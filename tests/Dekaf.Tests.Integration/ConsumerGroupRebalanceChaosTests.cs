@@ -1,9 +1,13 @@
 using System.Globalization;
+using System.Text;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
+using Dekaf.Serialization;
+using ConfluentKafka = Confluent.Kafka;
+using ConfluentKafkaAdmin = Confluent.Kafka.Admin;
 
 namespace Dekaf.Tests.Integration;
 
@@ -21,6 +25,12 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     private const int ChurnCycles = 2;
     private const int JointPhaseMessagesPerMember = 3;
     private const int RecoveryPhaseMessages = 3;
+    private const int StaticRestartProgressMessages = 3;
+    private const int MaxStaticRestartDuplicates = PartitionCount * CommitInterval * 3;
+    private const int GroupConfigVerificationAttempts = 10;
+    private static readonly TimeSpan StaticMemberSessionTimeout = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan StaticMemberHeartbeatInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan GroupConfigVerificationDelay = TimeSpan.FromMilliseconds(500);
 
     [Test]
     [Timeout(600_000)]
@@ -33,20 +43,209 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         }
     }
 
+    [Test]
+    public async Task SequenceOracle_BrokerObservedCommit_RejectsReplayBelowCommitFloor()
+    {
+        var oracle = new SequenceOracle("test-topic", partitionCount: 1, messagesPerPartition: 4, commitInterval: 2);
+        var second = CreateSequenceResult(offset: 1);
+
+        oracle.Record("original", CreateSequenceResult(offset: 0));
+        oracle.Record("original", second);
+        oracle.ObserveCommittedOffset(partition: 0, committedExclusive: 2);
+        oracle.Record("restarted", second);
+
+        await Assert.That(oracle.GetProgressBounds(0).ConfirmedCommit).IsEqualTo(2);
+        await Assert.That(oracle.Violations.Any(static violation =>
+            violation.Contains("replayed offset 1 below committed offset 2", StringComparison.Ordinal))).IsTrue();
+    }
+
+    [Test]
+    [Timeout(600_000)]
+    [SkipWhenNativeAot("Confluent.Kafka's librdkafka delegate binding requires runtime reflection.")]
+    public async Task StaticMember_RestartsWithinAndBeyondSessionTimeout_PreservesSequencesAndCommittedProgress(
+        CancellationToken cancellationToken)
+    {
+        const string assignor = "uniform";
+        var (topic, groupId, oracle) = await CreateScenarioAsync("rebalance-chaos-static", cancellationToken);
+        await ConfigureAndVerifyConsumerGroupTimeoutsAsync(groupId, cancellationToken);
+        var anchorInstanceId = $"anchor-{Guid.NewGuid():N}";
+        var restartingInstanceId = $"restarting-{Guid.NewGuid():N}";
+
+        await using var anchor = await CreateMemberAsync(
+            topic,
+            groupId,
+            "static-anchor",
+            assignor,
+            oracle,
+            cancellationToken,
+            anchorInstanceId);
+
+        anchor.Allow(1);
+        await anchor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
+        await anchor.WaitForObservedCountAsync(1, cancellationToken);
+
+        await using (var original = await CreateMemberAsync(
+                         topic,
+                         groupId,
+                         "static-restarting-original",
+                         assignor,
+                         oracle,
+                         cancellationToken,
+                         restartingInstanceId))
+        {
+            original.Allow(1);
+            await Task.WhenAll(
+                anchor.WaitForAssignmentCountAsync(PartitionCount / 2, cancellationToken),
+                original.WaitForAssignmentCountAsync(PartitionCount / 2, cancellationToken),
+                original.WaitForObservedCountAsync(1, cancellationToken));
+            anchor.ResetMaxAssignmentCount();
+            await original.StopAsync();
+        }
+
+        var withinTimeoutAnchorTarget = anchor.ObservedCount + StaticRestartProgressMessages;
+        anchor.Allow(StaticRestartProgressMessages);
+
+        await using (var withinTimeoutRestart = await CreateMemberAsync(
+                         topic,
+                         groupId,
+                         "static-restarting-within-timeout",
+                         assignor,
+                         oracle,
+                         cancellationToken,
+                         restartingInstanceId))
+        {
+            withinTimeoutRestart.Allow(StaticRestartProgressMessages);
+            await Task.WhenAll(
+                anchor.WaitForObservedCountAsync(withinTimeoutAnchorTarget, cancellationToken),
+                anchor.WaitForAssignmentCountAsync(PartitionCount / 2, cancellationToken),
+                withinTimeoutRestart.WaitForAssignmentCountAsync(PartitionCount / 2, cancellationToken),
+                withinTimeoutRestart.WaitForObservedCountAsync(StaticRestartProgressMessages, cancellationToken));
+
+            await Assert.That(anchor.MaxAssignmentCount).IsEqualTo(PartitionCount / 2)
+                .Because("the broker must retain the stopped static member's assignment until session timeout");
+            await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
+            await withinTimeoutRestart.StopAsync();
+        }
+
+        var beyondTimeoutAnchorTarget = anchor.ObservedCount + StaticRestartProgressMessages;
+        anchor.Allow(StaticRestartProgressMessages);
+        await anchor.WaitForObservedCountAsync(beyondTimeoutAnchorTarget, cancellationToken);
+
+        // A static leave retains its assignment. The surviving member receives every partition
+        // only after the broker expires that reservation, making this a broker-driven timeout signal.
+        await anchor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
+        await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
+
+        await using var beyondTimeoutRestart = await CreateMemberAsync(
+            topic,
+            groupId,
+            "static-restarting-after-timeout",
+            assignor,
+            oracle,
+            cancellationToken,
+            restartingInstanceId);
+
+        beyondTimeoutRestart.Allow(1);
+        await Task.WhenAll(
+            anchor.WaitForAssignmentCountAsync(PartitionCount / 2, cancellationToken),
+            beyondTimeoutRestart.WaitForAssignmentCountAsync(PartitionCount / 2, cancellationToken),
+            beyondTimeoutRestart.WaitForObservedCountAsync(1, cancellationToken));
+
+        anchor.Allow(PartitionCount * MessagesPerPartition * 2);
+        beyondTimeoutRestart.Allow(PartitionCount * MessagesPerPartition * 2);
+        await oracle.WaitForAllSequencesAsync(cancellationToken);
+        await oracle.WaitForFinalCommitsAsync(cancellationToken);
+        await Task.WhenAll(anchor.StopAsync(), beyondTimeoutRestart.StopAsync());
+
+        await AssertCompletedScenarioAsync(
+            groupId,
+            oracle,
+            MaxStaticRestartDuplicates,
+            cancellationToken);
+    }
+
+    private async Task ConfigureAndVerifyConsumerGroupTimeoutsAsync(
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        using var admin = new ConfluentKafka.AdminClientBuilder(new ConfluentKafka.AdminClientConfig
+        {
+            BootstrapServers = KafkaContainer.BootstrapServers
+        }).Build();
+        var resource = new ConfluentKafkaAdmin.ConfigResource
+        {
+            Type = ConfluentKafkaAdmin.ResourceType.Group,
+            Name = groupId
+        };
+        var sessionTimeout = ((int)StaticMemberSessionTimeout.TotalMilliseconds)
+            .ToString(CultureInfo.InvariantCulture);
+        var heartbeatInterval = ((int)StaticMemberHeartbeatInterval.TotalMilliseconds)
+            .ToString(CultureInfo.InvariantCulture);
+
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<
+            ConfluentKafkaAdmin.ConfigResource,
+            List<ConfluentKafkaAdmin.ConfigEntry>>
+        {
+            [resource] =
+            [
+                new ConfluentKafkaAdmin.ConfigEntry
+                {
+                    Name = "consumer.session.timeout.ms",
+                    Value = sessionTimeout,
+                    IncrementalOperation = ConfluentKafkaAdmin.AlterConfigOpType.Set
+                },
+                new ConfluentKafkaAdmin.ConfigEntry
+                {
+                    Name = "consumer.heartbeat.interval.ms",
+                    Value = heartbeatInterval,
+                    IncrementalOperation = ConfluentKafkaAdmin.AlterConfigOpType.Set
+                }
+            ]
+        }).WaitAsync(cancellationToken);
+
+        // The controller can acknowledge the alteration before the coordinator observes it.
+        for (var attempt = 0; attempt < GroupConfigVerificationAttempts; attempt++)
+        {
+            var results = await admin.DescribeConfigsAsync([resource]).WaitAsync(cancellationToken);
+            var entries = results.Single().Entries;
+            var sessionTimeoutMatches = entries["consumer.session.timeout.ms"].Value == sessionTimeout;
+            var heartbeatIntervalMatches = entries["consumer.heartbeat.interval.ms"].Value == heartbeatInterval;
+
+            if (sessionTimeoutMatches && heartbeatIntervalMatches)
+                return;
+
+            if (attempt == GroupConfigVerificationAttempts - 1)
+            {
+                await Assert.That(entries["consumer.session.timeout.ms"].Value).IsEqualTo(sessionTimeout);
+                await Assert.That(entries["consumer.heartbeat.interval.ms"].Value).IsEqualTo(heartbeatInterval);
+                return;
+            }
+
+            await Task.Delay(GroupConfigVerificationDelay, cancellationToken);
+        }
+    }
+
+    private static ConsumeResult<string, string> CreateSequenceResult(long offset) =>
+        new(
+            topic: "test-topic",
+            partition: 0,
+            offset,
+            keyData: ReadOnlyMemory<byte>.Empty,
+            isKeyNull: true,
+            valueData: Encoding.UTF8.GetBytes(offset.ToString(CultureInfo.InvariantCulture)),
+            isValueNull: false,
+            headers: null,
+            timestampMs: 0,
+            timestampType: TimestampType.NotAvailable,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: Serializers.String);
+
     private async Task RunChurnScenarioAsync(string assignor, CancellationToken cancellationToken)
     {
-        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: PartitionCount);
-        var groupId = $"rebalance-chaos-{assignor}-{Guid.NewGuid():N}";
-        var oracle = new SequenceOracle(topic, PartitionCount, MessagesPerPartition, CommitInterval);
-
-        await using var admin = KafkaContainer.CreateAdminClient();
-        await admin.IncrementalAlterConfigsAsync(
-            new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
-            {
-                [ConfigResource.Topic(topic)] = [ConfigAlter.Set("retention.ms", "600000")]
-            },
-            cancellationToken: cancellationToken);
-        await ProduceSequencedBacklogAsync(topic, cancellationToken);
+        var (topic, groupId, oracle) = await CreateScenarioAsync(
+            $"rebalance-chaos-{assignor}",
+            cancellationToken);
 
         await using var anchor = await CreateMemberAsync(
             topic,
@@ -85,7 +284,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
             await transient.StopAsync();
 
-            await AssertCommittedOffsetsAsync(admin, groupId, oracle, cancellationToken);
+            await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
             await anchor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
             var recoveryTarget = anchor.ObservedCount + RecoveryPhaseMessages;
             anchor.Allow(RecoveryPhaseMessages);
@@ -97,7 +296,33 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         await oracle.WaitForFinalCommitsAsync(cancellationToken);
         await anchor.StopAsync();
 
+        await AssertCompletedScenarioAsync(groupId, oracle, maximumDuplicateCount: null, cancellationToken);
+    }
+
+    private async Task<(string Topic, string GroupId, SequenceOracle Oracle)> CreateScenarioAsync(
+        string groupIdPrefix,
+        CancellationToken cancellationToken)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: PartitionCount);
+        var groupId = $"{groupIdPrefix}-{Guid.NewGuid():N}";
+        var oracle = new SequenceOracle(topic, PartitionCount, MessagesPerPartition, CommitInterval);
+
+        await ConfigureTopicRetentionAsync(topic, cancellationToken);
+        await ProduceSequencedBacklogAsync(topic, cancellationToken);
+
+        return (topic, groupId, oracle);
+    }
+
+    private async Task AssertCompletedScenarioAsync(
+        string groupId,
+        SequenceOracle oracle,
+        int? maximumDuplicateCount,
+        CancellationToken cancellationToken)
+    {
         await Assert.That(oracle.UniqueCount).IsEqualTo(PartitionCount * MessagesPerPartition);
+        if (maximumDuplicateCount is { } maximum)
+            await Assert.That(oracle.DuplicateCount).IsLessThanOrEqualTo(maximum);
+
         var violations = oracle.Violations;
         await Assert.That(violations).IsEmpty()
             .Because(string.Join(Environment.NewLine, violations));
@@ -108,7 +333,18 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 .IsEquivalentTo(Enumerable.Range(0, MessagesPerPartition).Select(static value => (long)value));
         }
 
-        await AssertCommittedOffsetsAsync(admin, groupId, oracle, cancellationToken);
+        await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
+    }
+
+    private async Task ConfigureTopicRetentionAsync(string topic, CancellationToken cancellationToken)
+    {
+        await using var admin = KafkaContainer.CreateAdminClient();
+        await admin.IncrementalAlterConfigsAsync(
+            new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+            {
+                [ConfigResource.Topic(topic)] = [ConfigAlter.Set("retention.ms", "600000")]
+            },
+            cancellationToken: cancellationToken);
     }
 
     private async Task ProduceSequencedBacklogAsync(string topic, CancellationToken cancellationToken)
@@ -140,10 +376,11 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         string clientId,
         string assignor,
         SequenceOracle oracle,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? groupInstanceId = null)
     {
         var assignments = new AssignmentTracker();
-        var consumer = await Kafka.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId(clientId)
             .WithGroupId(groupId)
@@ -153,32 +390,42 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             .WithMaxPollRecords(1)
             .WithQueuedMinMessages(1)
             .WithRebalanceListener(assignments)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync(cancellationToken);
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
+
+        if (groupInstanceId is not null)
+            builder.WithGroupInstanceId(groupInstanceId);
+
+        var consumer = await builder.BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
         return new ConsumerMember(clientId, consumer, assignments, oracle, cancellationToken);
     }
 
-    private static async Task AssertCommittedOffsetsAsync(
-        IAdminClient admin,
+    private async Task AssertCommittedOffsetsAsync(
         string groupId,
         SequenceOracle oracle,
         CancellationToken cancellationToken)
     {
+        await using var admin = KafkaContainer.CreateAdminClient();
         var committedOffsets = await admin.ListConsumerGroupOffsetsAsync(groupId, cancellationToken);
 
         for (var partition = 0; partition < PartitionCount; partition++)
         {
-            var expected = oracle.GetCommittedOffset(partition);
-            if (expected == 0)
-                continue;
-
-            await Assert.That(committedOffsets.TryGetValue(
+            var (confirmed, processed) = oracle.GetProgressBounds(partition);
+            if (!committedOffsets.TryGetValue(
                     new TopicPartition(oracle.Topic, partition),
                     out var committed))
-                .IsTrue();
-            await Assert.That(committed).IsEqualTo(expected);
+            {
+                await Assert.That(confirmed).IsEqualTo(0)
+                    .Because("a locally confirmed commit must exist on the broker");
+                continue;
+            }
+
+            await Assert.That(committed).IsGreaterThanOrEqualTo(confirmed)
+                .Because("Kafka may accept a commit before member shutdown or rebalance interrupts its response");
+            await Assert.That(committed).IsLessThanOrEqualTo(processed)
+                .Because("committed progress must not pass the contiguous processed prefix");
+            oracle.ObserveCommittedOffset(partition, committed);
         }
     }
 
@@ -211,7 +458,11 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         public int ObservedCount => _observed.Value;
 
+        public int MaxAssignmentCount => _assignments.MaxAssignmentCount;
+
         public void Allow(int count) => _permits.Release(count);
+
+        public void ResetMaxAssignmentCount() => _assignments.ResetMaxAssignmentCount();
 
         public Task WaitForAnyAssignmentAsync(CancellationToken cancellationToken) =>
             WaitForSignalOrCompletionAsync(
@@ -313,6 +564,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         private readonly AsyncCounter _finalCommits = new();
         private readonly object _violationsGate = new();
         private readonly List<string> _violations = [];
+        private int _duplicateCount;
 
         public SequenceOracle(
             string topic,
@@ -332,6 +584,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         }
 
         public int UniqueCount => _unique.Value;
+
+        public int DuplicateCount => Volatile.Read(ref _duplicateCount);
 
         public string Topic => _topic;
 
@@ -391,10 +645,14 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     while (state.Seen.Contains(state.NextExpected))
                         state.NextExpected++;
                 }
-                else if (result.Offset < state.CommittedExclusive)
+                else
                 {
-                    AddViolation(
-                        $"{clientId}, partition {result.Partition}: replayed offset {result.Offset} below committed offset {state.CommittedExclusive}");
+                    Interlocked.Increment(ref _duplicateCount);
+                    if (result.Offset < state.CommittedExclusive)
+                    {
+                        AddViolation(
+                            $"{clientId}, partition {result.Partition}: replayed offset {result.Offset} below committed offset {state.CommittedExclusive}");
+                    }
                 }
             }
 
@@ -481,11 +739,36 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 return [.. state.Seen.Order()];
         }
 
-        public long GetCommittedOffset(int partition)
+        public (long ConfirmedCommit, long ProcessedExclusive) GetProgressBounds(int partition)
         {
             var state = _partitions[partition];
             lock (state.Gate)
-                return state.CommittedExclusive;
+                return (state.CommittedExclusive, state.NextExpected);
+        }
+
+        public void ObserveCommittedOffset(int partition, long committedExclusive)
+        {
+            var state = _partitions[partition];
+            var finalCommit = false;
+            lock (state.Gate)
+            {
+                if (committedExclusive <= state.CommittedExclusive)
+                    return;
+
+                if (committedExclusive > state.NextExpected)
+                {
+                    AddViolation(
+                        $"Partition {partition}: broker commit {committedExclusive} jumped past processed offset {state.NextExpected}");
+                    return;
+                }
+
+                finalCommit = state.CommittedExclusive < _messagesPerPartition &&
+                              committedExclusive == _messagesPerPartition;
+                state.CommittedExclusive = committedExclusive;
+            }
+
+            if (finalCommit)
+                _finalCommits.Increment();
         }
 
         private static bool IsExpectedRebalanceCommitFailure(ErrorCode? errorCode) => errorCode is
@@ -515,6 +798,22 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         private readonly object _gate = new();
         private readonly HashSet<TopicPartition> _assigned = [];
         private readonly List<AssignmentWaiter> _waiters = [];
+        private int _maxAssignmentCount;
+
+        public int MaxAssignmentCount
+        {
+            get
+            {
+                lock (_gate)
+                    return _maxAssignmentCount;
+            }
+        }
+
+        public void ResetMaxAssignmentCount()
+        {
+            lock (_gate)
+                _maxAssignmentCount = _assigned.Count;
+        }
 
         public ValueTask OnPartitionsAssignedAsync(
             IEnumerable<TopicPartition> partitions,
@@ -574,6 +873,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     else
                         _assigned.Remove(partition);
                 }
+
+                _maxAssignmentCount = Math.Max(_maxAssignmentCount, _assigned.Count);
 
                 for (var index = _waiters.Count - 1; index >= 0; index--)
                 {
