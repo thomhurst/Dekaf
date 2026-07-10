@@ -428,6 +428,12 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
 
         Volatile.Write(ref rejoining, 1);
+        // Prefetch calls EnsureActiveGroupAsync without recording foreground poll progress.
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+
+        await Assert.That(rejoinRequest.Task.IsCompleted).IsFalse();
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+
         coordinator.RecordPoll();
         await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
 
@@ -1047,6 +1053,68 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(capturedRequest.Groups!).Count().IsEqualTo(1);
         await Assert.That(capturedRequest.Groups![0].MemberId).IsEqualTo("member-42");
         await Assert.That(capturedRequest.Groups[0].MemberEpoch).IsEqualTo(7);
+    }
+
+    [Test]
+    public async Task FetchOffsetsAsync_UnknownMemberAfterMaxPollExpiry_PreservesCommitFence()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
+        _metadataManager.SetApiVersion(
+            ApiKey.OffsetCommit,
+            OffsetCommitRequest.LowestSupportedVersion,
+            OffsetCommitRequest.HighestSupportedVersion);
+        SetupSuccessfulConsumerProtocolJoin();
+
+        _connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new OffsetFetchResponse
+            {
+                Groups =
+                [
+                    new OffsetFetchResponseGroup
+                    {
+                        GroupId = "test-group",
+                        Topics = [],
+                        ErrorCode = ErrorCode.UnknownMemberId
+                    }
+                ]
+            }));
+
+        var commitRequestCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitRequestCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        SetCoordinatorLongField(
+            coordinator,
+            "_maxPollExpiredAtPollVersion",
+            GetCoordinatorLongField(coordinator, "_pollVersion"));
+
+        await Assert.That(async () =>
+                await coordinator.FetchOffsetsAsync(
+                    [new TopicPartition("test-topic", 0)],
+                    CancellationToken.None))
+            .Throws<GroupException>();
+
+        var exception = await Assert.That(async () =>
+                await coordinator.CommitOffsetsAsync(
+                    [new TopicPartitionOffset("test-topic", 0, 1)],
+                    CancellationToken.None))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(commitRequestCount).IsEqualTo(0);
     }
 
     [Test]

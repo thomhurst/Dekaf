@@ -817,8 +817,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _memberId = null;
         _generationId = -1;
         _state = CoordinatorState.Unjoined;
-        Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
-
         ClearAssignment();
     }
 
