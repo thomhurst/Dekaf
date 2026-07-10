@@ -180,6 +180,19 @@ public class KafkaProtocolReaderTests
     }
 
     [Test]
+    public async Task ReadNullableArray_ClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
+    {
+        var data = new byte[] { 0x7F, 0xFF, 0xFF, 0xFF };
+
+        var exception = ReadThrowsMalformed(
+            data,
+            static (ref KafkaProtocolReader reader) =>
+                reader.ReadNullableArray(static (ref KafkaProtocolReader r) => r.ReadInt8()));
+
+        await Assert.That(exception.Message).Contains("claimed length");
+    }
+
+    [Test]
     public async Task ReadString_ClaimedLengthExceedsRemaining_ThrowsMalformedProtocolDataException()
     {
         var data = new byte[] { 0x00, 0x05, (byte)'a', (byte)'b' };

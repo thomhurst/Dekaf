@@ -22,6 +22,8 @@
   <ItemGroup>
     <EmbeddedResource Include="Corpus\ProtocolReader\*" />
     <Content Include="Corpus\ProtocolReader\*" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Corpus\Responses\*" />
+    <Content Include="Corpus\Responses\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

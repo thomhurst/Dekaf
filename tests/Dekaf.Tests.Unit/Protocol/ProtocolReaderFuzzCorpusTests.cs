@@ -16,7 +16,8 @@ public class ProtocolReaderFuzzCorpusTests
         ProtocolReaderOperation.ReadCompactNonNullableString,
         ProtocolReaderOperation.ReadRawBytes,
         ProtocolReaderOperation.ReadMemorySlice,
-        ProtocolReaderOperation.Skip
+        ProtocolReaderOperation.Skip,
+        ProtocolReaderOperation.ReadNullableArrayWithState
     ];
 
     private static readonly IReadOnlyDictionary<string, ProtocolReaderOperation> ExpectedCorpusOperations =
@@ -106,11 +107,11 @@ public class ProtocolReaderFuzzCorpusTests
 
         foreach (var seed in seeds)
         {
-            ProtocolReaderFuzzTarget.Run(seed.Data);
+            KafkaProtocolFuzzTarget.Run(seed.Data);
 
             var segmentedInput = seed.Data.ToArray();
             segmentedInput[0] |= 0x80;
-            ProtocolReaderFuzzTarget.Run(segmentedInput);
+            KafkaProtocolFuzzTarget.Run(segmentedInput);
         }
     }
 
