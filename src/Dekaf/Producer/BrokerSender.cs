@@ -93,6 +93,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private const int SendCoalescedTimeoutMs = 1500;
 
     private const int ResponsePollIntervalMs = 100;
+    private static readonly TimeSpan DisposalDrainTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Micro-linger: when coalesced batch count is at or below this threshold,
@@ -3935,7 +3936,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _pendingShrinkTask = null;
             if (pendingShrinkTask.IsCompleted)
             {
-                await DisposeShrinkResultAsync(pendingShrinkTask).ConfigureAwait(false);
+                await WaitForDisposalDrainAsync(
+                    DisposeShrinkResultAsync(pendingShrinkTask)).ConfigureAwait(false);
             }
             else
             {
@@ -3947,25 +3949,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         if (_drainingConnection is not null)
         {
-            try
-            {
-                await RetiredConnectionDisposer.DrainAndDisposeAsync(
+            await WaitForDisposalDrainAsync(
+                RetiredConnectionDisposer.DrainAndDisposeAsync(
                     _drainingConnection,
-                    _cts.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
+                    CancellationToken.None).AsTask()).ConfigureAwait(false);
             _drainingConnection = null;
         }
 
         if (_retiringConnection is not null)
         {
-            try
-            {
-                await RetiredConnectionDisposer.DrainAndDisposeAsync(
+            await WaitForDisposalDrainAsync(
+                RetiredConnectionDisposer.DrainAndDisposeAsync(
                     _retiringConnection,
-                    _cts.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
+                    CancellationToken.None).AsTask()).ConfigureAwait(false);
             _retiringConnection = null;
         }
 
@@ -4004,9 +4000,32 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _anyResponseCompleted.Dispose();
     }
 
+    private async ValueTask WaitForDisposalDrainAsync(Task drainTask)
+    {
+        try
+        {
+            await drainTask.WaitAsync(DisposalDrainTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException ex)
+        {
+            LogBatchCleanupStepFailed(ex, _brokerId);
+            // WaitAsync bounds DisposeAsync only. The drain retains connection ownership
+            // and must continue until sibling leases and operations finish.
+            _ = drainTask.ContinueWith(
+                static (task, _) => { _ = task.Exception; },
+                null,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+        catch (Exception ex)
+        {
+            LogBatchCleanupStepFailed(ex, _brokerId);
+        }
+    }
+
     private async Task DisposeShrinkResultAsync(Task<IKafkaConnection?> shrinkTask)
     {
-        var cancellationToken = _cts.Token;
         try
         {
             var removedConnection = await shrinkTask.ConfigureAwait(false);
@@ -4014,7 +4033,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 await RetiredConnectionDisposer.DrainAndDisposeAsync(
                     removedConnection,
-                    cancellationToken).ConfigureAwait(false);
+                    CancellationToken.None).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
