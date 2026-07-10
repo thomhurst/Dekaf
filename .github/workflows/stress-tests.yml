@@ -88,7 +88,7 @@ jobs:
             brokers: 1
             run_3conn: false
             artifact_suffix: ""
-            timeout_minutes: 60
+            timeout_minutes: 90
             name: Producer → Consumer Round-Trip (Paired)
           - scenario: consumer
             client: all

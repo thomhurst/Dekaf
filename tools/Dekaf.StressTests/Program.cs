@@ -430,7 +430,7 @@ public static class Program
             if (StressRunCompletionPolicy.EndedEarly(
                     result.Throughput.ElapsedSeconds,
                     result.DurationMinutes,
-                    isMessageBounded: result.RoundTripValidation is not null))
+                    isMessageBounded: result.IsMessageBounded))
             {
                 var expectedSeconds = result.DurationMinutes * 60;
                 reasons.Add(

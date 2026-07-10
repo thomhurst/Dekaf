@@ -508,6 +508,7 @@ internal static class RoundTripScenarioHelpers
             Latency = null,
             GcStats = gcStats.ToSnapshot(),
             CpuTimeSeconds = throughput.CpuTimeSeconds,
+            IsMessageBounded = true,
             RoundTripValidation = validation,
             ProducerDeliveryDiagnostics = producerDeliveryDiagnostics
         };

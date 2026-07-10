@@ -22,6 +22,12 @@ internal sealed class StressTestResult
     public RoundTripValidationSnapshot? RoundTripValidation { get; init; }
 
     /// <summary>
+    /// Whether a fixed message count, rather than <see cref="DurationMinutes"/>, defines
+    /// successful scenario completion. Message-bounded runs may finish before the duration.
+    /// </summary>
+    public bool IsMessageBounded { get; init; }
+
+    /// <summary>
     /// Whether the scenario's producer ran with idempotence enabled. Must mirror the
     /// producer configuration a few lines above where each scenario sets it. The failure
     /// policy in Program.CheckForFailures derives duplicate-delivery enforcement from

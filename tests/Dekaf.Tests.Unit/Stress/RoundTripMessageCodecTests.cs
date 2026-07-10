@@ -234,7 +234,7 @@ public class RoundTripMessageCodecTests
     }
 
     [Test]
-    public async Task DeliveryDiagnostics_RoundTripBytePayload_IsConfiguredAndReturned()
+    public async Task RoundTripResult_ConfiguresDiagnosticsAndMessageBound()
     {
         var options = new StressTestOptions
         {
@@ -278,5 +278,6 @@ public class RoundTripMessageCodecTests
             snapshot);
 
         await Assert.That(result.ProducerDeliveryDiagnostics).IsSameReferenceAs(snapshot);
+        await Assert.That(result.IsMessageBounded).IsTrue();
     }
 }
