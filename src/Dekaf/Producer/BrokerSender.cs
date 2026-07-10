@@ -3947,14 +3947,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         if (_drainingConnection is not null)
         {
-            try { await _drainingConnection.DisposeAsync().ConfigureAwait(false); }
+            try
+            {
+                await RetiredConnectionDisposer.DrainAndDisposeAsync(
+                    _drainingConnection,
+                    _cts.Token).ConfigureAwait(false);
+            }
             catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
             _drainingConnection = null;
         }
 
         if (_retiringConnection is not null)
         {
-            try { await _retiringConnection.DisposeAsync().ConfigureAwait(false); }
+            try
+            {
+                await RetiredConnectionDisposer.DrainAndDisposeAsync(
+                    _retiringConnection,
+                    _cts.Token).ConfigureAwait(false);
+            }
             catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
             _retiringConnection = null;
         }
@@ -3996,11 +4006,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private async Task DisposeShrinkResultAsync(Task<IKafkaConnection?> shrinkTask)
     {
+        var cancellationToken = _cts.Token;
         try
         {
             var removedConnection = await shrinkTask.ConfigureAwait(false);
             if (removedConnection is not null)
-                await removedConnection.DisposeAsync().ConfigureAwait(false);
+            {
+                await RetiredConnectionDisposer.DrainAndDisposeAsync(
+                    removedConnection,
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -4318,10 +4333,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var connection = _drainingConnection;
         _drainingConnection = null;
 
-        // Fire-and-forget disposal with exception observation to prevent UnobservedTaskException.
-        // The connection has no in-flight requests (its pending list was empty when it was
-        // promoted to draining).
-        _ = connection.DisposeAsync().AsTask().ContinueWith(
+        // This sender's pending list is empty. The shared retirement helper also waits for
+        // any leases or operations held by other pool users before disposing in the background.
+        _ = RetiredConnectionDisposer.DrainAndDisposeAsync(
+            connection,
+            _cts.Token).AsTask().ContinueWith(
             static (t, _) => { /* Observe exception — best-effort disposal */ },
             null,
             CancellationToken.None,

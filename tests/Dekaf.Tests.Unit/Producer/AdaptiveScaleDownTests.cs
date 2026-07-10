@@ -460,6 +460,50 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task DisposeShrinkResultAsync_WaitsForLeasedConnection(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var removedConnection = new TestKafkaConnection();
+        var retirableConnection = (IRetirableKafkaConnection)removedConnection;
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+
+        var disposeShrinkResultAsync = typeof(BrokerSender).GetMethod(
+            "DisposeShrinkResultAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("DisposeShrinkResultAsync method not found");
+        var disposalTask = (Task)disposeShrinkResultAsync.Invoke(
+            sender,
+            [Task.FromResult<IKafkaConnection?>(removedConnection)])!;
+
+        try
+        {
+            var firstSignal = await Task.WhenAny(
+                    removedConnection.LeaseCountObserved.Task,
+                    removedConnection.DisposeStarted.Task)
+                .WaitAsync(cancellationToken);
+
+            await Assert.That(firstSignal).IsSameReferenceAs(removedConnection.LeaseCountObserved.Task);
+            await Assert.That(disposalTask.IsCompleted).IsFalse();
+            await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(0);
+        }
+        finally
+        {
+            retirableConnection.ReleaseLease();
+            await disposalTask.WaitAsync(cancellationToken);
+            await sender.DisposeAsync();
+        }
+
+        await Assert.That(Volatile.Read(ref removedConnection.CompleteRetirementCalls)).IsEqualTo(1);
+        await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ApplyScaleDown_EmptyRemovedSlot_DisposesConnectionImmediately()
     {
         var options = CreateOptions(idempotent: false);

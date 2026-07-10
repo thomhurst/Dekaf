@@ -11,6 +11,8 @@ internal readonly struct KafkaConnectionLease(
 
 internal static class ConnectionPoolLeaseExtensions
 {
+    private static readonly TimeSpan LeaseRetryDelay = TimeSpan.FromMilliseconds(1);
+
     public static async ValueTask<KafkaConnectionLease> LeaseConnectionAsync(
         this IConnectionPool connectionPool,
         int brokerId,
@@ -24,7 +26,7 @@ internal static class ConnectionPoolLeaseExtensions
                 return lease;
 
             cancellationToken.ThrowIfCancellationRequested();
-            await Task.Yield();
+            await Task.Delay(LeaseRetryDelay, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -42,7 +44,7 @@ internal static class ConnectionPoolLeaseExtensions
                 return lease;
 
             cancellationToken.ThrowIfCancellationRequested();
-            await Task.Yield();
+            await Task.Delay(LeaseRetryDelay, cancellationToken).ConfigureAwait(false);
         }
     }
 

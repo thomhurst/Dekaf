@@ -1058,41 +1058,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (removedConnection is null)
                 continue;
 
-            await DrainAndDisposeRetiredConnectionAsync(
+            await RetiredConnectionDisposer.DrainAndDisposeAsync(
                 removedConnection,
                 cancellationToken).ConfigureAwait(false);
         }
     }
-
-    private static async ValueTask DrainAndDisposeRetiredConnectionAsync(
-        IKafkaConnection connection,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            // Pool routing is already closed. Existing leases may still start more sends,
-            // so seal retirement only after every lease has been returned.
-            if (connection is IRetirableKafkaConnection retirableConnection)
-            {
-                while (retirableConnection.LeaseCount > 0)
-                    await Task.Delay(10, cancellationToken).ConfigureAwait(false);
-
-                retirableConnection.CompleteRetirement();
-            }
-
-            // A send may have entered immediately before retirement was sealed.
-            while (HasRetiredConnectionWork(connection))
-                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            await connection.DisposeAsync().ConfigureAwait(false);
-        }
-    }
-
-    private static bool HasRetiredConnectionWork(IKafkaConnection connection)
-        => connection is IRetirableKafkaConnection { ActiveOperationCount: > 0 }
-            || connection is IIdleTrackedKafkaConnection { PendingRequestCount: > 0 };
 
     public StringSet Subscription => _subscriptionSnapshot;
     public string? SubscriptionPattern => _topicPattern;
@@ -2170,6 +2140,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 && scheduledFetchSessions is not null
                 && scheduledFetchSessions.Contains(key))
             {
+                continue;
+            }
+
+            // Owned consumers physically removed indices beyond the current group, so
+            // asking the pool for one would modulo-wrap the close onto a live connection.
+            // Shared consumers only narrow local routing and retain those physical slots.
+            if (_ownsInfrastructure && key.ConnectionIndex >= currentConnections)
+            {
+                _fetchSessions.TryRemove(key, out _);
                 continue;
             }
 

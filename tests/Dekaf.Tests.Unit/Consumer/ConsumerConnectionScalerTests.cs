@@ -176,6 +176,25 @@ public sealed class ConsumerConnectionScalerTests
     }
 
     [Test]
+    public async Task MaybeScale_SynchronousDelegateThrow_LogsError()
+    {
+        var exception = new InvalidOperationException("scale failed synchronously");
+        Exception? logged = null;
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ => throw exception,
+            scaleDownAsync: _ => ValueTask.CompletedTask,
+            logError: ex => logged = ex);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.MaybeScale();
+
+        await Assert.That(logged).IsSameReferenceAs(exception);
+    }
+
+    [Test]
     public async Task StopAndDrainAsync_PendingOperation_ReturnsAfterTimeout()
     {
         var scaleCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

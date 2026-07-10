@@ -132,17 +132,25 @@ internal sealed class ConsumerConnectionScaler
     private void FireAndObserve(Func<CancellationToken, ValueTask> action)
     {
         Task operationTask;
-        lock (_operationLock)
+        try
         {
-            if (_stopping != 0)
-                return;
+            lock (_operationLock)
+            {
+                if (_stopping != 0)
+                    return;
 
-            var operation = action(CancellationToken.None);
-            if (operation.IsCompletedSuccessfully)
-                return;
+                var operation = action(CancellationToken.None);
+                if (operation.IsCompletedSuccessfully)
+                    return;
 
-            operationTask = operation.AsTask();
-            _pendingOperations.Add(operationTask);
+                operationTask = operation.AsTask();
+                _pendingOperations.Add(operationTask);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logError?.Invoke(ex);
+            return;
         }
 
         _ = operationTask.ContinueWith(

@@ -44,10 +44,14 @@ public sealed class ConsumerConnectionOwnershipTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Consumer_ScaleDown_ClosesStaleFetchSessionOnRetainedConnection(
-        bool ownsInfrastructure)
+    [Arguments(false, 1, true)]
+    [Arguments(true, 1, true)]
+    [Arguments(false, 2, true)]
+    [Arguments(true, 2, false)]
+    public async Task Consumer_ScaleDown_ClosesOnlyReachableStaleFetchSession(
+        bool ownsInfrastructure,
+        int sessionConnectionIndex,
+        bool expectsCloseRequest)
     {
         var pool = CreatePool();
         var closeRequest = new TaskCompletionSource<(int SessionId, int SessionEpoch)>(
@@ -55,7 +59,7 @@ public sealed class ConsumerConnectionOwnershipTests
         var connection = new TrackedConnection(
             hasPendingRequest: false,
             onFetchRequest: request => closeRequest.TrySetResult((request.SessionId, request.SessionEpoch)));
-        pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
+        pool.GetConnectionByIndexAsync(1, sessionConnectionIndex, Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
 
         var metadataManager = CreateMetadataManager(pool);
@@ -78,7 +82,7 @@ public sealed class ConsumerConnectionOwnershipTests
                 ErrorCode = ErrorCode.None,
                 SessionId = 42
             });
-            fetchSessions[(1, 1)] = handler;
+            fetchSessions[(1, sessionConnectionIndex)] = handler;
 
             var dispatchMethod = typeof(KafkaConsumer<string, string>).GetMethod(
                 "DispatchReadyBrokerPrefetchesAsync",
@@ -89,13 +93,24 @@ public sealed class ConsumerConnectionOwnershipTests
                 [CancellationToken.None])!;
 
             var result = await dispatch;
-            var close = await closeRequest.Task.WaitAsync(TimeSpan.FromSeconds(1));
-
-            await Assert.That(result.Started).IsEqualTo(1);
-            await Assert.That(close.SessionId).IsEqualTo(42);
-            await Assert.That(close.SessionEpoch).IsEqualTo(-1);
-            await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
-            await Assert.That(connection.LeaseCount).IsEqualTo(0);
+            if (expectsCloseRequest)
+            {
+                var close = await closeRequest.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                await Assert.That(result.Started).IsEqualTo(1);
+                await Assert.That(close.SessionId).IsEqualTo(42);
+                await Assert.That(close.SessionEpoch).IsEqualTo(-1);
+                await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
+                await Assert.That(connection.LeaseCount).IsEqualTo(0);
+            }
+            else
+            {
+                await Assert.That(result.Started).IsEqualTo(0);
+                await pool.DidNotReceive().GetConnectionByIndexAsync(
+                    1,
+                    sessionConnectionIndex,
+                    Arg.Any<CancellationToken>());
+                await Assert.That(fetchSessions.ContainsKey((1, sessionConnectionIndex))).IsFalse();
+            }
         }
         finally
         {
