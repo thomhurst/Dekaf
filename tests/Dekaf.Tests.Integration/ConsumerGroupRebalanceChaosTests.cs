@@ -77,6 +77,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 anchor.WaitForAssignmentCountAsync(PartitionCount / 2, cancellationToken),
                 original.WaitForAssignmentCountAsync(PartitionCount / 2, cancellationToken),
                 original.WaitForObservedCountAsync(1, cancellationToken));
+            anchor.ResetMaxAssignmentCount();
             await original.StopAsync();
         }
 
@@ -99,6 +100,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 withinTimeoutRestart.WaitForAssignmentCountAsync(PartitionCount / 2, cancellationToken),
                 withinTimeoutRestart.WaitForObservedCountAsync(StaticRestartProgressMessages, cancellationToken));
 
+            await Assert.That(anchor.MaxAssignmentCount).IsEqualTo(PartitionCount / 2)
+                .Because("the broker must retain the stopped static member's assignment until session timeout");
             await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
             await withinTimeoutRestart.StopAsync();
         }
@@ -399,7 +402,11 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         public int ObservedCount => _observed.Value;
 
+        public int MaxAssignmentCount => _assignments.MaxAssignmentCount;
+
         public void Allow(int count) => _permits.Release(count);
+
+        public void ResetMaxAssignmentCount() => _assignments.ResetMaxAssignmentCount();
 
         public Task WaitForAnyAssignmentAsync(CancellationToken cancellationToken) =>
             WaitForSignalOrCompletionAsync(
@@ -710,6 +717,22 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         private readonly object _gate = new();
         private readonly HashSet<TopicPartition> _assigned = [];
         private readonly List<AssignmentWaiter> _waiters = [];
+        private int _maxAssignmentCount;
+
+        public int MaxAssignmentCount
+        {
+            get
+            {
+                lock (_gate)
+                    return _maxAssignmentCount;
+            }
+        }
+
+        public void ResetMaxAssignmentCount()
+        {
+            lock (_gate)
+                _maxAssignmentCount = _assigned.Count;
+        }
 
         public ValueTask OnPartitionsAssignedAsync(
             IEnumerable<TopicPartition> partitions,
@@ -769,6 +792,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     else
                         _assigned.Remove(partition);
                 }
+
+                _maxAssignmentCount = Math.Max(_maxAssignmentCount, _assigned.Count);
 
                 for (var index = _waiters.Count - 1; index >= 0; index--)
                 {
