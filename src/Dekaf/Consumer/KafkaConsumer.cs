@@ -4180,7 +4180,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
             if (Volatile.Read(ref _lastCoordinatorAssignmentVersion) == coordinatorAssignmentVersion)
+            {
+                coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
                 return;
+            }
         }
         else if (IsManualAssignmentEnsureCurrent())
         {
@@ -4211,6 +4214,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (_assignment.SetEquals(coordinatorAssignment) && coordinatorRevocations is null)
                 {
                     Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
+                    coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
                     return;
                 }
 
@@ -4288,6 +4292,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
 
                 Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
+                coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
                 unacknowledgedCoordinatorRevocations = null;
             }
             else

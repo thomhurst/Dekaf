@@ -232,6 +232,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
+    internal void AcknowledgeAssignmentSync(int assignmentVersion)
+    {
+        lock (_assignmentStateLock)
+        {
+            if (Volatile.Read(ref _assignmentVersion) != assignmentVersion
+                || !_revokedPartitionsSinceLastSync.IsEmpty)
+            {
+                return;
+            }
+
+            Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
+        }
+    }
+
     private void EnqueueRevokedPartitions(IEnumerable<TopicPartition> revoked)
     {
         foreach (var partition in revoked)
@@ -1371,7 +1385,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     _state = CoordinatorState.Stable;
                     RefreshPollDeadline();
-                    Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
 
                     Diagnostics.DekafMetrics.RebalanceDuration.Record(
                         Stopwatch.GetElapsedTime(startedAt).TotalSeconds,
