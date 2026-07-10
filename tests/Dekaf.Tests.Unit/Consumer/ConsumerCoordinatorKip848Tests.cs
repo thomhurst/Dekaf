@@ -1348,6 +1348,23 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task EnsureActiveGroupAsync_StableWithRetainedFence_PreservesMemberEpoch()
+    {
+        SetupFindCoordinator();
+        SetupConsumerGroupHeartbeat(memberEpoch: 7, heartbeatIntervalMs: 60_000);
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.RecordPollAsync(CancellationToken.None);
+        SetCoordinatorLongField(coordinator, "_maxPollExpiredAtPollVersion", 0);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.GenerationId).IsEqualTo(7);
+    }
+
+    [Test]
     public async Task CommitOffsetsAsync_BackgroundAssignmentSyncPreservesFenceUntilForegroundPoll()
     {
         SetupSuccessfulConsumerProtocolJoin(assignment: CreateAssignment(TestTopicId, 0));

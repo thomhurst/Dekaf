@@ -1336,6 +1336,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             ThrowIfFatalHeartbeatException();
 
+            if (_state == CoordinatorState.Stable)
+                return;
+
             var expiredPollVersion = Volatile.Read(ref _maxPollExpiredAtPollVersion);
             if (expiredPollVersion >= 0)
             {
@@ -1349,9 +1352,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // epoch -2; dynamic members rejoin with the initial epoch 0.
                 _generationId = _options.GroupInstanceId is null ? 0 : -2;
             }
-
-            if (_state == CoordinatorState.Stable)
-                return;
 
             LogEnsureActiveGroupStarted(_options.GroupId!, _state);
             var startedAt = Stopwatch.GetTimestamp();
