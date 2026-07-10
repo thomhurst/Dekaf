@@ -887,6 +887,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private async ValueTask<ConsumerHeartbeatResult> SendConsumerGroupHeartbeatAsync(
         bool isInitial,
+        bool discardIfNotStable,
         CancellationToken cancellationToken)
     {
         using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
@@ -949,6 +950,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         var response = await connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
             request, version, cancellationToken).ConfigureAwait(false);
+
+        // A foreground poll can expire the member while this request is in flight.
+        // Ignore the stale response before it can update the epoch or assignment.
+        if (discardIfNotStable && _state != CoordinatorState.Stable)
+            return default;
 
         if (response.ErrorCode != ErrorCode.None)
         {
@@ -1220,6 +1226,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     heartbeatResult = await SendConsumerGroupHeartbeatAsync(
                         isInitial: _memberId is null || _generationId <= 0,
+                        discardIfNotStable: false,
                         cancellationToken).ConfigureAwait(false);
 
                     _state = CoordinatorState.Stable;
@@ -1315,7 +1322,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     break;
 
                 var result = await SendConsumerGroupHeartbeatAsync(
-                    isInitial: false, cancellationToken).ConfigureAwait(false);
+                    isInitial: false,
+                    discardIfNotStable: true,
+                    cancellationToken).ConfigureAwait(false);
 
                 await FireConsumerProtocolRebalanceListenersAsync(result, cancellationToken)
                     .ConfigureAwait(false);

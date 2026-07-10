@@ -162,7 +162,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             "SendConsumerGroupHeartbeatAsync",
             BindingFlags.NonPublic | BindingFlags.Instance);
 
-        var result = method!.Invoke(coordinator, [false, CancellationToken.None])!;
+        var result = method!.Invoke(coordinator, [false, true, CancellationToken.None])!;
         var task = (Task)result.GetType().GetMethod("AsTask")!.Invoke(result, null)!;
         await task;
     }
@@ -601,6 +601,80 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await competingHeartbeat.WaitAsync(cancellationToken);
 
         await Assert.That(steadyHeartbeatCount).IsEqualTo(0);
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task ConsumerProtocol_ForegroundExpiry_DropsInFlightHeartbeatResponse(
+        CancellationToken cancellationToken)
+    {
+        SetupFindCoordinator();
+        var steadyHeartbeatStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var steadyHeartbeatResponse = new TaskCompletionSource<ConsumerGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                if (request.MemberEpoch == 0)
+                {
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = "member-1",
+                        MemberEpoch = 1,
+                        HeartbeatIntervalMs = 60_000,
+                        Assignment = CreateAssignment(TestTopicId, 0)
+                    });
+                }
+
+                if (request.MemberEpoch == -1)
+                {
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = "member-1",
+                        MemberEpoch = -1,
+                        HeartbeatIntervalMs = 60_000
+                    });
+                }
+
+                steadyHeartbeatStarted.TrySetResult();
+                return new ValueTask<ConsumerGroupHeartbeatResponse>(steadyHeartbeatResponse.Task);
+            });
+
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            maxPollIntervalMs: 300_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
+
+        var inFlightHeartbeat = InvokeSteadyConsumerGroupHeartbeatAsync(coordinator).AsTask();
+        await steadyHeartbeatStarted.Task.WaitAsync(cancellationToken);
+        SetCoordinatorLongField(
+            coordinator,
+            "_lastPollTimestamp",
+            Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 600L));
+
+        await coordinator.RecordPollAsync(cancellationToken);
+        steadyHeartbeatResponse.TrySetResult(new ConsumerGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.None,
+            MemberId = "member-1",
+            MemberEpoch = 2,
+            HeartbeatIntervalMs = 60_000,
+            Assignment = CreateAssignment(TestTopicId, 1)
+        });
+        await inFlightHeartbeat;
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.GenerationId).IsEqualTo(1);
+        await Assert.That(coordinator.Assignment).IsEmpty();
     }
 
     [Test]
