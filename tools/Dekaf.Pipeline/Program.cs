@@ -53,6 +53,7 @@ if (!skipIntegrationTests)
         ["Consumer"] = () => builder.Services.AddModule<RunConsumerIntegrationTestsModule>(),
         ["ConsumerGroup"] = () => builder.Services.AddModule<RunConsumerGroupIntegrationTestsModule>(),
         ["ConsumerLag"] = () => builder.Services.AddModule<RunConsumerLagIntegrationTestsModule>(),
+        ["Interop"] = () => builder.Services.AddModule<RunInteropIntegrationTestsModule>(),
         ["Messaging"] = () => builder.Services.AddModule<RunMessagingIntegrationTestsModule>(),
         ["MessagingPatterns"] = () => builder.Services.AddModule<RunMessagingPatternsIntegrationTestsModule>(),
         ["MessagingOrdering"] = () => builder.Services.AddModule<RunMessagingOrderingIntegrationTestsModule>(),
