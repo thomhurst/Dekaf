@@ -234,11 +234,12 @@ public sealed class ConsumerAssignmentFastPathTests
         SetupFindCoordinator(connection);
         SetupConsumerGroupHeartbeat(connection, CreateAssignment());
 
-        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager, maxPollIntervalMs: 10);
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
         consumer.Subscribe("test-topic");
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         var coordinator = GetCoordinator(consumer);
+        await coordinator.StopHeartbeatAsync();
         using var delayCancellation = new CancellationTokenSource();
         var delay = consumer.DelayForForegroundPollAsync(
             Timeout.Infinite,
@@ -247,7 +248,7 @@ public sealed class ConsumerAssignmentFastPathTests
         {
             LastPollTimestampField.SetValue(
                 coordinator,
-                Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+                Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 600L));
             await coordinator.RecordPollAsync(CancellationToken.None);
 
             await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
