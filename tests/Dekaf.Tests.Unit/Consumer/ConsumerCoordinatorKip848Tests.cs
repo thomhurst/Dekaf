@@ -684,6 +684,94 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task ConsumerProtocol_HeartbeatExpiry_BlocksRejoinUntilPartitionsLostCompletes(
+        CancellationToken cancellationToken)
+    {
+        SetupFindCoordinator();
+        var lossStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseLoss = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var assignmentCount = 0;
+        var joinRequestCount = 0;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref assignmentCount);
+                return ValueTask.CompletedTask;
+            });
+        listener.OnPartitionsLostAsync(
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                lossStarted.TrySetResult();
+                return new ValueTask(releaseLoss.Task);
+            });
+
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                if (request.MemberEpoch == -1)
+                {
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = "member-1",
+                        MemberEpoch = -1,
+                        HeartbeatIntervalMs = 60_000
+                    });
+                }
+
+                var join = Interlocked.Increment(ref joinRequestCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = join,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = CreateAssignment(TestTopicId, join - 1)
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions(
+            rebalanceListener: listener,
+            heartbeatIntervalMs: 60_000,
+            maxPollIntervalMs: 300_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string> { "test-topic" };
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+        SetCoordinatorLongField(
+            coordinator,
+            "_lastPollTimestamp",
+            Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 600L));
+
+        var heartbeatExpiry = InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, cancellationToken);
+        await lossStarted.Task.WaitAsync(cancellationToken);
+
+        await coordinator.RecordPollAsync(cancellationToken);
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+        var joinsWhileLossPending = Volatile.Read(ref joinRequestCount);
+        var assignmentsWhileLossPending = Volatile.Read(ref assignmentCount);
+
+        releaseLoss.TrySetResult();
+        await heartbeatExpiry.WaitAsync(cancellationToken);
+        await coordinator.RecordPollAsync(cancellationToken);
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+
+        await Assert.That(joinsWhileLossPending).IsEqualTo(1);
+        await Assert.That(assignmentsWhileLossPending).IsEqualTo(1);
+        await Assert.That(joinRequestCount).IsEqualTo(2);
+        await Assert.That(assignmentCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task CommitOffsetsAsync_OverdueBeforeHeartbeatExpiry_RejectsCommit()
     {
         SetupFindCoordinator();

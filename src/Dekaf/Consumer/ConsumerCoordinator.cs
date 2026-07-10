@@ -70,6 +70,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private long _pollVersion;
     private long _maxPollExpiredAtPollVersion = -1;
     private long _maxPollExpirationVersion;
+    private int _maxPollLossNotificationPending;
     private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
     private volatile StringSet? _subscribedTopics;
     private volatile string? _subscribedTopicRegex;
@@ -110,6 +111,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal ValueTask RecordPollAsync(CancellationToken cancellationToken)
     {
+        // Heartbeat expiry invokes user callbacks outside _lock. Keep its poll generation
+        // unchanged so EnsureActiveGroup cannot rejoin until notification completes.
+        if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+            return ValueTask.CompletedTask;
+
         var now = Stopwatch.GetTimestamp();
         if (_state == CoordinatorState.Stable
             && now - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks)
@@ -125,7 +131,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
         if (expiration.Expired)
-            await InvokePartitionsLostAsync(expiration.Lost).ConfigureAwait(false);
+            await CompleteMaxPollExpirationAsync(expiration.Lost).ConfigureAwait(false);
 
         cancellationToken.ThrowIfCancellationRequested();
         // Advance only after loss callbacks so prefetch cannot rejoin during notification.
@@ -1318,7 +1324,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
                 if (expiration.Expired)
                 {
-                    await InvokePartitionsLostAsync(expiration.Lost).ConfigureAwait(false);
+                    await CompleteMaxPollExpirationAsync(expiration.Lost).ConfigureAwait(false);
 
                     break;
                 }
@@ -1420,9 +1426,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // EnsureActiveGroup, but only a new foreground poll increments this generation.
             Interlocked.Increment(ref _maxPollExpirationVersion);
             Volatile.Write(ref _maxPollExpiredAtPollVersion, pollVersion);
-            _state = CoordinatorState.Unjoined;
-
             var lost = ClearAssignment();
+            Volatile.Write(ref _maxPollLossNotificationPending, 1);
+            _state = CoordinatorState.Unjoined;
 
             LogMaxPollIntervalExceeded(_options.MaxPollIntervalMs);
             await SendConsumerProtocolLeaveRequestAsync(cancellationToken).ConfigureAwait(false);
@@ -1431,6 +1437,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         finally
         {
             _lock.Release();
+        }
+    }
+
+    private async ValueTask CompleteMaxPollExpirationAsync(IReadOnlyList<TopicPartition>? lost)
+    {
+        try
+        {
+            await InvokePartitionsLostAsync(lost).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _maxPollLossNotificationPending, 0);
         }
     }
 
