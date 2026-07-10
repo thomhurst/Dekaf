@@ -112,21 +112,29 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         }
         await sampler.StopAsync().ConfigureAwait(false);
 
-        var endOffsets = await StressTestHelpers.QueryEndOffsetsAsync(
-            consumer,
-            options.Topic,
-            options.Partitions,
-            cancellationToken);
+        var queriedEndOffsets = await RoundTripScenarioHelpers.TryQueryEndOffsetsAsync(
+            token => StressTestHelpers.QueryEndOffsetsAsync(
+                consumer,
+                options.Topic,
+                options.Partitions,
+                token),
+            throughput,
+            StressTestHelpers.OperationTimeout,
+            cancellationToken).ConfigureAwait(false);
+        // Empty ranges let reporting preserve the produce/flush errors and delivery
+        // diagnostics; timedOut below still makes the unverifiable validation fail.
+        var endOffsets = queriedEndOffsets ?? startOffsets;
         var delivered = RoundTripScenarioHelpers.CountRecords(startOffsets, endOffsets);
         var validator = new RoundTripValidator(factory.ExpectedPerPartition);
-        var timedOut = await ConsumeAndValidateAsync(
-            consumer,
-            options,
-            startOffsets,
-            endOffsets,
-            validator,
-            throughput,
-            cancellationToken).ConfigureAwait(false);
+        var timedOut = queriedEndOffsets is null || await ConsumeAndValidateAsync(
+                consumer,
+                options,
+                startOffsets,
+                endOffsets,
+                validator,
+                throughput,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         throughput.Stop();
 
@@ -455,6 +463,43 @@ internal static class RoundTripScenarioHelpers
             "Round-trip produce",
             ordinal);
         return true;
+    }
+
+    public static async Task<long[]?> TryQueryEndOffsetsAsync(
+        Func<CancellationToken, Task<long[]>> query,
+        ThroughputTracker throughput,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        using var queryTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        try
+        {
+            return await query(queryTimeout.Token)
+                .WaitAsync(timeout, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException ex)
+        {
+            queryTimeout.Cancel();
+            throughput.RecordError(
+                new TimeoutException(
+                    $"Round-trip end offset query did not complete within {timeout.TotalSeconds:N0} seconds.",
+                    ex),
+                "Round-trip end offset query");
+            return null;
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throughput.RecordError(ex, "Round-trip end offset query");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throughput.RecordError(ex, "Round-trip end offset query");
+            return null;
+        }
     }
 
     public static long CountRecords(long[] startOffsets, long[] endOffsets)

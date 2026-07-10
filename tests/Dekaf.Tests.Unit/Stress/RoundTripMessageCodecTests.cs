@@ -213,6 +213,64 @@ public class RoundTripMessageCodecTests
     }
 
     [Test]
+    public async Task TryQueryEndOffsets_WhenQueryFails_RecordsErrorAndReturnsNull()
+    {
+        var throughput = new ThroughputTracker();
+
+        var offsets = await RoundTripScenarioHelpers.TryQueryEndOffsetsAsync(
+            _ => Task.FromException<long[]>(new InvalidOperationException("query failed")),
+            throughput,
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+
+        var error = throughput.GetSnapshot().ErrorSamples.Single();
+        await Assert.That(offsets).IsNull();
+        await Assert.That(throughput.ErrorCount).IsEqualTo(1);
+        await Assert.That(error.Operation).IsEqualTo("Round-trip end offset query");
+        await Assert.That(error.Message).IsEqualTo("query failed");
+    }
+
+    [Test]
+    public async Task TryQueryEndOffsets_WhenQueryHangs_RecordsTimeoutAndReturnsNull()
+    {
+        var throughput = new ThroughputTracker();
+        var neverCompletes = new TaskCompletionSource<long[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var offsets = await RoundTripScenarioHelpers.TryQueryEndOffsetsAsync(
+                _ => neverCompletes.Task,
+                throughput,
+                TimeSpan.Zero,
+                CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+
+        var error = throughput.GetSnapshot().ErrorSamples.Single();
+        await Assert.That(offsets).IsNull();
+        await Assert.That(throughput.ErrorCount).IsEqualTo(1);
+        await Assert.That(error.ExceptionType).IsEqualTo(typeof(TimeoutException).FullName);
+        await Assert.That(error.Operation).IsEqualTo("Round-trip end offset query");
+    }
+
+    [Test]
+    public async Task TryQueryEndOffsets_WhenRunIsCancelled_PropagatesCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var throughput = new ThroughputTracker();
+
+        await Assert.That(async () => await RoundTripScenarioHelpers.TryQueryEndOffsetsAsync(
+                async token =>
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                    return [];
+                },
+                throughput,
+                TimeSpan.FromSeconds(1),
+                cancellation.Token))
+            .Throws<OperationCanceledException>();
+        await Assert.That(throughput.ErrorCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task StartSampler_WhenOperationThrows_StopsSamplerAndRethrows()
     {
         var throughput = new ThroughputTracker();
