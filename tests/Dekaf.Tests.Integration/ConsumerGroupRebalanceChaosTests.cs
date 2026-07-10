@@ -70,6 +70,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
     [Test]
     [Timeout(600_000)]
+    [SkipWhenNativeAot("Confluent.Kafka native delegate binding requires runtime reflection.")]
     public async Task ClassicEagerRange_ChurnUnderLoad_PreservesSequencesAndCommittedProgress(
         CancellationToken cancellationToken)
     {
@@ -264,6 +265,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
     [Test]
     [Timeout(600_000)]
+    [SkipWhenNativeAot("Confluent.Kafka native delegate binding requires runtime reflection.")]
     public async Task ClassicEagerRange_ToKip848Uniform_OnlineMigrationPreservesSequencesAndCommittedProgress(
         CancellationToken cancellationToken)
     {
@@ -276,6 +278,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
     [Test]
     [Timeout(600_000)]
+    [SkipWhenNativeAot("Confluent.Kafka native delegate binding requires runtime reflection.")]
     public async Task Kip848Uniform_ToClassicEagerRange_OnlineMigrationPreservesSequencesAndCommittedProgress(
         CancellationToken cancellationToken)
     {
