@@ -915,6 +915,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ? new ValueTask[connectionCapacity]
             : Array.Empty<ValueTask>();
 
+        // Shared by all connection buckets dispatched in one send-loop iteration. Send
+        // failures can complete concurrently, so PrepareDeferredNetworkRetry protects it.
+        HashSet<string>? retryMetadataRefreshTopics = null;
+
         // Per-connection timeout CTS for multi-connection mode, reused with TryReset()
         // to avoid per-send CTS allocation (same pattern as sendTimeoutCts for single-connection).
         // Entries beyond the current connection count are created lazily on scale-up.
@@ -1359,6 +1363,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         {
                             // === Multi-connection path ===
 
+                            var metadataRefreshTopics = retryMetadataRefreshTopics ??=
+                                new HashSet<string>(StringComparer.Ordinal);
+                            metadataRefreshTopics.Clear();
+
                             // Distribute coalesced batches into per-connection buckets.
                             // Partition affinity (partition % N) keeps each partition's batches
                             // on the same connection for CPU cache locality. This also preserves
@@ -1396,7 +1404,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                                 ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
                                 parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
-                                    scratches[c], bucketTimeoutCts[c].Token);
+                                    scratches[c], metadataRefreshTopics, bucketTimeoutCts[c].Token);
                             }
 
                             var completedSends = await AwaitParallelSendsAsync(parallelSends, pendingSendCount)
@@ -1441,7 +1449,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                                     ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
                                     parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
-                                        scratches[c], bucketTimeoutCts[c].Token);
+                                        scratches[c], metadataRefreshTopics, bucketTimeoutCts[c].Token);
                                 }
 
                                 var waitCompletedSends = await AwaitParallelSendsAsync(parallelSends, pendingSendCount)
@@ -2676,7 +2684,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int count,
         ProduceRequestScratch scratch,
         int connectionIndex,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        HashSet<string>? metadataRefreshTopics = null)
     {
         // Snapshot batch generations before the first await, while this send still has
         // exclusive ownership handed over by the send loop's coalesce step. If the request
@@ -2997,7 +3006,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
             _pinnedConnections[connectionIndex] = null; // Invalidate only the broken connection
             LogResponseFailed(ex, _brokerId);
-            HashSet<string>? metadataRefreshTopics = null;
 
             for (var i = 0; i < count; i++)
             {
@@ -3073,7 +3081,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             batch.TopicPartition.Partition, _options.RetryBackoffMs);
         batch.RetryNotBefore = Stopwatch.GetTimestamp() + _options.RetryBackoffTicks;
 
-        if (metadataRefreshTopics.Add(batch.TopicPartition.Topic))
+        bool refreshMetadata;
+        lock (metadataRefreshTopics)
+        {
+            refreshMetadata = metadataRefreshTopics.Add(batch.TopicPartition.Topic);
+        }
+
+        if (refreshMetadata)
         {
             // The send token may already be cancelled when a write times out. Use the sender
             // lifetime token so recovery can still refresh metadata.
@@ -3319,7 +3333,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private async ValueTask SendConnectionBucketAsync(
         int connIdx, ConnectionBucket[] connectionBuckets,
-        ProduceRequestScratch scratch, CancellationToken cancellationToken)
+        ProduceRequestScratch scratch,
+        HashSet<string> metadataRefreshTopics,
+        CancellationToken cancellationToken)
     {
         ref var bucket = ref connectionBuckets[connIdx];
         var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(bucket.Count);
@@ -3340,7 +3356,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
-        await SendCoalescedAsync(batchesToSend, countToSend, scratch, connIdx, cancellationToken)
+        await SendCoalescedAsync(
+                batchesToSend,
+                countToSend,
+                scratch,
+                connIdx,
+                cancellationToken,
+                metadataRefreshTopics)
             .ConfigureAwait(false);
     }
 

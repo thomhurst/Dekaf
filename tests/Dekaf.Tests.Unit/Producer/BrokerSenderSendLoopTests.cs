@@ -839,6 +839,108 @@ public sealed class BrokerSenderSendLoopTests
 
     [Test]
     [Timeout(30_000)]
+    public async Task SendLoop_ParallelSendFailures_RefreshMetadataOncePerTopic(
+        CancellationToken cancellationToken)
+    {
+        const string topic = "test-topic";
+        var firstFailedConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () =>
+                ValueTask.FromException<Task<ProduceResponse>>(new IOException("First leader connection closed"))
+        };
+        var secondFailedConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () =>
+                ValueTask.FromException<Task<ProduceResponse>>(new IOException("Second leader connection closed"))
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(firstFailedConnection));
+        pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(secondFailedConnection));
+
+        var metadataConnection = Substitute.For<IKafkaConnection>();
+        var metadataRequests = 0;
+        var duplicateMetadataRequest = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(metadataConnection));
+        metadataConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<ApiVersionsResponse>(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            }));
+        metadataConnection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (Interlocked.Increment(ref metadataRequests) > 1)
+                    duplicateMetadataRequest.TrySetResult();
+
+                return new ValueTask<MetadataResponse>(CreateLeaderMetadataResponse(
+                    topic, leaderId: 2, leaderEpoch: 2, partitionCount: 2));
+            });
+
+        var options = CreateOptions(
+            maxInFlight: 2,
+            retryBackoffMs: 500,
+            retryBackoffMaxMs: 500,
+            connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateLeaderMetadataResponse(
+            topic, leaderId: 1, leaderEpoch: 1, partitionCount: 2));
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var allRerouted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reroutedCount = 0;
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: (_, _, _, _, _) => { },
+            metadataManager,
+            rerouteBatch: (_, _) =>
+            {
+                if (Interlocked.Increment(ref reroutedCount) == 2)
+                    allRerouted.TrySetResult();
+            });
+
+        try
+        {
+            sender.EnqueueBulk(
+            [
+                CreateTestBatch(valueTaskSourcePool, topic, partition: 0),
+                CreateTestBatch(valueTaskSourcePool, topic, partition: 1)
+            ]);
+
+            var firstResult = await Task.WhenAny(allRerouted.Task, duplicateMetadataRequest.Task)
+                .WaitAsync(cancellationToken);
+
+            await Assert.That(firstResult).IsSameReferenceAs(allRerouted.Task);
+            await Assert.That(Volatile.Read(ref metadataRequests)).IsEqualTo(1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task SendLoop_ParallelSendFailure_MutesPartitionBeforeSiblingWriteCompletes(
         CancellationToken cancellationToken)
     {
