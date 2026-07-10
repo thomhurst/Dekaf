@@ -1396,7 +1396,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            _coordinator?.RecordPoll();
+            await RecordPollAsync(cancellationToken).ConfigureAwait(false);
 
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
@@ -1604,7 +1604,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
 
                         yield return nextResult;
-                        _coordinator?.RecordPoll();
+                        await RecordPollAsync(cancellationToken).ConfigureAwait(false);
 
                         // User code at the yield point may have called Seek/Assign, which
                         // clears _pendingFetches and disposes `pending` while it is still
@@ -1671,7 +1671,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     eofEvent.Partition.Topic,
                     eofEvent.Partition.Partition,
                     eofEvent.Offset);
-                _coordinator?.RecordPoll();
+                await RecordPollAsync(cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -1702,7 +1702,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            _coordinator?.RecordPoll();
+            await RecordPollAsync(cancellationToken).ConfigureAwait(false);
 
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
@@ -1793,7 +1793,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
-                    _coordinator?.RecordPoll();
+                    await RecordPollAsync(cancellationToken).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -1841,7 +1841,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            _coordinator?.RecordPoll();
+            await RecordPollAsync(cancellationToken).ConfigureAwait(false);
 
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
@@ -1927,7 +1927,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     ConsumeRawBatch batch = new(pending, CanContinueBatchIteration, _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
-                    _coordinator?.RecordPoll();
+                    await RecordPollAsync(cancellationToken).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -3054,7 +3054,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            _coordinator?.RecordPoll();
+            await RecordPollAsync(cancellationToken).ConfigureAwait(false);
 
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
@@ -4143,6 +4143,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         return changed;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ValueTask RecordPollAsync(CancellationToken cancellationToken)
+        => _coordinator is { } coordinator
+            ? coordinator.RecordPollAsync(cancellationToken)
+            : ValueTask.CompletedTask;
 
     internal async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
     {

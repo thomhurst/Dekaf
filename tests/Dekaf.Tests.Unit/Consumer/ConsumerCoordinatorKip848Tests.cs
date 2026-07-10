@@ -207,18 +207,6 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         field.SetValue(coordinator, value);
     }
 
-    private static void SetCoordinatorState(
-        ConsumerCoordinator coordinator,
-        CoordinatorState state)
-    {
-        var field = typeof(ConsumerCoordinator).GetField(
-            "_state",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("_state field not found.");
-
-        field.SetValue(coordinator, state);
-    }
-
     private static async Task AssertOwnedTopicPartitionsAsync(
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? topicPartitions,
         Guid topicId,
@@ -319,33 +307,38 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task RecordPoll_OverdueStableMember_PreservesDeadlineUntilEviction()
+    public async Task RecordPollAsync_OverdueStableMember_ExpiresAssignmentBeforeReturning()
     {
-        var options = CreateConsumerProtocolOptions(maxPollIntervalMs: 50);
+        SetupFindCoordinator();
+        SetupConsumerGroupHeartbeat(
+            heartbeatIntervalMs: 60_000,
+            assignment: CreateAssignment(TestTopicId, 0, 1));
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            maxPollIntervalMs: 300_000);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
-        var overdueTimestamp = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
-        SetCoordinatorState(coordinator, CoordinatorState.Stable);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        var overdueTimestamp = Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 600L);
         SetCoordinatorLongField(coordinator, "_lastPollTimestamp", overdueTimestamp);
         var pollVersion = GetCoordinatorLongField(coordinator, "_pollVersion");
 
-        coordinator.RecordPoll();
+        await coordinator.RecordPollAsync(CancellationToken.None);
 
-        await Assert.That(GetCoordinatorLongField(coordinator, "_lastPollTimestamp"))
-            .IsEqualTo(overdueTimestamp);
-        await Assert.That(GetCoordinatorLongField(coordinator, "_pollVersion"))
-            .IsEqualTo(pollVersion);
-
-        SetCoordinatorLongField(coordinator, "_maxPollExpiredAtPollVersion", pollVersion);
-        coordinator.RecordPoll();
-
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(coordinator.Assignment).IsEmpty();
         await Assert.That(GetCoordinatorLongField(coordinator, "_lastPollTimestamp"))
             .IsGreaterThan(overdueTimestamp);
         await Assert.That(GetCoordinatorLongField(coordinator, "_pollVersion"))
             .IsEqualTo(pollVersion + 1);
+        await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request.MemberEpoch == -1),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
     }
 
     [Test]
-    public async Task RecordPoll_OverdueUnjoinedMember_RefreshesDeadline()
+    public async Task RecordPollAsync_OverdueUnjoinedMember_RefreshesDeadline()
     {
         var options = CreateConsumerProtocolOptions(maxPollIntervalMs: 50);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
@@ -353,7 +346,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         SetCoordinatorLongField(coordinator, "_lastPollTimestamp", overdueTimestamp);
         var pollVersion = GetCoordinatorLongField(coordinator, "_pollVersion");
 
-        coordinator.RecordPoll();
+        await coordinator.RecordPollAsync(CancellationToken.None);
 
         await Assert.That(GetCoordinatorLongField(coordinator, "_lastPollTimestamp"))
             .IsGreaterThan(overdueTimestamp);
@@ -464,7 +457,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(rejoinRequest.Task.IsCompleted).IsFalse();
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
 
-        coordinator.RecordPoll();
+        await coordinator.RecordPollAsync(cancellationToken);
         await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
 
         var rejoin = await rejoinRequest.Task.WaitAsync(cancellationToken);

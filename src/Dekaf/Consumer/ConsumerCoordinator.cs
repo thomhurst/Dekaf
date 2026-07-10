@@ -107,19 +107,33 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public TopicPartitionSet Assignment => _assignedPartitions;
     internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
 
-    internal void RecordPoll()
+    internal ValueTask RecordPollAsync(CancellationToken cancellationToken)
     {
         var now = Stopwatch.GetTimestamp();
         if (_state == CoordinatorState.Stable
-            && Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
             && now - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks)
         {
-            // Preserve the overdue poll generation until the heartbeat records its expiry.
-            // A later foreground poll can advance it once the expiry marker is visible.
-            return;
+            return ExpireAndRecordPollAsync(cancellationToken);
         }
 
-        Volatile.Write(ref _lastPollTimestamp, now);
+        RecordPoll(now);
+        return ValueTask.CompletedTask;
+    }
+
+    private async ValueTask ExpireAndRecordPollAsync(CancellationToken cancellationToken)
+    {
+        var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
+        if (expiration.Expired)
+            await InvokePartitionsLostAsync(expiration.Lost).ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        // Advance only after loss callbacks so prefetch cannot rejoin during notification.
+        RecordPoll(Stopwatch.GetTimestamp());
+    }
+
+    private void RecordPoll(long timestamp)
+    {
+        Volatile.Write(ref _lastPollTimestamp, timestamp);
         Interlocked.Increment(ref _pollVersion);
     }
 
@@ -1291,14 +1305,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
                 if (expiration.Expired)
                 {
-                    if (expiration.Lost is { Count: > 0 })
-                    {
-                        await InvokeRebalanceListenersAsync(
-                            "OnPartitionsLost",
-                            expiration.Lost,
-                            static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
-                            CancellationToken.None).ConfigureAwait(false);
-                    }
+                    await InvokePartitionsLostAsync(expiration.Lost).ConfigureAwait(false);
 
                     break;
                 }
@@ -1387,7 +1394,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             var pollVersion = Volatile.Read(ref _pollVersion);
             var lastPollTimestamp = Volatile.Read(ref _lastPollTimestamp);
-            if (Stopwatch.GetElapsedTime(lastPollTimestamp) < TimeSpan.FromMilliseconds(_options.MaxPollIntervalMs))
+            if (Stopwatch.GetTimestamp() - lastPollTimestamp < _maxPollIntervalStopwatchTicks)
                 return default;
 
             // Record the poll generation that expired. A prefetch loop may continue calling
@@ -1406,6 +1413,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _lock.Release();
         }
     }
+
+    private ValueTask InvokePartitionsLostAsync(IReadOnlyList<TopicPartition>? lost)
+        => lost is { Count: > 0 }
+            ? InvokeRebalanceListenersAsync(
+                "OnPartitionsLost",
+                lost,
+                static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+                CancellationToken.None)
+            : ValueTask.CompletedTask;
 
     /// <summary>
     /// KIP-848 leave: sends ConsumerGroupHeartbeat with MemberEpoch=-1 for dynamic members,
