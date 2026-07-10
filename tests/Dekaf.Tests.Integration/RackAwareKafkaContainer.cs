@@ -15,15 +15,26 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
     private const int ControllerPort = 9093;
     private const int ExternalBrokerPort = 19092;
 
-    private readonly string _resourceSuffix = Guid.NewGuid().ToString("N")[..12];
-    private readonly int[] _hostPorts = GetFreeTcpPorts(3);
-    private readonly IContainer[] _brokers = new IContainer[3];
+    private string _resourceSuffix = string.Empty;
+    private int[] _hostPorts = [];
+    private IContainer[] _brokers = [];
     private INetwork? _network;
 
     public string BootstrapServers => string.Join(",", _hostPorts.Select(port => $"127.0.0.1:{port}"));
 
     public async Task InitializeAsync()
     {
+        await ContainerStartupRetry.RunAsync(
+            StartClusterAttemptAsync,
+            DisposeClusterAttemptAsync,
+            ContainerStartupRetry.IsPortBindingCollision).ConfigureAwait(false);
+    }
+
+    private async Task StartClusterAttemptAsync()
+    {
+        _resourceSuffix = Guid.NewGuid().ToString("N")[..12];
+        _hostPorts = GetFreeTcpPorts(3);
+        _brokers = new IContainer[3];
         _network = new NetworkBuilder()
             .WithName($"dekaf-rack-{_resourceSuffix}")
             .Build();
@@ -40,14 +51,43 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var broker in _brokers.AsEnumerable().Reverse())
+        await DisposeClusterAttemptAsync().ConfigureAwait(false);
+    }
+
+    private async ValueTask DisposeClusterAttemptAsync()
+    {
+        var brokers = _brokers;
+        var network = _network;
+        _brokers = [];
+        _network = null;
+        _hostPorts = [];
+
+        Exception? firstError = null;
+        foreach (var broker in brokers.AsEnumerable().Reverse())
         {
-            if (broker is not null)
-                await broker.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                if (broker is not null)
+                    await broker.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                firstError ??= exception;
+            }
         }
 
-        if (_network is not null)
-            await _network.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            if (network is not null)
+                await network.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            firstError ??= exception;
+        }
+
+        if (firstError is not null)
+            throw firstError;
     }
 
     public IAdminClient CreateAdminClient()
