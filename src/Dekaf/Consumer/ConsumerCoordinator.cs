@@ -48,6 +48,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // every assignment site: ProcessConsumerGroupAssignment() and DisposeAsync().
     private volatile HashSet<TopicPartition> _assignedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
+    // Serializes user rebalance callbacks without holding the coordinator state lock. This
+    // permits callbacks to re-enter consumer APIs while preserving assigned-before-lost order.
+    private readonly SemaphoreSlim _rebalanceListenerLock = new(1, 1);
     private readonly object _heartbeatGuard = new();
     private CancellationTokenSource? _heartbeatCts;
     private Task? _heartbeatTask;
@@ -65,6 +68,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     // KIP-848 consumer protocol state
     private volatile int _heartbeatIntervalMs;
+    private readonly long _maxPollIntervalStopwatchTicks;
+    private long _lastPollTimestamp;
+    private long _pollVersion;
+    private long _maxPollExpiredAtPollVersion = -1;
+    private long _maxPollExpirationVersion;
+    private int _maxPollLossNotificationPending;
+    // Foreground assignment initialization and fetch waits are application poll activity. Track
+    // concurrent callers without allocating a scope object on each poll cycle.
+    private int _foregroundPollActivityCount;
     private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
     private volatile StringSet? _subscribedTopics;
     private volatile string? _subscribedTopicRegex;
@@ -93,6 +105,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
             : () => GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
         _heartbeatIntervalMs = options.HeartbeatIntervalMs;
+        _maxPollIntervalStopwatchTicks = options.MaxPollIntervalMs * Stopwatch.Frequency / 1000;
+        _lastPollTimestamp = Stopwatch.GetTimestamp();
     }
 
     public string? MemberId => _memberId;
@@ -100,6 +114,101 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     public CoordinatorState State => _state;
     public TopicPartitionSet Assignment => _assignedPartitions;
     internal int AssignmentVersion => Volatile.Read(ref _assignmentVersion);
+
+    internal ValueTask RecordPollAsync(CancellationToken cancellationToken)
+    {
+        // Heartbeat expiry invokes user callbacks outside _lock. Keep its poll generation
+        // unchanged so EnsureActiveGroup cannot rejoin until notification completes.
+        if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+            return ValueTask.CompletedTask;
+
+        if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
+        {
+            RefreshPollDeadline();
+            return ValueTask.CompletedTask;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        if (_state == CoordinatorState.Stable
+            && now - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks)
+        {
+            return ExpireAndRecordPollAsync(cancellationToken);
+        }
+
+        RecordPollIfLossNotificationComplete(now);
+        return ValueTask.CompletedTask;
+    }
+
+    private void RecordPollIfLossNotificationComplete(long timestamp)
+    {
+        if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+            return;
+
+        RecordPoll(timestamp);
+    }
+
+    private async ValueTask ExpireAndRecordPollAsync(CancellationToken cancellationToken)
+    {
+        var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
+        if (expiration.Expired)
+            await CompleteMaxPollExpirationAsync(expiration.Lost).ConfigureAwait(false);
+
+        // Another overdue foreground poll may have won _lock and started loss callbacks
+        // after this call passed RecordPollAsync's initial guard. Its expired generation
+        // must remain unchanged until those callbacks finish.
+        if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+            return;
+
+        cancellationToken.ThrowIfCancellationRequested();
+        // Advance only after loss callbacks so prefetch cannot rejoin during notification.
+        RecordPoll(Stopwatch.GetTimestamp());
+    }
+
+    private void RecordPoll(long timestamp)
+    {
+        Volatile.Write(ref _lastPollTimestamp, timestamp);
+        Interlocked.Increment(ref _pollVersion);
+    }
+
+    internal void BeginForegroundPollActivity()
+    {
+        Interlocked.Increment(ref _foregroundPollActivityCount);
+        RefreshPollDeadline();
+    }
+
+    internal void EndForegroundPollActivity()
+    {
+        RefreshPollDeadline();
+        Interlocked.Decrement(ref _foregroundPollActivityCount);
+    }
+
+    private void RefreshPollDeadline() => Volatile.Write(ref _lastPollTimestamp, Stopwatch.GetTimestamp());
+
+    private void ThrowIfMaxPollIntervalExpired()
+    {
+        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
+            && !IsCurrentPollGenerationExpired())
+            return;
+
+        throw new GroupException(
+            ErrorCode.FencedMemberEpoch,
+            $"Offset commit rejected because maximum poll interval of {_options.MaxPollIntervalMs}ms was exceeded")
+        {
+            GroupId = _options.GroupId
+        };
+    }
+
+    private bool IsCurrentPollGenerationExpired()
+    {
+        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
+            return true;
+
+        if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
+            return false;
+
+        return _state == CoordinatorState.Stable
+            && Stopwatch.GetTimestamp() - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks;
+    }
 
     internal (TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)
         GetAssignmentSnapshotAndDrainRevocations()
@@ -121,6 +230,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         lock (_assignmentStateLock)
         {
             EnqueueRevokedPartitions(revoked);
+        }
+    }
+
+    internal void AcknowledgeAssignmentSync(int assignmentVersion)
+    {
+        lock (_assignmentStateLock)
+        {
+            if (Volatile.Read(ref _assignmentVersion) != assignmentVersion
+                || !_revokedPartitionsSinceLastSync.IsEmpty
+                || Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
+            {
+                return;
+            }
+
+            Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
         }
     }
 
@@ -429,13 +553,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private async ValueTask InvokeRebalanceListenerAsync(
         string callbackName,
         IReadOnlyList<TopicPartition> partitions,
-        Func<IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
+        IRebalanceListener listener,
+        Func<IRebalanceListener, IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
         CancellationToken cancellationToken)
     {
-        LogRebalanceListenerCall(callbackName, partitions.Count);
         try
         {
-            await callback(partitions, cancellationToken).ConfigureAwait(false);
+            LogRebalanceListenerCall(callbackName, partitions.Count);
+            var callbackTask = callback(listener, partitions, cancellationToken);
+
+            await callbackTask.ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -455,7 +582,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             await InvokeRebalanceListenerAsync(
                 callbackName,
                 partitions,
-                (items, token) => callback(configuredListener, items, token),
+                configuredListener,
+                callback,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -465,7 +593,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             await InvokeRebalanceListenerAsync(
                 callbackName,
                 partitions,
-                (items, token) => callback(runtimeListener, items, token),
+                runtimeListener,
+                callback,
                 cancellationToken).ConfigureAwait(false);
         }
     }
@@ -480,6 +609,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        ThrowIfMaxPollIntervalExpired();
+
         LogCommitOffsetsStarted(_options.GroupId!);
         // Lock is intentionally held across retries to protect the shared _commitTopicGroups dictionary,
         // which is reused across calls to avoid allocations. With up to 3 retries x ~600ms each,
@@ -489,6 +620,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             await RetryHelper.WithRetryAsync(async () =>
             {
+                // Expiration can happen while this call waits for the commit lock.
+                ThrowIfMaxPollIntervalExpired();
+
                 using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                     _coordinatorId,
                     _getCoordinationConnectionIndex(),
@@ -545,6 +679,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     OffsetCommitRequest.LowestSupportedVersion,
                     OffsetCommitRequest.HighestSupportedVersion);
 
+                ThrowIfMaxPollIntervalExpired();
                 var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
                     request,
                     offsetCommitVersion,
@@ -775,11 +910,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private void ResetMemberState()
     {
-        var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
-
         _memberId = null;
         _generationId = -1;
         _state = CoordinatorState.Unjoined;
+        ClearAssignment();
+    }
+
+    private IReadOnlyList<TopicPartition>? ClearAssignment()
+    {
+        var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
+
         lock (_assignmentStateLock)
         {
             _assignedPartitions = [];
@@ -792,12 +932,31 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         if (revoked is not null)
             _onPartitionsRevoked?.Invoke(revoked);
+
+        return revoked;
     }
 
     /// <summary>
     /// Fires rebalance listener callbacks for a ConsumerHeartbeatResult if assignment changed.
     /// </summary>
     private async ValueTask FireConsumerProtocolRebalanceListenersAsync(
+        ConsumerHeartbeatResult result,
+        CancellationToken cancellationToken)
+    {
+        await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await FireConsumerProtocolRebalanceListenersCoreAsync(
+                result,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _rebalanceListenerLock.Release();
+        }
+    }
+
+    private async ValueTask FireConsumerProtocolRebalanceListenersCoreAsync(
         ConsumerHeartbeatResult result,
         CancellationToken cancellationToken)
     {
@@ -824,12 +983,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// </summary>
     private async ValueTask<ConsumerHeartbeatResult> SendConsumerGroupHeartbeatAsync(
         bool isInitial,
+        bool discardIfMembershipChanged,
         CancellationToken cancellationToken)
     {
-        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-            _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
-            .ConfigureAwait(false);
-        var connection = connectionLease.Connection;
+        var maxPollExpirationVersion = discardIfMembershipChanged
+            ? Volatile.Read(ref _maxPollExpirationVersion)
+            : 0;
+        ConsumerGroupHeartbeatResponse response;
+        int assignmentVersion;
+        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions;
+        string? subscribedTopicRegex;
+        using (var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                   _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                   .ConfigureAwait(false))
+        {
+            var connection = connectionLease.Connection;
+
+            if (discardIfMembershipChanged &&
+                 (_state != CoordinatorState.Stable ||
+                 Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
+                 IsCurrentPollGenerationExpired()))
+                return default;
 
         var version = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ConsumerGroupHeartbeat,
@@ -853,8 +1027,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
         // which is invalid when there's no previous state.
-        var assignmentVersion = Volatile.Read(ref _assignmentVersion);
-        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions =
+        assignmentVersion = Volatile.Read(ref _assignmentVersion);
+        ownedTopicPartitions =
             isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
 
         // Atomically snapshot and clear the subscription-changed flag to prevent a race where
@@ -866,7 +1040,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var subscriptionShouldBeSent = isInitial || subscriptionChanged;
         var currentSubscribedTopicRegex = _subscribedTopicRegex;
         var subscribedTopics = subscriptionShouldBeSent ? _subscribedTopics?.ToList() : null;
-        var subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
+        subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
             ? currentSubscribedTopicRegex ?? (isInitial ? null : string.Empty)
             : null;
 
@@ -876,7 +1050,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             MemberId = memberId,
             MemberEpoch = memberEpoch,
             InstanceId = _options.GroupInstanceId,
-            RebalanceTimeoutMs = isInitial ? _options.RebalanceTimeoutMs : -1,
+            RebalanceTimeoutMs = isInitial ? _options.MaxPollIntervalMs : -1,
             RackId = isInitial ? _options.ClientRack : null,
             SubscribedTopicNames = subscribedTopics,
             SubscribedTopicRegex = subscribedTopicRegex,
@@ -884,8 +1058,65 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             TopicPartitions = ownedTopicPartitions
         };
 
-        var response = await connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            request, version, cancellationToken).ConfigureAwait(false);
+            response = await connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                request, version, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!discardIfMembershipChanged)
+            return ProcessConsumerGroupHeartbeatResponse(
+                response,
+                isInitial,
+                ownedTopicPartitions,
+                assignmentVersion,
+                subscribedTopicRegex);
+
+        await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ConsumerHeartbeatResult result;
+            await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                // A foreground poll can expire the member while this request is in flight.
+                // Validate and publish under the state lock. The listener lock preserves
+                // callback ordering after this lock is released without blocking re-entrant APIs.
+                if (_state != CoordinatorState.Stable ||
+                    Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
+                    IsCurrentPollGenerationExpired())
+                    return default;
+
+                result = ProcessConsumerGroupHeartbeatResponse(
+                    response,
+                    isInitial,
+                    ownedTopicPartitions,
+                    assignmentVersion,
+                    subscribedTopicRegex);
+            }
+            finally
+            {
+                _lock.Release();
+            }
+
+            await FireConsumerProtocolRebalanceListenersCoreAsync(result, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _rebalanceListenerLock.Release();
+        }
+
+        // Steady-heartbeat callbacks are fired above while publication is fenced against
+        // max-poll expiry. The heartbeat loop must not fire the result a second time.
+        return default;
+    }
+
+    private ConsumerHeartbeatResult ProcessConsumerGroupHeartbeatResponse(
+        ConsumerGroupHeartbeatResponse response,
+        bool isInitial,
+        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions,
+        int assignmentVersion,
+        string? subscribedTopicRegex)
+    {
 
         if (response.ErrorCode != ErrorCode.None)
         {
@@ -1115,6 +1346,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (_state == CoordinatorState.Stable)
                 return;
 
+            var expiredPollVersion = Volatile.Read(ref _maxPollExpiredAtPollVersion);
+            if (expiredPollVersion >= 0)
+            {
+                // Background prefetch also calls EnsureActiveGroup. Do not let it rejoin a
+                // member evicted for max.poll.interval until the application polls again.
+                if (Volatile.Read(ref _pollVersion) == expiredPollVersion)
+                    return;
+
+                // Keep the marker until this join succeeds so commits stay locally fenced.
+                // Reuse the member identity for this process. Static members must rejoin with
+                // epoch -2; dynamic members rejoin with the initial epoch 0.
+                _generationId = _options.GroupInstanceId is null ? 0 : -2;
+            }
+
             LogEnsureActiveGroupStarted(_options.GroupId!, _state);
             var startedAt = Stopwatch.GetTimestamp();
             var rebalanceTimeout = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
@@ -1143,9 +1388,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     heartbeatResult = await SendConsumerGroupHeartbeatAsync(
                         isInitial: _memberId is null || _generationId <= 0,
+                        discardIfMembershipChanged: false,
                         cancellationToken).ConfigureAwait(false);
 
                     _state = CoordinatorState.Stable;
+                    if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
+                        RefreshPollDeadline();
 
                     Diagnostics.DekafMetrics.RebalanceDuration.Record(
                         Stopwatch.GetElapsedTime(startedAt).TotalSeconds,
@@ -1220,15 +1468,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             try
             {
                 // Task.Delay (not PeriodicTimer): the broker controls the interval via each response,
-                // and PeriodicTimer cannot change its period after construction. At ~5s intervals,
-                // the per-tick TimerQueueTimer allocation is negligible.
-                await Task.Delay(_heartbeatIntervalMs, cancellationToken).ConfigureAwait(false);
+                // and PeriodicTimer cannot change its period after construction. Wake at the
+                // max.poll deadline when it is sooner so eviction is not heartbeat-interval late.
+                await Task.Delay(GetConsumerProtocolHeartbeatDelay(), cancellationToken).ConfigureAwait(false);
 
-                var result = await SendConsumerGroupHeartbeatAsync(
-                    isInitial: false, cancellationToken).ConfigureAwait(false);
+                var expiration = await TryExpireMaxPollIntervalAsync(cancellationToken).ConfigureAwait(false);
+                if (expiration.Expired)
+                {
+                    await CompleteMaxPollExpirationAsync(expiration.Lost).ConfigureAwait(false);
 
-                await FireConsumerProtocolRebalanceListenersAsync(result, cancellationToken)
-                    .ConfigureAwait(false);
+                    break;
+                }
+
+                // A foreground poll may have expired the member while this loop waited for _lock.
+                if (_state != CoordinatorState.Stable)
+                    break;
+
+                await SendConsumerGroupHeartbeatAsync(
+                    isInitial: false,
+                    discardIfMembershipChanged: true,
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1252,11 +1511,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             var lost = _assignedPartitions.ToList();
                             if (lost.Count > 0)
                             {
-                                await InvokeRebalanceListenersAsync(
-                                    "OnPartitionsLost",
-                                    lost,
-                                    static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
-                                    CancellationToken.None).ConfigureAwait(false);
+                                await InvokePartitionsLostAsync(lost).ConfigureAwait(false);
                             }
 
                             ResetMemberState();
@@ -1285,11 +1540,110 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
+    private TimeSpan GetConsumerProtocolHeartbeatDelay()
+    {
+        var heartbeatDelay = TimeSpan.FromMilliseconds(Math.Max(_heartbeatIntervalMs, 1));
+        var remaining = TimeSpan.FromMilliseconds(_options.MaxPollIntervalMs)
+            - Stopwatch.GetElapsedTime(Volatile.Read(ref _lastPollTimestamp));
+
+        if (remaining <= TimeSpan.Zero)
+            return TimeSpan.Zero;
+
+        return remaining < heartbeatDelay ? remaining : heartbeatDelay;
+    }
+
+    private async ValueTask<(bool Expired, IReadOnlyList<TopicPartition>? Lost)> TryExpireMaxPollIntervalAsync(
+        CancellationToken cancellationToken)
+    {
+        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_state != CoordinatorState.Stable)
+                return default;
+
+            if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
+            {
+                RefreshPollDeadline();
+                return default;
+            }
+
+            var pollVersion = Volatile.Read(ref _pollVersion);
+            var lastPollTimestamp = Volatile.Read(ref _lastPollTimestamp);
+            if (Stopwatch.GetTimestamp() - lastPollTimestamp < _maxPollIntervalStopwatchTicks)
+                return default;
+
+            // Record the poll generation that expired. A prefetch loop may continue calling
+            // EnsureActiveGroup, but only a new foreground poll increments this generation.
+            Interlocked.Increment(ref _maxPollExpirationVersion);
+            Volatile.Write(ref _maxPollExpiredAtPollVersion, pollVersion);
+            var lost = ClearAssignment();
+            Volatile.Write(ref _maxPollLossNotificationPending, 1);
+            _state = CoordinatorState.Unjoined;
+
+            LogMaxPollIntervalExceeded(_options.MaxPollIntervalMs);
+            await SendConsumerProtocolLeaveRequestAsync(cancellationToken).ConfigureAwait(false);
+            return (true, lost);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    private async ValueTask CompleteMaxPollExpirationAsync(IReadOnlyList<TopicPartition>? lost)
+    {
+        try
+        {
+            await InvokePartitionsLostAsync(lost).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _maxPollLossNotificationPending, 0);
+        }
+    }
+
+    private async ValueTask InvokePartitionsLostAsync(IReadOnlyList<TopicPartition>? lost)
+    {
+        if (lost is not { Count: > 0 })
+            return;
+
+        await _rebalanceListenerLock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await InvokeRebalanceListenersAsync(
+                "OnPartitionsLost",
+                lost,
+                static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _rebalanceListenerLock.Release();
+        }
+    }
+
     /// <summary>
     /// KIP-848 leave: sends ConsumerGroupHeartbeat with MemberEpoch=-1 for dynamic members,
     /// or -2 for static members so the broker keeps the assignment warm.
     /// </summary>
     private async ValueTask LeaveGroupConsumerProtocolAsync(CancellationToken cancellationToken)
+    {
+        await SendConsumerProtocolLeaveRequestAsync(cancellationToken).ConfigureAwait(false);
+
+        await StopHeartbeatAsync().ConfigureAwait(false);
+
+        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            ResetMemberState();
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    private async ValueTask SendConsumerProtocolLeaveRequestAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -1326,18 +1680,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         catch (Exception ex)
         {
             LogLeaveGroupRequestFailed(ex);
-        }
-
-        await StopHeartbeatAsync().ConfigureAwait(false);
-
-        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-        try
-        {
-            ResetMemberState();
-        }
-        finally
-        {
-            _lock.Release();
         }
     }
 
@@ -1429,6 +1771,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Heartbeat failed")]
     private partial void LogHeartbeatFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Maximum poll interval of {MaxPollIntervalMs}ms exceeded; leaving consumer group")]
+    private partial void LogMaxPollIntervalExceeded(int maxPollIntervalMs);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "LeaveGroup failed with error: {ErrorCode}")]
     private partial void LogLeaveGroupFailed(ErrorCode errorCode);

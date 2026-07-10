@@ -32,6 +32,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     private static readonly TimeSpan GroupConfigVerificationDelay = TimeSpan.FromMilliseconds(500);
     private const int CrashPhaseMessages = 12;
     private static readonly TimeSpan CrashClientReadyTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan MaxPollEvictionInterval = TimeSpan.FromSeconds(2);
     private static readonly HashSet<string> ExpectedCommitFailureNames = new(StringComparer.Ordinal)
     {
         nameof(ErrorCode.IllegalGeneration),
@@ -295,6 +296,71 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         {
             await RunAbruptMemberLossScenarioAsync(assignor, cancellationToken);
         }
+    }
+
+    [Test]
+    [Timeout(600_000)]
+    public async Task MaxPollIntervalEvictsStalledMemberWithoutAdvancingItsCommits(
+        CancellationToken cancellationToken)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: PartitionCount);
+        var groupId = $"rebalance-max-poll-{Guid.NewGuid():N}";
+        var oracle = new SequenceOracle(topic, PartitionCount, MessagesPerPartition, CommitInterval);
+
+        await ProduceSequencedBacklogAsync(topic, cancellationToken);
+        await using var admin = KafkaContainer.CreateAdminClient();
+        await using var stalled = await CreateDekafMemberAsync(
+            topic,
+            groupId,
+            "max-poll-stalled",
+            "uniform",
+            oracle,
+            cancellationToken,
+            maxPollInterval: MaxPollEvictionInterval);
+
+        stalled.Allow(1);
+        await stalled.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
+        await stalled.WaitForObservedCountAsync(1, cancellationToken);
+
+        await using var healthy = await CreateDekafMemberAsync(
+            topic,
+            groupId,
+            "max-poll-healthy",
+            "uniform",
+            oracle,
+            cancellationToken);
+
+        healthy.Allow(1);
+        await healthy.WaitForAnyAssignmentAsync(cancellationToken);
+        await healthy.WaitForObservedCountAsync(1, cancellationToken);
+        await healthy.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
+
+        var descriptions = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken);
+        var description = descriptions[groupId];
+        await Assert.That(description.Members).Count().IsEqualTo(1);
+        await Assert.That(description.Members[0].ClientId).IsEqualTo("max-poll-healthy");
+
+        var staleCommit = await Assert.That(async () =>
+                await stalled.CommitAsync(
+                    new TopicPartitionOffset(topic, 0, MessagesPerPartition),
+                    cancellationToken))
+            .Throws<GroupException>();
+        await Assert.That(
+                staleCommit!.ErrorCode is { } errorCode && IsExpectedCommitFailure(errorCode))
+            .IsTrue();
+
+        healthy.Allow(PartitionCount * MessagesPerPartition * 2);
+        await oracle.WaitForAllSequencesAsync(cancellationToken);
+        await oracle.WaitForFinalCommitsAsync(cancellationToken);
+        await healthy.StopAsync();
+        await stalled.StopAsync();
+
+        await Assert.That(oracle.UniqueCount).IsEqualTo(PartitionCount * MessagesPerPartition);
+        await Assert.That(oracle.DuplicateCount).IsLessThanOrEqualTo(CommitInterval);
+        var violations = oracle.Violations;
+        await Assert.That(violations).IsEmpty()
+            .Because(string.Join(Environment.NewLine, violations));
+        await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
     }
 
     private async Task RunChurnScenarioAsync(string assignor, CancellationToken cancellationToken)
@@ -665,14 +731,15 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             cancellationToken);
     }
 
-    private async Task<IConsumerMember> CreateDekafMemberAsync(
+    private async Task<DekafConsumerMember> CreateDekafMemberAsync(
         string topic,
         string groupId,
         string clientId,
         string assignor,
         SequenceOracle oracle,
         CancellationToken cancellationToken,
-        string? groupInstanceId = null)
+        string? groupInstanceId = null,
+        TimeSpan? maxPollInterval = null)
     {
         var assignments = new AssignmentTracker();
         var builder = Kafka.CreateConsumer<string, string>()
@@ -689,6 +756,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         if (groupInstanceId is not null)
             builder.WithGroupInstanceId(groupInstanceId);
+
+        if (maxPollInterval is { } interval)
+            builder.WithMaxPollInterval(interval);
 
         var consumer = await builder.BuildAsync(cancellationToken);
 
@@ -1115,6 +1185,11 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         }
 
         protected override ValueTask DisposeConsumerAsync() => _consumer.DisposeAsync();
+
+        public ValueTask CommitAsync(
+            TopicPartitionOffset offset,
+            CancellationToken cancellationToken) =>
+            _consumer.CommitAsync([offset], cancellationToken);
 
         private async ValueTask<bool> TryCommitAsync(
             TopicPartitionOffset offset,
