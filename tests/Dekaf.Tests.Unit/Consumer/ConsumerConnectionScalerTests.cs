@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Consumer;
 
 namespace Dekaf.Tests.Unit.Consumer;
@@ -314,6 +315,25 @@ public sealed class ConsumerConnectionScalerTests
         await scaler.StopAndDrainAsync(TimeSpan.FromSeconds(1));
 
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
+    public async Task Dispose_DisposesOperationCancellationSource()
+    {
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ => ValueTask.CompletedTask,
+            scaleDownAsync: _ => ValueTask.CompletedTask);
+        var field = typeof(ConsumerConnectionScaler).GetField(
+            "_operationCancellationSource",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Cancellation source field not found");
+        var source = (CancellationTokenSource)field.GetValue(scaler)!;
+
+        scaler.Dispose();
+
+        await Assert.That(source.Cancel).Throws<ObjectDisposedException>();
     }
 
     [Test]

@@ -6347,6 +6347,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 await _connectionScaler.StopAndDrainAsync().ConfigureAwait(false);
             else
                 await _connectionScaler.StopAndDrainAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            _connectionScaler.Dispose();
         }
 
         autoCommitCts?.Dispose();

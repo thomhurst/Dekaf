@@ -8,7 +8,7 @@ namespace Dekaf.Consumer;
 /// Scale-down: when utilization is below 30% for >120 seconds.
 /// Cooldown: 5 seconds between any scale operations.
 /// </summary>
-internal sealed class ConsumerConnectionScaler
+internal sealed class ConsumerConnectionScaler : IDisposable
 {
     /// <summary>
     /// Maximum number of fetch connections per broker. Used for stackalloc sizing
@@ -256,6 +256,8 @@ internal sealed class ConsumerConnectionScaler
             // Each operation's continuation observes and logs its exception.
         }
     }
+
+    public void Dispose() => _operationCancellationSource.Dispose();
 
     /// <summary>
     /// Splits partitions across fetch connections using chunked distribution.
