@@ -486,6 +486,24 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
+    public async Task RawBatch_RechecksAssignmentBeforeTrackingRecord()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        var pending = CreatePendingFetchData();
+        GetPendingFetches(consumer).Enqueue(pending);
+        var assignmentChecks = 0;
+        var batch = new ConsumeRawBatch(
+            pending,
+            _ => Interlocked.Increment(ref assignmentChecks) == 1);
+        using var enumerator = batch.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsFalse();
+        await Assert.That(assignmentChecks).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task ResetToDivergingEpoch_DoesNotRewindDeliveredPosition()
     {
         var pool = Substitute.For<IConnectionPool>();

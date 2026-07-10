@@ -1330,7 +1330,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         // Clear any pending fetch data for the removed partitions
-        ClearFetchBufferForPartitions(partitions, invalidateAllFetches: true);
+        ClearFetchBufferForPartitions(partitions, invalidateAllFetches: clearAll);
 
         if (hadPaused)
             PublishPausedSnapshot();
@@ -3564,6 +3564,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             foreach (var partition in partitions)
             {
+                // Coordinator revocation supersedes any correction from the old assignment.
+                // Keep the revocation marker so the consume loop still drains stale buffers.
+                _pendingDivergingEpochResets.TryRemove(partition, out _);
                 _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
             }
 
@@ -3607,29 +3610,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
     }
 
-    private void CancelCoordinatorRevokedPartitionsFetchClear(IReadOnlyList<TopicPartition> partitions)
-    {
-        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
-        {
-            var cancelledDivergingEpochReset = false;
-            foreach (var partition in partitions)
-            {
-                cancelledDivergingEpochReset |= _pendingDivergingEpochResets.TryRemove(partition, out _);
-                _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
-            }
-
-            // Reject fetches started after the correction but before reassignment.
-            if (cancelledDivergingEpochReset)
-                InvalidateFetchesForPartitionsLocked(partitions);
-
-            if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
-            {
-                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
-                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
-            }
-        }
-    }
-
     private bool ClearFetchBufferForPendingCoordinatorRevocations()
     {
         if (!HasPendingCoordinatorRevocations())
@@ -3645,20 +3625,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             var partitionsToRemove = _coordinatorRevokedPartitionsPendingFetchClear.Keys.ToHashSet();
-            var invalidatesAssignment = false;
-            foreach (var partition in partitionsToRemove)
-            {
-                if (!_pendingDivergingEpochResets.ContainsKey(partition))
-                {
-                    invalidatesAssignment = true;
-                    break;
-                }
-            }
 
             // Keep partitions marked while clearing. Background prefetches use this
             // marker to avoid advancing positions for data that will be discarded.
             ApplyPendingDivergingEpochResets(partitionsToRemove);
-            ClearFetchBufferForPartitions(partitionsToRemove, invalidateAllFetches: invalidatesAssignment);
+            ClearFetchBufferForPartitions(partitionsToRemove);
 
             foreach (var partition in partitionsToRemove)
                 _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);

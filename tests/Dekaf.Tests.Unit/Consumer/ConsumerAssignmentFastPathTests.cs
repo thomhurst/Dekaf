@@ -200,6 +200,13 @@ public sealed class ConsumerAssignmentFastPathTests
         var staleFetchBufferEpoch = GetFetchBufferEpoch(consumer);
         GetPendingFetches(consumer).Enqueue(stalePendingFetch);
         GetFetchPositions(consumer)[reassignedPartition] = 0;
+        StageDivergingEpochReset(
+            consumer,
+            reassignedPartition,
+            endOffset: 42,
+            epoch: 7,
+            staleFetchBufferEpoch);
+        CompleteDivergingEpochResets(consumer);
 
         var coordinator = GetCoordinator(consumer);
         coordinator.RequestRejoin();
@@ -222,6 +229,40 @@ public sealed class ConsumerAssignmentFastPathTests
 
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, reassignedPartition)).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_RevocationDiscardsPendingDivergenceReset()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupRevokingConsumerGroupHeartbeat(connection);
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var revokedPartition = new TopicPartition("test-topic", 0);
+        StageDivergingEpochReset(
+            consumer,
+            revokedPartition,
+            endOffset: 42,
+            epoch: 7,
+            GetFetchBufferEpoch(consumer));
+        CompleteDivergingEpochResets(consumer);
+
+        GetCoordinator(consumer).RequestRejoin();
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.Assignment).DoesNotContain(revokedPartition);
+        await Assert.That(GetFetchPositions(consumer).ContainsKey(revokedPartition)).IsFalse();
     }
 
     [Test]
@@ -321,44 +362,56 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
-    public async Task CancelCoordinatorRevokedPartitionsFetchClear_ReassignedPartitionRemovesPendingClear()
+    public async Task IncrementalUnassign_InvalidatesOnlyRemovedPartitionFetches()
     {
         await using var consumer = CreateConsumer();
-        var reassignedPartition = new TopicPartition("test-topic", 0);
-        var stillRevokedPartition = new TopicPartition("test-topic", 1);
+        var removedPartition = new TopicPartition("test-topic", 0);
+        var retainedPartition = new TopicPartition("test-topic", 1);
+        consumer.IncrementalAssign(
+        [
+            new TopicPartitionOffset(removedPartition.Topic, removedPartition.Partition, 0),
+            new TopicPartitionOffset(retainedPartition.Topic, retainedPartition.Partition, 0)
+        ]);
+        var globalMinimumEpoch = GetMinimumFetchBufferEpoch(consumer);
 
-        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [reassignedPartition, stillRevokedPartition]);
+        consumer.IncrementalUnassign([removedPartition]);
 
-        CancelCoordinatorRevokedPartitionsFetchClear(consumer, [reassignedPartition]);
-
-        var pendingRevocations = GetCoordinatorRevokedPartitionsPendingFetchClear(consumer);
-        await Assert.That(pendingRevocations.ContainsKey(reassignedPartition)).IsFalse();
-        await Assert.That(pendingRevocations.ContainsKey(stillRevokedPartition)).IsTrue();
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(1);
-
-        CancelCoordinatorRevokedPartitionsFetchClear(consumer, [stillRevokedPartition]);
-
-        await Assert.That(pendingRevocations).IsEmpty();
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+        var partitionMinimumEpochs = GetMinimumFetchBufferEpochsByPartition(consumer);
+        await Assert.That(GetMinimumFetchBufferEpoch(consumer)).IsEqualTo(globalMinimumEpoch);
+        await Assert.That(partitionMinimumEpochs.ContainsKey(removedPartition)).IsTrue();
+        await Assert.That(partitionMinimumEpochs.ContainsKey(retainedPartition)).IsFalse();
     }
 
     [Test]
-    public async Task CancelCoordinatorRevokedPartitionsFetchClear_ReassignmentCancelsDivergenceReset()
+    public async Task PendingRevocationDrain_InvalidatesOnlyAffectedPartitionFetches()
     {
         await using var consumer = CreateConsumer();
-        var partition = new TopicPartition("test-topic", 0);
-        consumer.IncrementalAssign([new TopicPartitionOffset("test-topic", 0, 0)]);
-
-        StageDivergingEpochReset(consumer, partition, endOffset: 42, epoch: 7, GetFetchBufferEpoch(consumer));
+        var divergingPartition = new TopicPartition("test-topic", 0);
+        var revokedPartition = new TopicPartition("test-topic", 1);
+        var retainedPartition = new TopicPartition("test-topic", 2);
+        consumer.IncrementalAssign(
+        [
+            new TopicPartitionOffset(divergingPartition.Topic, divergingPartition.Partition, 0),
+            new TopicPartitionOffset(revokedPartition.Topic, revokedPartition.Partition, 0),
+            new TopicPartitionOffset(retainedPartition.Topic, retainedPartition.Partition, 0)
+        ]);
+        StageDivergingEpochReset(
+            consumer,
+            divergingPartition,
+            endOffset: 42,
+            epoch: 7,
+            GetFetchBufferEpoch(consumer));
         CompleteDivergingEpochResets(consumer);
-        var staleFetchEpoch = GetFetchBufferEpoch(consumer);
+        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [revokedPartition]);
+        var globalMinimumEpoch = GetMinimumFetchBufferEpoch(consumer);
 
-        CancelCoordinatorRevokedPartitionsFetchClear(consumer, [partition]);
-        StageDivergingEpochReset(consumer, partition, endOffset: 43, epoch: 8, staleFetchEpoch);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
 
-        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
-        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(0L);
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+        var partitionMinimumEpochs = GetMinimumFetchBufferEpochsByPartition(consumer);
+        await Assert.That(GetMinimumFetchBufferEpoch(consumer)).IsEqualTo(globalMinimumEpoch);
+        await Assert.That(partitionMinimumEpochs.ContainsKey(divergingPartition)).IsTrue();
+        await Assert.That(partitionMinimumEpochs.ContainsKey(revokedPartition)).IsTrue();
+        await Assert.That(partitionMinimumEpochs.ContainsKey(retainedPartition)).IsFalse();
     }
 
     [Test]
@@ -654,12 +707,14 @@ public sealed class ConsumerAssignmentFastPathTests
                     {
                         PartitionIndex = 0,
                         CommittedOffset = 10,
+                        CommittedLeaderEpoch = 4,
                         ErrorCode = ErrorCode.None
                     },
                     new OffsetFetchResponsePartition
                     {
                         PartitionIndex = 1,
                         CommittedOffset = 20,
+                        CommittedLeaderEpoch = 5,
                         ErrorCode = ErrorCode.None
                     }
                 ]
@@ -733,6 +788,16 @@ public sealed class ConsumerAssignmentFastPathTests
         return (int)field.GetValue(consumer)!;
     }
 
+    private static int GetMinimumFetchBufferEpoch(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_minimumFetchBufferEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_minimumFetchBufferEpoch field not found.");
+
+        return (int)field.GetValue(consumer)!;
+    }
+
     private static ConcurrentDictionary<TopicPartition, int> GetMinimumFetchBufferEpochsByPartition(
         KafkaConsumer<string, string> consumer)
     {
@@ -775,6 +840,18 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_fetchPositions field not found.");
 
         return (ConcurrentDictionary<TopicPartition, long>)field.GetValue(consumer)!;
+    }
+
+    private static int GetLastConsumedLeaderEpoch(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "GetLastConsumedLeaderEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("GetLastConsumedLeaderEpoch method not found.");
+
+        return (int)method.Invoke(consumer, [partition])!;
     }
 
     private static void QueueCoordinatorRevokedPartitionsForFetchClear(
@@ -824,18 +901,6 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("CompleteDivergingEpochResets method not found.");
 
         method.Invoke(consumer, []);
-    }
-
-    private static void CancelCoordinatorRevokedPartitionsFetchClear(
-        KafkaConsumer<string, string> consumer,
-        TopicPartition[] partitions)
-    {
-        var method = typeof(KafkaConsumer<string, string>).GetMethod(
-            "CancelCoordinatorRevokedPartitionsFetchClear",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("CancelCoordinatorRevokedPartitionsFetchClear method not found.");
-
-        method.Invoke(consumer, [partitions]);
     }
 
     private static bool ClearFetchBufferForPendingCoordinatorRevocations(KafkaConsumer<string, string> consumer)

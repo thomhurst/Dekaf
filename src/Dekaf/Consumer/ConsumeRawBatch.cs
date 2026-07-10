@@ -162,6 +162,12 @@ namespace Dekaf.Consumer
                     isKeyNull: record.IsKeyNull,
                     isValueNull: record.IsValueNull);
 
+                if (_batch._isPartitionStillAssigned is not null
+                    && !_batch._isPartitionStillAssigned(pending.TopicPartition))
+                {
+                    return false;
+                }
+
                 pending.TrackConsumed(offset, messageBytes);
                 _recordsYielded++;
                 _batch._count++;
