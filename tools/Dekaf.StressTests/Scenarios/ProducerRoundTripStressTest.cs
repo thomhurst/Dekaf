@@ -68,6 +68,11 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         ProducerDeliveryDiagnosticsSnapshot? producerDiagnostics;
         await using (var producer = await builder.BuildAsync(cancellationToken))
         {
+            using var watchdog = options.ProgressWatchdog.Track(
+                throughput,
+                Client,
+                Name,
+                () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
             using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
 
