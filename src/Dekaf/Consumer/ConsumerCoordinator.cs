@@ -110,7 +110,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal void RecordPoll()
     {
         var now = Stopwatch.GetTimestamp();
-        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
+        if (_state == CoordinatorState.Stable
+            && Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
             && now - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks)
         {
             // Preserve the overdue poll generation until the heartbeat records its expiry.
@@ -124,7 +125,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private void ThrowIfMaxPollIntervalExpired()
     {
-        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0)
+        var pollDeadlineElapsed = _state == CoordinatorState.Stable
+            && Stopwatch.GetTimestamp() - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks;
+        if (!pollDeadlineElapsed && Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0)
             return;
 
         throw new GroupException(

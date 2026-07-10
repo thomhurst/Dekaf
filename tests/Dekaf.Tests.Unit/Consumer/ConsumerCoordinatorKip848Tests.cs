@@ -207,6 +207,18 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         field.SetValue(coordinator, value);
     }
 
+    private static void SetCoordinatorState(
+        ConsumerCoordinator coordinator,
+        CoordinatorState state)
+    {
+        var field = typeof(ConsumerCoordinator).GetField(
+            "_state",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_state field not found.");
+
+        field.SetValue(coordinator, state);
+    }
+
     private static async Task AssertOwnedTopicPartitionsAsync(
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? topicPartitions,
         Guid topicId,
@@ -307,11 +319,12 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task RecordPoll_OverdueBeforeExpiry_PreservesDeadlineUntilEviction()
+    public async Task RecordPoll_OverdueStableMember_PreservesDeadlineUntilEviction()
     {
         var options = CreateConsumerProtocolOptions(maxPollIntervalMs: 50);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
         var overdueTimestamp = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+        SetCoordinatorState(coordinator, CoordinatorState.Stable);
         SetCoordinatorLongField(coordinator, "_lastPollTimestamp", overdueTimestamp);
         var pollVersion = GetCoordinatorLongField(coordinator, "_pollVersion");
 
@@ -323,6 +336,23 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             .IsEqualTo(pollVersion);
 
         SetCoordinatorLongField(coordinator, "_maxPollExpiredAtPollVersion", pollVersion);
+        coordinator.RecordPoll();
+
+        await Assert.That(GetCoordinatorLongField(coordinator, "_lastPollTimestamp"))
+            .IsGreaterThan(overdueTimestamp);
+        await Assert.That(GetCoordinatorLongField(coordinator, "_pollVersion"))
+            .IsEqualTo(pollVersion + 1);
+    }
+
+    [Test]
+    public async Task RecordPoll_OverdueUnjoinedMember_RefreshesDeadline()
+    {
+        var options = CreateConsumerProtocolOptions(maxPollIntervalMs: 50);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var overdueTimestamp = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+        SetCoordinatorLongField(coordinator, "_lastPollTimestamp", overdueTimestamp);
+        var pollVersion = GetCoordinatorLongField(coordinator, "_pollVersion");
+
         coordinator.RecordPoll();
 
         await Assert.That(GetCoordinatorLongField(coordinator, "_lastPollTimestamp"))
@@ -502,6 +532,45 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 await coordinator.CommitOffsetsAsync(
                     [new TopicPartitionOffset("test-topic", 0, 1)],
                     cancellationToken))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(commitRequestCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_OverdueBeforeHeartbeatExpiry_RejectsCommit()
+    {
+        SetupFindCoordinator();
+        SetupConsumerGroupHeartbeat(heartbeatIntervalMs: 60_000);
+        _metadataManager.SetApiVersion(
+            ApiKey.OffsetCommit,
+            OffsetCommitRequest.LowestSupportedVersion,
+            OffsetCommitRequest.HighestSupportedVersion);
+
+        var commitRequestCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitRequestCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        var options = CreateConsumerProtocolOptions(maxPollIntervalMs: 300_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        SetCoordinatorLongField(
+            coordinator,
+            "_lastPollTimestamp",
+            Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 600L));
+
+        var exception = await Assert.That(async () =>
+                await coordinator.CommitOffsetsAsync(
+                    [new TopicPartitionOffset("test-topic", 0, 1)],
+                    CancellationToken.None))
             .Throws<GroupException>();
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
