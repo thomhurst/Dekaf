@@ -550,8 +550,6 @@ public sealed class AdaptiveScaleDownTests
         var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
         var removedConnection = new TestKafkaConnection();
         var retirableConnection = (IRetirableKafkaConnection)removedConnection;
-        var drainStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        sender.RetirementDrainStartedForTest = () => drainStarted.TrySetResult();
         await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
         retirableConnection.BeginRetirement();
 
@@ -560,7 +558,11 @@ public sealed class AdaptiveScaleDownTests
             BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(sender, removedConnection);
 
-        await drainStarted.Task.WaitAsync(cancellationToken);
+        typeof(BrokerSender).GetMethod(
+            "MaybeDrainAndDisposeConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(sender, null);
+
         await AssertDisposeWaitsForLeaseAsync(
             sender,
             removedConnection,

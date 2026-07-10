@@ -483,8 +483,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private IKafkaConnection? _retiringConnection;
     private readonly ConcurrentDictionary<Task, byte> _retirementDrainTasks = new();
 
-    internal Action? RetirementDrainStartedForTest { get; set; }
-
     // Set at send-loop finally entry so IsAlive turns false before surviving batches are
     // reroute-redelivered — GetOrCreateBrokerSender must build a replacement, not return
     // this instance whose event channel is already completed.
@@ -4376,7 +4374,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             connection,
             CancellationToken.None).AsTask();
         _retirementDrainTasks.TryAdd(drainTask, 0);
-        RetirementDrainStartedForTest?.Invoke();
         _ = drainTask.ContinueWith(
             static (task, state) => ((BrokerSender)state!).ObserveCompletedRetirementDrain(task),
             this,
