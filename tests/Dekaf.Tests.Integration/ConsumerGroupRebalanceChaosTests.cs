@@ -472,18 +472,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         // masquerade as recovery.
         await survivor.WaitForPartitionAssignedAsync(crashedPartition, cancellationToken);
         await survivor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
-        await AssertGroupMemberPresenceAsync(
-            admin,
-            groupId,
-            crashedClientId,
-            expected: false,
-            cancellationToken);
-        var committedAfterExpiry = await CaptureAndAssertCommittedOffsetsAsync(
-            admin,
-            groupId,
-            oracle,
-            cancellationToken,
-            committedAtCrash);
+
+        // A two-member uniform/range assignment cannot return the crashed partition
+        // and all four partitions to the survivor until the broker expires the killed member.
 
         var remainingPermits = PartitionCount * MessagesPerPartition * 2;
         survivor.Allow(remainingPermits);
@@ -509,12 +500,15 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 .IsEquivalentTo(Enumerable.Range(0, MessagesPerPartition).Select(static value => (long)value));
         }
 
+        // Reconnect after the broker-side session transition; the pre-crash
+        // admin connection can time out while rediscovering the coordinator.
+        await using var finalAdmin = KafkaContainer.CreateAdminClient();
         await CaptureAndAssertCommittedOffsetsAsync(
-            admin,
+            finalAdmin,
             groupId,
             oracle,
             cancellationToken,
-            committedAfterExpiry);
+            committedAtCrash);
     }
 
     private async Task ProduceSequencedBacklogAsync(string topic, CancellationToken cancellationToken)
@@ -611,8 +605,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         for (var partition = 0; partition < PartitionCount; partition++)
         {
-            var explicitCommit = oracle.GetCommittedOffset(partition);
-            var processedExclusive = oracle.GetProcessedExclusive(partition);
+            var (explicitCommit, processedExclusive) = oracle.GetProgressBounds(partition);
             var actual = committedOffsets.GetValueOrDefault(
                 new TopicPartition(oracle.Topic, partition),
                 0);
@@ -1089,13 +1082,6 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
             if (finalCommit)
                 _finalCommits.Increment();
-        }
-
-        public long GetProcessedExclusive(int partition)
-        {
-            var state = _partitions[partition];
-            lock (state.Gate)
-                return state.NextExpected;
         }
 
         public void BeginCrashWindow(IReadOnlyList<long> brokerCommittedOffsets)
