@@ -266,6 +266,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 
         using (var producer = new ConfluentKafka.ProducerBuilder<string, byte[]>(producerConfig).Build())
         {
+            using var watchdog = options.ProgressWatchdog.Track(throughput, Client, Name);
             using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
 
