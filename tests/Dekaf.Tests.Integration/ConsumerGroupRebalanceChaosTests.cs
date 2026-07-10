@@ -43,6 +43,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
     [Test]
     [Timeout(600_000)]
+    [SkipWhenNativeAot("Confluent.Kafka's librdkafka delegate binding requires runtime reflection.")]
     public async Task StaticMember_RestartsWithinAndBeyondSessionTimeout_PreservesSequencesAndCommittedProgress(
         CancellationToken cancellationToken)
     {
