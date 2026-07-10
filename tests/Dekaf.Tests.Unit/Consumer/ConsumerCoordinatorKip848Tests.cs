@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -183,6 +184,29 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         };
     }
 
+    private static long GetCoordinatorLongField(ConsumerCoordinator coordinator, string fieldName)
+    {
+        var field = typeof(ConsumerCoordinator).GetField(
+            fieldName,
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found.");
+
+        return (long)field.GetValue(coordinator)!;
+    }
+
+    private static void SetCoordinatorLongField(
+        ConsumerCoordinator coordinator,
+        string fieldName,
+        long value)
+    {
+        var field = typeof(ConsumerCoordinator).GetField(
+            fieldName,
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found.");
+
+        field.SetValue(coordinator, value);
+    }
+
     private static async Task AssertOwnedTopicPartitionsAsync(
         IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? topicPartitions,
         Guid topicId,
@@ -280,6 +304,31 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             Arg.Is<ConsumerGroupHeartbeatRequest>(request => request.RebalanceTimeoutMs == 12_345),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task RecordPoll_OverdueBeforeExpiry_PreservesDeadlineUntilEviction()
+    {
+        var options = CreateConsumerProtocolOptions(maxPollIntervalMs: 50);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var overdueTimestamp = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+        SetCoordinatorLongField(coordinator, "_lastPollTimestamp", overdueTimestamp);
+        var pollVersion = GetCoordinatorLongField(coordinator, "_pollVersion");
+
+        coordinator.RecordPoll();
+
+        await Assert.That(GetCoordinatorLongField(coordinator, "_lastPollTimestamp"))
+            .IsEqualTo(overdueTimestamp);
+        await Assert.That(GetCoordinatorLongField(coordinator, "_pollVersion"))
+            .IsEqualTo(pollVersion);
+
+        SetCoordinatorLongField(coordinator, "_maxPollExpiredAtPollVersion", pollVersion);
+        coordinator.RecordPoll();
+
+        await Assert.That(GetCoordinatorLongField(coordinator, "_lastPollTimestamp"))
+            .IsGreaterThan(overdueTimestamp);
+        await Assert.That(GetCoordinatorLongField(coordinator, "_pollVersion"))
+            .IsEqualTo(pollVersion + 1);
     }
 
     [Test]

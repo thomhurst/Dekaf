@@ -65,6 +65,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     // KIP-848 consumer protocol state
     private volatile int _heartbeatIntervalMs;
+    private readonly long _maxPollIntervalStopwatchTicks;
     private long _lastPollTimestamp;
     private long _pollVersion;
     private long _maxPollExpiredAtPollVersion = -1;
@@ -96,6 +97,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
             : () => GetCoordinationConnectionIndex(options.ConnectionsPerBroker);
         _heartbeatIntervalMs = options.HeartbeatIntervalMs;
+        _maxPollIntervalStopwatchTicks = options.MaxPollIntervalMs * Stopwatch.Frequency / 1000;
         _lastPollTimestamp = Stopwatch.GetTimestamp();
     }
 
@@ -107,7 +109,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal void RecordPoll()
     {
-        Volatile.Write(ref _lastPollTimestamp, Stopwatch.GetTimestamp());
+        var now = Stopwatch.GetTimestamp();
+        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
+            && now - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks)
+        {
+            // Preserve the overdue poll generation until the heartbeat records its expiry.
+            // A later foreground poll can advance it once the expiry marker is visible.
+            return;
+        }
+
+        Volatile.Write(ref _lastPollTimestamp, now);
         Interlocked.Increment(ref _pollVersion);
     }
 
