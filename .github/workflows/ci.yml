@@ -41,7 +41,7 @@ jobs:
       - name: Filter changed paths
         id: filter
         if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           # Positive allowlist: anything matching runs full CI. Docs, markdown,
           # and agent config fall through and skip CI.
