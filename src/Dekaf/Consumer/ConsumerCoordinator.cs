@@ -614,6 +614,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     OffsetCommitRequest.LowestSupportedVersion,
                     OffsetCommitRequest.HighestSupportedVersion);
 
+                ThrowIfMaxPollIntervalExpired();
                 var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
                     request,
                     offsetCommitVersion,

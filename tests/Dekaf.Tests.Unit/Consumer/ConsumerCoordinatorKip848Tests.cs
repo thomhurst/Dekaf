@@ -913,6 +913,62 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task CommitOffsetsAsync_PollExpiresDuringConnectionWait_RejectsCommit(
+        CancellationToken cancellationToken)
+    {
+        SetupFindCoordinator();
+        SetupConsumerGroupHeartbeat(heartbeatIntervalMs: 60_000);
+        _metadataManager.SetApiVersion(
+            ApiKey.OffsetCommit,
+            OffsetCommitRequest.LowestSupportedVersion,
+            OffsetCommitRequest.HighestSupportedVersion);
+
+        var options = CreateConsumerProtocolOptions(maxPollIntervalMs: 300_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
+
+        var connectionRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseConnection = new TaskCompletionSource<IKafkaConnection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _connectionPool.GetConnectionByIndexAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                connectionRequested.TrySetResult();
+                return new ValueTask<IKafkaConnection>(releaseConnection.Task);
+            });
+
+        var commitRequestCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitRequestCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        var commit = coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 0, 1)],
+            cancellationToken).AsTask();
+        await connectionRequested.Task.WaitAsync(cancellationToken);
+        SetCoordinatorLongField(
+            coordinator,
+            "_lastPollTimestamp",
+            Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 600L));
+        releaseConnection.TrySetResult(_connection);
+
+        var exception = await Assert.That(async () => await commit).Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(commitRequestCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_SuccessfulJoin_WithAssignment_SetsPartitions()
     {
         var assignment = CreateAssignment(TestTopicId, 0, 1);
