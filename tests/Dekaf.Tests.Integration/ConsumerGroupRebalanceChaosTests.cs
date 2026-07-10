@@ -275,7 +275,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             "kip848-uniform-to-classic-range",
             MemberProtocol.Kip848Uniform,
             MemberProtocol.ClassicEagerRange,
-            cancellationToken);
+            cancellationToken,
+            stopAnchorAfterJointPhase: true);
     }
 
     private async Task RunChurnScenarioAsync(string assignor, CancellationToken cancellationToken)
@@ -294,7 +295,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         string scenarioName,
         MemberProtocol anchorProtocol,
         MemberProtocol transientProtocol,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool stopAnchorAfterJointPhase = false)
     {
         var (topic, groupId, oracle) = await CreateScenarioAsync(
             $"rebalance-chaos-{scenarioName}",
@@ -344,6 +346,24 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 anchor.WaitForObservedCountAsync(anchorTarget, cancellationToken),
                 transient.WaitForObservedCountAsync(transientTarget, cancellationToken));
 
+            if (stopAnchorAfterJointPhase)
+            {
+                await anchor.StopAsync();
+
+                await transient.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
+                await AssertGroupModeAsync(admin, groupId, transientProtocol, cancellationToken);
+                await Assert.That(transient.ObservedCount).IsEqualTo(transientTarget)
+                    .Because("Consumer-to-Classic migration must not consume records without a permit");
+                await AssertCommittedOffsetsAsync(admin, groupId, oracle, cancellationToken);
+
+                var downgradeRecoveryTarget = transient.ObservedCount + RecoveryPhaseMessages;
+                transient.Allow(RecoveryPhaseMessages);
+                await transient.WaitForObservedCountAsync(downgradeRecoveryTarget, cancellationToken);
+
+                await CompleteScenarioAsync(transient, admin, groupId, oracle, cancellationToken);
+                return;
+            }
+
             await transient.StopAsync();
 
             await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
@@ -356,10 +376,20 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             await anchor.WaitForObservedCountAsync(recoveryTarget, cancellationToken);
         }
 
-        anchor.Allow(PartitionCount * MessagesPerPartition * 2);
+        await CompleteScenarioAsync(anchor, admin, groupId, oracle, cancellationToken);
+    }
+
+    private static async Task CompleteScenarioAsync(
+        IConsumerMember survivor,
+        IAdminClient admin,
+        string groupId,
+        SequenceOracle oracle,
+        CancellationToken cancellationToken)
+    {
+        survivor.Allow(PartitionCount * MessagesPerPartition * 2);
         await oracle.WaitForAllSequencesAsync(cancellationToken);
         await oracle.WaitForFinalCommitsAsync(cancellationToken);
-        await anchor.StopAsync();
+        await survivor.StopAsync();
 
         await AssertCompletedScenarioAsync(groupId, oracle, maximumDuplicateCount: null, cancellationToken);
     }
