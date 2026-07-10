@@ -2839,8 +2839,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            var connection = await GetConnectionAtIndexAsync(connectionIndex, cancellationToken)
+            using var connectionLease = await GetConnectionLeaseAtIndexAsync(connectionIndex, cancellationToken)
                 .ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             count = CompactCurrentBatches(batches, generations, count);
             if (count == 0)
@@ -2851,7 +2852,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Diagnostic: mark batches as having acquired a connection.
             // If orphan trace shows 'S' but no 'G' (Got connection), the hang is at
-            // GetConnectionAtIndexAsync (connection creation or write lock contention).
+            // GetConnectionLeaseAtIndexAsync (connection creation or write lock contention).
             for (var i = 0; i < count; i++)
                 batches[i].AppendDiag('G');
 
@@ -3583,26 +3584,33 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns the pinned connection for the given connection index.
-    /// Each connection slot caches a healthy connection for reuse.
+    /// Leases and returns the pinned connection for the given connection index.
+    /// Each connection slot caches a healthy connection for reuse, while the lease bridges
+    /// selection to request registration so shared-pool retirement cannot dispose it between them.
     /// </summary>
-    private async ValueTask<IKafkaConnection> GetConnectionAtIndexAsync(int connIdx, CancellationToken cancellationToken)
+    private async ValueTask<KafkaConnectionLease> GetConnectionLeaseAtIndexAsync(
+        int connIdx,
+        CancellationToken cancellationToken)
     {
         var conn = _pinnedConnections[connIdx];
-        if (conn is not null && conn.IsConnected)
-            return conn;
+        if (conn is not null
+            && conn.IsConnected
+            && KafkaConnectionLease.TryAcquire(conn, out var pinnedLease))
+        {
+            return pinnedLease;
+        }
 
         // Shared pools may retain an expanded group owned by another client. An owning
         // sender also retains a one-slot group after scaling back down. Keep those slots
         // indexed, while preserving the singleton path before this sender first scales up.
-        var connection = _connectionCount > 1 || !_canPhysicallyShrinkConnections || _hasScaledConnectionGroup
-            ? await _connectionPool.GetConnectionByIndexAsync(_brokerId, connIdx, cancellationToken)
+        var connectionLease = _connectionCount > 1 || !_canPhysicallyShrinkConnections || _hasScaledConnectionGroup
+            ? await _connectionPool.LeaseConnectionByIndexAsync(_brokerId, connIdx, cancellationToken)
                 .ConfigureAwait(false)
-            : await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
+            : await _connectionPool.LeaseConnectionAsync(_brokerId, cancellationToken)
                 .ConfigureAwait(false);
 
-        _pinnedConnections[connIdx] = connection;
-        return connection;
+        _pinnedConnections[connIdx] = connectionLease.Connection;
+        return connectionLease;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -7,6 +7,24 @@ internal readonly struct KafkaConnectionLease(
     public IKafkaConnection Connection { get; } = connection;
 
     public void Dispose() => retirableConnection?.ReleaseLease();
+
+    internal static bool TryAcquire(IKafkaConnection connection, out KafkaConnectionLease lease)
+    {
+        if (connection is IRetirableKafkaConnection retirableConnection)
+        {
+            if (!retirableConnection.TryAcquireLease())
+            {
+                lease = default;
+                return false;
+            }
+
+            lease = new KafkaConnectionLease(connection, retirableConnection);
+            return true;
+        }
+
+        lease = new KafkaConnectionLease(connection, null);
+        return true;
+    }
 }
 
 internal static class ConnectionPoolLeaseExtensions
@@ -22,7 +40,7 @@ internal static class ConnectionPoolLeaseExtensions
         {
             var connection = await connectionPool.GetConnectionAsync(brokerId, cancellationToken)
                 .ConfigureAwait(false);
-            if (TryLease(connection, out var lease))
+            if (KafkaConnectionLease.TryAcquire(connection, out var lease))
                 return lease;
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -40,7 +58,7 @@ internal static class ConnectionPoolLeaseExtensions
         {
             var connection = await connectionPool.GetConnectionByIndexAsync(brokerId, index, cancellationToken)
                 .ConfigureAwait(false);
-            if (TryLease(connection, out var lease))
+            if (KafkaConnectionLease.TryAcquire(connection, out var lease))
                 return lease;
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -48,21 +66,4 @@ internal static class ConnectionPoolLeaseExtensions
         }
     }
 
-    private static bool TryLease(IKafkaConnection connection, out KafkaConnectionLease lease)
-    {
-        if (connection is IRetirableKafkaConnection retirableConnection)
-        {
-            if (!retirableConnection.TryAcquireLease())
-            {
-                lease = default;
-                return false;
-            }
-
-            lease = new KafkaConnectionLease(connection, retirableConnection);
-            return true;
-        }
-
-        lease = new KafkaConnectionLease(connection, null);
-        return true;
-    }
 }

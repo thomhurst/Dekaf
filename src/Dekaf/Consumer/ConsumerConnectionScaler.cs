@@ -27,6 +27,7 @@ internal sealed class ConsumerConnectionScaler
     private readonly Action<Exception>? _logError;
     private readonly object _operationLock = new();
     private readonly HashSet<Task> _pendingOperations = [];
+    private readonly CancellationTokenSource _operationCancellationSource = new();
 
     private int _currentConnectionCount;
     private long _saturationStartTimestamp;
@@ -96,8 +97,8 @@ internal sealed class ConsumerConnectionScaler
         BeforeScaleOperationLockForTest?.Invoke();
 
         var now = GetTimestamp();
-        Task? operationTask = null;
-        Exception? operationError = null;
+        Func<CancellationToken, ValueTask>? operation = null;
+        TaskCompletionSource? operationReservation = null;
         lock (_operationLock)
         {
             if (_stopping != 0)
@@ -113,7 +114,7 @@ internal sealed class ConsumerConnectionScaler
                 Interlocked.Increment(ref _currentConnectionCount);
                 _saturationStartTimestamp = 0;
                 _lastScaleTimestamp = now;
-                operationTask = StartAndTrackOperation(_scaleUpAsync, out operationError);
+                operation = _scaleUpAsync;
             }
             else if (_lowUtilizationStartTimestamp != 0
                 && _currentConnectionCount > _initialConnectionCount
@@ -122,15 +123,22 @@ internal sealed class ConsumerConnectionScaler
                 Interlocked.Decrement(ref _currentConnectionCount);
                 _lowUtilizationStartTimestamp = 0;
                 _lastScaleTimestamp = now;
-                operationTask = StartAndTrackOperation(_scaleDownAsync, out operationError);
+                operation = _scaleDownAsync;
+            }
+
+            if (operation is not null)
+            {
+                operationReservation = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _pendingOperations.Add(operationReservation.Task);
             }
         }
 
-        if (operationError is not null)
-            _logError?.Invoke(operationError);
-
-        if (operationTask is not null)
-            ObserveOperation(operationTask);
+        if (operationReservation is not null)
+        {
+            ObserveOperation(operationReservation.Task);
+            StartReservedOperation(operation!, operationReservation);
+        }
     }
 
     /// <summary>
@@ -141,26 +149,51 @@ internal sealed class ConsumerConnectionScaler
     internal static int GetFetchConnectionCount(int connectionsPerBroker)
         => connectionsPerBroker > 1 ? connectionsPerBroker - 1 : 1;
 
-    private Task? StartAndTrackOperation(
+    private void StartReservedOperation(
         Func<CancellationToken, ValueTask> action,
-        out Exception? operationError)
+        TaskCompletionSource operationReservation)
     {
-        Debug.Assert(Monitor.IsEntered(_operationLock));
-        operationError = null;
         try
         {
-            var operation = action(CancellationToken.None);
+            var cancellationToken = _operationCancellationSource.Token;
+            cancellationToken.ThrowIfCancellationRequested();
+            var operation = action(cancellationToken);
             if (operation.IsCompletedSuccessfully)
-                return null;
+            {
+                operationReservation.TrySetResult();
+                return;
+            }
 
-            var operationTask = operation.AsTask();
-            _pendingOperations.Add(operationTask);
-            return operationTask;
+            _ = CompleteReservedOperationAsync(operation, operationReservation);
+        }
+        catch (OperationCanceledException ex)
+        {
+            operationReservation.TrySetCanceled(ex.CancellationToken);
         }
         catch (Exception ex)
         {
-            operationError = ex;
-            return null;
+            // Preserve synchronous delegate semantics: report before MaybeScale returns.
+            _logError?.Invoke(ex);
+            operationReservation.TrySetResult();
+        }
+    }
+
+    private static async Task CompleteReservedOperationAsync(
+        ValueTask operation,
+        TaskCompletionSource operationReservation)
+    {
+        try
+        {
+            await operation.ConfigureAwait(false);
+            operationReservation.TrySetResult();
+        }
+        catch (OperationCanceledException ex)
+        {
+            operationReservation.TrySetCanceled(ex.CancellationToken);
+        }
+        catch (Exception ex)
+        {
+            operationReservation.TrySetException(ex);
         }
     }
 
@@ -198,11 +231,16 @@ internal sealed class ConsumerConnectionScaler
     private async ValueTask StopAndDrainCoreAsync()
     {
         Task[] pendingOperations;
+        bool cancelOperations;
         lock (_operationLock)
         {
+            cancelOperations = _stopping == 0;
             Volatile.Write(ref _stopping, 1);
             pendingOperations = [.. _pendingOperations];
         }
+
+        if (cancelOperations)
+            _operationCancellationSource.Cancel();
 
         if (pendingOperations.Length == 0)
             return;

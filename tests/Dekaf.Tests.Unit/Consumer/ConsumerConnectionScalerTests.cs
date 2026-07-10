@@ -263,6 +263,73 @@ public sealed class ConsumerConnectionScalerTests
     }
 
     [Test]
+    public async Task StopAndDrainAsync_CancelsPendingOperation()
+    {
+        var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: async cancellationToken =>
+            {
+                operationStarted.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    cancellationObserved.TrySetResult();
+                    throw;
+                }
+            },
+            scaleDownAsync: _ => ValueTask.CompletedTask);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.MaybeScale();
+
+        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await scaler.StopAndDrainAsync(TimeSpan.FromSeconds(1));
+
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
+    public async Task MaybeScale_SynchronousDelegatePrefix_DoesNotHoldOperationLock()
+    {
+        var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseOperation = new ManualResetEventSlim();
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ =>
+            {
+                operationStarted.TrySetResult();
+                releaseOperation.Wait(CancellationToken.None);
+                return ValueTask.CompletedTask;
+            },
+            scaleDownAsync: _ => ValueTask.CompletedTask);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+
+        var firstScale = Task.Run(scaler.MaybeScale);
+        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var secondScale = Task.Run(scaler.MaybeScale);
+        try
+        {
+            await secondScale.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            releaseOperation.Set();
+            await firstScale.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Test]
     public async Task SplitPartitions_SingleConnection_ReturnsSingleGroup()
     {
         var groups = new (int StartIndex, int Count)[1];

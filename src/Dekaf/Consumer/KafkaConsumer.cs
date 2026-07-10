@@ -1072,9 +1072,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (removedConnection is null)
             return;
 
+        // Once detached from the pool, the retired connection must finish draining even if
+        // consumer shutdown cancels further pool operations; otherwise it has no remaining owner.
         await RetiredConnectionDisposer.DrainAndDisposeAsync(
             removedConnection,
-            cancellationToken).ConfigureAwait(false);
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     public StringSet Subscription => _subscriptionSnapshot;
