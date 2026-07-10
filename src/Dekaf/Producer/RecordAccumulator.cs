@@ -131,6 +131,12 @@ internal static class ProducerDebugCounters
     private static int _completionSourcesCompleted;
     private static int _completionSourcesFailed;
 
+    // ReadyBatch pool lifecycle. A return count above the rent count proves the same
+    // object entered the pool more than once and can be handed to concurrent renters.
+    private static int _readyBatchesRented;
+    private static int _readyBatchesReturned;
+    private static int _readyBatchDuplicateReturns;
+
     // Stage 5: Flush and disposal
     private static int _flushCalls;
     private static int _batchesFlushedFromDictionary;
@@ -183,6 +189,15 @@ internal static class ProducerDebugCounters
         Interlocked.Add(ref _completionSourcesFailed, count);
 
     [Conditional("DEBUG")]
+    public static void RecordReadyBatchRented() => Interlocked.Increment(ref _readyBatchesRented);
+
+    [Conditional("DEBUG")]
+    public static void RecordReadyBatchReturned() => Interlocked.Increment(ref _readyBatchesReturned);
+
+    [Conditional("DEBUG")]
+    public static void RecordReadyBatchDuplicateReturn() => Interlocked.Increment(ref _readyBatchDuplicateReturns);
+
+    [Conditional("DEBUG")]
     public static void RecordFlushCall() => Interlocked.Increment(ref _flushCalls);
 
     [Conditional("DEBUG")]
@@ -205,8 +220,35 @@ internal static class ProducerDebugCounters
         _batchesFailed = 0;
         _completionSourcesCompleted = 0;
         _completionSourcesFailed = 0;
+        _readyBatchesRented = 0;
+        _readyBatchesReturned = 0;
+        _readyBatchDuplicateReturns = 0;
         _flushCalls = 0;
         _batchesFlushedFromDictionary = 0;
+    }
+
+    public static ProducerDebugCounterSnapshot GetSnapshot()
+    {
+#if DEBUG
+        return new ProducerDebugCounterSnapshot
+        {
+            MessagesAppended = Volatile.Read(ref _messagesAppended),
+            MessagesAppendedWithCompletion = Volatile.Read(ref _messagesAppendedWithCompletion),
+            MessagesAppendedFireAndForget = Volatile.Read(ref _messagesAppendedFireAndForget),
+            CompletionSourcesStoredInBatch = Volatile.Read(ref _completionSourcesStoredInBatch),
+            BatchesCompleted = Volatile.Read(ref _batchesCompleted),
+            BatchesSentSuccessfully = Volatile.Read(ref _batchesSentSuccessfully),
+            BatchesFailed = Volatile.Read(ref _batchesFailed),
+            CompletionSourcesCompleted = Volatile.Read(ref _completionSourcesCompleted),
+            CompletionSourcesFailed = Volatile.Read(ref _completionSourcesFailed),
+            ReadyBatchesRented = Volatile.Read(ref _readyBatchesRented),
+            ReadyBatchesReturned = Volatile.Read(ref _readyBatchesReturned),
+            ReadyBatchDuplicateReturns = Volatile.Read(ref _readyBatchDuplicateReturns),
+            FlushCalls = Volatile.Read(ref _flushCalls)
+        };
+#else
+        return default;
+#endif
     }
 
     public static string GetSummary()
@@ -249,6 +291,23 @@ internal static class ProducerDebugCounters
 
     [Conditional("DEBUG")]
     public static void DumpToConsole() => Console.WriteLine(GetSummary());
+}
+
+internal readonly record struct ProducerDebugCounterSnapshot
+{
+    public int MessagesAppended { get; init; }
+    public int MessagesAppendedWithCompletion { get; init; }
+    public int MessagesAppendedFireAndForget { get; init; }
+    public int CompletionSourcesStoredInBatch { get; init; }
+    public int BatchesCompleted { get; init; }
+    public int BatchesSentSuccessfully { get; init; }
+    public int BatchesFailed { get; init; }
+    public int CompletionSourcesCompleted { get; init; }
+    public int CompletionSourcesFailed { get; init; }
+    public int ReadyBatchesRented { get; init; }
+    public int ReadyBatchesReturned { get; init; }
+    public int ReadyBatchDuplicateReturns { get; init; }
+    public int FlushCalls { get; init; }
 }
 
 /// <summary>
@@ -1873,7 +1932,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void ReturnReadyBatch(ReadyBatch batch)
     {
         if (!TryClaimReadyBatchReturn(batch))
+        {
+            ProducerDebugCounters.RecordReadyBatchDuplicateReturn();
             return;
+        }
 
         CompleteClaimedReadyBatchReturn(batch);
     }
@@ -1907,6 +1969,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         batch.WaitForPreSerializationIfStarted();
         batch.WaitForResourcePins();
         batch.WaitForCleanupIfStarted();
+        batch.WaitForMemoryReleaseIfStarted();
         batch.WaitForTerminalBookkeeping();
 
         // Registration is protected by a resource pin, so release recovery only after all
@@ -2397,8 +2460,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
                     batchToFail.Fail(disposedException);
-                    if (batchToFail.TrySetMemoryReleased())
-                        ReleaseMemory(batchToFail.DataSize);
+                    ReleaseBatchMemory(batchToFail);
                 }
 
                 if (!ownsRotation && sealedBatchToEnqueue is null && sealedBatchBytesToRelease > 0)
@@ -2771,8 +2833,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
                     batchToFail.Fail(disposedException);
-                    if (batchToFail.TrySetMemoryReleased())
-                        ReleaseMemory(batchToFail.DataSize);
+                    ReleaseBatchMemory(batchToFail);
                 }
 
                 ReleaseDetachedBatchBytesIfSafe();
@@ -3627,6 +3688,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Releases a batch's BufferMemory reservation exactly once. Pool reset waits for this
+    /// operation to finish, so the winning thread cannot observe a cleared or reused DataSize.
+    /// </summary>
+    internal void ReleaseBatchMemory(ReadyBatch batch)
+    {
+        if (!batch.TryBeginMemoryRelease(out var dataSize))
+            return;
+
+        try
+        {
+            ReleaseMemory(dataSize);
+        }
+        finally
+        {
+            batch.CompleteMemoryRelease();
+        }
+    }
+
+    /// <summary>
     /// Releases reserved buffer memory without triggering <see cref="DrainPendingAppends"/>.
     /// Used inside <see cref="DrainPendingAppends"/> when a claimed operation was already
     /// completed by timeout/cancel and the memory reservation must be returned.
@@ -4429,10 +4509,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
         try
         {
-            if (batch.TrySetMemoryReleased())
-            {
-                ReleaseMemory(batch.DataSize);
-            }
+            ReleaseBatchMemory(batch);
         }
         catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
         if (removeFromPipeline)
@@ -4461,10 +4538,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
         try
         {
-            if (batch.TrySetMemoryReleased())
-            {
-                ReleaseMemory(batch.DataSize);
-            }
+            ReleaseBatchMemory(batch);
         }
         catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
     }
@@ -4712,10 +4786,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                     if (readyBatch is not null)
                                     {
                                         readyBatch.Fail(disposedException);
-                                        if (readyBatch.TrySetMemoryReleased())
-                                        {
-                                            ReleaseMemory(readyBatch.DataSize);
-                                        }
+                                        ReleaseBatchMemory(readyBatch);
                                     }
                                     if (bytesToRelease > 0)
                                         ReleaseMemory(bytesToRelease);
@@ -4800,10 +4871,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             var batch = pd.PollFirst()!;
             batch.Fail(disposedException);
-            if (batch.TrySetMemoryReleased())
-            {
-                ReleaseMemory(batch.DataSize);
-            }
+            ReleaseBatchMemory(batch);
             OnBatchExitsPipeline(batch);
         }
     }
@@ -5752,6 +5820,21 @@ public readonly record struct RecordAppendResult(
 internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSize * 2)
     : ObjectPool<ReadyBatch>(maxPoolSize)
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public new ReadyBatch Rent()
+    {
+        var batch = base.Rent();
+        ProducerDebugCounters.RecordReadyBatchRented();
+        return batch;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public new void Return(ReadyBatch item)
+    {
+        base.Return(item);
+        ProducerDebugCounters.RecordReadyBatchReturned();
+    }
+
     protected override ReadyBatch Create() => new();
     protected override void Reset(ReadyBatch item) => item.Reset();
 }
@@ -5795,7 +5878,7 @@ internal sealed class BatchArrayReuseQueue
 /// Returns pooled arrays to ArrayPool when complete.
 /// PooledValueTaskSource instances auto-return to their pool when GetResult() is called.
 /// </summary>
-internal sealed class ReadyBatch : IValueTaskSource<bool>
+internal sealed class ReadyBatch
 {
     private TopicPartition _topicPartition;
     private RecordBatch _recordBatch = null!;
@@ -5827,12 +5910,24 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
 
     /// <summary>
     /// Gets a ValueTask that completes when this batch is done (either sent successfully or failed).
-    /// Used by FlushAsync to wait for batch completion.
+    /// The producer's FlushAsync path uses RecordAccumulator's in-flight counter; this task is
+    /// retained for diagnostics and direct batch observers.
     /// IMPORTANT: This task never faults - it completes with true (success) or false (failure).
     /// This design eliminates UnobservedTaskException issues for fire-and-forget scenarios.
     /// Per-message exceptions are handled via the completion sources array, not this task.
     /// </summary>
-    public ValueTask<bool> DoneTask => new(this, _doneCore.Version);
+    public ValueTask<bool> DoneTask
+    {
+        get
+        {
+            var state = RegisterDoneTaskObserver(out var completedResult);
+            if (completedResult is { } succeeded)
+                return new ValueTask<bool>(succeeded);
+
+            AfterDoneTaskObserverRegisteredForTest?.Invoke();
+            return new ValueTask<bool>(state.Source.Task);
+        }
+    }
 
     // Working arrays from accumulator (pooled) - mutable for pooling
     private PooledValueTaskSource<RecordMetadata>[]? _completionSourcesArray;
@@ -6093,26 +6188,62 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     }
 
     /// <summary>
-    /// Whether BufferMemory has already been released for this batch.
-    /// Set to true when ReleaseMemory is called (at TCP send time or in error paths).
+    /// Whether BufferMemory release has been claimed or completed for this batch.
     /// Prevents double-release across send and cleanup paths.
     /// Uses atomic operations because multiple threads may race to release:
     /// BrokerSender send loop, orphan sweep, and forceful disposal.
-    /// For observation/diagnostics only — use <see cref="TrySetMemoryReleased"/> as the
-    /// atomic guard when releasing memory.
+    /// For observation/diagnostics only. Production cleanup uses
+    /// <see cref="RecordAccumulator.ReleaseBatchMemory"/>.
     /// </summary>
-    internal bool MemoryReleased => Volatile.Read(ref _memoryReleased) != 0;
+    internal bool MemoryReleased => Volatile.Read(ref _memoryReleased) != MemoryReleasePending;
     private int _memoryReleased;
 
+    private const int MemoryReleasePending = 0;
+    private const int MemoryReleaseInProgress = 1;
+    private const int MemoryReleaseComplete = 2;
+
     /// <summary>
-    /// Atomically marks memory as released. Returns true if this call was the first
-    /// to set the flag (caller should release memory). Returns false if another thread
-    /// already set it (caller should skip release to avoid double-release).
+    /// Atomically marks memory as already released. Used by tests and batches whose memory
+    /// accounting is intentionally external. Production cleanup uses
+    /// <see cref="RecordAccumulator.ReleaseBatchMemory"/> so pool reset waits for release.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TrySetMemoryReleased()
     {
-        return Interlocked.CompareExchange(ref _memoryReleased, 1, 0) == 0;
+        return Interlocked.CompareExchange(
+            ref _memoryReleased,
+            MemoryReleaseComplete,
+            MemoryReleasePending) == MemoryReleasePending;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryBeginMemoryRelease(out int dataSize)
+    {
+        if (Interlocked.CompareExchange(
+                ref _memoryReleased,
+                MemoryReleaseInProgress,
+                MemoryReleasePending) != MemoryReleasePending)
+        {
+            dataSize = 0;
+            return false;
+        }
+
+        dataSize = DataSize;
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void CompleteMemoryRelease()
+        => Volatile.Write(ref _memoryReleased, MemoryReleaseComplete);
+
+    internal void WaitForMemoryReleaseIfStarted()
+    {
+        if (Volatile.Read(ref _memoryReleased) != MemoryReleaseInProgress)
+            return;
+
+        var spinWait = new SpinWait();
+        while (Volatile.Read(ref _memoryReleased) == MemoryReleaseInProgress)
+            spinWait.SpinOnce();
     }
 
     /// <summary>
@@ -6171,14 +6302,35 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         IsRetry = true;
     }
 
-    // Batch-level completion tracking using resettable ManualResetValueTaskSourceCore
-    // Never faults - uses SetResult(true) for success, SetResult(false) for failure
-    private ManualResetValueTaskSourceCore<bool> _doneCore = new() { RunContinuationsAsynchronously = true };
+    // DoneTask is observed only by diagnostics/tests; producer flushing uses the accumulator's
+    // in-flight counter. Allocate its source lazily so the hot path remains allocation-free.
+    // A Task is deliberately used instead of a resettable IValueTaskSource: ReadyBatch can be
+    // returned to its pool before an asynchronous continuation consumes the prior result.
+    private sealed class DoneTaskState(int generation)
+    {
+        public int Generation { get; } = generation;
+        public TaskCompletionSource<bool> Source { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private SpinLock _doneTaskObserverLock = new(enableThreadOwnerTracking: false);
+    private List<DoneTaskState>? _doneTaskObservers;
+    private int _doneTaskObserverCount;
+    private long _lastDoneTaskCompletion;
+    internal Action? AfterDoneTaskObserverIntentPublishedForTest;
+    internal Action? AfterDoneTaskObserverRegisteredForTest;
+
+    private const int CompletionSucceeded = 1;
+    private const int CompletionFailed = 2;
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup in Cleanup())
-    private int _resourcesCleanedUp; // 0 = pooled resources retained, 1 = arena/RecordBatch returned
+    private const int ResourceCleanupPending = 0;
+    private const int ResourceCleanupInProgress = 1;
+    private const int ResourceCleanupComplete = 2;
+
+    private int _resourcesCleanedUp;
     private int _activeResourcePins; // readers holding RecordBatch/arena stable during serialization
-    private int _completed; // 0 = not completed, 1 = completed (prevents double-signal of _doneCore)
+    private int _completed; // 0 = pending, 1 = success, 2 = failure
     private int _sendCompleted; // 0 = not done, 1 = done (prevents concurrent CompleteSend/Fail)
     private int _terminalBookkeepingCompleted = 1; // generation-safe terminal owner finished post-Fail cleanup
     internal int _returnedToPool; // 0 = not returned, 1 = returned (prevents double pool return)
@@ -6291,10 +6443,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // Reset lifecycle flags at the START of a new lifecycle (not in Reset()).
         // This ensures stale references from a previous lifecycle see _cleanedUp=1
         // and return early from CompleteSend/Fail, preventing pool corruption.
-        // _memoryReleased follows the same pattern: stale references seeing 1 (released)
+        // _memoryReleased follows the same pattern: stale references seeing a nonzero state
         // will skip the release, which is the safe/defensive behavior.
         Interlocked.Exchange(ref _cleanedUp, 0);
-        Interlocked.Exchange(ref _resourcesCleanedUp, 0);
+        Interlocked.Exchange(ref _resourcesCleanedUp, ResourceCleanupPending);
         Interlocked.Exchange(ref _activeResourcePins, 0);
         Interlocked.Exchange(ref _completed, 0);
         Interlocked.Exchange(ref _sendCompleted, 0);
@@ -6333,6 +6485,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // has started but Cleanup hasn't finished. If we reach here, neither was ever called.
         if (Volatile.Read(ref _cleanedUp) == 0)
         {
+            ProducerDebugCounters.RecordBatchFailed();
+            var failedCount = 0;
             if (_completionSourcesCount > 0 && _completionSourcesArray is not null)
             {
                 var orphanedException = new InvalidOperationException(
@@ -6341,9 +6495,13 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
                     $"completed={Volatile.Read(ref _completed)}, trace={DiagTrace})");
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
-                    _completionSourcesArray[i]?.TrySetException(orphanedException);
+                    if (_completionSourcesArray[i]?.TrySetException(orphanedException) == true)
+                        failedCount++;
                 }
             }
+
+            ProducerDebugCounters.RecordCompletionSourceFailed(failedCount);
+            CompleteDoneTask(succeeded: false);
 
             // Cleanup() is idempotent (uses Interlocked.Exchange), so double-call is safe.
             Cleanup();
@@ -6366,7 +6524,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         InFlightPrev = null;
         InFlightNext = null;
         InFlightLinked = false;
-        // NOTE: _memoryReleased is NOT reset here — it stays armed (=1) while in pool,
+        // NOTE: _memoryReleased is NOT reset here — it stays complete while in pool,
         // so stale references calling TrySetMemoryReleased() return false (safe no-op).
         // Cleared in Initialize() at the start of the next lifecycle.
         IsRetry = false;
@@ -6376,19 +6534,11 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _diagTraceLen = 0;
 
         // NOTE: _cleanedUp, _completed, and _sendCompleted are NOT reset here. They stay
-        // at 1 (armed) while the batch is in the pool, so that stale references from a
+        // nonzero (armed) while the batch is in the pool, so stale references from a
         // previous lifecycle calling CompleteSend/Fail will hit the guard and return early.
         // These flags are reset in Initialize() when the batch starts a new lifecycle.
-
-        // Reset the ValueTaskSourceCore for reuse
-        _doneCore.Reset();
+        // Captured DoneTask instances retain their own TaskCompletionSource after pool return.
     }
-
-    // IValueTaskSource<bool> implementation for DoneTask
-    bool IValueTaskSource<bool>.GetResult(short token) => _doneCore.GetResult(token);
-    ValueTaskSourceStatus IValueTaskSource<bool>.GetStatus(short token) => _doneCore.GetStatus(token);
-    void IValueTaskSource<bool>.OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
-        => _doneCore.OnCompleted(continuation, state, token, flags);
 
     /// <summary>
     /// Marks batch as "ready" (processed by completion loop).
@@ -6398,18 +6548,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void CompleteDelivery()
     {
-        // Atomically claim completion - only one thread wins
-        if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
-            return;
-
-        // Check _cleanedUp AFTER winning the CAS to avoid TOCTOU race.
-        // If Cleanup() ran between our CAS and this check, _doneCore may be reset.
-        // In that case, skip SetResult to avoid calling it on a reset core.
-        if (Volatile.Read(ref _cleanedUp) != 0)
-            return;
-
-        // Signal batch is done (ready for fire-and-forget semantic)
-        _doneCore.SetResult(true);
+        CompleteDoneTask(succeeded: true);
     }
 
     /// <summary>
@@ -6489,8 +6628,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             }
 
             // Signal batch is done (successfully) if not already signaled by CompleteDelivery
-            if (Interlocked.CompareExchange(ref _completed, 1, 0) == 0)
-                _doneCore.SetResult(true);
+            CompleteDoneTask(succeeded: true);
         }
         finally
         {
@@ -6624,14 +6762,125 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             // Signal batch is done (failed) - NO EXCEPTION to avoid UnobservedTaskException
             // For fire-and-forget, no one awaits this, so exception would go unobserved
             // For FlushAsync, it just needs to know "done", not success/failure details
-            if (Interlocked.CompareExchange(ref _completed, 1, 0) == 0)
-                _doneCore.SetResult(false);
+            CompleteDoneTask(succeeded: false);
         }
         finally
         {
             Cleanup();
         }
     }
+
+    private void CompleteDoneTask(bool succeeded)
+    {
+        var generation = Generation;
+        var completion = succeeded ? CompletionSucceeded : CompletionFailed;
+        if (Interlocked.CompareExchange(ref _completed, completion, 0) != 0)
+            return;
+
+        if (Volatile.Read(ref _doneTaskObserverCount) == 0)
+        {
+            Volatile.Write(ref _lastDoneTaskCompletion, PackDoneTaskCompletion(generation, completion));
+
+            // Close the race with a registration that published its intent after the first
+            // count read. It will either consume the packed result under the observer lock,
+            // or this thread will acquire that lock and deliver the result directly.
+            if (Volatile.Read(ref _doneTaskObserverCount) == 0)
+                return;
+        }
+
+        CompleteDoneTaskObservers(generation, completion, succeeded);
+    }
+
+    private DoneTaskState RegisterDoneTaskObserver(out bool? completedResult)
+    {
+        completedResult = null;
+        var lockTaken = false;
+        var observerCountIncremented = false;
+        try
+        {
+            _doneTaskObserverLock.Enter(ref lockTaken);
+
+            // Publish intent while holding the same lock used by observed completions. Once
+            // the count is visible, the current lifecycle cannot complete and recycle before
+            // its generation is captured and registered below.
+            Interlocked.Increment(ref _doneTaskObserverCount);
+            observerCountIncremented = true;
+            AfterDoneTaskObserverIntentPublishedForTest?.Invoke();
+
+            var state = new DoneTaskState(Generation);
+            (_doneTaskObservers ??= new List<DoneTaskState>(1)).Add(state);
+
+            // A completion that observed zero registrations publishes its result before
+            // checking the count again. Consume that hand-off before releasing the lock so a
+            // later lifecycle cannot overwrite it first.
+            if (TryGetDoneTaskCompletion(state.Generation, out var succeeded))
+            {
+                _doneTaskObservers.Remove(state);
+                Interlocked.Decrement(ref _doneTaskObserverCount);
+                observerCountIncremented = false;
+                completedResult = succeeded;
+            }
+
+            return state;
+        }
+        catch
+        {
+            if (observerCountIncremented)
+                Interlocked.Decrement(ref _doneTaskObserverCount);
+            throw;
+        }
+        finally
+        {
+            if (lockTaken)
+                _doneTaskObserverLock.Exit();
+        }
+    }
+
+    private void CompleteDoneTaskObservers(int generation, int completion, bool succeeded)
+    {
+        var lockTaken = false;
+        try
+        {
+            _doneTaskObserverLock.Enter(ref lockTaken);
+            Volatile.Write(ref _lastDoneTaskCompletion, PackDoneTaskCompletion(generation, completion));
+
+            if (_doneTaskObservers is null)
+                return;
+
+            for (var i = _doneTaskObservers.Count - 1; i >= 0; i--)
+            {
+                var state = _doneTaskObservers[i];
+                if (state.Generation != generation)
+                    continue;
+
+                _doneTaskObservers.RemoveAt(i);
+                Interlocked.Decrement(ref _doneTaskObserverCount);
+                state.Source.TrySetResult(succeeded);
+            }
+        }
+        finally
+        {
+            if (lockTaken)
+                _doneTaskObserverLock.Exit();
+        }
+    }
+
+    private bool TryGetDoneTaskCompletion(int generation, out bool succeeded)
+    {
+        var packedCompletion = Volatile.Read(ref _lastDoneTaskCompletion);
+        var result = unchecked((int)packedCompletion);
+        if (result != 0 && unchecked((int)(packedCompletion >> 32)) == generation)
+        {
+            succeeded = result == CompletionSucceeded;
+            return true;
+        }
+
+        succeeded = false;
+        return false;
+    }
+
+    private static long PackDoneTaskCompletion(int generation, int completion)
+        => ((long)generation << 32) | (uint)completion;
 
     /// <summary>
     /// If CompleteSend/Fail has been called but Cleanup hasn't finished yet, spin-waits
@@ -6655,13 +6904,14 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             while (Volatile.Read(ref _cleanedUp) == 0);
         }
 
-        if (Volatile.Read(ref _cleanedUp) != 0 && Volatile.Read(ref _resourcesCleanedUp) == 0)
+        if (Volatile.Read(ref _cleanedUp) != 0
+            && Volatile.Read(ref _resourcesCleanedUp) != ResourceCleanupComplete)
         {
             // Reset must wait for deferred resource cleanup; otherwise it can recycle fields
             // while the last serialization pin is still returning the old RecordBatch/arena.
             var sw = new SpinWait();
             do { sw.SpinOnce(); }
-            while (Volatile.Read(ref _resourcesCleanedUp) == 0);
+            while (Volatile.Read(ref _resourcesCleanedUp) != ResourceCleanupComplete);
         }
     }
 
@@ -6680,50 +6930,67 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         if (Volatile.Read(ref _activeResourcePins) != 0)
             return;
 
-        if (Interlocked.Exchange(ref _resourcesCleanedUp, 1) != 0)
+        if (Interlocked.CompareExchange(
+                ref _resourcesCleanedUp,
+                ResourceCleanupInProgress,
+                ResourceCleanupPending) != ResourceCleanupPending)
             return;
 
-        // Return the working (container) array: either to the reuse queue for fast recycling
-        // back to PartitionBatch, or to ArrayPool as fallback.
-        // Safety: clearArray: false is intentional. Array slots past the used count may contain
-        // stale PooledValueTaskSource references, but these are never accessed because counters
-        // reset to 0 on reuse. PooledValueTaskSource instances auto-return to their pool via
-        // GetResult(), so stale references don't prevent pool recycling.
-        if (_completionSourcesArray is not null)
+        var completionSourcesArray = _completionSourcesArray;
+        var arrayReuseQueue = _arrayReuseQueue;
+        var arena = _arena;
+        var callbacks = _callbacks;
+        var recordBatch = _recordBatch;
+
+        try
         {
-            if (_arrayReuseQueue is not null)
+            // Return the working (container) array: either to the reuse queue for fast recycling
+            // back to PartitionBatch, or to ArrayPool as fallback.
+            // Safety: clearArray: false is intentional. Array slots past the used count may contain
+            // stale PooledValueTaskSource references, but these are never accessed because counters
+            // reset to 0 on reuse. PooledValueTaskSource instances auto-return to their pool via
+            // GetResult(), so stale references don't prevent pool recycling.
+            if (completionSourcesArray is not null)
             {
-                _arrayReuseQueue.EnqueueOrReturn(_completionSourcesArray);
+                if (arrayReuseQueue is not null)
+                {
+                    arrayReuseQueue.EnqueueOrReturn(completionSourcesArray);
+                }
+                else
+                {
+                    // Fallback: return to the dedicated pool (not ArrayPool<T>.Shared) to prevent
+                    // TLS accumulation from cross-thread return on BrokerSender threads
+                    ProducerContainerPools.CompletionSources.Return(completionSourcesArray, clearArray: false);
+                }
             }
-            else
+
+            // Return arena to pool for reuse (arena-based path)
+            // This avoids allocating a new BatchArena object on each batch recycle
+            if (arena is not null)
             {
-                // Fallback: return to the dedicated pool (not ArrayPool<T>.Shared) to prevent
-                // TLS accumulation from cross-thread return on BrokerSender threads
-                ProducerContainerPools.CompletionSources.Return(_completionSourcesArray, clearArray: false);
+                BatchArena.ReturnToPool(arena);
+            }
+
+            // Return callback array to dedicated pool if present
+            if (callbacks is not null)
+            {
+                ProducerContainerPools.Callbacks.Return(callbacks, clearArray: true);
+            }
+
+            // Return pre-compressed buffer and RecordBatch to pool.
+            // ReturnPreCompressedBuffer() releases the producer-pool buffer, then ReturnToPool()
+            // clears all references and returns the RecordBatch object for reuse.
+            if (recordBatch is not null)
+            {
+                recordBatch.ReturnPreCompressedBuffer();
+                recordBatch.DisposeRecordList();
+                recordBatch.ReturnToPool();
             }
         }
-
-        // Return arena to pool for reuse (arena-based path)
-        // This avoids allocating a new BatchArena object on each batch recycle
-        if (_arena is not null)
+        finally
         {
-            BatchArena.ReturnToPool(_arena);
-        }
-
-        // Return callback array to dedicated pool if present
-        if (_callbacks is not null)
-        {
-            ProducerContainerPools.Callbacks.Return(_callbacks, clearArray: true);
-        }
-
-        // Return pre-compressed buffer and RecordBatch to pool.
-        // ReturnPreCompressedBuffer() releases the producer-pool buffer, then ReturnToPool()
-        // clears all references and returns the RecordBatch object for reuse.
-        if (_recordBatch is not null)
-        {
-            _recordBatch.ReturnPreCompressedBuffer();
-            _recordBatch.DisposeRecordList();
-            _recordBatch.ReturnToPool();
+            // Reset must not clear fields until every pooled resource return above completes.
+            Volatile.Write(ref _resourcesCleanedUp, ResourceCleanupComplete);
         }
     }
 }

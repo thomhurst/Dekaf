@@ -2879,10 +2879,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
-                    if (batch.TrySetMemoryReleased())
-                    {
-                        _accumulator.ReleaseMemory(batch.DataSize);
-                    }
+                    _accumulator.ReleaseBatchMemory(batch);
                 }
 
                 var pendingResponse = PendingResponse.Create(responseTask, batches, generations, count, requestStartTime);
@@ -3782,10 +3779,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Release buffer memory at batch completion (matching Java's RecordAccumulator.deallocate()).
         // This is the primary release path: memory is held throughout the entire pipeline
         // (append → drain → send → response) to provide accurate end-to-end backpressure.
-        if (batch.TrySetMemoryReleased())
-        {
-            _accumulator.ReleaseMemory(batch.DataSize);
-        }
+        _accumulator.ReleaseBatchMemory(batch);
         // Remove from tracking and decrement in-flight counter. OnBatchExitsPipeline uses
         // TryRemove as an atomic guard — if another path already removed this batch
         // (e.g., SweepExpiredInFlightBatches), it returns false but we still return

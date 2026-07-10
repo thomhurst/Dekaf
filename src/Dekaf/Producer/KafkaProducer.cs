@@ -2788,10 +2788,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
         try
         {
-            if (batch.TrySetMemoryReleased())
-            {
-                _accumulator.ReleaseMemory(batch.DataSize);
-            }
+            _accumulator.ReleaseBatchMemory(batch);
         }
         catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
         // Remove from tracking BEFORE returning to pool. ReturnReadyBatch is idempotent

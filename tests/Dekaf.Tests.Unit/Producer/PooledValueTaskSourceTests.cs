@@ -769,6 +769,152 @@ public class PooledValueTaskSourceTests
         batch.Reset();
     }
 
+    [Test]
+    public async Task ReadyBatchDoneTask_ResetBeforeContinuationConsumesResult_RemainsValid()
+    {
+        var batch = new ReadyBatch();
+        InitializeBatch(batch);
+
+        using var continuationStarted = new ManualResetEventSlim();
+        using var releaseContinuation = new ManualResetEventSlim();
+        using var continuationFinished = new ManualResetEventSlim();
+        var awaiter = batch.DoneTask.GetAwaiter();
+        Exception? continuationException = null;
+        var result = false;
+
+        awaiter.UnsafeOnCompleted(() =>
+        {
+            continuationStarted.Set();
+            releaseContinuation.Wait();
+            try
+            {
+                result = awaiter.GetResult();
+            }
+            catch (Exception exception)
+            {
+                continuationException = exception;
+            }
+            finally
+            {
+                continuationFinished.Set();
+            }
+        });
+
+        try
+        {
+            batch.CompleteDelivery();
+            await Assert.That(continuationStarted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+
+            // Pool return resets ReadyBatch before an asynchronous DoneTask continuation
+            // necessarily consumes the result. The captured task must remain independent.
+            batch.Reset();
+            releaseContinuation.Set();
+
+            await Assert.That(continuationFinished.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            if (continuationException is not null)
+                ExceptionDispatchInfo.Capture(continuationException).Throw();
+
+            await Assert.That(result).IsTrue();
+        }
+        finally
+        {
+            releaseContinuation.Set();
+            batch.Reset();
+        }
+    }
+
+    [Test]
+    public async Task ReadyBatchDoneTask_RegistrationIntentRace_CapturesStartedLifecycle()
+    {
+        var batch = new ReadyBatch();
+        InitializeBatch(batch);
+
+        using var observerIntentPublished = new ManualResetEventSlim();
+        using var continueGetter = new ManualResetEventSlim();
+        using var lifecycleStarted = new ManualResetEventSlim();
+        batch.AfterDoneTaskObserverIntentPublishedForTest = () =>
+        {
+            observerIntentPublished.Set();
+            continueGetter.Wait();
+        };
+
+        var getterTask = Task.Run(() => batch.DoneTask);
+        try
+        {
+            await Assert.That(observerIntentPublished.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+
+            var lifecycleTask = Task.Run(() =>
+            {
+                lifecycleStarted.Set();
+                batch.Fail(new InvalidOperationException("expected"));
+                batch.Reset();
+                InitializeBatch(batch);
+                batch.CompleteDelivery();
+                batch.Reset();
+                InitializeBatch(batch);
+            });
+
+            await Assert.That(lifecycleStarted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            await Task.WhenAny(lifecycleTask, Task.Delay(TimeSpan.FromSeconds(1))).ConfigureAwait(false);
+
+            continueGetter.Set();
+            await lifecycleTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var capturedTask = await getterTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var result = await capturedTask.AsTask().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+
+            await Assert.That(result).IsFalse();
+        }
+        finally
+        {
+            batch.AfterDoneTaskObserverIntentPublishedForTest = null;
+            continueGetter.Set();
+            batch.CompleteDelivery();
+            batch.Reset();
+        }
+    }
+
+    [Test]
+    public async Task ReadyBatchDoneTask_SourcePublicationRacesWithMultipleReuses_CompletesCapturedLifecycle()
+    {
+        var batch = new ReadyBatch();
+        InitializeBatch(batch);
+
+        using var observerRegistered = new ManualResetEventSlim();
+        using var continueGetter = new ManualResetEventSlim();
+        batch.AfterDoneTaskObserverRegisteredForTest = () =>
+        {
+            observerRegistered.Set();
+            continueGetter.Wait();
+        };
+
+        var getterTask = Task.Run(() => batch.DoneTask);
+        try
+        {
+            await Assert.That(observerRegistered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+
+            batch.Fail(new InvalidOperationException("expected"));
+            batch.Reset();
+            InitializeBatch(batch);
+            batch.CompleteDelivery();
+            batch.Reset();
+            InitializeBatch(batch);
+            batch.AfterDoneTaskObserverRegisteredForTest = null;
+
+            continueGetter.Set();
+            var capturedTask = await getterTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var result = await capturedTask.AsTask().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+
+            await Assert.That(result).IsFalse();
+        }
+        finally
+        {
+            batch.AfterDoneTaskObserverRegisteredForTest = null;
+            continueGetter.Set();
+            batch.CompleteDelivery();
+            batch.Reset();
+        }
+    }
+
     private static async Task<T> CompleteWithoutRunningContinuationInlineAsync<T>(
         ValueTask<T> valueTask,
         Action complete)

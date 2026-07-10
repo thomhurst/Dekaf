@@ -153,18 +153,13 @@ public class MemoryReleasedAtomicityTests
             const int releaserThreads = 4;
             var tasks = new List<Task>();
 
-            foreach (var (batch, dataSize) in batches)
+            foreach (var (batch, _) in batches)
             {
                 for (var t = 0; t < releaserThreads; t++)
                 {
                     tasks.Add(Task.Run(() =>
                     {
-                        // This is the exact pattern used in production:
-                        // TrySetMemoryReleased() is the atomic guard
-                        if (batch.TrySetMemoryReleased())
-                        {
-                            accumulator.ReleaseMemory(dataSize);
-                        }
+                        accumulator.ReleaseBatchMemory(batch);
                     }));
                 }
             }
