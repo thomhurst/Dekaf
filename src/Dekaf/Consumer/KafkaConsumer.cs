@@ -3753,7 +3753,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         return await RetryHelper.WithRetryAsync(async () =>
         {
-            var connection = await GetPartitionLeaderConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
+            var connection = await GetPartitionLeaderControlConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
             if (connection is null)
                 throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
 
@@ -4202,7 +4202,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         return RetryHelper.WithRetryAsync(async () =>
         {
-            var connection = await GetPartitionLeaderConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
+            var connection = await GetPartitionLeaderControlConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
             if (connection is null)
                 return 0;
 
@@ -4265,7 +4265,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }, _metadataManager, cancellationToken);
     }
 
-    private async ValueTask<IKafkaConnection?> GetPartitionLeaderConnectionAsync(TopicPartition partition, CancellationToken cancellationToken)
+    private async ValueTask<IKafkaConnection?> GetPartitionLeaderControlConnectionAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken)
     {
         var leader = await _metadataManager.GetPartitionLeaderAsync(partition.Topic, partition.Partition, cancellationToken)
             .ConfigureAwait(false);
@@ -4273,7 +4275,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (leader is null)
             return null;
 
-        return await _connectionPool.GetConnectionByIndexAsync(leader.NodeId, 0, cancellationToken).ConfigureAwait(false);
+        // Keep offset-control requests off fetch connections. A delayed fetch response must not
+        // block assignment position initialization or watermark queries during a rebalance.
+        var connectionCount = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
+        var connectionIndex = ConsumerCoordinator.GetCoordinationConnectionIndex(connectionCount);
+        return await _connectionPool.GetConnectionByIndexAsync(leader.NodeId, connectionIndex, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask FetchRecordsAsync(CancellationToken cancellationToken)
