@@ -44,7 +44,10 @@ public sealed class ConsumerConnectionOwnershipTests
     }
 
     [Test]
-    public async Task SharedConsumer_ScaleDown_ClosesStaleFetchSessionOnSharedConnection()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Consumer_ScaleDown_ClosesStaleFetchSessionOnRetainedConnection(
+        bool ownsInfrastructure)
     {
         var pool = CreatePool();
         var closeRequest = new TaskCompletionSource<(int SessionId, int SessionEpoch)>(
@@ -56,7 +59,9 @@ public sealed class ConsumerConnectionOwnershipTests
             .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
 
         var metadataManager = CreateMetadataManager(pool);
-        var consumer = CreateSharedConsumer(pool, metadataManager);
+        var consumer = ownsInfrastructure
+            ? CreateStandaloneConsumer(pool, metadataManager)
+            : CreateSharedConsumer(pool, metadataManager);
 
         try
         {
@@ -95,7 +100,8 @@ public sealed class ConsumerConnectionOwnershipTests
         finally
         {
             await consumer.DisposeAsync();
-            await metadataManager.DisposeAsync();
+            if (!ownsInfrastructure)
+                await metadataManager.DisposeAsync();
         }
     }
 

@@ -2166,22 +2166,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             var isScaledDownConnection = key.ConnectionIndex >= fetchConnectionCount;
-            if (isScaledDownConnection)
-            {
-                if (_ownsInfrastructure)
-                {
-                    _fetchSessions.TryRemove(key, out _);
-                    continue;
-                }
-
-                // Shared consumers retain the physical connection after logical scale-down.
-                // Fall through so an empty fetch closes the now-unused session.
-            }
-            else if (scheduledFetchSessions is not null && scheduledFetchSessions.Contains(key))
+            if (!isScaledDownConnection
+                && scheduledFetchSessions is not null
+                && scheduledFetchSessions.Contains(key))
             {
                 continue;
             }
 
+            // Shared consumers retain every physical connection. Owned consumers remove the
+            // old coordination connection, so the former highest fetch connection also remains
+            // open as the new coordination connection. Close either stale session explicitly.
             targetCount++;
             if (TryStartBrokerPrefetch(
                 key.BrokerId,
