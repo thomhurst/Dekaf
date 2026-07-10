@@ -1963,6 +1963,23 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         throw CreateTransactionException(errorCode, classification, $"{operation} failed: {errorCode}");
     }
 
+    private async ValueTask<TResponse> SendWithConnectionLeaseAsync<TRequest, TResponse>(
+        int brokerId,
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        using var connectionLease = await _connectionPool.LeaseConnectionAsync(
+            brokerId,
+            cancellationToken).ConfigureAwait(false);
+        return await connectionLease.Connection.SendAsync<TRequest, TResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     internal async ValueTask ReinitializeProducerIdAsync(
         CancellationToken cancellationToken,
         bool keepPreparedTransaction = false)
@@ -1972,9 +1989,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
-                .ConfigureAwait(false);
-
             var initProducerIdVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.InitProducerId,
                 InitProducerIdRequest.LowestSupportedVersion,
@@ -1996,9 +2010,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 KeepPreparedTransaction = keepPreparedTransaction
             };
 
-            var response = (InitProducerIdResponse)await connection
-                .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                    request, initProducerIdVersion, cancellationToken)
+            var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                    _transactionCoordinatorId,
+                    request,
+                    initProducerIdVersion,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             if (response.ErrorCode != ErrorCode.None)
@@ -2080,16 +2096,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
-                .ConfigureAwait(false);
-
             var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.FindCoordinator,
                 FindCoordinatorRequest.LowestSupportedVersion,
                 FindCoordinatorRequest.HighestSupportedVersion);
 
-            var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                request, findCoordinatorVersion, cancellationToken).ConfigureAwait(false);
+            var response = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                brokers[0].NodeId,
+                request,
+                findCoordinatorVersion,
+                cancellationToken).ConfigureAwait(false);
 
             if (response.Coordinators.Count == 0)
             {
@@ -2179,12 +2195,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
-                .ConfigureAwait(false);
-
-            var response = (AddPartitionsToTxnResponse)await connection
-                .SendAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
-                    request, apiVersion, cancellationToken)
+            var response = await SendWithConnectionLeaseAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
+                    _transactionCoordinatorId,
+                    request,
+                    apiVersion,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             // Check for retriable errors in the response
@@ -2282,9 +2297,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
-                .ConfigureAwait(false);
-
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.EndTxn,
                 EndTxnRequest.LowestSupportedVersion,
@@ -2299,29 +2311,35 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             };
 
             EndTxnResponse response;
-            if (afterRequestWrittenAsync is null)
+            using (var connectionLease = await _connectionPool.LeaseConnectionAsync(
+                       _transactionCoordinatorId,
+                       cancellationToken).ConfigureAwait(false))
             {
-                response = await connection
-                    .SendAsync<EndTxnRequest, EndTxnResponse>(
-                        request, apiVersion, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                if (connection is not IKafkaPipelinedWriteCompletionConnection writeCompletionConnection)
+                var connection = connectionLease.Connection;
+                if (afterRequestWrittenAsync is null)
                 {
-                    throw new InvalidOperationException(
-                        "The transaction coordinator connection cannot report request write completion.");
+                    response = await connection
+                        .SendAsync<EndTxnRequest, EndTxnResponse>(
+                            request, apiVersion, cancellationToken)
+                        .ConfigureAwait(false);
                 }
+                else
+                {
+                    if (connection is not IKafkaPipelinedWriteCompletionConnection writeCompletionConnection)
+                    {
+                        throw new InvalidOperationException(
+                            "The transaction coordinator connection cannot report request write completion.");
+                    }
 
-                var responseTask = await writeCompletionConnection
-                    .SendPipelinedAfterWriteAsync<EndTxnRequest, EndTxnResponse>(
-                        request, apiVersion, cancellationToken)
-                    .ConfigureAwait(false);
-                var requestWrittenCallback = afterRequestWrittenAsync;
-                afterRequestWrittenAsync = null;
-                await requestWrittenCallback().ConfigureAwait(false);
-                response = await responseTask.ConfigureAwait(false);
+                    var responseTask = await writeCompletionConnection
+                        .SendPipelinedAfterWriteAsync<EndTxnRequest, EndTxnResponse>(
+                            request, apiVersion, cancellationToken)
+                        .ConfigureAwait(false);
+                    var requestWrittenCallback = afterRequestWrittenAsync;
+                    afterRequestWrittenAsync = null;
+                    await requestWrittenCallback().ConfigureAwait(false);
+                    response = await responseTask.ConfigureAwait(false);
+                }
             }
 
             if (response.ErrorCode == ErrorCode.None)
@@ -2387,9 +2405,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
             // Step 1: Add offsets to the transaction via the transaction coordinator
-            var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
-                .ConfigureAwait(false);
-
             var addOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.AddOffsetsToTxn,
                 AddOffsetsToTxnRequest.LowestSupportedVersion,
@@ -2403,9 +2418,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 GroupId = consumerGroupId
             };
 
-            var addOffsetsResponse = (AddOffsetsToTxnResponse)await connection
-                .SendAsync<AddOffsetsToTxnRequest, AddOffsetsToTxnResponse>(
-                    addOffsetsRequest, addOffsetsVersion, cancellationToken)
+            var addOffsetsResponse = await SendWithConnectionLeaseAsync<AddOffsetsToTxnRequest, AddOffsetsToTxnResponse>(
+                    _transactionCoordinatorId,
+                    addOffsetsRequest,
+                    addOffsetsVersion,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             if (addOffsetsResponse.ErrorCode != ErrorCode.None)
@@ -2421,9 +2438,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             // Step 2: Find the group coordinator
             var brokers = _metadataManager.Metadata.GetBrokers();
-            var brokerConnection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
-                .ConfigureAwait(false);
-
             var findCoordVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.FindCoordinator,
                 FindCoordinatorRequest.LowestSupportedVersion,
@@ -2435,9 +2449,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 KeyType = CoordinatorType.Group
             };
 
-            var findCoordResponse = await brokerConnection
-                .SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                    findCoordRequest, findCoordVersion, cancellationToken)
+            var findCoordResponse = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                    brokers[0].NodeId,
+                    findCoordRequest,
+                    findCoordVersion,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             if (findCoordResponse.Coordinators.Count == 0)
@@ -2461,9 +2477,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Step 3: Send TxnOffsetCommit to the group coordinator
-            var groupConnection = await _connectionPool.GetConnectionAsync(coord.NodeId, cancellationToken)
-                .ConfigureAwait(false);
-
             var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.TxnOffsetCommit,
                 TxnOffsetCommitRequest.LowestSupportedVersion,
@@ -2505,9 +2518,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 Topics = txnTopics
             };
 
-            var txnOffsetCommitResponse = (TxnOffsetCommitResponse)await groupConnection
-                .SendAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
-                    txnOffsetCommitRequest, txnOffsetCommitVersion, cancellationToken)
+            var txnOffsetCommitResponse = await SendWithConnectionLeaseAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
+                    coord.NodeId,
+                    txnOffsetCommitRequest,
+                    txnOffsetCommitVersion,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             // Check for errors across all partitions
@@ -3383,9 +3398,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     throw new InvalidOperationException("No brokers available for idempotent producer initialization");
                 }
 
-                var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
-                    .ConfigureAwait(false);
-
                 var request = new InitProducerIdRequest
                 {
                     TransactionalId = null,
@@ -3394,9 +3406,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     ProducerEpoch = _producerEpoch
                 };
 
-                var response = (InitProducerIdResponse)await connection
-                    .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                        request, initProducerIdVersion, cancellationToken)
+                var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                        brokers[0].NodeId,
+                        request,
+                        initProducerIdVersion,
+                        cancellationToken)
                     .ConfigureAwait(false);
 
                 if (response.ErrorCode == ErrorCode.None)
@@ -3510,9 +3524,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     throw new InvalidOperationException("No brokers available for epoch bump");
                 }
 
-                var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
-                    .ConfigureAwait(false);
-
                 var request = new InitProducerIdRequest
                 {
                     TransactionalId = null,
@@ -3521,9 +3532,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     ProducerEpoch = _producerEpoch
                 };
 
-                var response = (InitProducerIdResponse)await connection
-                    .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                        request, initProducerIdVersion, cancellationToken)
+                var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                        brokers[0].NodeId,
+                        request,
+                        initProducerIdVersion,
+                        cancellationToken)
                     .ConfigureAwait(false);
 
                 if (response.ErrorCode == ErrorCode.None)

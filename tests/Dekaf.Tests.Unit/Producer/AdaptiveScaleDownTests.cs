@@ -576,6 +576,48 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task ApplyScaleDown_CancelledSender_KeepsRetirementDrainAlive(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var removedConnection = new TestKafkaConnection();
+        var retirableConnection = (IRetirableKafkaConnection)removedConnection;
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+
+        var lifetimeCts = (CancellationTokenSource)typeof(BrokerSender).GetField(
+            "_cts",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+        lifetimeCts.Cancel();
+
+        typeof(BrokerSender).GetMethod(
+            "ApplyScaleDown",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(sender, [removedConnection]);
+
+        try
+        {
+            await removedConnection.LeaseCountObserved.Task.WaitAsync(cancellationToken);
+            await Assert.That(removedConnection.DisposeStarted.Task.IsCompleted).IsFalse();
+            await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(0);
+        }
+        finally
+        {
+            retirableConnection.ReleaseLease();
+            await removedConnection.DisposeStarted.Task.WaitAsync(cancellationToken);
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+
+        await Assert.That(Volatile.Read(ref removedConnection.CompleteRetirementCalls)).IsEqualTo(1);
+        await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ApplyScaleDown_EmptyRemovedSlot_DisposesConnectionImmediately()
     {
         var options = CreateOptions(idempotent: false);

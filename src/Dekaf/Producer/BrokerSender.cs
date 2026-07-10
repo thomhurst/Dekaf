@@ -4356,7 +4356,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // any leases or operations held by other pool users before disposing in the background.
         _ = RetiredConnectionDisposer.DrainAndDisposeAsync(
             connection,
-            _cts.Token).AsTask().ContinueWith(
+            CancellationToken.None).AsTask().ContinueWith(
             static (t, _) => { /* Observe exception — best-effort disposal */ },
             null,
             CancellationToken.None,
