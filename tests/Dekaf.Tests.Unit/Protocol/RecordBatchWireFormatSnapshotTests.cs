@@ -66,7 +66,8 @@ public sealed class RecordBatchWireFormatSnapshotTests
             ? new[]
             {
                 new Header("trace-id", "abc123"u8.ToArray()),
-                new Header("empty", [])
+                new Header("empty", []),
+                new Header("null", value: null)
             }
             : null;
 
