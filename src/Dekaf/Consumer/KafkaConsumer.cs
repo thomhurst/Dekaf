@@ -701,7 +701,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
-    private readonly ConcurrentQueue<Exception> _pendingFetchExceptions = new();
     // Auto-commit reads this snapshot from its background task instead of touching _pendingFetches.
     private string? _activeConsumedTopic;
     private int _activeConsumedPartition;
@@ -716,12 +715,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Coarse-grained by design: unrelated partition clears may restart the current
     // iteration, avoiding per-partition tracking on the per-message hot path.
     private int _pendingFetchesVersion;
-    // Invalidates in-flight prefetch completions after Seek/Assign clears buffered data.
-    // Otherwise stale fetches can arrive after a rewind and advance _fetchPositions again.
+    // Generates fetch epochs. Full clears advance the global minimum; partition clears advance
+    // only that partition's minimum so an unrelated broker response can still be consumed.
     private int _fetchBufferEpoch;
-    // Keeps the pending flag and dictionary in sync while preserving the volatile hot-path check.
+    private int _minimumFetchBufferEpoch;
+    private readonly ConcurrentDictionary<TopicPartition, int> _minimumFetchBufferEpochsByPartition = new();
+    // Coordinator revocations and diverging-epoch corrections share this partition set because
+    // both must stop record iteration before the poll loop clears stale fetch data. The marker
+    // flag stops iteration as soon as a clear is staged; the pending flag publishes a fully
+    // staged batch without adding dictionary work to the normal path.
     private readonly object _coordinatorRevokedPartitionsPendingFetchClearLock = new();
     private readonly ConcurrentDictionary<TopicPartition, byte> _coordinatorRevokedPartitionsPendingFetchClear = new();
+    private readonly ConcurrentDictionary<TopicPartition, (long EndOffset, int Epoch)> _pendingDivergingEpochResets = new();
+    private int _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent;
     private int _coordinatorRevokedPartitionsPendingFetchClearPending;
 
     // Background prefetch support
@@ -1325,7 +1331,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         // Clear any pending fetch data for the removed partitions
-        ClearFetchBufferForPartitions(partitions);
+        ClearFetchBufferForPartitions(partitions, invalidateAllFetches: clearAll);
 
         if (hadPaused)
             PublishPausedSnapshot();
@@ -1357,8 +1363,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            ThrowPendingFetchException();
-
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -1422,8 +1426,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Direct fetch (no prefetching)
                     await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
                 }
-
-                ThrowPendingFetchException();
             }
 
             // Yield records lazily from pending fetches
@@ -1525,14 +1527,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 keyDeserializer: _keyDeserializer,
                                 valueDeserializer: _valueDeserializer);
 
-                            TrackConsumedPosition(pending, offset, messageBytes);
-                            // Position dictionaries are flushed once per fetch; auto-commit reads
-                            // the published active snapshot without touching the pending queue.
+                            if (HasPendingFetchClear(pending.TopicPartition))
+                                break;
 
                             // Apply OnConsume interceptors before yielding to user
                             // Uses hoisted hasInterceptors to skip method call when no interceptors
                             if (hasInterceptors)
+                            {
                                 nextResult = ApplyOnConsumeInterceptors(nextResult);
+
+                                // An interceptor can run long enough for background prefetch to
+                                // publish a divergence reset. Do not mark that stale record consumed.
+                                if (HasPendingFetchClear(pending.TopicPartition))
+                                    break;
+                            }
+
+                            TrackConsumedPosition(pending, offset, messageBytes);
+                            // Position dictionaries are flushed once per fetch; auto-commit reads
+                            // the published active snapshot without touching the pending queue.
 
                             // Store raw byte references for DLQ lazy capture (zero-copy — just memory slices)
                             if (rawTrackingEnabled)
@@ -1653,8 +1665,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            ThrowPendingFetchException();
-
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -1713,8 +1723,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Direct fetch (no prefetching)
                     await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
                 }
-
-                ThrowPendingFetchException();
             }
 
             // Yield batches from pending fetches
@@ -1742,7 +1750,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         pending,
                         _keyDeserializer,
                         _valueDeserializer,
-                        IsCurrentlyAssigned,
+                        CanContinueBatchIteration,
                         _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
@@ -1793,8 +1801,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            ThrowPendingFetchException();
-
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -1853,8 +1859,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Direct fetch (no prefetching)
                     await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
                 }
-
-                ThrowPendingFetchException();
             }
 
             // Yield raw batches from pending fetches
@@ -1878,7 +1882,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     pending.EagerParseAll();
 
                     // Yield the raw batch to the caller for synchronous iteration
-                    ConsumeRawBatch batch = new(pending, IsCurrentlyAssigned, _options.MaxPollRecords);
+                    ConsumeRawBatch batch = new(pending, CanContinueBatchIteration, _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
                 }
@@ -2056,6 +2060,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async ValueTask<(int Started, int TargetCount)> DispatchReadyBrokerPrefetchesAsync(CancellationToken cancellationToken)
     {
         var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
+        partitionsByBroker = ExcludePartitionsPendingFetchClear(partitionsByBroker);
         var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
             ? _fetchSessions.ToArray()
             : Array.Empty<KeyValuePair<(int BrokerId, int ConnectionIndex), FetchSessionHandler>>();
@@ -2136,6 +2141,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return (started, targetCount);
+    }
+
+    private Dictionary<int, List<TopicPartition>> ExcludePartitionsPendingFetchClear(
+        Dictionary<int, List<TopicPartition>> partitionsByBroker)
+    {
+        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
+            return partitionsByBroker;
+
+        var filtered = new Dictionary<int, List<TopicPartition>>(partitionsByBroker.Count);
+        foreach (var (brokerId, partitions) in partitionsByBroker)
+        {
+            List<TopicPartition>? retained = null;
+            foreach (var partition in partitions)
+            {
+                if (!_coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition))
+                    (retained ??= []).Add(partition);
+            }
+
+            if (retained is { Count: > 0 })
+                filtered[brokerId] = retained;
+        }
+
+        return filtered;
     }
 
     private bool TryStartBrokerPrefetch(
@@ -2379,14 +2407,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var memoryOwner = response.PooledMemoryOwner;
             response.PooledMemoryOwner = null; // Clear to prevent double-dispose
 
-            if (IsFetchBufferEpochStale(fetchBufferEpoch))
-            {
-                fetchSessionHandler?.HandleResponse(response);
-                response.ReturnToPool();
-                memoryOwner?.Dispose();
-                return;
-            }
-
             if (response.ErrorCode != ErrorCode.None)
             {
                 fetchSessionHandler?.HandleResponse(response);
@@ -2406,6 +2426,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // concurrently for different brokers AND different connections to the same broker
             var pendingItems = _prefetchPendingItemsByBroker.GetOrAdd((brokerId, connectionIndex), static _ => []);
             pendingItems.Clear();
+            var queuedDivergingEpochReset = false;
 
             // Write to prefetch channel
             try
@@ -2427,7 +2448,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (partitionResponse.DivergingEpoch is not null)
                         {
-                            ResetToDivergingEpoch(topic, partitionResponse, fetchBufferEpoch);
+                            queuedDivergingEpochReset |= ResetToDivergingEpoch(
+                                topic,
+                                partitionResponse,
+                                fetchBufferEpoch);
                             continue;
                         }
 
@@ -2489,6 +2513,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
             finally
             {
+                if (queuedDivergingEpochReset)
+                    CompleteDivergingEpochResets();
+
                 // Return the response and its nested objects to their pools.
                 // Data has been transferred to PendingFetchData; the response wrappers are no longer needed.
                 response.ReturnToPool();
@@ -2796,7 +2823,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearDirtyStoredOffsetIfCommitted(partition, committedOffset);
     }
 
-    private void UpdateFetchPositionsFromPrefetch(PendingFetchData pending)
+    private void UpdateFetchPositionsFromPrefetch(PendingFetchData pending, int fetchBufferEpoch)
     {
         // Calculate the last offset in the prefetched data
         // We need to update fetch positions so next prefetch gets new data
@@ -2813,11 +2840,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // concurrent seek-forward with a stale prefetch offset.
         // Uses the factoryArgument overload with static lambdas to avoid closure allocation.
         var nextOffset = lastOffset + 1;
+        var update = (Consumer: this, FetchBufferEpoch: fetchBufferEpoch, NextOffset: nextOffset);
         _fetchPositions.AddOrUpdate(
             tp,
-            static (_, nextOffset) => nextOffset,
-            static (_, currentPos, nextOffset) => Math.Max(currentPos, nextOffset),
-            nextOffset);
+            static (_, update) => update.NextOffset,
+            static (partition, currentPos, update) =>
+                update.Consumer.ShouldDropStaleFetchPartition(partition, update.FetchBufferEpoch)
+                    ? currentPos
+                    : Math.Max(currentPos, update.NextOffset),
+            update);
     }
 
     /// <summary>
@@ -2965,8 +2996,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            ThrowPendingFetchException();
-
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -2983,8 +3012,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     return null;
                 }
-
-                ThrowPendingFetchException();
             }
 
             if (TryConsumeOneFromPendingFetches(out var result))
@@ -3113,10 +3140,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             keyDeserializer: _keyDeserializer,
                             valueDeserializer: _valueDeserializer);
 
-                        TrackConsumedPosition(pending, offset, messageBytes);
+                        if (HasPendingFetchClear(pending.TopicPartition))
+                            break;
 
                         if (hasInterceptors)
+                        {
                             result = ApplyOnConsumeInterceptors(result);
+
+                            if (HasPendingFetchClear(pending.TopicPartition))
+                                break;
+                        }
+
+                        TrackConsumedPosition(pending, offset, messageBytes);
 
                         if (rawTrackingEnabled)
                         {
@@ -3400,6 +3435,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _positions.TryRemove(partition, out _);
             ClearStoredOffset(partition);
             _fetchPositions.TryRemove(partition, out _);
+            _minimumFetchBufferEpochsByPartition.TryRemove(partition, out _);
             _lastConsumedLeaderEpochs.TryRemove(partition, out _);
             _committed.TryRemove(partition, out _);
             _highWatermarks.TryRemove(partition, out _);
@@ -3425,7 +3461,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void ClearFetchBuffer()
     {
-        Interlocked.Increment(ref _fetchBufferEpoch);
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            InvalidateAllFetchesLocked();
+            _pendingDivergingEpochResets.Clear();
+        }
 
         // Dispose and clear pending fetches to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
@@ -3443,7 +3483,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _pendingEofEvents.Clear();
     }
 
-    private void ClearFetchBufferForPartitions(IEnumerable<TopicPartition> partitionsToRemove)
+    private void ClearFetchBufferForPartitions(
+        IEnumerable<TopicPartition> partitionsToRemove,
+        bool invalidateAllFetches = false)
     {
         // Create a set for efficient lookup
         var removeSet = partitionsToRemove is HashSet<TopicPartition> set
@@ -3453,7 +3495,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (removeSet.Count == 0)
             return;
 
-        Interlocked.Increment(ref _fetchBufferEpoch);
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            if (invalidateAllFetches)
+                InvalidateAllFetchesLocked();
+            else
+                InvalidateFetchesForPartitionsLocked(removeSet);
+
+            foreach (var partition in removeSet)
+                _pendingDivergingEpochResets.TryRemove(partition, out _);
+        }
 
         // Filter in-place without allocating a temporary queue
         // Dequeue all items and re-enqueue only those we want to keep
@@ -3510,15 +3561,50 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             foreach (var partition in partitions)
             {
+                // Coordinator revocation supersedes any correction from the old assignment.
+                // Keep the revocation marker so the consume loop still drains stale buffers.
+                _pendingDivergingEpochResets.TryRemove(partition, out _);
                 _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
             }
 
             // Invalidate broker fetches that started before the revocation immediately.
             // Waiting for the consume loop to drain the queued clear lets an ABA reassignment
             // make a stale response look current and advance the reinitialized fetch position.
-            Interlocked.Increment(ref _fetchBufferEpoch);
+            InvalidateFetchesForPartitionsLocked(partitions);
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
         }
+    }
+
+    private bool StageDivergingEpochReset(
+        TopicPartition partition,
+        long endOffset,
+        int epoch,
+        int fetchBufferEpoch)
+    {
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            return TryQueueDivergingEpochResetLocked(partition, endOffset, epoch, fetchBufferEpoch);
+    }
+
+    private bool TryQueueDivergingEpochResetLocked(
+        TopicPartition partition,
+        long endOffset,
+        int epoch,
+        int fetchBufferEpoch)
+    {
+        if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
+            return false;
+
+        _pendingDivergingEpochResets[partition] = (endOffset, epoch);
+        _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
+        Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
+        return true;
+    }
+
+    private void CompleteDivergingEpochResets()
+    {
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
     }
 
     private bool ClearFetchBufferForPendingCoordinatorRevocations()
@@ -3526,30 +3612,67 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (!HasPendingCoordinatorRevocations())
             return false;
 
-        HashSet<TopicPartition>? partitionsToRemove;
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
             {
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
                 Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
                 return false;
             }
 
-            partitionsToRemove = [];
-            foreach (var partition in _coordinatorRevokedPartitionsPendingFetchClear.Keys)
+            var partitionsToRemove = _coordinatorRevokedPartitionsPendingFetchClear.Keys.ToHashSet();
+
+            // Keep partitions marked while clearing. Background prefetches use this
+            // marker to avoid advancing positions for data that will be discarded.
+            ApplyPendingDivergingEpochResets(partitionsToRemove);
+            ClearFetchBufferForPartitions(partitionsToRemove);
+
+            foreach (var partition in partitionsToRemove)
+                _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
+
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
+            return true;
+        }
+    }
+
+    private void ApplyPendingDivergingEpochResets(IReadOnlyCollection<TopicPartition> partitions)
+    {
+        foreach (var partition in partitions)
+        {
+            if (!_pendingDivergingEpochResets.TryRemove(partition, out var reset))
+                continue;
+
+            // Refetch unread common-prefix records that were buffered before the divergence
+            // response. Only offsets already yielded to the application are safe to skip.
+            var resumeOffset = _positions.GetValueOrDefault(partition, reset.EndOffset);
+
+            foreach (var pending in _pendingFetches)
             {
-                if (_coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _))
-                    partitionsToRemove.Add(partition);
+                if (TryGetConsumedPosition(pending, out var pendingPartition, out var nextOffset, out _)
+                    && pendingPartition.Equals(partition))
+                {
+                    resumeOffset = Math.Max(resumeOffset, nextOffset);
+                }
             }
 
-            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
+            _fetchPositions[partition] = resumeOffset;
+            SetPosition(partition, resumeOffset, dirty: false);
+            // Clearing the pending fetch bypasses its normal position flush. Discard the
+            // matching auto-commit snapshot so a later commit/position read cannot restore
+            // the pre-divergence leader epoch after the reset below clears it.
+            ClearActiveConsumedPosition(partition, resumeOffset);
+            // The diverging epoch is the last common epoch, not the new leader epoch.
+            // Reusing it would make every subsequent fetch report the same divergence.
+            ClearLastConsumedLeaderEpoch(partition);
+            LogDivergingEpochReset(
+                partition.Topic,
+                partition.Partition,
+                resumeOffset,
+                reset.EndOffset,
+                reset.Epoch);
         }
-
-        if (partitionsToRemove.Count == 0)
-            return false;
-
-        ClearFetchBufferForPartitions(partitionsToRemove);
-        return true;
     }
 
     private bool HasPendingCoordinatorRevocations() =>
@@ -3560,11 +3683,38 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return _assignmentSnapshot.Contains(partition);
     }
 
-    private bool IsFetchBufferEpochStale(int fetchBufferEpoch) =>
-        Volatile.Read(ref _fetchBufferEpoch) != fetchBufferEpoch;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool HasPendingFetchClear(TopicPartition partition) =>
+        Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0
+        && _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition);
+
+    private bool CanContinueBatchIteration(TopicPartition partition) =>
+        !HasPendingFetchClear(partition)
+        && IsCurrentlyAssigned(partition);
+
+    private bool IsFetchBufferEpochStale(TopicPartition partition, int fetchBufferEpoch) =>
+        fetchBufferEpoch < Volatile.Read(ref _minimumFetchBufferEpoch)
+        || (_minimumFetchBufferEpochsByPartition.TryGetValue(partition, out var minimumEpoch)
+            && fetchBufferEpoch < minimumEpoch);
 
     private bool ShouldDropStaleFetchPartition(TopicPartition partition, int fetchBufferEpoch) =>
-        IsFetchBufferEpochStale(fetchBufferEpoch) || !IsCurrentlyAssigned(partition);
+        IsFetchBufferEpochStale(partition, fetchBufferEpoch)
+        || _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition)
+        || !IsCurrentlyAssigned(partition);
+
+    private void InvalidateAllFetchesLocked()
+    {
+        var minimumEpoch = Interlocked.Increment(ref _fetchBufferEpoch);
+        Volatile.Write(ref _minimumFetchBufferEpoch, minimumEpoch);
+        _minimumFetchBufferEpochsByPartition.Clear();
+    }
+
+    private void InvalidateFetchesForPartitionsLocked(IEnumerable<TopicPartition> partitions)
+    {
+        var minimumEpoch = Interlocked.Increment(ref _fetchBufferEpoch);
+        foreach (var partition in partitions)
+            _minimumFetchBufferEpochsByPartition[partition] = minimumEpoch;
+    }
 
     private async ValueTask WritePrefetchedItemsAsync(
         IReadOnlyList<PendingFetchData> pendingItems,
@@ -3583,7 +3733,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Track memory and advance fetch positions only after confirming
             // this pipelined response still belongs to the current assignment.
             TrackPrefetchedBytes(pending, release: false);
-            UpdateFetchPositionsFromPrefetch(pending);
+            UpdateFetchPositionsFromPrefetch(pending, fetchBufferEpoch);
 
             while (!_prefetchBuffer.TryWrite(pending))
             {
@@ -4379,18 +4529,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         try
                         {
-                            if (IsFetchBufferEpochStale(fetchBufferEpoch))
-                            {
-                                foreach (var pending in pendingItems)
-                                {
-                                    pending.Dispose();
-                                }
-
-                                continue;
-                            }
-
                             foreach (var pending in pendingItems)
                             {
+                                if (ShouldDropStaleFetchPartition(pending.TopicPartition, fetchBufferEpoch))
+                                {
+                                    pending.Dispose();
+                                    continue;
+                                }
+
                                 _pendingFetches.Enqueue(pending);
                             }
                         }
@@ -4866,14 +5012,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var memoryOwner = response.PooledMemoryOwner;
         response.PooledMemoryOwner = null; // Clear to prevent double-dispose
 
-        if (IsFetchBufferEpochStale(fetchBufferEpoch))
-        {
-            fetchSessionHandler?.HandleResponse(response);
-            response.ReturnToPool();
-            memoryOwner?.Dispose();
-            return null;
-        }
-
         if (response.ErrorCode != ErrorCode.None)
         {
             fetchSessionHandler?.HandleResponse(response);
@@ -4888,6 +5026,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Collect pending fetch data items - we need to assign memory owner to the last one
         List<PendingFetchData>? pendingItems = null;
+        var queuedDivergingEpochReset = false;
 
         // Queue pending fetch data for lazy iteration - don't parse records yet!
         try
@@ -4909,7 +5048,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     if (partitionResponse.DivergingEpoch is not null)
                     {
-                        ResetToDivergingEpoch(topic, partitionResponse, fetchBufferEpoch);
+                        queuedDivergingEpochReset |= ResetToDivergingEpoch(
+                            topic,
+                            partitionResponse,
+                            fetchBufferEpoch);
                         continue;
                     }
 
@@ -4970,6 +5112,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         finally
         {
+            if (queuedDivergingEpochReset)
+                CompleteDivergingEpochResets();
+
             // Return the response and its nested objects to their pools.
             // Data has been transferred to PendingFetchData; the response wrappers are no longer needed.
             response.ReturnToPool();
@@ -5137,36 +5282,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int GetStoredOffsetLeaderEpoch(TopicPartition partition) =>
         _storedOffsetLeaderEpochs.GetValueOrDefault(partition, -1);
 
-    private void ThrowPendingFetchException()
-    {
-        if (_pendingFetchExceptions.TryDequeue(out var exception))
-            throw exception;
-    }
-
-    private void QueueFetchException(Exception exception)
-    {
-        _pendingFetchExceptions.Enqueue(exception);
-    }
-
-    private void ResetToDivergingEpoch(
+    private bool ResetToDivergingEpoch(
         string topic,
         FetchResponsePartition partitionResponse,
         int fetchBufferEpoch)
     {
         if (partitionResponse.DivergingEpoch is not { } divergingEpoch)
-            return;
+            return false;
 
         var partition = new TopicPartition(topic, partitionResponse.PartitionIndex);
         if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
-            return;
+            return false;
 
-        _fetchPositions[partition] = divergingEpoch.EndOffset;
-        SetPosition(partition, divergingEpoch.EndOffset, dirty: false);
-        SetLastConsumedLeaderEpoch(partition, divergingEpoch.Epoch);
-        QueueFetchException(new Errors.ConsumeException(
-            ErrorCode.OffsetOutOfRange,
-            $"Log truncation detected for {topic}-{partitionResponse.PartitionIndex}; reset fetch position to offset {divergingEpoch.EndOffset} at leader epoch {divergingEpoch.Epoch}.",
-            isRetriable: true));
+        return StageDivergingEpochReset(
+            partition,
+            divergingEpoch.EndOffset,
+            divergingEpoch.Epoch,
+            fetchBufferEpoch);
     }
 
     private async ValueTask ResetOffsetOutOfRangeAsync(
@@ -6230,6 +6362,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "{Error} for {Topic}-{Partition}, refreshing leader metadata")]
     private partial void LogLeaderEpochRefresh(string topic, int partition, ErrorCode error);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Log truncation detected for {Topic}-{Partition}; reset fetch position to offset {ResumeOffset} from broker correction {EndOffset} at leader epoch {LeaderEpoch}")]
+    private partial void LogDivergingEpochReset(
+        string topic,
+        int partition,
+        long resumeOffset,
+        long endOffset,
+        int leaderEpoch);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Preferred read replica {ReplicaId} selected for {Topic}-{Partition}")]
     private partial void LogPreferredReadReplicaSelected(string topic, int partition, int replicaId);

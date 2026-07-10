@@ -151,6 +151,12 @@ namespace Dekaf.Consumer
                     keyDeserializer: _batch._keyDeserializer,
                     valueDeserializer: _batch._valueDeserializer);
 
+                if (_batch._isPartitionStillAssigned is not null
+                    && !_batch._isPartitionStillAssigned(pending.TopicPartition))
+                {
+                    return false;
+                }
+
                 pending.TrackConsumed(offset, messageBytes);
                 _recordsYielded++;
                 _batch._count++;

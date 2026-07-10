@@ -45,6 +45,22 @@ public sealed class FetchSessionHandlerTests
     }
 
     [Test]
+    public async Task Build_LastFetchedEpochChanged_SendsPartitionUpdate()
+    {
+        var handler = new FetchSessionHandler();
+        var initial = TopicsWithEpoch(lastFetchedEpoch: 7);
+
+        handler.Build(initial, clusterMetadata: null);
+        handler.HandleResponse(Response(sessionId: 42));
+
+        var changed = handler.Build(TopicsWithEpoch(lastFetchedEpoch: -1), clusterMetadata: null);
+
+        await Assert.That(changed.Topics).Count().IsEqualTo(1);
+        await Assert.That(changed.Topics[0].Partitions).Count().IsEqualTo(1);
+        await Assert.That(changed.Topics[0].Partitions[0].LastFetchedEpoch).IsEqualTo(-1);
+    }
+
+    [Test]
     public async Task Build_IncrementalDetectsForgottenPartitions()
     {
         var topicId = Guid.NewGuid();
@@ -150,6 +166,25 @@ public sealed class FetchSessionHandlerTests
 
         return result;
     }
+
+    private static List<FetchRequestTopic> TopicsWithEpoch(int lastFetchedEpoch) =>
+    [
+        new FetchRequestTopic
+        {
+            Topic = "topic-a",
+            Partitions =
+            [
+                new FetchRequestPartition
+                {
+                    Partition = 0,
+                    FetchOffset = 100,
+                    PartitionMaxBytes = 1024,
+                    CurrentLeaderEpoch = 8,
+                    LastFetchedEpoch = lastFetchedEpoch
+                }
+            ]
+        }
+    ];
 
     private static ClusterMetadata Metadata(string topic, Guid topicId)
     {

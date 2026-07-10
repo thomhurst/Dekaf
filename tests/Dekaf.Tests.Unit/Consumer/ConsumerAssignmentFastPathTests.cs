@@ -200,6 +200,13 @@ public sealed class ConsumerAssignmentFastPathTests
         var staleFetchBufferEpoch = GetFetchBufferEpoch(consumer);
         GetPendingFetches(consumer).Enqueue(stalePendingFetch);
         GetFetchPositions(consumer)[reassignedPartition] = 0;
+        StageDivergingEpochReset(
+            consumer,
+            reassignedPartition,
+            endOffset: 42,
+            epoch: 7,
+            staleFetchBufferEpoch);
+        CompleteDivergingEpochResets(consumer);
 
         var coordinator = GetCoordinator(consumer);
         coordinator.RequestRejoin();
@@ -222,6 +229,40 @@ public sealed class ConsumerAssignmentFastPathTests
 
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, reassignedPartition)).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_RevocationDiscardsPendingDivergenceReset()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupRevokingConsumerGroupHeartbeat(connection);
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var revokedPartition = new TopicPartition("test-topic", 0);
+        StageDivergingEpochReset(
+            consumer,
+            revokedPartition,
+            endOffset: 42,
+            epoch: 7,
+            GetFetchBufferEpoch(consumer));
+        CompleteDivergingEpochResets(consumer);
+
+        GetCoordinator(consumer).RequestRejoin();
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.Assignment).DoesNotContain(revokedPartition);
+        await Assert.That(GetFetchPositions(consumer).ContainsKey(revokedPartition)).IsFalse();
     }
 
     [Test]
@@ -318,6 +359,75 @@ public sealed class ConsumerAssignmentFastPathTests
 
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).IsEmpty();
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task IncrementalUnassign_InvalidatesOnlyRemovedPartitionFetches()
+    {
+        await using var consumer = CreateConsumer();
+        var removedPartition = new TopicPartition("test-topic", 0);
+        var retainedPartition = new TopicPartition("test-topic", 1);
+        consumer.IncrementalAssign(
+        [
+            new TopicPartitionOffset(removedPartition.Topic, removedPartition.Partition, 0),
+            new TopicPartitionOffset(retainedPartition.Topic, retainedPartition.Partition, 0)
+        ]);
+        var globalMinimumEpoch = GetMinimumFetchBufferEpoch(consumer);
+
+        consumer.IncrementalUnassign([removedPartition]);
+
+        var partitionMinimumEpochs = GetMinimumFetchBufferEpochsByPartition(consumer);
+        await Assert.That(GetMinimumFetchBufferEpoch(consumer)).IsEqualTo(globalMinimumEpoch);
+        await Assert.That(partitionMinimumEpochs.ContainsKey(removedPartition)).IsTrue();
+        await Assert.That(partitionMinimumEpochs.ContainsKey(retainedPartition)).IsFalse();
+    }
+
+    [Test]
+    public async Task PendingRevocationDrain_InvalidatesOnlyAffectedPartitionFetches()
+    {
+        await using var consumer = CreateConsumer();
+        var divergingPartition = new TopicPartition("test-topic", 0);
+        var revokedPartition = new TopicPartition("test-topic", 1);
+        var retainedPartition = new TopicPartition("test-topic", 2);
+        consumer.IncrementalAssign(
+        [
+            new TopicPartitionOffset(divergingPartition.Topic, divergingPartition.Partition, 0),
+            new TopicPartitionOffset(revokedPartition.Topic, revokedPartition.Partition, 0),
+            new TopicPartitionOffset(retainedPartition.Topic, retainedPartition.Partition, 0)
+        ]);
+        StageDivergingEpochReset(
+            consumer,
+            divergingPartition,
+            endOffset: 42,
+            epoch: 7,
+            GetFetchBufferEpoch(consumer));
+        CompleteDivergingEpochResets(consumer);
+        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [revokedPartition]);
+        var globalMinimumEpoch = GetMinimumFetchBufferEpoch(consumer);
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+
+        var partitionMinimumEpochs = GetMinimumFetchBufferEpochsByPartition(consumer);
+        await Assert.That(GetMinimumFetchBufferEpoch(consumer)).IsEqualTo(globalMinimumEpoch);
+        await Assert.That(partitionMinimumEpochs.ContainsKey(divergingPartition)).IsTrue();
+        await Assert.That(partitionMinimumEpochs.ContainsKey(revokedPartition)).IsTrue();
+        await Assert.That(partitionMinimumEpochs.ContainsKey(retainedPartition)).IsFalse();
+    }
+
+    [Test]
+    public async Task RemovePartitionState_RemovesPartitionFetchEpochMinimum()
+    {
+        await using var consumer = CreateConsumer();
+        var removedPartition = new TopicPartition("test-topic", 0);
+        var retainedPartition = new TopicPartition("test-topic", 1);
+        var minimumEpochs = GetMinimumFetchBufferEpochsByPartition(consumer);
+        minimumEpochs[removedPartition] = 2;
+        minimumEpochs[retainedPartition] = 3;
+
+        RemovePartitionState(consumer, [removedPartition]);
+
+        await Assert.That(minimumEpochs.ContainsKey(removedPartition)).IsFalse();
+        await Assert.That(minimumEpochs[retainedPartition]).IsEqualTo(3);
     }
 
     [Test]
@@ -597,12 +707,14 @@ public sealed class ConsumerAssignmentFastPathTests
                     {
                         PartitionIndex = 0,
                         CommittedOffset = 10,
+                        CommittedLeaderEpoch = 4,
                         ErrorCode = ErrorCode.None
                     },
                     new OffsetFetchResponsePartition
                     {
                         PartitionIndex = 1,
                         CommittedOffset = 20,
+                        CommittedLeaderEpoch = 5,
                         ErrorCode = ErrorCode.None
                     }
                 ]
@@ -676,6 +788,27 @@ public sealed class ConsumerAssignmentFastPathTests
         return (int)field.GetValue(consumer)!;
     }
 
+    private static int GetMinimumFetchBufferEpoch(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_minimumFetchBufferEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_minimumFetchBufferEpoch field not found.");
+
+        return (int)field.GetValue(consumer)!;
+    }
+
+    private static ConcurrentDictionary<TopicPartition, int> GetMinimumFetchBufferEpochsByPartition(
+        KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_minimumFetchBufferEpochsByPartition",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_minimumFetchBufferEpochsByPartition field not found.");
+
+        return (ConcurrentDictionary<TopicPartition, int>)field.GetValue(consumer)!;
+    }
+
     private static ConcurrentDictionary<TopicPartition, byte> GetCoordinatorRevokedPartitionsPendingFetchClear(
         KafkaConsumer<string, string> consumer)
     {
@@ -709,6 +842,18 @@ public sealed class ConsumerAssignmentFastPathTests
         return (ConcurrentDictionary<TopicPartition, long>)field.GetValue(consumer)!;
     }
 
+    private static int GetLastConsumedLeaderEpoch(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "GetLastConsumedLeaderEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("GetLastConsumedLeaderEpoch method not found.");
+
+        return (int)method.Invoke(consumer, [partition])!;
+    }
+
     private static void QueueCoordinatorRevokedPartitionsForFetchClear(
         KafkaConsumer<string, string> consumer,
         TopicPartition[] partitions)
@@ -719,6 +864,43 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("QueueCoordinatorRevokedPartitionsForFetchClear method not found.");
 
         method.Invoke(consumer, [partitions]);
+    }
+
+    private static void RemovePartitionState(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition[] partitions)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "RemovePartitionState",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("RemovePartitionState method not found.");
+
+        method.Invoke(consumer, [partitions]);
+    }
+
+    private static void StageDivergingEpochReset(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        long endOffset,
+        int epoch,
+        int fetchBufferEpoch)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "StageDivergingEpochReset",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("StageDivergingEpochReset method not found.");
+
+        method.Invoke(consumer, [partition, endOffset, epoch, fetchBufferEpoch]);
+    }
+
+    private static void CompleteDivergingEpochResets(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CompleteDivergingEpochResets",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("CompleteDivergingEpochResets method not found.");
+
+        method.Invoke(consumer, []);
     }
 
     private static bool ClearFetchBufferForPendingCoordinatorRevocations(KafkaConsumer<string, string> consumer)
