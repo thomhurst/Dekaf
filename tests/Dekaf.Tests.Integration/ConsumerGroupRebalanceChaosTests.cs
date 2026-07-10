@@ -790,6 +790,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     .IsGreaterThanOrEqualTo(previousBrokerOffsets[partition])
                     .Because($"partition {partition} broker commit cannot rewind between checkpoints");
             }
+
+            oracle.ObserveCommittedOffset(partition, actual);
         }
 
         return actualOffsets;
@@ -823,6 +825,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         CancellationToken cancellationToken)
     {
         var descriptions = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken);
+        await Assert.That(descriptions).ContainsKey(groupId);
+
         var description = descriptions[groupId];
         var containsMember = description.Members.Any(member =>
             string.Equals(member.ClientId, clientId, StringComparison.Ordinal));

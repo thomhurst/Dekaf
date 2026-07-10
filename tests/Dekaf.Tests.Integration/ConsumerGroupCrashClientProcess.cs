@@ -111,6 +111,15 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
 
             if (ReferenceEquals(completedTask, exitTask))
             {
+                linkedSource.Cancel();
+                try
+                {
+                    await connectionTask;
+                }
+                catch (OperationCanceledException) when (linkedSource.IsCancellationRequested)
+                {
+                }
+
                 await exitTask;
                 throw new InvalidOperationException(
                     $"Consumer group crash client exited before signaling readiness with code {_process.ExitCode}." +
@@ -143,6 +152,10 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
         try
         {
             await ForceTerminateAsync(requireRunning: false, CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            _diagnostics.Append("cleanup", exception.ToString());
         }
         finally
         {
@@ -260,29 +273,6 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
         return startInfo;
     }
 
-    private sealed class BoundedProcessDiagnostics(int maximumCharacters)
-    {
-        private readonly StringBuilder _buffer = new();
-
-        public void Append(string stream, string? message)
-        {
-            if (message is null)
-                return;
-
-            lock (_buffer)
-            {
-                _buffer.Append('[').Append(stream).Append("] ").AppendLine(message);
-                if (_buffer.Length > maximumCharacters)
-                    _buffer.Remove(0, _buffer.Length - maximumCharacters);
-            }
-        }
-
-        public override string ToString()
-        {
-            lock (_buffer)
-                return _buffer.ToString();
-        }
-    }
 }
 
 /// <summary>
