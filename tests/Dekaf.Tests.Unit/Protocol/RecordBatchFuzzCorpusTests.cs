@@ -15,6 +15,7 @@ public class RecordBatchFuzzCorpusTests
         "gzip-corrupt",
         "gzip-valid",
         "lz4-corrupt",
+        "lz4-invalid-block-size",
         "lz4-valid",
         "none-corrupt",
         "none-valid",
@@ -148,6 +149,15 @@ public class RecordBatchFuzzCorpusTests
     public async Task CorruptZstdSeed_IsRejectedAsInvalidData()
     {
         var seed = RecordBatchFuzzCorpus.LoadEmbedded().Single(seed => seed.Name == "zstd-corrupt");
+
+        await Assert.That(() => RecordBatchFuzzTarget.Execute(seed.Data))
+            .ThrowsExactly<InvalidDataException>();
+    }
+
+    [Test]
+    public async Task MalformedLz4Seed_IsRejectedAsInvalidData()
+    {
+        var seed = RecordBatchFuzzCorpus.LoadEmbedded().Single(seed => seed.Name == "lz4-invalid-block-size");
 
         await Assert.That(() => RecordBatchFuzzTarget.Execute(seed.Data))
             .ThrowsExactly<InvalidDataException>();
