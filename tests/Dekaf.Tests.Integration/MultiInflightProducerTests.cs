@@ -4,39 +4,40 @@ using Dekaf.Producer;
 namespace Dekaf.Tests.Integration;
 
 /// <summary>
-/// Integration tests for multiple in-flight batches per partition.
-/// Verifies that producers with multiple in-flight batches preserve
-/// per-partition ordering and deliver all messages.
+/// Integration tests for multiple in-flight produce requests.
+/// Verifies per-partition ordering and complete delivery across producer modes.
 /// </summary>
 [Category("MultiInFlightProducer")]
 public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
-    public async Task MultiInflight_SinglePartition_OrderingPreserved()
+    public async Task NonIdempotentMultiInflight_SinglePartition_OrderingPreserved()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
-        const int messageCount = 1000;
+        const int messageCount = 10_000;
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithClientId("test-multi-inflight-single-partition")
+            .WithClientId("test-non-idempotent-multi-inflight-single-partition")
+            .WithIdempotence(false)
             .WithAcks(Acks.All)
-
-            .WithBatchSize(512) // Small batch size to force many batches
+            .WithBatchSize(256) // Force many concurrently submitted batches
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
+        var deliveries = new Task<RecordMetadata>[messageCount];
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            deliveries[i] = producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "ordering-key",
                 Value = $"msg-{i:D4}"
-            }, CancellationToken.None);
+            }, CancellationToken.None).AsTask();
         }
 
+        await Task.WhenAll(deliveries);
         await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -384,10 +385,8 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        // Warm up all partitions to ensure the broker has fully initialized partition
-        // state tracking. Without this, the first produce to a newly-created partition
-        // may get NotLeaderOrFollower, and with MaxInFlight > 1 later in-flight batches
-        // for the same partition can succeed out of order at the broker.
+        // Warm up all partitions so this test covers coalescing rather than initial
+        // partition metadata recovery.
         for (var p = 0; p < partitionCount; p++)
             await producer.ProduceAsync(new ProducerMessage<int, string>
             {

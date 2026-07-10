@@ -39,10 +39,11 @@ public sealed class BrokerSenderMuteOrderingTests
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 0, int retryBackoffMaxMs = 0,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
-        int maxRequestSize = 1_048_576) => new()
+        int maxRequestSize = 1_048_576, bool enableIdempotence = true) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
+            EnableIdempotence = enableIdempotence,
             Acks = acks,
             DeliveryTimeoutMs = deliveryTimeoutMs,
             RetryBackoffMs = retryBackoffMs,
@@ -298,6 +299,74 @@ public sealed class BrokerSenderMuteOrderingTests
             completionSourcesCount: 0,
             dataSize: 100);
         return batch;
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task NonIdempotentProducer_MultipleInFlight_SerializesSamePartitionBatches(
+        CancellationToken ct)
+    {
+        var responses = Enumerable.Range(0, 2)
+            .Select(_ => new TaskCompletionSource<ProduceResponse>(
+                TaskCreationOptions.RunContinuationsAsynchronously))
+            .ToArray();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(responses);
+        var (pool, _) = CreateMockConnection(responseQueue);
+        var options = CreateOptions(maxInFlight: 2, enableIdempotence: false);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var sendLogger = new PipelinedSendLogger(expectedSends: 2);
+        var acknowledgedOffsets = new List<long>();
+        var allAcknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, offset, _, _, ex) =>
+            {
+                if (ex is not null)
+                    return;
+
+                lock (acknowledgedOffsets)
+                {
+                    acknowledgedOffsets.Add(offset);
+                    if (acknowledgedOffsets.Count == 2)
+                        allAcknowledged.TrySetResult();
+                }
+            },
+            logger: sendLogger);
+
+        try
+        {
+            var firstBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
+            sender.Enqueue(firstBatch);
+            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+
+            await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsTrue();
+
+            var secondBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
+            sender.Enqueue(secondBatch);
+
+            await WaitForDiagAsync(secondBatch, 'O', TimeSpan.FromSeconds(5), ct);
+            await Assert.That(sendLogger.SendCount).IsEqualTo(1);
+
+            responses[0].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 100));
+            await sendLogger.SendSignals[1].Task.WaitAsync(ct);
+            responses[1].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 101));
+
+            await allAcknowledged.Task.WaitAsync(ct);
+            await Assert.That(acknowledgedOffsets[0]).IsEqualTo(100);
+            await Assert.That(acknowledgedOffsets[1]).IsEqualTo(101);
+        }
+        finally
+        {
+            responses[0].TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 100));
+            responses[1].TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 101));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
     }
 
     [Test]
@@ -1386,6 +1455,42 @@ public sealed class BrokerSenderMuteOrderingTests
             _crashGate.Task.GetAwaiter().GetResult();
             if (Volatile.Read(ref _armed) != 0 && Interlocked.Exchange(ref _thrown, 1) == 0)
                 throw new InvalidOperationException("Injected send-loop crash");
+        }
+    }
+
+    private sealed class PipelinedSendLogger : ILogger
+    {
+        private int _sendCount;
+
+        public PipelinedSendLogger(int expectedSends)
+        {
+            SendSignals = Enumerable.Range(0, expectedSends)
+                .Select(_ => new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously))
+                .ToArray();
+        }
+
+        public TaskCompletionSource[] SendSignals { get; }
+
+        public int SendCount => Volatile.Read(ref _sendCount);
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel == LogLevel.Debug;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Name != "LogPipelinedSend")
+                return;
+
+            var index = Interlocked.Increment(ref _sendCount) - 1;
+            if ((uint)index < (uint)SendSignals.Length)
+                SendSignals[index].TrySetResult();
         }
     }
 }

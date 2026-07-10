@@ -424,15 +424,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Func<bool> _isTransactional;
     private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
 
-    // Send-time muting: when true, partitions are muted at send time (limiting to 1
-    // in-flight batch per partition). When false, multiple in-flight batches per partition
-    // are allowed, relying on sequence numbers for ordering instead of muting.
-    // Only enabled when MaxInFlight <= 1; idempotent producers with MaxInFlight > 1
-    // use sequence numbers to guarantee ordering without send-time muting.
+    // Send-time muting limits each partition to 1 in-flight batch when producer sequence
+    // numbers are unavailable, or when the configured request limit is already 1.
+    // Idempotent producers with MaxInFlight > 1 rely on sequence numbers instead.
     private readonly bool _muteOnSend;
 
     // Muted partitions: partitions with a retry in progress or limited to 1 in-flight
-    // batch (when _muteOnSend). Prevents newer batches from being sent, maintaining
+    // batch by _muteOnSend. Prevents newer batches from being sent, maintaining
     // per-partition ordering. Aligned with Java Kafka producer's mute mechanism.
     // Uses ConcurrentDictionary as a concurrent set (byte value unused): with multi-connection
     // sends, concurrent Z handlers (catch blocks in SendCoalescedAsync) can write from
@@ -612,15 +610,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         });
 
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
+        _isIdempotent = options.EnableIdempotence;
 
-        // Only mute at send time when limited to 1 in-flight request.
-        // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
-        _muteOnSend = _maxInFlight <= 1;
+        // Non-idempotent batches have no sequence numbers, so concurrent requests for the
+        // same partition can be appended out of order even when no retry occurs.
+        _muteOnSend = !_isIdempotent || _maxInFlight <= 1;
 
         // All producers use partition affinity (partition % connectionCount) for CPU cache
         // locality. Idempotent producers additionally need affinity for sequence ordering.
         _connectionCount = options.ConnectionsPerBroker;
-        _isIdempotent = options.EnableIdempotence;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
 
         // Adaptive scaling: available for all non-transactional producers.
@@ -1522,9 +1520,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     //
                     // Can pipeline: progress was made, no muted carry-over that could
                     // generate stale channel events, and in-flight capacity remains.
-                    // Note: when _muteOnSend is true (MaxInFlightRequestsPerConnection == 1),
-                    // waitPendingCount == _totalMaxInFlight after every send, so canPipeline
-                    // is always false — single-in-flight producers always take the response-wait path.
+                    // A request limit of 1 always fills capacity and takes the response-wait path.
+                    // Non-idempotent producers can still pipeline batches for other partitions;
+                    // their same-partition batches remain in carry-over while muted.
                     var canPipeline = sentThisIteration
                         && carryOver.Count == 0
                         && waitPendingCount < _totalMaxInFlight;
@@ -2355,8 +2353,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 }
 
-                // Only unmute on success when mute-on-send is active (maxInFlight <= 1).
-                // With maxInFlight > 1, partitions are muted only on error (HandleRetriableBatch).
+                // Only unmute on success when mute-on-send is active (non-idempotent or maxInFlight <= 1).
+                // Idempotent producers with maxInFlight > 1 mute partitions only on error.
                 // Unconditionally unmuting on success would prematurely clear the mute set by a
                 // DIFFERENT failed batch for the same partition still pending retry. This allows
                 // newer carry-over batches to skip ahead of the older retry batch, violating
@@ -3001,10 +2999,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         .UnsafeOnCompleted(_responseCompletionCallback);
                 }
 
-                // Mute partitions at send time when limited to 1 in-flight request.
+                // Mute partitions when producer sequence numbers cannot preserve order, or when
+                // the configured request limit already permits only 1 in-flight request.
                 // This ensures at most one batch per partition in-flight across all requests.
-                // When maxInFlight > 1, sequence numbers guarantee ordering instead,
-                // and retry-time muting handles error recovery.
+                // Idempotent producers with maxInFlight > 1 use sequence numbers instead.
                 if (_muteOnSend)
                 {
                     for (var i = 0; i < count; i++)
