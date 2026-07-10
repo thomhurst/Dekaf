@@ -362,6 +362,22 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task RemovePartitionState_RemovesPartitionFetchEpochMinimum()
+    {
+        await using var consumer = CreateConsumer();
+        var removedPartition = new TopicPartition("test-topic", 0);
+        var retainedPartition = new TopicPartition("test-topic", 1);
+        var minimumEpochs = GetMinimumFetchBufferEpochsByPartition(consumer);
+        minimumEpochs[removedPartition] = 2;
+        minimumEpochs[retainedPartition] = 3;
+
+        RemovePartitionState(consumer, [removedPartition]);
+
+        await Assert.That(minimumEpochs.ContainsKey(removedPartition)).IsFalse();
+        await Assert.That(minimumEpochs[retainedPartition]).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task WritePrefetchedItemsAsync_DropsUnassignedPartitionsBeforeAdvancingFetchPosition()
     {
         await using var consumer = CreateConsumer();
@@ -717,6 +733,17 @@ public sealed class ConsumerAssignmentFastPathTests
         return (int)field.GetValue(consumer)!;
     }
 
+    private static ConcurrentDictionary<TopicPartition, int> GetMinimumFetchBufferEpochsByPartition(
+        KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_minimumFetchBufferEpochsByPartition",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_minimumFetchBufferEpochsByPartition field not found.");
+
+        return (ConcurrentDictionary<TopicPartition, int>)field.GetValue(consumer)!;
+    }
+
     private static ConcurrentDictionary<TopicPartition, byte> GetCoordinatorRevokedPartitionsPendingFetchClear(
         KafkaConsumer<string, string> consumer)
     {
@@ -758,6 +785,18 @@ public sealed class ConsumerAssignmentFastPathTests
             "QueueCoordinatorRevokedPartitionsForFetchClear",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("QueueCoordinatorRevokedPartitionsForFetchClear method not found.");
+
+        method.Invoke(consumer, [partitions]);
+    }
+
+    private static void RemovePartitionState(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition[] partitions)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "RemovePartitionState",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("RemovePartitionState method not found.");
 
         method.Invoke(consumer, [partitions]);
     }
