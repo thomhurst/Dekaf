@@ -387,6 +387,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // FIFO ordering (matching the old List iteration order) and is optimized for the
     // cross-thread producer-consumer pattern used here.
     //
+    // The send loop drains this queue through HandleRetriableBatch so connection failures
+    // trigger the same metadata refresh and ordering logic as broker error responses.
+    //
     // Each entry carries the batch's generation captured at send start. ReadyBatch objects
     // are pooled, so a reference sitting in this queue can be completed and recycled by
     // another owner before the send loop dequeues it. IsReturnedToPool alone cannot detect
@@ -397,9 +400,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly ConcurrentQueue<(ReadyBatch Batch, int Generation)> _sendFailedRetries = new();
 
     // Batches recovered from an unexpectedly exited sender. These must run before both
-    // send-failure retries and normal channel backlog on the replacement sender. They use
-    // a separate queue because _sendFailedRetries is drained with AddFirst (which reverses
-    // FIFO order when multiple same-partition entries arrive together).
+    // send-failure retries and normal channel backlog on the replacement sender. Their
+    // separate queue preserves LoopExitRedeliveryOrder while carry-over insertion keeps
+    // every crash recovery ahead of ordinary retries and new work.
     private readonly ConcurrentQueue<(ReadyBatch Batch, int Generation)> _loopExitRedeliveries = new();
 
     // Partitions accepted while this sender is alive. Guarded with _loopExited so an
@@ -914,6 +917,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ? new ValueTask[connectionCapacity]
             : Array.Empty<ValueTask>();
 
+        // Shared by all connection buckets dispatched in one send-loop iteration. Send
+        // failures can complete concurrently, so PrepareDeferredNetworkRetry protects it.
+        HashSet<string>? retryMetadataRefreshTopics = null;
+
         // Per-connection timeout CTS for multi-connection mode, reused with TryReset()
         // to avoid per-send CTS allocation (same pattern as sendTimeoutCts for single-connection).
         // Entries beyond the current connection count are created lazily on scale-up.
@@ -958,13 +965,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
 
                 // ── 2. Pick up send-failed retries ──
-                // FIFO dequeue + AddFirst reverses the enqueue order, but this is intentional:
-                // each retry batch goes before all existing carry-over for its partition,
-                // matching Java's Deque.addFirst semantics for retry priority.
+                // Process these through the common retriable-error path. In particular, a
+                // stopped leader often fails before returning a ProduceResponse, so this is
+                // the only point that can request fresh metadata before the stale route retries.
                 while (_sendFailedRetries.TryDequeue(out var retry))
                 {
                     if (retry.Batch.IsCurrentIncarnation(retry.Generation))
-                        carryOver.AddFirst(new BatchReference(retry.Batch, retry.Generation));
+                    {
+                        HandleRetriableBatch(
+                            retry.Batch,
+                            retry.Generation,
+                            ErrorCode.NetworkException,
+                            carryOver,
+                            cancellationToken,
+                            networkRetryPrepared: true);
+                    }
                     else
                         LogStaleRetryBatchSkipped(_instanceId, _brokerId);
                 }
@@ -1351,6 +1366,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         {
                             // === Multi-connection path ===
 
+                            var metadataRefreshTopics = retryMetadataRefreshTopics ??=
+                                new HashSet<string>(StringComparer.Ordinal);
+                            metadataRefreshTopics.Clear();
+
                             // Distribute coalesced batches into per-connection buckets.
                             // Partition affinity (partition % N) keeps each partition's batches
                             // on the same connection for CPU cache locality. This also preserves
@@ -1388,7 +1407,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                                 ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
                                 parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
-                                    scratches[c], bucketTimeoutCts[c].Token);
+                                    scratches[c], metadataRefreshTopics, bucketTimeoutCts[c].Token);
                             }
 
                             var completedSends = await AwaitParallelSendsAsync(parallelSends, pendingSendCount)
@@ -1433,7 +1452,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                                     ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
                                     parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
-                                        scratches[c], bucketTimeoutCts[c].Token);
+                                        scratches[c], metadataRefreshTopics, bucketTimeoutCts[c].Token);
                                 }
 
                                 var waitCompletedSends = await AwaitParallelSendsAsync(parallelSends, pendingSendCount)
@@ -2548,8 +2567,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Called inline from ProcessCompletedResponses in the single-threaded send loop.
     /// </summary>
     private void HandleRetriableBatch(ReadyBatch batch, int generation, ErrorCode errorCode,
-        PartitionCarryOver carryOver, CancellationToken cancellationToken)
-        => HandleRetriableBatch(batch, generation, errorCode, null, [], carryOver, cancellationToken);
+        PartitionCarryOver carryOver, CancellationToken cancellationToken,
+        bool networkRetryPrepared = false)
+        => HandleRetriableBatch(batch, generation, errorCode, null, [], carryOver, cancellationToken,
+            networkRetryPrepared);
 
     private void HandleRetriableBatch(
         ReadyBatch batch,
@@ -2558,7 +2579,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         LeaderIdAndEpoch? currentLeader,
         IReadOnlyList<NodeEndpoint> nodeEndpoints,
         PartitionCarryOver carryOver,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool networkRetryPrepared = false)
     {
         if (!batch.IsCurrentIncarnation(generation))
         {
@@ -2589,7 +2611,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Mute partition so no newer batches overtake the retry (ordering guarantee).
         // Also mute in accumulator so Ready/Drain skips this partition — prevents the
         // sender loop from draining newer batches that would jump the retry queue.
-        if (!batch.IsLoopExitRedelivery)
+        if (!networkRetryPrepared && !batch.IsLoopExitRedelivery)
             MutePartition(batch.TopicPartition);
 
         var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
@@ -2628,7 +2650,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
             batch.InflightEntry = null;
         }
-        else
+        else if (!networkRetryPrepared)
         {
             if (TryApplyInlineLeader(batch.TopicPartition, errorCode, currentLeader, nodeEndpoints))
             {
@@ -2715,7 +2737,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int count,
         ProduceRequestScratch scratch,
         int connectionIndex,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        HashSet<string>? metadataRefreshTopics = null)
     {
         // Snapshot batch generations before the first await, while this send still has
         // exclusive ownership handed over by the send loop's coalesce step. If the request
@@ -3072,12 +3095,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     else
                     {
-                        // Mute partition (ordering guarantee) and queue for retry.
-                        if (!batch.IsLoopExitRedelivery)
-                            MutePartition(batch.TopicPartition);
-                        batch.IsRetry = true;
-                        batch.RetryNotBefore = Stopwatch.GetTimestamp() +
-                            _options.RetryBackoffTicks;
+                        metadataRefreshTopics ??= new HashSet<string>(StringComparer.Ordinal);
+                        PrepareDeferredNetworkRetry(batch, metadataRefreshTopics);
                         _sendFailedRetries.Enqueue((batch, generations[i]));
                     }
                 }
@@ -3102,6 +3121,30 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // array; ReturnBatchesArray returns both. On every other path it is owned here.
             if (!pendingResponseAdded)
                 ArrayPool<int>.Shared.Return(generations);
+        }
+    }
+
+    private void PrepareDeferredNetworkRetry(ReadyBatch batch, HashSet<string> metadataRefreshTopics)
+    {
+        // Parallel connection buckets may still be sending. Begin recovery here so a blocked
+        // sibling write cannot postpone metadata refresh or the start of retry backoff.
+        if (!batch.IsLoopExitRedelivery)
+            MutePartition(batch.TopicPartition);
+        LogRetriableErrorWithBackoff(ErrorCode.NetworkException, batch.TopicPartition.Topic,
+            batch.TopicPartition.Partition, _options.RetryBackoffMs);
+        batch.RetryNotBefore = Stopwatch.GetTimestamp() + _options.RetryBackoffTicks;
+
+        bool refreshMetadata;
+        lock (metadataRefreshTopics)
+        {
+            refreshMetadata = metadataRefreshTopics.Add(batch.TopicPartition.Topic);
+        }
+
+        if (refreshMetadata)
+        {
+            // The send token may already be cancelled when a write times out. Use the sender
+            // lifetime token so recovery can still refresh metadata.
+            _ = ObserveMetadataRefreshAsync(batch.TopicPartition.Topic, _cts.Token);
         }
     }
 
@@ -3329,7 +3372,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private async ValueTask SendConnectionBucketAsync(
         int connIdx, ConnectionBucket[] connectionBuckets,
-        ProduceRequestScratch scratch, CancellationToken cancellationToken)
+        ProduceRequestScratch scratch,
+        HashSet<string> metadataRefreshTopics,
+        CancellationToken cancellationToken)
     {
         ref var bucket = ref connectionBuckets[connIdx];
         var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(bucket.Count);
@@ -3350,7 +3395,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
-        await SendCoalescedAsync(batchesToSend, countToSend, scratch, connIdx, cancellationToken)
+        await SendCoalescedAsync(
+                batchesToSend,
+                countToSend,
+                scratch,
+                connIdx,
+                cancellationToken,
+                metadataRefreshTopics)
             .ConfigureAwait(false);
     }
 

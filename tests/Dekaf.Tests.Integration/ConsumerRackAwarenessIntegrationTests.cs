@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace Dekaf.Tests.Integration;
 
 [Category("Consumer")]
+[NotInParallel("RackAwareKafkaContainer")]
 [ClassDataSource<RackAwareKafkaContainer>(Shared = SharedType.PerTestSession)]
 public sealed class ConsumerRackAwarenessIntegrationTests(RackAwareKafkaContainer kafka)
 {
