@@ -30,6 +30,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     private static readonly TimeSpan StaticMemberSessionTimeout = TimeSpan.FromSeconds(6);
     private static readonly TimeSpan StaticMemberHeartbeatInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan GroupConfigVerificationDelay = TimeSpan.FromMilliseconds(500);
+    private const int CrashPhaseMessages = 12;
+    private static readonly TimeSpan CrashClientReadyTimeout = TimeSpan.FromSeconds(90);
     private static readonly HashSet<string> ExpectedCommitFailureNames = new(StringComparer.Ordinal)
     {
         nameof(ErrorCode.IllegalGeneration),
@@ -284,6 +286,17 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         await Assert.That(() => member.Allow(1)).Throws<ObjectDisposedException>();
     }
 
+    [Test]
+    [Timeout(600_000)]
+    public async Task AbruptMemberLoss_AfterSessionExpiry_PreservesSequencesAndCommittedProgress(
+        CancellationToken cancellationToken)
+    {
+        foreach (var assignor in new[] { "uniform", "range" })
+        {
+            await RunAbruptMemberLossScenarioAsync(assignor, cancellationToken);
+        }
+    }
+
     private async Task RunChurnScenarioAsync(string assignor, CancellationToken cancellationToken)
     {
         var protocol = assignor switch
@@ -448,6 +461,167 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             cancellationToken: cancellationToken);
     }
 
+    private async Task RunAbruptMemberLossScenarioAsync(
+        string assignor,
+        CancellationToken cancellationToken)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: PartitionCount);
+        var groupId = $"rebalance-crash-{assignor}-{Guid.NewGuid():N}";
+        var oracle = new SequenceOracle(topic, PartitionCount, MessagesPerPartition, CommitInterval);
+
+        await using var admin = KafkaContainer.CreateAdminClient();
+        await admin.IncrementalAlterConfigsAsync(
+            new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
+            {
+                [ConfigResource.Topic(topic)] = [ConfigAlter.Set("retention.ms", "600000")]
+            },
+            cancellationToken: cancellationToken);
+        await ProduceSequencedBacklogAsync(topic, cancellationToken);
+
+        await using var survivor = await CreateDekafMemberAsync(
+            topic,
+            groupId,
+            $"{assignor}-survivor",
+            assignor,
+            oracle,
+            cancellationToken);
+
+        survivor.Allow(1);
+        await survivor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
+        await survivor.WaitForObservedCountAsync(1, cancellationToken);
+
+        var crashedClientId = $"{assignor}-crashed";
+        await using var crashedMember = ConsumerGroupCrashClientProcess.Start(
+            KafkaContainer.BootstrapServers,
+            topic,
+            groupId,
+            crashedClientId,
+            assignor);
+        var crashedObservation = await crashedMember.WaitUntilReadyAsync(
+            CrashClientReadyTimeout,
+            cancellationToken);
+
+        await survivor.WaitForAssignmentCountBelowAsync(PartitionCount, cancellationToken);
+        var crashedPartition = new TopicPartition(topic, crashedObservation.Partition);
+        await survivor.WaitForPartitionUnassignedAsync(crashedPartition, cancellationToken);
+        oracle.Record(
+            crashedClientId,
+            crashedObservation.Partition,
+            crashedObservation.CommittedOffset,
+            crashedObservation.CommittedValue);
+        oracle.Record(
+            crashedClientId,
+            crashedObservation.Partition,
+            crashedObservation.Offset,
+            crashedObservation.Value);
+        await AssertGroupMemberPresenceAsync(
+            admin,
+            groupId,
+            crashedClientId,
+            expected: true,
+            cancellationToken);
+        await AssertObservationIsUncommittedAsync(
+            admin,
+            groupId,
+            topic,
+            crashedObservation,
+            cancellationToken);
+
+        var survivorJointTarget = survivor.ObservedCount + JointPhaseMessagesPerMember;
+        survivor.Allow(JointPhaseMessagesPerMember);
+        await survivor.WaitForObservedCountAsync(survivorJointTarget, cancellationToken);
+
+        var processingAcrossCrash = survivor.PauseNextRecord();
+        var crashPhaseProgressTarget = survivor.ObservedCount + CrashPhaseMessages;
+        survivor.Allow(CrashPhaseMessages);
+        await processingAcrossCrash.WaitUntilPausedAsync(cancellationToken);
+
+        var committedAtCrash = await CaptureAndAssertCommittedOffsetsAsync(
+            admin,
+            groupId,
+            oracle,
+            cancellationToken);
+        oracle.BeginCrashWindow(committedAtCrash);
+        await Assert.That(oracle.IsInCrashWindow(
+                crashedObservation.Partition,
+                crashedObservation.Offset))
+            .IsTrue()
+            .Because("the child record must be inside the committed/processed window captured at kill");
+
+        await crashedMember.TerminateAsync(cancellationToken);
+
+        // A force-killed KIP-848 member remains registered until its broker-side
+        // session expires; no LeaveGroup or terminal heartbeat removed it.
+        await AssertGroupMemberPresenceAsync(
+            admin,
+            groupId,
+            crashedClientId,
+            expected: true,
+            cancellationToken);
+
+        processingAcrossCrash.Release();
+        await survivor.WaitForObservedCountAsync(crashPhaseProgressTarget, cancellationToken);
+        await AssertGroupMemberPresenceAsync(
+            admin,
+            groupId,
+            crashedClientId,
+            expected: true,
+            cancellationToken);
+
+        // This waiter is created only after the child took the partition and the
+        // survivor reported it revoked, so an old full-assignment signal cannot
+        // masquerade as recovery.
+        await survivor.WaitForPartitionAssignedAsync(crashedPartition, cancellationToken);
+        await survivor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
+
+        // Start the post-expiry admin probe only after full reassignment shows the
+        // coordinator transition has settled, then reuse it for both checkpoints.
+        await using var postExpiryAdmin = KafkaContainer.CreateAdminClient();
+        await AssertGroupMemberPresenceAsync(
+            postExpiryAdmin,
+            groupId,
+            crashedClientId,
+            expected: false,
+            cancellationToken);
+        var committedAfterExpiry = await CaptureAndAssertCommittedOffsetsAsync(
+            postExpiryAdmin,
+            groupId,
+            oracle,
+            cancellationToken,
+            committedAtCrash);
+
+        var remainingPermits = PartitionCount * MessagesPerPartition * 2;
+        survivor.Allow(remainingPermits);
+        await oracle.WaitForAllSequencesAsync(cancellationToken);
+        await oracle.WaitForFinalCommitsAsync(cancellationToken);
+
+        await Assert.That(oracle.WasDuplicatedAfterCrash(
+                crashedObservation.Partition,
+                crashedObservation.Offset))
+            .IsTrue()
+            .Because("the crashed member's last uncommitted record must be replayed after session expiry");
+
+        await survivor.StopAsync();
+
+        await Assert.That(oracle.UniqueCount).IsEqualTo(PartitionCount * MessagesPerPartition);
+        var violations = oracle.Violations;
+        await Assert.That(violations).IsEmpty()
+            .Because(string.Join(Environment.NewLine, violations));
+
+        for (var partition = 0; partition < PartitionCount; partition++)
+        {
+            await Assert.That(oracle.GetSeenOffsets(partition))
+                .IsEquivalentTo(Enumerable.Range(0, MessagesPerPartition).Select(static value => (long)value));
+        }
+
+        await CaptureAndAssertCommittedOffsetsAsync(
+            postExpiryAdmin,
+            groupId,
+            oracle,
+            cancellationToken,
+            committedAfterExpiry);
+    }
+
     private async Task ProduceSequencedBacklogAsync(string topic, CancellationToken cancellationToken)
     {
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -586,6 +760,82 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         }
     }
 
+    private static async Task<long[]> CaptureAndAssertCommittedOffsetsAsync(
+        IAdminClient admin,
+        string groupId,
+        SequenceOracle oracle,
+        CancellationToken cancellationToken,
+        IReadOnlyList<long>? previousBrokerOffsets = null)
+    {
+        var committedOffsets = await admin.ListConsumerGroupOffsetsAsync(groupId, cancellationToken);
+        var actualOffsets = new long[PartitionCount];
+
+        for (var partition = 0; partition < PartitionCount; partition++)
+        {
+            var (explicitCommit, processedExclusive) = oracle.GetProgressBounds(partition);
+            var actual = committedOffsets.GetValueOrDefault(
+                new TopicPartition(oracle.Topic, partition),
+                0);
+            actualOffsets[partition] = actual;
+            await Assert.That(actual)
+                .IsLessThanOrEqualTo(processedExclusive)
+                .Because($"partition {partition} broker commit cannot jump ahead of processed records");
+            await Assert.That(actual)
+                .IsGreaterThanOrEqualTo(explicitCommit)
+                .Because($"partition {partition} broker commit cannot trail a successful explicit commit");
+
+            if (previousBrokerOffsets is not null)
+            {
+                await Assert.That(actual)
+                    .IsGreaterThanOrEqualTo(previousBrokerOffsets[partition])
+                    .Because($"partition {partition} broker commit cannot rewind between checkpoints");
+            }
+
+            oracle.ObserveCommittedOffset(partition, actual);
+        }
+
+        return actualOffsets;
+    }
+
+    private static async Task AssertObservationIsUncommittedAsync(
+        IAdminClient admin,
+        string groupId,
+        string topic,
+        ConsumerGroupCrashObservation observation,
+        CancellationToken cancellationToken)
+    {
+        var committedOffsets = await admin.ListConsumerGroupOffsetsAsync(groupId, cancellationToken);
+        var committedExclusive = committedOffsets.GetValueOrDefault(
+            new TopicPartition(topic, observation.Partition),
+            0);
+
+        await Assert.That(observation.Offset)
+            .IsEqualTo(observation.CommittedOffset + 1)
+            .Because("the child must commit one record immediately before its crash record");
+        await Assert.That(committedExclusive)
+            .IsEqualTo(observation.Offset)
+            .Because("the crash record must be the first offset after the child's durable commit");
+    }
+
+    private static async Task AssertGroupMemberPresenceAsync(
+        IAdminClient admin,
+        string groupId,
+        string clientId,
+        bool expected,
+        CancellationToken cancellationToken)
+    {
+        var descriptions = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken);
+        await Assert.That(descriptions).ContainsKey(groupId);
+
+        var description = descriptions[groupId];
+        var containsMember = description.Members.Any(member =>
+            string.Equals(member.ClientId, clientId, StringComparison.Ordinal));
+
+        await Assert.That(containsMember)
+            .IsEqualTo(expected)
+            .Because($"group members: {string.Join(", ", description.Members.Select(member => member.ClientId))}");
+    }
+
     private static async Task AssertGroupModeAsync(
         IAdminClient admin,
         string groupId,
@@ -630,8 +880,12 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         int MaxAssignmentCount { get; }
         void Allow(int count);
         void ResetMaxAssignmentCount();
+        RecordProcessingBarrier PauseNextRecord();
         Task WaitForAnyAssignmentAsync(CancellationToken cancellationToken);
         Task WaitForAssignmentCountAsync(int count, CancellationToken cancellationToken);
+        Task WaitForAssignmentCountBelowAsync(int count, CancellationToken cancellationToken);
+        Task WaitForPartitionAssignedAsync(TopicPartition partition, CancellationToken cancellationToken);
+        Task WaitForPartitionUnassignedAsync(TopicPartition partition, CancellationToken cancellationToken);
         Task WaitForObservedCountAsync(int count, CancellationToken cancellationToken);
         Task StopAsync();
     }
@@ -644,6 +898,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         private readonly SemaphoreSlim _permits = new(0, int.MaxValue);
         private readonly AsyncCounter _observed = new();
         private Task? _runTask;
+        private RecordProcessingBarrier? _nextRecordBarrier;
         private int _stopped;
 
         protected ConsumerMemberBase(
@@ -674,6 +929,15 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         public void ResetMaxAssignmentCount() => _assignments.ResetMaxAssignmentCount();
 
+        public RecordProcessingBarrier PauseNextRecord()
+        {
+            var barrier = new RecordProcessingBarrier();
+            if (Interlocked.CompareExchange(ref _nextRecordBarrier, barrier, null) is not null)
+                throw new InvalidOperationException("A record-processing barrier is already pending.");
+
+            return barrier;
+        }
+
         public Task WaitForAnyAssignmentAsync(CancellationToken cancellationToken) =>
             WaitForSignalOrCompletionAsync(
                 _assignments.WaitForAnyAsync(cancellationToken),
@@ -686,6 +950,31 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 _assignments.WaitForCountAsync(count, cancellationToken),
                 GetRunTask(),
                 $"{_memberDescription} completed before receiving {count} partitions",
+                cancellationToken);
+
+        public Task WaitForAssignmentCountBelowAsync(int count, CancellationToken cancellationToken) =>
+            WaitForSignalOrCompletionAsync(
+                _assignments.WaitForCountBelowAsync(count, cancellationToken),
+                GetRunTask(),
+                $"{_memberDescription} completed before its assignment dropped below {count} partitions",
+                cancellationToken);
+
+        public Task WaitForPartitionAssignedAsync(
+            TopicPartition partition,
+            CancellationToken cancellationToken) =>
+            WaitForSignalOrCompletionAsync(
+                _assignments.WaitForPartitionAssignedAsync(partition, cancellationToken),
+                GetRunTask(),
+                $"{_memberDescription} completed before {partition} was assigned",
+                cancellationToken);
+
+        public Task WaitForPartitionUnassignedAsync(
+            TopicPartition partition,
+            CancellationToken cancellationToken) =>
+            WaitForSignalOrCompletionAsync(
+                _assignments.WaitForPartitionUnassignedAsync(partition, cancellationToken),
+                GetRunTask(),
+                $"{_memberDescription} completed before {partition} was revoked",
                 cancellationToken);
 
         public Task WaitForObservedCountAsync(int count, CancellationToken cancellationToken) =>
@@ -735,6 +1024,13 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         protected void IncrementObserved() => _observed.Increment();
 
+        protected async Task WaitForPendingRecordBarrierAsync()
+        {
+            var barrier = Interlocked.Exchange(ref _nextRecordBarrier, null);
+            if (barrier is not null)
+                await barrier.PauseAsync(StoppingToken);
+        }
+
         protected abstract Task RunAsync();
         protected abstract ValueTask DisposeConsumerAsync();
 
@@ -747,6 +1043,25 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         int Partition,
         long Offset,
         string? Value);
+
+    private sealed class RecordProcessingBarrier
+    {
+        private readonly TaskCompletionSource _paused = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _released = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task WaitUntilPausedAsync(CancellationToken cancellationToken) =>
+            _paused.Task.WaitAsync(cancellationToken);
+
+        public void Release() => _released.TrySetResult();
+
+        public async Task PauseAsync(CancellationToken cancellationToken)
+        {
+            _paused.TrySetResult();
+            await _released.Task.WaitAsync(cancellationToken);
+        }
+    }
 
     private sealed class DekafConsumerMember : ConsumerMemberBase
     {
@@ -782,14 +1097,16 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     }
 
                     var result = enumerator.Current;
+                    await WaitForPendingRecordBarrierAsync();
+
                     var record = new ObservedRecord(
                         result.Topic,
                         result.Partition,
                         result.Offset,
                         result.Value);
                     Oracle.Record(ClientId, record);
-                    IncrementObserved();
                     await Oracle.CommitIfNeededAsync(record, TryCommitAsync, StoppingToken);
+                    IncrementObserved();
                 }
             }
             catch (OperationCanceledException) when (StoppingToken.IsCancellationRequested)
@@ -880,14 +1197,16 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         private async Task ObserveAsync(ConfluentKafka.ConsumeResult<string, string> result)
         {
+            await WaitForPendingRecordBarrierAsync();
+
             var record = new ObservedRecord(
                 result.Topic,
                 result.Partition.Value,
                 result.Offset.Value,
                 result.Message.Value);
             Oracle.Record(ClientId, record);
-            IncrementObserved();
             await Oracle.CommitIfNeededAsync(record, TryCommitAsync, StoppingToken);
+            IncrementObserved();
         }
 
         private void RewindIdlePollResult(ConfluentKafka.ConsumeResult<string, string> result)
@@ -1025,38 +1344,47 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 return;
             }
 
-            if (result.Partition < 0 || result.Partition >= _partitions.Length)
+            Record(clientId, result.Partition, result.Offset, result.Value);
+        }
+
+        public void Record(
+            string clientId,
+            int partition,
+            long offset,
+            string? value)
+        {
+            if (partition < 0 || partition >= _partitions.Length)
             {
-                AddViolation($"Unexpected partition {result.Partition}");
+                AddViolation($"Unexpected partition {partition}");
                 return;
             }
 
-            if (!long.TryParse(result.Value, NumberStyles.None, CultureInfo.InvariantCulture, out var sequence))
+            if (!long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var sequence))
             {
-                AddViolation($"Partition {result.Partition}: invalid sequence payload '{result.Value}'");
+                AddViolation($"Partition {partition}: invalid sequence payload '{value}'");
                 return;
             }
 
-            if (sequence != result.Offset)
-                AddViolation($"Partition {result.Partition}: payload {sequence} does not match offset {result.Offset}");
+            if (sequence != offset)
+                AddViolation($"Partition {partition}: payload {sequence} does not match offset {offset}");
 
-            if (result.Offset < 0 || result.Offset >= _messagesPerPartition)
+            if (offset < 0 || offset >= _messagesPerPartition)
             {
-                AddViolation($"Partition {result.Partition}: offset {result.Offset} is outside seeded range");
+                AddViolation($"Partition {partition}: offset {offset} is outside seeded range");
                 return;
             }
 
-            var state = _partitions[result.Partition];
+            var state = _partitions[partition];
             var unique = false;
             lock (state.Gate)
             {
-                if (state.Seen.Add(result.Offset))
+                if (state.Seen.Add(offset))
                 {
                     unique = true;
-                    if (result.Offset != state.NextExpected)
+                    if (offset != state.NextExpected)
                     {
                         AddViolation(
-                            $"Partition {result.Partition}: observed new offset {result.Offset} before {state.NextExpected}");
+                            $"Partition {partition}: observed new offset {offset} before {state.NextExpected}");
                     }
 
                     while (state.Seen.Contains(state.NextExpected))
@@ -1065,10 +1393,23 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 else
                 {
                     Interlocked.Increment(ref _duplicateCount);
-                    if (result.Offset < state.CommittedExclusive)
+                    if (state.CrashWindowActive)
+                    {
+                        state.PostCrashDuplicates.Add(offset);
+                        if (offset < state.CrashCommittedExclusive ||
+                            offset >= state.CrashProcessedExclusive)
+                        {
+                            AddViolation(
+                                $"{clientId}, partition {partition}: post-crash replay {offset} outside " +
+                                $"uncommitted window [{state.CrashCommittedExclusive}, " +
+                                $"{state.CrashProcessedExclusive})");
+                        }
+                    }
+
+                    if (offset < state.CommittedExclusive)
                     {
                         AddViolation(
-                            $"{clientId}, partition {result.Partition}: replayed offset {result.Offset} below committed offset {state.CommittedExclusive}");
+                            $"{clientId}, partition {partition}: replayed offset {offset} below committed offset {state.CommittedExclusive}");
                     }
                 }
             }
@@ -1182,6 +1523,41 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 _finalCommits.Increment();
         }
 
+        public void BeginCrashWindow(IReadOnlyList<long> brokerCommittedOffsets)
+        {
+            if (brokerCommittedOffsets.Count != _partitions.Length)
+                throw new ArgumentException("A committed offset is required for every partition.", nameof(brokerCommittedOffsets));
+
+            for (var partition = 0; partition < _partitions.Length; partition++)
+            {
+                var state = _partitions[partition];
+                lock (state.Gate)
+                {
+                    state.CrashCommittedExclusive = brokerCommittedOffsets[partition];
+                    state.CrashProcessedExclusive = state.NextExpected;
+                    state.CrashWindowActive = true;
+                }
+            }
+        }
+
+        public bool IsInCrashWindow(int partition, long offset)
+        {
+            var state = _partitions[partition];
+            lock (state.Gate)
+            {
+                return state.CrashWindowActive &&
+                       offset >= state.CrashCommittedExclusive &&
+                       offset < state.CrashProcessedExclusive;
+            }
+        }
+
+        public bool WasDuplicatedAfterCrash(int partition, long offset)
+        {
+            var state = _partitions[partition];
+            lock (state.Gate)
+                return state.PostCrashDuplicates.Contains(offset);
+        }
+
         private void AddViolation(string violation)
         {
             lock (_violationsGate)
@@ -1192,8 +1568,12 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         {
             public object Gate { get; } = new();
             public HashSet<long> Seen { get; } = [];
+            public HashSet<long> PostCrashDuplicates { get; } = [];
             public long NextExpected { get; set; }
             public long CommittedExclusive { get; set; }
+            public long CrashCommittedExclusive { get; set; }
+            public long CrashProcessedExclusive { get; set; }
+            public bool CrashWindowActive { get; set; }
         }
     }
 
@@ -1248,17 +1628,32 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         public void Revoke(IEnumerable<TopicPartition> partitions) => Update(partitions, assigned: false);
 
         public Task WaitForAnyAsync(CancellationToken cancellationToken) =>
-            WaitForAsync(static count => count > 0, cancellationToken);
+            WaitForAsync(static assigned => assigned.Count > 0, cancellationToken);
 
         public Task WaitForCountAsync(int count, CancellationToken cancellationToken) =>
-            WaitForAsync(current => current == count, cancellationToken);
+            WaitForAsync(assigned => assigned.Count == count, cancellationToken);
 
-        private Task WaitForAsync(Func<int, bool> predicate, CancellationToken cancellationToken)
+        public Task WaitForCountBelowAsync(int count, CancellationToken cancellationToken) =>
+            WaitForAsync(assigned => assigned.Count < count, cancellationToken);
+
+        public Task WaitForPartitionAssignedAsync(
+            TopicPartition partition,
+            CancellationToken cancellationToken) =>
+            WaitForAsync(assigned => assigned.Contains(partition), cancellationToken);
+
+        public Task WaitForPartitionUnassignedAsync(
+            TopicPartition partition,
+            CancellationToken cancellationToken) =>
+            WaitForAsync(assigned => !assigned.Contains(partition), cancellationToken);
+
+        private Task WaitForAsync(
+            Func<HashSet<TopicPartition>, bool> predicate,
+            CancellationToken cancellationToken)
         {
             Task signal;
             lock (_gate)
             {
-                if (predicate(_assigned.Count))
+                if (predicate(_assigned))
                     return Task.CompletedTask;
 
                 var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1287,7 +1682,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 for (var index = _waiters.Count - 1; index >= 0; index--)
                 {
                     var waiter = _waiters[index];
-                    if (!waiter.Predicate(_assigned.Count))
+                    if (!waiter.Predicate(_assigned))
                         continue;
 
                     completed ??= [];
@@ -1304,7 +1699,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         }
 
         private sealed record AssignmentWaiter(
-            Func<int, bool> Predicate,
+            Func<HashSet<TopicPartition>, bool> Predicate,
             TaskCompletionSource Completion);
     }
 
