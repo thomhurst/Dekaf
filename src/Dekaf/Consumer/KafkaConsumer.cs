@@ -1379,7 +1379,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
         ThrowIfNotInitialized();
-        _coordinator?.RecordPoll();
 
         // Start auto-commit if enabled (only in Auto mode)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
@@ -1397,6 +1396,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            _coordinator?.RecordPoll();
+
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -1684,7 +1685,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         ThrowIfNotInitialized();
-        _coordinator?.RecordPoll();
 
         // Start auto-commit if enabled (only in Auto mode)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
@@ -1702,6 +1702,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            _coordinator?.RecordPoll();
+
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -1822,7 +1824,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         ThrowIfNotInitialized();
-        _coordinator?.RecordPoll();
 
         // Start auto-commit if enabled (only in Auto mode)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
@@ -1840,6 +1841,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            _coordinator?.RecordPoll();
+
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 
@@ -3036,7 +3039,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
         ThrowIfNotInitialized();
-        _coordinator?.RecordPoll();
 
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
         {
@@ -3052,6 +3054,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            _coordinator?.RecordPoll();
+
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
             ClearFetchBufferForPendingCoordinatorRevocations();
 

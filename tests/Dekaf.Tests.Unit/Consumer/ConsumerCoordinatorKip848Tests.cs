@@ -323,6 +323,71 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task ConsumerProtocol_MaxPollIntervalExceeded_RejectsCommitWhenLeaveFails(
+        CancellationToken cancellationToken)
+    {
+        SetupFindCoordinator();
+        var leaveAttempted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                if (request.MemberEpoch == -1)
+                {
+                    leaveAttempted.TrySetResult();
+                    return ValueTask.FromException<ConsumerGroupHeartbeatResponse>(
+                        new InvalidOperationException("leave failed"));
+                }
+
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 10
+                });
+            });
+
+        _metadataManager.SetApiVersion(
+            ApiKey.OffsetCommit,
+            OffsetCommitRequest.LowestSupportedVersion,
+            OffsetCommitRequest.HighestSupportedVersion);
+        var commitRequestCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitRequestCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 10,
+            maxPollIntervalMs: 50);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, cancellationToken);
+        await leaveAttempted.Task.WaitAsync(cancellationToken);
+
+        var exception = await Assert.That(async () =>
+                await coordinator.CommitOffsetsAsync(
+                    [new TopicPartitionOffset("test-topic", 0, 1)],
+                    cancellationToken))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(commitRequestCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_SuccessfulJoin_WithAssignment_SetsPartitions()
     {
         var assignment = CreateAssignment(TestTopicId, 0, 1);

@@ -16,6 +16,51 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class ConsumerAssignmentFastPathTests
 {
     private static readonly Guid TestTopicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+    private static readonly FieldInfo PollVersionField = typeof(ConsumerCoordinator).GetField(
+        "_pollVersion",
+        BindingFlags.NonPublic | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("_pollVersion field not found.");
+
+    [Test]
+    public async Task ConsumeAsync_IdleLoop_RecordsForegroundPollProgress()
+    {
+        await AssertIdleLoopRecordsPollProgressAsync(
+            static (consumer, token) => consumer.ConsumeAsync(token));
+    }
+
+    [Test]
+    public async Task ConsumeBatchAsync_IdleLoop_RecordsForegroundPollProgress()
+    {
+        await AssertIdleLoopRecordsPollProgressAsync(
+            static (consumer, token) => consumer.ConsumeBatchAsync(token));
+    }
+
+    [Test]
+    public async Task ConsumeRawBatchAsync_IdleLoop_RecordsForegroundPollProgress()
+    {
+        await AssertIdleLoopRecordsPollProgressAsync(
+            static (consumer, token) => consumer.ConsumeRawBatchAsync(token));
+    }
+
+    private static async Task AssertIdleLoopRecordsPollProgressAsync<T>(
+        Func<KafkaConsumer<string, string>, CancellationToken, IAsyncEnumerable<T>> consume)
+    {
+        await using var consumer = CreatePausedGroupConsumer();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await using var enumerator = consume(consumer, cts.Token).GetAsyncEnumerator();
+        var moveNext = enumerator.MoveNextAsync().AsTask();
+
+        try
+        {
+            await Assert.That(() => GetPollVersion(consumer))
+                .Eventually(version => version.IsGreaterThanOrEqualTo(3), TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            cts.Cancel();
+            await IgnoreCancellationAsync(moveNext);
+        }
+    }
 
     [Test]
     public async Task EnsureAssignmentAsync_UnchangedManualAssignment_SkipsAssignmentLock()
@@ -484,6 +529,30 @@ public sealed class ConsumerAssignmentFastPathTests
             },
             Serializers.String,
             Serializers.String);
+    }
+
+    private static KafkaConsumer<string, string> CreatePausedGroupConsumer()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var metadataManager = CreateMetadataManager(connectionPool);
+        var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        SetInitialized(consumer);
+
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, 0)]);
+        consumer.Pause(partition);
+        return consumer;
+    }
+
+    private static async Task IgnoreCancellationAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     private static KafkaConsumer<string, string> CreateGroupConsumer(
@@ -967,6 +1036,11 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_coordinator field not found.");
 
         return (ConsumerCoordinator)field.GetValue(consumer)!;
+    }
+
+    private static long GetPollVersion(KafkaConsumer<string, string> consumer)
+    {
+        return (long)PollVersionField.GetValue(GetCoordinator(consumer))!;
     }
 
     private static void InvalidateCoordinatorAssignmentSnapshot(KafkaConsumer<string, string> consumer)

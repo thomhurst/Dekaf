@@ -111,6 +111,19 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Interlocked.Increment(ref _pollVersion);
     }
 
+    private void ThrowIfMaxPollIntervalExpired()
+    {
+        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0)
+            return;
+
+        throw new GroupException(
+            ErrorCode.FencedMemberEpoch,
+            $"Offset commit rejected because maximum poll interval of {_options.MaxPollIntervalMs}ms was exceeded")
+        {
+            GroupId = _options.GroupId
+        };
+    }
+
     internal (TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)
         GetAssignmentSnapshotAndDrainRevocations()
     {
@@ -490,6 +503,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        ThrowIfMaxPollIntervalExpired();
+
         LogCommitOffsetsStarted(_options.GroupId!);
         // Lock is intentionally held across retries to protect the shared _commitTopicGroups dictionary,
         // which is reused across calls to avoid allocations. With up to 3 retries x ~600ms each,
@@ -499,6 +514,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             await RetryHelper.WithRetryAsync(async () =>
             {
+                // Expiration can happen while this call waits for the commit lock.
+                ThrowIfMaxPollIntervalExpired();
+
                 using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                     _coordinatorId,
                     _getCoordinationConnectionIndex(),
@@ -1139,9 +1157,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (Volatile.Read(ref _pollVersion) == expiredPollVersion)
                     return;
 
+                // Keep the marker until this join succeeds so commits stay locally fenced.
                 _memberId = null;
                 _generationId = -1;
-                Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
             }
 
             if (_state == CoordinatorState.Stable)
@@ -1178,6 +1196,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         cancellationToken).ConfigureAwait(false);
 
                     _state = CoordinatorState.Stable;
+                    Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
 
                     Diagnostics.DekafMetrics.RebalanceDuration.Record(
                         Stopwatch.GetElapsedTime(startedAt).TotalSeconds,
