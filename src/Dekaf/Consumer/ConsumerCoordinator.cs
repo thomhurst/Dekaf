@@ -186,7 +186,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private void ThrowIfMaxPollIntervalExpired()
     {
-        if (!IsMaxPollIntervalExpired())
+        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
+            && !IsCurrentPollGenerationExpired())
             return;
 
         throw new GroupException(
@@ -197,9 +198,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         };
     }
 
-    private bool IsMaxPollIntervalExpired()
+    private bool IsCurrentPollGenerationExpired()
     {
-        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) >= 0)
+        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
             return true;
 
         if (Volatile.Read(ref _foregroundFetchWaitCount) != 0)
@@ -999,9 +1000,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var connection = connectionLease.Connection;
 
         if (discardIfMembershipChanged &&
-            (_state != CoordinatorState.Stable ||
+             (_state != CoordinatorState.Stable ||
              Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
-             IsMaxPollIntervalExpired()))
+             IsCurrentPollGenerationExpired()))
             return default;
 
         var version = _metadataManager.GetNegotiatedApiVersion(
@@ -1077,7 +1078,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // membership between this guard and the epoch/assignment writes below.
             if (_state != CoordinatorState.Stable ||
                 Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
-                IsMaxPollIntervalExpired())
+                IsCurrentPollGenerationExpired())
                 return default;
 
             result = ProcessConsumerGroupHeartbeatResponse(

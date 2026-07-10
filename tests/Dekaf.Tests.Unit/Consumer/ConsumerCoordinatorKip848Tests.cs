@@ -511,6 +511,45 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_RejoinCommitFence_DoesNotSuppressSteadyHeartbeat()
+    {
+        SetupFindCoordinator();
+        var steadyHeartbeatCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                if (request.MemberEpoch > 0)
+                    Interlocked.Increment(ref steadyHeartbeatCount);
+
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = request.MemberEpoch > 0 ? request.MemberEpoch : 1,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = CreateAssignment(TestTopicId, 0)
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.RecordPollAsync(CancellationToken.None);
+        SetCoordinatorLongField(coordinator, "_maxPollExpiredAtPollVersion", 0);
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic" },
+            CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(steadyHeartbeatCount).IsEqualTo(1);
+    }
+
+    [Test]
     [Timeout(5_000)]
     public async Task ConsumerProtocol_MaxPollIntervalExceeded_LeavesDynamicMember(
         CancellationToken cancellationToken)
