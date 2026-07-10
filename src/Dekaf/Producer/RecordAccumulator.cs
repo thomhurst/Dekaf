@@ -873,6 +873,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         (long)(DisposeAppendInProgressWaitMs * (Stopwatch.Frequency / 1000.0));
 
     private readonly ProducerOptions _options;
+    private readonly bool _serializeBatchesPerPartition;
     private readonly CompressionCodecRegistry? _compressionCodecs;
     private readonly ConcurrentDictionary<string, int> _singleBatchRequestFixedSizes =
         new(StringComparer.Ordinal);
@@ -1871,6 +1872,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _options = options;
+        _serializeBatchesPerPartition = !options.EnableIdempotence
+            || options.MaxInFlightRequestsPerConnection <= 1;
         _compressionCodecs = compressionCodecs;
         _onBatchComplete = onBatchComplete;
         _onRecordAppended = onRecordAppended;
@@ -3393,7 +3396,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ShouldSealAppendedBatch(PartitionBatch batch)
         => batch.IsExactlyAtSizeLimit
-            || (_options.LingerMs == 0 && batch.ShouldFlush(Stopwatch.GetTimestamp(), _options.LingerMs));
+            || (_options.LingerMs == 0
+                && !ShouldDeferPartialBatchSeal(batch.TopicPartition)
+                && batch.ShouldFlush(Stopwatch.GetTimestamp(), _options.LingerMs));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool ShouldDeferPartialBatchSeal(TopicPartition topicPartition)
+    {
+        if (_mutedPartitions.ContainsKey(topicPartition))
+            return true;
+
+        return _serializeBatchesPerPartition
+            && _partitionQueueBytes.TryGetValue(topicPartition, out var queuedBytes)
+            && queuedBytes > 0;
+    }
 
     private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
     {
@@ -4088,7 +4104,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     break;
                 }
-                else if (sealAll || pd.CurrentBatch.ShouldFlush(now, _options.LingerMs))
+                // A muted or serialized busy partition already has an earlier batch to send.
+                // Keep its partial arena open so zero-linger appends coalesce instead of
+                // allocating one BatchSize arena per record while they wait. Size-full batches
+                // still seal in the append path, and FlushAsync must always seal.
+                else if (sealAll
+                    || (!ShouldDeferPartialBatchSeal(topicPartition)
+                        && pd.CurrentBatch.ShouldFlush(now, _options.LingerMs)))
                 {
                     ProducerDebugCounters.RecordBatchFlushedFromDictionary();
                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, pd.CurrentBatch);

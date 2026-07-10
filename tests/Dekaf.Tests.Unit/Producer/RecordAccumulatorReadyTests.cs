@@ -22,7 +22,8 @@ public class RecordAccumulatorReadyTests
     private static ProducerOptions CreateTestOptions(
         int batchSize = 1000,
         int lingerMs = 10,
-        CompressionType compressionType = CompressionType.None)
+        CompressionType compressionType = CompressionType.None,
+        bool enableIdempotence = true)
     {
         return new ProducerOptions
         {
@@ -31,7 +32,8 @@ public class RecordAccumulatorReadyTests
             BufferMemory = ulong.MaxValue,
             BatchSize = batchSize,
             LingerMs = lingerMs,
-            CompressionType = compressionType
+            CompressionType = compressionType,
+            EnableIdempotence = enableIdempotence
         };
     }
 
@@ -886,6 +888,101 @@ public class RecordAccumulatorReadyTests
             await accumulator.DisposeAsync();
             await metadataManager.DisposeAsync();
         }
+    }
+
+    [Test]
+    public async Task ExpireLingerAsync_MutedPartition_KeepsBatchOpenUntilUnmuted()
+    {
+        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        accumulator.MutePartition(topicPartition);
+
+        try
+        {
+            var appended = await accumulator.AppendFromSpansAsync(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+
+            await Assert.That(appended).IsTrue();
+            await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue();
+
+            await accumulator.ExpireLingerAsync(CancellationToken.None);
+            await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue();
+
+            accumulator.UnmutePartition(topicPartition);
+            await accumulator.ExpireLingerAsync(CancellationToken.None);
+            await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsFalse();
+
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+            await Assert.That(readyNodes).Contains(1);
+        }
+        finally
+        {
+            accumulator.UnmutePartition(topicPartition);
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ZeroLinger_SerializedPartition_KeepsNextBatchOpenWhilePreviousQueued()
+    {
+        var options = CreateTestOptions(
+            batchSize: 100_000,
+            lingerMs: 0,
+            enableIdempotence: false);
+        await using var accumulator = new RecordAccumulator(options);
+
+        var firstAppended = await accumulator.AppendFromSpansAsync(
+            "test-topic",
+            partition: 0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            "first"u8,
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(firstAppended).IsTrue();
+        await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsFalse();
+        await Assert.That(accumulator.GetPartitionQueueBytes("test-topic", 0)).IsGreaterThan(0);
+
+        var secondAppended = await accumulator.AppendFromSpansAsync(
+            "test-topic",
+            partition: 0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            "second"u8,
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(secondAppended).IsTrue();
+        await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue();
+
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+        await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue();
     }
 
     [Test]
