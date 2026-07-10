@@ -284,6 +284,41 @@ public sealed class ConsumerConnectionOwnershipTests
         _ = pool.Received(1).DisposeAsync();
     }
 
+    [Test]
+    public async Task StandaloneConsumer_Dispose_KeepsPoolAliveUntilRetiredLeaseReleases()
+    {
+        var pool = CreatePool();
+        var removedConnection = new TrackedConnection(
+            hasPendingRequest: false,
+            hasLease: true);
+        pool.ShrinkConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection?>(removedConnection));
+        var consumer = CreateStandaloneConsumer(pool, CreateMetadataManager(pool));
+        var leaseReleased = false;
+
+        TriggerScaleDown(consumer);
+        var disposeTask = consumer.DisposeAsync().AsTask();
+
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5.2));
+            _ = pool.DidNotReceive().DisposeAsync();
+
+            removedConnection.ReleaseLease();
+            leaseReleased = true;
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            if (!leaseReleased)
+                removedConnection.ReleaseLease();
+            await consumer.DisposeAsync();
+        }
+
+        await Assert.That(removedConnection.DisposeCount).IsEqualTo(1);
+        _ = pool.Received(1).DisposeAsync();
+    }
+
     private static IConnectionPool CreatePool()
     {
         var pool = Substitute.For<IConnectionPool>();

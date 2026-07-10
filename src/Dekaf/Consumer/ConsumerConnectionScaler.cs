@@ -228,6 +228,8 @@ internal sealed class ConsumerConnectionScaler
         }
     }
 
+    internal ValueTask StopAndDrainAsync() => StopAndDrainCoreAsync();
+
     private async ValueTask StopAndDrainCoreAsync()
     {
         Task[] pendingOperations;

@@ -6342,7 +6342,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         if (_connectionScaler is not null)
-            await _connectionScaler.StopAndDrainAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        {
+            if (_ownsInfrastructure)
+                await _connectionScaler.StopAndDrainAsync().ConfigureAwait(false);
+            else
+                await _connectionScaler.StopAndDrainAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
 
         autoCommitCts?.Dispose();
         prefetchCts?.Dispose();

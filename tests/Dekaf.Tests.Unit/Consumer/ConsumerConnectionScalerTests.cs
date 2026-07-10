@@ -263,6 +263,27 @@ public sealed class ConsumerConnectionScalerTests
     }
 
     [Test]
+    public async Task StopAndDrainAsync_WithoutTimeout_WaitsForPendingOperation()
+    {
+        var scaleCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ => new ValueTask(scaleCompletion.Task),
+            scaleDownAsync: _ => ValueTask.CompletedTask);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.MaybeScale();
+
+        var drainTask = scaler.StopAndDrainAsync().AsTask();
+        await Assert.That(drainTask.IsCompleted).IsFalse();
+
+        scaleCompletion.SetResult();
+        await drainTask.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Test]
     public async Task StopAndDrainAsync_CancelsPendingOperation()
     {
         var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
