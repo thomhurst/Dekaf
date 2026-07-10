@@ -212,7 +212,8 @@ jobs:
           retention-days: 7
 
   integration-tests:
-    name: Integration Tests (${{ matrix.category }}, ${{ matrix.framework }}, Kafka ${{ matrix.kafka }})
+    # Preserve the current-lane names required by the default-branch ruleset.
+    name: "Integration Tests (${{ matrix.category }}, ${{ matrix.framework }}${{ matrix.kafka != 'current' && format(', Kafka {0}', matrix.kafka) || '' }})"
     needs: build-and-unit-test
     runs-on: ubuntu-latest
     strategy:
@@ -284,7 +285,8 @@ jobs:
           retention-days: 7
 
   integration-tests-aot:
-    name: Integration Tests AOT (${{ matrix.category }}, Kafka ${{ matrix.kafka }})
+    # Preserve the current-lane names required by the default-branch ruleset.
+    name: "Integration Tests AOT (${{ matrix.category }}${{ matrix.kafka != 'current' && format(', Kafka {0}', matrix.kafka) || '' }})"
     needs: native-aot-integration-publish
     runs-on: ubuntu-latest
     strategy:
