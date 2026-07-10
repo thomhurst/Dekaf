@@ -1,0 +1,24 @@
+﻿Response: Dekaf.Protocol.Messages.CreateDelegationTokenResponse
+API key: CreateDelegationToken (38)
+Version: 1
+Header version: 0
+Body length: 40 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00 |................|
+0010: 00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00 |................|
+0020: 00 00 00 00 00 00 00 00                          |........|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "ExpiryTimestampMs": 0,
+  "Hmac": "",
+  "IssueTimestampMs": 0,
+  "MaxTimestampMs": 0,
+  "PrincipalName": "",
+  "PrincipalType": "",
+  "ThrottleTimeMs": 0,
+  "TokenId": "",
+  "TokenRequesterPrincipalName": null,
+  "TokenRequesterPrincipalType": null
+}

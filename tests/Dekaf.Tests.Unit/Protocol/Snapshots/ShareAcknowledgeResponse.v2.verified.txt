@@ -1,0 +1,17 @@
+﻿Response: Dekaf.Protocol.Messages.ShareAcknowledgeResponse
+API key: ShareAcknowledge (79)
+Version: 2
+Header version: 1
+Body length: 14 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00 00 00       |..............|
+
+Decoded:
+{
+  "AcquisitionLockTimeoutMs": 0,
+  "ErrorCode": "None",
+  "ErrorMessage": null,
+  "NodeEndpoints": [],
+  "Responses": [],
+  "ThrottleTimeMs": 0
+}

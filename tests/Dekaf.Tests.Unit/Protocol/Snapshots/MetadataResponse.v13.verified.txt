@@ -1,0 +1,18 @@
+﻿Response: Dekaf.Protocol.Messages.MetadataResponse
+API key: Metadata (3)
+Version: 13
+Header version: 1
+Body length: 14 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00 00 00       |..............|
+
+Decoded:
+{
+  "Brokers": [],
+  "ClusterAuthorizedOperations": -2147483648,
+  "ClusterId": null,
+  "ControllerId": 0,
+  "ErrorCode": "None",
+  "ThrottleTimeMs": 0,
+  "Topics": []
+}

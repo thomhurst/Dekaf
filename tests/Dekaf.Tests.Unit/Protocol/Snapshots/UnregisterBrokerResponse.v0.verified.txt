@@ -1,0 +1,14 @@
+﻿Response: Dekaf.Protocol.Messages.UnregisterBrokerResponse
+API key: UnregisterBroker (64)
+Version: 0
+Header version: 1
+Body length: 8 bytes
+
+0000: 00 00 00 00 00 00 00 00                          |........|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "ErrorMessage": null,
+  "ThrottleTimeMs": 0
+}

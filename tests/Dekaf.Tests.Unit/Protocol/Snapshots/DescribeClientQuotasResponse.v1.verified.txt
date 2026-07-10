@@ -1,0 +1,15 @@
+﻿Response: Dekaf.Protocol.Messages.DescribeClientQuotasResponse
+API key: DescribeClientQuotas (48)
+Version: 1
+Header version: 1
+Body length: 9 bytes
+
+0000: 00 00 00 00 00 00 00 00  00                      |.........|
+
+Decoded:
+{
+  "Entries": null,
+  "ErrorCode": "None",
+  "ErrorMessage": null,
+  "ThrottleTimeMs": 0
+}

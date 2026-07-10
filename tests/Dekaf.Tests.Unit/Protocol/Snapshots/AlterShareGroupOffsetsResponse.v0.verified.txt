@@ -1,0 +1,15 @@
+﻿Response: Dekaf.Protocol.Messages.AlterShareGroupOffsetsResponse
+API key: AlterShareGroupOffsets (91)
+Version: 0
+Header version: 1
+Body length: 9 bytes
+
+0000: 00 00 00 00 00 00 00 00  00                      |.........|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "ErrorMessage": null,
+  "Responses": [],
+  "ThrottleTimeMs": 0
+}

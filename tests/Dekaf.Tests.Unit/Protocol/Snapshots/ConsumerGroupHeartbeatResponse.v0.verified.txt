@@ -1,0 +1,22 @@
+﻿Response: Dekaf.Protocol.Messages.ConsumerGroupHeartbeatResponse
+API key: ConsumerGroupHeartbeat (68)
+Version: 0
+Header version: 1
+Body length: 20 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00 |................|
+0010: 00 00 00 00                                      |....|
+
+Decoded:
+{
+  "Assignment": {
+    "AssignedTopicPartitions": [],
+    "PendingTopicPartitions": []
+  },
+  "ErrorCode": "None",
+  "ErrorMessage": null,
+  "HeartbeatIntervalMs": 0,
+  "MemberEpoch": 0,
+  "MemberId": null,
+  "ThrottleTimeMs": 0
+}

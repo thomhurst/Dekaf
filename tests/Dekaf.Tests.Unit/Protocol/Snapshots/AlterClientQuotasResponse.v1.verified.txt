@@ -1,0 +1,13 @@
+﻿Response: Dekaf.Protocol.Messages.AlterClientQuotasResponse
+API key: AlterClientQuotas (49)
+Version: 1
+Header version: 1
+Body length: 6 bytes
+
+0000: 00 00 00 00 00 00                                |......|
+
+Decoded:
+{
+  "Entries": [],
+  "ThrottleTimeMs": 0
+}

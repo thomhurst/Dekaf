@@ -1,0 +1,15 @@
+﻿Response: Dekaf.Protocol.Messages.SaslAuthenticateResponse
+API key: SaslAuthenticate (36)
+Version: 2
+Header version: 1
+Body length: 13 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00 00          |.............|
+
+Decoded:
+{
+  "AuthBytes": "",
+  "ErrorCode": "None",
+  "ErrorMessage": null,
+  "SessionLifetimeMs": 0
+}

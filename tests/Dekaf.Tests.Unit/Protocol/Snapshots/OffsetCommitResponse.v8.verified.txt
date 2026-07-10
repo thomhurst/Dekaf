@@ -1,0 +1,13 @@
+﻿Response: Dekaf.Protocol.Messages.OffsetCommitResponse
+API key: OffsetCommit (8)
+Version: 8
+Header version: 1
+Body length: 6 bytes
+
+0000: 00 00 00 00 00 00                                |......|
+
+Decoded:
+{
+  "ThrottleTimeMs": 0,
+  "Topics": []
+}

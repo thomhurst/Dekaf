@@ -1,0 +1,14 @@
+﻿Response: Dekaf.Protocol.Messages.DescribeDelegationTokenResponse
+API key: DescribeDelegationToken (41)
+Version: 1
+Header version: 0
+Body length: 10 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00                   |..........|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "ThrottleTimeMs": 0,
+  "Tokens": []
+}

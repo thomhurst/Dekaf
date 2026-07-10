@@ -1,0 +1,17 @@
+﻿Response: Dekaf.Protocol.Messages.DescribeTopicPartitionsResponse
+API key: DescribeTopicPartitions (75)
+Version: 0
+Header version: 1
+Body length: 13 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00 00          |.............|
+
+Decoded:
+{
+  "NextCursor": {
+    "PartitionIndex": 0,
+    "TopicName": ""
+  },
+  "ThrottleTimeMs": 0,
+  "Topics": []
+}

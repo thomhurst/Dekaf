@@ -1,0 +1,16 @@
+﻿Response: Dekaf.Protocol.Messages.FetchResponse
+API key: Fetch (1)
+Version: 12
+Header version: 1
+Body length: 12 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00             |............|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "NodeEndpoints": [],
+  "Responses": [],
+  "SessionId": 0,
+  "ThrottleTimeMs": 0
+}

@@ -1,0 +1,14 @@
+﻿Response: Dekaf.Protocol.Messages.ListClientMetricsResourcesResponse
+API key: ListClientMetricsResources (74)
+Version: 0
+Header version: 1
+Body length: 8 bytes
+
+0000: 00 00 00 00 00 00 00 00                          |........|
+
+Decoded:
+{
+  "ClientMetricsResources": [],
+  "ErrorCode": "None",
+  "ThrottleTimeMs": 0
+}
