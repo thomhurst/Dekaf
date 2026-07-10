@@ -277,44 +277,41 @@ public class RecordBatchTests
     #region Zero-Copy Memory Management Tests
 
     [Test]
-    [NotInParallel("RecordBatchPool")]
-    public async Task RecordBatch_Dispose_DisposesLazyRecordList()
+    public async Task RecordBatch_Dispose_DisposesRecordList()
     {
-        var buffer = new ArrayBufferWriter<byte>();
-
-        var originalBatch = new RecordBatch
+        // Observe ownership through a non-pooled spy. Accessing the batch after Dispose
+        // races with legitimate pool reuse and cannot reliably prove disposal.
+        var records = new TrackingRecordList
         {
-            BaseOffset = 0,
-            BaseTimestamp = 0,
-            MaxTimestamp = 0,
-            Records =
-            [
-                new Record
-                {
-                    OffsetDelta = 0,
-                    TimestampDelta = 0,
-                    Key = "key"u8.ToArray(),
-                    Value = "value"u8.ToArray()
-                }
-            ]
+            new() { OffsetDelta = 0, TimestampDelta = 0, Value = "value"u8.ToArray() }
         };
+        var batch = new RecordBatch { Records = records };
 
-        originalBatch.Write(buffer);
+        batch.Dispose();
 
-        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        var parsedBatch = RecordBatch.Read(ref reader);
+        await Assert.That(records.WasDisposed).IsTrue();
+    }
 
-        // Access record before dispose
-        var record = parsedBatch.Records[0];
-        await Assert.That(record.Key.ToArray()).IsEquivalentTo("key"u8.ToArray());
+    private sealed class TrackingRecordList : List<Record>, IDisposable
+    {
+        public bool WasDisposed { get; private set; }
 
-        // Dispose the batch (returns to pool, clearing Records reference)
-        parsedBatch.Dispose();
+        public void Dispose() => WasDisposed = true;
+    }
 
-        // Accessing records after dispose should throw ObjectDisposedException
+    [Test]
+    [NotInParallel]
+    public async Task RecordBatch_Records_AfterDispose_ThrowsObjectDisposedException()
+    {
+        // Dispose returns the batch to a shared pool. Suite-wide isolation prevents
+        // another test from re-renting it before the disposed-state assertion.
+        var batch = new RecordBatch { Records = [] };
+
+        batch.Dispose();
+
         await Assert.ThrowsAsync<ObjectDisposedException>(() =>
         {
-            _ = parsedBatch.Records[0];
+            _ = batch.Records;
             return Task.CompletedTask;
         });
     }
