@@ -1403,7 +1403,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (_assignmentSnapshot.Count == 0)
             {
-                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                await DelayForForegroundPollAsync(100, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -1709,7 +1709,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (_assignmentSnapshot.Count == 0)
             {
-                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                await DelayForForegroundPollAsync(100, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -1848,7 +1848,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (_assignmentSnapshot.Count == 0)
             {
-                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                await DelayForForegroundPollAsync(100, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -3069,7 +3069,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             if (_assignmentSnapshot.Count == 0)
             {
-                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                await DelayForForegroundPollAsync(100, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
@@ -4165,6 +4165,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            coordinator?.EndForegroundPollActivity();
+        }
+    }
+
+    internal async ValueTask DelayForForegroundPollAsync(int milliseconds, CancellationToken cancellationToken)
+    {
+        var coordinator = _coordinator;
+        coordinator?.BeginForegroundPollActivity();
+        try
+        {
+            await Task.Delay(milliseconds, cancellationToken).ConfigureAwait(false);
         }
         finally
         {

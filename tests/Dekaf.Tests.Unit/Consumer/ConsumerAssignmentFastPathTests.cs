@@ -224,6 +224,32 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task DelayForForegroundPollAsync_EmptyAssignment_DoesNotExpireMember()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment());
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager, maxPollIntervalMs: 10);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var coordinator = GetCoordinator(consumer);
+        var delay = consumer.DelayForForegroundPollAsync(100, CancellationToken.None).AsTask();
+        LastPollTimestampField.SetValue(
+            coordinator,
+            Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+        await coordinator.RecordPollAsync(CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await delay;
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_CoordinatorRevocation_ClearsPendingAndPrefetchedRecordsForRemovedPartitions()
     {
         var connectionPool = Substitute.For<IConnectionPool>();

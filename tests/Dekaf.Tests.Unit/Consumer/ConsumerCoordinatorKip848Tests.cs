@@ -954,6 +954,55 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
     [Test]
     [Timeout(5_000)]
+    public async Task ConsumerProtocol_SteadyHeartbeatListener_ReentersCoordinatorWithoutDeadlock(
+        CancellationToken cancellationToken)
+    {
+        SetupFindCoordinator();
+        var heartbeatCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref heartbeatCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = count,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = CreateAssignment(TestTopicId, count - 1)
+                });
+            });
+
+        var topics = new HashSet<string> { "test-topic" };
+        ConsumerCoordinator? coordinator = null;
+        var assignmentCallbackCount = 0;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref assignmentCallbackCount) == 1
+                ? ValueTask.CompletedTask
+                : coordinator!.EnsureActiveGroupAsync(topics, cancellationToken));
+
+        var options = CreateConsumerProtocolOptions(
+            rebalanceListener: listener,
+            heartbeatIntervalMs: 60_000);
+        await using var ownedCoordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        coordinator = ownedCoordinator;
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+        await coordinator.StopHeartbeatAsync();
+
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator).AsTask().WaitAsync(cancellationToken);
+
+        await Assert.That(assignmentCallbackCount).IsEqualTo(2);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+    }
+
+    [Test]
+    [Timeout(5_000)]
     public async Task ConsumerProtocol_HeartbeatExpiry_BlocksRejoinUntilPartitionsLostCompletes(
         CancellationToken cancellationToken)
     {
