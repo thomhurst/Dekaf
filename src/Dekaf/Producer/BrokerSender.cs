@@ -2550,7 +2550,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Mute partition so no newer batches overtake the retry (ordering guarantee).
         // Also mute in accumulator so Ready/Drain skips this partition — prevents the
         // sender loop from draining newer batches that would jump the retry queue.
-        if (!batch.IsLoopExitRedelivery)
+        if (!networkRetryPrepared && !batch.IsLoopExitRedelivery)
             MutePartition(batch.TopicPartition);
 
         var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
@@ -2997,6 +2997,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
             _pinnedConnections[connectionIndex] = null; // Invalidate only the broken connection
             LogResponseFailed(ex, _brokerId);
+            HashSet<string>? metadataRefreshTopics = null;
 
             for (var i = 0; i < count; i++)
             {
@@ -3033,7 +3034,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     else
                     {
-                        PrepareDeferredNetworkRetry(batch);
+                        metadataRefreshTopics ??= new HashSet<string>(StringComparer.Ordinal);
+                        PrepareDeferredNetworkRetry(batch, metadataRefreshTopics);
                         _sendFailedRetries.Enqueue((batch, generations[i]));
                     }
                 }
@@ -3061,7 +3063,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
     }
 
-    private void PrepareDeferredNetworkRetry(ReadyBatch batch)
+    private void PrepareDeferredNetworkRetry(ReadyBatch batch, HashSet<string> metadataRefreshTopics)
     {
         // Parallel connection buckets may still be sending. Begin recovery here so a blocked
         // sibling write cannot postpone metadata refresh or the start of retry backoff.
@@ -3069,10 +3071,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             MutePartition(batch.TopicPartition);
         LogRetriableErrorWithBackoff(ErrorCode.NetworkException, batch.TopicPartition.Topic,
             batch.TopicPartition.Partition, _options.RetryBackoffMs);
-        // The send token may already be cancelled when a write times out. Use the sender lifetime
-        // token so timeout recovery can still refresh metadata.
-        _ = ObserveMetadataRefreshAsync(batch.TopicPartition.Topic, _cts.Token);
         batch.RetryNotBefore = Stopwatch.GetTimestamp() + _options.RetryBackoffTicks;
+
+        if (metadataRefreshTopics.Add(batch.TopicPartition.Topic))
+        {
+            // The send token may already be cancelled when a write times out. Use the sender
+            // lifetime token so recovery can still refresh metadata.
+            _ = ObserveMetadataRefreshAsync(batch.TopicPartition.Topic, _cts.Token);
+        }
     }
 
     /// <summary>

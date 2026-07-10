@@ -153,7 +153,8 @@ public sealed class BrokerSenderSendLoopTests
     private static MetadataResponse CreateLeaderMetadataResponse(
         string topic,
         int leaderId,
-        int leaderEpoch) =>
+        int leaderEpoch,
+        int partitionCount = 1) =>
         new()
         {
             Brokers =
@@ -167,18 +168,16 @@ public sealed class BrokerSenderSendLoopTests
                 {
                     ErrorCode = ErrorCode.None,
                     Name = topic,
-                    Partitions =
-                    [
-                        new PartitionMetadata
+                    Partitions = Enumerable.Range(0, partitionCount)
+                        .Select(partition => new PartitionMetadata
                         {
                             ErrorCode = ErrorCode.None,
-                            PartitionIndex = 0,
+                            PartitionIndex = partition,
                             LeaderId = leaderId,
                             LeaderEpoch = leaderEpoch,
                             ReplicaNodes = [1, 2],
                             IsrNodes = [1, 2]
-                        }
-                    ]
+                        }).ToArray()
                 }
             ]
         };
@@ -747,6 +746,94 @@ public sealed class BrokerSenderSendLoopTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_CoalescedSendFailure_RefreshesMetadataOncePerTopic(
+        CancellationToken cancellationToken)
+    {
+        const string topic = "test-topic";
+        var staleConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () =>
+                ValueTask.FromException<Task<ProduceResponse>>(new IOException("Leader connection closed"))
+        };
+        var metadataConnection = Substitute.For<IKafkaConnection>();
+        var metadataRequests = 0;
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(1, Arg.Any<CancellationToken>())
+            .Returns(staleConnection);
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(metadataConnection));
+        metadataConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<ApiVersionsResponse>(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            }));
+        metadataConnection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref metadataRequests);
+                return new ValueTask<MetadataResponse>(CreateLeaderMetadataResponse(
+                    topic, leaderId: 2, leaderEpoch: 2, partitionCount: 2));
+            });
+
+        var options = CreateOptions(retryBackoffMs: 10, retryBackoffMaxMs: 10);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateLeaderMetadataResponse(
+            topic, leaderId: 1, leaderEpoch: 1, partitionCount: 2));
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var rerouted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reroutedCount = 0;
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: (_, _, _, _, _) => { },
+            metadataManager,
+            rerouteBatch: (_, _) =>
+            {
+                if (Interlocked.Increment(ref reroutedCount) == 2)
+                    rerouted.TrySetResult();
+            });
+
+        try
+        {
+            var firstBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 0);
+            var secondBatch = CreateTestBatch(valueTaskSourcePool, topic, partition: 1);
+            sender.EnqueueBulk(
+            [
+                firstBatch,
+                secondBatch
+            ]);
+
+            await rerouted.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(Volatile.Read(ref metadataRequests)).IsEqualTo(1);
+            await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsFalse();
+            await Assert.That(accumulator.IsMuted(secondBatch.TopicPartition)).IsFalse();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
         }
     }
 

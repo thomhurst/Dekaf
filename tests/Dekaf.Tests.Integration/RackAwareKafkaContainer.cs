@@ -176,27 +176,13 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         int previousLeaderId,
         CancellationToken cancellationToken = default)
     {
-        Exception? lastError = null;
-        for (var attempt = 0; attempt < 90; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                var leaderId = await GetPartitionLeaderIdAsync(topic, cancellationToken).ConfigureAwait(false);
-                if (leaderId >= 0 && leaderId != previousLeaderId)
-                    return leaderId;
-            }
-            catch (Exception ex)
-            {
-                lastError = ex;
-            }
-
-            await Task.Delay(500, cancellationToken).ConfigureAwait(false);
-        }
-
-        throw new InvalidOperationException(
-            $"Topic '{topic}' did not elect a new leader after broker {previousLeaderId} stopped. " +
-            $"Last error: {lastError?.Message}");
+        return await PollUntilAsync(
+            token => GetPartitionLeaderIdAsync(topic, token),
+            leaderId => leaderId >= 0 && leaderId != previousLeaderId,
+            maxAttempts: 90,
+            delay: TimeSpan.FromMilliseconds(500),
+            timeoutMessage: $"Topic '{topic}' did not elect a new leader after broker {previousLeaderId} stopped.",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     public async Task WaitForInSyncReplicasAsync(
@@ -204,28 +190,18 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         int expectedCount,
         CancellationToken cancellationToken = default)
     {
-        Exception? lastError = null;
-        for (var attempt = 0; attempt < 120; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
+        _ = await PollUntilAsync(
+            async token =>
             {
                 await using var admin = CreateAdminClient();
-                var descriptions = await admin.DescribeTopicsAsync([topic], cancellationToken).ConfigureAwait(false);
-                if (descriptions[topic].Partitions.Single().IsrNodes.Count == expectedCount)
-                    return;
-            }
-            catch (Exception ex)
-            {
-                lastError = ex;
-            }
-
-            await Task.Delay(500, cancellationToken).ConfigureAwait(false);
-        }
-
-        throw new InvalidOperationException(
-            $"Topic '{topic}' did not restore {expectedCount} in-sync replicas. " +
-            $"Last error: {lastError?.Message}");
+                var descriptions = await admin.DescribeTopicsAsync([topic], token).ConfigureAwait(false);
+                return descriptions[topic].Partitions.Single().IsrNodes.Count;
+            },
+            isComplete: count => count == expectedCount,
+            maxAttempts: 120,
+            delay: TimeSpan.FromMilliseconds(500),
+            timeoutMessage: $"Topic '{topic}' did not restore {expectedCount} in-sync replicas.",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private IContainer CreateBroker(int nodeId, string rack, int externalPort)
@@ -277,55 +253,80 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
 
     private async Task WaitForClusterAsync(CancellationToken cancellationToken = default)
     {
-        Exception? lastError = null;
-        for (var attempt = 0; attempt < 90; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
+        _ = await PollUntilAsync(
+            async token =>
             {
                 await using var admin = CreateAdminClient();
-                var cluster = await admin.DescribeClusterAsync(cancellationToken).ConfigureAwait(false);
-                if (cluster.Nodes.Count == 3)
-                    return;
-            }
-            catch (Exception ex)
-            {
-                lastError = ex;
-            }
-
-            await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
-        }
-
-        throw new InvalidOperationException(
-            $"Rack-aware Kafka cluster was not ready after 90s. Last error: {lastError?.Message}");
-    }
-
-    private static async Task WaitForTopicAssignmentAsync(IAdminClient admin, string topic)
-    {
-        await WaitForTopicAssignmentAsync(admin, topic, [1, 2]).ConfigureAwait(false);
+                var cluster = await admin.DescribeClusterAsync(token).ConfigureAwait(false);
+                return cluster.Nodes.Count;
+            },
+            isComplete: nodeCount => nodeCount == 3,
+            maxAttempts: 90,
+            delay: TimeSpan.FromSeconds(1),
+            timeoutMessage: "Rack-aware Kafka cluster was not ready after 90s.",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task WaitForTopicAssignmentAsync(
         IAdminClient admin,
         string topic,
-        IReadOnlyList<int> expectedReplicas)
+        CancellationToken cancellationToken = default)
     {
-        for (var attempt = 0; attempt < 60; attempt++)
-        {
-            var descriptions = await admin.DescribeTopicsAsync([topic]).ConfigureAwait(false);
-            var partition = descriptions[topic].Partitions.Single();
+        await WaitForTopicAssignmentAsync(admin, topic, [1, 2], cancellationToken).ConfigureAwait(false);
+    }
 
-            if (partition.LeaderId == 1
-                && partition.ReplicaNodes.SequenceEqual(expectedReplicas)
-                && expectedReplicas.All(partition.IsrNodes.Contains))
+    private static async Task WaitForTopicAssignmentAsync(
+        IAdminClient admin,
+        string topic,
+        IReadOnlyList<int> expectedReplicas,
+        CancellationToken cancellationToken = default)
+    {
+        _ = await PollUntilAsync(
+            async token =>
             {
-                return;
+                var descriptions = await admin.DescribeTopicsAsync([topic], token).ConfigureAwait(false);
+                var partition = descriptions[topic].Partitions.Single();
+                return partition.LeaderId == 1
+                    && partition.ReplicaNodes.SequenceEqual(expectedReplicas)
+                    && expectedReplicas.All(partition.IsrNodes.Contains);
+            },
+            isComplete: static assigned => assigned,
+            maxAttempts: 60,
+            delay: TimeSpan.FromMilliseconds(500),
+            timeoutMessage: $"Topic '{topic}' did not get expected rack-aware assignment.",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<T> PollUntilAsync<T>(
+        Func<CancellationToken, Task<T>> probeAsync,
+        Func<T, bool> isComplete,
+        int maxAttempts,
+        TimeSpan delay,
+        string timeoutMessage,
+        CancellationToken cancellationToken = default)
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var result = await probeAsync(cancellationToken).ConfigureAwait(false);
+                if (isComplete(result))
+                    return result;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                lastError = ex;
             }
 
-            await Task.Delay(500).ConfigureAwait(false);
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
         }
 
-        throw new InvalidOperationException($"Topic '{topic}' did not get expected rack-aware assignment.");
+        if (lastError is null)
+            throw new InvalidOperationException(timeoutMessage);
+
+        throw new InvalidOperationException($"{timeoutMessage} Last error: {lastError.Message}", lastError);
     }
 
     private IContainer GetBroker(int nodeId)
