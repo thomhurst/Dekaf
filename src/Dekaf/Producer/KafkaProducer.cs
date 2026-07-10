@@ -74,6 +74,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
     private volatile int _produceApiVersion = -1;
+    private int _maxObservedBrokerThrottleTimeMs;
     private int _disposed;
 
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
@@ -2525,6 +2526,25 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     ProducerDeliveryDiagnosticsSnapshot IProducerDiagnostics.GetDeliveryDiagnosticsSnapshot()
         => _accumulator.GetDeliveryDiagnosticsSnapshot();
 
+    int IProducerDiagnostics.MaxObservedBrokerThrottleTimeMs =>
+        Volatile.Read(ref _maxObservedBrokerThrottleTimeMs);
+
+    private void ObserveBrokerThrottle(int throttleTimeMs)
+    {
+        var observedMaximum = Volatile.Read(ref _maxObservedBrokerThrottleTimeMs);
+        while (throttleTimeMs > observedMaximum)
+        {
+            var previous = Interlocked.CompareExchange(
+                ref _maxObservedBrokerThrottleTimeMs,
+                throttleTimeMs,
+                observedMaximum);
+            if (previous == observedMaximum)
+                return;
+
+            observedMaximum = previous;
+        }
+    }
+
     private async Task SenderLoopAsync(CancellationToken cancellationToken)
     {
         // PER-BROKER SENDER ARCHITECTURE: Each broker gets a dedicated BrokerSender with its own
@@ -2814,7 +2834,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             RerouteBatchToCurrentLeader,
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
             _logger,
-            canPhysicallyShrinkConnections: _ownsInfrastructure);
+            canPhysicallyShrinkConnections: _ownsInfrastructure,
+            onBrokerThrottle: _options.EnableDeliveryDiagnostics ? ObserveBrokerThrottle : null);
     }
 
     /// <summary>

@@ -93,6 +93,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private const int SendCoalescedTimeoutMs = 1500;
 
+    private const int ResponsePollIntervalMs = 100;
+
     /// <summary>
     /// Micro-linger: when coalesced batch count is at or below this threshold,
     /// briefly spin-wait for more batches before sending. Reduces per-request
@@ -129,6 +131,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? _bumpEpoch;
     private readonly Func<short>? _getCurrentEpoch;
     private readonly ILogger _logger;
+    private readonly Action<int>? _onBrokerThrottle;
+    private readonly Func<long> _getTimestamp;
+    private readonly Func<int, CancellationToken, ValueTask> _delayForThrottle;
 
     private readonly Channel<SendLoopEvent> _eventChannel;
     private readonly Task _sendLoopTask;
@@ -518,6 +523,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // loop to undercount pending responses and enter idle wait prematurely.
     private int _totalPendingResponseCount;
 
+    // Broker quota throttling is scoped per broker, not per connection. A positive
+    // ProduceResponse.ThrottleTimeMs pauses every connection owned by this BrokerSender.
+    // Zero is the common fast path and leaves this sentinel at zero.
+    private long _brokerThrottleUntilTimestamp;
+
     // Tracks distinct partitions this broker has seen, used to skip MicroLinger when all
     // known partitions are already coalesced (e.g., single-partition topics).
     // Conservative: a brand-new partition not yet in _knownPartitions may miss one
@@ -568,7 +578,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action<ReadyBatch, int>? rerouteBatch,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
         ILogger? logger,
-        bool canPhysicallyShrinkConnections = true)
+        bool canPhysicallyShrinkConnections = true,
+        Action<int>? onBrokerThrottle = null,
+        Func<long>? getTimestamp = null,
+        Func<int, CancellationToken, ValueTask>? delayForThrottle = null)
     {
         _brokerId = brokerId;
         _connectionPool = connectionPool;
@@ -586,6 +599,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _rerouteBatch = rerouteBatch;
         _onAcknowledgement = onAcknowledgement;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
+        _onBrokerThrottle = onBrokerThrottle;
+        _getTimestamp = getTimestamp ?? Stopwatch.GetTimestamp;
+        _delayForThrottle = delayForThrottle ?? DelayForThrottleAsync;
 
         _eventChannel = Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
         {
@@ -641,6 +657,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default).Unwrap();
     }
+
+    private static ValueTask DelayForThrottleAsync(int delayMs, CancellationToken cancellationToken) =>
+        new(Task.Delay(delayMs, cancellationToken));
 
     /// <summary>
     /// Returns true if the send loop is still running. When false, this BrokerSender
@@ -1204,31 +1223,42 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // epoch bump (step 4) runs before re-coalescing.
                     if (coalescedCount > 0 && Volatile.Read(ref _epochBumpRequestedForEpoch) >= 0)
                     {
-                        // Epoch bump pending — move coalesced batches back to carry-over.
-                        // Retry batches use AddFirst (they're older and must go before everything).
-                        // Normal batches use AddAfterRetries (they're newer and must go after
-                        // all retry batches to preserve per-partition ordering). Without this
-                        // distinction, AddFirst puts normal batches before retries, causing
-                        // newer data to be sent before older retry data after the partition unmutes.
-                        for (var i = 0; i < coalescedCount; i++)
+                        MoveCoalescedToCarryOver(
+                            coalescedBatches, coalescedGenerations, ref coalescedCount, carryOver);
+                        continue;
+                    }
+
+                    if (coalescedCount > 0)
+                    {
+                        var throttleDelayMs = GetRemainingBrokerThrottleMs();
+                        if (throttleDelayMs > 0)
                         {
-                            var batch = coalescedBatches[i];
-                            var generation = coalescedGenerations[i];
-                            if (!batch.IsCurrentIncarnation(generation))
+                            MoveCoalescedToCarryOver(
+                                coalescedBatches, coalescedGenerations, ref coalescedCount, carryOver);
+                            SweepExpiredCarryOver(carryOver);
+
+                            if (carryOver.Count == 0)
+                                continue;
+
+                            var nextDeadlineMs = ComputeNextWakeupMs(carryOver);
+
+                            // Keep polling already-sent requests while new sends are throttled.
+                            // Their acknowledgements must not wait behind the broker delay.
+                            if (Volatile.Read(ref _totalPendingResponseCount) > 0)
                             {
-                                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                                var responseWaitMs = ComputeThrottledResponseWaitMs(
+                                    throttleDelayMs,
+                                    nextDeadlineMs);
+                                await WaitForAnyResponseAsync(cancellationToken, responseWaitMs)
+                                    .ConfigureAwait(false);
                                 continue;
                             }
 
-                            if (batch.IsRetry)
-                                carryOver.AddFirst(new BatchReference(batch, generation));
-                            else
-                                carryOver.AddAfterRetries(new BatchReference(batch, generation));
+                            var delayMs = Math.Min(throttleDelayMs, nextDeadlineMs);
+                            if (delayMs > 0)
+                                await _delayForThrottle(delayMs, cancellationToken).ConfigureAwait(false);
+                            continue;
                         }
-                        Array.Clear(coalescedBatches, 0, coalescedCount);
-                        Array.Clear(coalescedGenerations, 0, coalescedCount);
-                        coalescedCount = 0;
-                        continue;
                     }
 
                     if (coalescedCount > 0)
@@ -1364,12 +1394,31 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             remainingBuckets -= completedSends;
 
                             // Wait for capacity on blocked connections
+                            var bucketsRequeuedForThrottle = false;
                             while (remainingBuckets > 0)
                             {
                                 ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
 
                                 // Handle timed-out requests to free zombie entries from stale connections.
                                 HandleTimedOutRequests(carryOver, cancellationToken);
+
+                                // A response processed above may start a broker-wide throttle.
+                                // Requeue every unsent bucket so the outer send gate observes it
+                                // before another connection can send during the quota pause.
+                                if (GetRemainingBrokerThrottleMs() > 0)
+                                {
+                                    for (var c = 0; c < _connectionCount; c++)
+                                    {
+                                        ref var bucket = ref connectionBuckets[c];
+                                        if (!bucket.HasBatches) continue;
+
+                                        MoveCoalescedToCarryOver(
+                                            bucket.Batches, bucket.Generations, ref bucket.Count, carryOver);
+                                    }
+
+                                    bucketsRequeuedForThrottle = true;
+                                    break;
+                                }
 
                                 // Try sending on connections that now have capacity (parallel)
                                 var sent = false;
@@ -1396,6 +1445,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 if (remainingBuckets > 0 && !sent)
                                     await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
                             }
+
+                            if (bucketsRequeuedForThrottle)
+                                continue;
                         }
                     }
                     else
@@ -1921,6 +1973,73 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
+    /// Requeues an unsent request without changing retry state. Retries stay ahead of
+    /// normal batches so quota waits and epoch bumps cannot reorder a partition.
+    /// </summary>
+    private void MoveCoalescedToCarryOver(
+        ReadyBatch[] batches,
+        int[] generations,
+        ref int count,
+        PartitionCarryOver carryOver)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            var batch = batches[i];
+            var generation = generations[i];
+            if (!batch.IsCurrentIncarnation(generation))
+            {
+                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                continue;
+            }
+
+            var batchReference = new BatchReference(batch, generation);
+            if (batch.IsRetry)
+                carryOver.AddFirst(batchReference);
+            else
+                carryOver.AddAfterRetries(batchReference);
+        }
+
+        Array.Clear(batches, 0, count);
+        Array.Clear(generations, 0, count);
+        count = 0;
+    }
+
+    private void ObserveBrokerThrottle(int throttleTimeMs)
+    {
+        _onBrokerThrottle?.Invoke(throttleTimeMs);
+
+        if (throttleTimeMs <= 0)
+            return;
+
+        var now = _getTimestamp();
+        var delayTicks = (long)Math.Ceiling(
+            throttleTimeMs * (double)Stopwatch.Frequency / 1000);
+        var throttleUntil = delayTicks >= long.MaxValue - now
+            ? long.MaxValue
+            : now + delayTicks;
+
+        if (throttleUntil > _brokerThrottleUntilTimestamp)
+            _brokerThrottleUntilTimestamp = throttleUntil;
+    }
+
+    private int GetRemainingBrokerThrottleMs()
+    {
+        if (_brokerThrottleUntilTimestamp == 0)
+            return 0;
+
+        var remainingTicks = _brokerThrottleUntilTimestamp - _getTimestamp();
+        if (remainingTicks <= 0)
+        {
+            _brokerThrottleUntilTimestamp = 0;
+            return 0;
+        }
+
+        var remainingMs = (long)Math.Ceiling(
+            remainingTicks * 1000d / Stopwatch.Frequency);
+        return (int)Math.Min(remainingMs, int.MaxValue);
+    }
+
+    /// <summary>
     /// Polls _pendingResponsesByConnection for completed response tasks and processes them inline.
     /// Equivalent to Java's Sender processing completed sends inside NetworkClient.poll().
     /// Uses compact-in-place pattern to avoid list allocation during removal.
@@ -1986,6 +2105,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 var response = task.Result;
+                ObserveBrokerThrottle(response.ThrottleTimeMs);
                 // Reuse caller-provided dictionary to avoid per-response allocation.
                 // The dictionary is cleared after use in ProcessResponseBatches.
                 var responseLookup = reusableResponseLookup;
@@ -2324,7 +2444,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private int ComputeNextWakeupMs(PartitionCarryOver carryOver)
     {
-        var now = Stopwatch.GetTimestamp();
+        var now = _getTimestamp();
         var earliestTicks = long.MaxValue;
 
         // Use request timeout for pending responses (Java handleTimedOutRequests pattern).
@@ -2512,21 +2632,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Waits for any pending response to complete using an <see cref="AsyncAutoResetSignal"/>,
-    /// with a 100ms periodic wake-up to re-sweep delivery timeouts for zombie entries.
+    /// with a bounded periodic wake-up to re-sweep delivery timeouts for zombie entries.
     /// Signal may be missed if multiple responses complete between iterations;
-    /// the 100ms fallback ensures we don't wait indefinitely.
+    /// the 100ms default fallback ensures we don't wait indefinitely.
     ///
     /// Zero-allocation in steady state: the signal uses a reusable internal timer for
-    /// the 100ms timeout and a one-time shutdown token registration for cancellation.
+    /// the timeout and a one-time shutdown token registration for cancellation.
     /// </summary>
-    private async ValueTask WaitForAnyResponseAsync(CancellationToken cancellationToken)
+    private async ValueTask WaitForAnyResponseAsync(
+        CancellationToken cancellationToken,
+        int timeoutMs = ResponsePollIntervalMs)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         // WaitAsync returns true if signaled, false on timeout.
         // Throws OperationCanceledException only on shutdown (via RegisterShutdownToken).
-        await _anyResponseCompleted.WaitAsync(100).ConfigureAwait(false);
+        await _anyResponseCompleted.WaitAsync(timeoutMs).ConfigureAwait(false);
     }
+
+    internal static int ComputeThrottledResponseWaitMs(int throttleDelayMs, int batchDeadlineMs)
+        => Math.Min(ResponsePollIntervalMs, Math.Min(throttleDelayMs, batchDeadlineMs));
 
     /// <summary>
     /// Sends coalesced batches (one per partition) as a single ProduceRequest.
@@ -3439,7 +3564,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void SweepExpiredCarryOver(PartitionCarryOver carryOver)
     {
-        var now = Stopwatch.GetTimestamp();
+        var now = _getTimestamp();
         var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
 
         foreach (var kvp in carryOver.Partitions)
@@ -3467,7 +3592,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic,
                     batch.TopicPartition.Partition);
-                var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks, now);
                 var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
                 FailAndCleanupBatch(batch, new KafkaTimeoutException(
                     TimeoutKind.Delivery,

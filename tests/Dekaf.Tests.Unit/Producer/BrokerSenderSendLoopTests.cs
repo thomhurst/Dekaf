@@ -1,5 +1,7 @@
 using System.Buffers;
+using System.Diagnostics;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -25,10 +27,13 @@ public sealed class BrokerSenderSendLoopTests
 {
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 100, int retryBackoffMaxMs = 1000,
-        int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000) => new()
+        int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
+        int connectionsPerBroker = 1, bool enableAdaptiveConnections = true) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
+            ConnectionsPerBroker = connectionsPerBroker,
+            EnableAdaptiveConnections = enableAdaptiveConnections,
             Acks = acks,
             DeliveryTimeoutMs = deliveryTimeoutMs,
             RetryBackoffMs = retryBackoffMs,
@@ -99,9 +104,11 @@ public sealed class BrokerSenderSendLoopTests
     /// <summary>
     /// Creates a ProduceResponse with success for the given topic/partition.
     /// </summary>
-    private static ProduceResponse CreateSuccessResponse(string topic, int partition, long baseOffset) =>
+    private static ProduceResponse CreateSuccessResponse(
+        string topic, int partition, long baseOffset, int throttleTimeMs = 0) =>
         new()
         {
+            ThrottleTimeMs = throttleTimeMs,
             TopicCount = 1,
             Responses =
             [
@@ -150,7 +157,10 @@ public sealed class BrokerSenderSendLoopTests
         IConnectionPool pool,
         ProducerOptions options,
         RecordAccumulator accumulator,
-        Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement) =>
+        Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement,
+        Action<int>? onBrokerThrottle = null,
+        Func<long>? getTimestamp = null,
+        Func<int, CancellationToken, ValueTask>? delayForThrottle = null) =>
         new(
             brokerId: 1, pool,
             new MetadataManager(pool, options.BootstrapServers),
@@ -165,7 +175,10 @@ public sealed class BrokerSenderSendLoopTests
             getCurrentEpoch: null,
             rerouteBatch: null,
             onAcknowledgement: onAcknowledgement,
-            logger: null);
+            logger: null,
+            onBrokerThrottle: onBrokerThrottle,
+            getTimestamp: getTimestamp,
+            delayForThrottle: delayForThrottle);
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {
@@ -1168,6 +1181,346 @@ public sealed class BrokerSenderSendLoopTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Arguments(5, 100, 5)]
+    [Arguments(20, 100, 20)]
+    [Arguments(250, 100, 100)]
+    [Arguments(20, 7, 7)]
+    public async Task ComputeThrottledResponseWaitMs_BoundsEveryDeadline(
+        int throttleDelayMs,
+        int batchDeadlineMs,
+        int expectedWaitMs)
+    {
+        var waitMs = BrokerSender.ComputeThrottledResponseWaitMs(
+            throttleDelayMs,
+            batchDeadlineMs);
+
+        await Assert.That(waitMs).IsEqualTo(expectedWaitMs);
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_ThrottleObservedDuringConnectionCapacityWait_DelaysRemainingBucket(
+        CancellationToken cancellationToken)
+    {
+        const int throttleTimeMs = 250;
+
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var thirdResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, secondResponse, thirdResponse]);
+        var sendSignals = new[]
+        {
+            new TaskCompletionSource(),
+            new TaskCompletionSource(),
+            new TaskCompletionSource()
+        };
+        var sendCount = 0;
+        var connection0 = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () =>
+            {
+                var response = responseQueue.Dequeue().Task;
+                var index = Interlocked.Increment(ref sendCount) - 1;
+                sendSignals[index].TrySetResult();
+                return new ValueTask<Task<ProduceResponse>>(response);
+            }
+        };
+        var connection1 = new TestKafkaConnection();
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection0);
+        pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => new ValueTask<IKafkaConnection>(
+                (int)callInfo[1] == 0 ? connection0 : connection1));
+
+        var options = CreateOptions(
+            maxInFlight: 2,
+            connectionsPerBroker: 2,
+            enableAdaptiveConnections: false);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var throttleWaitStarted = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseThrottleWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var timestamp = 0L;
+        var acknowledgements = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgementCount = 0;
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, error) =>
+            {
+                if (error is null && Interlocked.Increment(ref acknowledgementCount) == 3)
+                    acknowledgements.TrySetResult();
+            },
+            getTimestamp: () => Volatile.Read(ref timestamp),
+            delayForThrottle: (delayMs, token) =>
+            {
+                throttleWaitStarted.TrySetResult(delayMs);
+                return new ValueTask(releaseThrottleWait.Task.WaitAsync(token));
+            });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 2));
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+
+            var delayedBatch = CreateTestBatch(valueTaskSourcePool, "test-topic", 4);
+            delayedBatch.EnableDeliveryDiagnostics();
+            sender.Enqueue(delayedBatch);
+            await WaitUntilAsync(() => delayedBatch.DiagTrace.Contains('S'), cancellationToken);
+
+            firstResponse.SetResult(CreateSuccessResponse(
+                "test-topic", 0, baseOffset: 10, throttleTimeMs));
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", 2, baseOffset: 11));
+
+            var firstProgress = await Task.WhenAny(throttleWaitStarted.Task, sendSignals[2].Task)
+                .WaitAsync(cancellationToken);
+            await Assert.That(firstProgress).IsSameReferenceAs(throttleWaitStarted.Task);
+            await Assert.That(await throttleWaitStarted.Task).IsEqualTo(throttleTimeMs);
+            await Assert.That(sendSignals[2].Task.IsCompleted).IsFalse();
+
+            Volatile.Write(ref timestamp, Stopwatch.Frequency);
+            releaseThrottleWait.SetResult();
+
+            await sendSignals[2].Task.WaitAsync(cancellationToken);
+            thirdResponse.SetResult(CreateSuccessResponse("test-topic", 4, baseOffset: 12));
+            await acknowledgements.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_PositiveBrokerThrottle_DelaysNextRequestWithoutDeliveryErrors(
+        CancellationToken cancellationToken)
+    {
+        const int throttleTimeMs = 250;
+
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responseQueue, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+
+        var options = CreateOptions(maxInFlight: 1);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var throttleWaitStarted = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseThrottleWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observedThrottleTimes = new List<int>();
+        var timestamp = 0L;
+        var acknowledgements = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgementCount = 0;
+
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, error) =>
+            {
+                if (error is null && Interlocked.Increment(ref acknowledgementCount) == 2)
+                    acknowledgements.TrySetResult();
+            },
+            observedThrottleTimes.Add,
+            () => Volatile.Read(ref timestamp),
+            (delayMs, token) =>
+            {
+                throttleWaitStarted.TrySetResult(delayMs);
+                return new ValueTask(releaseThrottleWait.Task.WaitAsync(token));
+            });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
+            firstResponse.SetResult(CreateSuccessResponse(
+                "test-topic", 0, baseOffset: 10, throttleTimeMs));
+
+            var requestedDelayMs = await throttleWaitStarted.Task.WaitAsync(cancellationToken);
+            await Assert.That(requestedDelayMs).IsEqualTo(throttleTimeMs);
+            await Assert.That(sendSignals[1].Task.IsCompleted).IsFalse();
+
+            Volatile.Write(ref timestamp, Stopwatch.Frequency);
+            releaseThrottleWait.SetResult();
+
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 11));
+            await acknowledgements.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(observedThrottleTimes).IsEquivalentTo([throttleTimeMs, 0]);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_ZeroBrokerThrottle_DoesNotDelayNextRequest(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responseQueue, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+
+        var options = CreateOptions(maxInFlight: 1);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var throttleDelayCalled = false;
+        var observedThrottleTimes = new List<int>();
+        var acknowledgements = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgementCount = 0;
+
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, error) =>
+            {
+                if (error is null && Interlocked.Increment(ref acknowledgementCount) == 2)
+                    acknowledgements.TrySetResult();
+            },
+            observedThrottleTimes.Add,
+            delayForThrottle: (_, _) =>
+            {
+                throttleDelayCalled = true;
+                return ValueTask.CompletedTask;
+            });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
+            firstResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 20));
+
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 21));
+            await acknowledgements.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(throttleDelayCalled).IsFalse();
+            await Assert.That(observedThrottleTimes).IsEquivalentTo([0, 0]);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_InjectedClockControlsThrottleWakeupAndDeliveryExpiry(
+        CancellationToken cancellationToken)
+    {
+        const int deliveryTimeoutMs = 10_000;
+        const int throttleTimeMs = 20_000;
+
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responseQueue, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+
+        var options = CreateOptions(maxInFlight: 1, deliveryTimeoutMs: deliveryTimeoutMs);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var expiringBatch = CreateTestBatch(valueTaskSourcePool, "test-topic", 1);
+        var fakeTimestamp = expiringBatch.StopwatchCreatedTicks + options.DeliveryTimeoutTicks / 2;
+        var firstDelayRequested = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var unexpectedSecondDelay = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondDelayGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deliveryFailure = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var delayCount = 0;
+
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (topicPartition, _, _, _, error) =>
+            {
+                if (topicPartition.Partition == 1 && error is not null)
+                    deliveryFailure.TrySetResult(error);
+            },
+            getTimestamp: () => Volatile.Read(ref fakeTimestamp),
+            delayForThrottle: (delayMs, token) =>
+            {
+                if (Interlocked.Increment(ref delayCount) == 1)
+                {
+                    firstDelayRequested.TrySetResult(delayMs);
+                    Volatile.Write(
+                        ref fakeTimestamp,
+                        expiringBatch.StopwatchCreatedTicks + options.DeliveryTimeoutTicks);
+                    return ValueTask.CompletedTask;
+                }
+
+                unexpectedSecondDelay.TrySetResult();
+                return new ValueTask(secondDelayGate.Task.WaitAsync(token));
+            });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(expiringBatch);
+            firstResponse.SetResult(CreateSuccessResponse(
+                "test-topic", 0, baseOffset: 10, throttleTimeMs));
+
+            await Assert.That(await firstDelayRequested.Task.WaitAsync(cancellationToken))
+                .IsEqualTo(deliveryTimeoutMs / 2);
+
+            var progress = await Task.WhenAny(deliveryFailure.Task, unexpectedSecondDelay.Task)
+                .WaitAsync(cancellationToken);
+            await Assert.That(progress).IsSameReferenceAs(deliveryFailure.Task);
+            await Assert.That(await deliveryFailure.Task).IsTypeOf<KafkaTimeoutException>();
+            await Assert.That(sendSignals[1].Task.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
         }
     }
 }
