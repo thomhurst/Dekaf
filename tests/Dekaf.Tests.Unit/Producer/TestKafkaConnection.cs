@@ -24,6 +24,7 @@ internal sealed class TestKafkaConnection :
     public int SendFireAndForgetWithCallerTimeoutCalls;
     public int DisposeCalls;
     public int CompleteRetirementCalls;
+    public int LeaseCountDuringRequest;
 
     public TaskCompletionSource LeaseCountObserved { get; } = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
@@ -33,6 +34,7 @@ internal sealed class TestKafkaConnection :
 
     public Func<ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWrite { get; set; }
     public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout { get; set; }
+    public Func<Type, object>? SendResponse { get; set; }
 
     public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
         TRequest request,
@@ -40,7 +42,13 @@ internal sealed class TestKafkaConnection :
         CancellationToken cancellationToken = default)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
-        => throw new NotSupportedException();
+    {
+        if (SendResponse is null)
+            throw new NotSupportedException();
+
+        LeaseCountDuringRequest = Volatile.Read(ref _leaseCount);
+        return ValueTask.FromResult((TResponse)SendResponse(typeof(TRequest)));
+    }
 
     public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
         TRequest request,

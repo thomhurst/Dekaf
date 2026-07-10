@@ -3845,9 +3845,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // so under normal parallel disposal the aggregate completes quickly.
                 // This outer deadline only fires if something beyond the per-sender
                 // timeout hangs (e.g., CancelAsync blocking on a slow callback).
-                await Task.WhenAll(disposeTasks)
-                    .WaitAsync(TimeSpan.FromMilliseconds(brokerDisposeMs))
-                    .ConfigureAwait(false);
+                var disposeSendersTask = Task.WhenAll(disposeTasks);
+                if (_ownsInfrastructure)
+                    await disposeSendersTask.ConfigureAwait(false);
+                else
+                    await disposeSendersTask
+                        .WaitAsync(TimeSpan.FromMilliseconds(brokerDisposeMs))
+                        .ConfigureAwait(false);
             }
             catch (TimeoutException)
             {

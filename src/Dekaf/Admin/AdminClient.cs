@@ -138,7 +138,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyList<ClientMetricsResourceListing>>(async () =>
         {
-            var connection = await GetAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
             var request = new ListClientMetricsResourcesRequest();
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -202,7 +203,8 @@ public sealed class AdminClient : IAdminClient
         await WithRetryAsync(async () =>
         {
             var isRetryAttempt = createMayHaveApplied;
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var request = new CreateTopicsRequest
             {
@@ -335,7 +337,8 @@ public sealed class AdminClient : IAdminClient
         await WithRetryAsync(async () =>
         {
             var isRetryAttempt = deleteMayHaveApplied;
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 Protocol.ApiKey.DeleteTopics,
@@ -518,7 +521,9 @@ public sealed class AdminClient : IAdminClient
                 throw new InvalidOperationException("No brokers available");
             }
 
-            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+            var connection = connectionLease.Connection;
             var request = new DescribeTopicPartitionsRequest
             {
                 Topics = topicList.Select(static name => new DescribeTopicPartitionsRequestTopic
@@ -695,7 +700,8 @@ public sealed class AdminClient : IAdminClient
 
         foreach (var (coordinatorId, groups) in groupsByCoordinator)
         {
-            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new ConsumerGroupDescribeRequest
             {
@@ -780,7 +786,8 @@ public sealed class AdminClient : IAdminClient
 
         foreach (var (coordinatorId, groups) in groupsByCoordinator)
         {
-            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new DescribeGroupsRequest
             {
@@ -859,7 +866,8 @@ public sealed class AdminClient : IAdminClient
 
             foreach (var broker in brokers)
             {
-                var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
                     request,
@@ -943,7 +951,8 @@ public sealed class AdminClient : IAdminClient
 
             var responses = await Task.WhenAll(brokers.Select(async broker =>
             {
-                var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
                 var response = await connection.SendAsync<ListTransactionsRequest, ListTransactionsResponse>(
                     request,
                     apiVersion,
@@ -1035,7 +1044,8 @@ public sealed class AdminClient : IAdminClient
 
             foreach (var (coordinatorId, ids) in idsByCoordinator)
             {
-                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
                 var request = new DescribeTransactionsRequest
                 {
                     TransactionalIds = ids
@@ -1136,7 +1146,8 @@ public sealed class AdminClient : IAdminClient
 
             foreach (var (leaderId, topics) in partitionsByLeader)
             {
-                var connection = await _connectionPool.GetConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
                 var request = new DescribeProducersRequest
                 {
                     Topics = topics
@@ -1230,7 +1241,8 @@ public sealed class AdminClient : IAdminClient
 
             foreach (var (coordinatorId, ids) in idsByCoordinator)
             {
-                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 foreach (var transactionalId in ids)
                 {
@@ -1328,7 +1340,9 @@ public sealed class AdminClient : IAdminClient
                 ]
             };
 
-            var connection = await _connectionPool.GetConnectionAsync(leaderNode.NodeId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(leaderNode.NodeId, cancellationToken).ConfigureAwait(false);
+
+            var connection = connectionLease.Connection;
             var response = await connection.SendAsync<WriteTxnMarkersRequest, WriteTxnMarkersResponse>(
                 request,
                 apiVersion,
@@ -1384,7 +1398,8 @@ public sealed class AdminClient : IAdminClient
 
             foreach (var (coordinatorId, groups) in groupsByCoordinator)
             {
-                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 var request = new DeleteGroupsRequest
                 {
@@ -1431,7 +1446,8 @@ public sealed class AdminClient : IAdminClient
         {
             // Find group coordinator
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new OffsetFetchRequest
             {
@@ -1505,7 +1521,8 @@ public sealed class AdminClient : IAdminClient
         await WithRetryAsync(async () =>
         {
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new OffsetCommitRequest
             {
@@ -1580,7 +1597,8 @@ public sealed class AdminClient : IAdminClient
 
             foreach (var (leaderId, leaderOffsets) in partitionsByLeader)
             {
-                var connection = await _connectionPool.GetConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 // Build topics array from offsets grouped by topic
                 var topics = leaderOffsets
@@ -1642,7 +1660,8 @@ public sealed class AdminClient : IAdminClient
         await WithRetryAsync(async () =>
         {
             var isRetryAttempt = createPartitionsMayHaveApplied;
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var request = new CreatePartitionsRequest
             {
@@ -1713,7 +1732,8 @@ public sealed class AdminClient : IAdminClient
         await WithRetryAsync(async () =>
         {
             var isRetryAttempt = alterMayHaveApplied;
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var request = new AlterPartitionReassignmentsRequest
             {
@@ -1782,7 +1802,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, PartitionReassignment>>(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var request = new ListPartitionReassignmentsRequest
             {
@@ -1893,7 +1914,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>>(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var request = new DescribeUserScramCredentialsRequest
             {
@@ -1987,7 +2009,8 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var request = new AlterUserScramCredentialsRequest
             {
@@ -2029,7 +2052,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>>(async () =>
         {
-            var connection = await GetAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new DescribeClientQuotasRequest
             {
@@ -2084,7 +2108,8 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            var connection = await GetAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new AlterClientQuotasRequest
             {
@@ -2198,7 +2223,7 @@ public sealed class AdminClient : IAdminClient
             }).ToList()
         };
 
-    private async ValueTask<IKafkaConnection> GetAnyBrokerConnectionAsync(CancellationToken cancellationToken)
+    private async ValueTask<KafkaConnectionLease> LeaseAnyBrokerConnectionAsync(CancellationToken cancellationToken)
     {
         var brokers = _metadataManager.Metadata.GetBrokers();
         if (brokers.Count == 0)
@@ -2206,7 +2231,7 @@ public sealed class AdminClient : IAdminClient
             throw new InvalidOperationException("No brokers available");
         }
 
-        return await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+        return await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<DelegationToken> CreateDelegationTokenAsync(
@@ -2223,7 +2248,8 @@ public sealed class AdminClient : IAdminClient
         var maxLifetimeMs = ToKafkaMilliseconds(maxLifetime, nameof(maxLifetime));
 
         // CreateDelegationToken has no client idempotency key; do not auto-retry after the broker may have minted a token.
-        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+        using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+        var controller = controllerLease.Connection;
         var request = new CreateDelegationTokenRequest
         {
             Owner = ownerPrincipal,
@@ -2266,7 +2292,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<DateTimeOffset>(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
             var request = new RenewDelegationTokenRequest
             {
                 Hmac = hmac,
@@ -2304,7 +2331,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<DateTimeOffset>(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
             var request = new ExpireDelegationTokenRequest
             {
                 Hmac = hmac,
@@ -2340,7 +2368,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyList<DelegationToken>>(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
             var request = new DescribeDelegationTokenRequest
             {
                 Owners = ownerList
@@ -2466,7 +2495,9 @@ public sealed class AdminClient : IAdminClient
                 throw new InvalidOperationException("No brokers available");
             }
 
-            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+            var connection = connectionLease.Connection;
 
             var request = new DescribeConfigsRequest
             {
@@ -2549,7 +2580,9 @@ public sealed class AdminClient : IAdminClient
                 throw new InvalidOperationException("No brokers available");
             }
 
-            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+            var connection = connectionLease.Connection;
 
             var request = new AlterConfigsRequest
             {
@@ -2607,7 +2640,9 @@ public sealed class AdminClient : IAdminClient
                 throw new InvalidOperationException("No brokers available");
             }
 
-            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+            var connection = connectionLease.Connection;
 
             var request = new IncrementalAlterConfigsRequest
             {
@@ -2672,7 +2707,8 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var request = new CreateAclsRequest
             {
@@ -2727,7 +2763,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyList<AclBinding>>(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var request = new DeleteAclsRequest
             {
@@ -2795,7 +2832,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyList<AclBinding>>(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var request = new DescribeAclsRequest
             {
@@ -2882,7 +2920,8 @@ public sealed class AdminClient : IAdminClient
         {
             var isRetryAttempt = deleteMayHaveApplied;
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new OffsetDeleteRequest
             {
@@ -2995,7 +3034,8 @@ public sealed class AdminClient : IAdminClient
             // Send requests to each leader
             foreach (var (leaderId, topics) in partitionsByLeader)
             {
-                var connection = await _connectionPool.GetConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 var request = new ListOffsetsRequest
                 {
@@ -3082,7 +3122,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>>(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
 
             var request = new ElectLeadersRequest
             {
@@ -3143,7 +3184,8 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 Protocol.ApiKey.DescribeQuorum,
                 DescribeQuorumRequest.LowestSupportedVersion,
@@ -3231,7 +3273,8 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 Protocol.ApiKey.AddRaftVoter,
                 AddRaftVoterRequest.LowestSupportedVersion,
@@ -3288,7 +3331,8 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 Protocol.ApiKey.RemoveRaftVoter,
                 RemoveRaftVoterRequest.LowestSupportedVersion,
@@ -3328,7 +3372,8 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 Protocol.ApiKey.UnregisterBroker,
                 UnregisterBrokerRequest.LowestSupportedVersion,
@@ -3382,7 +3427,8 @@ public sealed class AdminClient : IAdminClient
             // Fan out to all requested brokers in parallel.
             var brokerResults = await Task.WhenAll(brokerIdList.Select(async brokerId =>
             {
-                var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
                 var response = await connection.SendAsync<DescribeLogDirsRequest, DescribeLogDirsResponse>(
                     new DescribeLogDirsRequest { Topics = topicFilters },
                     apiVersion,
@@ -3473,7 +3519,8 @@ public sealed class AdminClient : IAdminClient
             var brokerResults = await Task.WhenAll(assignmentsByBroker.Select(async brokerAssignments =>
             {
                 var brokerId = brokerAssignments.Key;
-                var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
                 var request = new AlterReplicaLogDirsRequest
                 {
                     Dirs = BuildAlterReplicaLogDirsRequestDirs(brokerAssignments)
@@ -3638,7 +3685,8 @@ public sealed class AdminClient : IAdminClient
 
             var describeResponses = await Task.WhenAll(groupsByCoordinator.Select(async kvp =>
             {
-                var connection = await _connectionPool.GetConnectionAsync(kvp.Key, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(kvp.Key, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 var request = new StreamsGroupDescribeRequest
                 {
@@ -3704,7 +3752,8 @@ public sealed class AdminClient : IAdminClient
 
             var responses = await Task.WhenAll(brokers.Select(async broker =>
             {
-                var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
                     request,
@@ -3903,7 +3952,8 @@ public sealed class AdminClient : IAdminClient
             // Fan out ShareGroupDescribe requests to all coordinators in parallel
             var describeResponses = await Task.WhenAll(groupsByCoordinator.Select(async kvp =>
             {
-                var connection = await _connectionPool.GetConnectionAsync(kvp.Key, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(kvp.Key, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 var request = new ShareGroupDescribeRequest
                 {
@@ -3991,7 +4041,8 @@ public sealed class AdminClient : IAdminClient
             // Fan out to all brokers in parallel
             var responses = await Task.WhenAll(brokers.Select(async broker =>
             {
-                var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
                     request,
@@ -4054,7 +4105,8 @@ public sealed class AdminClient : IAdminClient
         return await WithRetryAsync<IReadOnlyList<ShareGroupOffsetDescription>>(async () =>
         {
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             // Build topics filter from partitions list, or null for all
             IReadOnlyList<DescribeShareGroupOffsetsRequestTopic>? requestTopics = null;
@@ -4151,7 +4203,8 @@ public sealed class AdminClient : IAdminClient
         await WithRetryAsync(async () =>
         {
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new AlterShareGroupOffsetsRequest
             {
@@ -4212,7 +4265,8 @@ public sealed class AdminClient : IAdminClient
         {
             var isRetryAttempt = deleteMayHaveApplied;
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new DeleteShareGroupOffsetsRequest
             {
@@ -4344,7 +4398,7 @@ public sealed class AdminClient : IAdminClient
             $"WriteTxnMarkers response did not include {topicPartition.Topic}-{topicPartition.Partition} for producer {transaction.ProducerId}.");
     }
 
-    private async ValueTask<IKafkaConnection> GetControllerAsync(CancellationToken cancellationToken)
+    private async ValueTask<KafkaConnectionLease> LeaseControllerAsync(CancellationToken cancellationToken)
     {
         var controllerId = _metadataManager.Metadata.ControllerId;
         if (controllerId < 0)
@@ -4352,7 +4406,7 @@ public sealed class AdminClient : IAdminClient
             throw new InvalidOperationException("No controller available");
         }
 
-        return await _connectionPool.GetConnectionAsync(controllerId, cancellationToken).ConfigureAwait(false);
+        return await _connectionPool.LeaseConnectionAsync(controllerId, cancellationToken).ConfigureAwait(false);
     }
 
     private static QuorumReplicaState MapQuorumReplicaState(DescribeQuorumReplicaState state) =>
@@ -4418,7 +4472,9 @@ public sealed class AdminClient : IAdminClient
             throw new InvalidOperationException("No brokers available");
         }
 
-        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+        using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+        var connection = connectionLease.Connection;
 
         var request = new FindCoordinatorRequest
         {
@@ -4460,7 +4516,9 @@ public sealed class AdminClient : IAdminClient
             throw new InvalidOperationException("No brokers available");
         }
 
-        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+        using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+        var connection = connectionLease.Connection;
 
         var request = new FindCoordinatorRequest
         {

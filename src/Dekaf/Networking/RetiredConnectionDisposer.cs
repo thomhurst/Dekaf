@@ -11,26 +11,21 @@ internal static class RetiredConnectionDisposer
         IKafkaConnection connection,
         CancellationToken cancellationToken)
     {
-        try
+        // Existing lease holders may still start operations while retirement is open.
+        // Seal retirement only after every holder has returned its lease.
+        if (connection is IRetirableKafkaConnection retirableConnection)
         {
-            // Existing lease holders may still start operations while retirement is open.
-            // Seal retirement only after every holder has returned its lease.
-            if (connection is IRetirableKafkaConnection retirableConnection)
-            {
-                while (retirableConnection.LeaseCount > 0)
-                    await Task.Delay(DrainPollInterval, cancellationToken).ConfigureAwait(false);
-
-                retirableConnection.CompleteRetirement();
-            }
-
-            // A send may have entered immediately before retirement was sealed.
-            while (HasActiveWork(connection))
+            while (retirableConnection.LeaseCount > 0)
                 await Task.Delay(DrainPollInterval, cancellationToken).ConfigureAwait(false);
+
+            retirableConnection.CompleteRetirement();
         }
-        finally
-        {
-            await connection.DisposeAsync().ConfigureAwait(false);
-        }
+
+        // A send may have entered immediately before retirement was sealed.
+        while (HasActiveWork(connection))
+            await Task.Delay(DrainPollInterval, cancellationToken).ConfigureAwait(false);
+
+        await connection.DisposeAsync().ConfigureAwait(false);
     }
 
     private static bool HasActiveWork(IKafkaConnection connection)

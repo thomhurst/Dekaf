@@ -4023,7 +4023,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         try
         {
-            await drainTask.WaitAsync(DisposalDrainTimeout).ConfigureAwait(false);
+            if (_canPhysicallyShrinkConnections)
+                await drainTask.ConfigureAwait(false);
+            else
+                await drainTask.WaitAsync(DisposalDrainTimeout).ConfigureAwait(false);
         }
         catch (TimeoutException ex)
         {

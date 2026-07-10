@@ -653,13 +653,18 @@ public sealed class AdaptiveScaleDownTests
 
     [Test]
     [Timeout(15_000)]
-    public async Task DisposeAsync_DrainTimeout_ContinuesWaitingForLease(
+    public async Task DisposeAsync_SharedDrainTimeout_ContinuesWaitingForLease(
         CancellationToken cancellationToken)
     {
         var options = CreateOptions(idempotent: false);
         await using var accumulator = new RecordAccumulator(options);
         var pool = Substitute.For<IConnectionPool>();
-        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: null,
+            canPhysicallyShrinkConnections: false);
         var removedConnection = new TestKafkaConnection();
         var retirableConnection = (IRetirableKafkaConnection)removedConnection;
         await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
@@ -684,6 +689,43 @@ public sealed class AdaptiveScaleDownTests
         }
 
         await Assert.That(Volatile.Read(ref removedConnection.CompleteRetirementCalls)).IsEqualTo(1);
+        await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(1);
+    }
+
+    [Test]
+    [Timeout(15_000)]
+    public async Task DisposeAsync_OwnedDrainPastTimeout_WaitsForLease(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var removedConnection = new TestKafkaConnection();
+        var retirableConnection = (IRetirableKafkaConnection)removedConnection;
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+
+        typeof(BrokerSender).GetField(
+            "_drainingConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(sender, removedConnection);
+
+        var dispose = sender.DisposeAsync().AsTask();
+        try
+        {
+            await removedConnection.LeaseCountObserved.Task.WaitAsync(cancellationToken);
+            await Assert.That(async () =>
+                    await dispose.WaitAsync(TimeSpan.FromMilliseconds(5_200), cancellationToken))
+                .Throws<TimeoutException>();
+            await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(0);
+        }
+        finally
+        {
+            retirableConnection.ReleaseLease();
+            await dispose.WaitAsync(cancellationToken);
+        }
+
         await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(1);
     }
 
