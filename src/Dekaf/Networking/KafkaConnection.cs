@@ -2942,10 +2942,21 @@ public sealed partial class KafkaConnection :
     [LoggerMessage(Level = LogLevel.Debug, Message = "Connected to {Host}:{Port}")]
     private partial void LogConnected(string host, int port);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Sending {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}")]
+    internal const int SendingRequestEventId = 1001;
+    internal const int RequestSentWaitingForResponseEventId = 1002;
+
+    [LoggerMessage(
+        EventId = SendingRequestEventId,
+        EventName = "SendingRequest",
+        Level = LogLevel.Debug,
+        Message = "Sending {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}")]
     private partial void LogSendingRequest(ApiKey apiKey, int correlationId, short version, string host, int port);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Request sent, waiting for response (correlation {CorrelationId})")]
+    [LoggerMessage(
+        EventId = RequestSentWaitingForResponseEventId,
+        EventName = "RequestSentWaitingForResponse",
+        Level = LogLevel.Debug,
+        Message = "Request sent, waiting for response (correlation {CorrelationId})")]
     private partial void LogRequestSentWaitingForResponse(int correlationId);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Sending fire-and-forget {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}")]
