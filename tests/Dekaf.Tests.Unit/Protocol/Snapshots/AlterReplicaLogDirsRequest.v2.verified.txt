@@ -1,0 +1,12 @@
+﻿Request: Dekaf.Protocol.Messages.AlterReplicaLogDirsRequest
+API key: AlterReplicaLogDirs (34)
+Version: 2
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 59 bytes (55-byte payload)
+
+0000: 00 00 00 37 00 22 00 02  10 20 30 40 00 0E 64 65 |...7."... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 02 0A 77 |kaf-snapshot...w|
+0020: 69 72 65 2D 70 61 74 68  02 0A 77 69 72 65 2D 6E |ire-path..wire-n|
+0030: 61 6D 65 02 00 00 00 02  00 00 00                |ame........|

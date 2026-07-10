@@ -1,0 +1,13 @@
+﻿Request: Dekaf.Protocol.Messages.AlterConfigsRequest
+API key: AlterConfigs (33)
+Version: 2
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 75 bytes (71-byte payload)
+
+0000: 00 00 00 47 00 21 00 02  10 20 30 40 00 0E 64 65 |...G.!... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 02 01 12 |kaf-snapshot....|
+0020: 77 69 72 65 2D 72 65 73  6F 75 72 63 65 6E 61 6D |wire-resourcenam|
+0030: 65 02 0A 77 69 72 65 2D  6E 61 6D 65 0B 77 69 72 |e..wire-name.wir|
+0040: 65 2D 76 61 6C 75 65 00  00 01 00                |e-value....|

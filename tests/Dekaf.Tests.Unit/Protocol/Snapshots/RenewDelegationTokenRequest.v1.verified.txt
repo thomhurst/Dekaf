@@ -1,0 +1,11 @@
+﻿Request: Dekaf.Protocol.Messages.RenewDelegationTokenRequest
+API key: RenewDelegationToken (39)
+Version: 1
+Header version: 1
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 44 bytes (40-byte payload)
+
+0000: 00 00 00 28 00 27 00 01  10 20 30 40 00 0E 64 65 |...(.'... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 00 00 04 |kaf-snapshot....|
+0020: 01 23 45 67 00 00 00 00  49 96 02 D2             |.#Eg....I...|

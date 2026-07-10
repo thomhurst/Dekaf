@@ -89,5 +89,8 @@ tools/Dekaf.Benchmarks/BenchmarkResults/**/*.log
 # Temporary test projects
 temptest/
 
+# Verify snapshot output
+*.received.*
+
 # Stress test logs
 stress_run.log

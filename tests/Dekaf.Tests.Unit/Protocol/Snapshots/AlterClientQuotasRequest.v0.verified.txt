@@ -1,0 +1,14 @@
+﻿Request: Dekaf.Protocol.Messages.AlterClientQuotasRequest
+API key: AlterClientQuotas (49)
+Version: 0
+Header version: 1
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 94 bytes (90-byte payload)
+
+0000: 00 00 00 5A 00 31 00 00  10 20 30 40 00 0E 64 65 |...Z.1... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 00 00 01 |kaf-snapshot....|
+0020: 00 00 00 01 00 0F 77 69  72 65 2D 65 6E 74 69 74 |......wire-entit|
+0030: 79 74 79 70 65 00 0F 77  69 72 65 2D 65 6E 74 69 |ytype..wire-enti|
+0040: 74 79 6E 61 6D 65 00 00  00 01 00 08 77 69 72 65 |tyname......wire|
+0050: 2D 6B 65 79 40 45 40 00  00 00 00 00 01 01       |-key@E@.......|

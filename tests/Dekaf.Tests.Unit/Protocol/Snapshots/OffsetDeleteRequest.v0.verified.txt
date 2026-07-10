@@ -1,0 +1,12 @@
+﻿Request: Dekaf.Protocol.Messages.OffsetDeleteRequest
+API key: OffsetDelete (47)
+Version: 0
+Header version: 1
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 63 bytes (59-byte payload)
+
+0000: 00 00 00 3B 00 2F 00 00  10 20 30 40 00 0E 64 65 |...;./... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 0A 77 69 |kaf-snapshot..wi|
+0020: 72 65 2D 67 72 6F 75 70  00 00 00 01 00 09 77 69 |re-group......wi|
+0030: 72 65 2D 6E 61 6D 65 00  00 00 01 00 00 00 02    |re-name........|

@@ -1,0 +1,17 @@
+﻿Request: Dekaf.Protocol.Messages.ShareFetchRequest
+API key: ShareFetch (78)
+Version: 0
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 142 bytes (138-byte payload)
+
+0000: 00 00 00 8A 00 4E 00 00  10 20 30 40 00 0E 64 65 |.....N... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 0B 77 69 |kaf-snapshot..wi|
+0020: 72 65 2D 67 72 6F 75 70  0E 77 69 72 65 2D 6D 65 |re-group.wire-me|
+0030: 6D 62 65 72 69 64 00 00  00 03 00 00 00 11 00 00 |mberid..........|
+0040: 00 11 00 00 00 11 02 00  11 22 33 44 55 66 77 88 |........."3DUfw.|
+0050: 99 AA BB CC DD EE FF 02  00 00 00 02 00 00 00 02 |................|
+0060: 02 00 00 00 00 00 00 00  2A 00 00 00 00 00 00 00 |........*.......|
+0070: 2A 02 02 00 00 00 02 00  11 22 33 44 55 66 77 88 |*........"3DUfw.|
+0080: 99 AA BB CC DD EE FF 02  00 00 00 02 00 00       |..............|

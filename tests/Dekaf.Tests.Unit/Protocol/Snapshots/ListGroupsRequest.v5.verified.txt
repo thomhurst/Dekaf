@@ -1,0 +1,13 @@
+﻿Request: Dekaf.Protocol.Messages.ListGroupsRequest
+API key: ListGroups (16)
+Version: 5
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 67 bytes (63-byte payload)
+
+0000: 00 00 00 3F 00 10 00 05  10 20 30 40 00 0E 64 65 |...?..... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 02 12 77 |kaf-snapshot...w|
+0020: 69 72 65 2D 73 74 61 74  65 73 66 69 6C 74 65 72 |ire-statesfilter|
+0030: 02 11 77 69 72 65 2D 74  79 70 65 73 66 69 6C 74 |..wire-typesfilt|
+0040: 65 72 00                                         |er.|

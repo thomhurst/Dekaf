@@ -1,0 +1,11 @@
+﻿Request: Dekaf.Protocol.Messages.SaslAuthenticateRequest
+API key: SaslAuthenticate (36)
+Version: 2
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 35 bytes (31-byte payload)
+
+0000: 00 00 00 1F 00 24 00 02  10 20 30 40 00 0E 64 65 |.....$... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 05 01 23 |kaf-snapshot...#|
+0020: 45 67 00                                         |Eg.|
