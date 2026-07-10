@@ -1533,14 +1533,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             if (HasPendingFetchClear(pending.TopicPartition))
                                 break;
 
-                            TrackConsumedPosition(pending, offset, messageBytes);
-                            // Position dictionaries are flushed once per fetch; auto-commit reads
-                            // the published active snapshot without touching the pending queue.
-
                             // Apply OnConsume interceptors before yielding to user
                             // Uses hoisted hasInterceptors to skip method call when no interceptors
                             if (hasInterceptors)
+                            {
                                 nextResult = ApplyOnConsumeInterceptors(nextResult);
+
+                                // An interceptor can run long enough for background prefetch to
+                                // publish a divergence reset. Do not mark that stale record consumed.
+                                if (HasPendingFetchClear(pending.TopicPartition))
+                                    break;
+                            }
+
+                            TrackConsumedPosition(pending, offset, messageBytes);
+                            // Position dictionaries are flushed once per fetch; auto-commit reads
+                            // the published active snapshot without touching the pending queue.
 
                             // Store raw byte references for DLQ lazy capture (zero-copy — just memory slices)
                             if (rawTrackingEnabled)
@@ -3151,10 +3158,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (HasPendingFetchClear(pending.TopicPartition))
                             break;
 
-                        TrackConsumedPosition(pending, offset, messageBytes);
-
                         if (hasInterceptors)
+                        {
                             result = ApplyOnConsumeInterceptors(result);
+
+                            if (HasPendingFetchClear(pending.TopicPartition))
+                                break;
+                        }
+
+                        TrackConsumedPosition(pending, offset, messageBytes);
 
                         if (rawTrackingEnabled)
                         {

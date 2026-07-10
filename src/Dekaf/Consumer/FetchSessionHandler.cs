@@ -235,13 +235,15 @@ internal sealed class FetchSessionHandler
         long FetchOffset,
         long LogStartOffset,
         int PartitionMaxBytes,
-        int CurrentLeaderEpoch)
+        int CurrentLeaderEpoch,
+        int LastFetchedEpoch)
     {
         public static CachedPartitionData From(FetchRequestPartition partition) => new(
             partition.FetchOffset,
             partition.LogStartOffset,
             partition.PartitionMaxBytes,
-            partition.CurrentLeaderEpoch);
+            partition.CurrentLeaderEpoch,
+            partition.LastFetchedEpoch);
     }
 }
 

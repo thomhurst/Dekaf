@@ -465,6 +465,69 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
+    public async Task ResetToDivergingEpoch_StopsConsumeAsyncWhenInterceptorPublishesReset()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var interceptor = new CallbackConsumerInterceptor();
+        using var cancellationSource = new CancellationTokenSource();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager, interceptor: interceptor);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+        SetInitialized(consumer);
+
+        interceptor.Callback = () =>
+        {
+            InvokeResetToDivergingEpoch(
+                consumer,
+                CreateDivergingEpochResponse(),
+                GetFetchBufferEpoch(consumer));
+            cancellationSource.Cancel();
+        };
+
+        GetPendingFetches(consumer).Enqueue(CreatePendingFetchData());
+        await using var enumerator = consumer
+            .ConsumeAsync(cancellationSource.Token)
+            .GetAsyncEnumerator();
+
+        await Assert.That(await enumerator.MoveNextAsync()).IsFalse();
+        InvokeCompleteDivergingEpochResets(consumer);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_StopsConsumeOneAsyncWhenInterceptorPublishesReset()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var interceptor = new CallbackConsumerInterceptor();
+        using var cancellationSource = new CancellationTokenSource();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager, interceptor: interceptor);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+        SetInitialized(consumer);
+
+        interceptor.Callback = () =>
+        {
+            InvokeResetToDivergingEpoch(
+                consumer,
+                CreateDivergingEpochResponse(),
+                GetFetchBufferEpoch(consumer));
+            cancellationSource.Cancel();
+        };
+
+        GetPendingFetches(consumer).Enqueue(CreatePendingFetchData());
+
+        var result = await consumer.ConsumeOneAsync(
+            TimeSpan.FromSeconds(1),
+            cancellationSource.Token);
+
+        await Assert.That(result).IsNull();
+        InvokeCompleteDivergingEpochResets(consumer);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ResetToDivergingEpoch_StopsRawBatchAtLastDeliveredRecord()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -657,12 +720,14 @@ public sealed class ConsumerLeaderDiscoveryTests
     private static KafkaConsumer<string, string> CreateConsumer(
         IConnectionPool pool,
         MetadataManager metadataManager,
-        IDeserializer<string>? keyDeserializer = null)
+        IDeserializer<string>? keyDeserializer = null,
+        IConsumerInterceptor<string, string>? interceptor = null)
         => new(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
-                ClientId = "test-consumer"
+                ClientId = "test-consumer",
+                Interceptors = interceptor is null ? null : [interceptor]
             },
             keyDeserializer ?? Serializers.String,
             Serializers.String,
@@ -922,5 +987,18 @@ public sealed class ConsumerLeaderDiscoveryTests
                 "ClearFetchBufferForPendingCoordinatorRevocations method not found");
 
         return (bool)method.Invoke(consumer, [])!;
+    }
+
+    private sealed class CallbackConsumerInterceptor : IConsumerInterceptor<string, string>
+    {
+        public Action? Callback { get; set; }
+
+        public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result)
+        {
+            Callback?.Invoke();
+            return result;
+        }
+
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
     }
 }
