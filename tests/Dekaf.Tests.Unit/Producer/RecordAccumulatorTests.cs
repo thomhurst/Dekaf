@@ -1129,6 +1129,64 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    [NotInParallel]
+    public async Task TryAppendWithCompletion_OversizedRecord_ReturnsPooledResources()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1_024,
+            MaxRequestSize = 64,
+            LingerMs = 10_000
+        };
+
+        await using var accumulator = new RecordAccumulator(options);
+        await using var completionPool = new ValueTaskSourcePool<RecordMetadata>();
+        var keyArray = ProducerDataPool.BytePool.Rent(16);
+        var valueArray = ProducerDataPool.BytePool.Rent(128);
+        var headers = ProducerContainerPools.Headers.Rent(1);
+        headers[0] = new Header("test", new byte[] { 1 });
+        var completion = completionPool.Rent();
+
+        await Assert.That(() => accumulator.TryAppendWithCompletion(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                new PooledMemory(keyArray, 16),
+                new PooledMemory(valueArray, 128),
+                headers,
+                headerCount: 1,
+                completion,
+                partitionCount: 1))
+            .Throws<ProduceException>();
+
+        completionPool.Return(completion);
+
+        var returnedKeyArray = ProducerDataPool.BytePool.Rent(16);
+        var returnedValueArray = ProducerDataPool.BytePool.Rent(128);
+        var returnedHeaders = ProducerContainerPools.Headers.Rent(1);
+        var keyReturned = ReferenceEquals(returnedKeyArray, keyArray);
+        var valueReturned = ReferenceEquals(returnedValueArray, valueArray);
+        var headersReturned = ReferenceEquals(returnedHeaders, headers);
+
+        ProducerDataPool.BytePool.Return(returnedKeyArray, clearArray: false);
+        ProducerDataPool.BytePool.Return(returnedValueArray, clearArray: false);
+        ProducerContainerPools.Headers.Return(returnedHeaders, clearArray: true);
+        if (!keyReturned)
+            ProducerDataPool.BytePool.Return(keyArray, clearArray: false);
+        if (!valueReturned)
+            ProducerDataPool.BytePool.Return(valueArray, clearArray: false);
+        if (!headersReturned)
+            ProducerContainerPools.Headers.Return(headers, clearArray: true);
+
+        await Assert.That(keyReturned).IsTrue();
+        await Assert.That(valueReturned).IsTrue();
+        await Assert.That(headersReturned).IsTrue();
+    }
+
+    [Test]
     [Arguments(64)]
     [Arguments(127)]
     [Arguments(128)]

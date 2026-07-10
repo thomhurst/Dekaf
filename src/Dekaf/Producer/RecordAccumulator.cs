@@ -2651,10 +2651,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _disposed) != 0)
             return false;
 
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
-        ThrowIfRecordExceedsMaxRequestSize(
-            topic, partition, key.IsNull, key.Length, value.IsNull, value.Length,
-            headers, headerCount, recordSize);
+        int recordSize;
+        try
+        {
+            recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
+            ThrowIfRecordExceedsMaxRequestSize(
+                topic, partition, key.IsNull, key.Length, value.IsNull, value.Length,
+                headers, headerCount, recordSize);
+        }
+        catch
+        {
+            key.Return();
+            value.Return();
+            ReturnPooledHeaders(headers);
+            throw;
+        }
 
         // Try non-blocking memory reservation. If buffer is full, return false so the
         // caller (ProduceAsync fast path) falls back to the async path.
