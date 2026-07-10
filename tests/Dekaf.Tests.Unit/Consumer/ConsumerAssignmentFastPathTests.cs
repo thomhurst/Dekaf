@@ -349,11 +349,12 @@ public sealed class ConsumerAssignmentFastPathTests
         var partition = new TopicPartition("test-topic", 0);
         consumer.IncrementalAssign([new TopicPartitionOffset("test-topic", 0, 0)]);
 
-        QueueDivergingEpochReset(consumer, partition, endOffset: 42, epoch: 7, GetFetchBufferEpoch(consumer));
+        StageDivergingEpochReset(consumer, partition, endOffset: 42, epoch: 7, GetFetchBufferEpoch(consumer));
+        CompleteDivergingEpochResets(consumer);
         var staleFetchEpoch = GetFetchBufferEpoch(consumer);
 
         CancelCoordinatorRevokedPartitionsFetchClear(consumer, [partition]);
-        QueueDivergingEpochReset(consumer, partition, endOffset: 43, epoch: 8, staleFetchEpoch);
+        StageDivergingEpochReset(consumer, partition, endOffset: 43, epoch: 8, staleFetchEpoch);
 
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
         await Assert.That(consumer.GetPosition(partition)).IsEqualTo(0L);
@@ -761,7 +762,7 @@ public sealed class ConsumerAssignmentFastPathTests
         method.Invoke(consumer, [partitions]);
     }
 
-    private static void QueueDivergingEpochReset(
+    private static void StageDivergingEpochReset(
         KafkaConsumer<string, string> consumer,
         TopicPartition partition,
         long endOffset,
@@ -769,11 +770,21 @@ public sealed class ConsumerAssignmentFastPathTests
         int fetchBufferEpoch)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
-            "QueueDivergingEpochReset",
+            "StageDivergingEpochReset",
             BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("QueueDivergingEpochReset method not found.");
+            ?? throw new InvalidOperationException("StageDivergingEpochReset method not found.");
 
         method.Invoke(consumer, [partition, endOffset, epoch, fetchBufferEpoch]);
+    }
+
+    private static void CompleteDivergingEpochResets(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CompleteDivergingEpochResets",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("CompleteDivergingEpochResets method not found.");
+
+        method.Invoke(consumer, []);
     }
 
     private static void CancelCoordinatorRevokedPartitionsFetchClear(

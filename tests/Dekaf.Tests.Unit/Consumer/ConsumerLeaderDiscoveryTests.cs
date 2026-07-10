@@ -187,7 +187,7 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
-    public async Task QueueDivergingEpochResets_QueuesEveryPartitionBeforeInvalidatingEpoch()
+    public async Task QueueDivergingEpochResets_StagesEveryPartitionBeforePublishingClear()
     {
         var pool = Substitute.For<IConnectionPool>();
         await using var metadataManager = CreateMetadataManager(pool);
@@ -209,11 +209,112 @@ public sealed class ConsumerLeaderDiscoveryTests
             fetchBufferEpoch);
 
         await Assert.That(GetFetchBufferEpoch(consumer)).IsEqualTo(fetchBufferEpoch);
-        InvokeCompleteDivergingEpochResets(consumer, fetchBufferEpoch);
+        InvokeCompleteDivergingEpochResets(consumer);
 
-        await Assert.That(GetFetchBufferEpoch(consumer)).IsEqualTo(fetchBufferEpoch + 1);
+        await Assert.That(GetFetchBufferEpoch(consumer)).IsEqualTo(fetchBufferEpoch);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(GetFetchBufferEpoch(consumer)).IsEqualTo(fetchBufferEpoch + 1);
         await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition: 0)).IsEqualTo(-1);
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition: 1)).IsEqualTo(-1);
+    }
+
+    [Test]
+    public async Task FetchResponse_WithDivergence_StillReturnsNormalPartitions()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.SendAsync<FetchRequest, FetchResponse>(
+                Arg.Any<FetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FetchResponse
+            {
+                Responses =
+                [
+                    new FetchResponseTopic
+                    {
+                        Topic = Topic,
+                        Partitions =
+                        [
+                            CreateDivergingEpochResponse(partition: 0),
+                            new FetchResponsePartition
+                            {
+                                PartitionIndex = 1,
+                                Records =
+                                [
+                                    new RecordBatch
+                                    {
+                                        BaseOffset = 10,
+                                        Records = [new Record { OffsetDelta = 0, Value = "normal"u8.ToArray() }]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }));
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connection));
+
+        await using var metadataManager = CreateMetadataManager(pool);
+        metadataManager.SetApiVersion(ApiKey.Fetch, FetchRequest.LowestSupportedVersion, FetchRequest.HighestSupportedVersion);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        consumer.IncrementalAssign(
+        [
+            new TopicPartitionOffset(Topic, 0, 0),
+            new TopicPartitionOffset(Topic, 1, 10)
+        ]);
+
+        var pendingItems = await InvokeFetchFromBrokerAsync(
+            consumer,
+            brokerId: 1,
+            [new TopicPartition(Topic, 0), new TopicPartition(Topic, 1)],
+            GetFetchBufferEpoch(consumer));
+
+        try
+        {
+            await Assert.That(pendingItems).IsNotNull();
+            await Assert.That(pendingItems!).Count().IsEqualTo(1);
+            await Assert.That(pendingItems[0].TopicPartition).IsEqualTo(new TopicPartition(Topic, 1));
+        }
+        finally
+        {
+            DisposeAndReturn(pendingItems);
+        }
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+    }
+
+    [Test]
+    public async Task DivergingEpochReset_InvalidatesOnlyCorrectedPartition()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        consumer.IncrementalAssign(
+        [
+            new TopicPartitionOffset(Topic, 0, 0, leaderEpoch: 3),
+            new TopicPartitionOffset(Topic, 1, 0, leaderEpoch: 4)
+        ]);
+        var fetchBufferEpoch = GetFetchBufferEpoch(consumer);
+
+        await Assert.That(InvokeResetToDivergingEpoch(
+            consumer,
+            CreateDivergingEpochResponse(partition: 0),
+            fetchBufferEpoch)).IsTrue();
+        InvokeCompleteDivergingEpochResets(consumer);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+
+        await Assert.That(InvokeResetToDivergingEpoch(
+            consumer,
+            CreateDivergingEpochResponse(partition: 0),
+            fetchBufferEpoch)).IsFalse();
+        await Assert.That(InvokeResetToDivergingEpoch(
+            consumer,
+            CreateDivergingEpochResponse(partition: 1),
+            fetchBufferEpoch)).IsTrue();
+        InvokeCompleteDivergingEpochResets(consumer);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(GetLastConsumedLeaderEpoch(consumer, partition: 1)).IsEqualTo(-1);
     }
 
@@ -308,7 +409,10 @@ public sealed class ConsumerLeaderDiscoveryTests
                 Arg.Any<SerializationContext>())
             .Returns(callInfo =>
             {
-                InvokeResetToDivergingEpoch(consumer, CreateDivergingEpochResponse());
+                InvokeResetToDivergingEpoch(
+                    consumer,
+                    CreateDivergingEpochResponse(),
+                    GetFetchBufferEpoch(consumer));
                 cancellationSource.Cancel();
                 return Encoding.UTF8.GetString(callInfo.ArgAt<ReadOnlyMemory<byte>>(0).Span);
             });
@@ -319,6 +423,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             .GetAsyncEnumerator();
 
         await Assert.That(await enumerator.MoveNextAsync()).IsFalse();
+        InvokeCompleteDivergingEpochResets(consumer);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(0);
     }
@@ -339,7 +444,10 @@ public sealed class ConsumerLeaderDiscoveryTests
                 Arg.Any<SerializationContext>())
             .Returns(callInfo =>
             {
-                InvokeResetToDivergingEpoch(consumer, CreateDivergingEpochResponse());
+                InvokeResetToDivergingEpoch(
+                    consumer,
+                    CreateDivergingEpochResponse(),
+                    GetFetchBufferEpoch(consumer));
                 cancellationSource.Cancel();
                 return Encoding.UTF8.GetString(callInfo.ArgAt<ReadOnlyMemory<byte>>(0).Span);
             });
@@ -351,6 +459,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             cancellationSource.Token);
 
         await Assert.That(result).IsNull();
+        InvokeCompleteDivergingEpochResets(consumer);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(0);
     }
@@ -666,7 +775,7 @@ public sealed class ConsumerLeaderDiscoveryTests
         await valueTask.ConfigureAwait(false);
     }
 
-    private static void InvokeResetToDivergingEpoch(
+    private static bool InvokeResetToDivergingEpoch(
         KafkaConsumer<string, string> consumer,
         FetchResponsePartition partitionResponse,
         int? fetchBufferEpoch = null)
@@ -676,21 +785,54 @@ public sealed class ConsumerLeaderDiscoveryTests
             ?? throw new InvalidOperationException("ResetToDivergingEpoch method not found");
 
         var epoch = fetchBufferEpoch ?? GetFetchBufferEpoch(consumer);
-        method.Invoke(consumer, [Topic, partitionResponse, epoch]);
+        var staged = (bool)method.Invoke(consumer, [Topic, partitionResponse, epoch])!;
 
-        if (fetchBufferEpoch is null)
-            InvokeCompleteDivergingEpochResets(consumer, epoch);
+        if (fetchBufferEpoch is null && staged)
+            InvokeCompleteDivergingEpochResets(consumer);
+
+        return staged;
     }
 
-    private static void InvokeCompleteDivergingEpochResets(
+    private static async ValueTask<List<PendingFetchData>?> InvokeFetchFromBrokerAsync(
         KafkaConsumer<string, string> consumer,
+        int brokerId,
+        List<TopicPartition> partitions,
         int fetchBufferEpoch)
+    {
+        var method = typeof(KafkaConsumer<string, string>)
+            .GetMethod("FetchFromBrokerAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("FetchFromBrokerAsync method not found");
+
+        var result = method.Invoke(consumer, [brokerId, partitions, fetchBufferEpoch, CancellationToken.None]);
+        if (result is not ValueTask<List<PendingFetchData>?> valueTask)
+            throw new InvalidOperationException("FetchFromBrokerAsync returned unexpected type");
+
+        return await valueTask.ConfigureAwait(false);
+    }
+
+    private static void DisposeAndReturn(List<PendingFetchData>? pendingItems)
+    {
+        if (pendingItems is null)
+            return;
+
+        try
+        {
+            foreach (var pending in pendingItems)
+                pending.Dispose();
+        }
+        finally
+        {
+            ConsumerFetchPools.ReturnPendingFetchDataList(pendingItems);
+        }
+    }
+
+    private static void InvokeCompleteDivergingEpochResets(KafkaConsumer<string, string> consumer)
     {
         var method = typeof(KafkaConsumer<string, string>)
             .GetMethod("CompleteDivergingEpochResets", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("CompleteDivergingEpochResets method not found");
 
-        method.Invoke(consumer, [fetchBufferEpoch]);
+        method.Invoke(consumer, []);
     }
 
     private static int GetFetchBufferEpoch(KafkaConsumer<string, string> consumer)
