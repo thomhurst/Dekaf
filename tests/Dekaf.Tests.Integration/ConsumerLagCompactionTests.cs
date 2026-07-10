@@ -142,31 +142,38 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
     }
 
     [Test]
-    public async Task CompactedTopic_ConsumerLag_ReflectsActualMessages()
+    public async Task CompactedTopic_ConsumerLag_UsesProcessedOffsetBoundary()
     {
         var topic = await CreateCompactedTopicAsync();
         const int uniqueKeys = 10;
         const int duplicatesPerKey = 5;
-        var totalProduced = uniqueKeys * duplicatesPerKey;
+        const int totalProduced = uniqueKeys * duplicatesPerKey;
+        const string lagBoundaryKey = "lag-boundary";
+        const long lagBoundaryOffset = totalProduced / 2;
+        const int markerTimeoutSeconds = 30;
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        // Produce messages with duplicate keys
-        for (var round = 0; round < duplicatesPerKey; round++)
+        async Task ProduceRangeAsync(int startOffset, int endOffset)
         {
-            for (var key = 0; key < uniqueKeys; key++)
+            for (var producedOffset = startOffset; producedOffset < endOffset; producedOffset++)
             {
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
-                    Key = $"key-{key}",
-                    Value = $"value-round-{round}"
+                    Key = producedOffset == lagBoundaryOffset
+                        ? lagBoundaryKey
+                        : $"key-{producedOffset % uniqueKeys}",
+                    Value = $"value-round-{producedOffset / uniqueKeys}"
                 }, CancellationToken.None);
             }
         }
+
+        // Stop production at the marker so the consumer cannot prefetch beyond it.
+        await ProduceRangeAsync(0, (int)lagBoundaryOffset + 1);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -176,25 +183,40 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
 
-        // Consume half the messages
-        var consumeCount = totalProduced / 2;
-        var consumed = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // Consume through a stable offset boundary. Counting physical records is invalid for
+        // compacted topics because earlier duplicate-key records may already be gone.
+        long? processedOffset = null;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(markerTimeoutSeconds));
 
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        try
         {
-            consumed.Add(msg);
-            if (consumed.Count >= consumeCount) break;
+            await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+            {
+                if (msg.Key != lagBoundaryKey) continue;
+
+                processedOffset = msg.Offset;
+                break;
+            }
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            // Let the assertion below report which deterministic boundary was missed.
         }
 
-        await Assert.That(consumed).Count().IsEqualTo(consumeCount);
+        await Assert.That(processedOffset).IsEqualTo(lagBoundaryOffset)
+            .Because($"Consumer should reach marker '{lagBoundaryKey}' before the {markerTimeoutSeconds}-second timeout");
 
-        // Check consumer position and watermarks
-        var position = consumer.GetPosition(tp);
+        // The unique marker gives the exact consumed offset regardless of compacted gaps.
+        var processedPosition = processedOffset!.Value + 1;
+
+        // Produce the tail only after the marker enumerator has stopped. Background prefetch
+        // can fetch these records, but it must not advance the reported consumed position.
+        await ProduceRangeAsync((int)processedPosition, totalProduced);
+
+        var reportedPosition = consumer.GetPosition(tp);
         var watermarks = await consumer.QueryWatermarkOffsetsAsync(tp);
 
-        await Assert.That(position).IsNotNull();
-        await Assert.That(position!.Value).IsEqualTo(consumeCount);
+        await Assert.That(reportedPosition).IsEqualTo(processedPosition);
 
         // High watermark always reflects total produced, regardless of compaction
         await Assert.That(watermarks.High).IsEqualTo(totalProduced);
@@ -202,10 +224,11 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         // Lag is calculated as high watermark minus position.
         // Even with compaction, offset-based lag reflects the offset distance,
         // not the number of physically remaining messages.
-        var lag = watermarks.High - position.Value;
-        await Assert.That(lag).IsEqualTo(totalProduced - consumeCount);
+        var expectedLag = totalProduced - processedPosition;
+        var lag = watermarks.High - reportedPosition!.Value;
+        await Assert.That(lag).IsEqualTo(expectedLag);
 
-        // Wait for compaction and re-check: lag calculation should still be consistent
+        // Give the log cleaner time to run. Correctness does not depend on whether it finishes.
         await Task.Delay(10_000);
 
         var watermarksAfterCompaction = await consumer.QueryWatermarkOffsetsAsync(tp);
@@ -213,13 +236,11 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         // High watermark must remain the same after compaction
         await Assert.That(watermarksAfterCompaction.High).IsEqualTo(totalProduced);
 
-        // Position hasn't changed (we stopped consuming)
-        var positionAfterCompaction = consumer.GetPosition(tp);
-        await Assert.That(positionAfterCompaction).IsEqualTo(consumeCount);
+        var reportedPositionAfterCompaction = consumer.GetPosition(tp);
+        await Assert.That(reportedPositionAfterCompaction).IsEqualTo(processedPosition);
 
-        // Lag calculation remains consistent
-        var lagAfterCompaction = watermarksAfterCompaction.High - positionAfterCompaction!.Value;
-        await Assert.That(lagAfterCompaction).IsEqualTo(totalProduced - consumeCount);
+        var lagAfterCompaction = watermarksAfterCompaction.High - reportedPositionAfterCompaction!.Value;
+        await Assert.That(lagAfterCompaction).IsEqualTo(expectedLag);
     }
 
     [Test]
