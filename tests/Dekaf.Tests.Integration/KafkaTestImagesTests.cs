@@ -51,4 +51,14 @@ public sealed class KafkaTestImagesTests
         await Assert.That(resolved.VersionNumber).IsEqualTo(431);
         await Assert.That(resolved.Image).IsEqualTo(KafkaTestImages.CurrentImage);
     }
+
+    [Test]
+    public async Task TransactionFaultContainer_UsesSelectedKafkaLane()
+    {
+        var selected = KafkaTestImages.Selected;
+        await using var container = new TransactionFaultKafkaContainer();
+
+        await Assert.That(container.ContainerName).IsEqualTo(selected.Image);
+        await Assert.That(container.Version).IsEqualTo(selected.VersionNumber);
+    }
 }
