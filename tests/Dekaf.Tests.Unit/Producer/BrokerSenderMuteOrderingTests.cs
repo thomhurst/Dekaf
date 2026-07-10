@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Compression;
 using Dekaf.Metadata;
@@ -7,6 +8,7 @@ using Dekaf.Protocol;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using Microsoft.Extensions.Logging;
 
 using NSubstitute;
 
@@ -88,6 +90,22 @@ public sealed class BrokerSenderMuteOrderingTests
 
         batch.TrySetMemoryReleased();
         return batch;
+    }
+
+    private static async Task WaitForDiagAsync(
+        ReadyBatch batch,
+        char marker,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = Stopwatch.GetTimestamp() + (long)(timeout.TotalSeconds * Stopwatch.Frequency);
+        while (!batch.DiagTrace.Contains(marker))
+        {
+            if (Stopwatch.GetTimestamp() >= deadline)
+                throw new TimeoutException($"Batch did not reach '{marker}': {batch.DiagTrace}");
+
+            await Task.Delay(1, cancellationToken);
+        }
     }
 
     private static ProduceResponse CreateSuccessResponse(string topic, int partition, long baseOffset) =>
@@ -200,7 +218,8 @@ public sealed class BrokerSenderMuteOrderingTests
         RecordAccumulator accumulator,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement,
         MetadataManager? metadataManager = null,
-        Action<ReadyBatch>? rerouteBatch = null) =>
+        Action<ReadyBatch, int>? rerouteBatch = null,
+        ILogger? logger = null) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -215,7 +234,7 @@ public sealed class BrokerSenderMuteOrderingTests
             getCurrentEpoch: null,
             rerouteBatch: rerouteBatch,
             onAcknowledgement: onAcknowledgement,
-            logger: null);
+            logger: logger);
 
     private static object CreateCarryOver()
     {
@@ -450,7 +469,7 @@ public sealed class BrokerSenderMuteOrderingTests
             accumulator,
             onAcknowledgement: (_, _, _, _, _) => { },
             metadataManager,
-            rerouteBatch: batch => rerouted.TrySetResult(batch));
+            rerouteBatch: (batch, _) => rerouted.TrySetResult(batch));
 
         try
         {
@@ -1023,6 +1042,130 @@ public sealed class BrokerSenderMuteOrderingTests
     }
 
     /// <summary>
+    /// Verifies the actual unexpected-exit cleanup path publishes its partition barrier,
+    /// preserves survivor FIFO, and reroutes a newer batch rejected by the dead sender
+    /// behind both survivors.
+    /// </summary>
+    [Test]
+    [Timeout(30_000)]
+    public async Task UnexpectedLoopExit_AfterRetiredSenderDisposal_RedeliveryPreemptsRejectedNewerBatch(CancellationToken ct)
+    {
+        var responses = Enumerable.Range(0, 3)
+            .Select(_ => new TaskCompletionSource<ProduceResponse>(
+                TaskCreationOptions.RunContinuationsAsynchronously))
+            .ToArray();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(responses);
+        var sendSignals = Enumerable.Range(0, 3)
+            .Select(_ => new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously))
+            .ToArray();
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responseQueue, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            if (index < sendSignals.Length)
+                sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(maxInFlight: 1);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledgedMessageCounts = new List<int>();
+        var allAcknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var replacement = CreateSender(pool, options, accumulator, (tp, _, _, count, ex) =>
+        {
+            if (tp.Partition != 0 || ex is not null)
+                return;
+
+            lock (acknowledgedMessageCounts)
+            {
+                acknowledgedMessageCounts.Add(count);
+                if (acknowledgedMessageCounts.Count == 3)
+                    allAcknowledged.TrySetResult();
+            }
+        });
+        var crashLogger = new ThrowOnArmedIterationLogger();
+        var exited = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: (_, _, _, _, _) => { },
+            rerouteBatch: replacement.Enqueue,
+            logger: crashLogger);
+
+        try
+        {
+            var recoveredA = CreateTestBatch(vtPool, "test-topic", partition: 0, messageCount: 1);
+            var recoveredB = CreateTestBatch(vtPool, "test-topic", partition: 0, messageCount: 2);
+            var newer = CreateTestBatch(vtPool, "test-topic", partition: 0, messageCount: 3);
+            var topicPartition = recoveredA.TopicPartition;
+
+            // The logger holds the source at the first iteration boundary. Queue both batches
+            // while it is blocked, then release it to throw before either event is drained.
+            await crashLogger.FirstIteration.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            exited.EnqueueBulk([recoveredA, recoveredB]);
+            crashLogger.Arm();
+
+            while (exited.IsAlive)
+            {
+                ct.ThrowIfCancellationRequested();
+                await Task.Yield();
+            }
+
+            // Production disposes the crashed sender as soon as the first survivor creates
+            // its replacement. A caller that already captured the old sender can still race
+            // in afterward; its rejected batch must follow the replacement handoff, not fail.
+            await exited.DisposeAsync();
+
+            // Crash recovery references must keep this newer batch behind A and B.
+            exited.Enqueue(newer);
+
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await WaitForDiagAsync(recoveredA, 'W', TimeSpan.FromSeconds(5), ct);
+            responses[0].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 10));
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await WaitForDiagAsync(recoveredB, 'W', TimeSpan.FromSeconds(5), ct);
+            responses[1].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 11));
+            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await WaitForDiagAsync(newer, 'W', TimeSpan.FromSeconds(5), ct);
+            responses[2].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 12));
+
+            try
+            {
+                await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            }
+            catch (TimeoutException ex)
+            {
+                throw new InvalidOperationException(
+                    $"Acknowledgements=[{string.Join(',', acknowledgedMessageCounts)}], " +
+                    $"sends={Volatile.Read(ref sendCount)}, queuedResponses={responseQueue.Count}, " +
+                    $"A={recoveredA.DiagTrace}, B={recoveredB.DiagTrace}, newer={newer.DiagTrace}", ex);
+            }
+
+            await Assert.That(acknowledgedMessageCounts).Count().IsEqualTo(3);
+            await Assert.That(acknowledgedMessageCounts[0]).IsEqualTo(1);
+            await Assert.That(acknowledgedMessageCounts[1]).IsEqualTo(2);
+            await Assert.That(acknowledgedMessageCounts[2]).IsEqualTo(3);
+
+            var unmuteDeadline = Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency);
+            while (accumulator.IsMuted(topicPartition) && Stopwatch.GetTimestamp() < unmuteDeadline)
+                await Task.Delay(1, ct);
+            await Assert.That(accumulator.IsMuted(topicPartition)).IsFalse();
+        }
+        finally
+        {
+            crashLogger.Arm();
+            for (var i = 0; i < responses.Length; i++)
+                responses[i].TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 10 + i));
+
+            await exited.DisposeAsync();
+            await replacement.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// Verifies that when the in-flight wait processes a response that mutes a partition,
     /// any already-coalesced normal batch for that partition is moved back to carry-over
     /// (the muted partition filter added in the fix). Without this filter, the normal batch
@@ -1132,6 +1275,46 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    private sealed class ThrowOnArmedIterationLogger : ILogger
+    {
+        private int _armed;
+        private int _thrown;
+        private readonly TaskCompletionSource _crashGate =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource FirstIteration { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Arm()
+        {
+            Volatile.Write(ref _armed, 1);
+            _crashGate.TrySetResult();
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Name != "LogSendLoopIteration"
+                && !formatter(state, exception).Contains("send loop iteration", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            FirstIteration.TrySetResult();
+            _crashGate.Task.GetAwaiter().GetResult();
+            if (Volatile.Read(ref _armed) != 0 && Interlocked.Exchange(ref _thrown, 1) == 0)
+                throw new InvalidOperationException("Injected send-loop crash");
         }
     }
 }

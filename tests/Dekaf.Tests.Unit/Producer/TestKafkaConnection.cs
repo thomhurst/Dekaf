@@ -16,6 +16,7 @@ internal sealed class TestKafkaConnection : IKafkaConnection, IKafkaPipelinedWri
     public int SendPipelinedAfterWriteCalls;
     public int SendPipelinedWithCallerTimeoutAfterWriteCalls;
     public int SendFireAndForgetWithCallerTimeoutCalls;
+    public int DisposeCalls;
 
     public Func<ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWrite { get; set; }
     public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout { get; set; }
@@ -71,7 +72,11 @@ internal sealed class TestKafkaConnection : IKafkaConnection, IKafkaPipelinedWri
 
     public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public ValueTask DisposeAsync()
+    {
+        Interlocked.Increment(ref DisposeCalls);
+        return ValueTask.CompletedTask;
+    }
 
     public async ValueTask<Task<TResponse>> SendPipelinedAfterWriteAsync<TRequest, TResponse>(
         TRequest request,

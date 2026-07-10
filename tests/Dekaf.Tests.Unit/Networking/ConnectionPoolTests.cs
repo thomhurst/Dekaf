@@ -504,6 +504,46 @@ public sealed class ConnectionPoolTests
 
     [Test]
     [NotInParallel]
+    public async Task GetConnectionByIndexAsync_AfterAdaptiveScaleUp_UsesScaledGroup()
+    {
+        const int scaledCount = 3;
+        var captureScaledConnections = 0;
+        var scaledConnections = new IKafkaConnection?[scaledCount];
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (brokerId, host, port, index, _) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                if (Volatile.Read(ref captureScaledConnections) != 0)
+                    scaledConnections[index] = connection;
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            var originalSingleConnection = await pool.GetConnectionAsync(1);
+            Volatile.Write(ref captureScaledConnections, 1);
+            var actualScaledCount = await pool.ScaleConnectionGroupAsync(1, newCount: scaledCount);
+            Volatile.Write(ref captureScaledConnections, 0);
+
+            var connection0 = await pool.GetConnectionByIndexAsync(1, index: 0);
+            var connection1 = await pool.GetConnectionByIndexAsync(1, index: 1);
+            var connection2 = await pool.GetConnectionByIndexAsync(1, index: 2);
+
+            await Assert.That(actualScaledCount).IsEqualTo(scaledCount);
+            await Assert.That(connection0).IsSameReferenceAs(scaledConnections[0]);
+            await Assert.That(connection1).IsSameReferenceAs(scaledConnections[1]);
+            await Assert.That(connection2).IsSameReferenceAs(scaledConnections[2]);
+            await Assert.That(connection0).IsNotSameReferenceAs(originalSingleConnection);
+        }
+    }
+
+    [Test]
+    [NotInParallel]
     public async Task CreateConnectionGroup_AfterConnectionFailure_WaitsForReconnectBackoff()
     {
         const int connectionsPerBroker = 2;
