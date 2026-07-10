@@ -62,6 +62,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         GC.Collect();
 
         var gcStats = new GcStats();
+        using var deliveryErrorListener = CreateDeliveryErrorListener(throughput);
         throughput.Start();
 
         ProducerDeliveryDiagnosticsSnapshot? producerDiagnostics;
@@ -135,6 +136,9 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             validation,
             producerDiagnostics);
     }
+
+    internal static DekafDeliveryErrorListener CreateDeliveryErrorListener(ThroughputTracker throughput) =>
+        new(throughput);
 
     private static async Task<bool> ConsumeAndValidateAsync(
         IKafkaConsumer<string, byte[]> consumer,
