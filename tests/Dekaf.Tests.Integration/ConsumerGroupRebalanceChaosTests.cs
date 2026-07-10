@@ -4,6 +4,8 @@ using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
+using ConfluentKafka = Confluent.Kafka;
+using ConfluentKafkaAdmin = Confluent.Kafka.Admin;
 
 namespace Dekaf.Tests.Integration;
 
@@ -24,6 +26,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     private const int StaticRestartProgressMessages = 3;
     private const int MaxStaticRestartDuplicates = PartitionCount * CommitInterval * 3;
     private static readonly TimeSpan StaticMemberSessionTimeout = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan StaticMemberHeartbeatInterval = TimeSpan.FromSeconds(1);
 
     [Test]
     [Timeout(600_000)]
@@ -43,6 +46,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     {
         const string assignor = "uniform";
         var (topic, groupId, oracle) = await CreateScenarioAsync("rebalance-chaos-static", cancellationToken);
+        await ConfigureAndVerifyConsumerGroupTimeoutsAsync(groupId, cancellationToken);
         var anchorInstanceId = $"anchor-{Guid.NewGuid():N}";
         var restartingInstanceId = $"restarting-{Guid.NewGuid():N}";
 
@@ -53,8 +57,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             assignor,
             oracle,
             cancellationToken,
-            anchorInstanceId,
-            StaticMemberSessionTimeout);
+            anchorInstanceId);
 
         anchor.Allow(1);
         await anchor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
@@ -67,8 +70,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                          assignor,
                          oracle,
                          cancellationToken,
-                         restartingInstanceId,
-                         StaticMemberSessionTimeout))
+                         restartingInstanceId))
         {
             original.Allow(1);
             await Task.WhenAll(
@@ -88,8 +90,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                          assignor,
                          oracle,
                          cancellationToken,
-                         restartingInstanceId,
-                         StaticMemberSessionTimeout))
+                         restartingInstanceId))
         {
             withinTimeoutRestart.Allow(StaticRestartProgressMessages);
             await Task.WhenAll(
@@ -118,8 +119,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             assignor,
             oracle,
             cancellationToken,
-            restartingInstanceId,
-            StaticMemberSessionTimeout);
+            restartingInstanceId);
 
         beyondTimeoutRestart.Allow(1);
         await Task.WhenAll(
@@ -138,6 +138,51 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             oracle,
             MaxStaticRestartDuplicates,
             cancellationToken);
+    }
+
+    private async Task ConfigureAndVerifyConsumerGroupTimeoutsAsync(
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        using var admin = new ConfluentKafka.AdminClientBuilder(new ConfluentKafka.AdminClientConfig
+        {
+            BootstrapServers = KafkaContainer.BootstrapServers
+        }).Build();
+        var resource = new ConfluentKafkaAdmin.ConfigResource
+        {
+            Type = ConfluentKafkaAdmin.ResourceType.Group,
+            Name = groupId
+        };
+        var sessionTimeout = ((int)StaticMemberSessionTimeout.TotalMilliseconds)
+            .ToString(CultureInfo.InvariantCulture);
+        var heartbeatInterval = ((int)StaticMemberHeartbeatInterval.TotalMilliseconds)
+            .ToString(CultureInfo.InvariantCulture);
+
+        await admin.IncrementalAlterConfigsAsync(new Dictionary<
+            ConfluentKafkaAdmin.ConfigResource,
+            List<ConfluentKafkaAdmin.ConfigEntry>>
+        {
+            [resource] =
+            [
+                new ConfluentKafkaAdmin.ConfigEntry
+                {
+                    Name = "consumer.session.timeout.ms",
+                    Value = sessionTimeout,
+                    IncrementalOperation = ConfluentKafkaAdmin.AlterConfigOpType.Set
+                },
+                new ConfluentKafkaAdmin.ConfigEntry
+                {
+                    Name = "consumer.heartbeat.interval.ms",
+                    Value = heartbeatInterval,
+                    IncrementalOperation = ConfluentKafkaAdmin.AlterConfigOpType.Set
+                }
+            ]
+        }).WaitAsync(cancellationToken);
+
+        var results = await admin.DescribeConfigsAsync([resource]).WaitAsync(cancellationToken);
+        var entries = results.Single().Entries;
+        await Assert.That(entries["consumer.session.timeout.ms"].Value).IsEqualTo(sessionTimeout);
+        await Assert.That(entries["consumer.heartbeat.interval.ms"].Value).IsEqualTo(heartbeatInterval);
     }
 
     private async Task RunChurnScenarioAsync(string assignor, CancellationToken cancellationToken)
@@ -276,8 +321,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         string assignor,
         SequenceOracle oracle,
         CancellationToken cancellationToken,
-        string? groupInstanceId = null,
-        TimeSpan? sessionTimeout = null)
+        string? groupInstanceId = null)
     {
         var assignments = new AssignmentTracker();
         var builder = Kafka.CreateConsumer<string, string>()
@@ -294,8 +338,6 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         if (groupInstanceId is not null)
             builder.WithGroupInstanceId(groupInstanceId);
-        if (sessionTimeout is { } timeout)
-            builder.WithSessionTimeout(timeout);
 
         var consumer = await builder.BuildAsync(cancellationToken);
 
