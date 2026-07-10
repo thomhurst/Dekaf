@@ -468,6 +468,49 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_SteadyHeartbeat_CrossesMaxPollWhileAwaitingResponse_DiscardsResponse()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            maxPollIntervalMs: 50);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        var heartbeatSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var heartbeatResponse = new TaskCompletionSource<ConsumerGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                heartbeatSent.TrySetResult();
+                return new ValueTask<ConsumerGroupHeartbeatResponse>(heartbeatResponse.Task);
+            });
+
+        var heartbeat = InvokeSteadyConsumerGroupHeartbeatAsync(coordinator).AsTask();
+        await heartbeatSent.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        SetCoordinatorLongField(
+            coordinator,
+            "_lastPollTimestamp",
+            Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+        heartbeatResponse.SetResult(new ConsumerGroupHeartbeatResponse
+        {
+            ErrorCode = ErrorCode.None,
+            MemberId = "member-1",
+            MemberEpoch = 99,
+            HeartbeatIntervalMs = 60_000
+        });
+
+        await heartbeat.WaitAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(coordinator.GenerationId).IsEqualTo(1);
+    }
+
+    [Test]
     [Timeout(5_000)]
     public async Task ConsumerProtocol_MaxPollIntervalExceeded_LeavesDynamicMember(
         CancellationToken cancellationToken)

@@ -1052,7 +1052,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             // Validate and publish under the same lock used by expiry so it cannot clear
             // membership between this guard and the epoch/assignment writes below.
             if (_state != CoordinatorState.Stable ||
-                Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion)
+                Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
+                IsMaxPollIntervalExpired())
                 return default;
 
             result = ProcessConsumerGroupHeartbeatResponse(
