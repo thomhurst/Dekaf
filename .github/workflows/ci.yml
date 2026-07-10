@@ -133,6 +133,12 @@ jobs:
           NuGet__ShouldPublish: 'false'
         run: dotnet run --project tools/Dekaf.Pipeline
 
+      - name: Replay protocol fuzz regression corpora
+        run: >-
+          ./tests/Dekaf.Tests.Unit/bin/Release/net10.0/Dekaf.Tests.Unit
+          --treenode-filter
+          "/*/*/(ProtocolReaderFuzzCorpusTests|ResponseParserFuzzCorpusTests|RecordBatchFuzzCorpusTests)/*"
+
       - name: Package test binaries
         run: |
           tar -czf test-binaries.tar.gz \

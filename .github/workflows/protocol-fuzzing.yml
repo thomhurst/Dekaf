@@ -1,0 +1,179 @@
+name: Protocol Fuzzing
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      max_total_time_seconds:
+        description: 'Time budget per fuzz target'
+        required: false
+        default: '900'
+      rss_limit_mb:
+        description: 'Memory limit per fuzz target'
+        required: false
+        default: '2048'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protocol-fuzzing
+  cancel-in-progress: false
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  SHARPFUZZ_VERSION: '2.3.0'
+  LIBFUZZER_DOTNET_VERSION: 'v2025.05.02.0904'
+  LIBFUZZER_DOTNET_SHA256: 'c2c2a90d94c409a4af339a0d4f244e0442c5a5d249be0f1252ba07871f285958'
+  MAX_INPUT_LENGTH: '1048576'
+  PER_INPUT_TIMEOUT_SECONDS: '30'
+  FUZZ_SECONDS: ${{ inputs.max_total_time_seconds || '900' }}
+  RSS_LIMIT_MB: ${{ inputs.rss_limit_mb || '2048' }}
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: kafka-protocol
+            seed: '1613'
+            corpus_directories: 'tools/Dekaf.Fuzzing/Corpus/ProtocolReader tools/Dekaf.Fuzzing/Corpus/Responses'
+            instrument_assemblies: 'Dekaf.dll'
+          - target: record-batch
+            seed: '1612'
+            corpus_directories: 'tools/Dekaf.Fuzzing/Corpus/RecordBatch'
+            instrument_assemblies: 'Dekaf.dll Dekaf.Compression.Brotli.dll Dekaf.Compression.Lz4.dll Dekaf.Compression.Snappy.dll Dekaf.Compression.Zstd.dll'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Install pinned fuzzing tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/fuzz/tools
+          dotnet tool install \
+            --tool-path artifacts/fuzz/tools \
+            SharpFuzz.CommandLine \
+            --version "$SHARPFUZZ_VERSION"
+          curl --fail --location --silent --show-error \
+            "https://github.com/Metalnem/libfuzzer-dotnet/releases/download/${LIBFUZZER_DOTNET_VERSION}/libfuzzer-dotnet-ubuntu" \
+            --output artifacts/fuzz/tools/libfuzzer-dotnet
+          echo "${LIBFUZZER_DOTNET_SHA256}  artifacts/fuzz/tools/libfuzzer-dotnet" | sha256sum --check
+          chmod +x artifacts/fuzz/tools/libfuzzer-dotnet
+
+      - name: Publish and instrument ${{ matrix.target }}
+        shell: bash
+        env:
+          INSTRUMENT_ASSEMBLIES: ${{ matrix.instrument_assemblies }}
+        run: |
+          set -euo pipefail
+          publish_dir="artifacts/fuzz/${{ matrix.target }}/publish"
+          dotnet publish tools/Dekaf.Fuzzing/Dekaf.Fuzzing.csproj \
+            --configuration Release \
+            --framework net10.0 \
+            --output "$publish_dir"
+          for assembly in $INSTRUMENT_ASSEMBLIES; do
+            artifacts/fuzz/tools/sharpfuzz "$publish_dir/$assembly"
+          done
+
+      - name: Run bounded ${{ matrix.target }} campaign
+        shell: bash
+        env:
+          DEKAF_FUZZ_TARGET: ${{ matrix.target }}
+          FUZZ_SEED: ${{ matrix.seed }}
+          CORPUS_DIRECTORIES: ${{ matrix.corpus_directories }}
+        run: |
+          set -euo pipefail
+          result_dir="artifacts/fuzz-results/${DEKAF_FUZZ_TARGET}"
+          corpus_dir="$result_dir/corpus"
+          crash_dir="$result_dir/crashes"
+          mkdir -p "$corpus_dir" "$crash_dir"
+
+          for source_dir in $CORPUS_DIRECTORIES; do
+            cp -a "$source_dir/." "$corpus_dir/"
+          done
+
+          started_at=$(date --utc --iso-8601=seconds)
+          jq --null-input \
+            --arg target "$DEKAF_FUZZ_TARGET" \
+            --arg seed "$FUZZ_SEED" \
+            --arg commit "$GITHUB_SHA" \
+            --arg started_at "$started_at" \
+            --argjson max_total_time_seconds "$FUZZ_SECONDS" \
+            --argjson per_input_timeout_seconds "$PER_INPUT_TIMEOUT_SECONDS" \
+            --argjson rss_limit_mb "$RSS_LIMIT_MB" \
+            --argjson max_input_length "$MAX_INPUT_LENGTH" \
+            '{target: $target, seed: $seed, commit: $commit, started_at: $started_at,
+              max_total_time_seconds: $max_total_time_seconds,
+              per_input_timeout_seconds: $per_input_timeout_seconds,
+              rss_limit_mb: $rss_limit_mb, max_input_length: $max_input_length}' \
+            > "$result_dir/metadata.json"
+
+          set +e
+          artifacts/fuzz/tools/libfuzzer-dotnet \
+            --target_path=dotnet \
+            --target_arg="artifacts/fuzz/${DEKAF_FUZZ_TARGET}/publish/Dekaf.Fuzzing.dll" \
+            -max_total_time="$FUZZ_SECONDS" \
+            -timeout="$PER_INPUT_TIMEOUT_SECONDS" \
+            -rss_limit_mb="$RSS_LIMIT_MB" \
+            -max_len="$MAX_INPUT_LENGTH" \
+            -seed="$FUZZ_SEED" \
+            -artifact_prefix="$crash_dir/${DEKAF_FUZZ_TARGET}-seed-${FUZZ_SEED}-" \
+            "$corpus_dir" 2>&1 | tee "$result_dir/fuzzer.log"
+          fuzz_exit=${PIPESTATUS[0]}
+          set -e
+
+          jq \
+            --arg finished_at "$(date --utc --iso-8601=seconds)" \
+            --argjson exit_code "$fuzz_exit" \
+            '. + {finished_at: $finished_at, exit_code: $exit_code}' \
+            "$result_dir/metadata.json" > "$result_dir/metadata.tmp"
+          mv "$result_dir/metadata.tmp" "$result_dir/metadata.json"
+          exit "$fuzz_exit"
+
+      - name: Surface campaign metadata and crashes
+        if: always()
+        shell: bash
+        env:
+          FUZZ_SEED: ${{ matrix.seed }}
+        run: |
+          result_dir="artifacts/fuzz-results/${{ matrix.target }}"
+          {
+            echo "## ${{ matrix.target }} fuzz campaign"
+            echo
+            echo "- Seed: \`${FUZZ_SEED}\`"
+            echo "- Time bound: \`${FUZZ_SECONDS}s\`"
+            echo "- Per-input timeout: \`${PER_INPUT_TIMEOUT_SECONDS}s\`"
+            echo "- RSS bound: \`${RSS_LIMIT_MB} MiB\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo
+            echo '### Crash inputs'
+            if find "$result_dir/crashes" -type f -print -quit 2>/dev/null | grep -q .; then
+              find "$result_dir/crashes" -type f -printf -- '- `%f`\n' | sort
+              echo "::error title=${{ matrix.target }} fuzz crash::Crash input retained in protocol-fuzz-${{ matrix.target }}-seed-${FUZZ_SEED}-${GITHUB_RUN_ID}"
+            else
+              echo 'None.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload campaign corpus, logs, and crashes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: protocol-fuzz-${{ matrix.target }}-seed-${{ matrix.seed }}-${{ github.run_id }}
+          path: artifacts/fuzz-results/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 90
