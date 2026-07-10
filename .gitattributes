@@ -1,4 +1,7 @@
 *.verified.txt text eol=lf
 
+# Shell scripts run on Linux CI runners and must keep LF endings.
+*.sh text eol=lf
+
 # Fuzz corpora are byte-exact binary regression fixtures.
 tools/Dekaf.Fuzzing/Corpus/** -text -diff

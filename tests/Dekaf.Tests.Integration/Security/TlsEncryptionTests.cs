@@ -16,7 +16,6 @@ namespace Dekaf.Tests.Integration.Security;
 /// auto-generated test certificates (CA, server, client).
 /// </summary>
 [Category("Tls")]
-[NotInParallel("TlsKafka")]
 [ClassDataSource<TlsKafkaContainer>(Shared = SharedType.PerTestSession)]
 public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
 {
@@ -205,6 +204,11 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
                 .WithBootstrapServers(tlsKafka.BootstrapServers)
                 .WithClientId("test-tls-untrusted")
                 .UseTls(tlsConfig)
+                // The handshake can never succeed; tight budgets stop the client from
+                // burning the full default retry/delivery window before failing.
+                .WithConnectionTimeout(TimeSpan.FromSeconds(5))
+                .WithRequestTimeout(TimeSpan.FromSeconds(5))
+                .WithDeliveryTimeout(TimeSpan.FromSeconds(10))
                 .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
@@ -239,6 +243,11 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
                 .WithBootstrapServers(tlsKafka.BootstrapServers)
                 .WithClientId("test-tls-no-ca")
                 .UseTls(tlsConfig)
+                // The handshake can never succeed; tight budgets stop the client from
+                // burning the full default retry/delivery window before failing.
+                .WithConnectionTimeout(TimeSpan.FromSeconds(5))
+                .WithRequestTimeout(TimeSpan.FromSeconds(5))
+                .WithDeliveryTimeout(TimeSpan.FromSeconds(10))
                 .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
