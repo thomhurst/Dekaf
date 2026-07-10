@@ -93,6 +93,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private const int SendCoalescedTimeoutMs = 1500;
 
     private const int ResponsePollIntervalMs = 100;
+    private static readonly TimeSpan DisposalDrainTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Micro-linger: when coalesced batch count is at or below this threshold,
@@ -480,6 +481,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // disposal. The list is expected to already be empty when parked; a non-empty list
     // means a request slipped in against the width-reduction invariant and is logged.
     private IKafkaConnection? _retiringConnection;
+    private readonly ConcurrentDictionary<Task, byte> _retirementDrainTasks = new();
 
     // Set at send-loop finally entry so IsAlive turns false before surviving batches are
     // reroute-redelivered — GetOrCreateBrokerSender must build a replacement, not return
@@ -2837,8 +2839,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            var connection = await GetConnectionAtIndexAsync(connectionIndex, cancellationToken)
+            using var connectionLease = await GetConnectionLeaseAtIndexAsync(connectionIndex, cancellationToken)
                 .ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             count = CompactCurrentBatches(batches, generations, count);
             if (count == 0)
@@ -2849,7 +2852,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Diagnostic: mark batches as having acquired a connection.
             // If orphan trace shows 'S' but no 'G' (Got connection), the hang is at
-            // GetConnectionAtIndexAsync (connection creation or write lock contention).
+            // GetConnectionLeaseAtIndexAsync (connection creation or write lock contention).
             for (var i = 0; i < count; i++)
                 batches[i].AppendDiag('G');
 
@@ -3581,26 +3584,33 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns the pinned connection for the given connection index.
-    /// Each connection slot caches a healthy connection for reuse.
+    /// Leases and returns the pinned connection for the given connection index.
+    /// Each connection slot caches a healthy connection for reuse, while the lease bridges
+    /// selection to request registration so shared-pool retirement cannot dispose it between them.
     /// </summary>
-    private async ValueTask<IKafkaConnection> GetConnectionAtIndexAsync(int connIdx, CancellationToken cancellationToken)
+    private async ValueTask<KafkaConnectionLease> GetConnectionLeaseAtIndexAsync(
+        int connIdx,
+        CancellationToken cancellationToken)
     {
         var conn = _pinnedConnections[connIdx];
-        if (conn is not null && conn.IsConnected)
-            return conn;
+        if (conn is not null
+            && conn.IsConnected
+            && KafkaConnectionLease.TryAcquire(conn, out var pinnedLease))
+        {
+            return pinnedLease;
+        }
 
         // Shared pools may retain an expanded group owned by another client. An owning
         // sender also retains a one-slot group after scaling back down. Keep those slots
         // indexed, while preserving the singleton path before this sender first scales up.
-        var connection = _connectionCount > 1 || !_canPhysicallyShrinkConnections || _hasScaledConnectionGroup
-            ? await _connectionPool.GetConnectionByIndexAsync(_brokerId, connIdx, cancellationToken)
+        var connectionLease = _connectionCount > 1 || !_canPhysicallyShrinkConnections || _hasScaledConnectionGroup
+            ? await _connectionPool.LeaseConnectionByIndexAsync(_brokerId, connIdx, cancellationToken)
                 .ConfigureAwait(false)
-            : await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
+            : await _connectionPool.LeaseConnectionAsync(_brokerId, cancellationToken)
                 .ConfigureAwait(false);
 
-        _pinnedConnections[connIdx] = connection;
-        return connection;
+        _pinnedConnections[connIdx] = connectionLease.Connection;
+        return connectionLease;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -3928,6 +3938,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogBatchCleanupStepFailed(ex, _brokerId);
         }
 
+        // A final send-loop iteration may have already detached a retirement drain after
+        // clearing the raw connection fields. Wait for every such drain before inspecting
+        // the remaining scale-down state.
+        var retirementDrainTasks = _retirementDrainTasks.Keys.ToArray();
+        if (retirementDrainTasks.Length > 0)
+        {
+            await WaitForDisposalDrainAsync(
+                Task.WhenAll(retirementDrainTasks)).ConfigureAwait(false);
+        }
+
         // Observe any in-flight shrink task and dispose the draining connection.
         // After the send loop exits, these won't be polled by MaybeScaleConnections.
         if (_pendingShrinkTask is { } pendingShrinkTask)
@@ -3935,7 +3955,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _pendingShrinkTask = null;
             if (pendingShrinkTask.IsCompleted)
             {
-                await DisposeShrinkResultAsync(pendingShrinkTask).ConfigureAwait(false);
+                await WaitForDisposalDrainAsync(
+                    DisposeShrinkResultAsync(pendingShrinkTask)).ConfigureAwait(false);
             }
             else
             {
@@ -3947,15 +3968,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         if (_drainingConnection is not null)
         {
-            try { await _drainingConnection.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
+            await WaitForDisposalDrainAsync(
+                RetiredConnectionDisposer.DrainAndDisposeAsync(
+                    _drainingConnection,
+                    CancellationToken.None).AsTask()).ConfigureAwait(false);
             _drainingConnection = null;
         }
 
         if (_retiringConnection is not null)
         {
-            try { await _retiringConnection.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
+            await WaitForDisposalDrainAsync(
+                RetiredConnectionDisposer.DrainAndDisposeAsync(
+                    _retiringConnection,
+                    CancellationToken.None).AsTask()).ConfigureAwait(false);
             _retiringConnection = null;
         }
 
@@ -3994,13 +4019,44 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _anyResponseCompleted.Dispose();
     }
 
+    private async ValueTask WaitForDisposalDrainAsync(Task drainTask)
+    {
+        try
+        {
+            if (_canPhysicallyShrinkConnections)
+                await drainTask.ConfigureAwait(false);
+            else
+                await drainTask.WaitAsync(DisposalDrainTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException ex)
+        {
+            LogBatchCleanupStepFailed(ex, _brokerId);
+            // WaitAsync bounds DisposeAsync only. The drain retains connection ownership
+            // and must continue until sibling leases and operations finish.
+            _ = drainTask.ContinueWith(
+                static (task, _) => { _ = task.Exception; },
+                null,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+        catch (Exception ex)
+        {
+            LogBatchCleanupStepFailed(ex, _brokerId);
+        }
+    }
+
     private async Task DisposeShrinkResultAsync(Task<IKafkaConnection?> shrinkTask)
     {
         try
         {
             var removedConnection = await shrinkTask.ConfigureAwait(false);
             if (removedConnection is not null)
-                await removedConnection.DisposeAsync().ConfigureAwait(false);
+            {
+                await RetiredConnectionDisposer.DrainAndDisposeAsync(
+                    removedConnection,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -4318,15 +4374,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var connection = _drainingConnection;
         _drainingConnection = null;
 
-        // Fire-and-forget disposal with exception observation to prevent UnobservedTaskException.
-        // The connection has no in-flight requests (its pending list was empty when it was
-        // promoted to draining).
-        _ = connection.DisposeAsync().AsTask().ContinueWith(
-            static (t, _) => { /* Observe exception — best-effort disposal */ },
-            null,
+        // This sender's pending list is empty. The shared retirement helper also waits for
+        // any leases or operations held by other pool users before disposing in the background.
+        StartRetirementDrain(connection);
+    }
+
+    private void StartRetirementDrain(IKafkaConnection connection)
+    {
+        var drainTask = RetiredConnectionDisposer.DrainAndDisposeAsync(
+            connection,
+            CancellationToken.None).AsTask();
+        _retirementDrainTasks.TryAdd(drainTask, 0);
+        _ = drainTask.ContinueWith(
+            static (task, state) => ((BrokerSender)state!).ObserveCompletedRetirementDrain(task),
+            this,
             CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+    }
+
+    private void ObserveCompletedRetirementDrain(Task task)
+    {
+        _retirementDrainTasks.TryRemove(task, out _);
+        _ = task.Exception;
     }
 
     /// <summary>

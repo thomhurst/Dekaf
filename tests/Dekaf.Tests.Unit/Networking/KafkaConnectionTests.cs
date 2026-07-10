@@ -138,6 +138,26 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    public async Task SendAsync_AfterRetirementSealed_ThrowsObjectDisposedException()
+    {
+        await using var connection = new KafkaConnection("localhost", 9092);
+        var retirableConnection = (IRetirableKafkaConnection)connection;
+
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+        await Assert.That(retirableConnection.TryAcquireLease()).IsFalse();
+        retirableConnection.ReleaseLease();
+        retirableConnection.CompleteRetirement();
+
+        Func<Task> act = () => connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+            apiVersion: 3).AsTask();
+
+        await Assert.That(act).Throws<ObjectDisposedException>();
+        await Assert.That(retirableConnection.ActiveOperationCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ConnectAsync_AfterDispose_ThrowsObjectDisposedException()
     {
         var connection = new KafkaConnection("localhost", 9092);

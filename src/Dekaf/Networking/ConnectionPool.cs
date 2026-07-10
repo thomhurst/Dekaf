@@ -549,6 +549,9 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             // Remove the last connection from the group
             var removedConnection = currentGroup[^1];
+            if (removedConnection is IRetirableKafkaConnection retirableConnection)
+                retirableConnection.BeginRetirement();
+
             var shrunkGroup = new IKafkaConnection[currentGroup.Length - 1];
             Array.Copy(currentGroup, shrunkGroup, shrunkGroup.Length);
 

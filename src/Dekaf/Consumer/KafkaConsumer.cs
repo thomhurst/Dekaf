@@ -998,6 +998,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Initialize adaptive connection scaler if configured (before coordinator, which needs the connection count)
         if (options.EnableAdaptiveConnections && options.MaxConnectionsPerBroker > options.ConnectionsPerBroker)
         {
+            // Shared consumers may narrow local fetch routing, but cannot retire sockets
+            // that sibling clients still use from the shared connection pool.
             _connectionScaler = new ConsumerConnectionScaler(
                 initialConnectionCount: options.ConnectionsPerBroker,
                 maxConnectionCount: options.MaxConnectionsPerBroker,
@@ -1007,12 +1009,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     foreach (var broker in _metadataManager.Metadata.GetBrokers())
                         await _connectionPool.ScaleConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
                 },
-                scaleDownAsync: async ct =>
-                {
-                    var newCount = _connectionScaler!.CurrentConnectionCount;
-                    foreach (var broker in _metadataManager.Metadata.GetBrokers())
-                        await _connectionPool.ShrinkConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
-                },
+                scaleDownAsync: ownsInfrastructure
+                    ? ScaleDownOwnedConnectionGroupsAsync
+                    : static _ => ValueTask.CompletedTask,
                 logError: ex => _logger.LogWarning(ex, "Adaptive connection scaling operation failed"));
         }
 
@@ -1045,6 +1044,39 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Register this instance's lag callback with the shared static gauge.
         // The callback is invoked only during metric collection (~every 5-60s), not on the hot path.
         Diagnostics.DekafMetrics.RegisterConsumerLagCallback(ObserveConsumerLag);
+    }
+
+    private async ValueTask ScaleDownOwnedConnectionGroupsAsync(CancellationToken cancellationToken)
+    {
+        var newCount = _connectionScaler!.CurrentConnectionCount;
+        var brokers = _metadataManager.Metadata.GetBrokers();
+        var scaleDownTasks = new Task[brokers.Count];
+        for (var i = 0; i < brokers.Count; i++)
+            scaleDownTasks[i] = ScaleDownOwnedConnectionGroupAsync(
+                brokers[i].NodeId,
+                newCount,
+                cancellationToken).AsTask();
+
+        await Task.WhenAll(scaleDownTasks).ConfigureAwait(false);
+    }
+
+    private async ValueTask ScaleDownOwnedConnectionGroupAsync(
+        int brokerId,
+        int newCount,
+        CancellationToken cancellationToken)
+    {
+        var removedConnection = await _connectionPool.ShrinkConnectionGroupAsync(
+            brokerId,
+            newCount,
+            cancellationToken).ConfigureAwait(false);
+        if (removedConnection is null)
+            return;
+
+        // Once detached from the pool, the retired connection must finish draining even if
+        // consumer shutdown cancels further pool operations; otherwise it has no remaining owner.
+        await RetiredConnectionDisposer.DrainAndDisposeAsync(
+            removedConnection,
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     public StringSet Subscription => _subscriptionSnapshot;
@@ -2118,15 +2150,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 continue;
             }
 
-            if (key.ConnectionIndex >= fetchConnectionCount)
+            var isScaledDownConnection = key.ConnectionIndex >= fetchConnectionCount;
+            if (!isScaledDownConnection
+                && scheduledFetchSessions is not null
+                && scheduledFetchSessions.Contains(key))
+            {
+                continue;
+            }
+
+            // Owned consumers physically removed indices beyond the current group, so
+            // asking the pool for one would modulo-wrap the close onto a live connection.
+            // Shared consumers only narrow local routing and retain those physical slots.
+            if (_ownsInfrastructure && key.ConnectionIndex >= currentConnections)
             {
                 _fetchSessions.TryRemove(key, out _);
                 continue;
             }
 
-            if (scheduledFetchSessions is not null && scheduledFetchSessions.Contains(key))
-                continue;
-
+            // Shared consumers retain every physical connection. Owned consumers remove the
+            // old coordination connection, so the former highest fetch connection also remains
+            // open as the new coordination connection. Close either stale session explicitly.
             targetCount++;
             if (TryStartBrokerPrefetch(
                 key.BrokerId,
@@ -2339,7 +2382,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int fetchBufferEpoch,
         CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, connectionIndex, cancellationToken).ConfigureAwait(false);
+        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+            brokerId,
+            connectionIndex,
+            cancellationToken).ConfigureAwait(false);
+        var connection = connectionLease.Connection;
 
         // Ensure API version is negotiated (thread-safe initialization)
         var apiVersion = _fetchApiVersion;
@@ -3903,9 +3950,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         return await RetryHelper.WithRetryAsync(async () =>
         {
-            var connection = await GetPartitionLeaderControlConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
-            if (connection is null)
+            var connectionLease = await GetPartitionLeaderControlConnectionAsync(topicPartition, cancellationToken)
+                .ConfigureAwait(false);
+            if (connectionLease is null)
                 throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
+            using var lease = connectionLease.Value;
+            var connection = lease.Connection;
 
             var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.ListOffsets,
@@ -4352,9 +4402,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         return RetryHelper.WithRetryAsync(async () =>
         {
-            var connection = await GetPartitionLeaderControlConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
-            if (connection is null)
+            var connectionLease = await GetPartitionLeaderControlConnectionAsync(partition, cancellationToken)
+                .ConfigureAwait(false);
+            if (connectionLease is null)
                 return 0;
+            using var lease = connectionLease.Value;
+            var connection = lease.Connection;
 
             var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.ListOffsets,
@@ -4415,7 +4468,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }, _metadataManager, cancellationToken);
     }
 
-    private async ValueTask<IKafkaConnection?> GetPartitionLeaderControlConnectionAsync(
+    private async ValueTask<KafkaConnectionLease?> GetPartitionLeaderControlConnectionAsync(
         TopicPartition partition,
         CancellationToken cancellationToken)
     {
@@ -4429,7 +4482,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // block assignment position initialization or watermark queries during a rebalance.
         var connectionCount = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
         var connectionIndex = ConsumerCoordinator.GetCoordinationConnectionIndex(connectionCount);
-        return await _connectionPool.GetConnectionByIndexAsync(leader.NodeId, connectionIndex, cancellationToken).ConfigureAwait(false);
+        return await _connectionPool.LeaseConnectionByIndexAsync(leader.NodeId, connectionIndex, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async ValueTask FetchRecordsAsync(CancellationToken cancellationToken)
@@ -4947,7 +5001,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int fetchBufferEpoch,
         CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, 0, cancellationToken).ConfigureAwait(false);
+        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+            brokerId,
+            0,
+            cancellationToken).ConfigureAwait(false);
+        var connection = connectionLease.Connection;
 
         // Ensure API version is negotiated (thread-safe initialization)
         var apiVersion = _fetchApiVersion;
@@ -6126,7 +6184,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         List<TopicPartitionTimestamp> partitions,
         CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, 0, cancellationToken).ConfigureAwait(false);
+        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+            brokerId,
+            0,
+            cancellationToken).ConfigureAwait(false);
+        var connection = connectionLease.Connection;
 
         var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ListOffsets,
@@ -6277,6 +6339,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // Ignore — task may not exit promptly after cancellation
             }
+        }
+
+        if (_connectionScaler is not null)
+        {
+            if (_ownsInfrastructure)
+                await _connectionScaler.StopAndDrainAsync().ConfigureAwait(false);
+            else
+                await _connectionScaler.StopAndDrainAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            _connectionScaler.Dispose();
         }
 
         autoCommitCts?.Dispose();

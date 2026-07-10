@@ -135,9 +135,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
             var broker = brokers[attempt % brokers.Count];
-            var connection = await _connectionPool.GetConnectionByIndexAsync(
+            using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                 broker.NodeId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.FindCoordinator,
@@ -251,9 +252,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         bool isInitial,
         CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(
+        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
             _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
             .ConfigureAwait(false);
+        var connection = connectionLease.Connection;
 
         var version = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ShareGroupHeartbeat,
@@ -553,9 +555,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
 
         try
         {
-            var connection = await _connectionPool.GetConnectionByIndexAsync(
+            using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
                 _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
                 .ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var request = new ShareGroupHeartbeatRequest
             {

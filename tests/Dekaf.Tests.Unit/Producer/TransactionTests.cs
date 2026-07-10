@@ -479,6 +479,36 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task CompletePreparedTransactionAsync_HoldsConnectionLeaseDuringRequest()
+    {
+        var preparedState = new PreparedTransactionState(1001, 4);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9);
+
+        await harness.Producer.CompletePreparedTransactionAsync(preparedState, committed: true);
+
+        await Assert.That(harness.LeaseCountDuringRequest).IsEqualTo(1);
+        await Assert.That(harness.LeaseCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ReinitializeProducerIdAsync_HoldsConnectionLeaseDuringRequest()
+    {
+        var preparedState = new PreparedTransactionState(1001, 4);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9);
+
+        await harness.Producer.ReinitializeProducerIdAsync(CancellationToken.None);
+
+        await Assert.That(harness.LeaseCountDuringRequest).IsEqualTo(1);
+        await Assert.That(harness.LeaseCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task CompletePreparedTransactionAsync_Abort_UsesPreparedTransactionProducerIdentity()
     {
         var preparedState = new PreparedTransactionState(1001, 4);
@@ -580,21 +610,11 @@ public sealed class TransactionTests
         short currentProducerEpoch,
         ErrorCode endTxnError = ErrorCode.None)
     {
-        EndTxnRequest? capturedRequest = null;
-        var connection = Substitute.For<IKafkaConnection>();
-        connection.IsConnected.Returns(true);
-        connection.BrokerId.Returns(1);
-        connection
-            .SendAsync<EndTxnRequest, EndTxnResponse>(
-                Arg.Do<EndTxnRequest>(request => capturedRequest = request),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(_ => new ValueTask<EndTxnResponse>(new EndTxnResponse
-            {
-                ErrorCode = endTxnError,
-                ProducerId = preparedState.ProducerId,
-                ProducerEpoch = (short)(preparedState.ProducerEpoch + 1)
-            }));
+        var connection = new LeaseTrackingConnection(
+            preparedState,
+            currentProducerId,
+            currentProducerEpoch,
+            endTxnError);
 
         var connectionPool = new ConnectionPool(
             clientId: "test-producer",
@@ -608,6 +628,10 @@ public sealed class TransactionTests
             ApiKey.EndTxn,
             EndTxnRequest.LowestSupportedVersion,
             EndTxnRequest.HighestSupportedVersion);
+        metadataManager.SetApiVersion(
+            ApiKey.InitProducerId,
+            InitProducerIdRequest.LowestSupportedVersion,
+            InitProducerIdRequest.HighestSupportedVersion);
 
         var producer = new KafkaProducer<string, string>(
             new ProducerOptions
@@ -631,10 +655,7 @@ public sealed class TransactionTests
         producer._preparedTransactionState = preparedState;
         producer._transactionState = TransactionState.PreparedTransaction;
 
-        return new PreparedCompletionHarness(
-            producer,
-            connectionPool,
-            () => capturedRequest ?? throw new InvalidOperationException("EndTxn request was not captured."));
+        return new PreparedCompletionHarness(producer, connectionPool, connection);
     }
 
     private static void SetFinalizedTransactionVersion(KafkaProducer<string, string> producer, short version)
@@ -665,16 +686,116 @@ public sealed class TransactionTests
     private sealed class PreparedCompletionHarness(
         KafkaProducer<string, string> producer,
         ConnectionPool connectionPool,
-        Func<EndTxnRequest> capturedRequest) : IAsyncDisposable
+        LeaseTrackingConnection connection) : IAsyncDisposable
     {
         public KafkaProducer<string, string> Producer { get; } = producer;
 
-        public EndTxnRequest CapturedRequest => capturedRequest();
+        public EndTxnRequest CapturedRequest => connection.CapturedEndTxnRequest
+            ?? throw new InvalidOperationException("EndTxn request was not captured.");
+        public int LeaseCountDuringRequest => connection.LeaseCountDuringRequest;
+        public int LeaseCount => connection.LeaseCount;
 
         public async ValueTask DisposeAsync()
         {
             await Producer.DisposeAsync().ConfigureAwait(false);
             await connectionPool.DisposeAsync().ConfigureAwait(false);
         }
+    }
+
+    private sealed class LeaseTrackingConnection(
+        PreparedTransactionState preparedState,
+        long producerId,
+        short producerEpoch,
+        ErrorCode endTxnError) : IKafkaConnection, IRetirableKafkaConnection
+    {
+        private int _leaseCount;
+        private int _leaseCountDuringRequest = -1;
+
+        public int BrokerId => 1;
+        public string Host => "localhost";
+        public int Port => 9092;
+        public bool IsConnected => true;
+        public EndTxnRequest? CapturedEndTxnRequest { get; private set; }
+        public int LeaseCount => Volatile.Read(ref _leaseCount);
+        public int LeaseCountDuringRequest => Volatile.Read(ref _leaseCountDuringRequest);
+        public int ActiveOperationCount => 0;
+
+        public bool TryAcquireLease()
+        {
+            Interlocked.Increment(ref _leaseCount);
+            return true;
+        }
+
+        public void ReleaseLease() => Interlocked.Decrement(ref _leaseCount);
+        public void BeginRetirement() { }
+        public void CompleteRetirement() { }
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            Volatile.Write(ref _leaseCountDuringRequest, LeaseCount);
+            IKafkaResponse response = request switch
+            {
+                EndTxnRequest endTxnRequest => CreateEndTxnResponse(endTxnRequest),
+                InitProducerIdRequest => new InitProducerIdResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    ProducerId = producerId,
+                    ProducerEpoch = producerEpoch
+                },
+                _ => throw new NotSupportedException()
+            };
+
+            return ValueTask.FromResult((TResponse)response);
+        }
+
+        private EndTxnResponse CreateEndTxnResponse(EndTxnRequest request)
+        {
+            CapturedEndTxnRequest = request;
+            return new EndTxnResponse
+            {
+                ErrorCode = endTxnError,
+                ProducerId = preparedState.ProducerId,
+                ProducerEpoch = (short)(preparedState.ProducerEpoch + 1)
+            };
+        }
+
+        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => throw new NotSupportedException();
+
+        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => throw new NotSupportedException();
+
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => throw new NotSupportedException();
+
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => throw new NotSupportedException();
     }
 }

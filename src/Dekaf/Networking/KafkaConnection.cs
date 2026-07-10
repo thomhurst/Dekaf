@@ -134,6 +134,7 @@ internal static class ConnectionHelper
 public sealed partial class KafkaConnection :
     IKafkaConnection,
     IIdleTrackedKafkaConnection,
+    IRetirableKafkaConnection,
     IKafkaPipelinedWriteCompletionConnection
 {
     private readonly string _host;
@@ -185,6 +186,9 @@ public sealed partial class KafkaConnection :
     private int _pendingRequestSlotOperationCount;
     private int _pendingRequestSlotsClosed;
     private int _pendingRequestCount;
+    private int _leaseCount;
+    private int _activeOperationCount;
+    private int _retirementState;
     private readonly CancelledCorrelationIdTracker _cancelledCorrelationIds = new(MaxCancelledCorrelationIds);
     private readonly PendingRequestPool _pendingRequestPool;
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
@@ -229,6 +233,19 @@ public sealed partial class KafkaConnection :
     int IIdleTrackedKafkaConnection.PendingRequestCount => GetPendingRequestCount();
 
     void IIdleTrackedKafkaConnection.Touch() => Touch();
+
+    int IRetirableKafkaConnection.LeaseCount => Volatile.Read(ref _leaseCount);
+
+    int IRetirableKafkaConnection.ActiveOperationCount => Volatile.Read(ref _activeOperationCount);
+
+    bool IRetirableKafkaConnection.TryAcquireLease() => TryAcquireLease();
+
+    void IRetirableKafkaConnection.ReleaseLease() => ReleaseLease();
+
+    void IRetirableKafkaConnection.BeginRetirement()
+        => Interlocked.CompareExchange(ref _retirementState, 1, 0);
+
+    void IRetirableKafkaConnection.CompleteRetirement() => Volatile.Write(ref _retirementState, 2);
 
     /// <summary>
     /// Gets the current SASL session state, if SASL authentication was performed.
@@ -567,6 +584,8 @@ public sealed partial class KafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
+        using var operation = TrackOperation();
+
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
 
@@ -662,6 +681,8 @@ public sealed partial class KafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
+        using var operation = TrackOperation();
+
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
 
@@ -764,6 +785,8 @@ public sealed partial class KafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
+        using var operation = TrackOperation();
+
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
 
@@ -1619,6 +1642,46 @@ public sealed partial class KafkaConnection :
     private int GetPendingRequestCount() => Volatile.Read(ref _pendingRequestCount);
 
     private bool HasPendingRequests() => Volatile.Read(ref _pendingRequestCount) != 0;
+
+    private bool TryAcquireLease()
+    {
+        if (Volatile.Read(ref _retirementState) != 0 || Volatile.Read(ref _disposed) != 0)
+            return false;
+
+        Interlocked.Increment(ref _leaseCount);
+        if (Volatile.Read(ref _retirementState) == 0 && Volatile.Read(ref _disposed) == 0)
+            return true;
+
+        ReleaseLease();
+        return false;
+    }
+
+    private void ReleaseLease()
+    {
+        var remaining = Interlocked.Decrement(ref _leaseCount);
+        Debug.Assert(remaining >= 0);
+    }
+
+    private TrackedOperation TrackOperation()
+    {
+        Interlocked.Increment(ref _activeOperationCount);
+        if (Volatile.Read(ref _retirementState) < 2 && Volatile.Read(ref _disposed) == 0)
+            return new TrackedOperation(this);
+
+        EndTrackedOperation();
+        throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
+    }
+
+    private void EndTrackedOperation()
+    {
+        var remaining = Interlocked.Decrement(ref _activeOperationCount);
+        Debug.Assert(remaining >= 0);
+    }
+
+    private readonly struct TrackedOperation(KafkaConnection connection) : IDisposable
+    {
+        public void Dispose() => connection.EndTrackedOperation();
+    }
 
     private void RefreshReceiveTimeout()
     {

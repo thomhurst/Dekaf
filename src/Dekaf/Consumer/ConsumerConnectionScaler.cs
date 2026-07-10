@@ -8,7 +8,7 @@ namespace Dekaf.Consumer;
 /// Scale-down: when utilization is below 30% for >120 seconds.
 /// Cooldown: 5 seconds between any scale operations.
 /// </summary>
-internal sealed class ConsumerConnectionScaler
+internal sealed class ConsumerConnectionScaler : IDisposable
 {
     /// <summary>
     /// Maximum number of fetch connections per broker. Used for stackalloc sizing
@@ -25,12 +25,18 @@ internal sealed class ConsumerConnectionScaler
     private readonly Func<CancellationToken, ValueTask> _scaleUpAsync;
     private readonly Func<CancellationToken, ValueTask> _scaleDownAsync;
     private readonly Action<Exception>? _logError;
+    private readonly object _operationLock = new();
+    private readonly HashSet<Task> _pendingOperations = [];
+    private readonly CancellationTokenSource _operationCancellationSource = new();
 
     private int _currentConnectionCount;
     private long _saturationStartTimestamp;
     private long _lowUtilizationStartTimestamp;
     private long _lastScaleTimestamp;
     private long _testTimeOffsetTicks;
+    private int _stopping;
+
+    internal Action? BeforeScaleOperationLockForTest { get; set; }
 
     public int CurrentConnectionCount => Interlocked.CompareExchange(ref _currentConnectionCount, 0, 0);
 
@@ -88,30 +94,50 @@ internal sealed class ConsumerConnectionScaler
     /// </summary>
     public void MaybeScale()
     {
+        BeforeScaleOperationLockForTest?.Invoke();
+
         var now = GetTimestamp();
-
-        if (_lastScaleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
-            return;
-
-        if (_saturationStartTimestamp != 0
-            && _currentConnectionCount < _maxConnectionCount
-            && Stopwatch.GetElapsedTime(_saturationStartTimestamp, now) >= ScaleUpSustained)
+        Func<CancellationToken, ValueTask>? operation = null;
+        TaskCompletionSource? operationReservation = null;
+        lock (_operationLock)
         {
-            Interlocked.Increment(ref _currentConnectionCount);
-            _saturationStartTimestamp = 0;
-            _lastScaleTimestamp = now;
-            FireAndObserve(_scaleUpAsync);
-            return;
+            if (_stopping != 0)
+                return;
+
+            if (_lastScaleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
+                return;
+
+            if (_saturationStartTimestamp != 0
+                && _currentConnectionCount < _maxConnectionCount
+                && Stopwatch.GetElapsedTime(_saturationStartTimestamp, now) >= ScaleUpSustained)
+            {
+                Interlocked.Increment(ref _currentConnectionCount);
+                _saturationStartTimestamp = 0;
+                _lastScaleTimestamp = now;
+                operation = _scaleUpAsync;
+            }
+            else if (_lowUtilizationStartTimestamp != 0
+                && _currentConnectionCount > _initialConnectionCount
+                && Stopwatch.GetElapsedTime(_lowUtilizationStartTimestamp, now) >= ScaleDownSustained)
+            {
+                Interlocked.Decrement(ref _currentConnectionCount);
+                _lowUtilizationStartTimestamp = 0;
+                _lastScaleTimestamp = now;
+                operation = _scaleDownAsync;
+            }
+
+            if (operation is not null)
+            {
+                operationReservation = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _pendingOperations.Add(operationReservation.Task);
+            }
         }
 
-        if (_lowUtilizationStartTimestamp != 0
-            && _currentConnectionCount > _initialConnectionCount
-            && Stopwatch.GetElapsedTime(_lowUtilizationStartTimestamp, now) >= ScaleDownSustained)
+        if (operationReservation is not null)
         {
-            Interlocked.Decrement(ref _currentConnectionCount);
-            _lowUtilizationStartTimestamp = 0;
-            _lastScaleTimestamp = now;
-            FireAndObserve(_scaleDownAsync);
+            ObserveOperation(operationReservation.Task);
+            StartReservedOperation(operation!, operationReservation);
         }
     }
 
@@ -123,18 +149,115 @@ internal sealed class ConsumerConnectionScaler
     internal static int GetFetchConnectionCount(int connectionsPerBroker)
         => connectionsPerBroker > 1 ? connectionsPerBroker - 1 : 1;
 
-    private void FireAndObserve(Func<CancellationToken, ValueTask> action)
+    private void StartReservedOperation(
+        Func<CancellationToken, ValueTask> action,
+        TaskCompletionSource operationReservation)
     {
-        var task = action(CancellationToken.None);
-        if (task.IsCompletedSuccessfully)
+        try
+        {
+            var cancellationToken = _operationCancellationSource.Token;
+            cancellationToken.ThrowIfCancellationRequested();
+            var operation = action(cancellationToken);
+            if (operation.IsCompletedSuccessfully)
+            {
+                operationReservation.TrySetResult();
+                return;
+            }
+
+            _ = CompleteReservedOperationAsync(operation, operationReservation);
+        }
+        catch (OperationCanceledException ex)
+        {
+            operationReservation.TrySetCanceled(ex.CancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Preserve synchronous delegate semantics: report before MaybeScale returns.
+            _logError?.Invoke(ex);
+            operationReservation.TrySetResult();
+        }
+    }
+
+    private static async Task CompleteReservedOperationAsync(
+        ValueTask operation,
+        TaskCompletionSource operationReservation)
+    {
+        try
+        {
+            await operation.ConfigureAwait(false);
+            operationReservation.TrySetResult();
+        }
+        catch (OperationCanceledException ex)
+        {
+            operationReservation.TrySetCanceled(ex.CancellationToken);
+        }
+        catch (Exception ex)
+        {
+            operationReservation.TrySetException(ex);
+        }
+    }
+
+    private void ObserveOperation(Task operationTask)
+    {
+        _ = operationTask.ContinueWith(
+            static (task, state) => ((ConsumerConnectionScaler)state!).ObserveCompletedOperation(task),
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private void ObserveCompletedOperation(Task task)
+    {
+        lock (_operationLock)
+            _pendingOperations.Remove(task);
+
+        if (task.Exception is not null)
+            _logError?.Invoke(task.Exception.InnerException ?? task.Exception);
+    }
+
+    internal async ValueTask StopAndDrainAsync(TimeSpan timeout)
+    {
+        try
+        {
+            await StopAndDrainCoreAsync().AsTask().WaitAsync(timeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // Core drain continues observing the pending operations after disposal moves on.
+        }
+    }
+
+    internal ValueTask StopAndDrainAsync() => StopAndDrainCoreAsync();
+
+    private async ValueTask StopAndDrainCoreAsync()
+    {
+        Task[] pendingOperations;
+        bool cancelOperations;
+        lock (_operationLock)
+        {
+            cancelOperations = _stopping == 0;
+            Volatile.Write(ref _stopping, 1);
+            pendingOperations = [.. _pendingOperations];
+        }
+
+        if (cancelOperations)
+            _operationCancellationSource.Cancel();
+
+        if (pendingOperations.Length == 0)
             return;
 
-        task.AsTask().ContinueWith(static (t, state) =>
+        try
         {
-            if (t.Exception is not null)
-                ((Action<Exception>?)state)?.Invoke(t.Exception.InnerException ?? t.Exception);
-        }, _logError, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            await Task.WhenAll(pendingOperations).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Each operation's continuation observes and logs its exception.
+        }
     }
+
+    public void Dispose() => _operationCancellationSource.Dispose();
 
     /// <summary>
     /// Splits partitions across fetch connections using chunked distribution.

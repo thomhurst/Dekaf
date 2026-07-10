@@ -21,9 +21,9 @@ public sealed class QueryWatermarkOffsetsTests
     public async Task QueryWatermarkOffsetsAsync_UsesCoordinationConnectionAndStartsRequestsConcurrently()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
-        var connection = Substitute.For<IKafkaConnection>();
+        var connection = new LeaseTrackingConnection();
         connectionPool.GetConnectionByIndexAsync(0, 1, Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(connection));
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
 
         var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
         metadataManager.SetApiVersion(ApiKey.ListOffsets, ListOffsetsRequest.LowestSupportedVersion, ListOffsetsRequest.HighestSupportedVersion);
@@ -45,32 +45,29 @@ public sealed class QueryWatermarkOffsetsTests
         var latestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseResponses = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-                Arg.Any<ListOffsetsRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ci =>
-            {
-                var request = ci.Arg<ListOffsetsRequest>();
-                var timestamp = request.Topics[0].Partitions[0].Timestamp;
-                var currentLeaderEpoch = request.Topics[0].Partitions[0].CurrentLeaderEpoch;
+        connection.SendHandler = request =>
+        {
+            var timestamp = request.Topics[0].Partitions[0].Timestamp;
+            var currentLeaderEpoch = request.Topics[0].Partitions[0].CurrentLeaderEpoch;
 
-                if (currentLeaderEpoch != 3)
-                    throw new InvalidOperationException($"Unexpected CurrentLeaderEpoch {currentLeaderEpoch}");
+            if (currentLeaderEpoch != 3)
+                throw new InvalidOperationException($"Unexpected CurrentLeaderEpoch {currentLeaderEpoch}");
 
-                if (timestamp == EarliestOffsetTimestamp)
-                    earliestStarted.TrySetResult();
-                else if (timestamp == LatestOffsetTimestamp)
-                    latestStarted.TrySetResult();
-                else
-                    throw new InvalidOperationException($"Unexpected ListOffsets timestamp {timestamp}");
+            if (timestamp == EarliestOffsetTimestamp)
+                earliestStarted.TrySetResult();
+            else if (timestamp == LatestOffsetTimestamp)
+                latestStarted.TrySetResult();
+            else
+                throw new InvalidOperationException($"Unexpected ListOffsets timestamp {timestamp}");
 
-                return new ValueTask<ListOffsetsResponse>(CreateListOffsetsResponseAsync(timestamp, releaseResponses.Task));
-            });
+            return new ValueTask<ListOffsetsResponse>(CreateListOffsetsResponseAsync(timestamp, releaseResponses.Task));
+        };
 
         var queryTask = consumer.QueryWatermarkOffsetsAsync(new TopicPartition(Topic, Partition), CancellationToken.None).AsTask();
 
         await earliestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
+        await Assert.That(connection.LeaseCount).IsEqualTo(1);
         try
         {
             await latestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
@@ -91,6 +88,7 @@ public sealed class QueryWatermarkOffsetsTests
             0,
             1,
             Arg.Any<CancellationToken>());
+        await Assert.That(connection.LeaseCount).IsEqualTo(0);
     }
 
     private static async Task<ListOffsetsResponse> CreateListOffsetsResponseAsync(long timestamp, Task release)
@@ -159,5 +157,79 @@ public sealed class QueryWatermarkOffsetsTests
             ?? throw new InvalidOperationException("_initialized field not found - was it renamed?");
 
         initializedField.SetValue(consumer, true);
+    }
+
+    private sealed class LeaseTrackingConnection : IKafkaConnection, IRetirableKafkaConnection
+    {
+        private int _leaseCount;
+        private int _leaseAcquisitionCount;
+
+        public Func<ListOffsetsRequest, ValueTask<ListOffsetsResponse>>? SendHandler { get; set; }
+        public int BrokerId => 0;
+        public string Host => "localhost";
+        public int Port => 9092;
+        public bool IsConnected => true;
+        public int LeaseCount => Volatile.Read(ref _leaseCount);
+        public int LeaseAcquisitionCount => Volatile.Read(ref _leaseAcquisitionCount);
+        public int ActiveOperationCount => 0;
+
+        public bool TryAcquireLease()
+        {
+            Interlocked.Increment(ref _leaseAcquisitionCount);
+            Interlocked.Increment(ref _leaseCount);
+            return true;
+        }
+
+        public void ReleaseLease() => Interlocked.Decrement(ref _leaseCount);
+        public void BeginRetirement() { }
+        public void CompleteRetirement() { }
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            if (request is not ListOffsetsRequest listOffsetsRequest
+                || typeof(TResponse) != typeof(ListOffsetsResponse)
+                || SendHandler is null)
+            {
+                throw new NotSupportedException();
+            }
+
+            var response = await SendHandler(listOffsetsRequest);
+            return (TResponse)(object)response;
+        }
+
+        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
     }
 }

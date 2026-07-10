@@ -115,6 +115,45 @@ public sealed class AdaptiveScaleDownTests
             logger: null,
             canPhysicallyShrinkConnections: canPhysicallyShrinkConnections);
 
+    private static IKafkaConnection?[] GetPinnedConnections(BrokerSender sender)
+        => (IKafkaConnection?[])typeof(BrokerSender).GetField(
+            "_pinnedConnections",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+
+    private static ValueTask<KafkaConnectionLease> GetConnectionLeaseAtIndexAsync(
+        BrokerSender sender,
+        int connectionIndex)
+        => (ValueTask<KafkaConnectionLease>)typeof(BrokerSender).GetMethod(
+            "GetConnectionLeaseAtIndexAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(
+                sender,
+                [connectionIndex, CancellationToken.None])!;
+
+    private static async Task AssertDisposeWaitsForLeaseAsync(
+        BrokerSender sender,
+        TestKafkaConnection connection,
+        IRetirableKafkaConnection retirableConnection,
+        CancellationToken cancellationToken)
+    {
+        var disposalTask = sender.DisposeAsync().AsTask();
+        try
+        {
+            await connection.LeaseCountObserved.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(disposalTask.IsCompleted).IsFalse();
+            await Assert.That(connection.DisposeStarted.Task.IsCompleted).IsFalse();
+            await Assert.That(Volatile.Read(ref connection.DisposeCalls)).IsEqualTo(0);
+        }
+        finally
+        {
+            retirableConnection.ReleaseLease();
+            await disposalTask.WaitAsync(cancellationToken);
+        }
+
+        await Assert.That(Volatile.Read(ref connection.CompleteRetirementCalls)).IsEqualTo(1);
+        await Assert.That(Volatile.Read(ref connection.DisposeCalls)).IsEqualTo(1);
+    }
+
     /// <summary>
     /// Drives a full scale-up → scale-down cycle through the live send loop with an
     /// idempotent producer whose partitions span every connection slot, then keeps
@@ -390,20 +429,11 @@ public sealed class AdaptiveScaleDownTests
                     .SetValue(sender, 1);
             }
 
-            var pinnedConnections = (IKafkaConnection?[])typeof(BrokerSender).GetField(
-                "_pinnedConnections",
-                BindingFlags.Instance | BindingFlags.NonPublic)!
-                .GetValue(sender)!;
+            var pinnedConnections = GetPinnedConnections(sender);
             pinnedConnections[0] = disconnectedConnection;
 
-            var getConnectionAtIndexAsync = typeof(BrokerSender).GetMethod(
-                "GetConnectionAtIndexAsync",
-                BindingFlags.Instance | BindingFlags.NonPublic)!;
-            var pendingConnection = (ValueTask<IKafkaConnection>)getConnectionAtIndexAsync.Invoke(
-                sender,
-                [0, CancellationToken.None])!;
-
-            var connection = await pendingConnection;
+            using var connectionLease = await GetConnectionLeaseAtIndexAsync(sender, 0);
+            var connection = connectionLease.Connection;
 
             await Assert.That(connection).IsSameReferenceAs(
                 expectsIndexedConnection ? indexedConnection : unindexedConnection);
@@ -426,6 +456,82 @@ public sealed class AdaptiveScaleDownTests
         {
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task GetConnectionLeaseAtIndexAsync_PinnedConnection_HoldsLeaseUntilDisposed()
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = new TestKafkaConnection();
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: null,
+            canPhysicallyShrinkConnections: false);
+
+        try
+        {
+            var pinnedConnections = GetPinnedConnections(sender);
+            pinnedConnections[0] = connection;
+
+            using (var connectionLease = await GetConnectionLeaseAtIndexAsync(sender, 0))
+            {
+                await Assert.That(connectionLease.Connection).IsSameReferenceAs(connection);
+                await Assert.That(((IRetirableKafkaConnection)connection).LeaseCount).IsEqualTo(1);
+            }
+
+            await Assert.That(((IRetirableKafkaConnection)connection).LeaseCount).IsEqualTo(0);
+            await pool.DidNotReceive().GetConnectionByIndexAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task GetConnectionLeaseAtIndexAsync_RetiredPinnedConnection_UsesCurrentPoolSlot()
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var retiredConnection = new TestKafkaConnection();
+        var replacementConnection = new TestKafkaConnection();
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(replacementConnection);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: null,
+            canPhysicallyShrinkConnections: false);
+
+        try
+        {
+            var pinnedConnections = GetPinnedConnections(sender);
+            pinnedConnections[0] = retiredConnection;
+            ((IRetirableKafkaConnection)retiredConnection).BeginRetirement();
+
+            using (var connectionLease = await GetConnectionLeaseAtIndexAsync(sender, 0))
+            {
+                await Assert.That(connectionLease.Connection).IsSameReferenceAs(replacementConnection);
+                await Assert.That(((IRetirableKafkaConnection)replacementConnection).LeaseCount).IsEqualTo(1);
+            }
+
+            await Assert.That(pinnedConnections[0]).IsSameReferenceAs(replacementConnection);
+            await Assert.That(((IRetirableKafkaConnection)retiredConnection).LeaseCount).IsEqualTo(0);
+            await Assert.That(((IRetirableKafkaConnection)replacementConnection).LeaseCount).IsEqualTo(0);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
         }
     }
 
@@ -456,6 +562,212 @@ public sealed class AdaptiveScaleDownTests
             await Task.Yield();
         }
 
+        await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(1);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_CompletedShrinkResult_WaitsForLeasedConnection(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var removedConnection = new TestKafkaConnection();
+        var retirableConnection = (IRetirableKafkaConnection)removedConnection;
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+
+        typeof(BrokerSender).GetField(
+            "_pendingShrinkTask",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(sender, Task.FromResult<IKafkaConnection?>(removedConnection));
+
+        await AssertDisposeWaitsForLeaseAsync(
+            sender,
+            removedConnection,
+            retirableConnection,
+            cancellationToken);
+    }
+
+    [Test]
+    [Arguments("_drainingConnection")]
+    [Arguments("_retiringConnection")]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_ParkedConnection_WaitsForLeasedConnection(
+        string connectionFieldName,
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var removedConnection = new TestKafkaConnection();
+        var retirableConnection = (IRetirableKafkaConnection)removedConnection;
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+
+        typeof(BrokerSender).GetField(
+            connectionFieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(sender, removedConnection);
+
+        await AssertDisposeWaitsForLeaseAsync(
+            sender,
+            removedConnection,
+            retirableConnection,
+            cancellationToken);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_InFlightRetirementDrain_WaitsForLeasedConnection(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var removedConnection = new TestKafkaConnection();
+        var retirableConnection = (IRetirableKafkaConnection)removedConnection;
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+
+        typeof(BrokerSender).GetField(
+            "_drainingConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(sender, removedConnection);
+
+        typeof(BrokerSender).GetMethod(
+            "MaybeDrainAndDisposeConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(sender, null);
+
+        await AssertDisposeWaitsForLeaseAsync(
+            sender,
+            removedConnection,
+            retirableConnection,
+            cancellationToken);
+    }
+
+    [Test]
+    [Timeout(15_000)]
+    public async Task DisposeAsync_SharedDrainTimeout_ContinuesWaitingForLease(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: null,
+            canPhysicallyShrinkConnections: false);
+        var removedConnection = new TestKafkaConnection();
+        var retirableConnection = (IRetirableKafkaConnection)removedConnection;
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+
+        typeof(BrokerSender).GetField(
+            "_drainingConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(sender, removedConnection);
+
+        try
+        {
+            await sender.DisposeAsync().AsTask().WaitAsync(cancellationToken);
+
+            await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(0);
+            await Assert.That(Volatile.Read(ref removedConnection.CompleteRetirementCalls)).IsEqualTo(0);
+        }
+        finally
+        {
+            retirableConnection.ReleaseLease();
+            await removedConnection.DisposeStarted.Task.WaitAsync(cancellationToken);
+        }
+
+        await Assert.That(Volatile.Read(ref removedConnection.CompleteRetirementCalls)).IsEqualTo(1);
+        await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(1);
+    }
+
+    [Test]
+    [Timeout(15_000)]
+    public async Task DisposeAsync_OwnedDrainPastTimeout_WaitsForLease(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var removedConnection = new TestKafkaConnection();
+        var retirableConnection = (IRetirableKafkaConnection)removedConnection;
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+
+        typeof(BrokerSender).GetField(
+            "_drainingConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(sender, removedConnection);
+
+        var dispose = sender.DisposeAsync().AsTask();
+        try
+        {
+            await removedConnection.LeaseCountObserved.Task.WaitAsync(cancellationToken);
+            await Assert.That(async () =>
+                    await dispose.WaitAsync(TimeSpan.FromMilliseconds(5_200), cancellationToken))
+                .Throws<TimeoutException>();
+            await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(0);
+        }
+        finally
+        {
+            retirableConnection.ReleaseLease();
+            await dispose.WaitAsync(cancellationToken);
+        }
+
+        await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(1);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task ApplyScaleDown_CancelledSender_KeepsRetirementDrainAlive(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var removedConnection = new TestKafkaConnection();
+        var retirableConnection = (IRetirableKafkaConnection)removedConnection;
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+
+        var lifetimeCts = (CancellationTokenSource)typeof(BrokerSender).GetField(
+            "_cts",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+        lifetimeCts.Cancel();
+
+        typeof(BrokerSender).GetMethod(
+            "ApplyScaleDown",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(sender, [removedConnection]);
+
+        try
+        {
+            await removedConnection.LeaseCountObserved.Task.WaitAsync(cancellationToken);
+            await Assert.That(removedConnection.DisposeStarted.Task.IsCompleted).IsFalse();
+            await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(0);
+        }
+        finally
+        {
+            retirableConnection.ReleaseLease();
+            await removedConnection.DisposeStarted.Task.WaitAsync(cancellationToken);
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+
+        await Assert.That(Volatile.Read(ref removedConnection.CompleteRetirementCalls)).IsEqualTo(1);
         await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(1);
     }
 

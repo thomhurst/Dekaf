@@ -4,6 +4,7 @@ using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Tests.Unit.Producer;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Admin;
@@ -60,13 +61,35 @@ public sealed class AdminClientClientMetricsResourcesTests
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.ClusterAuthorizationFailed);
     }
 
-    private static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection()
+    [Test]
+    public async Task ListClientMetricsResourcesAsync_HoldsConnectionLeaseThroughResponse()
     {
-        var connection = Substitute.For<IKafkaConnection>();
-        connection.BrokerId.Returns(1);
-        connection.Host.Returns("localhost");
-        connection.Port.Returns(9092);
-        connection.IsConnected.Returns(true);
+        var connection = new TestKafkaConnection
+        {
+            SendResponse = static requestType => requestType == typeof(ListClientMetricsResourcesRequest)
+                ? new ListClientMetricsResourcesResponse { ErrorCode = ErrorCode.None }
+                : throw new NotSupportedException()
+        };
+        var (admin, _) = CreateAdminWithMockConnection(connection);
+        var retirableConnection = (IRetirableKafkaConnection)connection;
+
+        await admin.ListClientMetricsResourcesAsync();
+
+        await Assert.That(connection.LeaseCountDuringRequest).IsEqualTo(1);
+        await Assert.That(retirableConnection.LeaseCount).IsEqualTo(0);
+    }
+
+    private static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection(
+        IKafkaConnection? suppliedConnection = null)
+    {
+        var connection = suppliedConnection ?? Substitute.For<IKafkaConnection>();
+        if (suppliedConnection is null)
+        {
+            connection.BrokerId.Returns(1);
+            connection.Host.Returns("localhost");
+            connection.Port.Returns(9092);
+            connection.IsConnected.Returns(true);
+        }
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -79,25 +102,28 @@ public sealed class AdminClientClientMetricsResourcesTests
         metadataManager.SetApiVersion(ApiKey.ListClientMetricsResources, 0, 0);
         metadataManager.SetApiVersion(ApiKey.Metadata, 9, 13);
 
-        connection.SendAsync<MetadataRequest, MetadataResponse>(
-                Arg.Any<MetadataRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(CreateMetadataResponse()));
+        if (suppliedConnection is null)
+        {
+            connection.SendAsync<MetadataRequest, MetadataResponse>(
+                    Arg.Any<MetadataRequest>(),
+                    Arg.Any<short>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(ValueTask.FromResult(CreateMetadataResponse()));
 
-        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-                Arg.Any<ApiVersionsRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new ApiVersionsResponse
-            {
-                ErrorCode = ErrorCode.None,
-                ApiKeys =
-                [
-                    new ApiVersion(ApiKey.Metadata, 9, 13),
-                    new ApiVersion(ApiKey.ListClientMetricsResources, 0, 0)
-                ]
-            }));
+            connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                    Arg.Any<ApiVersionsRequest>(),
+                    Arg.Any<short>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(ValueTask.FromResult(new ApiVersionsResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    ApiKeys =
+                    [
+                        new ApiVersion(ApiKey.Metadata, 9, 13),
+                        new ApiVersion(ApiKey.ListClientMetricsResources, 0, 0)
+                    ]
+                }));
+        }
 
         var admin = new AdminClient(
             new AdminClientOptions { BootstrapServers = ["localhost:9092"] },

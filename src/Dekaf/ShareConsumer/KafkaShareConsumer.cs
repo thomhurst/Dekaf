@@ -578,8 +578,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     {
         try
         {
-            var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
                 .ConfigureAwait(false);
+            var connection = connectionLease.Connection;
             var response = (ShareFetchResponse)await connection
                 .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
                 .ConfigureAwait(false);
@@ -638,8 +639,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     {
         try
         {
-            var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
                 .ConfigureAwait(false);
+            var connection = connectionLease.Connection;
             await connection.SendAsync<ShareFetchRequest, ShareFetchResponse>(
                 request, version, cancellationToken).ConfigureAwait(false);
         }
@@ -666,8 +668,9 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             Topics = topics
         };
 
-        var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
+        using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
             .ConfigureAwait(false);
+        var connection = connectionLease.Connection;
 
         var response = (ShareAcknowledgeResponse)await connection
             .SendAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(

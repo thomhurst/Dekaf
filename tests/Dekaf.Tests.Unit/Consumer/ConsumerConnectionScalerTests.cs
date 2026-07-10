@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Consumer;
 
 namespace Dekaf.Tests.Unit.Consumer;
@@ -173,6 +174,200 @@ public sealed class ConsumerConnectionScalerTests
 
         await TestWait.UntilAsync(() => logged is not null, TimeSpan.FromSeconds(5));
         await Assert.That(logged).IsSameReferenceAs(exception);
+    }
+
+    [Test]
+    public async Task MaybeScale_SynchronousDelegateThrow_LogsError()
+    {
+        var exception = new InvalidOperationException("scale failed synchronously");
+        Exception? logged = null;
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ => throw exception,
+            scaleDownAsync: _ => ValueTask.CompletedTask,
+            logError: ex => logged = ex);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.MaybeScale();
+
+        await Assert.That(logged).IsSameReferenceAs(exception);
+    }
+
+    [Test]
+    public async Task MaybeScale_StopBeforeOperationLock_DoesNotChangeCountOrDispatch()
+    {
+        var scaleUpCount = 0;
+        var beforeOperationLock = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var continueScale = new ManualResetEventSlim();
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ =>
+            {
+                Interlocked.Increment(ref scaleUpCount);
+                return ValueTask.CompletedTask;
+            },
+            scaleDownAsync: _ => ValueTask.CompletedTask)
+        {
+            BeforeScaleOperationLockForTest = () =>
+            {
+                beforeOperationLock.TrySetResult();
+                continueScale.Wait();
+            }
+        };
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+
+        var scaleTask = Task.Run(scaler.MaybeScale);
+        try
+        {
+            await beforeOperationLock.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await scaler.StopAndDrainAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            continueScale.Set();
+        }
+
+        await scaleTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(scaleUpCount).IsEqualTo(0);
+        await Assert.That(scaler.CurrentConnectionCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task StopAndDrainAsync_PendingOperation_ReturnsAfterTimeout()
+    {
+        var scaleCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ => new ValueTask(scaleCompletion.Task),
+            scaleDownAsync: _ => ValueTask.CompletedTask);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.MaybeScale();
+
+        try
+        {
+            await scaler.StopAndDrainAsync(TimeSpan.Zero);
+            await Assert.That(scaleCompletion.Task.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            scaleCompletion.TrySetResult();
+            await scaler.StopAndDrainAsync(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    [Test]
+    public async Task StopAndDrainAsync_WithoutTimeout_WaitsForPendingOperation()
+    {
+        var scaleCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ => new ValueTask(scaleCompletion.Task),
+            scaleDownAsync: _ => ValueTask.CompletedTask);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.MaybeScale();
+
+        var drainTask = scaler.StopAndDrainAsync().AsTask();
+        await Assert.That(drainTask.IsCompleted).IsFalse();
+
+        scaleCompletion.SetResult();
+        await drainTask.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Test]
+    public async Task StopAndDrainAsync_CancelsPendingOperation()
+    {
+        var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: async cancellationToken =>
+            {
+                operationStarted.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    cancellationObserved.TrySetResult();
+                    throw;
+                }
+            },
+            scaleDownAsync: _ => ValueTask.CompletedTask);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.MaybeScale();
+
+        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await scaler.StopAndDrainAsync(TimeSpan.FromSeconds(1));
+
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
+    public async Task Dispose_DisposesOperationCancellationSource()
+    {
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ => ValueTask.CompletedTask,
+            scaleDownAsync: _ => ValueTask.CompletedTask);
+        var field = typeof(ConsumerConnectionScaler).GetField(
+            "_operationCancellationSource",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Cancellation source field not found");
+        var source = (CancellationTokenSource)field.GetValue(scaler)!;
+
+        scaler.Dispose();
+
+        await Assert.That(source.Cancel).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    public async Task MaybeScale_SynchronousDelegatePrefix_DoesNotHoldOperationLock()
+    {
+        var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseOperation = new ManualResetEventSlim();
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ =>
+            {
+                operationStarted.TrySetResult();
+                releaseOperation.Wait(CancellationToken.None);
+                return ValueTask.CompletedTask;
+            },
+            scaleDownAsync: _ => ValueTask.CompletedTask);
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+
+        var firstScale = Task.Run(scaler.MaybeScale);
+        await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var secondScale = Task.Run(scaler.MaybeScale);
+        try
+        {
+            await secondScale.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            releaseOperation.Set();
+            await firstScale.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     [Test]
