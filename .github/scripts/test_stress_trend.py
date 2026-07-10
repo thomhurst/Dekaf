@@ -41,6 +41,10 @@ def history_run(index, messages_per_second=1000.0, cpu_micros_per_message=2.0, *
 
 
 class StressTrendTests(unittest.TestCase):
+    def test_empty_history_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported stress history version"):
+            evaluate_and_update({}, [result()], "2026-07-01T02:00:00Z")
+
     def test_first_adverse_excursion_warns_without_failing(self):
         history = {"version": 1, "runs": [history_run(i) for i in range(1, 4)]}
 
@@ -292,6 +296,32 @@ class StressTrendTests(unittest.TestCase):
                 ])
 
             self.assertFalse(github_output_path.exists())
+
+    def test_workflow_creates_merged_results_before_searching_for_results(self):
+        workflow = (
+            Path(__file__).parent.parent / "workflows" / "stress-tests.yml"
+        ).read_text(encoding="utf-8")
+        step = workflow[
+            workflow.index("      - name: Detect Performance Trends"):
+            workflow.index("      - name: Upload Merged Results")
+        ]
+
+        create_directory = step.index("mkdir -p merged-results")
+        find_result = step.index("result_file=$(find merged-results")
+        self.assertLess(create_directory, find_result)
+
+    def test_history_merge_wait_retries_one_transient_state_query_failure(self):
+        workflow = (
+            Path(__file__).parent.parent / "workflows" / "stress-tests.yml"
+        ).read_text(encoding="utf-8")
+        step = workflow[
+            workflow.index("      - name: Wait for History Merge"):
+            workflow.index("  regression-gate:")
+        ]
+
+        self.assertEqual(2, step.count('state=$(gh pr view "$PR_NUMBER"'))
+        self.assertIn("Failed to read stress history PR state; retrying once", step)
+        self.assertIn("Failed to read stress history PR state after retry", step)
 
 
 if __name__ == "__main__":

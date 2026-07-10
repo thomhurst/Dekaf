@@ -136,10 +136,10 @@ def _metric_status(value, baseline, lower_is_regression):
 
 def evaluate_and_update(history, current_results, run_started_at):
     """Evaluate current results, append one compact run, and return failure state."""
-    if history and history.get("version") != HISTORY_VERSION:
+    if history is not None and history.get("version") != HISTORY_VERSION:
         raise ValueError(f"Unsupported stress history version: {history.get('version')}")
 
-    runs = history.get("runs", []) if history else []
+    runs = history.get("runs", []) if history is not None else []
     if not isinstance(runs, list):
         raise ValueError("Stress history 'runs' must be a list")
 

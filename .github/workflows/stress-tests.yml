@@ -433,6 +433,7 @@ jobs:
         env:
           PYTHONPATH: .github/scripts
         run: |
+          mkdir -p merged-results
           result_file=$(find merged-results -type f -name 'stress-test-results-*.json' | sort | tail -1)
           if [ -z "$result_file" ]; then
             echo "::error::Merged stress-test results were not produced"
@@ -589,7 +590,14 @@ jobs:
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
         run: |
           while true; do
-            state=$(gh pr view "$PR_NUMBER" --json state --jq '.state')
+            if ! state=$(gh pr view "$PR_NUMBER" --json state --jq '.state'); then
+              echo "::warning::Failed to read stress history PR state; retrying once"
+              sleep 5
+              if ! state=$(gh pr view "$PR_NUMBER" --json state --jq '.state'); then
+                echo "::error::Failed to read stress history PR state after retry"
+                exit 1
+              fi
+            fi
             case "$state" in
               MERGED)
                 exit 0
