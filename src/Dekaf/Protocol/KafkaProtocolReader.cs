@@ -808,6 +808,28 @@ public ref struct KafkaProtocolReader
     }
 
     /// <summary>
+    /// Reads a nullable array with 4-byte length prefix (legacy format).
+    /// </summary>
+    public T[]? ReadNullableArray<T>(ReadFunc<T> readItem)
+    {
+        var length = ReadInt32();
+        if (length < 0)
+            return null;
+
+        if (length == 0)
+            return [];
+
+        ValidateReadableLength(length);
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Reads a compact array with unsigned varint length prefix (flexible format).
     /// </summary>
     public T[] ReadCompactArray<T>(ReadFunc<T> readItem)
@@ -911,6 +933,28 @@ public ref struct KafkaProtocolReader
     {
         var length = ReadInt32();
         if (length <= 0)
+            return [];
+
+        ValidateReadableLength(length);
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this, state);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Reads a nullable array with 4-byte length prefix (legacy format).
+    /// </summary>
+    public T[]? ReadNullableArray<T, TState>(ReadFunc<T, TState> readItem, TState state)
+    {
+        var length = ReadInt32();
+        if (length < 0)
+            return null;
+
+        if (length == 0)
             return [];
 
         ValidateReadableLength(length);

@@ -41,8 +41,7 @@ public sealed class DescribeClientQuotasResponse : IKafkaResponse
             ? reader.ReadCompactNullableArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeClientQuotasResponseEntry.Read(ref r, v),
                 version)
-            : ReadNullableArray(
-                ref reader,
+            : reader.ReadNullableArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeClientQuotasResponseEntry.Read(ref r, v),
                 version);
 
@@ -65,31 +64,6 @@ public sealed class DescribeClientQuotasResponse : IKafkaResponse
 
     internal static string? ReadString(ref KafkaProtocolReader reader, bool flexible) =>
         flexible ? reader.ReadCompactString() : reader.ReadString();
-
-    private static T[]? ReadNullableArray<T>(
-        ref KafkaProtocolReader reader,
-        KafkaProtocolReader.ReadFunc<T, short> readItem,
-        short version)
-    {
-        var length = reader.ReadInt32();
-        if (length < 0)
-        {
-            return null;
-        }
-
-        if (length == 0)
-        {
-            return [];
-        }
-
-        var result = new T[length];
-        for (var i = 0; i < length; i++)
-        {
-            result[i] = readItem(ref reader, version);
-        }
-
-        return result;
-    }
 }
 
 /// <summary>

@@ -1,4 +1,3 @@
-using System.Buffers;
 using Dekaf.Protocol;
 
 namespace Dekaf.Fuzzing;
@@ -87,11 +86,7 @@ public static class ProtocolReaderFuzzTarget
             return;
         }
 
-        var buffer = input.ToArray();
-        var split = buffer.Length / 2;
-        var first = new BufferSegment(buffer.AsMemory(0, split));
-        var last = first.Append(buffer.AsMemory(split));
-        var sequence = new ReadOnlySequence<byte>(first, 0, last, last.Memory.Length);
+        var sequence = SegmentedFuzzInput.Create(input);
         var reader = new KafkaProtocolReader(sequence);
         Execute(operation, ref reader);
     }
@@ -193,6 +188,9 @@ public static class ProtocolReaderFuzzTarget
             case ProtocolReaderOperation.Skip:
                 reader.Skip(reader.ReadInt32());
                 break;
+            case ProtocolReaderOperation.ReadNullableArrayWithState:
+                _ = reader.ReadNullableArray(ReadUInt8WithState, (byte)0);
+                break;
             default:
                 throw new InvalidOperationException($"Unknown protocol reader fuzz operation: {operation}");
         }
@@ -203,23 +201,6 @@ public static class ProtocolReaderFuzzTarget
         return reader.ReadUInt8();
     }
 
-    private sealed class BufferSegment : ReadOnlySequenceSegment<byte>
-    {
-        public BufferSegment(ReadOnlyMemory<byte> memory)
-        {
-            Memory = memory;
-        }
-
-        public BufferSegment Append(ReadOnlyMemory<byte> memory)
-        {
-            var segment = new BufferSegment(memory)
-            {
-                RunningIndex = RunningIndex + Memory.Length
-            };
-            Next = segment;
-            return segment;
-        }
-    }
 }
 
 internal enum ProtocolReaderOperation : byte
@@ -254,5 +235,6 @@ internal enum ProtocolReaderOperation : byte
     ReadCompactNonNullableString = 27,
     ReadRawBytes = 28,
     ReadMemorySlice = 29,
-    Skip = 30
+    Skip = 30,
+    ReadNullableArrayWithState = 31
 }
