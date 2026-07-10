@@ -19,11 +19,12 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
 ///   --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
+///   --roundtrip-messages &lt;count&gt;  Bounded message count for producer-roundtrip (default: 250000)
 ///   report --input &lt;path&gt;   Generate report from existing results
 ///   fault [options]          Run fault-injection correctness suite
 ///
@@ -139,6 +140,7 @@ public static class Program
         var producerTopic = $"stress-producer-{Guid.NewGuid():N}";
         var consumerTopic = $"stress-consumer-{Guid.NewGuid():N}";
         string? transactionalTopic = null;
+        var roundTripTopic = $"stress-roundtrip-{Guid.NewGuid():N}";
 
         var replicationFactor = Math.Min(options.Brokers, 3);
         var replayTopicConfigs = new Dictionary<string, string>
@@ -164,6 +166,17 @@ public static class Program
             replicationFactor,
             replayTopicConfigs).ConfigureAwait(false);
 
+        if (options.Scenario is "producer-roundtrip" or "all")
+        {
+            // Round-trip validation must consume every produced byte. Keep this topic
+            // retention-free, but cap its disk use with --roundtrip-messages.
+            await kafka.CreateTopicAsync(roundTripTopic, options.Partitions, replicationFactor, new Dictionary<string, string>
+            {
+                ["retention.ms"] = "-1",
+                ["retention.bytes"] = "-1"
+            }).ConfigureAwait(false);
+        }
+
         if (options.Scenario is "consumer" or "consumer-batch" or "consumer-raw" or "consumer-raw-batch" or "all")
         {
             await SeedConsumerTopicAsync(kafka.BootstrapServers, consumerTopic, options).ConfigureAwait(false);
@@ -177,6 +190,9 @@ public static class Program
         {
             if (scenarioName.Equals("producer-transactional", StringComparison.OrdinalIgnoreCase))
                 return transactionalTopic ?? throw new InvalidOperationException("Transactional topic was not created.");
+
+            if (scenarioName.Equals("producer-roundtrip", StringComparison.OrdinalIgnoreCase))
+                return roundTripTopic;
 
             return UsesProducerTopic(scenarioName)
                 ? producerTopic
@@ -195,6 +211,7 @@ public static class Program
             Compression = options.Compression,
             BrokerCount = options.Brokers,
             ConnectionsPerBroker = connectionsPerBroker,
+            RoundTripMessages = options.RoundTripMessages,
             EnableProducerDeliveryDiagnostics = options.EnableProducerDeliveryDiagnostics,
             ProgressWatchdog = progressWatchdog,
             SoakMessagesPerSecond = options.SoakMessagesPerSecond,
@@ -345,8 +362,10 @@ public static class Program
     /// - Duplicate delivery in idempotent scenarios (delivered exceeding accepted), which
     ///   means broker-side deduplication of retries is broken. Non-idempotent scenarios
     ///   skip this check because retry duplicates are legitimate there.
-    /// - A run that ended measurably earlier than its configured duration (a swallowed
-    ///   cancellation or crashed loop would otherwise pass with a fraction of the load).
+    /// - Round-trip checksum, partition, sequence, duplicate, gap, and timeout violations.
+    /// - A duration-bounded run that ended measurably earlier than its configured duration
+    ///   (a swallowed cancellation or crashed loop would otherwise pass with a fraction of
+    ///   the load). Message-bounded round-trip runs are exempt from this duration guard.
     /// - A sustained mid-run stall (see <see cref="StallThresholdSeconds"/>).
     /// - Task exceptions nobody observed, surfaced after a final finalizer sweep.
     /// Results are already saved at this point; the non-zero exit only fails the CI job.
@@ -403,9 +422,17 @@ public static class Program
                 }
             }
 
-            var expectedSeconds = result.DurationMinutes * 60;
-            if (result.Throughput.ElapsedSeconds < expectedSeconds * 0.9)
+            if (result.RoundTripValidation is { IsSuccess: false })
             {
+                reasons.Add("round-trip validation failed");
+            }
+
+            if (StressRunCompletionPolicy.EndedEarly(
+                    result.Throughput.ElapsedSeconds,
+                    result.DurationMinutes,
+                    isMessageBounded: result.IsMessageBounded))
+            {
+                var expectedSeconds = result.DurationMinutes * 60;
                 reasons.Add(
                     $"run ended early ({result.Throughput.ElapsedSeconds:N0}s of {expectedSeconds:N0}s)");
             }
@@ -451,6 +478,11 @@ public static class Program
             if (transactionVerification is { IsSuccessful: false })
             {
                 PrintTransactionVerificationFailure(transactionVerification);
+            }
+
+            if (result.RoundTripValidation is { } validation)
+            {
+                PrintRoundTripValidation(validation);
             }
         }
 
@@ -520,6 +552,17 @@ public static class Program
         {
             Console.WriteLine($"      - {sample}");
         }
+    }
+
+    private static void PrintRoundTripValidation(RoundTripValidationSnapshot validation)
+    {
+        Console.WriteLine(
+            $"    round-trip: expected={validation.ExpectedMessages:N0}, " +
+            $"consumed={validation.ConsumedMessages:N0}, missing={validation.MissingMessages:N0}, " +
+            $"duplicates={validation.DuplicateMessages:N0}, corrupt={validation.CorruptMessages:N0}, " +
+            $"out-of-order={validation.OutOfOrderMessages:N0}, " +
+            $"mispartitioned={validation.MispartitionedMessages:N0}, " +
+            $"unexpected={validation.UnexpectedMessages:N0}, timed-out={validation.TimedOut}");
     }
 
     private static void PrintProducerDeliveryDiagnostics(ProducerDeliveryDiagnosticsSnapshot? snapshot)
@@ -670,6 +713,8 @@ public static class Program
             new ProducerAsyncIdempotentStressTest(),
             new ConfluentProducerAsyncIdempotentStressTest(),
             new TransactionalProducerStressTest(),
+            new ProducerRoundTripStressTest(),
+            new ConfluentProducerRoundTripStressTest(),
             new ConsumerStressTest(),
             new ConsumerBatchStressTest(),
             new ConsumerRawStressTest(),
@@ -810,6 +855,13 @@ public static class Program
                         throw new ArgumentException("--seed-messages must be at least 1");
                     }
                     break;
+                case "--roundtrip-messages":
+                    options.RoundTripMessages = int.Parse(args[++i]);
+                    if (options.RoundTripMessages < 1)
+                    {
+                        throw new ArgumentException("--roundtrip-messages must be at least 1");
+                    }
+                    break;
                 case "--producer-delivery-diagnostics":
                     options.EnableProducerDeliveryDiagnostics = true;
                     break;
@@ -912,7 +964,7 @@ public static class Program
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, consumer, consumer-batch, consumer-raw, consumer-raw-batch, soak, all (default: all; all excludes soak)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip, consumer, consumer-batch, consumer-raw, consumer-raw-batch, soak, all (default: all; all excludes soak)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)
@@ -931,6 +983,7 @@ public static class Program
               --max-gc-heap-slope-mib-per-hour <n>      GC-heap growth limit (default: 4)
               --max-loh-slope-mib-per-hour <n>          LOH growth limit (default: 4)
               --max-throughput-decay-percent-per-hour <n> Throughput decay limit (default: 5)
+              --roundtrip-messages <count>  Bounded message count for producer-roundtrip (default: 250000)
               report --input <path>   Generate report from existing results
 
             Fault injection:
@@ -976,6 +1029,7 @@ public static class Program
         public int Brokers { get; set; } = 1;
         public int ConnectionsPerBroker { get; set; } = 1;
         public int SeedMessages { get; set; } = 2_000_000;
+        public int RoundTripMessages { get; set; } = 250_000;
         public bool EnableProducerDeliveryDiagnostics { get; set; }
         public string FaultProfile { get; set; } = "all";
         public int FaultDurationSeconds { get; set; } = 5;

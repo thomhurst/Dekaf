@@ -108,11 +108,11 @@ internal static class ConfluentStressTestHelpers
     /// queue-full messages are silently dropped and counted as errors, which makes
     /// throughput numbers incomparable (drops vs. delivered goodput).
     /// </summary>
-    internal static void ProduceWithBackpressure(
-        ConfluentKafka.IProducer<string, string> producer,
+    internal static void ProduceWithBackpressure<TKey, TValue>(
+        ConfluentKafka.IProducer<TKey, TValue> producer,
         string topic,
-        ConfluentKafka.Message<string, string> message,
-        Action<ConfluentKafka.DeliveryReport<string, string>>? deliveryHandler,
+        ConfluentKafka.Message<TKey, TValue> message,
+        Action<ConfluentKafka.DeliveryReport<TKey, TValue>>? deliveryHandler,
         CancellationToken cancellationToken)
         => ConfluentProducerBackpressure.ProduceWithBackpressure(
             producer,
@@ -212,8 +212,8 @@ internal static class ConfluentStressTestHelpers
     /// timeout: a flush that cannot drain against a healthy broker means the client is
     /// stuck, and the leftover messages will surface as undelivered loss.
     /// </summary>
-    internal static void FlushWithTimeout(
-        ConfluentKafka.IProducer<string, string> producer,
+    internal static void FlushWithTimeout<TKey, TValue>(
+        ConfluentKafka.IProducer<TKey, TValue> producer,
         ThroughputTracker throughput)
     {
         var remaining = producer.Flush(StressTestHelpers.OperationTimeout);

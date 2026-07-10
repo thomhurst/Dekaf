@@ -11,6 +11,7 @@ SCENARIO_TITLES = {
     'producer-async': 'Producer (Async)',
     'producer-async-idempotent': 'Producer (Async, Idempotent)',
     'producer-transactional': 'Producer (Transactional EOS)',
+    'producer-roundtrip': 'Producer → Consumer Round-Trip',
     'consumer': 'Consumer',
     'consumer-batch': 'Consumer (Batch)',
     'consumer-raw': 'Consumer (Raw Bytes)',
@@ -120,6 +121,9 @@ def accepted_messages_per_second(result):
 
 def median_interval_rate(result):
     """Median sampled client-side interval throughput, or None for old result files."""
+    if result.get('isMessageBounded'):
+        return None
+
     rate = result.get('medianIntervalMessagesPerSecond')
     if rate is not None:
         return rate
@@ -359,6 +363,40 @@ def format_transaction_verification(results):
     return lines
 
 
+def format_roundtrip_validation_table(results):
+    """Generate strict content/order validation results when present."""
+    validation_results = [r for r in results if r.get('roundTripValidation') is not None]
+    if not validation_results:
+        return []
+
+    lines = [
+        "### Round-Trip Validation",
+        "",
+        "| Client | Expected | Consumed | Missing | Duplicates | Corrupt | Out of Order | Wrong Partition | Unexpected | Timed Out | Result |",
+        "|--------|----------|----------|---------|------------|---------|--------------|-----------------|------------|-----------|--------|",
+    ]
+
+    for result in sorted(validation_results, key=lambda item: item.get('client', '')):
+        validation = result['roundTripValidation']
+        success = validation.get('isSuccess', False)
+        lines.append(
+            f"| {result.get('client', 'Unknown')} | "
+            f"{validation.get('expectedMessages', 0):,} | "
+            f"{validation.get('consumedMessages', 0):,} | "
+            f"{validation.get('missingMessages', 0):,} | "
+            f"{validation.get('duplicateMessages', 0):,} | "
+            f"{validation.get('corruptMessages', 0):,} | "
+            f"{validation.get('outOfOrderMessages', 0):,} | "
+            f"{validation.get('mispartitionedMessages', 0):,} | "
+            f"{validation.get('unexpectedMessages', 0):,} | "
+            f"{'yes' if validation.get('timedOut', False) else 'no'} | "
+            f"{'PASS' if success else 'FAIL'} |"
+        )
+
+    lines.append("")
+    return lines
+
+
 def generate_scenario_tables(results, include_ratio=False, include_callout=False):
     """Generate per-scenario throughput tables for all results."""
     producer_scenarios, consumer_scenarios = group_by_scenario(results)
@@ -370,6 +408,7 @@ def generate_scenario_tables(results, include_ratio=False, include_callout=False
             scenario_results = scenarios[scenario_key]
             output.extend(format_throughput_table(scenario_results, f"{title} Throughput", include_ratio=include_ratio))
             output.extend(format_transaction_verification(scenario_results))
+            output.extend(format_roundtrip_validation_table(scenario_results))
             if include_callout:
                 output.extend(format_comparison_callout(scenario_results, title))
 

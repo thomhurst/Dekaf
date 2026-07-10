@@ -251,8 +251,8 @@ internal static class StressTestHelpers
     /// in 30 seconds against a healthy broker means the producer is stuck, and any
     /// still-buffered messages will surface as undelivered loss.
     /// </summary>
-    internal static async Task FlushWithTimeoutAsync(
-        IKafkaProducer<string, string> producer,
+    internal static async Task FlushWithTimeoutAsync<TKey, TValue>(
+        IKafkaProducer<TKey, TValue> producer,
         ThroughputTracker throughput)
     {
         try
@@ -323,16 +323,16 @@ internal static class StressTestHelpers
         return delivered;
     }
 
-    internal static void ConfigureProducerDeliveryDiagnostics(
-        ProducerBuilder<string, string> builder,
+    internal static void ConfigureProducerDeliveryDiagnostics<TKey, TValue>(
+        ProducerBuilder<TKey, TValue> builder,
         StressTestOptions options)
     {
         if (options.EnableProducerDeliveryDiagnostics)
             builder.WithDeliveryDiagnostics();
     }
 
-    internal static ProducerDeliveryDiagnosticsSnapshot? CaptureProducerDeliveryDiagnostics(
-        IKafkaProducer<string, string> producer,
+    internal static ProducerDeliveryDiagnosticsSnapshot? CaptureProducerDeliveryDiagnostics<TKey, TValue>(
+        IKafkaProducer<TKey, TValue> producer,
         StressTestOptions options)
     {
         if (!options.EnableProducerDeliveryDiagnostics)
@@ -383,6 +383,41 @@ internal static class StressTestHelpers
                 // messaging.client.sent.errors metric (DekafDeliveryErrorListener), and
                 // this message was accepted into MessageCount before delivery failed.
                 throughput.RecordDeliveryErrorDetail(ex, "SampleDeliveryLatency", messageIndex);
+            }
+        }
+    }
+
+    internal static ThroughputSampler StartSampler(
+        ThroughputTracker throughput,
+        CancellationToken cancellationToken) =>
+        new(throughput, cancellationToken);
+
+    internal sealed class ThroughputSampler : IAsyncDisposable
+    {
+        private readonly CancellationTokenSource _cancellation;
+        private readonly Task _samplerTask;
+
+        internal ThroughputSampler(ThroughputTracker throughput, CancellationToken cancellationToken)
+        {
+            _cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _samplerTask = RunSamplerAsync(throughput, _cancellation.Token);
+        }
+
+        internal async ValueTask StopAsync()
+        {
+            _cancellation.Cancel();
+            await _samplerTask.ConfigureAwait(false);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                await StopAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                _cancellation.Dispose();
             }
         }
     }

@@ -13,6 +13,10 @@ on:
         description: 'Message size in bytes'
         required: false
         default: '1000'
+      roundtrip_messages:
+        description: 'Bounded message count for round-trip correctness scenario'
+        required: false
+        default: '250000'
 
 concurrency:
   group: stress-tests
@@ -79,6 +83,13 @@ jobs:
             artifact_suffix: ""
             timeout_minutes: 150
             name: Dekaf Transactional EOS (3 Brokers)
+          - scenario: producer-roundtrip
+            client: all
+            brokers: 1
+            run_3conn: false
+            artifact_suffix: ""
+            timeout_minutes: 90
+            name: Producer → Consumer Round-Trip (Paired)
           - scenario: consumer
             client: all
             brokers: 1
@@ -246,6 +257,7 @@ jobs:
             --brokers ${{ matrix.brokers }} \
             --connections-per-broker 1 \
             --producer-delivery-diagnostics \
+            --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
             --output ./results
 
           if [ "${{ matrix.run_3conn }}" = "true" ]; then
@@ -258,6 +270,7 @@ jobs:
               --brokers ${{ matrix.brokers }} \
               --connections-per-broker 3 \
               --producer-delivery-diagnostics \
+              --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
               --output ./results
           fi
 
@@ -557,6 +570,7 @@ jobs:
           output.append("- **Backpressure Parity**: both producers are bounded to the same 512 MB local buffer (Dekaf BufferMemory, librdkafka queue.buffering.max) and block on a full buffer, so neither client can absorb an unbounded backlog into RAM")
           output.append("- **Consumer Loop Replay**: Consumer tests re-read a pre-seeded topic (seek to beginning when drained) instead of racing a live feeder, so the consumer itself is measured")
           output.append("- **Delivery Latency Sampling**: 1 in 1000 produced messages is awaited end-to-end to record true broker round-trip latency")
+          output.append("- **Round-Trip Correctness**: Bounded sequenced payloads are consumed back and checked for corruption, wrong partitions, gaps, duplicates, and reordering")
           output.append("- **CPU Efficiency**: CPU time per message differentiates client efficiency even at equal throughput")
           output.append("- **Noise-Aware Trends**: each scenario is compared with its last 10 matching runs using a median ± 2×MAD band; one adverse excursion warns and two consecutive regressions fail the workflow")
           output.append("- **Parallel Execution**: Each scenario runs in its own isolated environment")

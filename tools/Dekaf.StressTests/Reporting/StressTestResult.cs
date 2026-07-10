@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
+using Dekaf.StressTests.Scenarios;
 
 namespace Dekaf.StressTests.Reporting;
 
@@ -18,6 +19,14 @@ internal sealed class StressTestResult
     public required GcSnapshot GcStats { get; init; }
     public int BrokerCount { get; init; } = 1;
     public ProducerDeliveryDiagnosticsSnapshot? ProducerDeliveryDiagnostics { get; init; }
+    public RoundTripValidationSnapshot? RoundTripValidation { get; init; }
+
+    /// <summary>
+    /// Whether a fixed message count, rather than <see cref="DurationMinutes"/>, defines
+    /// successful scenario completion. Message-bounded runs may finish before the duration.
+    /// </summary>
+    public bool IsMessageBounded { get; init; }
+
     /// <summary>
     /// Whether the scenario's producer ran with idempotence enabled. Must mirror the
     /// producer configuration a few lines above where each scenario sets it. The failure
@@ -69,12 +78,12 @@ internal sealed class StressTestResult
         DeliveredMegabytesPerSecond ?? Throughput.AverageMegabytesPerSecond;
 
     /// <summary>
-    /// Median of sampled client-side throughput intervals. This is less sensitive than
-    /// the whole-run mean to a brief late-run stall, and lets reports show the steady
-    /// state beside the end-to-end average.
+    /// Median of sampled client-side throughput intervals. Message-bounded round-trip
+    /// scenarios sample only their producer phase, while the headline rate includes
+    /// validation, so exposing that partial-window median would make comparisons invalid.
     /// </summary>
     public double? MedianIntervalMessagesPerSecond =>
-        GetMedian(Throughput.MessagesPerSecondSamples);
+        IsMessageBounded ? null : GetMedian(Throughput.MessagesPerSecondSamples);
 
     /// <summary>
     /// Client-side append rate, reported only when it is distinct from the headline
