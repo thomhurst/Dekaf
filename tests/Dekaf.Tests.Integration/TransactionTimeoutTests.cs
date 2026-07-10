@@ -9,7 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// multi-topic transactions, isolation level behavior, and failure recovery scenarios.
 /// </summary>
 [Category("Transaction")]
-public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
+public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task Transaction_MultipleTopicsAndPartitions_CommitsAtomically()

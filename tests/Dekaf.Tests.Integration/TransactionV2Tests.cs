@@ -9,7 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// are automatically active when connected to Kafka 4.0+ brokers that support transaction.version >= 2.
 /// </summary>
 [Category("Transaction")]
-public class TransactionV2Tests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
+public class TransactionV2Tests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task Transaction_Commit_ThenNewTransaction_Succeeds()

@@ -8,7 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for exactly-once processing semantics using consume-transform-produce with transactions.
 /// </summary>
 [Category("Transaction")]
-public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
+public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task ConsumeTransformProduce_WithTransactionalOffsetCommit_ExactlyOnceSemantics()

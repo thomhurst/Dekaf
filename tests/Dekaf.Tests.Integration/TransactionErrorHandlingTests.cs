@@ -16,7 +16,7 @@ namespace Dekaf.Tests.Integration;
 /// there is no reliable, non-flaky way to force a broker into returning an abortable error here.
 /// </remarks>
 [Category("Transaction")]
-public class TransactionErrorHandlingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
+public class TransactionErrorHandlingTests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task Transaction_FencedByNewerProducer_AllOperationsFailFatalAndWritesStayInvisible()

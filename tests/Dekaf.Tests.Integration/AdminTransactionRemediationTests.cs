@@ -8,7 +8,7 @@ using Dekaf.Protocol.Messages;
 namespace Dekaf.Tests.Integration;
 
 [Category("Transaction")]
-public sealed class AdminTransactionRemediationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
+public sealed class AdminTransactionRemediationTests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task FenceProducersAsync_FencesActiveTransactionalProducer()

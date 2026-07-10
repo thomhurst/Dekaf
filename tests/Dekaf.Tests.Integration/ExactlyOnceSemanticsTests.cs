@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// multi-producer isolation, epoch bumping/fencing, and consume-transform-produce patterns.
 /// </summary>
 [Category("Transaction")]
-public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
+public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task TransactionOffsetCommit_Atomicity_OffsetsAndMessagesCommittedTogether()

@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// concurrent commit/abort, abort markers, and last stable offset blocking.
 /// </summary>
 [Category("Transaction")]
-public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
+public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task ReadUncommitted_SeesMessages_FromOpenTransactions()
