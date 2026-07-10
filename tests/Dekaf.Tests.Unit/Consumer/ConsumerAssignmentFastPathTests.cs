@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
@@ -20,6 +21,10 @@ public sealed class ConsumerAssignmentFastPathTests
         "_pollVersion",
         BindingFlags.NonPublic | BindingFlags.Instance)
         ?? throw new InvalidOperationException("_pollVersion field not found.");
+    private static readonly FieldInfo LastPollTimestampField = typeof(ConsumerCoordinator).GetField(
+        "_lastPollTimestamp",
+        BindingFlags.NonPublic | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("_lastPollTimestamp field not found.");
 
     [Test]
     public async Task ConsumeAsync_IdleLoop_RecordsForegroundPollProgress()
@@ -172,6 +177,49 @@ public sealed class ConsumerAssignmentFastPathTests
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         await Assert.That(consumer.Assignment).Contains(new TopicPartition("test-topic", 0));
+        await Assert.That(consumer.Assignment).Contains(new TopicPartition("test-topic", 1));
+    }
+
+    [Test]
+    public async Task EnsureAssignmentForPollAsync_SlowPositionInitialization_DoesNotExpireMember()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupChangingConsumerGroupHeartbeat(connection);
+        var offsetFetchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOffsetFetch = new TaskCompletionSource<OffsetFetchResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        SetupBlockingSecondOffsetFetch(connection, offsetFetchStarted, releaseOffsetFetch);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager, maxPollIntervalMs: 100);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var coordinator = GetCoordinator(consumer);
+        coordinator.RequestRejoin();
+        var assignment = consumer.EnsureAssignmentForPollAsync(CancellationToken.None).AsTask();
+        CoordinatorState stateDuringInitialization;
+        try
+        {
+            await offsetFetchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            LastPollTimestampField.SetValue(
+                coordinator,
+                Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+            await coordinator.RecordPollAsync(CancellationToken.None);
+            stateDuringInitialization = coordinator.State;
+        }
+        finally
+        {
+            releaseOffsetFetch.TrySetResult(CreateSuccessfulOffsetFetchResponse());
+            await assignment;
+        }
+
+        await Assert.That(stateDuringInitialization).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
         await Assert.That(consumer.Assignment).Contains(new TopicPartition("test-topic", 1));
     }
 
@@ -558,7 +606,8 @@ public sealed class ConsumerAssignmentFastPathTests
     private static KafkaConsumer<string, string> CreateGroupConsumer(
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
-        int queuedMinMessages = 1)
+        int queuedMinMessages = 1,
+        int maxPollIntervalMs = 300_000)
     {
         return new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -566,7 +615,8 @@ public sealed class ConsumerAssignmentFastPathTests
                 BootstrapServers = ["localhost:9092"],
                 GroupId = "group-a",
                 OffsetCommitMode = OffsetCommitMode.Manual,
-                QueuedMinMessages = queuedMinMessages
+                QueuedMinMessages = queuedMinMessages,
+                MaxPollIntervalMs = maxPollIntervalMs
             },
             Serializers.String,
             Serializers.String,
@@ -737,6 +787,26 @@ public sealed class ConsumerAssignmentFastPathTests
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+    }
+
+    private static void SetupBlockingSecondOffsetFetch(
+        IKafkaConnection connection,
+        TaskCompletionSource offsetFetchStarted,
+        TaskCompletionSource<OffsetFetchResponse> releaseOffsetFetch)
+    {
+        var callCount = 0;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (Interlocked.Increment(ref callCount) == 1)
+                    return ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse());
+
+                offsetFetchStarted.TrySetResult();
+                return new ValueTask<OffsetFetchResponse>(releaseOffsetFetch.Task);
+            });
     }
 
     private static void SetupOffsetFetchFailureAfterInitialAssignment(IKafkaConnection connection)

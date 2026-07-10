@@ -74,9 +74,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private long _maxPollExpiredAtPollVersion = -1;
     private long _maxPollExpirationVersion;
     private int _maxPollLossNotificationPending;
-    // A pending MoveNext/ConsumeOne fetch is application poll activity. Track concurrent callers
-    // without allocating a scope object on each fetch cycle.
-    private int _foregroundFetchWaitCount;
+    // Foreground assignment initialization and fetch waits are application poll activity. Track
+    // concurrent callers without allocating a scope object on each poll cycle.
+    private int _foregroundPollActivityCount;
     private int _subscriptionChanged; // 0 = false, 1 = true; use Interlocked.Exchange for atomic snapshot
     private volatile StringSet? _subscribedTopics;
     private volatile string? _subscribedTopicRegex;
@@ -122,7 +122,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
             return ValueTask.CompletedTask;
 
-        if (Volatile.Read(ref _foregroundFetchWaitCount) != 0)
+        if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
         {
             RefreshPollDeadline();
             return ValueTask.CompletedTask;
@@ -170,16 +170,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Interlocked.Increment(ref _pollVersion);
     }
 
-    internal void BeginForegroundFetchWait()
+    internal void BeginForegroundPollActivity()
     {
-        Interlocked.Increment(ref _foregroundFetchWaitCount);
+        Interlocked.Increment(ref _foregroundPollActivityCount);
         RefreshPollDeadline();
     }
 
-    internal void EndForegroundFetchWait()
+    internal void EndForegroundPollActivity()
     {
         RefreshPollDeadline();
-        Interlocked.Decrement(ref _foregroundFetchWaitCount);
+        Interlocked.Decrement(ref _foregroundPollActivityCount);
     }
 
     private void RefreshPollDeadline() => Volatile.Write(ref _lastPollTimestamp, Stopwatch.GetTimestamp());
@@ -203,7 +203,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
             return true;
 
-        if (Volatile.Read(ref _foregroundFetchWaitCount) != 0)
+        if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
             return false;
 
         return _state == CoordinatorState.Stable
@@ -1557,7 +1557,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (_state != CoordinatorState.Stable)
                 return default;
 
-            if (Volatile.Read(ref _foregroundFetchWaitCount) != 0)
+            if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
             {
                 RefreshPollDeadline();
                 return default;

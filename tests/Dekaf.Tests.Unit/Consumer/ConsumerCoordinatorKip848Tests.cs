@@ -395,7 +395,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task RecordPollAsync_ActiveForegroundFetchWait_DoesNotExpireMember()
+    public async Task RecordPollAsync_ActiveForegroundPollActivity_DoesNotExpireMember()
     {
         SetupSuccessfulConsumerProtocolJoin();
         var options = CreateConsumerProtocolOptions(
@@ -405,7 +405,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
 
-        coordinator.BeginForegroundFetchWait();
+        coordinator.BeginForegroundPollActivity();
         try
         {
             SetCoordinatorLongField(
@@ -423,7 +423,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         }
         finally
         {
-            coordinator.EndForegroundFetchWait();
+            coordinator.EndForegroundPollActivity();
         }
     }
 
@@ -1257,7 +1257,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task CommitOffsetsAsync_EstablishedMaxPollFence_RejectsDuringForegroundFetchWait()
+    public async Task CommitOffsetsAsync_EstablishedMaxPollFence_RejectsDuringForegroundPollActivity()
     {
         _metadataManager.SetApiVersion(
             ApiKey.OffsetCommit,
@@ -1283,7 +1283,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             "_maxPollExpiredAtPollVersion",
             GetCoordinatorLongField(coordinator, "_pollVersion"));
 
-        coordinator.BeginForegroundFetchWait();
+        coordinator.BeginForegroundPollActivity();
         GroupException? exception;
         try
         {
@@ -1295,7 +1295,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         }
         finally
         {
-            coordinator.EndForegroundFetchWait();
+            coordinator.EndForegroundPollActivity();
         }
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
