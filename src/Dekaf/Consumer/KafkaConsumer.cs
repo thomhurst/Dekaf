@@ -1049,19 +1049,32 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async ValueTask ScaleDownOwnedConnectionGroupsAsync(CancellationToken cancellationToken)
     {
         var newCount = _connectionScaler!.CurrentConnectionCount;
-        foreach (var broker in _metadataManager.Metadata.GetBrokers())
-        {
-            var removedConnection = await _connectionPool.ShrinkConnectionGroupAsync(
-                broker.NodeId,
+        var brokers = _metadataManager.Metadata.GetBrokers();
+        var scaleDownTasks = new Task[brokers.Count];
+        for (var i = 0; i < brokers.Count; i++)
+            scaleDownTasks[i] = ScaleDownOwnedConnectionGroupAsync(
+                brokers[i].NodeId,
                 newCount,
-                cancellationToken).ConfigureAwait(false);
-            if (removedConnection is null)
-                continue;
+                cancellationToken).AsTask();
 
-            await RetiredConnectionDisposer.DrainAndDisposeAsync(
-                removedConnection,
-                cancellationToken).ConfigureAwait(false);
-        }
+        await Task.WhenAll(scaleDownTasks).ConfigureAwait(false);
+    }
+
+    private async ValueTask ScaleDownOwnedConnectionGroupAsync(
+        int brokerId,
+        int newCount,
+        CancellationToken cancellationToken)
+    {
+        var removedConnection = await _connectionPool.ShrinkConnectionGroupAsync(
+            brokerId,
+            newCount,
+            cancellationToken).ConfigureAwait(false);
+        if (removedConnection is null)
+            return;
+
+        await RetiredConnectionDisposer.DrainAndDisposeAsync(
+            removedConnection,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public StringSet Subscription => _subscriptionSnapshot;

@@ -35,6 +35,8 @@ internal sealed class ConsumerConnectionScaler
     private long _testTimeOffsetTicks;
     private int _stopping;
 
+    internal Action? BeforeScaleOperationLockForTest { get; set; }
+
     public int CurrentConnectionCount => Interlocked.CompareExchange(ref _currentConnectionCount, 0, 0);
 
     public ConsumerConnectionScaler(
@@ -91,34 +93,44 @@ internal sealed class ConsumerConnectionScaler
     /// </summary>
     public void MaybeScale()
     {
-        if (Volatile.Read(ref _stopping) != 0)
-            return;
+        BeforeScaleOperationLockForTest?.Invoke();
 
         var now = GetTimestamp();
-
-        if (_lastScaleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
-            return;
-
-        if (_saturationStartTimestamp != 0
-            && _currentConnectionCount < _maxConnectionCount
-            && Stopwatch.GetElapsedTime(_saturationStartTimestamp, now) >= ScaleUpSustained)
+        Task? operationTask = null;
+        Exception? operationError = null;
+        lock (_operationLock)
         {
-            Interlocked.Increment(ref _currentConnectionCount);
-            _saturationStartTimestamp = 0;
-            _lastScaleTimestamp = now;
-            FireAndObserve(_scaleUpAsync);
-            return;
+            if (_stopping != 0)
+                return;
+
+            if (_lastScaleTimestamp != 0 && Stopwatch.GetElapsedTime(_lastScaleTimestamp, now) < Cooldown)
+                return;
+
+            if (_saturationStartTimestamp != 0
+                && _currentConnectionCount < _maxConnectionCount
+                && Stopwatch.GetElapsedTime(_saturationStartTimestamp, now) >= ScaleUpSustained)
+            {
+                Interlocked.Increment(ref _currentConnectionCount);
+                _saturationStartTimestamp = 0;
+                _lastScaleTimestamp = now;
+                operationTask = StartAndTrackOperation(_scaleUpAsync, out operationError);
+            }
+            else if (_lowUtilizationStartTimestamp != 0
+                && _currentConnectionCount > _initialConnectionCount
+                && Stopwatch.GetElapsedTime(_lowUtilizationStartTimestamp, now) >= ScaleDownSustained)
+            {
+                Interlocked.Decrement(ref _currentConnectionCount);
+                _lowUtilizationStartTimestamp = 0;
+                _lastScaleTimestamp = now;
+                operationTask = StartAndTrackOperation(_scaleDownAsync, out operationError);
+            }
         }
 
-        if (_lowUtilizationStartTimestamp != 0
-            && _currentConnectionCount > _initialConnectionCount
-            && Stopwatch.GetElapsedTime(_lowUtilizationStartTimestamp, now) >= ScaleDownSustained)
-        {
-            Interlocked.Decrement(ref _currentConnectionCount);
-            _lowUtilizationStartTimestamp = 0;
-            _lastScaleTimestamp = now;
-            FireAndObserve(_scaleDownAsync);
-        }
+        if (operationError is not null)
+            _logError?.Invoke(operationError);
+
+        if (operationTask is not null)
+            ObserveOperation(operationTask);
     }
 
     /// <summary>
@@ -129,30 +141,31 @@ internal sealed class ConsumerConnectionScaler
     internal static int GetFetchConnectionCount(int connectionsPerBroker)
         => connectionsPerBroker > 1 ? connectionsPerBroker - 1 : 1;
 
-    private void FireAndObserve(Func<CancellationToken, ValueTask> action)
+    private Task? StartAndTrackOperation(
+        Func<CancellationToken, ValueTask> action,
+        out Exception? operationError)
     {
-        Task operationTask;
+        Debug.Assert(Monitor.IsEntered(_operationLock));
+        operationError = null;
         try
         {
-            lock (_operationLock)
-            {
-                if (_stopping != 0)
-                    return;
+            var operation = action(CancellationToken.None);
+            if (operation.IsCompletedSuccessfully)
+                return null;
 
-                var operation = action(CancellationToken.None);
-                if (operation.IsCompletedSuccessfully)
-                    return;
-
-                operationTask = operation.AsTask();
-                _pendingOperations.Add(operationTask);
-            }
+            var operationTask = operation.AsTask();
+            _pendingOperations.Add(operationTask);
+            return operationTask;
         }
         catch (Exception ex)
         {
-            _logError?.Invoke(ex);
-            return;
+            operationError = ex;
+            return null;
         }
+    }
 
+    private void ObserveOperation(Task operationTask)
+    {
         _ = operationTask.ContinueWith(
             static (task, state) => ((ConsumerConnectionScaler)state!).ObserveCompletedOperation(task),
             this,

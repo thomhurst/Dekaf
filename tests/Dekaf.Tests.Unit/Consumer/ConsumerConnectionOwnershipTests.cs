@@ -186,6 +186,47 @@ public sealed class ConsumerConnectionOwnershipTests
     }
 
     [Test]
+    public async Task StandaloneConsumer_ScaleDown_DrainsBrokerConnectionsConcurrently()
+    {
+        var pool = CreatePool();
+        var firstConnection = new TrackedConnection(
+            hasPendingRequest: false,
+            hasLease: true);
+        var secondConnection = new TrackedConnection(hasPendingRequest: false);
+        pool.ShrinkConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection?>(firstConnection));
+        pool.ShrinkConnectionGroupAsync(2, 2, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection?>(secondConnection));
+        var consumer = CreateStandaloneConsumer(
+            pool,
+            CreateMetadataManager(pool, includeSecondBroker: true));
+        var firstLeaseReleased = false;
+
+        try
+        {
+            TriggerScaleDown(consumer);
+
+            await TestWait.UntilAsync(
+                () => secondConnection.DisposeCount == 1,
+                TimeSpan.FromSeconds(5));
+            _ = pool.Received(1).ShrinkConnectionGroupAsync(2, 2, Arg.Any<CancellationToken>());
+            await Assert.That(firstConnection.DisposeCount).IsEqualTo(0);
+
+            firstConnection.ReleaseLease();
+            firstLeaseReleased = true;
+            await TestWait.UntilAsync(
+                () => firstConnection.DisposeCount == 1,
+                TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            if (!firstLeaseReleased)
+                firstConnection.ReleaseLease();
+            await consumer.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task StandaloneConsumer_Dispose_WaitsForLateShrinkAndDisposesReturnedConnection()
     {
         var pool = CreatePool();
@@ -250,19 +291,23 @@ public sealed class ConsumerConnectionOwnershipTests
         return pool;
     }
 
-    private static MetadataManager CreateMetadataManager(IConnectionPool pool)
+    private static MetadataManager CreateMetadataManager(IConnectionPool pool, bool includeSecondBroker = false)
     {
         var metadataManager = new MetadataManager(pool, ["localhost:9092"]);
+        var brokers = new List<BrokerMetadata>
+        {
+            new() { NodeId = 1, Host = "localhost", Port = 9092 }
+        };
+        if (includeSecondBroker)
+            brokers.Add(new BrokerMetadata { NodeId = 2, Host = "localhost", Port = 9093 });
+
         metadataManager.SetApiVersion(
             ApiKey.Fetch,
             FetchRequest.LowestSupportedVersion,
             FetchRequest.HighestSupportedVersion);
         metadataManager.Metadata.Update(new MetadataResponse
         {
-            Brokers =
-            [
-                new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }
-            ],
+            Brokers = brokers,
             Topics = []
         });
         return metadataManager;

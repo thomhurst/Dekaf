@@ -195,6 +195,48 @@ public sealed class ConsumerConnectionScalerTests
     }
 
     [Test]
+    public async Task MaybeScale_StopBeforeOperationLock_DoesNotChangeCountOrDispatch()
+    {
+        var scaleUpCount = 0;
+        var beforeOperationLock = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var continueScale = new ManualResetEventSlim();
+        var scaler = new ConsumerConnectionScaler(
+            initialConnectionCount: 2,
+            maxConnectionCount: 4,
+            scaleUpAsync: _ =>
+            {
+                Interlocked.Increment(ref scaleUpCount);
+                return ValueTask.CompletedTask;
+            },
+            scaleDownAsync: _ => ValueTask.CompletedTask)
+        {
+            BeforeScaleOperationLockForTest = () =>
+            {
+                beforeOperationLock.TrySetResult();
+                continueScale.Wait();
+            }
+        };
+
+        scaler.ReportPipelineUtilization(3, 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+
+        var scaleTask = Task.Run(scaler.MaybeScale);
+        try
+        {
+            await beforeOperationLock.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await scaler.StopAndDrainAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            continueScale.Set();
+        }
+
+        await scaleTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(scaleUpCount).IsEqualTo(0);
+        await Assert.That(scaler.CurrentConnectionCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task StopAndDrainAsync_PendingOperation_ReturnsAfterTimeout()
     {
         var scaleCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
