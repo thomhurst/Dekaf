@@ -1,0 +1,18 @@
+﻿Response: Dekaf.Protocol.Messages.InitProducerIdResponse
+API key: InitProducerId (22)
+Version: 6
+Header version: 1
+Body length: 27 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00 |................|
+0010: 00 00 00 00 00 00 00 00  00 00 00                |...........|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "OngoingTransactionProducerEpoch": 0,
+  "OngoingTransactionProducerId": 0,
+  "ProducerEpoch": 0,
+  "ProducerId": 0,
+  "ThrottleTimeMs": 0
+}

@@ -1,0 +1,15 @@
+﻿Response: Dekaf.Protocol.Messages.ListTransactionsResponse
+API key: ListTransactions (66)
+Version: 1
+Header version: 1
+Body length: 9 bytes
+
+0000: 00 00 00 00 00 00 00 00  00                      |.........|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "ThrottleTimeMs": 0,
+  "TransactionStates": [],
+  "UnknownStateFilters": []
+}

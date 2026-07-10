@@ -1,0 +1,13 @@
+﻿Response: Dekaf.Protocol.Messages.AlterReplicaLogDirsResponse
+API key: AlterReplicaLogDirs (34)
+Version: 1
+Header version: 0
+Body length: 8 bytes
+
+0000: 00 00 00 00 00 00 00 00                          |........|
+
+Decoded:
+{
+  "Results": [],
+  "ThrottleTimeMs": 0
+}

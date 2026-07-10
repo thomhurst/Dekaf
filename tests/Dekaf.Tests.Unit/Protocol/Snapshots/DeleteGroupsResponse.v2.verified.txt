@@ -1,0 +1,13 @@
+﻿Response: Dekaf.Protocol.Messages.DeleteGroupsResponse
+API key: DeleteGroups (42)
+Version: 2
+Header version: 1
+Body length: 6 bytes
+
+0000: 00 00 00 00 00 00                                |......|
+
+Decoded:
+{
+  "Results": [],
+  "ThrottleTimeMs": 0
+}

@@ -2,13 +2,13 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
-using System.Text;
 using Dekaf.Compression;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using VerifyTUnit;
+using static Dekaf.Tests.Unit.Protocol.WireFormatSnapshotSupport;
 
 namespace Dekaf.Tests.Unit.Protocol;
 
@@ -81,15 +81,6 @@ public class RequestWireFormatSnapshotTests
             }
         }
     }
-
-    private static Type? GetRequestInterface(Type type) => type.GetInterfaces()
-        .SingleOrDefault(static implemented =>
-            implemented.IsGenericType &&
-            implemented.GetGenericTypeDefinition() == typeof(IKafkaRequest<>));
-
-    private static T GetStaticProperty<T>(Type type, string propertyName) =>
-        (T)(type.GetProperty(propertyName, BindingFlags.Public | BindingFlags.Static)?.GetValue(null)
-            ?? throw new InvalidOperationException($"{type.FullName} has no static {propertyName} property."));
 
     private static class KafkaRequestSerializer
     {
@@ -387,42 +378,4 @@ public class RequestWireFormatSnapshotTests
                     : 1_234_567_890L;
     }
 
-    private static class HexDump
-    {
-        private const int BytesPerLine = 16;
-
-        public static string Format(ReadOnlySpan<byte> bytes)
-        {
-            var builder = new StringBuilder();
-            for (var offset = 0; offset < bytes.Length; offset += BytesPerLine)
-            {
-                var line = bytes.Slice(offset, Math.Min(BytesPerLine, bytes.Length - offset));
-                builder.Append(offset.ToString("X4")).Append(": ");
-
-                for (var index = 0; index < BytesPerLine; index++)
-                {
-                    if (index < line.Length)
-                    {
-                        builder.Append(line[index].ToString("X2"));
-                    }
-                    else
-                    {
-                        builder.Append("  ");
-                    }
-
-                    builder.Append(index == 7 ? "  " : " ");
-                }
-
-                builder.Append('|');
-                foreach (var value in line)
-                {
-                    builder.Append(value is >= 0x20 and <= 0x7E ? (char)value : '.');
-                }
-
-                builder.AppendLine("|");
-            }
-
-            return builder.ToString().TrimEnd();
-        }
-    }
 }

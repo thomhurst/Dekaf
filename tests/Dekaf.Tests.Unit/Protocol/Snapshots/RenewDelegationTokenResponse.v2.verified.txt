@@ -1,0 +1,14 @@
+﻿Response: Dekaf.Protocol.Messages.RenewDelegationTokenResponse
+API key: RenewDelegationToken (39)
+Version: 2
+Header version: 1
+Body length: 15 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00 00 00 00    |...............|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "ExpiryTimestampMs": 0,
+  "ThrottleTimeMs": 0
+}

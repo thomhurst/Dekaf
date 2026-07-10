@@ -1,0 +1,13 @@
+﻿Response: Dekaf.Protocol.Messages.ListOffsetsResponse
+API key: ListOffsets (2)
+Version: 7
+Header version: 1
+Body length: 6 bytes
+
+0000: 00 00 00 00 00 00                                |......|
+
+Decoded:
+{
+  "ThrottleTimeMs": 0,
+  "Topics": []
+}

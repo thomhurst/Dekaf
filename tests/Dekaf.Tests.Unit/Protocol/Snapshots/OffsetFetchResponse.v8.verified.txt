@@ -1,0 +1,15 @@
+﻿Response: Dekaf.Protocol.Messages.OffsetFetchResponse
+API key: OffsetFetch (9)
+Version: 8
+Header version: 1
+Body length: 6 bytes
+
+0000: 00 00 00 00 00 00                                |......|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "Groups": [],
+  "ThrottleTimeMs": 0,
+  "Topics": null
+}

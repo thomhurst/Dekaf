@@ -1,0 +1,12 @@
+﻿Response: Dekaf.Protocol.Messages.WriteTxnMarkersResponse
+API key: WriteTxnMarkers (27)
+Version: 2
+Header version: 1
+Body length: 2 bytes
+
+0000: 00 00                                            |..|
+
+Decoded:
+{
+  "Markers": []
+}

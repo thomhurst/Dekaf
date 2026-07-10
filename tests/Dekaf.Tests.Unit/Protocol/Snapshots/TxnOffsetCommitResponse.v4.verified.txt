@@ -1,0 +1,13 @@
+﻿Response: Dekaf.Protocol.Messages.TxnOffsetCommitResponse
+API key: TxnOffsetCommit (28)
+Version: 4
+Header version: 1
+Body length: 6 bytes
+
+0000: 00 00 00 00 00 00                                |......|
+
+Decoded:
+{
+  "ThrottleTimeMs": 0,
+  "Topics": []
+}

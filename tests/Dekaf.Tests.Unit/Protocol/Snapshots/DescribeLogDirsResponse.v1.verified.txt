@@ -1,0 +1,14 @@
+﻿Response: Dekaf.Protocol.Messages.DescribeLogDirsResponse
+API key: DescribeLogDirs (35)
+Version: 1
+Header version: 0
+Body length: 8 bytes
+
+0000: 00 00 00 00 00 00 00 00                          |........|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "Results": [],
+  "ThrottleTimeMs": 0
+}

@@ -1,0 +1,142 @@
+﻿Response: Dekaf.Protocol.Messages.MetadataResponse
+API key: Metadata (3)
+Version: 13
+Header version: 1
+Body length: 328 bytes
+
+0000: 00 00 00 11 03 00 00 00  01 11 62 72 6F 6B 65 72 |..........broker|
+0010: 2D 61 2E 65 78 61 6D 70  6C 65 00 00 23 84 07 72 |-a.example..#..r|
+0020: 61 63 6B 2D 61 00 00 00  00 02 11 62 72 6F 6B 65 |ack-a......broke|
+0030: 72 2D 62 2E 65 78 61 6D  70 6C 65 00 00 23 85 00 |r-b.example..#..|
+0040: 00 0D 77 69 72 65 2D 63  6C 75 73 74 65 72 00 00 |..wire-cluster..|
+0050: 00 01 03 00 00 0B 77 69  72 65 2D 74 6F 70 69 63 |......wire-topic|
+0060: 00 11 22 33 44 55 66 77  88 99 AA BB CC DD EE FF |.."3DUfw........|
+0070: 00 03 00 00 00 00 00 00  00 00 00 01 00 00 00 07 |................|
+0080: 04 00 00 00 01 00 00 00  02 00 00 00 03 03 00 00 |................|
+0090: 00 01 00 00 00 02 02 00  00 00 03 00 00 06 00 00 |................|
+00A0: 00 01 00 00 00 02 00 00  00 07 04 00 00 00 01 00 |................|
+00B0: 00 00 02 00 00 00 03 03  00 00 00 01 00 00 00 02 |................|
+00C0: 02 00 00 00 03 00 00 00  1F FF 00 00 03 0D 77 69 |..............wi|
+00D0: 72 65 2D 74 6F 70 69 63  2D 62 10 21 32 43 54 65 |re-topic-b.!2CTe|
+00E0: 76 87 98 A9 BA CB DC ED  FE 0F 00 03 00 00 00 00 |v...............|
+00F0: 00 02 00 00 00 01 00 00  00 07 04 00 00 00 01 00 |................|
+0100: 00 00 02 00 00 00 03 03  00 00 00 01 00 00 00 02 |................|
+0110: 02 00 00 00 03 00 00 06  00 00 00 03 00 00 00 02 |................|
+0120: 00 00 00 07 04 00 00 00  01 00 00 00 02 00 00 00 |................|
+0130: 03 03 00 00 00 01 00 00  00 02 02 00 00 00 03 00 |................|
+0140: 00 00 1F FF 00 00 81 00                          |........|
+
+Decoded:
+{
+  "Brokers": [
+    {
+      "Host": "broker-a.example",
+      "NodeId": 1,
+      "Port": 9092,
+      "Rack": "rack-a"
+    },
+    {
+      "Host": "broker-b.example",
+      "NodeId": 2,
+      "Port": 9093,
+      "Rack": null
+    }
+  ],
+  "ClusterAuthorizedOperations": -2147483648,
+  "ClusterId": "wire-cluster",
+  "ControllerId": 1,
+  "ErrorCode": "RebootstrapRequired",
+  "ThrottleTimeMs": 17,
+  "Topics": [
+    {
+      "ErrorCode": "None",
+      "IsInternal": false,
+      "Name": "wire-topic",
+      "Partitions": [
+        {
+          "ErrorCode": "None",
+          "IsrNodes": [
+            1,
+            2
+          ],
+          "LeaderEpoch": 7,
+          "LeaderId": 1,
+          "OfflineReplicas": [
+            3
+          ],
+          "PartitionIndex": 0,
+          "ReplicaNodes": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "ErrorCode": "NotLeaderOrFollower",
+          "IsrNodes": [
+            1,
+            2
+          ],
+          "LeaderEpoch": 7,
+          "LeaderId": 2,
+          "OfflineReplicas": [
+            3
+          ],
+          "PartitionIndex": 1,
+          "ReplicaNodes": [
+            1,
+            2,
+            3
+          ]
+        }
+      ],
+      "TopicAuthorizedOperations": 8191,
+      "TopicId": "00112233-4455-6677-8899-aabbccddeeff"
+    },
+    {
+      "ErrorCode": "UnknownTopicOrPartition",
+      "IsInternal": false,
+      "Name": "wire-topic-b",
+      "Partitions": [
+        {
+          "ErrorCode": "None",
+          "IsrNodes": [
+            1,
+            2
+          ],
+          "LeaderEpoch": 7,
+          "LeaderId": 1,
+          "OfflineReplicas": [
+            3
+          ],
+          "PartitionIndex": 2,
+          "ReplicaNodes": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "ErrorCode": "NotLeaderOrFollower",
+          "IsrNodes": [
+            1,
+            2
+          ],
+          "LeaderEpoch": 7,
+          "LeaderId": 2,
+          "OfflineReplicas": [
+            3
+          ],
+          "PartitionIndex": 3,
+          "ReplicaNodes": [
+            1,
+            2,
+            3
+          ]
+        }
+      ],
+      "TopicAuthorizedOperations": 8191,
+      "TopicId": "10213243-5465-7687-98a9-bacbdcedfe0f"
+    }
+  ]
+}

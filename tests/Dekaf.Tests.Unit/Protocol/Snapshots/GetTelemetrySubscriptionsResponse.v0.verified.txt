@@ -1,0 +1,22 @@
+﻿Response: Dekaf.Protocol.Messages.GetTelemetrySubscriptionsResponse
+API key: GetTelemetrySubscriptions (71)
+Version: 0
+Header version: 1
+Body length: 38 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00 |................|
+0010: 00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00 |................|
+0020: 00 00 00 00 00 00                                |......|
+
+Decoded:
+{
+  "AcceptedCompressionTypes": "",
+  "ClientInstanceId": "00000000-0000-0000-0000-000000000000",
+  "DeltaTemporality": false,
+  "ErrorCode": "None",
+  "PushIntervalMs": 0,
+  "RequestedMetrics": [],
+  "SubscriptionId": 0,
+  "TelemetryMaxBytes": 0,
+  "ThrottleTimeMs": 0
+}

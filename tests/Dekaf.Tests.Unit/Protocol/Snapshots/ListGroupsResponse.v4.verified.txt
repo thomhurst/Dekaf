@@ -1,0 +1,14 @@
+﻿Response: Dekaf.Protocol.Messages.ListGroupsResponse
+API key: ListGroups (16)
+Version: 4
+Header version: 1
+Body length: 8 bytes
+
+0000: 00 00 00 00 00 00 00 00                          |........|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "Groups": [],
+  "ThrottleTimeMs": 0
+}

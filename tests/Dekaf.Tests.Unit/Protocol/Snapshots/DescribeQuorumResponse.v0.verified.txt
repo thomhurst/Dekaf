@@ -1,0 +1,15 @@
+﻿Response: Dekaf.Protocol.Messages.DescribeQuorumResponse
+API key: DescribeQuorum (55)
+Version: 0
+Header version: 1
+Body length: 4 bytes
+
+0000: 00 00 00 00                                      |....|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "ErrorMessage": null,
+  "Nodes": [],
+  "Topics": []
+}

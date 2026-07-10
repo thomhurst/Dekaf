@@ -1,0 +1,17 @@
+﻿Response: Dekaf.Protocol.Messages.ShareFetchResponse
+API key: ShareFetch (78)
+Version: 0
+Header version: 1
+Body length: 10 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00                   |..........|
+
+Decoded:
+{
+  "AcquisitionLockTimeoutMs": 0,
+  "ErrorCode": "None",
+  "ErrorMessage": null,
+  "NodeEndpoints": [],
+  "Responses": [],
+  "ThrottleTimeMs": 0
+}

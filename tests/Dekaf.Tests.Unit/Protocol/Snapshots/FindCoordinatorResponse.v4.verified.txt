@@ -1,0 +1,13 @@
+﻿Response: Dekaf.Protocol.Messages.FindCoordinatorResponse
+API key: FindCoordinator (10)
+Version: 4
+Header version: 1
+Body length: 6 bytes
+
+0000: 00 00 00 00 00 00                                |......|
+
+Decoded:
+{
+  "Coordinators": [],
+  "ThrottleTimeMs": 0
+}

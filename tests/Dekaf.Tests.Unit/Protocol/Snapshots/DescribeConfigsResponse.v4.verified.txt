@@ -1,0 +1,79 @@
+﻿Response: Dekaf.Protocol.Messages.DescribeConfigsResponse
+API key: DescribeConfigs (32)
+Version: 4
+Header version: 1
+Body length: 259 bytes
+
+0000: 00 00 00 25 03 00 00 00  02 0B 77 69 72 65 2D 74 |...%......wire-t|
+0010: 6F 70 69 63 03 0F 63 6C  65 61 6E 75 70 2E 70 6F |opic..cleanup.po|
+0020: 6C 69 63 79 08 63 6F 6D  70 61 63 74 00 01 00 02 |licy.compact....|
+0030: 17 64 65 66 61 75 6C 74  2E 63 6C 65 61 6E 75 70 |.default.cleanup|
+0040: 2E 70 6F 6C 69 63 79 08  63 6F 6D 70 61 63 74 05 |.policy.compact.|
+0050: 00 04 21 44 6F 63 75 6D  65 6E 74 61 74 69 6F 6E |..!Documentation|
+0060: 20 66 6F 72 20 63 6C 65  61 6E 75 70 2E 70 6F 6C | for cleanup.pol|
+0070: 69 63 79 00 16 73 73 6C  2E 6B 65 79 73 74 6F 72 |icy..ssl.keystor|
+0080: 65 2E 70 61 73 73 77 6F  72 64 00 01 01 01 02 1E |e.password......|
+0090: 64 65 66 61 75 6C 74 2E  73 73 6C 2E 6B 65 79 73 |default.ssl.keys|
+00A0: 74 6F 72 65 2E 70 61 73  73 77 6F 72 64 00 05 00 |tore.password...|
+00B0: 04 28 44 6F 63 75 6D 65  6E 74 61 74 69 6F 6E 20 |.(Documentation |
+00C0: 66 6F 72 20 73 73 6C 2E  6B 65 79 73 74 6F 72 65 |for ssl.keystore|
+00D0: 2E 70 61 73 73 77 6F 72  64 00 00 00 28 11 75 6E |.password...(.un|
+00E0: 6B 6E 6F 77 6E 20 72 65  73 6F 75 72 63 65 04 11 |known resource..|
+00F0: 6D 69 73 73 69 6E 67 2D  72 65 73 6F 75 72 63 65 |missing-resource|
+0100: 01 00 00                                         |...|
+
+Decoded:
+{
+  "Results": [
+    {
+      "Configs": [
+        {
+          "ConfigSource": 1,
+          "ConfigType": 4,
+          "Documentation": "Documentation for cleanup.policy",
+          "IsDefault": false,
+          "IsSensitive": false,
+          "Name": "cleanup.policy",
+          "ReadOnly": false,
+          "Synonyms": [
+            {
+              "Name": "default.cleanup.policy",
+              "Source": 5,
+              "Value": "compact"
+            }
+          ],
+          "Value": "compact"
+        },
+        {
+          "ConfigSource": 1,
+          "ConfigType": 4,
+          "Documentation": "Documentation for ssl.keystore.password",
+          "IsDefault": false,
+          "IsSensitive": true,
+          "Name": "ssl.keystore.password",
+          "ReadOnly": true,
+          "Synonyms": [
+            {
+              "Name": "default.ssl.keystore.password",
+              "Source": 5,
+              "Value": null
+            }
+          ],
+          "Value": null
+        }
+      ],
+      "ErrorCode": "None",
+      "ErrorMessage": null,
+      "ResourceName": "wire-topic",
+      "ResourceType": 2
+    },
+    {
+      "Configs": [],
+      "ErrorCode": "InvalidConfig",
+      "ErrorMessage": "unknown resource",
+      "ResourceName": "missing-resource",
+      "ResourceType": 4
+    }
+  ],
+  "ThrottleTimeMs": 37
+}
