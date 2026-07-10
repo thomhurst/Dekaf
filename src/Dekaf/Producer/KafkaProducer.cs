@@ -1826,6 +1826,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     transactionToComplete.ProducerId,
                     transactionToComplete.ProducerEpoch,
                     applyResponseProducerState,
+                    afterRequestWrittenAsync: null,
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -2253,6 +2254,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _producerId,
             _producerEpoch,
             applyResponseProducerState: true,
+            afterRequestWrittenAsync: null,
+            cancellationToken);
+
+    internal ValueTask EndTransactionAsync(
+        bool committed,
+        Func<ValueTask>? afterRequestWrittenAsync,
+        CancellationToken cancellationToken)
+        => EndTransactionAsync(
+            committed,
+            _producerId,
+            _producerEpoch,
+            applyResponseProducerState: true,
+            afterRequestWrittenAsync,
             cancellationToken);
 
     private async ValueTask EndTransactionAsync(
@@ -2260,6 +2274,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         long producerId,
         short producerEpoch,
         bool applyResponseProducerState,
+        Func<ValueTask>? afterRequestWrittenAsync,
         CancellationToken cancellationToken)
     {
         const int maxRetries = 5;
@@ -2283,10 +2298,31 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 Committed = committed
             };
 
-            var response = (EndTxnResponse)await connection
-                .SendAsync<EndTxnRequest, EndTxnResponse>(
-                    request, apiVersion, cancellationToken)
-                .ConfigureAwait(false);
+            EndTxnResponse response;
+            if (afterRequestWrittenAsync is null)
+            {
+                response = await connection
+                    .SendAsync<EndTxnRequest, EndTxnResponse>(
+                        request, apiVersion, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                if (connection is not IKafkaPipelinedWriteCompletionConnection writeCompletionConnection)
+                {
+                    throw new InvalidOperationException(
+                        "The transaction coordinator connection cannot report request write completion.");
+                }
+
+                var responseTask = await writeCompletionConnection
+                    .SendPipelinedAfterWriteAsync<EndTxnRequest, EndTxnResponse>(
+                        request, apiVersion, cancellationToken)
+                    .ConfigureAwait(false);
+                var requestWrittenCallback = afterRequestWrittenAsync;
+                afterRequestWrittenAsync = null;
+                await requestWrittenCallback().ConfigureAwait(false);
+                response = await responseTask.ConfigureAwait(false);
+            }
 
             if (response.ErrorCode == ErrorCode.None)
             {
@@ -4065,7 +4101,20 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         return await _producer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
     }
 
-    public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
+    public ValueTask CommitAsync(CancellationToken cancellationToken = default) =>
+        CommitCoreAsync(afterRequestWrittenAsync: null, cancellationToken);
+
+    internal ValueTask CommitAfterRequestWrittenAsync(
+        Func<ValueTask> afterRequestWrittenAsync,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(afterRequestWrittenAsync);
+        return CommitCoreAsync(afterRequestWrittenAsync, cancellationToken);
+    }
+
+    private async ValueTask CommitCoreAsync(
+        Func<ValueTask>? afterRequestWrittenAsync,
+        CancellationToken cancellationToken)
     {
         ThrowIfProducerDisposed();
         _producer.ThrowIfFatalTransactionError("Cannot commit transaction");
@@ -4080,7 +4129,11 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             // Flush all pending messages before committing
             await _producer.FlushAsync(cancellationToken).ConfigureAwait(false);
 
-            await _producer.EndTransactionAsync(committed: true, cancellationToken).ConfigureAwait(false);
+            await _producer.EndTransactionAsync(
+                    committed: true,
+                    afterRequestWrittenAsync,
+                    cancellationToken)
+                .ConfigureAwait(false);
             _committed = true;
         }
         finally
