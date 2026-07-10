@@ -32,6 +32,14 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     private static readonly TimeSpan StaticMemberSessionTimeout = TimeSpan.FromSeconds(6);
     private static readonly TimeSpan StaticMemberHeartbeatInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan GroupConfigVerificationDelay = TimeSpan.FromMilliseconds(500);
+    private static readonly HashSet<string> ExpectedCommitFailureNames = new(StringComparer.Ordinal)
+    {
+        nameof(ErrorCode.IllegalGeneration),
+        nameof(ErrorCode.UnknownMemberId),
+        nameof(ErrorCode.RebalanceInProgress),
+        nameof(ErrorCode.FencedMemberEpoch),
+        nameof(ErrorCode.StaleMemberEpoch)
+    };
 
     [Test]
     [Timeout(600_000)]
@@ -279,6 +287,15 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             stopAnchorAfterJointPhase: true);
     }
 
+    [Test]
+    public async Task ConsumerMember_Stop_DisposesSharedResourcesWhenConsumerDisposalFails()
+    {
+        var member = new ThrowingDisposeConsumerMember();
+
+        await Assert.That(member.StopAsync).Throws<InvalidOperationException>();
+        await Assert.That(() => member.Allow(1)).Throws<ObjectDisposedException>();
+    }
+
     private async Task RunChurnScenarioAsync(string assignor, CancellationToken cancellationToken)
     {
         var protocol = assignor switch
@@ -348,6 +365,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
             if (stopAnchorAfterJointPhase)
             {
+                // This one-way downgrade removes the anchor, so it deliberately completes
+                // after one joint phase rather than starting another anchor churn cycle.
                 await anchor.StopAsync();
 
                 await transient.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
@@ -628,38 +647,35 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         Task StopAsync();
     }
 
-    private readonly record struct ObservedRecord(
-        string Topic,
-        int Partition,
-        long Offset,
-        string? Value);
-
-    private sealed class DekafConsumerMember : IConsumerMember
+    private abstract class ConsumerMemberBase : IConsumerMember
     {
-        private readonly IKafkaConsumer<string, string> _consumer;
-        private readonly string _clientId;
+        private readonly string _memberDescription;
         private readonly AssignmentTracker _assignments;
-        private readonly SequenceOracle _oracle;
         private readonly CancellationTokenSource _stopping;
         private readonly SemaphoreSlim _permits = new(0, int.MaxValue);
         private readonly AsyncCounter _observed = new();
-        private readonly Task _runTask;
+        private Task? _runTask;
         private int _stopped;
 
-        public DekafConsumerMember(
+        protected ConsumerMemberBase(
+            string memberDescription,
             string clientId,
-            IKafkaConsumer<string, string> consumer,
             AssignmentTracker assignments,
             SequenceOracle oracle,
             CancellationToken cancellationToken)
         {
-            _clientId = clientId;
-            _consumer = consumer;
+            _memberDescription = memberDescription;
+            ClientId = clientId;
             _assignments = assignments;
-            _oracle = oracle;
+            Oracle = oracle;
             _stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            _runTask = Task.Run(RunAsync, CancellationToken.None);
         }
+
+        protected string ClientId { get; }
+        protected SequenceOracle Oracle { get; }
+        protected CancellationToken StoppingToken => _stopping.Token;
+        protected SemaphoreSlim Permits => _permits;
+        protected int PermitCount => _permits.CurrentCount;
 
         public int ObservedCount => _observed.Value;
 
@@ -672,22 +688,22 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         public Task WaitForAnyAssignmentAsync(CancellationToken cancellationToken) =>
             WaitForSignalOrCompletionAsync(
                 _assignments.WaitForAnyAsync(cancellationToken),
-                _runTask,
-                "Consumer completed before receiving an assignment",
+                GetRunTask(),
+                $"{_memberDescription} completed before receiving an assignment",
                 cancellationToken);
 
         public Task WaitForAssignmentCountAsync(int count, CancellationToken cancellationToken) =>
             WaitForSignalOrCompletionAsync(
                 _assignments.WaitForCountAsync(count, cancellationToken),
-                _runTask,
-                $"Consumer completed before receiving {count} partitions",
+                GetRunTask(),
+                $"{_memberDescription} completed before receiving {count} partitions",
                 cancellationToken);
 
         public Task WaitForObservedCountAsync(int count, CancellationToken cancellationToken) =>
             WaitForSignalOrCompletionAsync(
                 _observed.WaitForAsync(count, cancellationToken),
-                _runTask,
-                $"Consumer completed before observing {count} records",
+                GetRunTask(),
+                $"{_memberDescription} completed before observing {count} records",
                 cancellationToken);
 
         public async Task StopAsync()
@@ -698,13 +714,13 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             try
             {
                 await _stopping.CancelAsync();
-                await _runTask;
+                await GetRunTask();
             }
             finally
             {
                 try
                 {
-                    await _consumer.DisposeAsync();
+                    await DisposeConsumerAsync();
                 }
                 finally
                 {
@@ -716,20 +732,63 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         public async ValueTask DisposeAsync() => await StopAsync();
 
-        private async Task RunAsync()
+        protected void StartRunTask(bool useLongRunningThread = false)
+        {
+            _runTask = useLongRunningThread
+                ? Task.Factory.StartNew(
+                        RunAsync,
+                        CancellationToken.None,
+                        TaskCreationOptions.LongRunning,
+                        TaskScheduler.Default)
+                    .Unwrap()
+                : Task.Run(RunAsync, CancellationToken.None);
+        }
+
+        protected void IncrementObserved() => _observed.Increment();
+
+        protected abstract Task RunAsync();
+        protected abstract ValueTask DisposeConsumerAsync();
+
+        private Task GetRunTask() => _runTask
+            ?? throw new InvalidOperationException($"{_memberDescription} run task has not started");
+    }
+
+    private readonly record struct ObservedRecord(
+        string Topic,
+        int Partition,
+        long Offset,
+        string? Value);
+
+    private sealed class DekafConsumerMember : ConsumerMemberBase
+    {
+        private readonly IKafkaConsumer<string, string> _consumer;
+
+        public DekafConsumerMember(
+            string clientId,
+            IKafkaConsumer<string, string> consumer,
+            AssignmentTracker assignments,
+            SequenceOracle oracle,
+            CancellationToken cancellationToken)
+            : base("Consumer", clientId, assignments, oracle, cancellationToken)
+        {
+            _consumer = consumer;
+            StartRunTask();
+        }
+
+        protected override async Task RunAsync()
         {
             try
             {
                 await using var enumerator = _consumer
-                    .ConsumeAsync(_stopping.Token)
-                    .GetAsyncEnumerator(_stopping.Token);
+                    .ConsumeAsync(StoppingToken)
+                    .GetAsyncEnumerator(StoppingToken);
 
-                while (!_oracle.IsComplete)
+                while (!Oracle.IsComplete)
                 {
-                    await _permits.WaitAsync(_stopping.Token);
+                    await Permits.WaitAsync(StoppingToken);
                     if (!await enumerator.MoveNextAsync())
                     {
-                        _stopping.Token.ThrowIfCancellationRequested();
+                        StoppingToken.ThrowIfCancellationRequested();
                         throw new InvalidOperationException("Consumer stream completed before the sequence oracle");
                     }
 
@@ -739,15 +798,17 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                         result.Partition,
                         result.Offset,
                         result.Value);
-                    _oracle.Record(_clientId, record);
-                    _observed.Increment();
-                    await _oracle.CommitIfNeededAsync(record, TryCommitAsync, _stopping.Token);
+                    Oracle.Record(ClientId, record);
+                    IncrementObserved();
+                    await Oracle.CommitIfNeededAsync(record, TryCommitAsync, StoppingToken);
                 }
             }
-            catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+            catch (OperationCanceledException) when (StoppingToken.IsCancellationRequested)
             {
             }
         }
+
+        protected override ValueTask DisposeConsumerAsync() => _consumer.DisposeAsync();
 
         private async ValueTask<bool> TryCommitAsync(
             TopicPartitionOffset offset,
@@ -758,26 +819,19 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 await _consumer.CommitAsync([offset], cancellationToken);
                 return true;
             }
-            catch (GroupException exception) when (IsExpectedDekafCommitFailure(exception.ErrorCode))
+            catch (GroupException exception) when (
+                exception.ErrorCode is { } errorCode && IsExpectedCommitFailure(errorCode))
             {
                 return false;
             }
         }
     }
 
-    private sealed class ClassicConsumerMember : IConsumerMember
+    private sealed class ClassicConsumerMember : ConsumerMemberBase
     {
         private static readonly TimeSpan EventPollInterval = TimeSpan.FromMilliseconds(50);
 
-        private readonly string _clientId;
         private readonly ConfluentKafka.IConsumer<string, string> _consumer;
-        private readonly AssignmentTracker _assignments;
-        private readonly SequenceOracle _oracle;
-        private readonly CancellationTokenSource _stopping;
-        private readonly SemaphoreSlim _permits = new(0, int.MaxValue);
-        private readonly AsyncCounter _observed = new();
-        private readonly Task _runTask;
-        private int _stopped;
 
         public ClassicConsumerMember(
             string clientId,
@@ -785,74 +839,26 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             AssignmentTracker assignments,
             SequenceOracle oracle,
             CancellationToken cancellationToken)
+            : base("Classic consumer", clientId, assignments, oracle, cancellationToken)
         {
-            _clientId = clientId;
             _consumer = consumer;
-            _assignments = assignments;
-            _oracle = oracle;
-            _stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            _runTask = Task.Run(RunAsync, CancellationToken.None);
+            StartRunTask(useLongRunningThread: true);
         }
 
-        public int ObservedCount => _observed.Value;
-
-        public void Allow(int count) => _permits.Release(count);
-
-        public Task WaitForAnyAssignmentAsync(CancellationToken cancellationToken) =>
-            WaitForSignalOrCompletionAsync(
-                _assignments.WaitForAnyAsync(cancellationToken),
-                _runTask,
-                "Classic consumer completed before receiving an assignment",
-                cancellationToken);
-
-        public Task WaitForAssignmentCountAsync(int count, CancellationToken cancellationToken) =>
-            WaitForSignalOrCompletionAsync(
-                _assignments.WaitForCountAsync(count, cancellationToken),
-                _runTask,
-                $"Classic consumer completed before receiving {count} partitions",
-                cancellationToken);
-
-        public Task WaitForObservedCountAsync(int count, CancellationToken cancellationToken) =>
-            WaitForSignalOrCompletionAsync(
-                _observed.WaitForAsync(count, cancellationToken),
-                _runTask,
-                $"Classic consumer completed before observing {count} records",
-                cancellationToken);
-
-        public async Task StopAsync()
-        {
-            if (Interlocked.Exchange(ref _stopped, 1) != 0)
-                return;
-
-            try
-            {
-                await _stopping.CancelAsync();
-                await _runTask;
-            }
-            finally
-            {
-                _consumer.Dispose();
-                _permits.Dispose();
-                _stopping.Dispose();
-            }
-        }
-
-        public async ValueTask DisposeAsync() => await StopAsync();
-
-        private async Task RunAsync()
+        protected override async Task RunAsync()
         {
             try
             {
-                while (!_oracle.IsComplete)
+                while (!Oracle.IsComplete)
                 {
-                    _stopping.Token.ThrowIfCancellationRequested();
+                    StoppingToken.ThrowIfCancellationRequested();
 
-                    if (_permits.Wait(0))
+                    if (Permits.Wait(0))
                     {
                         ResumeCurrentAssignment();
-                        var result = _consumer.Consume(_stopping.Token);
+                        var result = _consumer.Consume(StoppingToken);
                         await ObserveAsync(result);
-                        if (_permits.CurrentCount == 0)
+                        if (PermitCount == 0)
                             PauseCurrentAssignment();
                         continue;
                     }
@@ -865,16 +871,22 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     // A poll can install a new eager assignment and return its first record before
                     // the next pause. Rewind it so permit-gated consumption observes it later.
                     PauseCurrentAssignment();
-                    _consumer.Seek(eventResult.TopicPartitionOffset);
+                    RewindIdlePollResult(eventResult);
                 }
             }
-            catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+            catch (OperationCanceledException) when (StoppingToken.IsCancellationRequested)
             {
             }
             finally
             {
                 _consumer.Close();
             }
+        }
+
+        protected override ValueTask DisposeConsumerAsync()
+        {
+            _consumer.Dispose();
+            return ValueTask.CompletedTask;
         }
 
         private async Task ObserveAsync(ConfluentKafka.ConsumeResult<string, string> result)
@@ -884,9 +896,27 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 result.Partition.Value,
                 result.Offset.Value,
                 result.Message.Value);
-            _oracle.Record(_clientId, record);
-            _observed.Increment();
-            await _oracle.CommitIfNeededAsync(record, TryCommitAsync, _stopping.Token);
+            Oracle.Record(ClientId, record);
+            IncrementObserved();
+            await Oracle.CommitIfNeededAsync(record, TryCommitAsync, StoppingToken);
+        }
+
+        private void RewindIdlePollResult(ConfluentKafka.ConsumeResult<string, string> result)
+        {
+            try
+            {
+                _consumer.Seek(result.TopicPartitionOffset);
+            }
+            catch (Exception exception) when (
+                exception is ConfluentKafka.KafkaException or InvalidOperationException)
+            {
+                if (!_consumer.Assignment.Contains(result.TopicPartition))
+                    return;
+
+                throw new InvalidOperationException(
+                    $"Classic consumer could not rewind {result.TopicPartitionOffset} after an idle poll",
+                    exception);
+            }
         }
 
         private void PauseCurrentAssignment()
@@ -925,11 +955,30 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 return ValueTask.FromResult(false);
             }
             catch (ConfluentKafka.KafkaException exception)
-                when (IsExpectedConfluentCommitFailure(exception.Error.Code))
+                when (IsExpectedCommitFailure(exception.Error.Code))
             {
                 return ValueTask.FromResult(false);
             }
         }
+    }
+
+    private sealed class ThrowingDisposeConsumerMember : ConsumerMemberBase
+    {
+        public ThrowingDisposeConsumerMember()
+            : base(
+                "Test consumer",
+                "test-client",
+                new AssignmentTracker(),
+                new SequenceOracle("test-topic", 1, 1, 1),
+                CancellationToken.None)
+        {
+            StartRunTask();
+        }
+
+        protected override Task RunAsync() => Task.CompletedTask;
+
+        protected override ValueTask DisposeConsumerAsync() =>
+            ValueTask.FromException(new InvalidOperationException("Expected disposal failure"));
     }
 
     private sealed class SequenceOracle
@@ -1277,25 +1326,15 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         _ => throw new ArgumentOutOfRangeException(nameof(protocol), protocol, "Classic members use client-side assignment")
     };
 
-    private static bool IsExpectedDekafCommitFailure(ErrorCode? errorCode) => errorCode is
-        ErrorCode.IllegalGeneration or
-        ErrorCode.UnknownMemberId or
-        ErrorCode.RebalanceInProgress or
-        ErrorCode.FencedMemberEpoch or
-        ErrorCode.StaleMemberEpoch;
-
-    private static bool IsExpectedConfluentCommitFailure(ConfluentKafka.ErrorCode errorCode) => errorCode is
-        ConfluentKafka.ErrorCode.IllegalGeneration or
-        ConfluentKafka.ErrorCode.UnknownMemberId or
-        ConfluentKafka.ErrorCode.RebalanceInProgress or
-        ConfluentKafka.ErrorCode.FencedMemberEpoch or
-        ConfluentKafka.ErrorCode.StaleMemberEpoch;
+    private static bool IsExpectedCommitFailure<TError>(TError errorCode)
+        where TError : struct, Enum =>
+        ExpectedCommitFailureNames.Contains(errorCode.ToString());
 
     private static bool ContainsOnlyExpectedConfluentCommitFailures(
         IReadOnlyCollection<ConfluentKafka.TopicPartitionOffsetError> results) =>
         results.Any(static result => result.Error.IsError) &&
         results.All(static result =>
-            !result.Error.IsError || IsExpectedConfluentCommitFailure(result.Error.Code));
+            !result.Error.IsError || IsExpectedCommitFailure(result.Error.Code));
 
     private enum MemberProtocol
     {
