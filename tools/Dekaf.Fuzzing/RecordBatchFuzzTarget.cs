@@ -126,27 +126,24 @@ public static class RecordBatchFuzzTarget
 
     private static void ValidateRecordBatchCrc(ReadOnlySequence<byte> input)
     {
-        const int batchLengthOffset = 8;
-        const int crcOffset = 17;
-        const int crcContentOffset = 21;
-        const int minimumBatchLength = 49;
-
-        if (input.Length < crcContentOffset)
+        if (input.Length < RecordBatch.CrcContentOffset)
         {
             throw new InsufficientDataException();
         }
 
-        Span<byte> header = stackalloc byte[crcContentOffset];
+        Span<byte> header = stackalloc byte[RecordBatch.CrcContentOffset];
         input.Slice(0, header.Length).CopyTo(header);
-        var batchLength = BinaryPrimitives.ReadInt32BigEndian(header[batchLengthOffset..]);
-        var totalLength = 12L + batchLength;
-        if (batchLength < minimumBatchLength || totalLength > input.Length)
+        var batchLength = BinaryPrimitives.ReadInt32BigEndian(header[RecordBatch.BatchLengthOffset..]);
+        var totalLength = RecordBatch.BatchBodyOffset + (long)batchLength;
+        if (batchLength < RecordBatch.BatchHeaderSize || totalLength > input.Length)
         {
             throw new MalformedProtocolDataException($"Invalid RecordBatch length {batchLength}");
         }
 
-        var storedCrc = BinaryPrimitives.ReadUInt32BigEndian(header[crcOffset..]);
-        var computedCrc = Crc32C.Compute(input.Slice(crcContentOffset, batchLength - 9));
+        var storedCrc = BinaryPrimitives.ReadUInt32BigEndian(header[RecordBatch.CrcOffset..]);
+        var computedCrc = Crc32C.Compute(input.Slice(
+            RecordBatch.CrcContentOffset,
+            totalLength - RecordBatch.CrcContentOffset));
         if (storedCrc != computedCrc)
         {
             throw new MalformedProtocolDataException(

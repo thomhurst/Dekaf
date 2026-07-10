@@ -302,12 +302,18 @@ public sealed class RecordBatch : IDisposable
     internal static void RatchetMaxRetainedBufferSize(int newSize) =>
         InterlockedHelper.RatchetUp(ref s_maxRetainedBufferSize, newSize);
 
-    internal const int BatchHeaderSize = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4;
+    internal const int BatchLengthOffset = sizeof(long);
+    internal const int BatchBodyOffset = BatchLengthOffset + sizeof(int);
+    internal const int CrcOffset = BatchBodyOffset + sizeof(int) + sizeof(byte);
+    internal const int CrcContentOffset = CrcOffset + sizeof(uint);
+    internal const int BatchHeaderSize = sizeof(int) + sizeof(byte) + sizeof(uint) + sizeof(short) +
+                                         sizeof(int) + sizeof(long) + sizeof(long) + sizeof(long) +
+                                         sizeof(short) + sizeof(int) + sizeof(int);
 
     /// <summary>
     /// Total header size including baseOffset(8) + batchLength(4) + BatchHeaderSize(49) = 61 bytes.
     /// </summary>
-    internal const int TotalBatchHeaderSize = 8 + 4 + BatchHeaderSize;
+    internal const int TotalBatchHeaderSize = BatchBodyOffset + BatchHeaderSize;
 
     // Bounded pool of scratch buffer caches for RecordBatch serialization/deserialization.
     // Previously [ThreadStatic], but ConfigureAwait(false) in BrokerSender send loops causes

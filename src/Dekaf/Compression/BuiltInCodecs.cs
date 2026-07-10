@@ -130,7 +130,10 @@ internal static class CompressionStreamCopy
 {
     private const int BufferSize = 8192;
 
-    internal static void CopyToBufferWriter(Stream source, IBufferWriter<byte> destination)
+    internal static void CopyToBufferWriter(
+        Stream source,
+        IBufferWriter<byte> destination,
+        string? invalidDataMessage = null)
     {
 #if NETSTANDARD2_0
         var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
@@ -138,7 +141,7 @@ internal static class CompressionStreamCopy
         {
             while (true)
             {
-                var bytesRead = source.Read(buffer, 0, buffer.Length);
+                var bytesRead = Read(source, buffer, invalidDataMessage);
                 if (bytesRead == 0)
                     break;
 
@@ -154,7 +157,7 @@ internal static class CompressionStreamCopy
         while (true)
         {
             var span = destination.GetSpan(BufferSize);
-            var bytesRead = source.Read(span);
+            var bytesRead = Read(source, span, invalidDataMessage);
             if (bytesRead == 0)
                 break;
 
@@ -162,6 +165,32 @@ internal static class CompressionStreamCopy
         }
 #endif
     }
+
+#if NETSTANDARD2_0
+    private static int Read(Stream source, byte[] buffer, string? invalidDataMessage)
+    {
+        try
+        {
+            return source.Read(buffer, 0, buffer.Length);
+        }
+        catch (InvalidOperationException exception) when (invalidDataMessage is not null)
+        {
+            throw new InvalidDataException(invalidDataMessage, exception);
+        }
+    }
+#else
+    private static int Read(Stream source, Span<byte> buffer, string? invalidDataMessage)
+    {
+        try
+        {
+            return source.Read(buffer);
+        }
+        catch (InvalidOperationException exception) when (invalidDataMessage is not null)
+        {
+            throw new InvalidDataException(invalidDataMessage, exception);
+        }
+    }
+#endif
 }
 
 /// <summary>
