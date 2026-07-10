@@ -192,7 +192,7 @@ public sealed class BrokerSenderSendLoopTests
         RecordAccumulator accumulator,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement,
         MetadataManager? metadataManager = null,
-        Action<ReadyBatch>? rerouteBatch = null,
+        Action<ReadyBatch, int>? rerouteBatch = null,
         Action<int>? onBrokerThrottle = null,
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null) =>
@@ -729,7 +729,7 @@ public sealed class BrokerSenderSendLoopTests
             accumulator,
             onAcknowledgement: (_, _, _, _, _) => { },
             metadataManager,
-            rerouteBatch: batch => rerouted.TrySetResult(batch));
+            rerouteBatch: (batch, _) => rerouted.TrySetResult(batch));
 
         try
         {

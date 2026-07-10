@@ -3065,8 +3065,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         // Parallel connection buckets may still be sending. Begin recovery here so a blocked
         // sibling write cannot postpone metadata refresh or the start of retry backoff.
-        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
-        _accumulator.MutePartition(batch.TopicPartition);
+        if (!batch.IsLoopExitRedelivery)
+            MutePartition(batch.TopicPartition);
         LogRetriableErrorWithBackoff(ErrorCode.NetworkException, batch.TopicPartition.Topic,
             batch.TopicPartition.Partition, _options.RetryBackoffMs);
         // The send token may already be cancelled when a write times out. Use the sender lifetime
