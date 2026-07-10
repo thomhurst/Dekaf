@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Diagnostics;
@@ -9,11 +10,49 @@ namespace Dekaf.Tests.Unit.Producer;
 
 // Drives the real KafkaProducer async produce path with a serializer that implements
 // IAsyncSerializerPreparer<T>, exercising the preparer gate in ProduceAsyncCore. Uses a
-// process-wide ActivityListener, so it must not run alongside other producing tests.
+// process-wide ActivityListener, so it must not run alongside other listener tests.
 [NotInParallel("ActivityListener")]
 public class ProducerAsyncPreparerTests
 {
     private const string Topic = "prepare-topic";
+    private const string PublishActivityName = Topic + " publish";
+
+    [Test]
+    public async Task ActivityListener_IgnoresOtherDekafOperations()
+    {
+        var (started, stopped, listener) = ListenForActivities();
+        using (listener)
+        {
+            using (var unrelated = DekafDiagnostics.Source.StartActivity(
+                       "other-topic publish", ActivityKind.Producer))
+            {
+                await Assert.That(unrelated).IsNotNull();
+            }
+
+            await Assert.That(started).IsEmpty();
+            await Assert.That(stopped).IsEmpty();
+        }
+    }
+
+    [Test]
+    public async Task ActivityListener_CapturesConcurrentPublishOperations()
+    {
+        const int operationCount = 10_000;
+        var (started, stopped, listener) = ListenForActivities();
+        using (listener)
+        {
+            Parallel.For(0, operationCount, _ =>
+            {
+                using var activity = DekafDiagnostics.Source.StartActivity(
+                    PublishActivityName, ActivityKind.Producer);
+                if (activity is null)
+                    throw new InvalidOperationException("Publish activity was not sampled.");
+            });
+
+            await Assert.That(started.Count).IsEqualTo(operationCount);
+            await Assert.That(stopped.Count).IsEqualTo(operationCount);
+        }
+    }
 
     // --- Activity lifecycle when preparation faults (regression: a faulting preparer must still
     //     stop and error-tag the started span, matching every other completion path). ---
@@ -36,7 +75,7 @@ public class ProducerAsyncPreparerTests
             await Assert.That(started.Count).IsGreaterThan(0);
             // No leaked span: every started activity was also stopped.
             await Assert.That(stopped.Count).IsEqualTo(started.Count);
-            await Assert.That(started[0].Status).IsEqualTo(ActivityStatusCode.Error);
+            await Assert.That(started.First().Status).IsEqualTo(ActivityStatusCode.Error);
         }
     }
 
@@ -57,7 +96,7 @@ public class ProducerAsyncPreparerTests
 
             await Assert.That(started.Count).IsGreaterThan(0);
             await Assert.That(stopped.Count).IsEqualTo(started.Count);
-            await Assert.That(started[0].Status).IsEqualTo(ActivityStatusCode.Error);
+            await Assert.That(started.First().Status).IsEqualTo(ActivityStatusCode.Error);
         }
     }
 
@@ -118,19 +157,26 @@ public class ProducerAsyncPreparerTests
     private static ProducerMessage<string, string> NewMessage() =>
         new() { Topic = Topic, Key = "k", Value = "v" };
 
-    private static (List<Activity> Started, List<Activity> Stopped, ActivityListener Listener) ListenForActivities()
+    private static (ConcurrentQueue<Activity> Started, ConcurrentQueue<Activity> Stopped, ActivityListener Listener)
+        ListenForActivities()
     {
-        var started = new List<Activity>();
-        var stopped = new List<Activity>();
+        var started = new ConcurrentQueue<Activity>();
+        var stopped = new ConcurrentQueue<Activity>();
         var listener = new ActivityListener
         {
             ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
-            ActivityStarted = started.Add,
-            ActivityStopped = stopped.Add
+            ActivityStarted = activity => CaptureActivity(started, activity),
+            ActivityStopped = activity => CaptureActivity(stopped, activity)
         };
         ActivitySource.AddActivityListener(listener);
         return (started, stopped, listener);
+    }
+
+    private static void CaptureActivity(ConcurrentQueue<Activity> activities, Activity activity)
+    {
+        if (activity.OperationName == PublishActivityName)
+            activities.Enqueue(activity);
     }
 
     private static KafkaProducer<string, string> CreateProducer(
