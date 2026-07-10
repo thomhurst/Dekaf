@@ -324,6 +324,72 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
     [Test]
     [Timeout(5_000)]
+    public async Task ConsumerProtocol_StaticMaxPollExpiry_RejoinsWithNegativeTwoAndSameMemberId(
+        CancellationToken cancellationToken)
+    {
+        SetupFindCoordinator();
+        var leaveRequest = new TaskCompletionSource<ConsumerGroupHeartbeatRequest>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var rejoinRequest = new TaskCompletionSource<ConsumerGroupHeartbeatRequest>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var rejoining = 0;
+
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                if (Volatile.Read(ref rejoining) == 1)
+                {
+                    rejoinRequest.TrySetResult(request);
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = "member-1",
+                        MemberEpoch = 2,
+                        HeartbeatIntervalMs = 60_000
+                    });
+                }
+
+                if (request.MemberEpoch == -2)
+                    leaveRequest.TrySetResult(request);
+
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = request.MemberEpoch == -2 ? -2 : 1,
+                    HeartbeatIntervalMs = 10
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions(
+            groupInstanceId: "static-1",
+            heartbeatIntervalMs: 10,
+            maxPollIntervalMs: 50);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string> { "test-topic" };
+
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+        var leave = await leaveRequest.Task.WaitAsync(cancellationToken);
+
+        await Assert.That(leave.MemberId).IsEqualTo("member-1");
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+
+        Volatile.Write(ref rejoining, 1);
+        coordinator.RecordPoll();
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+
+        var rejoin = await rejoinRequest.Task.WaitAsync(cancellationToken);
+        await Assert.That(rejoin.MemberId).IsEqualTo("member-1");
+        await Assert.That(rejoin.MemberEpoch).IsEqualTo(-2);
+        await Assert.That(rejoin.InstanceId).IsEqualTo("static-1");
+    }
+
+    [Test]
+    [Timeout(5_000)]
     public async Task ConsumerProtocol_MaxPollIntervalExceeded_RejectsCommitWhenLeaveFails(
         CancellationToken cancellationToken)
     {

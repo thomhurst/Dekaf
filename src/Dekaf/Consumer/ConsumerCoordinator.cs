@@ -1158,8 +1158,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     return;
 
                 // Keep the marker until this join succeeds so commits stay locally fenced.
-                _memberId = null;
-                _generationId = -1;
+                // Reuse the member identity for this process. Static members must rejoin with
+                // epoch -2; dynamic members rejoin with the initial epoch 0.
+                _generationId = _options.GroupInstanceId is null ? 0 : -2;
             }
 
             if (_state == CoordinatorState.Stable)
