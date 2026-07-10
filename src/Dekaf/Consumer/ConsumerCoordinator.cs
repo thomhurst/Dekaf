@@ -133,6 +133,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (expiration.Expired)
             await CompleteMaxPollExpirationAsync(expiration.Lost).ConfigureAwait(false);
 
+        // Another overdue foreground poll may have won _lock and started loss callbacks
+        // after this call passed RecordPollAsync's initial guard. Its expired generation
+        // must remain unchanged until those callbacks finish.
+        if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+            return;
+
         cancellationToken.ThrowIfCancellationRequested();
         // Advance only after loss callbacks so prefetch cannot rejoin during notification.
         RecordPoll(Stopwatch.GetTimestamp());

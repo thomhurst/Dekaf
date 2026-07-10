@@ -772,6 +772,108 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task ConsumerProtocol_ConcurrentForegroundExpiry_DoesNotRecordPollDuringPartitionsLost(
+        CancellationToken cancellationToken)
+    {
+        SetupFindCoordinator();
+        var lossStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseLoss = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsLostAsync(
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                lossStarted.TrySetResult();
+                return new ValueTask(releaseLoss.Task);
+            });
+
+        var joinRequestCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                if (request.MemberEpoch == -1)
+                {
+                    return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                    {
+                        ErrorCode = ErrorCode.None,
+                        MemberId = "member-1",
+                        MemberEpoch = -1,
+                        HeartbeatIntervalMs = 60_000
+                    });
+                }
+
+                var join = Interlocked.Increment(ref joinRequestCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = join,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = CreateAssignment(TestTopicId, join - 1)
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions(
+            rebalanceListener: listener,
+            heartbeatIntervalMs: 60_000,
+            maxPollIntervalMs: 300_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string> { "test-topic" };
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+        SetCoordinatorLongField(
+            coordinator,
+            "_lastPollTimestamp",
+            Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 600L));
+        var pollVersion = GetCoordinatorLongField(coordinator, "_pollVersion");
+        var coordinatorLock = (SemaphoreSlim)typeof(ConsumerCoordinator).GetField(
+            "_lock",
+            BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(coordinator)!;
+
+        await coordinatorLock.WaitAsync(cancellationToken);
+        Task firstPoll;
+        Task secondPoll;
+        try
+        {
+            firstPoll = coordinator.RecordPollAsync(cancellationToken).AsTask();
+            secondPoll = coordinator.RecordPollAsync(cancellationToken).AsTask();
+        }
+        finally
+        {
+            coordinatorLock.Release();
+        }
+
+        try
+        {
+            await lossStarted.Task.WaitAsync(cancellationToken);
+            var nonExpiringPoll = await Task.WhenAny(firstPoll, secondPoll).WaitAsync(cancellationToken);
+            await nonExpiringPoll;
+            await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+
+            await Assert.That(GetCoordinatorLongField(coordinator, "_pollVersion"))
+                .IsEqualTo(pollVersion);
+            await Assert.That(joinRequestCount).IsEqualTo(1);
+
+            releaseLoss.TrySetResult();
+            await Task.WhenAll(firstPoll, secondPoll).WaitAsync(cancellationToken);
+            await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+
+            await Assert.That(GetCoordinatorLongField(coordinator, "_pollVersion"))
+                .IsEqualTo(pollVersion + 1);
+            await Assert.That(joinRequestCount).IsEqualTo(2);
+        }
+        finally
+        {
+            releaseLoss.TrySetResult();
+        }
+    }
+
+    [Test]
     public async Task CommitOffsetsAsync_OverdueBeforeHeartbeatExpiry_RejectsCommit()
     {
         SetupFindCoordinator();
