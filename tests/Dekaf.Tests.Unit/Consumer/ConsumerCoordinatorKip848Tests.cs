@@ -323,10 +323,47 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 });
             });
 
-        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        coordinator.BeginForegroundPollActivity();
+        try
+        {
+            await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        }
+        finally
+        {
+            coordinator.EndForegroundPollActivity();
+        }
 
         await Assert.That(GetCoordinatorLongField(coordinator, "_lastPollTimestamp"))
             .IsGreaterThan(staleTimestamp);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_BackgroundRejoin_DoesNotRefreshPollDeadline()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string> { "test-topic" };
+        coordinator.BeginForegroundPollActivity();
+        try
+        {
+            await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+        }
+        finally
+        {
+            coordinator.EndForegroundPollActivity();
+        }
+        await coordinator.StopHeartbeatAsync();
+
+        coordinator.RequestRejoin();
+        var staleTimestamp = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+        SetCoordinatorLongField(coordinator, "_lastPollTimestamp", staleTimestamp);
+
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        await Assert.That(GetCoordinatorLongField(coordinator, "_lastPollTimestamp"))
+            .IsEqualTo(staleTimestamp);
     }
 
     [Test]

@@ -1386,7 +1386,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         cancellationToken).ConfigureAwait(false);
 
                     _state = CoordinatorState.Stable;
-                    RefreshPollDeadline();
+                    if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
+                        RefreshPollDeadline();
 
                     Diagnostics.DekafMetrics.RebalanceDuration.Record(
                         Stopwatch.GetElapsedTime(startedAt).TotalSeconds,
