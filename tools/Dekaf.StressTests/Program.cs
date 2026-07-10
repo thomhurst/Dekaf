@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Dekaf.Producer;
 using Dekaf.StressTests.Diagnostics;
+using Dekaf.StressTests.FaultInjection;
 using Dekaf.StressTests.Infrastructure;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
@@ -23,6 +24,7 @@ namespace Dekaf.StressTests;
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
 ///   --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
 ///   report --input &lt;path&gt;   Generate report from existing results
+///   fault [options]          Run fault-injection correctness suite
 ///
 /// Environment Variables:
 ///   KAFKA_BOOTSTRAP_SERVERS - Use external Kafka instead of Testcontainers
@@ -30,6 +32,7 @@ namespace Dekaf.StressTests;
 /// Examples:
 ///   dotnet run -c Release -- --duration 15 --message-size 1000
 ///   dotnet run -c Release -- --scenario producer --client dekaf --duration 5
+///   dotnet run -c Release -- fault --fault-profile network --brokers 1
 ///   dotnet run -c Release -- report --input ./results
 /// </summary>
 public static class Program
@@ -65,6 +68,25 @@ public static class Program
             if (options.IsReport)
             {
                 return await RunReportAsync(options).ConfigureAwait(false);
+            }
+
+            if (options.IsFaultInjection)
+            {
+                var exitCode = await FaultInjectionRunner.RunAsync(new FaultInjectionOptions
+                {
+                    Profile = options.FaultProfile,
+                    BrokerCount = options.Brokers,
+                    PartitionCount = options.Partitions,
+                    MessageSizeBytes = options.MessageSizeBytes,
+                    FaultDuration = TimeSpan.FromSeconds(options.FaultDurationSeconds),
+                    MessagesBeforeFault = options.MessagesBeforeFault,
+                    MaxMessagesDuringFault = options.MaxMessagesDuringFault,
+                    MessagesAfterFault = options.MessagesAfterFault,
+                    OutputPath = options.OutputPath,
+                    AllowedFailureWindows = options.AllowedFailureWindows
+                }).ConfigureAwait(false);
+
+                return CompleteRun(exitCode);
             }
 
             return await RunStressTestsAsync(options).ConfigureAwait(false);
@@ -384,29 +406,39 @@ public static class Program
             }
         }
 
+        return CompleteRun(anyFailure ? 1 : 0) != 0;
+    }
+
+    private static int CompleteRun(int exitCode)
+    {
         // Drain finalizers so exceptions from abandoned tasks surface before the verdict.
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
-        if (!UnobservedTaskExceptions.IsEmpty)
-        {
-            MarkFailure();
+        return EscalateUnobservedTaskExceptions(exitCode, UnobservedTaskExceptions);
+    }
 
-            Console.WriteLine($"  {UnobservedTaskExceptions.Count:N0} unobserved task exception(s):");
-            var printed = 0;
-            foreach (var exception in UnobservedTaskExceptions)
+    internal static int EscalateUnobservedTaskExceptions(
+        int exitCode,
+        IReadOnlyCollection<Exception> exceptions)
+    {
+        if (exceptions.Count == 0)
+            return exitCode;
+
+        Console.WriteLine($"  {exceptions.Count:N0} unobserved task exception(s):");
+        var printed = 0;
+        foreach (var exception in exceptions)
+        {
+            Console.WriteLine($"    - {exception}");
+            if (++printed >= 5)
             {
-                Console.WriteLine($"    - {exception}");
-                if (++printed >= 5)
-                {
-                    Console.WriteLine("    (further exceptions omitted)");
-                    break;
-                }
+                Console.WriteLine("    (further exceptions omitted)");
+                break;
             }
         }
 
-        return anyFailure;
+        return 1;
     }
 
     private static int MaxConsecutiveZeroSamples(List<double> samples)
@@ -667,6 +699,9 @@ public static class Program
                 case "report":
                     options.IsReport = true;
                     break;
+                case "fault":
+                    options.IsFaultInjection = true;
+                    break;
                 case "--duration":
                     options.DurationMinutes = int.Parse(args[++i]);
                     break;
@@ -721,6 +756,28 @@ public static class Program
                 case "--producer-delivery-diagnostics":
                     options.EnableProducerDeliveryDiagnostics = true;
                     break;
+                case "--fault-profile":
+                    options.FaultProfile = args[++i].ToLowerInvariant();
+                    break;
+                case "--allowed-failure-windows":
+                    foreach (var window in args[++i].Split(
+                                 ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        options.AllowedFailureWindows.Add(window);
+                    }
+                    break;
+                case "--fault-duration-seconds":
+                    options.FaultDurationSeconds = ParsePositiveInt(args[++i], "--fault-duration-seconds");
+                    break;
+                case "--messages-before-fault":
+                    options.MessagesBeforeFault = ParsePositiveInt(args[++i], "--messages-before-fault");
+                    break;
+                case "--max-messages-during-fault":
+                    options.MaxMessagesDuringFault = ParsePositiveInt(args[++i], "--max-messages-during-fault");
+                    break;
+                case "--messages-after-fault":
+                    options.MessagesAfterFault = ParsePositiveInt(args[++i], "--messages-after-fault");
+                    break;
                 case "--help":
                 case "-h":
                     PrintHelp();
@@ -730,6 +787,17 @@ public static class Program
         }
 
         return options;
+    }
+
+    private static int ParsePositiveInt(string value, string optionName)
+    {
+        var parsed = int.Parse(value);
+        if (parsed < 1)
+        {
+            throw new ArgumentException($"{optionName} must be at least 1");
+        }
+
+        return parsed;
     }
 
     private static void PrintHelp()
@@ -756,6 +824,16 @@ public static class Program
               --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
               report --input <path>   Generate report from existing results
 
+            Fault injection:
+              fault                    Run fault-injection correctness suite
+              --fault-profile <name>   network, broker, or all (default: all)
+              --allowed-failure-windows <names>  Comma-separated window names that may fail
+              --fault-duration-seconds <n>  Active duration of each fault (default: 5)
+              --messages-before-fault <n>   Messages produced before activation (default: 2000)
+              --max-messages-during-fault <n>  Maximum buffered during active fault (default: 20000)
+              --messages-after-fault <n>    Messages proving post-heal recovery (default: 2000)
+              --brokers <count>        Fault mode accepts 1 or 3 brokers
+
             Environment Variables:
               KAFKA_BOOTSTRAP_SERVERS - Use external Kafka instead of Testcontainers
               STRESS_CLIENT_ORDER      - For --client all, run paired clients as dekaf-first or confluent-first
@@ -767,12 +845,14 @@ public static class Program
               dotnet run -c Release -- --scenario producer --client dekaf --duration 5
               dotnet run -c Release -- --scenario producer-transactional --client dekaf --duration 15
               dotnet run -c Release -- report --input ./results
+              dotnet run -c Release -- fault --fault-profile broker --brokers 3
             """);
     }
 
     private sealed class CliOptions
     {
         public bool IsReport { get; set; }
+        public bool IsFaultInjection { get; set; }
         public int DurationMinutes { get; set; } = 15;
         public int MessageSizeBytes { get; set; } = 1000;
         public string Scenario { get; set; } = "all";
@@ -787,5 +867,11 @@ public static class Program
         public int ConnectionsPerBroker { get; set; } = 1;
         public int SeedMessages { get; set; } = 2_000_000;
         public bool EnableProducerDeliveryDiagnostics { get; set; }
+        public string FaultProfile { get; set; } = "all";
+        public int FaultDurationSeconds { get; set; } = 5;
+        public int MessagesBeforeFault { get; set; } = 2_000;
+        public int MaxMessagesDuringFault { get; set; } = 20_000;
+        public int MessagesAfterFault { get; set; } = 2_000;
+        public HashSet<string> AllowedFailureWindows { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }

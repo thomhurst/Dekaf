@@ -30,6 +30,7 @@ builder.Services.AddModule<BuildModule>();
 if (!skipUnitTests)
 {
     builder.Services.AddModule<RunUnitTestsModule>();
+    builder.Services.AddModule<RunStressTestsUnitTestsModule>();
     if (!skipAotSmokeTests)
     {
         builder.Services.AddModule<RunAotSmokeTestsModule>();
