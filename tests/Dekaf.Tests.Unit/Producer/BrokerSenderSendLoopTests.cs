@@ -1543,9 +1543,9 @@ public sealed class BrokerSenderSendLoopTests
                 if (error is null && Interlocked.Increment(ref acknowledgementCount) == 2)
                     acknowledgements.TrySetResult();
             },
-            observedThrottleTimes.Add,
-            () => Volatile.Read(ref timestamp),
-            (delayMs, token) =>
+            onBrokerThrottle: observedThrottleTimes.Add,
+            getTimestamp: () => Volatile.Read(ref timestamp),
+            delayForThrottle: (delayMs, token) =>
             {
                 throttleWaitStarted.TrySetResult(delayMs);
                 return new ValueTask(releaseThrottleWait.Task.WaitAsync(token));
@@ -1615,7 +1615,7 @@ public sealed class BrokerSenderSendLoopTests
                 if (error is null && Interlocked.Increment(ref acknowledgementCount) == 2)
                     acknowledgements.TrySetResult();
             },
-            observedThrottleTimes.Add,
+            onBrokerThrottle: observedThrottleTimes.Add,
             delayForThrottle: (_, _) =>
             {
                 throttleDelayCalled = true;
