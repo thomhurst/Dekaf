@@ -720,8 +720,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _fetchBufferEpoch;
     private int _minimumFetchBufferEpoch;
     private readonly ConcurrentDictionary<TopicPartition, int> _minimumFetchBufferEpochsByPartition = new();
-    // The marker flag stops record iteration as soon as a clear is staged. The pending flag
-    // publishes a fully staged batch to the poll loop without adding dictionary work normally.
+    // Coordinator revocations and diverging-epoch corrections share this partition set because
+    // both must stop record iteration before the poll loop clears stale fetch data. The marker
+    // flag stops iteration as soon as a clear is staged; the pending flag publishes a fully
+    // staged batch without adding dictionary work to the normal path.
     private readonly object _coordinatorRevokedPartitionsPendingFetchClearLock = new();
     private readonly ConcurrentDictionary<TopicPartition, byte> _coordinatorRevokedPartitionsPendingFetchClear = new();
     private readonly ConcurrentDictionary<TopicPartition, (long EndOffset, int Epoch)> _pendingDivergingEpochResets = new();

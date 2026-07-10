@@ -206,6 +206,18 @@ foreach (var (tp, offset) in offsets)
 }
 ```
 
+### Log Truncation Recovery
+
+After broker failover, leader-epoch validation can report that a new leader's log ends before
+records already prefetched from the previous leader. Dekaf clears stale buffered records for the
+affected partition and resumes from the broker's corrected offset without rewinding records already
+yielded to the application.
+
+This recovery is internal. Dekaf logs a warning instead of surfacing a terminal
+`ConsumeException(OffsetOutOfRange)`. Applications that used that exception to detect log
+truncation should monitor warning logs instead. Other `OffsetOutOfRange` handling continues to
+follow the configured auto-offset-reset policy.
+
 ## Delivery Semantics
 
 | Mode | Semantics | Risk |
