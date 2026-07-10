@@ -481,6 +481,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // disposal. The list is expected to already be empty when parked; a non-empty list
     // means a request slipped in against the width-reduction invariant and is logged.
     private IKafkaConnection? _retiringConnection;
+    private readonly ConcurrentDictionary<Task, byte> _retirementDrainTasks = new();
+
+    internal Action? RetirementDrainStartedForTest { get; set; }
 
     // Set at send-loop finally entry so IsAlive turns false before surviving batches are
     // reroute-redelivered — GetOrCreateBrokerSender must build a replacement, not return
@@ -3929,6 +3932,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogBatchCleanupStepFailed(ex, _brokerId);
         }
 
+        // A final send-loop iteration may have already detached a retirement drain after
+        // clearing the raw connection fields. Wait for every such drain before inspecting
+        // the remaining scale-down state.
+        var retirementDrainTasks = _retirementDrainTasks.Keys.ToArray();
+        if (retirementDrainTasks.Length > 0)
+        {
+            await WaitForDisposalDrainAsync(
+                Task.WhenAll(retirementDrainTasks)).ConfigureAwait(false);
+        }
+
         // Observe any in-flight shrink task and dispose the draining connection.
         // After the send loop exits, these won't be polled by MaybeScaleConnections.
         if (_pendingShrinkTask is { } pendingShrinkTask)
@@ -4354,14 +4367,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // This sender's pending list is empty. The shared retirement helper also waits for
         // any leases or operations held by other pool users before disposing in the background.
-        _ = RetiredConnectionDisposer.DrainAndDisposeAsync(
+        StartRetirementDrain(connection);
+    }
+
+    private void StartRetirementDrain(IKafkaConnection connection)
+    {
+        var drainTask = RetiredConnectionDisposer.DrainAndDisposeAsync(
             connection,
-            CancellationToken.None).AsTask().ContinueWith(
-            static (t, _) => { /* Observe exception — best-effort disposal */ },
-            null,
+            CancellationToken.None).AsTask();
+        _retirementDrainTasks.TryAdd(drainTask, 0);
+        RetirementDrainStartedForTest?.Invoke();
+        _ = drainTask.ContinueWith(
+            static (task, state) => ((BrokerSender)state!).ObserveCompletedRetirementDrain(task),
+            this,
             CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+    }
+
+    private void ObserveCompletedRetirementDrain(Task task)
+    {
+        _retirementDrainTasks.TryRemove(task, out _);
+        _ = task.Exception;
     }
 
     /// <summary>

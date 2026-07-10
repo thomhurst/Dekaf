@@ -540,6 +540,35 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_InFlightRetirementDrain_WaitsForLeasedConnection(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(idempotent: false);
+        await using var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var removedConnection = new TestKafkaConnection();
+        var retirableConnection = (IRetirableKafkaConnection)removedConnection;
+        var drainStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        sender.RetirementDrainStartedForTest = () => drainStarted.TrySetResult();
+        await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
+        retirableConnection.BeginRetirement();
+
+        typeof(BrokerSender).GetField(
+            "_drainingConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(sender, removedConnection);
+
+        await drainStarted.Task.WaitAsync(cancellationToken);
+        await AssertDisposeWaitsForLeaseAsync(
+            sender,
+            removedConnection,
+            retirableConnection,
+            cancellationToken);
+    }
+
+    [Test]
     [Timeout(15_000)]
     public async Task DisposeAsync_DrainTimeout_ContinuesWaitingForLease(
         CancellationToken cancellationToken)
