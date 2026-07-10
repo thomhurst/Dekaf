@@ -178,12 +178,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private void ThrowIfMaxPollIntervalExpired()
     {
-        if (Volatile.Read(ref _foregroundFetchWaitCount) != 0)
-            return;
-
-        var pollDeadlineElapsed = _state == CoordinatorState.Stable
-            && Stopwatch.GetTimestamp() - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks;
-        if (!pollDeadlineElapsed && Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0)
+        if (!IsMaxPollIntervalExpired())
             return;
 
         throw new GroupException(
@@ -192,6 +187,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             GroupId = _options.GroupId
         };
+    }
+
+    private bool IsMaxPollIntervalExpired()
+    {
+        if (Volatile.Read(ref _foregroundFetchWaitCount) != 0)
+            return false;
+
+        var pollDeadlineElapsed = _state == CoordinatorState.Stable
+            && Stopwatch.GetTimestamp() - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks;
+        return pollDeadlineElapsed || Volatile.Read(ref _maxPollExpiredAtPollVersion) >= 0;
     }
 
     internal (TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)
@@ -968,6 +973,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
             .ConfigureAwait(false);
         var connection = connectionLease.Connection;
+
+        if (discardIfMembershipChanged &&
+            (_state != CoordinatorState.Stable ||
+             Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
+             IsMaxPollIntervalExpired()))
+            return default;
 
         var version = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ConsumerGroupHeartbeat,

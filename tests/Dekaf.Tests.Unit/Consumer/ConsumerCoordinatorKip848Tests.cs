@@ -428,6 +428,46 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_SteadyHeartbeat_CrossesMaxPollWhileAcquiringConnection_DoesNotSend()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            maxPollIntervalMs: 50);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        var connectionRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connectionAvailable = new TaskCompletionSource<IKafkaConnection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _connectionPool.GetConnectionByIndexAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                connectionRequested.TrySetResult();
+                return new ValueTask<IKafkaConnection>(connectionAvailable.Task);
+            });
+
+        var heartbeat = InvokeSteadyConsumerGroupHeartbeatAsync(coordinator).AsTask();
+        await connectionRequested.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        SetCoordinatorLongField(
+            coordinator,
+            "_lastPollTimestamp",
+            Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+        connectionAvailable.SetResult(_connection);
+
+        await heartbeat.WaitAsync(TimeSpan.FromSeconds(1));
+
+        await _connection.DidNotReceive().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request.MemberEpoch > 0),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     [Timeout(5_000)]
     public async Task ConsumerProtocol_MaxPollIntervalExceeded_LeavesDynamicMember(
         CancellationToken cancellationToken)
