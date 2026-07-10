@@ -7,20 +7,18 @@ public sealed class KafkaTestImagesTests
     public async Task Resolve_WithoutRequestedVersion_UsesCurrentStableImage()
     {
         var resolved = KafkaTestImages.Resolve(null);
+        var expected = KafkaTestImages.Parse(KafkaTestImages.CurrentImage);
 
-        await Assert.That(resolved.Release).IsEqualTo("4.3.1");
-        await Assert.That(resolved.Version).IsEqualTo(new Version(4, 3, 1));
-        await Assert.That(resolved.Image).IsEqualTo(KafkaTestImages.CurrentImage);
+        await Assert.That(resolved).IsEqualTo(expected);
     }
 
     [Test]
     public async Task Resolve_FloorLane_UsesPinnedFloorImage()
     {
         var resolved = KafkaTestImages.Resolve(KafkaTestImages.FloorLane);
+        var expected = KafkaTestImages.Parse(KafkaTestImages.FloorImage);
 
-        await Assert.That(resolved.Release).IsEqualTo("4.0.2");
-        await Assert.That(resolved.Version).IsEqualTo(new Version(4, 0, 2));
-        await Assert.That(resolved.Image).IsEqualTo(KafkaTestImages.FloorImage);
+        await Assert.That(resolved).IsEqualTo(expected);
     }
 
     [Test]
@@ -47,10 +45,9 @@ public sealed class KafkaTestImagesTests
     public async Task Resolve_CurrentLane_UsesCurrentStableImage()
     {
         var resolved = KafkaTestImages.Resolve(KafkaTestImages.CurrentLane);
+        var expected = KafkaTestImages.Parse(KafkaTestImages.CurrentImage);
 
-        await Assert.That(resolved.Release).IsEqualTo("4.3.1");
-        await Assert.That(resolved.Version).IsEqualTo(new Version(4, 3, 1));
-        await Assert.That(resolved.Image).IsEqualTo(KafkaTestImages.CurrentImage);
+        await Assert.That(resolved).IsEqualTo(expected);
     }
 
     [Test]
