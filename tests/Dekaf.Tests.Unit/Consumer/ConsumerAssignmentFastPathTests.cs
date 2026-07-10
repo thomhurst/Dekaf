@@ -239,14 +239,24 @@ public sealed class ConsumerAssignmentFastPathTests
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         var coordinator = GetCoordinator(consumer);
-        var delay = consumer.DelayForForegroundPollAsync(100, CancellationToken.None).AsTask();
-        LastPollTimestampField.SetValue(
-            coordinator,
-            Stopwatch.GetTimestamp() - Stopwatch.Frequency);
-        await coordinator.RecordPollAsync(CancellationToken.None);
+        using var delayCancellation = new CancellationTokenSource();
+        var delay = consumer.DelayForForegroundPollAsync(
+            Timeout.Infinite,
+            delayCancellation.Token).AsTask();
+        try
+        {
+            LastPollTimestampField.SetValue(
+                coordinator,
+                Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+            await coordinator.RecordPollAsync(CancellationToken.None);
 
-        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
-        await delay;
+            await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        }
+        finally
+        {
+            delayCancellation.Cancel();
+            await IgnoreCancellationAsync(delay);
+        }
     }
 
     [Test]
