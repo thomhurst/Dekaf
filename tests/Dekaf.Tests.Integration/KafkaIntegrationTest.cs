@@ -6,10 +6,11 @@ namespace Dekaf.Tests.Integration;
 /// Base class for integration tests that require a Kafka container.
 /// The <see cref="KafkaTestContainer"/> instance is shared across all tests in the session via TUnit's ClassDataSource.
 /// Derived classes receive the container through their own primary constructor parameter.
+/// The broker version is selected via the <c>KAFKA_TEST_IMAGE_TAG</c> environment variable
+/// (see <see cref="KafkaContainerDefault"/>); the NuGet release gate sweeps all
+/// supported versions while PR CI runs the current release only.
 /// </summary>
-[ClassDataSource<KafkaContainer40>(Shared = SharedType.PerTestSession)]
-[ClassDataSource<KafkaContainer41>(Shared = SharedType.PerTestSession)]
-[ClassDataSource<KafkaContainer42>(Shared = SharedType.PerTestSession)]
+[ClassDataSource<KafkaContainerDefault>(Shared = SharedType.PerTestSession)]
 public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer)
 {
     public KafkaTestContainer KafkaContainer { get; } = kafkaTestContainer;

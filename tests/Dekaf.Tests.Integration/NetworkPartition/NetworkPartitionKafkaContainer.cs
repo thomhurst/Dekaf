@@ -7,7 +7,7 @@ namespace Dekaf.Tests.Integration.NetworkPartition;
 /// Uses Docker's pause/unpause to freeze container processes, simulating a network partition
 /// where TCP connections go silent (no RST, no FIN).
 /// Shared once per test session for network partition tests. Do not reuse the general
-/// KafkaContainer40 session instance because pause/unpause would affect unrelated tests.
+/// KafkaContainerDefault session instance because pause/unpause would affect unrelated tests.
 /// </summary>
 public class NetworkPartitionKafkaContainer : KafkaTestContainer
 {

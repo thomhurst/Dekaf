@@ -19,6 +19,7 @@ Dekaf is a high-performance, pure C# Apache Kafka client library for .NET 10+. T
 ## Important Warnings
 
 - **Test Projects Require Docker**: Integration tests use Testcontainers.Kafka. Ensure Docker is running before executing integration tests.
+- **Broker Version Is Env-Driven**: `KafkaIntegrationTest`-derived tests run against a single Kafka broker whose image tag comes from `KAFKA_TEST_IMAGE_TAG` (default `4.2.0`). PR CI tests only the current release; the full 4.0.1/4.1.1/4.2.0 sweep runs as the NuGet release gate (`workflow_dispatch` with `publish_nuget=true`), which must pass before packages are pushed. To test an older broker locally, set the env var before running the integration exe.
 - **Benchmarks Compare Against Confluent.Kafka**: Producer/Consumer benchmarks spin up real Kafka instances. Memory/Serialization benchmarks run without Docker.
 - **Protocol Code Uses Unsafe**: The `Dekaf.Protocol` namespace uses unsafe code for performance. Changes here require extra scrutiny.
 - **BufferMemory Enforces Strict Limits**: Producer `BufferMemory` setting enforces limits across all append paths (both slow path and arena fast path) to prevent unbounded growth. Exceeding this limit blocks `ProduceAsync` until space is available via backpressure.
