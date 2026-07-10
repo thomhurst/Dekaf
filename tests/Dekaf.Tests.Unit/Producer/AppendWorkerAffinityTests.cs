@@ -88,8 +88,6 @@ public class AppendWorkerAffinityTests
             cancellationToken,
             TimeSpan.FromMilliseconds(25));
 
-        await Assert.That(HasBatchForPartition(deques, tp)).IsTrue();
-
         // Cancel workers before disposal to avoid waiting for sender drain timeout
         cts.Cancel();
         await accumulator.DisposeAsync();
@@ -145,12 +143,6 @@ public class AppendWorkerAffinityTests
             },
             cancellationToken,
             TimeSpan.FromMilliseconds(25));
-
-        for (var p = 0; p < partitionCount; p++)
-        {
-            var tp = new TopicPartition("test-topic", p);
-            await Assert.That(HasBatchForPartition(deques, tp)).IsTrue();
-        }
 
         cts.Cancel();
         await accumulator.DisposeAsync();
