@@ -989,16 +989,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var maxPollExpirationVersion = discardIfMembershipChanged
             ? Volatile.Read(ref _maxPollExpirationVersion)
             : 0;
-        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-            _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
-            .ConfigureAwait(false);
-        var connection = connectionLease.Connection;
+        ConsumerGroupHeartbeatResponse response;
+        int assignmentVersion;
+        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions;
+        string? subscribedTopicRegex;
+        using (var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                   _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken)
+                   .ConfigureAwait(false))
+        {
+            var connection = connectionLease.Connection;
 
-        if (discardIfMembershipChanged &&
-             (_state != CoordinatorState.Stable ||
-             Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
-             IsCurrentPollGenerationExpired()))
-            return default;
+            if (discardIfMembershipChanged &&
+                 (_state != CoordinatorState.Stable ||
+                 Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
+                 IsCurrentPollGenerationExpired()))
+                return default;
 
         var version = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ConsumerGroupHeartbeat,
@@ -1022,8 +1027,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
         // which is invalid when there's no previous state.
-        var assignmentVersion = Volatile.Read(ref _assignmentVersion);
-        IReadOnlyList<ConsumerGroupHeartbeatTopicPartitions>? ownedTopicPartitions =
+        assignmentVersion = Volatile.Read(ref _assignmentVersion);
+        ownedTopicPartitions =
             isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
 
         // Atomically snapshot and clear the subscription-changed flag to prevent a race where
@@ -1035,7 +1040,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var subscriptionShouldBeSent = isInitial || subscriptionChanged;
         var currentSubscribedTopicRegex = _subscribedTopicRegex;
         var subscribedTopics = subscriptionShouldBeSent ? _subscribedTopics?.ToList() : null;
-        var subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
+        subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
             ? currentSubscribedTopicRegex ?? (isInitial ? null : string.Empty)
             : null;
 
@@ -1053,8 +1058,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             TopicPartitions = ownedTopicPartitions
         };
 
-        var response = await connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            request, version, cancellationToken).ConfigureAwait(false);
+            response = await connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                request, version, cancellationToken).ConfigureAwait(false);
+        }
 
         if (!discardIfMembershipChanged)
             return ProcessConsumerGroupHeartbeatResponse(

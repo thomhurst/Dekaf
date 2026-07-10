@@ -1039,6 +1039,73 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_SteadyHeartbeat_ReleasesConnectionLeaseBeforeCallbacks()
+    {
+        var connection = Substitute.For<IKafkaConnection>();
+        var retirableConnection = new RetirableTestConnection(connection);
+        _connectionPool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(retirableConnection));
+        _connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(retirableConnection));
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                Coordinators =
+                [
+                    new Coordinator
+                    {
+                        Key = "test-group",
+                        NodeId = 0,
+                        Host = "localhost",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
+                    }
+                ]
+            }));
+        var heartbeatCount = 0;
+        connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref heartbeatCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = count,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = CreateAssignment(TestTopicId, count - 1)
+                });
+            });
+
+        var leaseStatesDuringCallbacks = new List<int>();
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                leaseStatesDuringCallbacks.Add(retirableConnection.LeaseCount);
+                return ValueTask.CompletedTask;
+            });
+        var options = CreateConsumerProtocolOptions(
+            rebalanceListener: listener,
+            heartbeatIntervalMs: 60_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(leaseStatesDuringCallbacks).IsEquivalentTo([0, 0]);
+    }
+
+    [Test]
     [Timeout(5_000)]
     public async Task ConsumerProtocol_HeartbeatExpiry_BlocksRejoinUntilPartitionsLostCompletes(
         CancellationToken cancellationToken)
@@ -3063,4 +3130,81 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     #endregion
+
+    private sealed class RetirableTestConnection(IKafkaConnection inner) :
+        IKafkaConnection,
+        IRetirableKafkaConnection
+    {
+        private int _leaseCount;
+
+        public int BrokerId => inner.BrokerId;
+        public string Host => inner.Host;
+        public int Port => inner.Port;
+        public bool IsConnected => inner.IsConnected;
+        public int LeaseCount => Volatile.Read(ref _leaseCount);
+        public int ActiveOperationCount => 0;
+
+        public bool TryAcquireLease() => Interlocked.CompareExchange(ref _leaseCount, 1, 0) == 0;
+
+        public void ReleaseLease() => Interlocked.Decrement(ref _leaseCount);
+
+        public void BeginRetirement()
+        {
+        }
+
+        public void CompleteRetirement()
+        {
+        }
+
+        public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => inner.SendAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => inner.SendFireAndForgetAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => inner.SendPipelinedAsync<TRequest, TResponse>(request, apiVersion, cancellationToken);
+
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => inner.SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+                request,
+                apiVersion,
+                cancellationToken);
+
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => inner.SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+                request,
+                apiVersion,
+                cancellationToken);
+
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default)
+            => inner.ConnectAsync(cancellationToken);
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
 }
