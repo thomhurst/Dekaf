@@ -100,3 +100,35 @@ dotnet ./tools/Dekaf.Fuzzing/bin/Release/net10.0/Dekaf.Fuzzing.dll /path/to/cras
 ```
 
 Set `DEKAF_FUZZ_TARGET=record-batch` before replaying a RecordBatch/codec crash input.
+
+## Nightly campaigns and regression promotion
+
+The `Protocol Fuzzing` GitHub Actions workflow runs both targets every night. Each target has a
+15-minute total-time bound, a 30-second per-input timeout, a 2 GiB RSS bound, a 1 MiB input limit,
+and a fixed seed recorded in `metadata.json`. Manual runs can override the total-time and RSS
+bounds. The workflow summary lists any crash input and its target/seed, while the matching
+`protocol-fuzz-<target>-seed-<seed>-<run-id>` artifact retains the metadata, full log, evolved
+corpus, and crash files for 90 days.
+
+To reproduce an artifact locally, build the target and pass the retained crash file directly to
+the harness:
+
+```powershell
+dotnet build tools/Dekaf.Fuzzing/Dekaf.Fuzzing.csproj --configuration Release --framework net10.0
+$env:DEKAF_FUZZ_TARGET = "record-batch" # Omit for kafka-protocol.
+dotnet ./tools/Dekaf.Fuzzing/bin/Release/net10.0/Dekaf.Fuzzing.dll ./path/to/retained-crash
+Remove-Item Env:\DEKAF_FUZZ_TARGET
+```
+
+Confirm the failure, minimize the input with libFuzzer when useful, then give it a descriptive,
+stable filename and copy it into the reviewed regression corpus:
+
+- `record-batch` inputs go under `Corpus/RecordBatch`.
+- `kafka-protocol` inputs beginning with the `0xFF` response marker go under `Corpus/Responses`;
+  other inputs go under `Corpus/ProtocolReader`.
+
+Run the replay tests shown in [Build and replay corpora](#build-and-replay-corpora). Commit the new
+input together with the parser fix and a focused assertion when the generic replay invariant does
+not fully describe the regression. Normal pull-request CI reruns all three corpus replay suites in
+the explicit `Replay protocol fuzz regression corpora` step, so promoted inputs become reviewable
+and permanently guarded.
