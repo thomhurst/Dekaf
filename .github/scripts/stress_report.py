@@ -10,6 +10,7 @@ SCENARIO_TITLES = {
     'producer-acks-all': 'Producer (Acks All)',
     'producer-async': 'Producer (Async)',
     'producer-async-idempotent': 'Producer (Async, Idempotent)',
+    'producer-transactional': 'Producer (Transactional EOS)',
     'consumer': 'Consumer',
     'consumer-batch': 'Consumer (Batch)',
     'consumer-raw': 'Consumer (Raw Bytes)',
@@ -305,6 +306,59 @@ def format_gc_table(results, title="GC Statistics"):
     return lines
 
 
+def format_transaction_verification(results):
+    """Generate committed/aborted read_committed verification rows when present."""
+    transactional = [result for result in results if result.get('transactionVerification') is not None]
+    if not transactional:
+        return []
+
+    lines = [
+        "### Transaction Verification",
+        "",
+        "| Client | Accepted | Committed | Aborted | Delivered | Duplicates | Shortfall | Aborted leaks | Unexpected | Missing sentinels | Status |",
+        "|--------|----------|-----------|---------|-----------|------------|-----------|---------------|------------|-------------------|--------|",
+    ]
+    failure_samples = []
+
+    for result in sorted(transactional, key=lambda item: item.get('client', '')):
+        verification = result['transactionVerification']
+        successful = verification.get('isSuccessful')
+        if successful is None:
+            successful = all(verification.get(field, 0) == 0 for field in (
+                'duplicateMessages',
+                'shortfallMessages',
+                'leakedAbortedMessages',
+                'unexpectedMessages',
+                'missingSentinelPartitions',
+            ))
+
+        values = [
+            result.get('client', 'Unknown'),
+            f"{verification.get('acceptedMessages', 0):,}",
+            f"{verification.get('committedMessages', 0):,}",
+            f"{verification.get('abortedMessages', 0):,}",
+            f"{verification.get('deliveredMessages', 0):,}",
+            f"{verification.get('duplicateMessages', 0):,}",
+            f"{verification.get('shortfallMessages', 0):,}",
+            f"{verification.get('leakedAbortedMessages', 0):,}",
+            f"{verification.get('unexpectedMessages', 0):,}",
+            f"{verification.get('missingSentinelPartitions', 0):,}",
+            'PASS' if successful else 'FAIL',
+        ]
+        lines.append(f"| {' | '.join(values)} |")
+        failure_samples.extend(
+            (result.get('client', 'Unknown'), sample)
+            for sample in verification.get('failureSamples', [])
+        )
+
+    lines.append("")
+    if failure_samples:
+        lines.append("**Transaction verification failure samples:**")
+        lines.extend(f"- {client}: {sample}" for client, sample in failure_samples)
+        lines.append("")
+    return lines
+
+
 def generate_scenario_tables(results, include_ratio=False, include_callout=False):
     """Generate per-scenario throughput tables for all results."""
     producer_scenarios, consumer_scenarios = group_by_scenario(results)
@@ -315,6 +369,7 @@ def generate_scenario_tables(results, include_ratio=False, include_callout=False
             title = scenario_title(scenario_key, fallback_prefix)
             scenario_results = scenarios[scenario_key]
             output.extend(format_throughput_table(scenario_results, f"{title} Throughput", include_ratio=include_ratio))
+            output.extend(format_transaction_verification(scenario_results))
             if include_callout:
                 output.extend(format_comparison_callout(scenario_results, title))
 

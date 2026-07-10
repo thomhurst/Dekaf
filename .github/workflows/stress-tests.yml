@@ -72,6 +72,13 @@ jobs:
             artifact_suffix: ""
             timeout_minutes: 120
             name: Producer Acks All (Paired, 3 Brokers)
+          - scenario: producer-transactional
+            client: dekaf
+            brokers: 3
+            run_3conn: false
+            artifact_suffix: ""
+            timeout_minutes: 150
+            name: Dekaf Transactional EOS (3 Brokers)
           - scenario: consumer
             client: all
             brokers: 1
