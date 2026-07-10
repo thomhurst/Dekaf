@@ -89,13 +89,13 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         // Warm up all partitions to ensure the broker has fully initialized partition state.
         for (var p = 0; p < partitionCount; p++)
-            await producer.FireAsync(new ProducerMessage<int, string>
+            await producer.ProduceAsync(new ProducerMessage<int, string>
             {
                 Topic = topic,
                 Key = -1,
                 Value = "warmup",
                 Partition = p
-            });
+            }, CancellationToken.None);
 
         // Produce messages keyed by partition index
         for (var p = 0; p < partitionCount; p++)
