@@ -25,4 +25,15 @@ public sealed class StressRunCompletionPolicyTests
 
         await Assert.That(endedEarly).IsTrue();
     }
+
+    [Test]
+    public async Task EndedEarly_DurationBoundedRun_AfterThreshold_IsFalse()
+    {
+        var endedEarly = StressRunCompletionPolicy.EndedEarly(
+            elapsedSeconds: 900,
+            configuredDurationMinutes: 15,
+            isMessageBounded: false);
+
+        await Assert.That(endedEarly).IsFalse();
+    }
 }

@@ -387,6 +387,41 @@ internal static class StressTestHelpers
         }
     }
 
+    internal static ThroughputSampler StartSampler(
+        ThroughputTracker throughput,
+        CancellationToken cancellationToken) =>
+        new(throughput, cancellationToken);
+
+    internal sealed class ThroughputSampler : IAsyncDisposable
+    {
+        private readonly CancellationTokenSource _cancellation;
+        private readonly Task _samplerTask;
+
+        internal ThroughputSampler(ThroughputTracker throughput, CancellationToken cancellationToken)
+        {
+            _cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _samplerTask = RunSamplerAsync(throughput, _cancellation.Token);
+        }
+
+        internal async ValueTask StopAsync()
+        {
+            _cancellation.Cancel();
+            await _samplerTask.ConfigureAwait(false);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                await StopAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                _cancellation.Dispose();
+            }
+        }
+    }
+
     internal static async Task RunSamplerAsync(ThroughputTracker throughput, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)

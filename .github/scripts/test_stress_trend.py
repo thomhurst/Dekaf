@@ -187,6 +187,33 @@ class StressTrendTests(unittest.TestCase):
         self.assertFalse(should_fail)
         self.assertEqual({"insufficient-history"}, {item["status"] for item in evaluations})
 
+    def test_different_roundtrip_bound_does_not_supply_baseline(self):
+        history = {
+            "version": 1,
+            "runs": [
+                history_run(
+                    i,
+                    scenario="producer-roundtrip",
+                    roundTripMessages=250_000,
+                )
+                for i in range(1, 4)
+            ],
+        }
+
+        evaluations, updated, should_fail = evaluate_and_update(
+            history,
+            [result(
+                messages_per_second=100.0,
+                scenario="producer-roundtrip",
+                roundTripValidation={"expectedMessages": 1_000},
+            )],
+            "2026-07-01T02:00:00Z",
+        )
+
+        self.assertFalse(should_fail)
+        self.assertEqual({"insufficient-history"}, {item["status"] for item in evaluations})
+        self.assertEqual(1_000, updated["runs"][-1]["results"][0]["roundTripMessages"])
+
     def test_history_is_bounded_and_same_run_is_replaced(self):
         runs = [history_run(i) for i in range(1, HISTORY_LIMIT + 1)]
         duplicate_timestamp = runs[-1]["runStartedAtUtc"]

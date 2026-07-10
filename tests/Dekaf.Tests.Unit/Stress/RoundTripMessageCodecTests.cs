@@ -212,6 +212,26 @@ public class RoundTripMessageCodecTests
     }
 
     [Test]
+    public async Task StartSampler_WhenOperationThrows_StopsSamplerAndRethrows()
+    {
+        var throughput = new ThroughputTracker();
+        throughput.Start();
+
+        var runTask = RunFailingOperationAsync(throughput);
+
+        await Assert.That(async () => await runTask.WaitAsync(TimeSpan.FromSeconds(2)))
+            .Throws<InvalidOperationException>()
+            .WithMessage("operation failed");
+
+        static async Task RunFailingOperationAsync(ThroughputTracker throughput)
+        {
+            await using var sampler = StressTestHelpers.StartSampler(throughput, CancellationToken.None);
+            await Task.Yield();
+            throw new InvalidOperationException("operation failed");
+        }
+    }
+
+    [Test]
     public async Task ConfluentDeliveryReportFailure_CountsAsDeliveryError()
     {
         var throughput = new ThroughputTracker();

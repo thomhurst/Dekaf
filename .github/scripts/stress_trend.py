@@ -21,6 +21,7 @@ _IDENTITY_FIELDS = (
     "brokerCount",
     "durationMinutes",
     "messageSizeBytes",
+    "roundTripMessages",
 )
 
 _METRICS = {
@@ -41,6 +42,13 @@ def _finite_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value)
 
 
+def _roundtrip_messages(result):
+    validation = result.get("roundTripValidation")
+    if isinstance(validation, dict):
+        return validation.get("expectedMessages", result.get("roundTripMessages"))
+    return result.get("roundTripMessages")
+
+
 def _identity(result):
     return (
         str(result.get("scenario", "unknown")).casefold(),
@@ -48,6 +56,7 @@ def _identity(result):
         result.get("brokerCount", 1),
         result.get("durationMinutes"),
         result.get("messageSizeBytes"),
+        _roundtrip_messages(result),
     )
 
 
@@ -107,11 +116,15 @@ def _limit_observations_per_identity(runs):
 
 def _scenario_label(result):
     brokers = result.get("brokerCount", 1)
-    return (
+    label = (
         f"{result.get('scenario', 'unknown')} / {result.get('client', 'unknown')} / "
         f"{brokers} broker{'s' if brokers != 1 else ''} / "
         f"{result.get('messageSizeBytes', '?')}B / {result.get('durationMinutes', '?')}m"
     )
+    roundtrip_messages = _roundtrip_messages(result)
+    if roundtrip_messages is not None:
+        label += f" / {roundtrip_messages} messages"
+    return label
 
 
 def _metric_status(value, baseline, lower_is_regression):
@@ -154,6 +167,7 @@ def evaluate_and_update(history, current_results, run_started_at):
         prior = _matching_observations(baseline_runs, result)
         observation = {field: result.get(field) for field in _IDENTITY_FIELDS}
         observation["brokerCount"] = result.get("brokerCount", 1)
+        observation["roundTripMessages"] = _roundtrip_messages(result)
 
         for metric, definition in _METRICS.items():
             value = definition["extract"](result)
