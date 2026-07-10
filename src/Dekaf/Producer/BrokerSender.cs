@@ -401,9 +401,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly ConcurrentQueue<(ReadyBatch Batch, int Generation)> _sendFailedRetries = new();
 
     // Batches recovered from an unexpectedly exited sender. These must run before both
-    // send-failure retries and normal channel backlog on the replacement sender. They use
-    // a separate queue because _sendFailedRetries is drained with AddFirst (which reverses
-    // FIFO order when multiple same-partition entries arrive together).
+    // send-failure retries and normal channel backlog on the replacement sender. Their
+    // separate queue preserves LoopExitRedeliveryOrder while carry-over insertion keeps
+    // every crash recovery ahead of ordinary retries and new work.
     private readonly ConcurrentQueue<(ReadyBatch Batch, int Generation)> _loopExitRedeliveries = new();
 
     // Partitions accepted while this sender is alive. Guarded with _loopExited so an
