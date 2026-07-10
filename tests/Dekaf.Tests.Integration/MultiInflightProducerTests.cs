@@ -69,7 +69,9 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         }
     }
 
-    [Test]
+    // This validates client-side multi-partition pipelining, not shared-broker saturation.
+    // Run alone so the test's 30-second broker retention does not trim early partitions.
+    [Test, NotInParallel]
     public async Task MultiInflight_MultiPartition_PerPartitionOrderingPreserved()
     {
         const int partitionCount = 8;
@@ -87,26 +89,26 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         // Warm up all partitions to ensure the broker has fully initialized partition state.
         for (var p = 0; p < partitionCount; p++)
-            await producer.ProduceAsync(new ProducerMessage<int, string>
+            await producer.FireAsync(new ProducerMessage<int, string>
             {
                 Topic = topic,
                 Key = -1,
                 Value = "warmup",
                 Partition = p
-            }, CancellationToken.None);
+            });
 
         // Produce messages keyed by partition index
         for (var p = 0; p < partitionCount; p++)
         {
             for (var i = 0; i < messagesPerPartition; i++)
             {
-                await producer.ProduceAsync(new ProducerMessage<int, string>
+                await producer.FireAsync(new ProducerMessage<int, string>
                 {
                     Topic = topic,
                     Partition = p,
                     Key = p,
                     Value = $"p{p}-msg-{i:D4}"
-                }, CancellationToken.None);
+                });
             }
         }
 
