@@ -268,7 +268,7 @@ public sealed class KafkaConnectionTests
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
-                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(1) });
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) });
 
             await connection.ConnectAsync(cancellationToken);
             using var serverClient = await acceptTask.ConfigureAwait(false);
@@ -288,8 +288,14 @@ public sealed class KafkaConnectionTests
             });
             await Assert.That(thrown!.CancellationToken).IsEqualTo(callerCancellation.Token);
 
-            await Task.Delay(TimeSpan.FromMilliseconds(1500), cancellationToken);
+            // Completion of the cancelled send synchronously removes its pending request and
+            // disarms the receive timeout. Invoke a late timer callback directly instead of
+            // racing caller cancellation against a one-second wall-clock timeout.
+            await Assert.That(GetPrivateField<int>(connection, "_pendingRequestCount")).IsEqualTo(0);
+            await Assert.That(GetPrivateField<long>(connection, "_receiveTimeoutDeadlineTimestamp")).IsEqualTo(0);
+            InvokeReceiveTimeout(connection);
 
+            await Assert.That(GetPrivateField<int>(connection, "_receiveTimeoutExpired")).IsEqualTo(0);
             await Assert.That(connection.IsConnected).IsTrue();
             await connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
         }
@@ -515,7 +521,10 @@ public sealed class KafkaConnectionTests
             .Throws<KafkaException>()
             .WithMessageContaining("Flush timeout");
 
-        await TestWait.UntilAsync(() => writeTask.IsCompleted, TimeSpan.FromSeconds(2));
+        await stream.Disposed.WaitAsync(cancellationToken);
+        await Assert.That(async () => await writeTask)
+            .Throws<IOException>()
+            .WithMessageContaining("write aborted");
 
         await Assert.That(GetPrivateField<int>(connection, "_disposed")).IsNotEqualTo(0);
         await Assert.That(stream.DisposeCount).IsEqualTo(1);
@@ -706,6 +715,17 @@ public sealed class KafkaConnectionTests
         return (RemoteCertificateValidationCallback?)method.Invoke(connection, null);
     }
 
+    private static void InvokeReceiveTimeout(KafkaConnection connection)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "OnReceiveTimeout",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        if (method is null)
+            throw new InvalidOperationException("OnReceiveTimeout was not found.");
+
+        method.Invoke(connection, null);
+    }
+
     private static T GetPrivateField<T>(KafkaConnection connection, string name)
     {
         var field = typeof(KafkaConnection).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
@@ -793,8 +813,11 @@ public sealed class KafkaConnectionTests
     private sealed class PendingWriteStream : Stream
     {
         private readonly TaskCompletionSource _pendingWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _disposeCount;
 
-        public int DisposeCount { get; private set; }
+        public int DisposeCount => Volatile.Read(ref _disposeCount);
+        public Task Disposed => _disposed.Task;
 
         public void CompletePendingWrite() => _pendingWrite.TrySetResult();
 
@@ -841,8 +864,9 @@ public sealed class KafkaConnectionTests
         {
             if (disposing)
             {
-                DisposeCount++;
+                Interlocked.Increment(ref _disposeCount);
                 _pendingWrite.TrySetException(new IOException("write aborted"));
+                _disposed.TrySetResult();
             }
 
             base.Dispose(disposing);
