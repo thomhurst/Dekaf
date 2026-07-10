@@ -2165,14 +2165,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 continue;
             }
 
-            if (key.ConnectionIndex >= fetchConnectionCount)
+            var isScaledDownConnection = key.ConnectionIndex >= fetchConnectionCount;
+            if (isScaledDownConnection)
             {
-                _fetchSessions.TryRemove(key, out _);
+                if (_ownsInfrastructure)
+                {
+                    _fetchSessions.TryRemove(key, out _);
+                    continue;
+                }
+
+                // Shared consumers retain the physical connection after logical scale-down.
+                // Fall through so an empty fetch closes the now-unused session.
+            }
+            else if (scheduledFetchSessions is not null && scheduledFetchSessions.Contains(key))
+            {
                 continue;
             }
-
-            if (scheduledFetchSessions is not null && scheduledFetchSessions.Contains(key))
-                continue;
 
             targetCount++;
             if (TryStartBrokerPrefetch(
@@ -2386,7 +2394,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int fetchBufferEpoch,
         CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, connectionIndex, cancellationToken).ConfigureAwait(false);
+        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+            brokerId,
+            connectionIndex,
+            cancellationToken).ConfigureAwait(false);
+        var connection = connectionLease.Connection;
 
         // Ensure API version is negotiated (thread-safe initialization)
         var apiVersion = _fetchApiVersion;
@@ -3950,9 +3962,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         return await RetryHelper.WithRetryAsync(async () =>
         {
-            var connection = await GetPartitionLeaderControlConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
-            if (connection is null)
+            var connectionLease = await GetPartitionLeaderControlConnectionAsync(topicPartition, cancellationToken)
+                .ConfigureAwait(false);
+            if (connectionLease is null)
                 throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
+            using var lease = connectionLease.Value;
+            var connection = lease.Connection;
 
             var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.ListOffsets,
@@ -4399,9 +4414,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         return RetryHelper.WithRetryAsync(async () =>
         {
-            var connection = await GetPartitionLeaderControlConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
-            if (connection is null)
+            var connectionLease = await GetPartitionLeaderControlConnectionAsync(partition, cancellationToken)
+                .ConfigureAwait(false);
+            if (connectionLease is null)
                 return 0;
+            using var lease = connectionLease.Value;
+            var connection = lease.Connection;
 
             var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.ListOffsets,
@@ -4462,7 +4480,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }, _metadataManager, cancellationToken);
     }
 
-    private async ValueTask<IKafkaConnection?> GetPartitionLeaderControlConnectionAsync(
+    private async ValueTask<KafkaConnectionLease?> GetPartitionLeaderControlConnectionAsync(
         TopicPartition partition,
         CancellationToken cancellationToken)
     {
@@ -4476,7 +4494,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // block assignment position initialization or watermark queries during a rebalance.
         var connectionCount = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
         var connectionIndex = ConsumerCoordinator.GetCoordinationConnectionIndex(connectionCount);
-        return await _connectionPool.GetConnectionByIndexAsync(leader.NodeId, connectionIndex, cancellationToken).ConfigureAwait(false);
+        return await _connectionPool.LeaseConnectionByIndexAsync(leader.NodeId, connectionIndex, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async ValueTask FetchRecordsAsync(CancellationToken cancellationToken)
@@ -4994,7 +5013,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int fetchBufferEpoch,
         CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, 0, cancellationToken).ConfigureAwait(false);
+        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+            brokerId,
+            0,
+            cancellationToken).ConfigureAwait(false);
+        var connection = connectionLease.Connection;
 
         // Ensure API version is negotiated (thread-safe initialization)
         var apiVersion = _fetchApiVersion;
@@ -6173,7 +6196,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         List<TopicPartitionTimestamp> partitions,
         CancellationToken cancellationToken)
     {
-        var connection = await _connectionPool.GetConnectionByIndexAsync(brokerId, 0, cancellationToken).ConfigureAwait(false);
+        using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+            brokerId,
+            0,
+            cancellationToken).ConfigureAwait(false);
+        var connection = connectionLease.Connection;
 
         var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ListOffsets,

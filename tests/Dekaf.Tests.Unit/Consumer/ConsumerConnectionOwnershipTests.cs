@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Internal;
@@ -34,6 +35,62 @@ public sealed class ConsumerConnectionOwnershipTests
             siblingConnection.CompleteRequest();
             await siblingConnection.ActiveRequest;
             await Assert.That(siblingConnection.DisposeCount).IsEqualTo(0);
+        }
+        finally
+        {
+            await consumer.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task SharedConsumer_ScaleDown_ClosesStaleFetchSessionOnSharedConnection()
+    {
+        var pool = CreatePool();
+        var closeRequest = new TaskCompletionSource<(int SessionId, int SessionEpoch)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new TrackedConnection(
+            hasPendingRequest: false,
+            onFetchRequest: request => closeRequest.TrySetResult((request.SessionId, request.SessionEpoch)));
+        pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+
+        var metadataManager = CreateMetadataManager(pool);
+        var consumer = CreateSharedConsumer(pool, metadataManager);
+
+        try
+        {
+            var fetchSessionsField = typeof(KafkaConsumer<string, string>).GetField(
+                "_fetchSessions",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("_fetchSessions field not found");
+            var fetchSessions = (ConcurrentDictionary<(int BrokerId, int ConnectionIndex), FetchSessionHandler>)
+                fetchSessionsField.GetValue(consumer)!;
+            var handler = new FetchSessionHandler();
+            _ = handler.Build([], clusterMetadata: null);
+            _ = handler.HandleResponse(new FetchResponse
+            {
+                ErrorCode = ErrorCode.None,
+                SessionId = 42
+            });
+            fetchSessions[(1, 1)] = handler;
+
+            var dispatchMethod = typeof(KafkaConsumer<string, string>).GetMethod(
+                "DispatchReadyBrokerPrefetchesAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("DispatchReadyBrokerPrefetchesAsync method not found");
+            var dispatch = (ValueTask<(int Started, int TargetCount)>)dispatchMethod.Invoke(
+                consumer,
+                [CancellationToken.None])!;
+
+            var result = await dispatch;
+            var close = await closeRequest.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+            await Assert.That(result.Started).IsEqualTo(1);
+            await Assert.That(close.SessionId).IsEqualTo(42);
+            await Assert.That(close.SessionEpoch).IsEqualTo(-1);
+            await Assert.That(connection.LeaseAcquisitionCount).IsEqualTo(1);
+            await Assert.That(connection.LeaseCount).IsEqualTo(0);
         }
         finally
         {
@@ -175,6 +232,10 @@ public sealed class ConsumerConnectionOwnershipTests
     private static MetadataManager CreateMetadataManager(IConnectionPool pool)
     {
         var metadataManager = new MetadataManager(pool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.Fetch,
+            FetchRequest.LowestSupportedVersion,
+            FetchRequest.HighestSupportedVersion);
         metadataManager.Metadata.Update(new MetadataResponse
         {
             Brokers =
@@ -239,7 +300,8 @@ public sealed class ConsumerConnectionOwnershipTests
     private sealed class TrackedConnection(
         bool hasPendingRequest,
         bool hasLease = false,
-        int activeOperationCount = 0) :
+        int activeOperationCount = 0,
+        Action<FetchRequest>? onFetchRequest = null) :
         IKafkaConnection,
         IIdleTrackedKafkaConnection,
         IRetirableKafkaConnection
@@ -248,6 +310,7 @@ public sealed class ConsumerConnectionOwnershipTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         private int _pendingRequestCount = hasPendingRequest ? 1 : 0;
         private int _leaseCount = hasLease ? 1 : 0;
+        private int _leaseAcquisitionCount;
         private int _activeOperationCount = activeOperationCount;
         private int _disposeCount;
 
@@ -260,6 +323,7 @@ public sealed class ConsumerConnectionOwnershipTests
         public long LastUsedTimestampMs => 0;
         public int PendingRequestCount => Volatile.Read(ref _pendingRequestCount);
         public int LeaseCount => Volatile.Read(ref _leaseCount);
+        public int LeaseAcquisitionCount => Volatile.Read(ref _leaseAcquisitionCount);
         public int ActiveOperationCount => Volatile.Read(ref _activeOperationCount);
 
         public void CompleteRequest()
@@ -276,6 +340,7 @@ public sealed class ConsumerConnectionOwnershipTests
 
         public bool TryAcquireLease()
         {
+            Interlocked.Increment(ref _leaseAcquisitionCount);
             Interlocked.Increment(ref _leaseCount);
             return true;
         }
@@ -298,8 +363,16 @@ public sealed class ConsumerConnectionOwnershipTests
             short apiVersion,
             CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
-            where TResponse : IKafkaResponse =>
+            where TResponse : IKafkaResponse
+        {
+            if (request is FetchRequest fetchRequest && typeof(TResponse) == typeof(FetchResponse))
+            {
+                onFetchRequest?.Invoke(fetchRequest);
+                return ValueTask.FromResult((TResponse)(object)new FetchResponse { ErrorCode = ErrorCode.None });
+            }
+
             throw new NotSupportedException();
+        }
 
         public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
             TRequest request,
