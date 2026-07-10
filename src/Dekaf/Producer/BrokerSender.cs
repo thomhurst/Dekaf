@@ -621,11 +621,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _connectionCount = options.ConnectionsPerBroker;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
 
-        // Adaptive scaling: available for all non-transactional producers.
-        // All producers use partition affinity (partition % N) for cache locality.
-        // Idempotent producers additionally need affinity for sequence ordering.
         // Transactions are excluded because coordinator requests require a single connection.
-        _adaptiveScalingEnabled = options.EnableAdaptiveConnections && options.TransactionalId is null;
+        // Acks.None is excluded because no broker acknowledgement establishes a safe boundary
+        // for remapping a partition to another connection without risking reordered appends.
+        _adaptiveScalingEnabled = options.EnableAdaptiveConnections
+            && options.TransactionalId is null
+            && options.Acks != Acks.None;
         _canPhysicallyShrinkConnections = canPhysicallyShrinkConnections;
         _minConnectionCount = options.ConnectionsPerBroker;
         _maxConnectionsPerBroker = options.MaxConnectionsPerBroker;
@@ -1028,7 +1029,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                // ── 4b. Adaptive connection scaling (all non-transactional producers) ──
+                // ── 4b. Adaptive connection scaling ──
                 if (_adaptiveScalingEnabled)
                 {
                     var scaledToCount = MaybeScaleConnections();

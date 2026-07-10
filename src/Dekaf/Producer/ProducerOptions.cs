@@ -529,13 +529,14 @@ public sealed class ProducerOptions
     /// When enabled, the producer will automatically increase connections per broker
     /// when sustained buffer backpressure is detected, improving drain throughput.
     /// <para>
-    /// Applies to both idempotent and non-idempotent producers. Idempotent producers
+    /// Applies to idempotent and acknowledged non-idempotent producers. Idempotent producers
     /// use partition affinity (partition % connectionCount) to preserve per-partition
     /// sequence ordering across multiple connections, so adaptive scaling is safe.
     /// </para>
     /// <para>
-    /// Only automatically disabled for transactional producers (<see cref="TransactionalId"/> is set),
-    /// because transaction coordinator requests require a single connection per broker.
+    /// Automatically disabled for transactional producers (<see cref="TransactionalId"/> is set),
+    /// because transaction coordinator requests require a single connection per broker, and for
+    /// <c>Acks.None</c>, because no broker acknowledgement establishes a safe remapping boundary.
     /// </para>
     /// Default: true.
     /// </summary>

@@ -370,6 +370,33 @@ public sealed class BrokerSenderMuteOrderingTests
     }
 
     [Test]
+    public async Task NonIdempotentFireAndForget_DisablesAdaptiveConnectionRemapping()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var options = CreateOptions(
+            acks: Acks.None,
+            maxInFlight: 2,
+            enableIdempotence: false);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            var adaptiveScalingEnabled = (bool)typeof(BrokerSender).GetField(
+                "_adaptiveScalingEnabled",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+
+            await Assert.That(adaptiveScalingEnabled).IsFalse()
+                .Because("Acks.None has no broker acknowledgement that makes cross-connection remapping safe");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Timeout(30_000)]
     public async Task NonIdempotentFireAndForget_SerializesSamePartitionWrites(
         CancellationToken ct)
