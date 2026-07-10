@@ -1,11 +1,9 @@
 using System.Globalization;
-using System.Text;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Protocol;
-using Dekaf.Serialization;
 using ConfluentKafka = Confluent.Kafka;
 using ConfluentKafkaAdmin = Confluent.Kafka.Admin;
 
@@ -56,9 +54,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     public async Task SequenceOracle_BrokerObservedCommit_RejectsReplayBelowCommitFloor()
     {
         var oracle = new SequenceOracle("test-topic", partitionCount: 1, messagesPerPartition: 4, commitInterval: 2);
-        var second = CreateSequenceResult(offset: 1);
+        var second = CreateSequenceRecord(offset: 1);
 
-        oracle.Record("original", CreateSequenceResult(offset: 0));
+        oracle.Record("original", CreateSequenceRecord(offset: 0));
         oracle.Record("original", second);
         oracle.ObserveCommittedOffset(partition: 0, committedExclusive: 2);
         oracle.Record("restarted", second);
@@ -93,7 +91,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         var anchorInstanceId = $"anchor-{Guid.NewGuid():N}";
         var restartingInstanceId = $"restarting-{Guid.NewGuid():N}";
 
-        await using var anchor = await CreateMemberAsync(
+        await using var anchor = await CreateDekafMemberAsync(
             topic,
             groupId,
             "static-anchor",
@@ -106,7 +104,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         await anchor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
         await anchor.WaitForObservedCountAsync(1, cancellationToken);
 
-        await using (var original = await CreateMemberAsync(
+        await using (var original = await CreateDekafMemberAsync(
                          topic,
                          groupId,
                          "static-restarting-original",
@@ -127,7 +125,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         var withinTimeoutAnchorTarget = anchor.ObservedCount + StaticRestartProgressMessages;
         anchor.Allow(StaticRestartProgressMessages);
 
-        await using (var withinTimeoutRestart = await CreateMemberAsync(
+        await using (var withinTimeoutRestart = await CreateDekafMemberAsync(
                          topic,
                          groupId,
                          "static-restarting-within-timeout",
@@ -158,7 +156,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         await anchor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
         await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
 
-        await using var beyondTimeoutRestart = await CreateMemberAsync(
+        await using var beyondTimeoutRestart = await CreateDekafMemberAsync(
             topic,
             groupId,
             "static-restarting-after-timeout",
@@ -247,21 +245,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         }
     }
 
-    private static ConsumeResult<string, string> CreateSequenceResult(long offset) =>
-        new(
-            topic: "test-topic",
-            partition: 0,
-            offset,
-            keyData: ReadOnlyMemory<byte>.Empty,
-            isKeyNull: true,
-            valueData: Encoding.UTF8.GetBytes(offset.ToString(CultureInfo.InvariantCulture)),
-            isValueNull: false,
-            headers: null,
-            timestampMs: 0,
-            timestampType: TimestampType.NotAvailable,
-            leaderEpoch: null,
-            keyDeserializer: null,
-            valueDeserializer: Serializers.String);
+    private static ObservedRecord CreateSequenceRecord(long offset) =>
+        new("test-topic", 0, offset, offset.ToString(CultureInfo.InvariantCulture));
 
     [Test]
     [Timeout(600_000)]
@@ -376,13 +361,13 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 await AssertGroupModeAsync(admin, groupId, transientProtocol, cancellationToken);
                 await Assert.That(transient.ObservedCount).IsEqualTo(transientTarget)
                     .Because("Consumer-to-Classic migration must not consume records without a permit");
-                await AssertCommittedOffsetsAsync(admin, groupId, oracle, cancellationToken);
+                await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
 
                 var downgradeRecoveryTarget = transient.ObservedCount + RecoveryPhaseMessages;
                 transient.Allow(RecoveryPhaseMessages);
                 await transient.WaitForObservedCountAsync(downgradeRecoveryTarget, cancellationToken);
 
-                await CompleteScenarioAsync(transient, admin, groupId, oracle, cancellationToken);
+                await CompleteScenarioAsync(transient, groupId, oracle, cancellationToken);
                 return;
             }
 
@@ -398,12 +383,11 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             await anchor.WaitForObservedCountAsync(recoveryTarget, cancellationToken);
         }
 
-        await CompleteScenarioAsync(anchor, admin, groupId, oracle, cancellationToken);
+        await CompleteScenarioAsync(anchor, groupId, oracle, cancellationToken);
     }
 
-    private static async Task CompleteScenarioAsync(
+    private async Task CompleteScenarioAsync(
         IConsumerMember survivor,
-        IAdminClient admin,
         string groupId,
         SequenceOracle oracle,
         CancellationToken cancellationToken)
@@ -643,7 +627,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     private interface IConsumerMember : IAsyncDisposable
     {
         int ObservedCount { get; }
+        int MaxAssignmentCount { get; }
         void Allow(int count);
+        void ResetMaxAssignmentCount();
         Task WaitForAnyAssignmentAsync(CancellationToken cancellationToken);
         Task WaitForAssignmentCountAsync(int count, CancellationToken cancellationToken);
         Task WaitForObservedCountAsync(int count, CancellationToken cancellationToken);
