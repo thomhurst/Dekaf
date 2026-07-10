@@ -337,6 +337,29 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
+    public async Task ResetToDivergingEpoch_ClearsActiveConsumedLeaderEpoch()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        var partition = new TopicPartition(Topic, 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+        SetInitialized(consumer);
+        GetPendingFetches(consumer).Enqueue(CreatePendingFetchData(leaderEpoch: 9));
+
+        await using var enumerator = consumer
+            .ConsumeAsync(CancellationToken.None)
+            .GetAsyncEnumerator();
+
+        await Assert.That(await enumerator.MoveNextAsync()).IsTrue();
+        InvokeResetToDivergingEpoch(consumer, CreateDivergingEpochResponse());
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(1);
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer)).IsEqualTo(-1);
+    }
+
+    [Test]
     public async Task ResetToDivergingEpoch_StopsDecodedBatchAtLastDeliveredRecord()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -810,7 +833,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             }
         };
 
-    private static PendingFetchData CreatePendingFetchData()
+    private static PendingFetchData CreatePendingFetchData(int leaderEpoch = -1)
     {
         var records = new Record[3];
         for (var i = 0; i < records.Length; i++)
@@ -826,7 +849,7 @@ public sealed class ConsumerLeaderDiscoveryTests
         var pending = PendingFetchData.Create(
             Topic,
             partitionIndex: 0,
-            [new RecordBatch { BaseOffset = 0, Records = records }]);
+            [new RecordBatch { BaseOffset = 0, PartitionLeaderEpoch = leaderEpoch, Records = records }]);
         pending.EagerParseAll();
         return pending;
     }

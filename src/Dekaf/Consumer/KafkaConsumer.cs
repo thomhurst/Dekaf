@@ -3674,6 +3674,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             _fetchPositions[partition] = resumeOffset;
             SetPosition(partition, resumeOffset, dirty: false);
+            // Clearing the pending fetch bypasses its normal position flush. Discard the
+            // matching auto-commit snapshot so a later commit/position read cannot restore
+            // the pre-divergence leader epoch after the reset below clears it.
+            ClearActiveConsumedPosition(partition, resumeOffset);
             // The diverging epoch is the last common epoch, not the new leader epoch.
             // Reusing it would make every subsequent fetch report the same divergence.
             ClearLastConsumedLeaderEpoch(partition);
