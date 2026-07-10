@@ -238,7 +238,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         lock (_assignmentStateLock)
         {
             if (Volatile.Read(ref _assignmentVersion) != assignmentVersion
-                || !_revokedPartitionsSinceLastSync.IsEmpty)
+                || !_revokedPartitionsSinceLastSync.IsEmpty
+                || Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
             {
                 return;
             }

@@ -1345,6 +1345,47 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task CommitOffsetsAsync_BackgroundAssignmentSyncPreservesFenceUntilForegroundPoll()
+    {
+        SetupSuccessfulConsumerProtocolJoin(assignment: CreateAssignment(TestTopicId, 0));
+        _metadataManager.SetApiVersion(
+            ApiKey.OffsetCommit,
+            OffsetCommitRequest.LowestSupportedVersion,
+            OffsetCommitRequest.HighestSupportedVersion);
+
+        var commitRequestCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitRequestCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        SetCoordinatorLongField(
+            coordinator,
+            "_maxPollExpiredAtPollVersion",
+            GetCoordinatorLongField(coordinator, "_pollVersion"));
+
+        var (_, assignmentVersion, _) = coordinator.GetAssignmentSnapshotAndDrainRevocations();
+        coordinator.AcknowledgeAssignmentSync(assignmentVersion);
+
+        var exception = await Assert.That(async () =>
+                await coordinator.CommitOffsetsAsync(
+                    [new TopicPartitionOffset("test-topic", 0, 1)],
+                    CancellationToken.None))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
+        await Assert.That(commitRequestCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_SuccessfulJoin_WithAssignment_SetsPartitions()
     {
         var assignment = CreateAssignment(TestTopicId, 0, 1);
