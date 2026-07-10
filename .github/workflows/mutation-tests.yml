@@ -25,7 +25,7 @@ env:
 jobs:
   mutation-test:
     name: Mutation test (${{ matrix.campaign }})
-    runs-on: ubicloud-standard-8
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
       fail-fast: false
