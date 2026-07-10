@@ -37,7 +37,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
 
     public virtual string ContainerName => s_selectedImage.Image;
-    public virtual int Version => s_selectedImage.VersionNumber;
+    public virtual Version Version => s_selectedImage.Version;
 
     private KafkaContainer CreateContainer()
     {

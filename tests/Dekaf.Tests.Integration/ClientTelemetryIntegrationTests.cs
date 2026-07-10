@@ -5,7 +5,7 @@ using Dekaf.Telemetry;
 namespace Dekaf.Tests.Integration;
 
 [Category("Telemetry")]
-[SupportsKafka(420)]
+[SupportsKafka("4.2.0")]
 public sealed class ClientTelemetryIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private static readonly FieldInfo ProducerTelemetryManagerField = typeof(KafkaProducer<string, string>)

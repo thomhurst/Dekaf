@@ -1,5 +1,6 @@
 namespace Dekaf.Tests.Integration;
 
+[Category("Admin")]
 public sealed class KafkaTestImagesTests
 {
     [Test]
@@ -8,7 +9,7 @@ public sealed class KafkaTestImagesTests
         var resolved = KafkaTestImages.Resolve(null);
 
         await Assert.That(resolved.Release).IsEqualTo("4.3.1");
-        await Assert.That(resolved.VersionNumber).IsEqualTo(431);
+        await Assert.That(resolved.Version).IsEqualTo(new Version(4, 3, 1));
         await Assert.That(resolved.Image).IsEqualTo(KafkaTestImages.CurrentImage);
     }
 
@@ -18,7 +19,7 @@ public sealed class KafkaTestImagesTests
         var resolved = KafkaTestImages.Resolve(KafkaTestImages.FloorLane);
 
         await Assert.That(resolved.Release).IsEqualTo("4.0.2");
-        await Assert.That(resolved.VersionNumber).IsEqualTo(402);
+        await Assert.That(resolved.Version).IsEqualTo(new Version(4, 0, 2));
         await Assert.That(resolved.Image).IsEqualTo(KafkaTestImages.FloorImage);
     }
 
@@ -33,13 +34,13 @@ public sealed class KafkaTestImagesTests
     [Test]
     [Arguments("4.0.10")]
     [Arguments("4.10.0")]
-    public async Task Parse_MultiDigitCompactVersionComponent_Throws(string release)
+    public async Task Parse_MultiDigitVersionComponent_IsAccepted(string release)
     {
         var image = $"apache/kafka:{release}@sha256:test";
+        var parsed = KafkaTestImages.Parse(image);
 
-        await Assert.That(() => KafkaTestImages.Parse(image))
-            .Throws<InvalidOperationException>()
-            .WithMessageContaining("single-digit minor and patch");
+        await Assert.That(parsed.Release).IsEqualTo(release);
+        await Assert.That(parsed.Version).IsEqualTo(Version.Parse(release));
     }
 
     [Test]
@@ -48,7 +49,7 @@ public sealed class KafkaTestImagesTests
         var resolved = KafkaTestImages.Resolve(KafkaTestImages.CurrentLane);
 
         await Assert.That(resolved.Release).IsEqualTo("4.3.1");
-        await Assert.That(resolved.VersionNumber).IsEqualTo(431);
+        await Assert.That(resolved.Version).IsEqualTo(new Version(4, 3, 1));
         await Assert.That(resolved.Image).IsEqualTo(KafkaTestImages.CurrentImage);
     }
 
@@ -59,6 +60,6 @@ public sealed class KafkaTestImagesTests
         await using var container = new TransactionFaultKafkaContainer();
 
         await Assert.That(container.ContainerName).IsEqualTo(selected.Image);
-        await Assert.That(container.Version).IsEqualTo(selected.VersionNumber);
+        await Assert.That(container.Version).IsEqualTo(selected.Version);
     }
 }

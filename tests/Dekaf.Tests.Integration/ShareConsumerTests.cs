@@ -14,7 +14,7 @@ namespace Dekaf.Tests.Integration;
 /// them to be within the acquisition window.
 /// </summary>
 [Category("ShareConsumer")]
-[SupportsKafka(420)]
+[SupportsKafka("4.2.0")]
 [NotInParallel("ShareConsumerKafkaCurrent")]
 public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
@@ -272,7 +272,7 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 /// Requires Kafka 4.2+ with group.share.enable=true.
 /// </summary>
 [Category("ShareConsumerAdmin")]
-[SupportsKafka(420)]
+[SupportsKafka("4.2.0")]
 [NotInParallel("ShareConsumerKafkaCurrent")]
 public class ShareConsumerAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {

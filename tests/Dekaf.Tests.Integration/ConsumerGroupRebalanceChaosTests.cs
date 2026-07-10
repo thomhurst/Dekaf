@@ -16,7 +16,7 @@ namespace Dekaf.Tests.Integration;
 /// Consumption permits make every churn phase deterministic without timing sleeps.
 /// </summary>
 [Category("ConsumerGroup")]
-[SupportsKafka(400)]
+[SupportsKafka("4.0.0")]
 public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private const int PartitionCount = 4;

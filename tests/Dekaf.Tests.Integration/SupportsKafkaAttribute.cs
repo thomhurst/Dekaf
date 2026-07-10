@@ -1,22 +1,24 @@
 namespace Dekaf.Tests.Integration;
 
-public class SupportsKafkaAttribute(int supportedKafkaVersion) : SkipAttribute(string.Empty)
+public class SupportsKafkaAttribute(string supportedKafkaVersion) : SkipAttribute(string.Empty)
 {
+    private readonly Version _supportedKafkaVersion = Version.Parse(supportedKafkaVersion);
+
     public override Task<bool> ShouldSkip(TestRegisteredContext context)
     {
         var kafkaVersionUsedInTest = GetKafkaVersionUsedInTest(context);
 
-        return Task.FromResult(kafkaVersionUsedInTest < supportedKafkaVersion);
+        return Task.FromResult(kafkaVersionUsedInTest < _supportedKafkaVersion);
     }
 
     protected override string GetSkipReason(TestRegisteredContext context)
     {
         var kafkaVersionUsedInTest = GetKafkaVersionUsedInTest(context);
 
-        return $"The test requires Kafka {supportedKafkaVersion} or above, but this test is testing {kafkaVersionUsedInTest}";
+        return $"The test requires Kafka {_supportedKafkaVersion} or above, but this test is testing {kafkaVersionUsedInTest}";
     }
 
-    private static int GetKafkaVersionUsedInTest(TestRegisteredContext context)
+    private static Version GetKafkaVersionUsedInTest(TestRegisteredContext context)
     {
         return context.TestContext
             .Metadata

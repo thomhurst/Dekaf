@@ -32,7 +32,7 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
 
     public override string ContainerName => s_selectedImage.Image;
 
-    public override int Version => s_selectedImage.VersionNumber;
+    public override Version Version => s_selectedImage.Version;
 
     private readonly INetwork _network = new NetworkBuilder().Build();
     private readonly ToxiproxyContainer _toxiproxy;

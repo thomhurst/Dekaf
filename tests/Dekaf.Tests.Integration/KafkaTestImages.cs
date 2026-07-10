@@ -6,7 +6,7 @@ namespace Dekaf.Tests.Integration;
 
 internal static class KafkaTestImages
 {
-    private const int RunWrapperMinimumVersion = 420;
+    private static readonly Version s_runWrapperMinimumVersion = new(4, 2, 0);
 
     public const string LaneEnvironmentVariable = "DEKAF_TEST_KAFKA_LANE";
     public const string FloorLane = "floor";
@@ -26,8 +26,8 @@ internal static class KafkaTestImages
         "/etc/kafka/docker/configure\n" +
         "exec /etc/kafka/docker/launch\n");
 
-    public static int FloorVersionNumber => s_floor.VersionNumber;
-    public static int CurrentVersionNumber => s_current.VersionNumber;
+    public static Version FloorVersion => s_floor.Version;
+    public static Version CurrentVersion => s_current.Version;
     public static KafkaTestImage Selected => Resolve(
         Environment.GetEnvironmentVariable(LaneEnvironmentVariable));
 
@@ -45,12 +45,12 @@ internal static class KafkaTestImages
     public static KafkaBuilder CreateBuilderForSelectedLane()
     {
         var selected = Selected;
-        return ConfigureBuilderForVersion(new KafkaBuilder(selected.Image), selected.VersionNumber);
+        return ConfigureBuilderForVersion(new KafkaBuilder(selected.Image), selected.Version);
     }
 
-    public static KafkaBuilder ConfigureBuilderForVersion(KafkaBuilder builder, int versionNumber)
+    public static KafkaBuilder ConfigureBuilderForVersion(KafkaBuilder builder, Version version)
     {
-        if (versionNumber < RunWrapperMinimumVersion)
+        if (version < s_runWrapperMinimumVersion)
             return builder;
 
         // Testcontainers.Kafka emits a trailing comma in KAFKA_ADVERTISED_LISTENERS
@@ -82,15 +82,14 @@ internal static class KafkaTestImages
             throw new InvalidOperationException($"Kafka image '{image}' must use a major.minor.patch tag.");
         }
 
-        if (major < 0 || minor is < 0 or > 9 || patch is < 0 or > 9)
+        if (major < 0 || minor < 0 || patch < 0)
         {
             throw new InvalidOperationException(
-                $"Kafka image '{image}' must use a non-negative major and single-digit minor and patch components.");
+                $"Kafka image '{image}' must use non-negative version components.");
         }
 
-        var versionNumber = checked(major * 100 + minor * 10 + patch);
-        return new KafkaTestImage(image, release, versionNumber);
+        return new KafkaTestImage(image, release, new Version(major, minor, patch));
     }
 }
 
-internal readonly record struct KafkaTestImage(string Image, string Release, int VersionNumber);
+internal readonly record struct KafkaTestImage(string Image, string Release, Version Version);

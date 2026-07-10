@@ -965,7 +965,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
     }
 
     [Test]
-    [SupportsKafka(370)]
+    [SupportsKafka("3.7.0")]
     public async Task DescribeTopicPartitionsAsync_WithPagination_ReturnsAllPartitions()
     {
         // Arrange

@@ -21,7 +21,9 @@ public sealed class TransactionCoordinatorTestGateTests
 
     private sealed class StubKafkaTestContainer(string name) : KafkaTestContainer
     {
+        private static readonly Version s_version = new(0, 0, 0);
+
         public override string ContainerName => name;
-        public override int Version => 0;
+        public override Version Version => s_version;
     }
 }

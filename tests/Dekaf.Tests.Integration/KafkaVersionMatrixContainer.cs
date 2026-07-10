@@ -6,7 +6,7 @@ public sealed class KafkaVersionMatrixContainer : KafkaTestContainer
 {
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder)
     {
-        if (Version < KafkaTestImages.CurrentVersionNumber)
+        if (Version < KafkaTestImages.CurrentVersion)
             return builder;
 
         // Enable share groups (KIP-932). The coordinator needs both the feature gate

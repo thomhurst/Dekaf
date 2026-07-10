@@ -11,7 +11,7 @@ namespace Dekaf.Tests.Integration;
 /// Requires Kafka 4.0+.
 /// </summary>
 [Category("Consumer")]
-[SupportsKafka(400)]
+[SupportsKafka("4.0.0")]
 public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
