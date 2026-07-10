@@ -1069,7 +1069,9 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await Assert.That(r.Value).IsEqualTo("value-7");
     }
 
-    [Test]
+    // This validates parallel client fetches, not shared-broker saturation. Run alone because
+    // hundreds of concurrent consumer cases can starve the per-session Kafka container.
+    [Test, NotInParallel]
     public async Task Consumer_ParallelFetchFromMultiplePartitions_ConsumesAllMessages()
     {
         // This test verifies that parallel fetches work correctly across multiple partitions
