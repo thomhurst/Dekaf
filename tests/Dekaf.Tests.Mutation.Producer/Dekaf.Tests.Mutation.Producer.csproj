@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <!-- Keep access to Dekaf internals while compiling the linked unit-test sources. -->
+    <AssemblyName>Dekaf.Tests.Unit</AssemblyName>
+    <RootNamespace>Dekaf.Tests.Unit</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- MTP cannot yet select covering tests per mutant, so link only direct core-producer suites. -->
+    <Compile Include="..\Dekaf.Tests.Unit\AssemblyInfo.cs" Link="AssemblyInfo.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\TestWait.cs" Link="TestWait.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\ThreadPoolConfiguration.cs" Link="ThreadPoolConfiguration.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\AdaptiveScalingTests.cs" Link="Producer\AdaptiveScalingTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\AppendWorkerAffinityTests.cs" Link="Producer\AppendWorkerAffinityTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\BrokerSenderMuteOrderingTests.cs" Link="Producer\BrokerSenderMuteOrderingTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\BrokerSenderSendLoopTests.cs" Link="Producer\BrokerSenderSendLoopTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\BrokerSenderTests.cs" Link="Producer\BrokerSenderTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\BufferMemoryTests.cs" Link="Producer\BufferMemoryTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\CoordinatedRetryTests.cs" Link="Producer\CoordinatedRetryTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\KafkaProducerBudgetTests.cs" Link="Producer\KafkaProducerBudgetTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\KafkaProducerFastPathTests.cs" Link="Producer\KafkaProducerFastPathTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\KafkaProducerMetricsTests.cs" Link="Producer\KafkaProducerMetricsTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\MaxBlockMsTests.cs" Link="Producer\MaxBlockMsTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\MemoryReleasedAtomicityTests.cs" Link="Producer\MemoryReleasedAtomicityTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\ProducerCancellationTests.cs" Link="Producer\ProducerCancellationTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\ProducerDeliveryDiagnosticsTests.cs" Link="Producer\ProducerDeliveryDiagnosticsTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\ProducerErrorTests.cs" Link="Producer\ProducerErrorTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\ProducerInitializationTests.cs" Link="Producer\ProducerInitializationTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\ProducerMessageTests.cs" Link="Producer\ProducerMessageTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\ReadyBatchIncarnationTests.cs" Link="Producer\ReadyBatchIncarnationTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\RecordAccumulatorBudgetTests.cs" Link="Producer\RecordAccumulatorBudgetTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\RecordAccumulatorReadyTests.cs" Link="Producer\RecordAccumulatorReadyTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\RecordAccumulatorTests.cs" Link="Producer\RecordAccumulatorTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\ShouldFlushTests.cs" Link="Producer\ShouldFlushTests.cs" />
+    <Compile Include="..\Dekaf.Tests.Unit\Producer\TestKafkaConnection.cs" Link="Producer\TestKafkaConnection.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="NSubstitute" Version="5.3.0" />
+    <PackageReference Include="TUnit" Version="1.58.0" />
+  </ItemGroup>
+
+</Project>

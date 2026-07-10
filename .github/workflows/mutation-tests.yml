@@ -1,0 +1,128 @@
+name: Mutation Tests
+
+on:
+  schedule:
+    - cron: '0 3 * * 3' # Weekly Wednesday 3 AM UTC
+  workflow_dispatch:
+    inputs:
+      max_score_drop:
+        description: 'Fail when mutation score drops by this many percentage points'
+        required: false
+        default: '5'
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: mutation-tests
+  cancel-in-progress: false
+
+env:
+  ContinuousIntegrationBuild: true
+  Deterministic: true
+
+jobs:
+  mutation-test:
+    name: Mutation test (${{ matrix.campaign }})
+    runs-on: ubicloud-standard-8
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - campaign: protocol
+            config: stryker-config.json
+          - campaign: producer
+            config: stryker-producer-config.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          # Stryker 4.16 targets net8.0; the test projects build with the net10 SDK.
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore local tools
+        run: dotnet tool restore
+
+      - name: Find previous retained campaign result
+        id: previous-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: mutation-baseline-${{ matrix.campaign }}
+        run: |
+          # Select this campaign's latest successful main-branch baseline. Each
+          # matrix leg uploads independently, so a failed sibling cannot erase it.
+          run_id=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=100" \
+            --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download previous mutation result
+        if: steps.previous-run.outputs.run_id != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: mutation-baseline-${{ matrix.campaign }}
+          path: artifacts/previous
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.previous-run.outputs.run_id }}
+
+      - name: Run focused mutation tests
+        working-directory: src/Dekaf
+        run: >-
+          dotnet stryker
+          --config-file "${{ matrix.config }}"
+          --output "${{ github.workspace }}/artifacts/mutation/${{ matrix.campaign }}"
+
+      - name: Report trend and enforce large-drop gate
+        env:
+          MAX_SCORE_DROP: ${{ github.event.inputs.max_score_drop || '5' }}
+        run: |
+          current_report=$(find "artifacts/mutation/${{ matrix.campaign }}" -type f -name mutation-report.json | sort | tail -n 1)
+          if [ -z "$current_report" ]; then
+            echo "::error::Stryker JSON report was not generated"
+            exit 1
+          fi
+
+          previous_report=$(find artifacts/previous -type f -name mutation-report.json 2>/dev/null | sort | tail -n 1 || true)
+          args=("$current_report" --max-drop "$MAX_SCORE_DROP" --summary artifacts/mutation-summary.md)
+          if [ -n "$previous_report" ]; then
+            args+=(--previous "$previous_report")
+          fi
+
+          set +e
+          python3 .github/scripts/mutation_report.py "${args[@]}"
+          gate_exit=$?
+          set -e
+          if [ -f artifacts/mutation-summary.md ]; then
+            cat artifacts/mutation-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$gate_exit"
+
+      - name: Upload successful mutation baseline
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-baseline-${{ matrix.campaign }}
+          path: artifacts/mutation/${{ matrix.campaign }}/**/mutation-report.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-results-${{ matrix.campaign }}
+          path: |
+            artifacts/mutation/
+            artifacts/mutation-summary.md
+          if-no-files-found: warn
+          retention-days: 90

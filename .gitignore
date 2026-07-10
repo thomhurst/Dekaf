@@ -94,3 +94,6 @@ temptest/
 
 # Stress test logs
 stress_run.log
+
+# Stryker.NET mutation-test output
+StrykerOutput/
