@@ -21,7 +21,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
 
     protected virtual TimeSpan ModuleTimeout => TimeSpan.FromMinutes(30);
 
-    protected virtual TimeSpan ProcessTimeout => TimeSpan.FromMinutes(20);
+    protected virtual TimeSpan ProcessTimeout => TimeSpan.FromMinutes(12);
 
     protected virtual int? MaximumParallelTests => null;
 
@@ -57,7 +57,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
         {
             "--",
             "--hangdump",
-            "--hangdump-timeout", "15m", // Creates diagnostic dump then kills process if it hangs
+            "--hangdump-timeout", "5m", // Creates diagnostic dump then kills process if it hangs
             "--log-level", "Debug",
             "--treenode-filter", $"/**[Category={Category}]"
         };

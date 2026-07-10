@@ -28,18 +28,51 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
-  build-and-unit-test:
-    name: Build & Unit Test (${{ matrix.framework }})
+  # Docs-only changes skip the expensive jobs entirely. Everything downstream
+  # gates on the `code` output; `ci-passed` (the single required check) treats
+  # skipped jobs as success, so branch protection keeps working.
+  changes:
+    name: Detect Changes
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        framework: [net8.0, net10.0]
-    # Declaring permissions drops all other scopes to none; contents:write is the only scope any
-    # step here needs (release/tag creation). NuGet push authenticates with an API-key secret, and
-    # artifact upload uses the exposed Actions runtime token — neither relies on GITHUB_TOKEN scopes.
+    timeout-minutes: 5
+    outputs:
+      code: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.code }}
+    steps:
+      - name: Filter changed paths
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          # Positive allowlist: anything matching runs full CI. Docs, markdown,
+          # and agent config fall through and skip CI.
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'tools/**'
+              - 'scripts/**'
+              - 'samples/**'
+              - '.github/workflows/**'
+              - '.github/scripts/**'
+              - '*.sln'
+              - '*.props'
+              - '*.targets'
+              - 'global.json'
+              - 'nuget.config'
+              - '.editorconfig'
+              - '.gitattributes'
+
+  # The ONLY job that compiles the solution. Runs net10.0 unit tests inline and
+  # ships the built test binaries to every downstream test job as one tarball
+  # (tar preserves the apphost executable bit; single-file upload is fast).
+  build:
+    name: Build & Unit Test (net10.0)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
-      contents: write  # Create GitHub releases (and their tags) when publishing
+      contents: read  # Publishing (and its release/tag creation) lives in the gated publish job
 
     steps:
       - name: Checkout
@@ -54,18 +87,22 @@ jobs:
           dotnet-quality: 'preview'
 
       - name: Setup .NET 8 runtime
-        if: matrix.framework == 'net8.0'
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
 
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Build.targets') }}
+          restore-keys: nuget-${{ runner.os }}-
+
       - name: Test Agent Lock Worktree Isolation
-        if: matrix.framework == 'net10.0'
         shell: pwsh
         run: ./scripts/Test-AgentLocks.ps1
 
       - name: Test Agent Lock Token Ownership
-        if: matrix.framework == 'net10.0'
         shell: pwsh
         run: ./scripts/Test-AgentLockTokenOwnership.ps1
 
@@ -88,19 +125,35 @@ jobs:
 
       - name: Run Pipeline
         env:
-          NET_VERSION: ${{ matrix.framework }}
+          NET_VERSION: net10.0
           SKIP_INTEGRATION_TESTS: 'true'
           SKIP_AOT_SMOKE_TESTS: 'true'
-          NuGet__ShouldPublish: ${{ matrix.framework == 'net10.0' && inputs.publish_nuget == true && 'true' || 'false' }}
-          NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Used by CreateReleaseModule when a publish ships packages
+          # Publishing happens in the gated publish job after the full release
+          # matrix is green — never here.
+          NuGet__ShouldPublish: 'false'
         run: dotnet run --project tools/Dekaf.Pipeline
+
+      - name: Package test binaries
+        run: |
+          tar -czf test-binaries.tar.gz \
+            tests/Dekaf.Tests.Unit/bin/Release/net8.0 \
+            tests/Dekaf.Tests.Unit/bin/Release/net10.0 \
+            tests/Dekaf.Tests.Integration/bin/Release/net8.0 \
+            tests/Dekaf.Tests.Integration/bin/Release/net10.0
+
+      - name: Upload test binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-binaries
+          path: test-binaries.tar.gz
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Upload Test Results
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: test-results-unit-${{ matrix.framework }}
+          name: test-results-unit-net10.0
           path: |
             **/TestResults/**
             **/test-results/**
@@ -108,7 +161,6 @@ jobs:
 
       - name: Upload Packages
         uses: actions/upload-artifact@v7
-        if: matrix.framework == 'net10.0'
         with:
           name: nuget-packages
           path: |
@@ -121,72 +173,195 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: hangdump-artifacts-unit-${{ matrix.framework }}
+          name: hangdump-artifacts-unit-net10.0
           path: |
             **/*.dmp
           if-no-files-found: ignore
           retention-days: 7
 
-  native-aot-smoke:
-    name: NativeAOT Smoke (${{ matrix.name }})
+  unit-net8:
+    name: Unit Tests (net8.0)
+    needs: [changes, build]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout  # Verify snapshot files are read from the repo at runtime
+        uses: actions/checkout@v7
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Download test binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: test-binaries
+
+      - name: Extract test binaries
+        run: tar -xzf test-binaries.tar.gz
+
+      - name: Expose GitHub Actions Runtime
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
+
+      - name: Run unit tests
+        env:
+          NET_VERSION: net8.0
+        run: |
+          exe=tests/Dekaf.Tests.Unit/bin/Release/net8.0/Dekaf.Tests.Unit
+          chmod +x "$exe"
+          "$exe" --hangdump --hangdump-timeout 5m --log-level Debug
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-unit-net8.0
+          path: |
+            **/TestResults/**
+            **/test-results/**
+          retention-days: 7
+
+      - name: Upload HangDump artifacts
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hangdump-artifacts-unit-net8.0
+          path: |
+            **/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Integration categories run via the shared group definitions in
+  # integration-groups.yml against the prebuilt binaries (no rebuild).
+  # PRs run net10.0 only; pushes to main add net8.0. NuGet publish dispatches
+  # skip this job — the release-matrix jobs below cover a superset.
+  integration:
+    name: Integration (${{ matrix.framework }})
+    needs: [changes, build]
+    if: needs.changes.outputs.code == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true)
     strategy:
       fail-fast: true
       matrix:
-        include:
-          - name: core
-            project: tests/Dekaf.Tests.Aot/Dekaf.Tests.Aot.csproj
-            executable: Dekaf.Tests.Aot
-          - name: dependency-injection
-            project: tests/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection.csproj
-            executable: Dekaf.Tests.Aot.DependencyInjection
+        framework: ${{ github.event_name == 'pull_request' && fromJSON('["net10.0"]') || fromJSON('["net8.0", "net10.0"]') }}
+    uses: ./.github/workflows/integration-groups.yml
+    with:
+      framework: ${{ matrix.framework }}
+
+  # Release gate: a NuGet publish dispatch must pass the full matrix — both
+  # frameworks across every supported broker version, plus the complete AOT
+  # sweep on floor and current — before the publish job below pushes packages.
+  release-matrix:
+    name: Release Matrix
+    needs: [changes, build]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
+    strategy:
+      fail-fast: true
+      matrix:
+        framework: [net8.0, net10.0]
+        kafka: ['4.0.1', '4.1.1', '4.2.0']
+    uses: ./.github/workflows/integration-groups.yml
+    with:
+      framework: ${{ matrix.framework }}
+      kafka-tag: ${{ matrix.kafka }}
+
+  release-matrix-aot:
+    name: Release Matrix AOT
+    needs: [changes, aot-integration-publish]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
+    strategy:
+      fail-fast: true
+      matrix:
+        kafka: ['4.0.1', '4.2.0']
+    uses: ./.github/workflows/integration-groups.yml
+    with:
+      framework: aot
+      kafka-tag: ${{ matrix.kafka }}
+
+  # Both NativeAOT smoke exes publish and run sequentially in one job — the
+  # compute is the same as two matrix jobs but saves one runner slot + setup.
+  aot-smoke:
+    name: NativeAOT Smoke
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Build.targets') }}
+          restore-keys: nuget-${{ runner.os }}-
 
       - name: Install NativeAOT prerequisites
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
-      - name: Publish NativeAOT smoke executable
+      - name: Publish and run core smoke test
         run: |
-          dotnet publish "${{ matrix.project }}" \
+          dotnet publish tests/Dekaf.Tests.Aot/Dekaf.Tests.Aot.csproj \
             --configuration Release \
             --framework net10.0 \
             --runtime linux-x64 \
             --self-contained true \
-            --output "artifacts/aot/${{ matrix.name }}" \
+            --output artifacts/aot/core \
             -p:PublishAot=true \
             -p:ContinuousIntegrationBuild=true \
             -p:TreatWarningsAsErrors=true
+          ./artifacts/aot/core/Dekaf.Tests.Aot
 
-      - name: Run NativeAOT smoke executable
-        run: ./artifacts/aot/${{ matrix.name }}/${{ matrix.executable }}
+      - name: Publish and run dependency-injection smoke test
+        run: |
+          dotnet publish tests/Dekaf.Tests.Aot.DependencyInjection/Dekaf.Tests.Aot.DependencyInjection.csproj \
+            --configuration Release \
+            --framework net10.0 \
+            --runtime linux-x64 \
+            --self-contained true \
+            --output artifacts/aot/dependency-injection \
+            -p:PublishAot=true \
+            -p:ContinuousIntegrationBuild=true \
+            -p:TreatWarningsAsErrors=true
+          ./artifacts/aot/dependency-injection/Dekaf.Tests.Aot.DependencyInjection
 
-  native-aot-integration-publish:
+  aot-integration-publish:
     name: NativeAOT Integration Publish
-    needs: build-and-unit-test
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Build.targets') }}
+          restore-keys: nuget-${{ runner.os }}-
 
       - name: Install NativeAOT prerequisites
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
@@ -211,15 +386,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  integration-tests:
-    name: Integration Tests (${{ matrix.category }}, ${{ matrix.framework }})
-    needs: build-and-unit-test
+  # PR-lane AOT coverage is a smoke slice; the full category sweep runs in the
+  # NuGet release gate.
+  aot-integration-smoke:
+    name: Integration Tests AOT (smoke)
+    needs: [changes, aot-integration-publish]
+    if: needs.changes.outputs.code == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        framework: [net8.0, net10.0]
-        category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Interop, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
-      fail-fast: true
+    timeout-minutes: 25
 
     steps:
       - name: Add Swap Space
@@ -232,77 +406,6 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          dotnet-quality: 'preview'
-
-      - name: Setup .NET 8 runtime
-        if: matrix.framework == 'net8.0'
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Expose GitHub Actions Runtime
-        uses: actions/github-script@v9
-        with:
-          script: |
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
-
-      - name: Run Pipeline
-        env:
-          NET_VERSION: ${{ matrix.framework }}
-          INTEGRATION_TEST_CATEGORY: ${{ matrix.category }}
-          SKIP_UNIT_TESTS: 'true'
-        run: dotnet run --project tools/Dekaf.Pipeline
-
-      - name: Upload Test Results
-        uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: test-results-integration-${{ matrix.category }}-${{ matrix.framework }}
-          path: |
-            **/TestResults/**
-            **/test-results/**
-          retention-days: 7
-
-      - name: Upload HangDump artifacts
-        uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: hangdump-artifacts-${{ matrix.category }}-${{ matrix.framework }}
-          path: |
-            **/*.dmp
-          if-no-files-found: ignore
-          retention-days: 7
-
-  integration-tests-aot:
-    name: Integration Tests AOT (${{ matrix.category }})
-    needs: native-aot-integration-publish
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Authentication, Authorization, Tls, Serialization, Resilience, Messaging, MessagingPatterns, MessagingOrdering, Compression, Offsets, NetworkPartition, Retry, ShareConsumer, ShareConsumerAdmin, Telemetry]
-      fail-fast: true
-
-    steps:
-      - name: Add Swap Space
-        run: |
-          sudo fallocate -l 8G /mnt/extra-swapfile
-          sudo chmod 600 /mnt/extra-swapfile
-          sudo mkswap /mnt/extra-swapfile
-          sudo swapon /mnt/extra-swapfile
-          free -h
-
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Download NativeAOT integration executable
         uses: actions/download-artifact@v8
@@ -317,34 +420,14 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
             core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
 
-      - name: Run NativeAOT integration tests
-        timeout-minutes: 25
-        env:
-          NET_VERSION: net10.0
-          DOTNET_GCConserveMemory: '9'
-        run: |
-          chmod +x ./artifacts/aot/integration/Dekaf.Tests.Integration
-          args=(
-            --hangdump
-            --hangdump-timeout 15m
-            --log-level Debug
-            --treenode-filter "/**[Category=${{ matrix.category }}]"
-          )
-          case "${{ matrix.category }}" in
-            Producer)
-              args+=(--maximum-parallel-tests 4)
-              ;;
-            NetworkPartition|ShareConsumer|ShareConsumerAdmin)
-              args+=(--maximum-parallel-tests 1)
-              ;;
-          esac
-          ./artifacts/aot/integration/Dekaf.Tests.Integration "${args[@]}"
+      - name: Run NativeAOT integration smoke tests
+        run: bash scripts/run-integration-categories.sh aot "Producer,Consumer,Messaging,Serialization"
 
       - name: Upload Test Results
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: test-results-integration-aot-${{ matrix.category }}
+          name: test-results-integration-aot-smoke
           path: |
             **/TestResults/**
             **/test-results/**
@@ -354,7 +437,7 @@ jobs:
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: hangdump-artifacts-integration-aot-${{ matrix.category }}
+          name: hangdump-artifacts-integration-aot-smoke
           path: |
             **/*.dmp
           if-no-files-found: ignore
@@ -362,7 +445,10 @@ jobs:
 
   code-quality:
     name: Code Quality
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -382,3 +468,97 @@ jobs:
         env:
           PYTHONPATH: .github/scripts
         run: python3 -m unittest discover -s .github/scripts -p 'test_stress_*.py'
+
+  # Pushes NuGet packages and creates the GitHub release — only reachable when
+  # the entire release matrix (plus the regular lanes) is green. Re-runs the
+  # pipeline on the same commit, so GitVersion yields the same version the
+  # build job computed.
+  publish:
+    name: Publish NuGet
+    needs: [build, unit-net8, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Declaring permissions drops all other scopes to none; contents:write is the only scope any
+    # step here needs (release/tag creation). NuGet push authenticates with an API-key secret, and
+    # artifact upload uses the exposed Actions runtime token — neither relies on GITHUB_TOKEN scopes.
+    permissions:
+      contents: write  # Create GitHub releases (and their tags) when publishing
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # Required for GitVersion
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Setup .NET 8 runtime
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props', '**/Directory.Build.targets') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v4
+        with:
+          versionSpec: '6.x'
+
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4
+        continue-on-error: true
+
+      - name: Expose GitHub Actions Runtime
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
+
+      - name: Run Pipeline (publish)
+        env:
+          NET_VERSION: net10.0
+          SKIP_INTEGRATION_TESTS: 'true'
+          SKIP_AOT_SMOKE_TESTS: 'true'
+          NuGet__ShouldPublish: 'true'
+          NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Used by CreateReleaseModule when a publish ships packages
+        run: dotnet run --project tools/Dekaf.Pipeline
+
+      - name: Upload Packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuget-packages-published
+          path: |
+            **/bin/Release/*.nupkg
+            **/bin/Release/*.snupkg
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Single required status check for branch protection. Succeeds when every
+  # upstream job succeeded or was skipped (docs-only PRs skip everything;
+  # release-only jobs skip on PR/push runs).
+  ci-passed:
+    name: CI Passed
+    needs: [changes, build, unit-net8, integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all jobs succeeded or were skipped
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS_JSON" | jq .
+          echo "$NEEDS_JSON" | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")'

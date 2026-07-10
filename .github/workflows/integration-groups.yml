@@ -1,0 +1,117 @@
+name: Integration Groups
+
+# Reusable job matrix that runs all integration test categories, grouped into
+# duration-balanced buckets, against prebuilt test binaries. Called by ci.yml
+# for both the PR/push lanes and the NuGet release gate, so the group
+# definitions cannot drift between lanes. The caller must have uploaded the
+# binaries artifact earlier in the same run.
+
+on:
+  workflow_call:
+    inputs:
+      framework:
+        description: 'Test binaries to run: net8.0, net10.0, or aot'
+        required: true
+        type: string
+      kafka-tag:
+        description: 'apache/kafka image tag for KafkaIntegrationTest-derived tests'
+        required: false
+        type: string
+        default: '4.2.0'
+
+jobs:
+  groups:
+    name: ${{ matrix.group }} (${{ inputs.framework }}, Kafka ${{ inputs.kafka-tag }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: true
+      matrix:
+        group: [tls, security, faults, produce, consume, messaging]
+        include:
+          - group: tls
+            categories: Tls
+          - group: security
+            categories: Authentication,Authorization
+          - group: faults
+            categories: Transaction,Resilience,NetworkPartition,Retry
+          - group: produce
+            categories: Producer,MultiInFlightProducer,Backpressure,Compression
+          - group: consume
+            categories: Consumer,ConsumerLag,ConsumerGroup,Offsets,ShareConsumer,ShareConsumerAdmin
+          - group: messaging
+            categories: Messaging,MessagingPatterns,MessagingOrdering,Serialization,Interop,Telemetry,Admin
+
+    steps:
+      - name: Add Swap Space
+        run: |
+          sudo fallocate -l 8G /mnt/extra-swapfile
+          sudo chmod 600 /mnt/extra-swapfile
+          sudo mkswap /mnt/extra-swapfile
+          sudo swapon /mnt/extra-swapfile
+          free -h
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        if: inputs.framework != 'aot'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Setup .NET 8 runtime
+        if: inputs.framework == 'net8.0'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Download test binaries
+        if: inputs.framework != 'aot'
+        uses: actions/download-artifact@v8
+        with:
+          name: test-binaries
+
+      - name: Extract test binaries
+        if: inputs.framework != 'aot'
+        run: tar -xzf test-binaries.tar.gz
+
+      - name: Download NativeAOT integration executable
+        if: inputs.framework == 'aot'
+        uses: actions/download-artifact@v8
+        with:
+          name: native-aot-integration
+          path: artifacts/aot/integration
+
+      - name: Expose GitHub Actions Runtime
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
+
+      - name: Run integration tests
+        env:
+          KAFKA_TEST_IMAGE_TAG: ${{ inputs.kafka-tag }}
+        run: bash scripts/run-integration-categories.sh ${{ inputs.framework }} "${{ matrix.categories }}"
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-integration-${{ inputs.framework }}-${{ inputs.kafka-tag }}-${{ matrix.group }}
+          path: |
+            **/TestResults/**
+            **/test-results/**
+          retention-days: 7
+
+      - name: Upload HangDump artifacts
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hangdump-artifacts-${{ inputs.framework }}-${{ inputs.kafka-tag }}-${{ matrix.group }}
+          path: |
+            **/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7

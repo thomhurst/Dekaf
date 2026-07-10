@@ -15,11 +15,10 @@ namespace Dekaf.Tests.Integration.Security;
 /// tokens are rejected by the broker with an <see cref="AuthenticationException"/>.
 ///
 /// Uses a dedicated OAUTHBEARER-enabled Kafka container shared across the test session.
-/// Tests are not run in parallel to avoid overwhelming the single broker.
+/// Tests use unique topics and consumer groups, so they run in parallel.
 /// </summary>
 [Category("Authentication")]
 [ClassDataSource<OAuthBearerKafkaContainer>(Shared = SharedType.PerTestSession)]
-[NotInParallel("OAuthBearerKafka")]
 public class OAuthBearerAuthenticationTests(OAuthBearerKafkaContainer oauthKafka)
 {
     [Test]
@@ -199,6 +198,11 @@ public class OAuthBearerAuthenticationTests(OAuthBearerKafkaContainer oauthKafka
                 .WithOAuthBearer(_ => new ValueTask<OAuthBearerToken>(
                     OAuthBearerKafkaContainer.CreateServerRejectedToken(OAuthBearerKafkaContainer.Principal)))
                 .WithAcks(Acks.All)
+                // Authentication can never succeed; tight budgets stop the client from
+                // burning the full default retry/delivery window before failing.
+                .WithConnectionTimeout(TimeSpan.FromSeconds(5))
+                .WithRequestTimeout(TimeSpan.FromSeconds(5))
+                .WithDeliveryTimeout(TimeSpan.FromSeconds(10))
                 .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 

@@ -58,7 +58,7 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                     Arguments = [
                         "--",
                             "--hangdump",
-                            "--hangdump-timeout", "15m",
+                            "--hangdump-timeout", "5m",
                             "--log-level", "Debug"
                     ]
                 },

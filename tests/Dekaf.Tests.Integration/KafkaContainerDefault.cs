@@ -4,10 +4,42 @@ using Testcontainers.Kafka;
 
 namespace Dekaf.Tests.Integration;
 
-public class KafkaContainer42 : KafkaTestContainer
+/// <summary>
+/// The Kafka container used by all <see cref="KafkaIntegrationTest"/>-derived tests.
+/// The broker image tag is driven by the <c>KAFKA_TEST_IMAGE_TAG</c> environment variable
+/// (default 4.2.0), so a single test binary covers the whole supported broker range:
+/// PR CI runs the current release, and the NuGet release gate sweeps the supported
+/// versions (4.0.1, 4.1.1, 4.2.0) by setting the variable per job.
+/// </summary>
+public class KafkaContainerDefault : KafkaTestContainer
 {
-    public override string ContainerName => "apache/kafka:4.2.0";
-    public override int Version => 420;
+    public const string DefaultTag = "4.2.0";
+
+    private static readonly string Tag =
+        Environment.GetEnvironmentVariable("KAFKA_TEST_IMAGE_TAG") is { Length: > 0 } tag ? tag : DefaultTag;
+
+    public override string ContainerName => $"apache/kafka:{Tag}";
+
+    public override int Version { get; } = ParseVersion(Tag);
+
+    /// <summary>
+    /// Parses a three-part image tag like "4.2.0" into the compact form used by
+    /// <see cref="SupportsKafkaAttribute"/>: major*100 + minor*10 + patch.
+    /// </summary>
+    internal static int ParseVersion(string tag)
+    {
+        var parts = tag.Split('.');
+        if (parts.Length != 3
+            || !int.TryParse(parts[0], out var major)
+            || !int.TryParse(parts[1], out var minor)
+            || !int.TryParse(parts[2], out var patch))
+        {
+            throw new InvalidOperationException(
+                $"KAFKA_TEST_IMAGE_TAG must be a three-part version like '4.2.0', but was '{tag}'.");
+        }
+
+        return major * 100 + minor * 10 + patch;
+    }
 
     // Testcontainers.Kafka generates a startup script that sets
     // KAFKA_ADVERTISED_LISTENERS with a trailing comma when no extra
@@ -23,6 +55,11 @@ public class KafkaContainer42 : KafkaTestContainer
 
     protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder)
     {
+        if (Version < 420)
+        {
+            return builder;
+        }
+
         return builder
             .WithResourceMapping(RunWrapperScript, "/etc/kafka/docker/run", 0, 0,
                 UnixFileModes.UserRead | UnixFileModes.UserWrite | UnixFileModes.UserExecute |

@@ -8,12 +8,11 @@ namespace Dekaf.Tests.Integration.Security;
 /// i.e. "not plaintext". Verifies that every SASL mechanism (PLAIN, SCRAM-SHA-256,
 /// SCRAM-SHA-512, OAUTHBEARER) can authenticate and round-trip messages over SSL.
 ///
-/// Uses a dedicated SASL_SSL Kafka container shared across the session. Tests are not run in
-/// parallel to avoid overwhelming the single broker.
+/// Uses a dedicated SASL_SSL Kafka container shared across the session. Tests use unique
+/// topics and consumer groups, so they run in parallel.
 /// </summary>
 [Category("Authentication")]
 [ClassDataSource<SaslSslKafkaContainer>(Shared = SharedType.PerTestSession)]
-[NotInParallel("SaslSslKafka")]
 public class SaslSslAuthenticationTests(SaslSslKafkaContainer saslSsl)
 {
     [Test]

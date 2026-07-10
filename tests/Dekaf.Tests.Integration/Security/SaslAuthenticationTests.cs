@@ -11,11 +11,10 @@ namespace Dekaf.Tests.Integration.Security;
 /// and that invalid credentials are properly rejected with AuthenticationException.
 ///
 /// Uses a dedicated SASL-enabled Kafka container shared across all tests in the session.
-/// Tests are not run in parallel to avoid overwhelming the single SASL broker.
+/// Tests use unique topics and consumer groups, so they run in parallel.
 /// </summary>
 [Category("Authentication")]
 [ClassDataSource<SaslKafkaContainer>(Shared = SharedType.PerTestSession)]
-[NotInParallel("SaslKafka")]
 public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
 {
     // ==========================================
@@ -263,6 +262,11 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
                 .WithClientId("sasl-invalid-producer")
                 .WithSaslPlain("wronguser", "wrongpassword")
                 .WithAcks(Acks.All)
+                // Authentication can never succeed; tight budgets stop the client from
+                // burning the full default retry/delivery window before failing.
+                .WithConnectionTimeout(TimeSpan.FromSeconds(5))
+                .WithRequestTimeout(TimeSpan.FromSeconds(5))
+                .WithDeliveryTimeout(TimeSpan.FromSeconds(10))
                 .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
@@ -290,6 +294,9 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
                 .WithGroupId($"sasl-invalid-group-{Guid.NewGuid():N}")
                 .WithSaslPlain("wronguser", "wrongpassword")
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+                // Authentication can never succeed; fail fast instead of retrying
+                // connections for the full 15s consume window.
+                .WithConnectionTimeout(TimeSpan.FromSeconds(5))
                 .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             consumer.Subscribe("any-topic");
