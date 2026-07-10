@@ -25,8 +25,10 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     private const int RecoveryPhaseMessages = 3;
     private const int StaticRestartProgressMessages = 3;
     private const int MaxStaticRestartDuplicates = PartitionCount * CommitInterval * 3;
+    private const int GroupConfigVerificationAttempts = 10;
     private static readonly TimeSpan StaticMemberSessionTimeout = TimeSpan.FromSeconds(6);
     private static readonly TimeSpan StaticMemberHeartbeatInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan GroupConfigVerificationDelay = TimeSpan.FromMilliseconds(500);
 
     [Test]
     [Timeout(600_000)]
@@ -182,10 +184,26 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             ]
         }).WaitAsync(cancellationToken);
 
-        var results = await admin.DescribeConfigsAsync([resource]).WaitAsync(cancellationToken);
-        var entries = results.Single().Entries;
-        await Assert.That(entries["consumer.session.timeout.ms"].Value).IsEqualTo(sessionTimeout);
-        await Assert.That(entries["consumer.heartbeat.interval.ms"].Value).IsEqualTo(heartbeatInterval);
+        // The controller can acknowledge the alteration before the coordinator observes it.
+        for (var attempt = 0; attempt < GroupConfigVerificationAttempts; attempt++)
+        {
+            var results = await admin.DescribeConfigsAsync([resource]).WaitAsync(cancellationToken);
+            var entries = results.Single().Entries;
+            var sessionTimeoutMatches = entries["consumer.session.timeout.ms"].Value == sessionTimeout;
+            var heartbeatIntervalMatches = entries["consumer.heartbeat.interval.ms"].Value == heartbeatInterval;
+
+            if (sessionTimeoutMatches && heartbeatIntervalMatches)
+                return;
+
+            if (attempt == GroupConfigVerificationAttempts - 1)
+            {
+                await Assert.That(entries["consumer.session.timeout.ms"].Value).IsEqualTo(sessionTimeout);
+                await Assert.That(entries["consumer.heartbeat.interval.ms"].Value).IsEqualTo(heartbeatInterval);
+                return;
+            }
+
+            await Task.Delay(GroupConfigVerificationDelay, cancellationToken);
+        }
     }
 
     private async Task RunChurnScenarioAsync(string assignor, CancellationToken cancellationToken)
