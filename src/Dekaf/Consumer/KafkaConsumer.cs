@@ -2932,13 +2932,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async ValueTask<bool> WaitForPrefetchDataAsync(CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        _coordinator?.BeginForegroundFetchWait();
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
 
-        if (_prefetchBuffer.HasDataAvailable())
-            return true;
+            if (_prefetchBuffer.HasDataAvailable())
+                return true;
 
-        return await _prefetchBuffer.WaitToReadAsync(_options.FetchMaxWaitMs, cancellationToken)
-            .ConfigureAwait(false);
+            return await _prefetchBuffer.WaitToReadAsync(_options.FetchMaxWaitMs, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _coordinator?.EndForegroundFetchWait();
+        }
     }
 
     private void TrackPrefetchedBytes(PendingFetchData pending, bool release)
@@ -4507,6 +4515,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async ValueTask FetchRecordsAsync(CancellationToken cancellationToken)
     {
+        _coordinator?.BeginForegroundFetchWait();
         // Rent a CTS from the pool to avoid allocating a LinkedCTS
         var consumeCts = _ctsPool.Rent();
         _activeConsumeCancellationSources.TryAdd(consumeCts, 0);
@@ -4629,6 +4638,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             _activeConsumeCancellationSources.TryRemove(consumeCts, out _);
             consumeCts.Dispose();
+            _coordinator?.EndForegroundFetchWait();
         }
     }
 

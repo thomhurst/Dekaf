@@ -301,6 +301,35 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_SuccessfulSlowJoin_RefreshesPollDeadline()
+    {
+        SetupFindCoordinator();
+        var options = CreateConsumerProtocolOptions(maxPollIntervalMs: 50);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var staleTimestamp = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                SetCoordinatorLongField(coordinator, "_lastPollTimestamp", staleTimestamp);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = 1,
+                    HeartbeatIntervalMs = 60_000
+                });
+            });
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await Assert.That(GetCoordinatorLongField(coordinator, "_lastPollTimestamp"))
+            .IsGreaterThan(staleTimestamp);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_InitialJoin_SendsMaxPollIntervalAsRebalanceTimeout()
     {
         SetupSuccessfulConsumerProtocolJoin();
@@ -363,6 +392,39 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             .IsGreaterThan(overdueTimestamp);
         await Assert.That(GetCoordinatorLongField(coordinator, "_pollVersion"))
             .IsEqualTo(pollVersion + 1);
+    }
+
+    [Test]
+    public async Task RecordPollAsync_ActiveForegroundFetchWait_DoesNotExpireMember()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            maxPollIntervalMs: 50);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+
+        coordinator.BeginForegroundFetchWait();
+        try
+        {
+            SetCoordinatorLongField(
+                coordinator,
+                "_lastPollTimestamp",
+                Stopwatch.GetTimestamp() - Stopwatch.Frequency);
+
+            await coordinator.RecordPollAsync(CancellationToken.None);
+
+            await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+            await _connection.DidNotReceive().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Is<ConsumerGroupHeartbeatRequest>(request => request.MemberEpoch == -1),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            coordinator.EndForegroundFetchWait();
+        }
     }
 
     [Test]

@@ -345,7 +345,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     new TopicPartitionOffset(topic, 0, MessagesPerPartition),
                     cancellationToken))
             .Throws<GroupException>();
-        await Assert.That(IsExpectedCommitFailure(staleCommit!.ErrorCode)).IsTrue();
+        await Assert.That(
+                staleCommit!.ErrorCode is { } errorCode && IsExpectedCommitFailure(errorCode))
+            .IsTrue();
 
         healthy.Allow(PartitionCount * MessagesPerPartition * 2);
         await oracle.WaitForAllSequencesAsync(cancellationToken);
