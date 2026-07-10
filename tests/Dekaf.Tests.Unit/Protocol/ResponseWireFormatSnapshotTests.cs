@@ -1,15 +1,17 @@
 using System.Collections;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 using VerifyTUnit;
+using static Dekaf.Tests.Unit.Protocol.WireFormatSnapshotSupport;
 
 namespace Dekaf.Tests.Unit.Protocol;
 
+[NotInParallel("FetchResponsePool")]
 public class ResponseWireFormatSnapshotTests
 {
     private const string FixtureResourceSegment = ".Protocol.ResponseFixtures.";
@@ -84,6 +86,17 @@ public class ResponseWireFormatSnapshotTests
         await Assert.That(ResponseFixtures.Keys.Order(StringComparer.Ordinal)).IsEquivalentTo(expectedFixtures);
     }
 
+    [Test]
+    public async Task PopulatedFixtures_MatchDeterministicEncoder()
+    {
+        var populatedFixtures = DeterministicResponseFixtureFactory.CreateAll();
+        foreach (var (fixtureName, expectedBytes) in populatedFixtures)
+        {
+            var actualBytes = ResponseFixtures[fixtureName];
+            await Assert.That(actualBytes.AsSpan().SequenceEqual(expectedBytes)).IsTrue();
+        }
+    }
+
     public static IEnumerable<(string ResponseType, short Version)> ResponseVersions()
     {
         foreach (var responseType in RequestTypesByResponse.Keys.Order(StringComparer.Ordinal))
@@ -133,15 +146,6 @@ public class ResponseWireFormatSnapshotTests
         return memory.ToArray();
     }
 
-    private static Type? GetRequestInterface(Type type) => type.GetInterfaces()
-        .SingleOrDefault(static implemented =>
-            implemented.IsGenericType &&
-            implemented.GetGenericTypeDefinition() == typeof(IKafkaRequest<>));
-
-    private static T GetStaticProperty<T>(Type type, string propertyName) =>
-        (T)(type.GetProperty(propertyName, BindingFlags.Public | BindingFlags.Static)?.GetValue(null)
-            ?? throw new InvalidOperationException($"{type.FullName} has no static {propertyName} property."));
-
     private static void ReturnPooledResponse(IKafkaResponse response)
     {
         switch (response)
@@ -150,8 +154,33 @@ public class ResponseWireFormatSnapshotTests
                 produceResponse.Return();
                 break;
             case FetchResponse fetchResponse:
+                ReturnFetchRecords(fetchResponse);
                 fetchResponse.ReturnToPool();
                 break;
+        }
+    }
+
+    private static void ReturnFetchRecords(FetchResponse response)
+    {
+        foreach (var topic in response.Responses)
+        {
+            foreach (var partition in topic.Partitions)
+            {
+                if (partition.Records is not { } batches)
+                {
+                    continue;
+                }
+
+                foreach (var batch in batches)
+                {
+                    batch.Dispose();
+                }
+
+                if (batches is List<RecordBatch> pooledBatches)
+                {
+                    FetchResponsePartition.ReturnRecordBatchList(pooledBatches);
+                }
+            }
         }
     }
 
@@ -255,6 +284,25 @@ public class ResponseWireFormatSnapshotTests
                 };
             }
 
+            if (value is Record record)
+            {
+                return new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    [nameof(Record.Attributes)] = record.Attributes,
+                    [nameof(Record.HeaderCount)] = record.HeaderCount,
+                    [nameof(Record.Headers)] = NormalizeValue(
+                        record.Headers?.Take(record.HeaderCount).ToArray(),
+                        ancestors),
+                    [nameof(Record.IsKeyNull)] = record.IsKeyNull,
+                    [nameof(Record.IsValueNull)] = record.IsValueNull,
+                    [nameof(Record.Key)] = NormalizeValue(record.Key, ancestors),
+                    [nameof(Record.Length)] = record.Length,
+                    [nameof(Record.OffsetDelta)] = record.OffsetDelta,
+                    [nameof(Record.TimestampDelta)] = record.TimestampDelta,
+                    [nameof(Record.Value)] = NormalizeValue(record.Value, ancestors)
+                };
+            }
+
             var trackReference = !type.IsValueType;
             if (trackReference && !ancestors.Add(value))
             {
@@ -293,37 +341,6 @@ public class ResponseWireFormatSnapshotTests
                     ancestors.Remove(value);
                 }
             }
-        }
-    }
-
-    private static class HexDump
-    {
-        private const int BytesPerLine = 16;
-
-        public static string Format(ReadOnlySpan<byte> bytes)
-        {
-            var builder = new StringBuilder();
-            for (var offset = 0; offset < bytes.Length; offset += BytesPerLine)
-            {
-                var line = bytes.Slice(offset, Math.Min(BytesPerLine, bytes.Length - offset));
-                builder.Append(offset.ToString("X4")).Append(": ");
-
-                for (var index = 0; index < BytesPerLine; index++)
-                {
-                    builder.Append(index < line.Length ? line[index].ToString("X2") : "  ");
-                    builder.Append(index == 7 ? "  " : " ");
-                }
-
-                builder.Append('|');
-                foreach (var item in line)
-                {
-                    builder.Append(item is >= 0x20 and <= 0x7E ? (char)item : '.');
-                }
-
-                builder.AppendLine("|");
-            }
-
-            return builder.ToString().TrimEnd();
         }
     }
 

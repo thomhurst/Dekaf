@@ -2,12 +2,63 @@
 API key: ListOffsets (2)
 Version: 8
 Header version: 1
-Body length: 6 bytes
+Body length: 142 bytes
 
-0000: 00 00 00 00 00 00                                |......|
+0000: 00 00 00 2B 03 0B 77 69  72 65 2D 74 6F 70 69 63 |...+..wire-topic|
+0010: 03 00 00 00 00 00 00 00  00 01 8B CF E5 68 00 00 |.............h..|
+0020: 00 00 00 00 00 00 2A 00  00 00 07 00 00 00 00 01 |......*.........|
+0030: 00 4E 00 00 01 8B CF E5  68 01 00 00 00 00 00 00 |.N......h.......|
+0040: 00 54 00 00 00 07 00 00  0D 77 69 72 65 2D 74 6F |.T.......wire-to|
+0050: 70 69 63 2D 62 03 00 00  00 02 00 00 00 00 01 8B |pic-b...........|
+0060: CF E5 68 02 00 00 00 00  00 00 00 2A 00 00 00 07 |..h........*....|
+0070: 00 00 00 00 03 00 4E 00  00 01 8B CF E5 68 03 00 |......N......h..|
+0080: 00 00 00 00 00 00 54 00  00 00 07 00 00 00       |......T.......|
 
 Decoded:
 {
-  "ThrottleTimeMs": 0,
-  "Topics": []
+  "ThrottleTimeMs": 43,
+  "Topics": [
+    {
+      "Name": "wire-topic",
+      "Partitions": [
+        {
+          "ErrorCode": "None",
+          "LeaderEpoch": 7,
+          "Offset": 42,
+          "OldStyleOffsets": null,
+          "PartitionIndex": 0,
+          "Timestamp": 1700000000000
+        },
+        {
+          "ErrorCode": "OffsetNotAvailable",
+          "LeaderEpoch": 7,
+          "Offset": 84,
+          "OldStyleOffsets": null,
+          "PartitionIndex": 1,
+          "Timestamp": 1700000000001
+        }
+      ]
+    },
+    {
+      "Name": "wire-topic-b",
+      "Partitions": [
+        {
+          "ErrorCode": "None",
+          "LeaderEpoch": 7,
+          "Offset": 42,
+          "OldStyleOffsets": null,
+          "PartitionIndex": 2,
+          "Timestamp": 1700000000002
+        },
+        {
+          "ErrorCode": "OffsetNotAvailable",
+          "LeaderEpoch": 7,
+          "Offset": 84,
+          "OldStyleOffsets": null,
+          "PartitionIndex": 3,
+          "Timestamp": 1700000000003
+        }
+      ]
+    }
+  ]
 }

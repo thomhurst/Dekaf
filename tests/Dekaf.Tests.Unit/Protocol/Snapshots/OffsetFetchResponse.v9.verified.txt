@@ -2,14 +2,123 @@
 API key: OffsetFetch (9)
 Version: 9
 Header version: 1
-Body length: 6 bytes
+Body length: 334 bytes
 
-0000: 00 00 00 00 00 00                                |......|
+0000: 00 00 00 29 03 0B 77 69  72 65 2D 67 72 6F 75 70 |...)..wire-group|
+0010: 03 0B 77 69 72 65 2D 74  6F 70 69 63 03 00 00 00 |..wire-topic....|
+0020: 00 00 00 00 00 00 00 00  2A 00 00 00 07 0B 6D 65 |........*.....me|
+0030: 74 61 64 61 74 61 2D 30  00 00 00 00 00 00 01 00 |tadata-0........|
+0040: 00 00 00 00 00 00 2B 00  00 00 07 0B 6D 65 74 61 |......+.....meta|
+0050: 64 61 74 61 2D 31 00 01  00 00 0D 77 69 72 65 2D |data-1.....wire-|
+0060: 74 6F 70 69 63 2D 62 03  00 00 00 00 00 00 00 00 |topic-b.........|
+0070: 00 00 00 34 00 00 00 07  0B 6D 65 74 61 64 61 74 |...4.....metadat|
+0080: 61 2D 30 00 00 00 00 00  00 01 00 00 00 00 00 00 |a-0.............|
+0090: 00 35 00 00 00 07 0B 6D  65 74 61 64 61 74 61 2D |.5.....metadata-|
+00A0: 31 00 01 00 00 00 00 00  0D 77 69 72 65 2D 67 72 |1........wire-gr|
+00B0: 6F 75 70 2D 62 03 0B 77  69 72 65 2D 74 6F 70 69 |oup-b..wire-topi|
+00C0: 63 03 00 00 00 00 FF FF  FF FF FF FF FF FF 00 00 |c...............|
+00D0: 00 07 0B 6D 65 74 61 64  61 74 61 2D 30 00 00 00 |...metadata-0...|
+00E0: 00 00 00 01 00 00 00 00  00 00 00 00 00 00 00 07 |................|
+00F0: 0B 6D 65 74 61 64 61 74  61 2D 31 00 01 00 00 0D |.metadata-1.....|
+0100: 77 69 72 65 2D 74 6F 70  69 63 2D 62 03 00 00 00 |wire-topic-b....|
+0110: 00 00 00 00 00 00 00 00  09 00 00 00 07 0B 6D 65 |..............me|
+0120: 74 61 64 61 74 61 2D 30  00 00 00 00 00 00 01 00 |tadata-0........|
+0130: 00 00 00 00 00 00 0A 00  00 00 07 0B 6D 65 74 61 |............meta|
+0140: 64 61 74 61 2D 31 00 01  00 00 00 10 00 00       |data-1........|
 
 Decoded:
 {
   "ErrorCode": "None",
-  "Groups": [],
-  "ThrottleTimeMs": 0,
+  "Groups": [
+    {
+      "ErrorCode": "None",
+      "GroupId": "wire-group",
+      "Topics": [
+        {
+          "Name": "wire-topic",
+          "Partitions": [
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 42,
+              "ErrorCode": "None",
+              "Metadata": "metadata-0",
+              "PartitionIndex": 0
+            },
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 43,
+              "ErrorCode": "OffsetOutOfRange",
+              "Metadata": "metadata-1",
+              "PartitionIndex": 1
+            }
+          ]
+        },
+        {
+          "Name": "wire-topic-b",
+          "Partitions": [
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 52,
+              "ErrorCode": "None",
+              "Metadata": "metadata-0",
+              "PartitionIndex": 0
+            },
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 53,
+              "ErrorCode": "OffsetOutOfRange",
+              "Metadata": "metadata-1",
+              "PartitionIndex": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ErrorCode": "NotCoordinator",
+      "GroupId": "wire-group-b",
+      "Topics": [
+        {
+          "Name": "wire-topic",
+          "Partitions": [
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": -1,
+              "ErrorCode": "None",
+              "Metadata": "metadata-0",
+              "PartitionIndex": 0
+            },
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 0,
+              "ErrorCode": "OffsetOutOfRange",
+              "Metadata": "metadata-1",
+              "PartitionIndex": 1
+            }
+          ]
+        },
+        {
+          "Name": "wire-topic-b",
+          "Partitions": [
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 9,
+              "ErrorCode": "None",
+              "Metadata": "metadata-0",
+              "PartitionIndex": 0
+            },
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 10,
+              "ErrorCode": "OffsetOutOfRange",
+              "Metadata": "metadata-1",
+              "PartitionIndex": 1
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "ThrottleTimeMs": 41,
   "Topics": null
 }
