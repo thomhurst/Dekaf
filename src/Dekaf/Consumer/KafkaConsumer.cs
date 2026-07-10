@@ -4520,13 +4520,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async ValueTask FetchRecordsAsync(CancellationToken cancellationToken)
     {
-        _coordinator?.BeginForegroundFetchWait();
         // Rent a CTS from the pool to avoid allocating a LinkedCTS
         var consumeCts = _ctsPool.Rent();
         _activeConsumeCancellationSources.TryAdd(consumeCts, 0);
 
         try
         {
+            _coordinator?.BeginForegroundFetchWait();
+
             // Forward outer cancellation into the pooled CTS via registration
             // instead of allocating a LinkedCTS (matches the prefetch path pattern)
             using var reg = cancellationToken.CanBeCanceled

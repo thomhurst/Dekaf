@@ -869,7 +869,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
     [Test]
     [Timeout(5_000)]
-    public async Task ConsumerProtocol_ExpirySkipsRemainingCallbacksFromPublishedHeartbeat(
+    public async Task ConsumerProtocol_ExpiryWaitsForPublishedHeartbeatCallbacks(
         CancellationToken cancellationToken)
     {
         SetupFindCoordinator();
@@ -940,13 +940,16 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             "_lastPollTimestamp",
             Stopwatch.GetTimestamp() - (Stopwatch.Frequency * 600L));
 
-        await coordinator.RecordPollAsync(cancellationToken);
+        var expiration = coordinator.RecordPollAsync(cancellationToken).AsTask();
+        await Assert.That(expiration.IsCompleted).IsFalse();
+
         releaseRevocation.TrySetResult();
         await steadyHeartbeat.WaitAsync(cancellationToken);
+        await expiration.WaitAsync(cancellationToken);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
         await Assert.That(coordinator.Assignment).IsEmpty();
-        await Assert.That(assignedCallbackCount).IsEqualTo(1);
+        await Assert.That(assignedCallbackCount).IsEqualTo(2);
     }
 
     [Test]

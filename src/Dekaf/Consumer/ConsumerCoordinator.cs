@@ -1070,34 +1070,33 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 assignmentVersion,
                 subscribedTopicRegex);
 
-        ConsumerHeartbeatResult result;
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             // A foreground poll can expire the member while this request is in flight.
-            // Validate and publish under the same lock used by expiry so it cannot clear
-            // membership between this guard and the epoch/assignment writes below.
+            // Validate, publish, and notify under the same lock used by expiry so it cannot
+            // report a newly committed assignment as lost before listeners see it assigned.
             if (_state != CoordinatorState.Stable ||
                 Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
                 IsCurrentPollGenerationExpired())
                 return default;
 
-            result = ProcessConsumerGroupHeartbeatResponse(
+            var result = ProcessConsumerGroupHeartbeatResponse(
                 response,
                 isInitial,
                 ownedTopicPartitions,
                 assignmentVersion,
                 subscribedTopicRegex);
+
+            await FireConsumerProtocolRebalanceListenersAsync(
+                result,
+                cancellationToken,
+                maxPollExpirationVersion).ConfigureAwait(false);
         }
         finally
         {
             _lock.Release();
         }
-
-        await FireConsumerProtocolRebalanceListenersAsync(
-            result,
-            cancellationToken,
-            maxPollExpirationVersion).ConfigureAwait(false);
 
         // Steady-heartbeat callbacks are fired above while publication is fenced against
         // max-poll expiry. The heartbeat loop must not fire the result a second time.
