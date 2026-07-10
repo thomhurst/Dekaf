@@ -28,9 +28,9 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
     private const ushort KafkaBrokerPort = 19_094;
     private const ushort KafkaControllerPort = 19_095;
 
-    public override string ContainerName => "apache/kafka:4.0.1";
+    public override string ContainerName => "apache/kafka:4.0.2";
 
-    public override int Version => 401;
+    public override int Version => 402;
 
     private readonly INetwork _network = new NetworkBuilder().Build();
     private readonly ToxiproxyContainer _toxiproxy;
@@ -138,7 +138,7 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
         ushort producerPublicPort,
         ushort consumerPublicPort)
     {
-        return new ContainerBuilder("apache/kafka:4.0.1")
+        return new ContainerBuilder("apache/kafka:4.0.2")
             .WithNetwork(_network)
             .WithNetworkAliases(KafkaNetworkAlias)
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")

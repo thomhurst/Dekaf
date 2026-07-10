@@ -34,8 +34,8 @@ public class SaslKafkaContainer : KafkaTestContainer
         $"password=\"{SaslPassword}\" " +
         $"user_{SaslUsername}=\"{SaslPassword}\";";
 
-    public override string ContainerName => "apache/kafka:4.0.1";
-    public override int Version => 401;
+    public override string ContainerName => "apache/kafka:4.0.2";
+    public override int Version => 402;
 
     /// <summary>
     /// Adds SASL-specific environment variables to the Kafka container builder.
