@@ -1,4 +1,5 @@
 using Dekaf.StressTests.Diagnostics;
+using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
 
 namespace Dekaf.StressTests.Scenarios;
@@ -24,4 +25,15 @@ internal sealed class StressTestOptions
     public int ConnectionsPerBroker { get; init; } = 1;
     public bool EnableProducerDeliveryDiagnostics { get; init; }
     public required ProgressWatchdog ProgressWatchdog { get; init; }
+    public int SoakMessagesPerSecond { get; init; } = 5_000;
+    public double ResourceSampleIntervalSeconds { get; init; } = 60;
+    public ResourceTrendThresholds ResourceTrendThresholds { get; init; } = new()
+    {
+        WarmupMinutes = 60,
+        MinimumSampleCount = 30,
+        MaxWorkingSetSlopeMibPerHour = 8,
+        MaxGcHeapSlopeMibPerHour = 4,
+        MaxLohSlopeMibPerHour = 4,
+        MaxThroughputDecayPercentPerHour = 5
+    };
 }

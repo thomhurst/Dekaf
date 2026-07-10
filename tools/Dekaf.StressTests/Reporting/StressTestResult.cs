@@ -26,6 +26,8 @@ internal sealed class StressTestResult
     /// retry deduplication broken); non-idempotent runs tolerate retry duplicates.
     /// </summary>
     public bool Idempotent { get; init; }
+    public ResourceTrendSnapshot? ResourceTrend { get; init; }
+    public long? ConsumedMessages { get; init; }
 
     public TransactionVerificationSnapshot? TransactionVerification { get; init; }
 

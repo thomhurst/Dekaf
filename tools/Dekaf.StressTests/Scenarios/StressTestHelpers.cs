@@ -272,19 +272,25 @@ internal static class StressTestHelpers
     /// Disposes the producer, recording a timeout as an error — a hung dispose is a
     /// shutdown bug even when every message was already delivered.
     /// </summary>
+    internal static Task DisposeWithTimeoutAsync(
+        IKafkaProducer<string, string> producer,
+        ThroughputTracker throughput) =>
+        DisposeWithTimeoutAsync(producer, throughput, OperationTimeout);
+
     internal static async Task DisposeWithTimeoutAsync(
         IKafkaProducer<string, string> producer,
-        ThroughputTracker throughput)
+        ThroughputTracker throughput,
+        TimeSpan timeout)
     {
         try
         {
             await producer.DisposeAsync().AsTask()
-                .WaitAsync(OperationTimeout, CancellationToken.None).ConfigureAwait(false);
+                .WaitAsync(timeout, CancellationToken.None).ConfigureAwait(false);
             Console.WriteLine($"  Producer disposed successfully");
         }
         catch (TimeoutException)
         {
-            var message = $"Dispose did not complete within {OperationTimeout.TotalSeconds:N0} seconds";
+            var message = $"Dispose did not complete within {timeout.TotalSeconds:N0} seconds";
             Console.WriteLine($"  Error: {message}");
             throughput.RecordError("DisposeTimeout", message, "DisposeAsync");
         }
