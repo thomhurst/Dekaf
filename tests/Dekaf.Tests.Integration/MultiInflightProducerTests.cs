@@ -70,7 +70,9 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         }
     }
 
-    [Test]
+    // This validates client-side multi-partition pipelining, not shared-broker saturation.
+    // Run alone so the test's 30-second broker retention does not trim early partitions.
+    [Test, NotInParallel]
     public async Task MultiInflight_MultiPartition_PerPartitionOrderingPreserved()
     {
         const int partitionCount = 8;
@@ -101,13 +103,13 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         {
             for (var i = 0; i < messagesPerPartition; i++)
             {
-                await producer.ProduceAsync(new ProducerMessage<int, string>
+                await producer.FireAsync(new ProducerMessage<int, string>
                 {
                     Topic = topic,
                     Partition = p,
                     Key = p,
                     Value = $"p{p}-msg-{i:D4}"
-                }, CancellationToken.None);
+                });
             }
         }
 
@@ -369,7 +371,9 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         }
     }
 
-    [Test]
+    // This validates cross-partition coalescing, not shared-broker saturation.
+    // Run alone so the test's 30-second broker retention does not trim early partitions.
+    [Test, NotInParallel]
     public async Task MultiInflight_WithCoalescing_OrderingPreserved()
     {
         const int partitionCount = 8;
@@ -401,13 +405,13 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         {
             for (var p = 0; p < partitionCount; p++)
             {
-                await producer.ProduceAsync(new ProducerMessage<int, string>
+                await producer.FireAsync(new ProducerMessage<int, string>
                 {
                     Topic = topic,
                     Partition = p,
                     Key = p,
                     Value = $"coal-p{p}-{i:D4}"
-                }, CancellationToken.None);
+                });
             }
         }
 
