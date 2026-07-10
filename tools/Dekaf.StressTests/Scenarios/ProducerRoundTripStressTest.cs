@@ -118,6 +118,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             startOffsets,
             endOffsets,
             validator,
+            throughput,
             cancellationToken).ConfigureAwait(false);
 
         throughput.Stop();
@@ -140,12 +141,13 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
     internal static DekafDeliveryErrorListener CreateDeliveryErrorListener(ThroughputTracker throughput) =>
         new(throughput);
 
-    private static async Task<bool> ConsumeAndValidateAsync(
+    internal static async Task<bool> ConsumeAndValidateAsync(
         IKafkaConsumer<string, byte[]> consumer,
         StressTestOptions options,
         long[] startOffsets,
         long[] endOffsets,
         RoundTripValidator validator,
+        ThroughputTracker throughput,
         CancellationToken cancellationToken)
     {
         var completion = new RoundTripCompletionTracker(startOffsets, endOffsets);
@@ -189,6 +191,11 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throughput.RecordError(ex, "Round-trip consume");
+            return false;
         }
 
         return !completion.IsComplete;

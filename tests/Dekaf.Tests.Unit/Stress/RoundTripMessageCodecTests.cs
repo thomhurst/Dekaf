@@ -1,6 +1,8 @@
+using Dekaf.Consumer;
 using Dekaf.Diagnostics;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Scenarios;
+using NSubstitute;
 using ConfluentKafka = Confluent.Kafka;
 
 namespace Dekaf.Tests.Unit.Stress;
@@ -231,6 +233,47 @@ public class RoundTripMessageCodecTests
 
         await Assert.That(throughput.DeliveryErrorCount).IsEqualTo(2);
         await Assert.That(throughput.ErrorCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DekafConsumeFailure_IsRecordedWithoutAbortingTheResult()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, byte[]>>();
+        consumer.Partitions.Returns(Substitute.For<IConsumerPartitions>());
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(ThrowConsumeFailure());
+        var throughput = new ThroughputTracker();
+        var validator = new RoundTripValidator([1]);
+        var options = new StressTestOptions
+        {
+            BootstrapServers = "localhost:9092",
+            Topic = "roundtrip-consume-failure",
+            Partitions = 1,
+            DurationMinutes = 1,
+            MessageSizeBytes = 128,
+            ProgressWatchdog = null!
+        };
+
+        var timedOut = await ProducerRoundTripStressTest.ConsumeAndValidateAsync(
+            consumer,
+            options,
+            startOffsets: [0],
+            endOffsets: [1],
+            validator,
+            throughput,
+            CancellationToken.None);
+
+        var error = throughput.GetSnapshot().ErrorSamples.Single();
+        await Assert.That(timedOut).IsFalse();
+        await Assert.That(throughput.ErrorCount).IsEqualTo(1);
+        await Assert.That(error.Operation).IsEqualTo("Round-trip consume");
+        await Assert.That(error.Message).IsEqualTo("consume failed");
+    }
+
+    private static async IAsyncEnumerable<ConsumeResult<string, byte[]>> ThrowConsumeFailure()
+    {
+        await Task.FromException(new InvalidOperationException("consume failed"));
+        yield break;
     }
 
     [Test]
