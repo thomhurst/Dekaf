@@ -191,12 +191,14 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private bool IsMaxPollIntervalExpired()
     {
+        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) >= 0)
+            return true;
+
         if (Volatile.Read(ref _foregroundFetchWaitCount) != 0)
             return false;
 
-        var pollDeadlineElapsed = _state == CoordinatorState.Stable
+        return _state == CoordinatorState.Stable
             && Stopwatch.GetTimestamp() - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks;
-        return pollDeadlineElapsed || Volatile.Read(ref _maxPollExpiredAtPollVersion) >= 0;
     }
 
     internal (TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)
