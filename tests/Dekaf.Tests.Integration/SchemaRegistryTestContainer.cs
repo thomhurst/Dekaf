@@ -14,6 +14,8 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposable
 {
+    private static readonly ContainerImageBootstrapCoordinator ImageBootstrapCoordinator = new();
+
     private KafkaContainer? _kafkaContainer;
     private IContainer? _schemaRegistryContainer;
     private INetwork? _network;
@@ -52,6 +54,12 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             return;
         }
 
+        // A complete first startup guarantees Testcontainers has pulled both images.
+        await ImageBootstrapCoordinator.RunAsync(StartLocalContainersAsync).ConfigureAwait(false);
+    }
+
+    private async Task StartLocalContainersAsync()
+    {
         Console.WriteLine("[KafkaWithSchemaRegistry] Creating Docker network...");
 
         // Create a shared network for the containers
