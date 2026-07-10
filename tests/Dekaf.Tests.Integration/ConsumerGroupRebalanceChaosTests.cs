@@ -304,6 +304,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
         for (var cycle = 0; cycle < ChurnCycles; cycle++)
         {
+            var anchorCountBeforeJoin = anchor.ObservedCount;
             await using var transient = await CreateMemberAsync(
                 topic,
                 groupId,
@@ -316,6 +317,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             await transient.WaitForAnyAssignmentAsync(cancellationToken);
             await transient.WaitForObservedCountAsync(1, cancellationToken);
             await AssertGroupModeAsync(admin, groupId, transientProtocol, cancellationToken);
+            await Assert.That(anchor.ObservedCount).IsEqualTo(anchorCountBeforeJoin)
+                .Because("group joins must not consume records without an anchor permit");
 
             var anchorTarget = anchor.ObservedCount + JointPhaseMessagesPerMember;
             var transientTarget = transient.ObservedCount + JointPhaseMessagesPerMember;
@@ -331,6 +334,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
             await anchor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
             await AssertGroupModeAsync(admin, groupId, anchorProtocol, cancellationToken);
+            await Assert.That(anchor.ObservedCount).IsEqualTo(anchorTarget)
+                .Because("group leaves must not consume records without an anchor permit");
             var recoveryTarget = anchor.ObservedCount + RecoveryPhaseMessages;
             anchor.Allow(RecoveryPhaseMessages);
             await anchor.WaitForObservedCountAsync(recoveryTarget, cancellationToken);
@@ -813,10 +818,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                         continue;
 
                     // A poll can install a new eager assignment and return its first record before
-                    // the next pause. Record it rather than advancing the client position invisibly;
-                    // the immediate pause bounds this to one record per assignment transition.
+                    // the next pause. Rewind it so permit-gated consumption observes it later.
                     PauseCurrentAssignment();
-                    await ObserveAsync(eventResult);
+                    _consumer.Seek(eventResult.TopicPartitionOffset);
                 }
             }
             catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
