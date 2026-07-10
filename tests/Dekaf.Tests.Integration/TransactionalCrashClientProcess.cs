@@ -498,13 +498,15 @@ public sealed class TransactionalCrashClient
 
             if (crashPoint == TransactionalEosCrashPoint.CommitAcknowledgementRace)
             {
-                var commitTask = transaction.CommitAsync(timeoutSource.Token).AsTask();
-                await Task.Yield();
-                await WriteSignalAsync(
-                    readyPath,
-                    TransactionalCrashClientProcess.SignalFor(crashPoint.Value));
-                await commitTask;
-                await Task.Delay(Timeout.InfiniteTimeSpan);
+                await ((Transaction<string, string>)transaction).CommitAfterRequestWrittenAsync(
+                    async () =>
+                    {
+                        await WriteSignalAsync(
+                            readyPath,
+                            TransactionalCrashClientProcess.SignalFor(crashPoint.Value));
+                        await Task.Delay(Timeout.InfiniteTimeSpan);
+                    },
+                    timeoutSource.Token);
             }
             else
             {
