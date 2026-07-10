@@ -51,6 +51,17 @@ public sealed class KafkaTestImagesTests
     }
 
     [Test]
+    [Arguments("4.1.9", false)]
+    [Arguments("4.2.0", true)]
+    [Arguments("5.0.0", true)]
+    public async Task SupportsShareGroups_UsesKafkaFeatureVersion(string release, bool expected)
+    {
+        var supported = KafkaTestImages.SupportsShareGroups(Version.Parse(release));
+
+        await Assert.That(supported).IsEqualTo(expected);
+    }
+
+    [Test]
     public async Task TransactionFaultContainer_UsesSelectedKafkaLane()
     {
         var selected = KafkaTestImages.Selected;

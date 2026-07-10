@@ -16,8 +16,6 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
 {
-    private static readonly KafkaTestImage s_selectedImage = KafkaTestImages.Selected;
-
     private const string KafkaNetworkAlias = "transaction-fault-kafka";
     private const string ProducerProxyName = "transaction-producer";
     private const string ConsumerProxyName = "transaction-consumer";
@@ -29,10 +27,6 @@ public sealed class TransactionFaultKafkaContainer : KafkaTestContainer
     private const ushort KafkaConsumerPort = 19_093;
     private const ushort KafkaBrokerPort = 19_094;
     private const ushort KafkaControllerPort = 19_095;
-
-    public override string ContainerName => s_selectedImage.Image;
-
-    public override Version Version => s_selectedImage.Version;
 
     private readonly INetwork _network = new NetworkBuilder().Build();
     private readonly ToxiproxyContainer _toxiproxy;

@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Integration;
 internal static class KafkaTestImages
 {
     private static readonly Version s_runWrapperMinimumVersion = new(4, 2, 0);
+    private static readonly Version s_shareGroupsMinimumVersion = new(4, 2, 0);
 
     public const string LaneEnvironmentVariable = "DEKAF_TEST_KAFKA_LANE";
     public const string FloorLane = "floor";
@@ -26,10 +27,10 @@ internal static class KafkaTestImages
         "/etc/kafka/docker/configure\n" +
         "exec /etc/kafka/docker/launch\n");
 
-    public static Version FloorVersion => s_floor.Version;
-    public static Version CurrentVersion => s_current.Version;
     public static KafkaTestImage Selected => Resolve(
         Environment.GetEnvironmentVariable(LaneEnvironmentVariable));
+
+    public static bool SupportsShareGroups(Version version) => version >= s_shareGroupsMinimumVersion;
 
     public static KafkaTestImage Resolve(string? requestedLane)
     {
