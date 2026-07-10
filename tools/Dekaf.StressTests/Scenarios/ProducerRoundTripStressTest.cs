@@ -176,12 +176,6 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             await foreach (var record in consumer.ConsumeAsync(timeout.Token).ConfigureAwait(false))
             {
                 var partition = record.Partition;
-                if (!completion.IsTrackedPartition(partition))
-                {
-                    validator.Record(record.Key, record.Value, partition, record.Offset);
-                    continue;
-                }
-
                 if (completion.Record(partition, record.Offset))
                 {
                     validator.Record(record.Key, record.Value, partition, record.Offset);
@@ -415,12 +409,6 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 
                 var partition = record.Partition.Value;
                 var offset = record.Offset.Value;
-                if (!completion.IsTrackedPartition(partition))
-                {
-                    validator.Record(record.Message.Key, record.Message.Value, partition, offset);
-                    continue;
-                }
-
                 if (completion.Record(partition, offset))
                 {
                     validator.Record(record.Message.Key, record.Message.Value, partition, offset);

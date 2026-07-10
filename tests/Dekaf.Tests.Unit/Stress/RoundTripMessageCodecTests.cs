@@ -1,5 +1,7 @@
+using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Diagnostics;
+using Dekaf.Serialization;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Scenarios;
 using NSubstitute;
@@ -270,11 +272,80 @@ public class RoundTripMessageCodecTests
         await Assert.That(error.Message).IsEqualTo("consume failed");
     }
 
+    [Test]
+    public async Task DekafConsume_UntrackedPartition_RecordsUnexpectedWithoutDecoding()
+    {
+        var factory = new RoundTripMessageFactory("untracked-partition", partitionCount: 1, payloadSize: 128);
+        var message = factory.Create(partition: 0);
+        var consumer = Substitute.For<IKafkaConsumer<string, byte[]>>();
+        consumer.Partitions.Returns(Substitute.For<IConsumerPartitions>());
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(CreateConsumeResults(
+                CreateConsumeResult(message, partition: 1, offset: 0),
+                CreateConsumeResult(message, partition: 0, offset: 0)));
+        var validator = new RoundTripValidator(factory.ExpectedPerPartition);
+        var options = new StressTestOptions
+        {
+            BootstrapServers = "localhost:9092",
+            Topic = "roundtrip-untracked-partition",
+            Partitions = 1,
+            DurationMinutes = 1,
+            MessageSizeBytes = 128,
+            ProgressWatchdog = null!
+        };
+
+        var timedOut = await ProducerRoundTripStressTest.ConsumeAndValidateAsync(
+            consumer,
+            options,
+            startOffsets: [0],
+            endOffsets: [1],
+            validator,
+            new ThroughputTracker(),
+            CancellationToken.None);
+
+        var snapshot = validator.CreateSnapshot(timedOut);
+        await Assert.That(timedOut).IsFalse();
+        await Assert.That(snapshot.ConsumedMessages).IsEqualTo(2);
+        await Assert.That(snapshot.UnexpectedMessages).IsEqualTo(1);
+        await Assert.That(snapshot.DuplicateMessages).IsEqualTo(0);
+        await Assert.That(snapshot.MispartitionedMessages).IsEqualTo(0);
+        await Assert.That(snapshot.MissingMessages).IsEqualTo(0);
+    }
+
     private static async IAsyncEnumerable<ConsumeResult<string, byte[]>> ThrowConsumeFailure()
     {
         await Task.FromException(new InvalidOperationException("consume failed"));
         yield break;
     }
+
+    private static async IAsyncEnumerable<ConsumeResult<string, byte[]>> CreateConsumeResults(
+        params ConsumeResult<string, byte[]>[] records)
+    {
+        foreach (var record in records)
+        {
+            yield return record;
+            await Task.Yield();
+        }
+    }
+
+    private static ConsumeResult<string, byte[]> CreateConsumeResult(
+        RoundTripMessage message,
+        int partition,
+        long offset) =>
+        new(
+            topic: "roundtrip-untracked-partition",
+            partition,
+            offset,
+            keyData: Encoding.UTF8.GetBytes(message.Key),
+            isKeyNull: false,
+            valueData: message.Value,
+            isValueNull: false,
+            headers: null,
+            timestampMs: 0,
+            timestampType: TimestampType.CreateTime,
+            leaderEpoch: null,
+            keyDeserializer: Serializers.String,
+            valueDeserializer: Serializers.ByteArray);
 
     [Test]
     public async Task RoundTripResult_ConfiguresDiagnosticsAndMessageBound()
