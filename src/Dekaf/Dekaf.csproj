@@ -17,6 +17,7 @@
     <InternalsVisibleTo Include="Dekaf.Benchmarks" />
     <InternalsVisibleTo Include="Dekaf.Profiling" />
     <InternalsVisibleTo Include="Dekaf.StressTests" />
+    <InternalsVisibleTo Include="Dekaf.Fuzzing" />
     <InternalsVisibleTo Include="Dekaf.Compression.Brotli" />
     <InternalsVisibleTo Include="Dekaf.Compression.Lz4" />
     <InternalsVisibleTo Include="Dekaf.Extensions.Hosting" />
