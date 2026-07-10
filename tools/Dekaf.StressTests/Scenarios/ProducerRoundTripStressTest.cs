@@ -64,6 +64,8 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         var gcStats = new GcStats();
         using var deliveryErrorListener = CreateDeliveryErrorListener(throughput);
         throughput.Start();
+        using var samplerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, samplerCts.Token);
 
         ProducerDeliveryDiagnosticsSnapshot? producerDiagnostics;
         await using (var producer = await builder.BuildAsync(cancellationToken))
@@ -109,6 +111,8 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
             producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
         }
+        samplerCts.Cancel();
+        await samplerTask.ConfigureAwait(false);
 
         var endOffsets = await StressTestHelpers.QueryEndOffsetsAsync(
             consumer,
@@ -263,6 +267,8 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 
         var gcStats = new GcStats();
         throughput.Start();
+        using var samplerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, samplerCts.Token);
 
         using (var producer = new ConfluentKafka.ProducerBuilder<string, byte[]>(producerConfig).Build())
         {
@@ -325,6 +331,8 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 
             ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput);
         }
+        samplerCts.Cancel();
+        await samplerTask.ConfigureAwait(false);
 
         var endOffsets = ConfluentStressTestHelpers.QueryEndOffsets(
             consumer,
