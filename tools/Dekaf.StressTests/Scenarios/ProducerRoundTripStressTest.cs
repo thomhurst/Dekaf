@@ -55,6 +55,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             "zstd" => builder.UseZstdCompression(),
             _ => builder
         };
+        StressTestHelpers.ConfigureProducerDeliveryDiagnostics(builder, options);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -63,6 +64,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         var gcStats = new GcStats();
         throughput.Start();
 
+        ProducerDeliveryDiagnosticsSnapshot? producerDiagnostics;
         await using (var producer = await builder.BuildAsync(cancellationToken))
         {
             using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -99,6 +101,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             }
 
             await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
+            producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
         }
 
         var endOffsets = await StressTestHelpers.QueryEndOffsetsAsync(
@@ -129,7 +132,8 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             throughput,
             gcStats,
             delivered,
-            validation);
+            validation,
+            producerDiagnostics);
     }
 
     private static async Task<bool> ConsumeAndValidateAsync(
@@ -334,7 +338,8 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             throughput,
             gcStats,
             delivered,
-            validation);
+            validation,
+            producerDeliveryDiagnostics: null);
     }
 
     internal static void RecordDeliveryReportError(ThroughputTracker throughput, ConfluentKafka.Error error)
@@ -483,7 +488,8 @@ internal static class RoundTripScenarioHelpers
         ThroughputTracker throughput,
         GcStats gcStats,
         long delivered,
-        RoundTripValidationSnapshot validation) =>
+        RoundTripValidationSnapshot validation,
+        ProducerDeliveryDiagnosticsSnapshot? producerDeliveryDiagnostics) =>
         new()
         {
             Scenario = scenario,
@@ -498,6 +504,7 @@ internal static class RoundTripScenarioHelpers
             Latency = null,
             GcStats = gcStats.ToSnapshot(),
             CpuTimeSeconds = throughput.CpuTimeSeconds,
-            RoundTripValidation = validation
+            RoundTripValidation = validation,
+            ProducerDeliveryDiagnostics = producerDeliveryDiagnostics
         };
 }

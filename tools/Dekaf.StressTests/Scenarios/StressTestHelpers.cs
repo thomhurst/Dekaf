@@ -323,16 +323,16 @@ internal static class StressTestHelpers
         return delivered;
     }
 
-    internal static void ConfigureProducerDeliveryDiagnostics(
-        ProducerBuilder<string, string> builder,
+    internal static void ConfigureProducerDeliveryDiagnostics<TKey, TValue>(
+        ProducerBuilder<TKey, TValue> builder,
         StressTestOptions options)
     {
         if (options.EnableProducerDeliveryDiagnostics)
             builder.WithDeliveryDiagnostics();
     }
 
-    internal static ProducerDeliveryDiagnosticsSnapshot? CaptureProducerDeliveryDiagnostics(
-        IKafkaProducer<string, string> producer,
+    internal static ProducerDeliveryDiagnosticsSnapshot? CaptureProducerDeliveryDiagnostics<TKey, TValue>(
+        IKafkaProducer<TKey, TValue> producer,
         StressTestOptions options)
     {
         if (!options.EnableProducerDeliveryDiagnostics)

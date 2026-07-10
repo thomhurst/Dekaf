@@ -218,4 +218,51 @@ public class RoundTripMessageCodecTests
         await Assert.That(throughput.DeliveryErrorCount).IsEqualTo(1);
         await Assert.That(throughput.ErrorCount).IsEqualTo(0);
     }
+
+    [Test]
+    public async Task DeliveryDiagnostics_RoundTripBytePayload_IsConfiguredAndReturned()
+    {
+        var options = new StressTestOptions
+        {
+            BootstrapServers = "localhost:9092",
+            Topic = "roundtrip-diagnostics",
+            DurationMinutes = 1,
+            MessageSizeBytes = 128,
+            EnableProducerDeliveryDiagnostics = true,
+            ProgressWatchdog = null!
+        };
+        var builder = Kafka.CreateProducer<string, byte[]>()
+            .WithBootstrapServers(options.BootstrapServers);
+        StressTestHelpers.ConfigureProducerDeliveryDiagnostics(builder, options);
+
+        await using var producer = builder.Build();
+        var snapshot = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
+
+        await Assert.That(snapshot).IsNotNull();
+        await Assert.That(snapshot!.DiagnosticsEnabled).IsTrue();
+
+        var result = RoundTripScenarioHelpers.CreateResult(
+            "producer-roundtrip",
+            "Dekaf",
+            options,
+            DateTime.UtcNow,
+            new ThroughputTracker(),
+            new GcStats(),
+            delivered: 0,
+            new RoundTripValidationSnapshot
+            {
+                ExpectedMessages = 0,
+                ConsumedMessages = 0,
+                MissingMessages = 0,
+                DuplicateMessages = 0,
+                CorruptMessages = 0,
+                OutOfOrderMessages = 0,
+                MispartitionedMessages = 0,
+                UnexpectedMessages = 0,
+                TimedOut = false
+            },
+            snapshot);
+
+        await Assert.That(result.ProducerDeliveryDiagnostics).IsSameReferenceAs(snapshot);
+    }
 }
