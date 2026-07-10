@@ -122,11 +122,13 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
                     return;
 
                 if (status == OperationStatus.InvalidData)
-                    throw new InvalidOperationException("Zstd decompression failed: invalid data");
+                    throw new InvalidDataException("Zstd decompression failed: invalid data");
 
                 // NeedMoreData or DestinationTooSmall: continue with next iteration
             }
         }
+
+        throw new InvalidDataException("Zstd decompression failed: incomplete frame");
     }
 
     private static Compressor GetCompressor(int compressionLevel)

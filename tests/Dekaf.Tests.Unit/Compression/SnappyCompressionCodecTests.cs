@@ -104,6 +104,34 @@ public class SnappyCompressionCodecTests
     }
 
     [Test]
+    public async Task Decompress_UnterminatedRawLength_ThrowsInvalidData()
+    {
+        var codec = new SnappyCompressionCodec();
+        var invalidData = new byte[] { 0x80, 0x80, 0x80, 0x80, 0x80 };
+        var decompressedBuffer = new ArrayBufferWriter<byte>();
+
+        await Assert.That(() => codec.Decompress(new ReadOnlySequence<byte>(invalidData), decompressedBuffer))
+            .ThrowsExactly<InvalidDataException>();
+    }
+
+    [Test]
+    public async Task Decompress_DestinationThrowsInvalidOperation_PreservesException()
+    {
+        var codec = new SnappyCompressionCodec();
+        var original = "destination failure"u8.ToArray();
+        var compressed = new byte[Snappier.Snappy.GetMaxCompressedLength(original.Length)];
+        var compressedLength = Snappier.Snappy.Compress(original, compressed);
+        var expected = new InvalidOperationException("Cannot grow buffer: maximum size reached.");
+
+        var exception = await Assert.That(() => codec.Decompress(
+                new ReadOnlySequence<byte>(compressed.AsMemory(0, compressedLength)),
+                new InvalidOperationBufferWriter(expected)))
+            .ThrowsExactly<InvalidOperationException>();
+
+        await Assert.That(exception).IsSameReferenceAs(expected);
+    }
+
+    [Test]
     public async Task Decompress_TruncatedXerialHeader_Throws()
     {
         var codec = new SnappyCompressionCodec();
@@ -256,6 +284,15 @@ public class SnappyCompressionCodecTests
         }
 
         return blocks;
+    }
+
+    private sealed class InvalidOperationBufferWriter(InvalidOperationException exception) : IBufferWriter<byte>
+    {
+        public void Advance(int count) => throw exception;
+
+        public Memory<byte> GetMemory(int sizeHint = 0) => throw exception;
+
+        public Span<byte> GetSpan(int sizeHint = 0) => throw exception;
     }
 }
 

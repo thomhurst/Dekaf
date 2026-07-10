@@ -14,6 +14,32 @@ namespace Dekaf.Tests.Unit.Compression;
 /// </summary>
 public class BrotliCompressionCodecTests
 {
+    [Test]
+    public async Task Decompress_InvalidPayload_ThrowsInvalidData()
+    {
+        var codec = new BrotliCompressionCodec();
+        var destination = new ArrayBufferWriter<byte>();
+
+        await Assert.That(() => codec.Decompress(new ReadOnlySequence<byte>(new byte[63]), destination))
+            .ThrowsExactly<InvalidDataException>();
+    }
+
+    [Test]
+    public async Task Decompress_DestinationThrowsInvalidOperation_PreservesException()
+    {
+        var codec = new BrotliCompressionCodec();
+        var compressed = new ArrayBufferWriter<byte>();
+        codec.Compress(new ReadOnlySequence<byte>("destination failure"u8.ToArray()), compressed);
+        var expected = new InvalidOperationException("Cannot grow buffer: maximum size reached.");
+
+        var exception = await Assert.That(() => codec.Decompress(
+                new ReadOnlySequence<byte>(compressed.WrittenMemory),
+                new InvalidOperationBufferWriter(expected)))
+            .ThrowsExactly<InvalidOperationException>();
+
+        await Assert.That(exception).IsSameReferenceAs(expected);
+    }
+
     #region Basic Functionality Tests
 
     [Test]
@@ -256,6 +282,15 @@ public class BrotliCompressionCodecTests
     #endregion
 
     #region Helper Classes
+
+    private sealed class InvalidOperationBufferWriter(InvalidOperationException exception) : IBufferWriter<byte>
+    {
+        public void Advance(int count) => throw exception;
+
+        public Memory<byte> GetMemory(int sizeHint = 0) => throw exception;
+
+        public Span<byte> GetSpan(int sizeHint = 0) => throw exception;
+    }
 
     /// <summary>
     /// Helper class for creating multi-segment ReadOnlySequence for testing.

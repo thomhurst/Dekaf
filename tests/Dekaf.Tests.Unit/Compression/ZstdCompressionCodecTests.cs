@@ -53,6 +53,19 @@ public class ZstdCompressionCodecTests
     }
 
     [Test]
+    public async Task ZstdCompressionCodec_Decompress_TruncatedFrame_ThrowsInvalidData()
+    {
+        var codec = new ZstdCompressionCodec();
+        var compressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Compress(new ReadOnlySequence<byte>("truncated zstd frame"u8.ToArray()), compressedBuffer);
+        var truncated = compressedBuffer.WrittenMemory[..^1];
+        var decompressedBuffer = new ArrayBufferWriter<byte>();
+
+        await Assert.That(() => codec.Decompress(new ReadOnlySequence<byte>(truncated), decompressedBuffer))
+            .ThrowsExactly<InvalidDataException>();
+    }
+
+    [Test]
     public async Task ZstdCompressionCodec_RoundTrip_LargeData()
     {
         var codec = new ZstdCompressionCodec();

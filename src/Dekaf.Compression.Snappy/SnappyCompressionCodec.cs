@@ -31,6 +31,9 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_compressedBuffer;
 
+    [ThreadStatic]
+    private static ExceptionTrackingBufferWriter? t_decompressionDestination;
+
     /// <summary>
     /// Creates a new Snappy compression codec.
     /// </summary>
@@ -97,7 +100,7 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
     {
         if (!HasXerialMagic(source))
         {
-            Snappier.Snappy.Decompress(source, destination);
+            DecompressBlock(source, destination);
             return;
         }
 
@@ -127,7 +130,7 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
                 throw new InvalidDataException("Truncated xerial-snappy block.");
 
             var compressedSequence = source.Slice(position, compressedSize);
-            Snappier.Snappy.Decompress(compressedSequence, destination);
+            DecompressBlock(compressedSequence, destination);
 
             position = source.GetPosition(compressedSize, position);
             remaining -= compressedSize;
@@ -147,6 +150,96 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         return magic.SequenceEqual(XerialMagic);
     }
 
+    private static void DecompressBlock(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+    {
+        var trackedDestination = GetTrackedDestination(destination);
+        try
+        {
+            Snappier.Snappy.Decompress(source, trackedDestination);
+        }
+        catch (InvalidOperationException exception)
+            when (!trackedDestination.DestinationThrewInvalidOperationException)
+        {
+            throw new InvalidDataException("Invalid Snappy payload.", exception);
+        }
+        finally
+        {
+            trackedDestination.Release();
+        }
+    }
+
+    private static ExceptionTrackingBufferWriter GetTrackedDestination(IBufferWriter<byte> destination)
+    {
+        var trackedDestination = t_decompressionDestination;
+        if (trackedDestination is null)
+        {
+            trackedDestination = new ExceptionTrackingBufferWriter();
+            t_decompressionDestination = trackedDestination;
+        }
+        else if (trackedDestination.IsInUse)
+        {
+            trackedDestination = new ExceptionTrackingBufferWriter();
+        }
+
+        trackedDestination.Initialize(destination);
+        return trackedDestination;
+    }
+
+    private sealed class ExceptionTrackingBufferWriter : IBufferWriter<byte>
+    {
+        private IBufferWriter<byte>? _destination;
+
+        internal bool IsInUse => _destination is not null;
+
+        internal bool DestinationThrewInvalidOperationException { get; private set; }
+
+        internal void Initialize(IBufferWriter<byte> destination)
+        {
+            _destination = destination;
+            DestinationThrewInvalidOperationException = false;
+        }
+
+        internal void Release() => _destination = null;
+
+        public void Advance(int count)
+        {
+            try
+            {
+                _destination!.Advance(count);
+            }
+            catch (InvalidOperationException)
+            {
+                DestinationThrewInvalidOperationException = true;
+                throw;
+            }
+        }
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            try
+            {
+                return _destination!.GetMemory(sizeHint);
+            }
+            catch (InvalidOperationException)
+            {
+                DestinationThrewInvalidOperationException = true;
+                throw;
+            }
+        }
+
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            try
+            {
+                return _destination!.GetSpan(sizeHint);
+            }
+            catch (InvalidOperationException)
+            {
+                DestinationThrewInvalidOperationException = true;
+                throw;
+            }
+        }
+    }
 }
 
 internal static class SnappyModuleInit

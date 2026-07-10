@@ -70,7 +70,7 @@ public sealed class BrotliCompressionCodec : ICompressionCodec
         using var inputStream = new ReadOnlySequenceStream(source);
         using var brotliStream = new BrotliStream(inputStream, CompressionMode.Decompress);
 
-        CompressionStreamCopy.CopyToBufferWriter(brotliStream, destination);
+        CompressionStreamCopy.CopyToBufferWriter(brotliStream, destination, "Invalid Brotli payload.");
     }
 }
 
