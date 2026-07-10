@@ -3,6 +3,7 @@ using Dekaf.Consumer;
 using Dekaf.Diagnostics;
 using Dekaf.Serialization;
 using Dekaf.StressTests.Metrics;
+using Dekaf.StressTests.Reporting;
 using Dekaf.StressTests.Scenarios;
 using NSubstitute;
 using ConfluentKafka = Confluent.Kafka;
@@ -413,5 +414,41 @@ public class RoundTripMessageCodecTests
 
         await Assert.That(result.ProducerDeliveryDiagnostics).IsSameReferenceAs(snapshot);
         await Assert.That(result.IsMessageBounded).IsTrue();
+    }
+
+    [Test]
+    public async Task RoundTripResult_ExcludesProducerOnlyMedianRate()
+    {
+        var now = DateTime.UtcNow;
+        var result = new StressTestResult
+        {
+            Scenario = "producer-roundtrip",
+            Client = "Dekaf",
+            DurationMinutes = 15,
+            MessageSizeBytes = 1_000,
+            StartedAtUtc = now,
+            CompletedAtUtc = now.AddSeconds(30),
+            Throughput = new ThroughputSnapshot
+            {
+                TotalMessages = 1_000,
+                TotalBytes = 1_000_000,
+                TotalErrors = 0,
+                ElapsedSeconds = 30,
+                AverageMessagesPerSecond = 33.3,
+                AverageMegabytesPerSecond = 0.03,
+                MessagesPerSecondSamples = [1_000, 1_100],
+                ErrorSamples = []
+            },
+            GcStats = new GcSnapshot
+            {
+                Gen0Collections = 0,
+                Gen1Collections = 0,
+                Gen2Collections = 0,
+                AllocatedBytes = 0
+            },
+            IsMessageBounded = true
+        };
+
+        await Assert.That(result.MedianIntervalMessagesPerSecond).IsNull();
     }
 }

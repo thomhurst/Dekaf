@@ -110,6 +110,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
             producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
         }
+        await sampler.StopAsync().ConfigureAwait(false);
 
         var endOffsets = await StressTestHelpers.QueryEndOffsetsAsync(
             consumer,
@@ -128,7 +129,6 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             cancellationToken).ConfigureAwait(false);
 
         throughput.Stop();
-        await sampler.StopAsync().ConfigureAwait(false);
 
         gcStats.Capture();
         var validation = validator.CreateSnapshot(timedOut);
@@ -323,6 +323,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 
             ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput);
         }
+        await sampler.StopAsync().ConfigureAwait(false);
 
         var endOffsets = ConfluentStressTestHelpers.QueryEndOffsets(
             consumer,
@@ -341,7 +342,6 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             cancellationToken);
 
         throughput.Stop();
-        await sampler.StopAsync().ConfigureAwait(false);
 
         gcStats.Capture();
         var validation = validator.CreateSnapshot(timedOut);

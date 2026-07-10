@@ -121,6 +121,9 @@ def accepted_messages_per_second(result):
 
 def median_interval_rate(result):
     """Median sampled client-side interval throughput, or None for old result files."""
+    if result.get('isMessageBounded'):
+        return None
+
     rate = result.get('medianIntervalMessagesPerSecond')
     if rate is not None:
         return rate

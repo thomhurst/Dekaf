@@ -7,13 +7,14 @@ from stress_report import (
 )
 
 
-def stress_result(client, effective_rate, median_rate=None):
+def stress_result(client, effective_rate, median_rate=None, is_message_bounded=False):
     result = {
         "client": client,
         "durationMinutes": 15,
         "messageSizeBytes": 1000,
         "effectiveMessagesPerSecond": effective_rate,
         "effectiveMegabytesPerSecond": effective_rate * 1000 / (1024 * 1024),
+        "isMessageBounded": is_message_bounded,
         "throughput": {
             "averageMessagesPerSecond": effective_rate,
             "averageMegabytesPerSecond": effective_rate * 1000 / (1024 * 1024),
@@ -61,6 +62,33 @@ class StressReportTests(unittest.TestCase):
         rows = [line for line in lines if line.startswith("| Dekaf") or line.startswith("| Confluent")]
 
         self.assertTrue(rows[0].startswith("| Dekaf"))
+        self.assertIn("| 2.00x |", rows[0])
+
+    def test_message_bounded_table_ignores_producer_only_median(self):
+        lines = format_throughput_table(
+            [
+                stress_result(
+                    "Dekaf",
+                    effective_rate=2000,
+                    median_rate=900,
+                    is_message_bounded=True,
+                ),
+                stress_result(
+                    "Confluent",
+                    effective_rate=1000,
+                    median_rate=1200,
+                    is_message_bounded=True,
+                ),
+            ],
+            "Producer Round-Trip",
+            include_ratio=True,
+        )
+
+        rows = [line for line in lines if line.startswith("| Dekaf") or line.startswith("| Confluent")]
+        dekaf_columns = [column.strip() for column in rows[0].strip("|").split("|")]
+
+        self.assertTrue(rows[0].startswith("| Dekaf"))
+        self.assertEqual("-", dekaf_columns[3])
         self.assertIn("| 2.00x |", rows[0])
 
     def test_transactional_scenario_reports_verification_counts(self):

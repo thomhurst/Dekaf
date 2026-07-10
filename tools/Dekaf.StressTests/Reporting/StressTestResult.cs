@@ -78,12 +78,12 @@ internal sealed class StressTestResult
         DeliveredMegabytesPerSecond ?? Throughput.AverageMegabytesPerSecond;
 
     /// <summary>
-    /// Median of sampled client-side throughput intervals. This is less sensitive than
-    /// the whole-run mean to a brief late-run stall, and lets reports show the steady
-    /// state beside the end-to-end average.
+    /// Median of sampled client-side throughput intervals. Message-bounded round-trip
+    /// scenarios sample only their producer phase, while the headline rate includes
+    /// validation, so exposing that partial-window median would make comparisons invalid.
     /// </summary>
     public double? MedianIntervalMessagesPerSecond =>
-        GetMedian(Throughput.MessagesPerSecondSamples);
+        IsMessageBounded ? null : GetMedian(Throughput.MessagesPerSecondSamples);
 
     /// <summary>
     /// Client-side append rate, reported only when it is distinct from the headline
