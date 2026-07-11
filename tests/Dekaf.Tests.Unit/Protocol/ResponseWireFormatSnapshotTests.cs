@@ -179,6 +179,7 @@ public class ResponseWireFormatSnapshotTests
                 if (batches is List<RecordBatch> pooledBatches)
                 {
                     FetchResponsePartition.ReturnRecordBatchList(pooledBatches);
+                    partition.Records = null;
                 }
             }
         }
