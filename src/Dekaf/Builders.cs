@@ -2279,14 +2279,21 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
     private void ApplyHighThroughputAdaptiveDefaults()
     {
+        var maxPartitionFetchBytes =
+            (int)Math.Min((long)_maxPartitionFetchBytes * 4, int.MaxValue);
+        var initialFetchMaxBytes = Math.Max(_fetchMaxBytes, _maxPartitionFetchBytes);
+        var maxFetchMaxBytes = Math.Max(
+            (int)Math.Min((long)_fetchMaxBytes * 2, int.MaxValue),
+            maxPartitionFetchBytes);
+
         _adaptiveFetchSizingOptions = new AdaptiveFetchSizingOptions
         {
             MinPartitionFetchBytes = _maxPartitionFetchBytes,
             InitialPartitionFetchBytes = _maxPartitionFetchBytes,
-            MaxPartitionFetchBytes = (int)Math.Min((long)_maxPartitionFetchBytes * 4, int.MaxValue),
-            MinFetchMaxBytes = _fetchMaxBytes,
-            InitialFetchMaxBytes = _fetchMaxBytes,
-            MaxFetchMaxBytes = (int)Math.Min((long)_fetchMaxBytes * 2, int.MaxValue)
+            MaxPartitionFetchBytes = maxPartitionFetchBytes,
+            MinFetchMaxBytes = initialFetchMaxBytes,
+            InitialFetchMaxBytes = initialFetchMaxBytes,
+            MaxFetchMaxBytes = maxFetchMaxBytes
         };
     }
 

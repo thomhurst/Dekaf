@@ -417,6 +417,23 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task ForHighThroughput_TotalAdaptiveBoundsCoverOnePartition()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .ForHighThroughput()
+            .WithFetchMaxBytes(8 * 1024 * 1024)
+            .WithMaxPartitionFetchBytes(64 * 1024 * 1024)
+            .Build();
+
+        var options = ((KafkaConsumer<string, string>)consumer).Options.AdaptiveFetchSizingOptions!;
+
+        await Assert.That(options.MinFetchMaxBytes).IsEqualTo(64 * 1024 * 1024);
+        await Assert.That(options.InitialFetchMaxBytes).IsEqualTo(64 * 1024 * 1024);
+        await Assert.That(options.MaxFetchMaxBytes).IsEqualTo(256 * 1024 * 1024);
+    }
+
+    [Test]
     public async Task ForHighThroughput_ThenWithCheckCrcs_OverridesPreset()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
