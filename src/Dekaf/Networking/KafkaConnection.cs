@@ -932,30 +932,7 @@ public sealed partial class KafkaConnection :
 
             if (isFetchResponse)
             {
-                var memoryOwner = pooledBuffer.TransferOwnership();
-                using var parsingScope = ResponseParsingContext.SetPooledMemory(memoryOwner);
-
-                var reader = new KafkaProtocolReader(pooledBuffer.Data);
-                var response = KafkaMessageMetadata<TRequest, TResponse>.ReadResponse(ref reader, apiVersion);
-
-                if (ResponseParsingContext.WasMemoryUsed)
-                {
-                    var takenMemory = ResponseParsingContext.TakePooledMemory();
-                    if (response is FetchResponse fetchResponse && takenMemory is not null)
-                    {
-                        fetchResponse.PooledMemoryOwner = takenMemory;
-                    }
-                    else
-                    {
-                        takenMemory?.Dispose();
-                    }
-                }
-                else
-                {
-                    memoryOwner.Dispose();
-                }
-
-                return response;
+                return ParseFetchResponse<TRequest, TResponse>(pooledBuffer, apiVersion);
             }
             else
             {
@@ -985,6 +962,46 @@ public sealed partial class KafkaConnection :
                     _cancelledCorrelationIds.TryAdd(correlationId);
                 }
             }
+        }
+    }
+
+    internal static TResponse ParseFetchResponse<TRequest, TResponse>(
+        PooledResponseBuffer pooledBuffer,
+        short apiVersion)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        var memoryOwner = pooledBuffer.TransferOwnership();
+        using var parsingScope = ResponseParsingContext.SetPooledMemory(memoryOwner);
+
+        try
+        {
+            var reader = new KafkaProtocolReader(pooledBuffer.Data);
+            var response = KafkaMessageMetadata<TRequest, TResponse>.ReadResponse(ref reader, apiVersion);
+
+            if (ResponseParsingContext.WasMemoryUsed)
+            {
+                var takenMemory = ResponseParsingContext.TakePooledMemory();
+                if (response is FetchResponse fetchResponse && takenMemory is not null)
+                {
+                    fetchResponse.PooledMemoryOwner = takenMemory;
+                }
+                else
+                {
+                    takenMemory?.Dispose();
+                }
+            }
+            else
+            {
+                memoryOwner.Dispose();
+            }
+
+            return response;
+        }
+        catch
+        {
+            memoryOwner.Dispose();
+            throw;
         }
     }
 
