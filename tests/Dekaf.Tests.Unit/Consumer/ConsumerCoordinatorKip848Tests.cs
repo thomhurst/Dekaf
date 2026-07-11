@@ -3187,6 +3187,22 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task TryRecordPollFast_PendingFatalHeartbeat_ReturnsFalse()
+    {
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await Assert.That(coordinator.TryRecordPollFast()).IsTrue();
+
+        SetPrivateField(
+            coordinator,
+            "_fatalHeartbeatException",
+            new GroupException(ErrorCode.GroupAuthorizationFailed, "fatal heartbeat"));
+
+        await Assert.That(coordinator.TryRecordPollFast()).IsFalse();
+    }
+
+    [Test]
     public async Task IsAssignmentSyncCurrent_HeartbeatAssignmentProcessing_ReturnsFalse()
     {
         var options = CreateConsumerProtocolOptions();

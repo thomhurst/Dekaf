@@ -269,6 +269,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal bool TryRecordPollFast()
     {
+        // The fatal can be published after the assignment-currency gate. Recheck here,
+        // immediately before the caller dequeues a buffered record, so the slow path throws it.
+        if (Volatile.Read(ref _fatalHeartbeatException) is not null)
+            return false;
+
         // Heartbeat expiry invokes user callbacks outside _lock. Keep its poll generation
         // unchanged so EnsureActiveGroup cannot rejoin until notification completes.
         if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
@@ -1046,58 +1051,58 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                  IsCurrentPollGenerationExpired()))
                 return default;
 
-        var version = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.ConsumerGroupHeartbeat,
-            ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
-            ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
+            var version = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.ConsumerGroupHeartbeat,
+                ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
+                ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
 
-        // KIP-1082: v1+ uses client-generated UUID v4 instead of empty string for new members.
-        // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
-        // Thread-safety: _memberId is only null on the initial join path (protected by _lock)
-        // or after ResetMemberState() which also transitions to Unjoined before any heartbeat loop restart.
-        if (_memberId is null && version >= 1)
-            _memberId = Guid.NewGuid().ToString();
+            // KIP-1082: v1+ uses client-generated UUID v4 instead of empty string for new members.
+            // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
+            // Thread-safety: _memberId is only null on the initial join path (protected by _lock)
+            // or after ResetMemberState() which also transitions to Unjoined before any heartbeat loop restart.
+            if (_memberId is null && version >= 1)
+                _memberId = Guid.NewGuid().ToString();
 
-        var memberId = _memberId ?? string.Empty;
+            var memberId = _memberId ?? string.Empty;
 
-        // MemberEpoch: 0 for initial join, -2 for static rejoin (set by fencing handler),
-        // or the current epoch for steady-state heartbeats
-        var memberEpoch = isInitial
-            ? (_generationId == -2 && _options.GroupInstanceId is not null ? -2 : 0)
-            : _generationId;
+            // MemberEpoch: 0 for initial join, -2 for static rejoin (set by fencing handler),
+            // or the current epoch for steady-state heartbeats
+            var memberEpoch = isInitial
+                ? (_generationId == -2 && _options.GroupInstanceId is not null ? -2 : 0)
+                : _generationId;
 
-        // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
-        // which is invalid when there's no previous state.
-        assignmentVersion = Volatile.Read(ref _assignmentVersion);
-        ownedTopicPartitions =
-            isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
+            // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
+            // which is invalid when there's no previous state.
+            assignmentVersion = Volatile.Read(ref _assignmentVersion);
+            ownedTopicPartitions =
+                isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
 
-        // Atomically snapshot and clear the subscription-changed flag to prevent a race where
-        // a concurrent EnsureActiveGroupConsumerProtocolAsync sets new topics + flag=true,
-        // but this heartbeat clears the flag after sending the old topics.
-        // Always send topics on initial/re-join — KIP-848 requires SubscribedTopicNames to be
-        // non-null when joining. The flag must still be cleared to avoid a stale re-send later.
-        var subscriptionChanged = Interlocked.Exchange(ref _subscriptionChanged, 0) == 1;
-        var subscriptionShouldBeSent = isInitial || subscriptionChanged;
-        var currentSubscribedTopicRegex = _subscribedTopicRegex;
-        var subscribedTopics = subscriptionShouldBeSent ? _subscribedTopics?.ToList() : null;
-        subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
-            ? currentSubscribedTopicRegex ?? (isInitial ? null : string.Empty)
-            : null;
+            // Atomically snapshot and clear the subscription-changed flag to prevent a race where
+            // a concurrent EnsureActiveGroupConsumerProtocolAsync sets new topics + flag=true,
+            // but this heartbeat clears the flag after sending the old topics.
+            // Always send topics on initial/re-join — KIP-848 requires SubscribedTopicNames to be
+            // non-null when joining. The flag must still be cleared to avoid a stale re-send later.
+            var subscriptionChanged = Interlocked.Exchange(ref _subscriptionChanged, 0) == 1;
+            var subscriptionShouldBeSent = isInitial || subscriptionChanged;
+            var currentSubscribedTopicRegex = _subscribedTopicRegex;
+            var subscribedTopics = subscriptionShouldBeSent ? _subscribedTopics?.ToList() : null;
+            subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
+                ? currentSubscribedTopicRegex ?? (isInitial ? null : string.Empty)
+                : null;
 
-        var request = new ConsumerGroupHeartbeatRequest
-        {
-            GroupId = _options.GroupId!,
-            MemberId = memberId,
-            MemberEpoch = memberEpoch,
-            InstanceId = _options.GroupInstanceId,
-            RebalanceTimeoutMs = isInitial ? _options.MaxPollIntervalMs : -1,
-            RackId = isInitial ? _options.ClientRack : null,
-            SubscribedTopicNames = subscribedTopics,
-            SubscribedTopicRegex = subscribedTopicRegex,
-            ServerAssignor = isInitial ? _options.GroupRemoteAssignor : null,
-            TopicPartitions = ownedTopicPartitions
-        };
+            var request = new ConsumerGroupHeartbeatRequest
+            {
+                GroupId = _options.GroupId!,
+                MemberId = memberId,
+                MemberEpoch = memberEpoch,
+                InstanceId = _options.GroupInstanceId,
+                RebalanceTimeoutMs = isInitial ? _options.MaxPollIntervalMs : -1,
+                RackId = isInitial ? _options.ClientRack : null,
+                SubscribedTopicNames = subscribedTopics,
+                SubscribedTopicRegex = subscribedTopicRegex,
+                ServerAssignor = isInitial ? _options.GroupRemoteAssignor : null,
+                TopicPartitions = ownedTopicPartitions
+            };
 
             response = await connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
                 request, version, cancellationToken).ConfigureAwait(false);
