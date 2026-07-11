@@ -47,6 +47,23 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_CurrentBufferedAssignment_DoesNotRentTimeoutCts()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromMinutes(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_WithPendingFetch_FlushesPositionWhenFetchExhausted()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
@@ -450,6 +467,32 @@ public sealed class ConsumeOneFastPathTests
             ?? throw new InvalidOperationException("_initialized field not found.");
 
         initializedField.SetValue(consumer, true);
+    }
+
+    private static void MarkManualAssignmentCurrent(KafkaConsumer<string, string> consumer)
+    {
+        var consumerType = typeof(KafkaConsumer<string, string>);
+        var assignmentVersion = consumerType.GetField(
+            "_assignmentEnsureVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_assignmentEnsureVersion field not found.");
+        var acknowledgedVersion = consumerType.GetField(
+            "_lastManualAssignmentEnsureVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_lastManualAssignmentEnsureVersion field not found.");
+        acknowledgedVersion.SetValue(consumer, assignmentVersion.GetValue(consumer));
+    }
+
+    private static int GetTimeoutCtsPoolCount(KafkaConsumer<string, string> consumer)
+    {
+        var ctsPoolField = typeof(KafkaConsumer<string, string>).GetField(
+            "_ctsPool",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_ctsPool field not found.");
+        var ctsPool = ctsPoolField.GetValue(consumer)!;
+        var countField = ctsPool.GetType().GetField("_count", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("CancellationTokenSourcePool._count field not found.");
+        return (int)countField.GetValue(ctsPool)!;
     }
 
     private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions(

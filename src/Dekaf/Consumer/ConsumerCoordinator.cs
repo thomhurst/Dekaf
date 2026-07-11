@@ -117,26 +117,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal ValueTask RecordPollAsync(CancellationToken cancellationToken)
     {
-        // Heartbeat expiry invokes user callbacks outside _lock. Keep its poll generation
-        // unchanged so EnsureActiveGroup cannot rejoin until notification completes.
-        if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
-            return ValueTask.CompletedTask;
-
-        if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
-        {
-            RefreshPollDeadline();
-            return ValueTask.CompletedTask;
-        }
-
-        var now = Stopwatch.GetTimestamp();
-        if (_state == CoordinatorState.Stable
-            && now - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks)
-        {
-            return ExpireAndRecordPollAsync(cancellationToken);
-        }
-
-        RecordPollIfLossNotificationComplete(now);
-        return ValueTask.CompletedTask;
+        return TryRecordPollFast()
+            ? ValueTask.CompletedTask
+            : ExpireAndRecordPollAsync(cancellationToken);
     }
 
     private void RecordPollIfLossNotificationComplete(long timestamp)
@@ -235,6 +218,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal void AcknowledgeAssignmentSync(int assignmentVersion)
     {
+        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
+            && _revokedPartitionsSinceLastSync.IsEmpty)
+        {
+            return;
+        }
+
         lock (_assignmentStateLock)
         {
             if (Volatile.Read(ref _assignmentVersion) != assignmentVersion
@@ -246,6 +235,36 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
         }
+    }
+
+    internal bool IsAssignmentSyncCurrent(int assignmentVersion) =>
+        _state == CoordinatorState.Stable
+        && Volatile.Read(ref _assignmentVersion) == assignmentVersion
+        && _revokedPartitionsSinceLastSync.IsEmpty
+        && Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0;
+
+    internal bool TryRecordPollFast()
+    {
+        // Heartbeat expiry invokes user callbacks outside _lock. Keep its poll generation
+        // unchanged so EnsureActiveGroup cannot rejoin until notification completes.
+        if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+            return true;
+
+        if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
+        {
+            RefreshPollDeadline();
+            return true;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        if (_state == CoordinatorState.Stable
+            && now - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks)
+        {
+            return false;
+        }
+
+        RecordPollIfLossNotificationComplete(now);
+        return true;
     }
 
     private void EnqueueRevokedPartitions(IEnumerable<TopicPartition> revoked)

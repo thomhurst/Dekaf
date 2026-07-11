@@ -2113,6 +2113,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
             return;
 
+        if (Volatile.Read(ref _prefetchTask) is not null)
+            return;
+
         lock (_prefetchStartLock)
         {
             if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
@@ -3250,6 +3253,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
+        if (CanUseBufferedConsumeOneFastPath(cancellationToken)
+            && TryConsumeOneFromPendingFetches(out var bufferedResult))
+        {
+            return bufferedResult;
+        }
+
         using var timeoutCts = _ctsPool.Rent();
         timeoutCts.CancelAfter(timeout);
 
@@ -3281,6 +3290,43 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return null;
+    }
+
+    private bool CanUseBufferedConsumeOneFastPath(CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested
+            || Volatile.Read(ref _consumerDisposed) != 0
+            || !_initialized
+            || _pendingFetches.Count == 0
+            || Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
+        {
+            return false;
+        }
+
+        if (_options.OffsetCommitMode == OffsetCommitMode.Auto
+            && _coordinator is not null
+            && Volatile.Read(ref _autoCommitTask) is not { IsCompleted: false })
+        {
+            return false;
+        }
+
+        if (_options.QueuedMinMessages > 1 && Volatile.Read(ref _prefetchTask) is null)
+            return false;
+
+        var pending = _pendingFetches.Peek();
+        if (!IsCurrentlyAssigned(pending.TopicPartition))
+            return false;
+
+        var coordinator = _coordinator;
+        if ((_subscriptionSnapshot.Count != 0 || _topicPattern is not null) && coordinator is not null)
+        {
+            var assignmentVersion = coordinator.AssignmentVersion;
+            return Volatile.Read(ref _lastCoordinatorAssignmentVersion) == assignmentVersion
+                   && coordinator.IsAssignmentSyncCurrent(assignmentVersion)
+                   && coordinator.TryRecordPollFast();
+        }
+
+        return IsManualAssignmentEnsureCurrent();
     }
 
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(CancellationToken cancellationToken)
@@ -6442,6 +6488,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async Task StartAutoCommitAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
+            return;
+
+        if (Volatile.Read(ref _autoCommitTask) is { IsCompleted: false })
             return;
 
         Task? oldTask;
