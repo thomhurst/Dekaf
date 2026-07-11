@@ -593,6 +593,10 @@ public sealed class RecordBatch : IDisposable
     // Reuses ObjectPool<T> for zero-alloc CAS-based pooling with miss tracking and exception safety.
     private static readonly RecordBatchPool s_pool = new();
 
+    internal static int MaxPoolSizeValue => s_pool.MaxPoolSize;
+
+    internal static void RatchetPoolSize(int newSize) => s_pool.RatchetMaxPoolSize(newSize);
+
     private sealed class RecordBatchPool : ObjectPool<RecordBatch>
     {
         public RecordBatchPool() : base(maxPoolSize: 2048) { }
@@ -1184,8 +1188,18 @@ internal readonly struct PooledRecordData
 internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 {
     // Pool for reusing LazyRecordList instances to eliminate per-batch class allocation.
-    private const int MaxPooledInstances = 256;
-    private static readonly LockFreeStack<LazyRecordList> s_instancePool = new(MaxPooledInstances);
+    private const int DefaultMaxPooledInstances = 256;
+    private static readonly LazyRecordListPool s_instancePool = new();
+
+    private sealed class LazyRecordListPool() : ObjectPool<LazyRecordList>(DefaultMaxPooledInstances)
+    {
+        protected override LazyRecordList Create() => new();
+        protected override void Reset(LazyRecordList item) { }
+    }
+
+    internal static int MaxPoolSizeValue => s_instancePool.MaxPoolSize;
+
+    internal static void RatchetPoolSize(int newSize) => s_instancePool.RatchetMaxPoolSize(newSize);
 
     private ReadOnlyMemory<byte> _rawData;
     private byte[]? _pooledArray; // Track pooled array for cleanup (mutable for idempotent dispose)
@@ -1224,13 +1238,9 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static LazyRecordList Rent()
     {
-        if (s_instancePool.TryPop(out var instance))
-        {
-            Volatile.Write(ref instance._disposed, 0);
-            return instance;
-        }
-
-        return new LazyRecordList();
+        var instance = s_instancePool.Rent();
+        Volatile.Write(ref instance._disposed, 0);
+        return instance;
     }
 
     public int Count => _count;
@@ -1403,7 +1413,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
         _nextParseOffset = 0;
 
         // Return to pool. If full, let GC handle this instance.
-        s_instancePool.TryPush(this);
+        s_instancePool.Return(this);
     }
 }
 

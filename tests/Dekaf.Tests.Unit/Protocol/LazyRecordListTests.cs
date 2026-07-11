@@ -328,4 +328,15 @@ public class LazyRecordListTests
         list.Dispose();
         list.Dispose();
     }
+
+    [Test]
+    public async Task LazyRecordList_RatchetPoolSize_GrowsAndDoesNotShrink()
+    {
+        var target = LazyRecordList.MaxPoolSizeValue + 1;
+
+        LazyRecordList.RatchetPoolSize(target);
+        LazyRecordList.RatchetPoolSize(1);
+
+        await Assert.That(LazyRecordList.MaxPoolSizeValue).IsGreaterThanOrEqualTo(target);
+    }
 }

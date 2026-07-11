@@ -1,5 +1,6 @@
 using System.Reflection;
 using Dekaf.Consumer;
+using Dekaf.Internal;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 
@@ -7,6 +8,27 @@ namespace Dekaf.Tests.Unit.Consumer;
 
 public sealed class KafkaConsumerPrefetchMemorySignalTests
 {
+    [Test]
+    public async Task BudgetGrowth_RatchetsRecordWrapperPools()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            QueuedMinMessages = 2
+        };
+
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+
+        ((IBudgetedInstance)consumer).OnBudgetChanged(512UL * 1024 * 1024);
+        var expected = PoolSizing.ForConsumerRecordWrappers(512L * 1024 * 1024);
+
+        await Assert.That(RecordBatch.MaxPoolSizeValue).IsGreaterThanOrEqualTo(expected);
+        await Assert.That(LazyRecordList.MaxPoolSizeValue).IsGreaterThanOrEqualTo(expected);
+    }
+
     [Test]
     public async Task TrackPrefetchedBytes_RepeatedRelease_DoesNotAccumulateMemorySignals()
     {

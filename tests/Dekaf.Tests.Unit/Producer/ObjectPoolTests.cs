@@ -151,6 +151,29 @@ public class ObjectPoolTests
     }
 
     [Test]
+    public async Task RatchetMaxPoolSize_GrowsAndPreservesPooledItems()
+    {
+        var pool = new TestPool(1);
+        var item = pool.Rent();
+        pool.Return(item);
+
+        pool.RatchetMaxPoolSize(4);
+
+        await Assert.That(pool.MaxPoolSize).IsEqualTo(4);
+        await Assert.That(pool.Rent()).IsSameReferenceAs(item);
+    }
+
+    [Test]
+    public async Task RatchetMaxPoolSize_DoesNotShrink()
+    {
+        var pool = new TestPool(4);
+
+        pool.RatchetMaxPoolSize(2);
+
+        await Assert.That(pool.MaxPoolSize).IsEqualTo(4);
+    }
+
+    [Test]
     [Repeat(10)]
     public async Task ConcurrentRentReturn_MaintainsBounds()
     {
