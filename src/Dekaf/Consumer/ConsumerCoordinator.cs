@@ -959,8 +959,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
 
-        if (revoked is not null)
-            _onPartitionsRevoking?.Invoke(revoked);
+        NotifyRevoking(revoked);
 
         lock (_assignmentStateLock)
         {
@@ -1104,49 +1103,62 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 request, version, cancellationToken).ConfigureAwait(false);
         }
 
-        using var assignmentProcessing = BeginAssignmentProcessing(response.Assignment);
+        var assignmentProcessing = BeginAssignmentProcessing(response.Assignment);
 
         if (!discardIfMembershipChanged)
-            return ProcessConsumerGroupHeartbeatResponse(
-                response,
-                isInitial,
-                ownedTopicPartitions,
-                assignmentVersion,
-                subscribedTopicRegex);
-
-        await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
         {
-            ConsumerHeartbeatResult result;
-            await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+            using (assignmentProcessing)
             {
-                // A foreground poll can expire the member while this request is in flight.
-                // Validate and publish under the state lock. The listener lock preserves
-                // callback ordering after this lock is released without blocking re-entrant APIs.
-                if (_state != CoordinatorState.Stable ||
-                    Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
-                    IsCurrentPollGenerationExpired())
-                    return default;
-
-                result = ProcessConsumerGroupHeartbeatResponse(
+                return ProcessConsumerGroupHeartbeatResponse(
                     response,
                     isInitial,
                     ownedTopicPartitions,
                     assignmentVersion,
                     subscribedTopicRegex);
             }
-            finally
+        }
+
+        var rebalanceListenerLockHeld = false;
+        try
+        {
+            ConsumerHeartbeatResult result;
+            using (assignmentProcessing)
             {
-                _lock.Release();
+                await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                rebalanceListenerLockHeld = true;
+                await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    // A foreground poll can expire the member while this request is in flight.
+                    // Validate and publish under the state lock. The listener lock preserves
+                    // callback ordering after this lock is released without blocking re-entrant APIs.
+                    if (_state != CoordinatorState.Stable ||
+                        Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
+                        IsCurrentPollGenerationExpired())
+                        return default;
+
+                    result = ProcessConsumerGroupHeartbeatResponse(
+                        response,
+                        isInitial,
+                        ownedTopicPartitions,
+                        assignmentVersion,
+                        subscribedTopicRegex);
+                }
+                finally
+                {
+                    _lock.Release();
+                }
             }
 
+            // Assignment state and the immediate stale-fetch marker are published. User
+            // callbacks remain serialized, but no longer suppress buffered polls while awaiting.
             await FireConsumerProtocolRebalanceListenersCoreAsync(result, cancellationToken)
                 .ConfigureAwait(false);
         }
         finally
         {
-            _rebalanceListenerLock.Release();
+            if (rebalanceListenerLockHeld)
+                _rebalanceListenerLock.Release();
         }
 
         // Steady-heartbeat callbacks are fired above while publication is fenced against
@@ -1360,8 +1372,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
         if (changed)
         {
-            if (revoked is not null)
-                _onPartitionsRevoking?.Invoke(revoked);
+            NotifyRevoking(revoked);
 
             lock (_assignmentStateLock)
             {
@@ -1379,6 +1390,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         return new ConsumerHeartbeatResult(changed, revoked, assigned);
+    }
+
+    private void NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
+    {
+        if (revoked is not null)
+            _onPartitionsRevoking?.Invoke(revoked);
     }
 
     /// <summary>

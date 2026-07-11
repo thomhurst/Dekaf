@@ -2115,7 +2115,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
             return;
 
-        if (Volatile.Read(ref _prefetchTask) is not null)
+        // Prefetch is a lifetime loop. A non-null terminal task represents a stopped
+        // consumer path and must not be silently restarted, unlike the auto-commit loop.
+        if (HasPrefetchStarted())
             return;
 
         lock (_prefetchStartLock)
@@ -2123,7 +2125,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
                 return;
 
-            if (_prefetchTask is not null)
+            if (HasPrefetchStarted())
                 return;
 
             _prefetchCts = new CancellationTokenSource();
@@ -3336,7 +3338,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return false;
         }
 
-        if (_options.QueuedMinMessages > 1 && Volatile.Read(ref _prefetchTask) is null)
+        if (_options.QueuedMinMessages > 1 && !HasPrefetchStarted())
             return false;
 
         var pending = _pendingFetches.Peek();
@@ -3346,20 +3348,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var coordinator = _coordinator;
         if ((_subscriptionSnapshot.Count != 0 || _topicPattern is not null) && coordinator is not null)
         {
-            var assignmentVersion = coordinator.AssignmentVersion;
-            return Volatile.Read(ref _lastCoordinatorAssignmentVersion) == assignmentVersion
-                   && coordinator.IsAssignmentSyncCurrent(assignmentVersion);
+            return IsCoordinatorAssignmentSyncCurrent(coordinator, out _);
         }
 
         return IsManualAssignmentEnsureCurrent();
     }
 
     private bool IsTopicFilterRefreshDue()
+        => _topicFilter is not null && IsFilterRefreshDue();
+
+    private bool IsFilterRefreshDue()
     {
         var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
-        return _topicFilter is not null
-               && (lastRefresh == 0
-                   || Dekaf.MonotonicClock.GetMilliseconds() - lastRefresh >= FilterRefreshIntervalMilliseconds);
+        return lastRefresh == 0
+               || Dekaf.MonotonicClock.GetMilliseconds() - lastRefresh >= FilterRefreshIntervalMilliseconds;
+    }
+
+    private bool HasPrefetchStarted() => Volatile.Read(ref _prefetchTask) is not null;
+
+    private bool IsCoordinatorAssignmentSyncCurrent(
+        ConsumerCoordinator coordinator,
+        out int assignmentVersion)
+    {
+        assignmentVersion = coordinator.AssignmentVersion;
+        return Volatile.Read(ref _lastCoordinatorAssignmentVersion) == assignmentVersion
+               && coordinator.IsAssignmentSyncCurrent(assignmentVersion);
     }
 
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(
@@ -4575,14 +4588,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <returns>True if the subscription changed.</returns>
     private async ValueTask<bool> RefreshFilteredTopicsAsync(Func<string, bool> filter, CancellationToken cancellationToken)
     {
-        var now = Dekaf.MonotonicClock.GetMilliseconds();
-        var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
-
-        // Rate-limit: skip if we refreshed recently (unless this is the first call)
-        if (lastRefresh != 0 && now - lastRefresh < FilterRefreshIntervalMilliseconds)
-        {
+        if (!IsFilterRefreshDue())
             return false;
-        }
+
+        var now = Dekaf.MonotonicClock.GetMilliseconds();
 
         Volatile.Write(ref _lastFilterRefreshTicks, now);
 
@@ -4684,8 +4693,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, topicPattern, cancellationToken).ConfigureAwait(false);
 
-            var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
-            if (Volatile.Read(ref _lastCoordinatorAssignmentVersion) == coordinatorAssignmentVersion)
+            if (IsCoordinatorAssignmentSyncCurrent(coordinator, out var coordinatorAssignmentVersion))
             {
                 coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
                 return;
