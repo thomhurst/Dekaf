@@ -16,18 +16,20 @@ namespace Dekaf.Producer;
 /// <typeparam name="T">The pooled item type. Must be a reference type.</typeparam>
 internal abstract class ObjectPool<T> where T : class
 {
-    private readonly LockFreeStack<T> _stack;
+    private LockFreeStack<T> _stack;
+    private readonly Lock _resizeLock = new();
+    private int _maxPoolSize;
     private long _misses;
 
     /// <summary>
     /// Maximum number of items the pool will retain. Excess items are discarded for GC.
     /// </summary>
-    public int MaxPoolSize { get; }
+    public int MaxPoolSize => Volatile.Read(ref _maxPoolSize);
 
     /// <summary>
     /// Approximate number of items currently in the pool.
     /// </summary>
-    public int ApproximateCount => _stack.Count;
+    public int ApproximateCount => Volatile.Read(ref _stack).Count;
 
     /// <summary>
     /// Number of times <see cref="Rent"/> found the pool empty and had to allocate.
@@ -38,7 +40,7 @@ internal abstract class ObjectPool<T> where T : class
     protected ObjectPool(int maxPoolSize)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPoolSize);
-        MaxPoolSize = maxPoolSize;
+        _maxPoolSize = maxPoolSize;
         _stack = new LockFreeStack<T>(maxPoolSize);
     }
 
@@ -61,7 +63,7 @@ internal abstract class ObjectPool<T> where T : class
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public T Rent()
     {
-        if (_stack.TryPop(out var item))
+        if (Volatile.Read(ref _stack).TryPop(out var item))
             return item;
 
         Interlocked.Increment(ref _misses);
@@ -80,7 +82,34 @@ internal abstract class ObjectPool<T> where T : class
     public void Return(T item)
     {
         Reset(item);
-        _stack.TryPush(item);
+        Volatile.Read(ref _stack).TryPush(item);
+    }
+
+    /// <summary>
+    /// Increases retained capacity while preserving items already in the pool.
+    /// A concurrent return through a stale stack reference may be lost during the
+    /// one-time migration; later returns use the newly published pool.
+    /// </summary>
+    public void RatchetMaxPoolSize(int newSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(newSize);
+        InterlockedHelper.RatchetUp(ref _maxPoolSize, newSize);
+
+        var currentPool = Volatile.Read(ref _stack);
+        if (currentPool.Capacity >= newSize)
+            return;
+
+        lock (_resizeLock)
+        {
+            currentPool = Volatile.Read(ref _stack);
+            if (currentPool.Capacity >= newSize)
+                return;
+
+            var newPool = new LockFreeStack<T>(newSize);
+            while (currentPool.TryPop(out var item))
+                newPool.TryPush(item);
+            Volatile.Write(ref _stack, newPool);
+        }
     }
 
     /// <summary>
@@ -95,7 +124,7 @@ internal abstract class ObjectPool<T> where T : class
         for (var i = 0; i < count; i++)
         {
             var item = Create();
-            if (!_stack.TryPush(item))
+            if (!Volatile.Read(ref _stack).TryPush(item))
                 break;
         }
     }
@@ -106,6 +135,6 @@ internal abstract class ObjectPool<T> where T : class
     /// </summary>
     public void Clear()
     {
-        _stack.Clear();
+        Volatile.Read(ref _stack).Clear();
     }
 }

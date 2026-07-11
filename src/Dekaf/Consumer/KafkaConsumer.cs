@@ -678,6 +678,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     void IBudgetedInstance.OnBudgetChanged(ulong newLimit)
     {
         Interlocked.Exchange(ref _currentQueuedMaxBytes, (long)newLimit);
+        RatchetRecordWrapperPools(_assignmentSnapshot.Count);
     }
 
     private readonly IDeserializer<TKey> _keyDeserializer;
@@ -1031,6 +1032,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // PendingFetchData uses a ratchet, so this only increases over time.
         var consumerSizes = PoolSizing.ForConsumer(maxPartitionCount: 64);
         PendingFetchData.RatchetPoolSize(consumerSizes.FetchDataPool);
+        RatchetRecordWrapperPools(partitionCount: 64);
         _ctsPool = new CancellationTokenSourcePool(consumerSizes.CancellationTokenSources);
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
 
@@ -1086,6 +1088,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (options.EnableAdaptiveFetchSizing)
         {
             _adaptiveFetchSizer = new AdaptiveFetchSizer(ResolveAdaptiveFetchSizingOptions(options));
+            RatchetRecordWrapperPools(partitionCount: 64);
         }
 
         if (!string.IsNullOrEmpty(options.GroupId))
@@ -1775,7 +1778,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (batchProcessingStarted.HasValue)
                     {
                         var processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+                        ReportAdaptiveProcessingComplete(processingDuration);
                     }
 
                     // Dequeue and dispose the pending fetch (releases pooled network buffer memory)
@@ -2106,7 +2109,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (batchProcessingStarted.HasValue)
         {
             TimeSpan processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-            _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+            ReportAdaptiveProcessingComplete(processingDuration);
         }
 
         if (disposePending || pending.IsExhausted || !IsCurrentlyAssigned(pending.TopicPartition))
@@ -3540,7 +3543,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (batchProcessingStarted.HasValue)
             {
                 var processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-                _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+                ReportAdaptiveProcessingComplete(processingDuration);
             }
 
             DequeuePendingFetch().Dispose();
@@ -6452,13 +6455,44 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     /// <summary>
     /// Ratchets process-global consumer pool sizes based on actual partition count.
-    /// Only <see cref="PendingFetchData"/> is ratcheted — the per-instance CTS pool
-    /// is fixed at construction and cannot be resized after creation.
+    /// Pending fetch and record wrapper pools grow process-wide; the per-instance
+    /// CTS pool is fixed at construction and cannot be resized after creation.
     /// </summary>
-    private static void RatchetConsumerPoolSizes(int partitionCount)
+    private void RatchetConsumerPoolSizes(int partitionCount)
     {
         var sizes = PoolSizing.ForConsumer(partitionCount);
         PendingFetchData.RatchetPoolSize(sizes.FetchDataPool);
+        RatchetRecordWrapperPools(partitionCount);
+    }
+
+    private void RatchetRecordWrapperPools(int partitionCount)
+    {
+        var prefetchMaxBytes = CalculatePrefetchMaxBytes(
+            (int)Math.Min(CurrentQueuedMaxBytes / 1024, int.MaxValue),
+            Math.Max(1, partitionCount),
+            _adaptiveFetchSizer?.CurrentPartitionFetchBytes ?? _options.MaxPartitionFetchBytes,
+            _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes,
+            _options.PrefetchPipelineDepth);
+        var wrapperPoolSize = PoolSizing.ForConsumerRecordWrappers(prefetchMaxBytes);
+        RecordBatch.RatchetPoolSize(wrapperPoolSize);
+        LazyRecordList.RatchetPoolSize(wrapperPoolSize);
+    }
+
+    private void ReportAdaptiveProcessingComplete(TimeSpan processingDuration)
+    {
+        var sizer = _adaptiveFetchSizer;
+        if (sizer is null)
+            return;
+
+        var previousPartitionFetchBytes = sizer.CurrentPartitionFetchBytes;
+        var previousFetchMaxBytes = sizer.CurrentFetchMaxBytes;
+        sizer.ReportProcessingComplete(processingDuration);
+
+        if (sizer.CurrentPartitionFetchBytes > previousPartitionFetchBytes
+            || sizer.CurrentFetchMaxBytes > previousFetchMaxBytes)
+        {
+            RatchetRecordWrapperPools(_assignmentSnapshot.Count);
+        }
     }
 
     private async Task StartAutoCommitAsync(CancellationToken cancellationToken)

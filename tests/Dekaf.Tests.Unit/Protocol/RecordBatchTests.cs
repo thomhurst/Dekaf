@@ -1134,6 +1134,17 @@ public class RecordBatchTests
     }
 
     [Test]
+    public async Task RecordBatch_RatchetPoolSize_GrowsAndDoesNotShrink()
+    {
+        var target = RecordBatch.MaxPoolSizeValue + 1;
+
+        RecordBatch.RatchetPoolSize(target);
+        RecordBatch.RatchetPoolSize(1);
+
+        await Assert.That(RecordBatch.MaxPoolSizeValue).IsGreaterThanOrEqualTo(target);
+    }
+
+    [Test]
     public async Task RecordBatch_PooledBatch_ClearsStaleRecordsOnReturn()
     {
         var buffer = new ArrayBufferWriter<byte>();

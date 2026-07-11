@@ -198,6 +198,15 @@ public class PoolSizingTests
     }
 
     [Test]
+    [Arguments(16L * 1024 * 1024, 2048)]
+    [Arguments(64L * 1024 * 1024, 4096)]
+    [Arguments(2L * 1024 * 1024 * 1024, 65536)]
+    public async Task ForConsumerRecordWrappers_ScalesWithPrefetchBytes(long bytes, int expected)
+    {
+        await Assert.That(PoolSizing.ForConsumerRecordWrappers(bytes)).IsEqualTo(expected);
+    }
+
+    [Test]
     public async Task ForConsumerPrefetchBuffer_PathologicalPipelineInputs_ClampsToMax()
     {
         var capacity = PoolSizing.ForConsumerPrefetchBuffer(

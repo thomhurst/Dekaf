@@ -114,6 +114,16 @@ internal static class PoolSizing
         };
     }
 
+    internal static int ForConsumerRecordWrappers(long prefetchMaxBytes)
+    {
+        const int estimatedWireBatchBytes = 16 * 1024;
+        const int minWrappers = 2048;
+        const int maxWrappers = 65536;
+
+        var estimatedLiveBatches = Math.Max(1L, prefetchMaxBytes) / estimatedWireBatchBytes;
+        return (int)Math.Clamp(estimatedLiveBatches, minWrappers, maxWrappers);
+    }
+
     internal static int ForConsumerPrefetchBuffer(
         int queuedMaxMessagesKbytes,
         int maxPartitionFetchBytes,
