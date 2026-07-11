@@ -17,6 +17,25 @@ namespace Dekaf.Tests.Unit.Consumer;
 /// </summary>
 public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 {
+    [Test]
+    public async Task PublicConstructor_PreservesSixParameterBinarySignature()
+    {
+        var constructor = typeof(ConsumerCoordinator).GetConstructor(
+            BindingFlags.Public | BindingFlags.Instance,
+            binder: null,
+            [
+                typeof(ConsumerOptions),
+                typeof(IConnectionPool),
+                typeof(MetadataManager),
+                typeof(Microsoft.Extensions.Logging.ILogger<ConsumerCoordinator>),
+                typeof(Func<int>),
+                typeof(Action<IReadOnlyList<TopicPartition>>)
+            ],
+            modifiers: null);
+
+        await Assert.That(constructor).IsNotNull();
+    }
+
     private static readonly Guid TestTopicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
     private readonly IConnectionPool _connectionPool;
@@ -1649,8 +1668,19 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             });
 
         ConsumerCoordinator? coordinator = null;
+        HashSet<TopicPartition>? assignmentObservedByRevokingCallback = null;
+        var versionObservedByRevokingCallback = -1;
+        var assignmentSyncObservedByRevokingCallback = true;
         HashSet<TopicPartition>? assignmentObservedByCallback = null;
         var versionObservedByCallback = -1;
+
+        void OnPartitionsRevoking(IReadOnlyList<TopicPartition> _)
+        {
+            assignmentObservedByRevokingCallback = coordinator!.Assignment.ToHashSet();
+            versionObservedByRevokingCallback = coordinator.AssignmentVersion;
+            assignmentSyncObservedByRevokingCallback =
+                coordinator.IsAssignmentSyncCurrent(versionObservedByRevokingCallback);
+        }
 
         void OnPartitionsRevoked(IReadOnlyList<TopicPartition> _)
         {
@@ -1663,7 +1693,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             options,
             _connectionPool,
             _metadataManager,
-            onPartitionsRevoked: OnPartitionsRevoked);
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: OnPartitionsRevoked,
+            onPartitionsRevoking: OnPartitionsRevoking);
         await using var coordinatorLifetime = coordinator;
         var topics = new HashSet<string> { "test-topic" };
 
@@ -1675,6 +1708,11 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
 
+        await Assert.That(assignmentObservedByRevokingCallback).IsNotNull();
+        await Assert.That(assignmentObservedByRevokingCallback!).Contains(new TopicPartition("test-topic", 0));
+        await Assert.That(assignmentObservedByRevokingCallback).Contains(new TopicPartition("test-topic", 1));
+        await Assert.That(versionObservedByRevokingCallback).IsEqualTo(versionAfterInitialAssignment);
+        await Assert.That(assignmentSyncObservedByRevokingCallback).IsFalse();
         await Assert.That(assignmentObservedByCallback).IsNotNull();
         await Assert.That(assignmentObservedByCallback!).Contains(new TopicPartition("test-topic", 1));
         await Assert.That(assignmentObservedByCallback).DoesNotContain(new TopicPartition("test-topic", 0));
@@ -3129,7 +3167,68 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(Guid.TryParse(coordinator.MemberId, out _)).IsTrue();
     }
 
+    [Test]
+    public async Task IsAssignmentSyncCurrent_PendingFatalHeartbeat_ReturnsFalse()
+    {
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        const int assignmentVersion = 7;
+        SetPrivateField(coordinator, "_state", CoordinatorState.Stable);
+        SetPrivateField(coordinator, "_assignmentVersion", assignmentVersion);
+
+        await Assert.That(coordinator.IsAssignmentSyncCurrent(assignmentVersion)).IsTrue();
+
+        SetPrivateField(
+            coordinator,
+            "_fatalHeartbeatException",
+            new GroupException(ErrorCode.GroupAuthorizationFailed, "fatal heartbeat"));
+
+        await Assert.That(coordinator.IsAssignmentSyncCurrent(assignmentVersion)).IsFalse();
+    }
+
+    [Test]
+    public async Task TryRecordPollFast_PendingFatalHeartbeat_ThrowsBeforeLockPath()
+    {
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await Assert.That(coordinator.TryRecordPollFast()).IsTrue();
+
+        SetPrivateField(
+            coordinator,
+            "_fatalHeartbeatException",
+            new GroupException(ErrorCode.GroupAuthorizationFailed, "fatal heartbeat"));
+
+        await Assert.That(() => coordinator.TryRecordPollFast())
+            .Throws<GroupException>();
+    }
+
+    [Test]
+    public async Task IsAssignmentSyncCurrent_HeartbeatAssignmentProcessing_ReturnsFalse()
+    {
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        const int assignmentVersion = 7;
+        SetPrivateField(coordinator, "_state", CoordinatorState.Stable);
+        SetPrivateField(coordinator, "_assignmentVersion", assignmentVersion);
+
+        await Assert.That(coordinator.IsAssignmentSyncCurrent(assignmentVersion)).IsTrue();
+
+        SetPrivateField(coordinator, "_assignmentProcessingCount", 1);
+
+        await Assert.That(coordinator.IsAssignmentSyncCurrent(assignmentVersion)).IsFalse();
+    }
+
     #endregion
+
+    private static void SetPrivateField<T>(ConsumerCoordinator coordinator, string fieldName, T value)
+    {
+        var field = typeof(ConsumerCoordinator).GetField(
+            fieldName,
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found.");
+        field.SetValue(coordinator, value);
+    }
 
     private sealed class RetirableTestConnection(IKafkaConnection inner) :
         IKafkaConnection,

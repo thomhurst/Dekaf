@@ -28,10 +28,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly IRebalanceListener? _rebalanceListener;
-    // Heartbeats can revoke and reassign a partition between poll-loop snapshots.
-    // Preserve both the immediate stale-fetch signal and the revocation history needed
-    // to defeat assignment ABA (A -> B -> A with the same final set).
+    // Retained for the public six-parameter constructor and direct coordinator callers.
+    // KafkaConsumer uses the pre-publication hook below to invalidate buffered fetches.
     private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoked;
+    // Heartbeats can revoke and reassign a partition between poll-loop snapshots.
+    // Signal before publication to defeat assignment ABA (A -> B -> A with the same final set).
+    private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoking;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
     // Assignment publication and revocation history form one snapshot. Rebalance callbacks
     // run only after this lock is released so user code cannot extend its critical section.
@@ -43,6 +45,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private volatile string? _memberId;
     private volatile int _generationId = -1;
     private int _assignmentVersion;
+    private int _assignmentProcessingCount;
     // Volatile ensures cross-thread visibility of the reference. Thread-safety relies on
     // all writes replacing the reference entirely (never in-place mutation) — verified at
     // every assignment site: ProcessConsumerGroupAssignment() and DisposeAsync().
@@ -94,12 +97,32 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ILogger<ConsumerCoordinator>? logger = null,
         Func<int>? getConnectionCount = null,
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked = null)
+        : this(
+            options,
+            connectionPool,
+            metadataManager,
+            logger,
+            getConnectionCount,
+            onPartitionsRevoked,
+            onPartitionsRevoking: null)
+    {
+    }
+
+    internal ConsumerCoordinator(
+        ConsumerOptions options,
+        IConnectionPool connectionPool,
+        MetadataManager metadataManager,
+        ILogger<ConsumerCoordinator>? logger,
+        Func<int>? getConnectionCount,
+        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked,
+        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking)
     {
         _options = options;
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
         _rebalanceListener = options.RebalanceListener;
         _onPartitionsRevoked = onPartitionsRevoked;
+        _onPartitionsRevoking = onPartitionsRevoking;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConsumerCoordinator>.Instance;
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
@@ -117,26 +140,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal ValueTask RecordPollAsync(CancellationToken cancellationToken)
     {
-        // Heartbeat expiry invokes user callbacks outside _lock. Keep its poll generation
-        // unchanged so EnsureActiveGroup cannot rejoin until notification completes.
-        if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
-            return ValueTask.CompletedTask;
-
-        if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
-        {
-            RefreshPollDeadline();
-            return ValueTask.CompletedTask;
-        }
-
-        var now = Stopwatch.GetTimestamp();
-        if (_state == CoordinatorState.Stable
-            && now - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks)
-        {
-            return ExpireAndRecordPollAsync(cancellationToken);
-        }
-
-        RecordPollIfLossNotificationComplete(now);
-        return ValueTask.CompletedTask;
+        return TryRecordPollFast()
+            ? ValueTask.CompletedTask
+            : ExpireAndRecordPollAsync(cancellationToken);
     }
 
     private void RecordPollIfLossNotificationComplete(long timestamp)
@@ -235,6 +241,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal void AcknowledgeAssignmentSync(int assignmentVersion)
     {
+        if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
+            && _revokedPartitionsSinceLastSync.IsEmpty)
+        {
+            return;
+        }
+
         lock (_assignmentStateLock)
         {
             if (Volatile.Read(ref _assignmentVersion) != assignmentVersion
@@ -246,6 +258,38 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             Volatile.Write(ref _maxPollExpiredAtPollVersion, -1);
         }
+    }
+
+    internal bool IsAssignmentSyncCurrent(int assignmentVersion) =>
+        _state == CoordinatorState.Stable
+        && Volatile.Read(ref _assignmentVersion) == assignmentVersion
+        && Volatile.Read(ref _assignmentProcessingCount) == 0
+        && _revokedPartitionsSinceLastSync.IsEmpty
+        && Volatile.Read(ref _fatalHeartbeatException) is null
+        && Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0;
+
+    internal bool TryRecordPollFast()
+    {
+        // The fatal can be published after the assignment-currency gate. Surface it here,
+        // before either a buffered dequeue or the timeout-bound coordinator lock path.
+        ThrowIfFatalHeartbeatException();
+
+        // Heartbeat expiry invokes user callbacks outside _lock. Keep its poll generation
+        // unchanged so EnsureActiveGroup cannot rejoin until notification completes.
+        if (Volatile.Read(ref _maxPollLossNotificationPending) != 0)
+            return true;
+
+        if (Volatile.Read(ref _foregroundPollActivityCount) != 0)
+        {
+            RefreshPollDeadline();
+            return true;
+        }
+
+        if (IsCurrentPollGenerationExpired())
+            return false;
+
+        RecordPollIfLossNotificationComplete(Stopwatch.GetTimestamp());
+        return true;
     }
 
     private void EnqueueRevokedPartitions(IEnumerable<TopicPartition> revoked)
@@ -920,6 +964,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         var revoked = _assignedPartitions.Count != 0 ? _assignedPartitions.ToList() : null;
 
+        NotifyRevoking(revoked);
+
         lock (_assignmentStateLock)
         {
             _assignedPartitions = [];
@@ -1005,109 +1051,147 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                  IsCurrentPollGenerationExpired()))
                 return default;
 
-        var version = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.ConsumerGroupHeartbeat,
-            ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
-            ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
+            var version = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.ConsumerGroupHeartbeat,
+                ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
+                ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
 
-        // KIP-1082: v1+ uses client-generated UUID v4 instead of empty string for new members.
-        // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
-        // Thread-safety: _memberId is only null on the initial join path (protected by _lock)
-        // or after ResetMemberState() which also transitions to Unjoined before any heartbeat loop restart.
-        if (_memberId is null && version >= 1)
-            _memberId = Guid.NewGuid().ToString();
+            // KIP-1082: v1+ uses client-generated UUID v4 instead of empty string for new members.
+            // Generate once when _memberId is null; subsequent heartbeats reuse the stored ID.
+            // Thread-safety: _memberId is only null on the initial join path (protected by _lock)
+            // or after ResetMemberState() which also transitions to Unjoined before any heartbeat loop restart.
+            if (_memberId is null && version >= 1)
+                _memberId = Guid.NewGuid().ToString();
 
-        var memberId = _memberId ?? string.Empty;
+            var memberId = _memberId ?? string.Empty;
 
-        // MemberEpoch: 0 for initial join, -2 for static rejoin (set by fencing handler),
-        // or the current epoch for steady-state heartbeats
-        var memberEpoch = isInitial
-            ? (_generationId == -2 && _options.GroupInstanceId is not null ? -2 : 0)
-            : _generationId;
+            // MemberEpoch: 0 for initial join, -2 for static rejoin (set by fencing handler),
+            // or the current epoch for steady-state heartbeats
+            var memberEpoch = isInitial
+                ? (_generationId == -2 && _options.GroupInstanceId is not null ? -2 : 0)
+                : _generationId;
 
-        // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
-        // which is invalid when there's no previous state.
-        assignmentVersion = Volatile.Read(ref _assignmentVersion);
-        ownedTopicPartitions =
-            isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
+            // On initial join, send empty array (owns nothing). null means "unchanged" in KIP-848
+            // which is invalid when there's no previous state.
+            assignmentVersion = Volatile.Read(ref _assignmentVersion);
+            ownedTopicPartitions =
+                isInitial ? [] : GetOwnedTopicPartitionsForHeartbeat(assignmentVersion);
 
-        // Atomically snapshot and clear the subscription-changed flag to prevent a race where
-        // a concurrent EnsureActiveGroupConsumerProtocolAsync sets new topics + flag=true,
-        // but this heartbeat clears the flag after sending the old topics.
-        // Always send topics on initial/re-join — KIP-848 requires SubscribedTopicNames to be
-        // non-null when joining. The flag must still be cleared to avoid a stale re-send later.
-        var subscriptionChanged = Interlocked.Exchange(ref _subscriptionChanged, 0) == 1;
-        var subscriptionShouldBeSent = isInitial || subscriptionChanged;
-        var currentSubscribedTopicRegex = _subscribedTopicRegex;
-        var subscribedTopics = subscriptionShouldBeSent ? _subscribedTopics?.ToList() : null;
-        subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
-            ? currentSubscribedTopicRegex ?? (isInitial ? null : string.Empty)
-            : null;
+            // Atomically snapshot and clear the subscription-changed flag to prevent a race where
+            // a concurrent EnsureActiveGroupConsumerProtocolAsync sets new topics + flag=true,
+            // but this heartbeat clears the flag after sending the old topics.
+            // Always send topics on initial/re-join — KIP-848 requires SubscribedTopicNames to be
+            // non-null when joining. The flag must still be cleared to avoid a stale re-send later.
+            var subscriptionChanged = Interlocked.Exchange(ref _subscriptionChanged, 0) == 1;
+            var subscriptionShouldBeSent = isInitial || subscriptionChanged;
+            var currentSubscribedTopicRegex = _subscribedTopicRegex;
+            var subscribedTopics = subscriptionShouldBeSent ? _subscribedTopics?.ToList() : null;
+            subscribedTopicRegex = subscriptionShouldBeSent && version >= 1
+                ? currentSubscribedTopicRegex ?? (isInitial ? null : string.Empty)
+                : null;
 
-        var request = new ConsumerGroupHeartbeatRequest
-        {
-            GroupId = _options.GroupId!,
-            MemberId = memberId,
-            MemberEpoch = memberEpoch,
-            InstanceId = _options.GroupInstanceId,
-            RebalanceTimeoutMs = isInitial ? _options.MaxPollIntervalMs : -1,
-            RackId = isInitial ? _options.ClientRack : null,
-            SubscribedTopicNames = subscribedTopics,
-            SubscribedTopicRegex = subscribedTopicRegex,
-            ServerAssignor = isInitial ? _options.GroupRemoteAssignor : null,
-            TopicPartitions = ownedTopicPartitions
-        };
+            var request = new ConsumerGroupHeartbeatRequest
+            {
+                GroupId = _options.GroupId!,
+                MemberId = memberId,
+                MemberEpoch = memberEpoch,
+                InstanceId = _options.GroupInstanceId,
+                RebalanceTimeoutMs = isInitial ? _options.MaxPollIntervalMs : -1,
+                RackId = isInitial ? _options.ClientRack : null,
+                SubscribedTopicNames = subscribedTopics,
+                SubscribedTopicRegex = subscribedTopicRegex,
+                ServerAssignor = isInitial ? _options.GroupRemoteAssignor : null,
+                TopicPartitions = ownedTopicPartitions
+            };
 
             response = await connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
                 request, version, cancellationToken).ConfigureAwait(false);
         }
 
+        var assignmentProcessing = BeginAssignmentProcessing(response.Assignment);
+
         if (!discardIfMembershipChanged)
-            return ProcessConsumerGroupHeartbeatResponse(
-                response,
-                isInitial,
-                ownedTopicPartitions,
-                assignmentVersion,
-                subscribedTopicRegex);
-
-        await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
         {
-            ConsumerHeartbeatResult result;
-            await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+            using (assignmentProcessing)
             {
-                // A foreground poll can expire the member while this request is in flight.
-                // Validate and publish under the state lock. The listener lock preserves
-                // callback ordering after this lock is released without blocking re-entrant APIs.
-                if (_state != CoordinatorState.Stable ||
-                    Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
-                    IsCurrentPollGenerationExpired())
-                    return default;
-
-                result = ProcessConsumerGroupHeartbeatResponse(
+                return ProcessConsumerGroupHeartbeatResponse(
                     response,
                     isInitial,
                     ownedTopicPartitions,
                     assignmentVersion,
                     subscribedTopicRegex);
             }
-            finally
+        }
+
+        var rebalanceListenerLockHeld = false;
+        try
+        {
+            ConsumerHeartbeatResult result;
+            using (assignmentProcessing)
             {
-                _lock.Release();
+                await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                rebalanceListenerLockHeld = true;
+                await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    // A foreground poll can expire the member while this request is in flight.
+                    // Validate and publish under the state lock. The listener lock preserves
+                    // callback ordering after this lock is released without blocking re-entrant APIs.
+                    if (_state != CoordinatorState.Stable ||
+                        Volatile.Read(ref _maxPollExpirationVersion) != maxPollExpirationVersion ||
+                        IsCurrentPollGenerationExpired())
+                        return default;
+
+                    result = ProcessConsumerGroupHeartbeatResponse(
+                        response,
+                        isInitial,
+                        ownedTopicPartitions,
+                        assignmentVersion,
+                        subscribedTopicRegex);
+                }
+                finally
+                {
+                    _lock.Release();
+                }
             }
 
+            // Assignment state and the immediate stale-fetch marker are published. User
+            // callbacks remain serialized, but no longer suppress buffered polls while awaiting.
             await FireConsumerProtocolRebalanceListenersCoreAsync(result, cancellationToken)
                 .ConfigureAwait(false);
         }
         finally
         {
-            _rebalanceListenerLock.Release();
+            if (rebalanceListenerLockHeld)
+                _rebalanceListenerLock.Release();
         }
 
         // Steady-heartbeat callbacks are fired above while publication is fenced against
         // max-poll expiry. The heartbeat loop must not fire the result a second time.
         return default;
+    }
+
+    private AssignmentProcessingScope BeginAssignmentProcessing(
+        ConsumerGroupHeartbeatAssignment? assignment)
+    {
+        if (assignment is null)
+            return default;
+
+        Interlocked.Increment(ref _assignmentProcessingCount);
+        return new AssignmentProcessingScope(this);
+    }
+
+    private readonly struct AssignmentProcessingScope : IDisposable
+    {
+        private readonly ConsumerCoordinator? _coordinator;
+
+        public AssignmentProcessingScope(ConsumerCoordinator coordinator) => _coordinator = coordinator;
+
+        public void Dispose()
+        {
+            if (_coordinator is { } coordinator)
+                Interlocked.Decrement(ref coordinator._assignmentProcessingCount);
+        }
     }
 
     private ConsumerHeartbeatResult ProcessConsumerGroupHeartbeatResponse(
@@ -1293,6 +1377,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
         if (changed)
         {
+            NotifyRevoking(revoked);
+
             lock (_assignmentStateLock)
             {
                 _assignedPartitions = newAssignment;
@@ -1309,6 +1395,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         return new ConsumerHeartbeatResult(changed, revoked, assigned);
+    }
+
+    private void NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)
+    {
+        if (revoked is not null)
+            _onPartitionsRevoking?.Invoke(revoked);
     }
 
     /// <summary>

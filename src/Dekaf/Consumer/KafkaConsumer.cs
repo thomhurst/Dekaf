@@ -686,6 +686,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private const int MaxRepeatedDeterministicPrefetchFailures = 3;
     private const int InitialPrefetchFailureBackoffMs = 100;
     private const int MaxPrefetchFailureBackoffMs = 5_000;
+    private const long FilterRefreshIntervalMilliseconds = 30_000;
     private static readonly TimeSpan PartitionStopListenerTimeout = TimeSpan.FromSeconds(5);
 
     private readonly ConsumerOptions _options;
@@ -1142,7 +1143,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 getConnectionCount: _connectionScaler is not null
                     ? () => _connectionScaler.CurrentConnectionCount
                     : null,
-                onPartitionsRevoked: QueueCoordinatorRevokedPartitionsForFetchClear);
+                onPartitionsRevoked: null,
+                onPartitionsRevoking: QueueCoordinatorRevokedPartitionsForFetchClear);
         }
 
         _prefetchBuffer = new MpscFetchBuffer(CalculatePrefetchBufferCapacity(options));
@@ -2175,12 +2177,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
             return;
 
+        // Prefetch is a lifetime loop. A non-null terminal task represents a stopped
+        // consumer path and must not be silently restarted, unlike the auto-commit loop.
+        if (HasPrefetchStarted())
+            return;
+
         lock (_prefetchStartLock)
         {
             if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
                 return;
 
-            if (_prefetchTask is not null)
+            if (HasPrefetchStarted())
                 return;
 
             _prefetchCts = new CancellationTokenSource();
@@ -3328,15 +3335,34 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
+        var timeoutMilliseconds = ValidateConsumeOneTimeout(timeout);
+
+        var pollRecorded = false;
+        long? bufferedDrainStarted = null;
+        if (!RequiresRuntimeTimeoutValidation(timeoutMilliseconds)
+            && CanUseBufferedConsumeOneFastPath(cancellationToken))
+        {
+            pollRecorded = _coordinator?.TryRecordPollFast() ?? true;
+            if (pollRecorded)
+            {
+                bufferedDrainStarted = Stopwatch.GetTimestamp();
+                if (TryConsumeOneFromPendingFetches(out var bufferedResult))
+                    return bufferedResult;
+
+                if (TryDequeuePendingEofResult(out var eofResult))
+                    return eofResult;
+            }
+        }
+
         using var timeoutCts = _ctsPool.Rent();
-        timeoutCts.CancelAfter(timeout);
+        timeoutCts.CancelAfter(CalculateRemainingConsumeOneTimeout(timeout, bufferedDrainStarted));
 
         // Fast path: if no external cancellation, use timeout CTS directly (avoids allocation)
         if (!cancellationToken.CanBeCanceled)
         {
             try
             {
-                return await ConsumeOneCoreAsync(timeoutCts.Token).ConfigureAwait(false);
+                return await ConsumeOneCoreAsync(pollRecorded, timeoutCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
             {
@@ -3350,7 +3376,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         try
         {
-            return await ConsumeOneCoreAsync(linkedCts.Token).ConfigureAwait(false);
+            return await ConsumeOneCoreAsync(pollRecorded, linkedCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
@@ -3361,7 +3387,101 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return null;
     }
 
-    private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(CancellationToken cancellationToken)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long ValidateConsumeOneTimeout(TimeSpan timeout)
+    {
+        const long MaxSupportedTimeoutMilliseconds = 0xfffffffe;
+        var timeoutMilliseconds = (long)timeout.TotalMilliseconds;
+        if (timeoutMilliseconds < -1 || timeoutMilliseconds > MaxSupportedTimeoutMilliseconds)
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+
+        return timeoutMilliseconds;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool RequiresRuntimeTimeoutValidation(long timeoutMilliseconds)
+    {
+#if NETSTANDARD2_0
+        // Legacy runtimes consuming this asset may cap CancelAfter at Int32.MaxValue.
+        // Route ambiguous values through the CTS path so the actual runtime decides.
+        return timeoutMilliseconds > int.MaxValue;
+#else
+        return false;
+#endif
+    }
+
+    internal static TimeSpan CalculateRemainingConsumeOneTimeout(TimeSpan timeout, long? bufferedDrainStarted)
+    {
+        if (bufferedDrainStarted is not { } startedAt || timeout < TimeSpan.Zero)
+            return timeout;
+
+        var remaining = timeout - Stopwatch.GetElapsedTime(startedAt);
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+    }
+
+    private bool CanUseBufferedConsumeOneFastPath(CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested
+            || Volatile.Read(ref _consumerDisposed) != 0
+            || !_initialized
+            || _pendingFetches.Count == 0
+            || Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
+        {
+            return false;
+        }
+
+        if (IsTopicFilterRefreshDue())
+            return false;
+
+        if (_options.OffsetCommitMode == OffsetCommitMode.Auto
+            && _coordinator is not null
+            && !IsAutoCommitRunning())
+        {
+            return false;
+        }
+
+        if (_options.QueuedMinMessages > 1 && !HasPrefetchStarted())
+            return false;
+
+        var pending = _pendingFetches.Peek();
+        if (!IsCurrentlyAssigned(pending.TopicPartition))
+            return false;
+
+        var coordinator = _coordinator;
+        if ((_subscriptionSnapshot.Count != 0 || _topicPattern is not null) && coordinator is not null)
+        {
+            return IsCoordinatorAssignmentSyncCurrent(coordinator, out _);
+        }
+
+        return IsManualAssignmentEnsureCurrent();
+    }
+
+    private bool IsTopicFilterRefreshDue()
+        => _topicFilter is not null && IsFilterRefreshDue();
+
+    private bool IsFilterRefreshDue()
+    {
+        var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
+        return lastRefresh == 0
+               || Dekaf.MonotonicClock.GetMilliseconds() - lastRefresh >= FilterRefreshIntervalMilliseconds;
+    }
+
+    private bool HasPrefetchStarted() => Volatile.Read(ref _prefetchTask) is not null;
+
+    private bool IsAutoCommitRunning() => Volatile.Read(ref _autoCommitTask) is { IsCompleted: false };
+
+    private bool IsCoordinatorAssignmentSyncCurrent(
+        ConsumerCoordinator coordinator,
+        out int assignmentVersion)
+    {
+        assignmentVersion = coordinator.AssignmentVersion;
+        return Volatile.Read(ref _lastCoordinatorAssignmentVersion) == assignmentVersion
+               && coordinator.IsAssignmentSyncCurrent(assignmentVersion);
+    }
+
+    private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(
+        bool pollRecorded,
+        CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
@@ -3382,7 +3502,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            await RecordPollAsync(cancellationToken).ConfigureAwait(false);
+            if (pollRecorded)
+            {
+                pollRecorded = false;
+            }
+            else
+            {
+                await RecordPollAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
             RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
@@ -3405,16 +3532,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (TryConsumeOneFromPendingFetches(out var result))
                 return result;
 
-            if (_pendingEofEvents.TryDequeue(out var eofEvent))
-            {
-                return ConsumeResult<TKey, TValue>.CreatePartitionEof(
-                    eofEvent.Partition.Topic,
-                    eofEvent.Partition.Partition,
-                    eofEvent.Offset);
-            }
+            if (TryDequeuePendingEofResult(out var eofResult))
+                return eofResult;
         }
 
         return null;
+    }
+
+    private bool TryDequeuePendingEofResult(out ConsumeResult<TKey, TValue> result)
+    {
+        if (_pendingEofEvents.TryDequeue(out var eofEvent))
+        {
+            result = ConsumeResult<TKey, TValue>.CreatePartitionEof(
+                eofEvent.Partition.Topic,
+                eofEvent.Partition.Partition,
+                eofEvent.Offset);
+            return true;
+        }
+
+        result = default;
+        return false;
     }
 
     private async ValueTask<bool> FillPendingFetchesForSingleConsumeAsync(bool prefetchEnabled, CancellationToken cancellationToken)
@@ -4589,16 +4726,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <returns>True if the subscription changed.</returns>
     private async ValueTask<bool> RefreshFilteredTopicsAsync(Func<string, bool> filter, CancellationToken cancellationToken)
     {
-        const long refreshIntervalTicks = 30 * TimeSpan.TicksPerSecond;
+        if (!IsFilterRefreshDue())
+            return false;
 
         var now = Dekaf.MonotonicClock.GetMilliseconds();
-        var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
-
-        // Rate-limit: skip if we refreshed recently (unless this is the first call)
-        if (lastRefresh != 0 && (now - lastRefresh) < (refreshIntervalTicks / TimeSpan.TicksPerMillisecond))
-        {
-            return false;
-        }
 
         Volatile.Write(ref _lastFilterRefreshTicks, now);
 
@@ -4700,8 +4831,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             await coordinator.EnsureActiveGroupAsync(subscriptionSnapshot, topicPattern, cancellationToken).ConfigureAwait(false);
 
-            var coordinatorAssignmentVersion = coordinator.AssignmentVersion;
-            if (Volatile.Read(ref _lastCoordinatorAssignmentVersion) == coordinatorAssignmentVersion)
+            if (IsCoordinatorAssignmentSyncCurrent(coordinator, out var coordinatorAssignmentVersion))
             {
                 coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
                 return;
@@ -6596,6 +6726,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
             return;
 
+        if (IsAutoCommitRunning())
+            return;
+
         Task? oldTask;
         CancellationTokenSource? oldCts;
         lock (_autoCommitStartLock)
@@ -6604,7 +6737,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return;
 
             var currentTask = _autoCommitTask;
-            if (currentTask is { IsCompleted: false })
+            if (IsAutoCommitRunning())
                 return;
 
             oldTask = currentTask;

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Diagnostics;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
@@ -44,6 +45,169 @@ public sealed class ConsumeOneFastPathTests
         await Assert.That(second!.Value.Offset).IsEqualTo(21L);
         await Assert.That(second.Value.Value).IsEqualTo("two");
         await Assert.That(consumer.GetPosition(tp)).IsEqualTo(22L);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_CurrentBufferedAssignment_DoesNotRentTimeoutCts()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromMinutes(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_ManualAssignmentWithCoordinator_RecordsPollOnce()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedGroupedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+        var coordinator = GetCoordinator(consumer);
+        var initialPollVersion = GetCoordinatorPollVersion(coordinator);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(GetCoordinatorPollVersion(coordinator)).IsEqualTo(initialPollVersion + 1);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_PrefetchNotStarted_UsesSlowPath()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(queuedMinMessages: 2, fetch);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_GroupedAutoCommitNotStarted_UsesSlowPath()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedGroupedConsumer(fetch, OffsetCommitMode.Auto);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TopicFilterRefreshDue_TracksRefreshInterval()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(fetch);
+        SetPrivateField<Func<string, bool>>(consumer, "_topicFilter", static _ => true);
+
+        await Assert.That(IsTopicFilterRefreshDue(consumer)).IsTrue();
+
+        SetPrivateField(consumer, "_lastFilterRefreshTicks", Math.Max(1, Dekaf.MonotonicClock.GetMilliseconds()));
+        await Assert.That(IsTopicFilterRefreshDue(consumer)).IsFalse();
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_InvalidTimeoutsWithPendingFetch_ThrowBeforeConsuming()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+
+        await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(-2), CancellationToken.None))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(0xffffffff), CancellationToken.None))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(GetPendingFetches(consumer).Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_FractionalNegativeTimeout_MatchesCancelAfterTruncation()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(
+            TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond - 1),
+            CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+    }
+
+    [Test]
+    public async Task CalculateRemainingConsumeOneTimeout_IncludesBufferedDrainTime()
+    {
+        var drainStarted = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+
+        var remaining = KafkaConsumer<string, string>.CalculateRemainingConsumeOneTimeout(
+            TimeSpan.FromMilliseconds(100),
+            drainStarted);
+
+        await Assert.That(remaining).IsEqualTo(TimeSpan.Zero);
+    }
+
+    [Test]
+    public async Task CalculateRemainingConsumeOneTimeout_PreservesInfiniteSentinel()
+    {
+        var timeout = TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond - 1);
+        var drainStarted = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+
+        var remaining = KafkaConsumer<string, string>.CalculateRemainingConsumeOneTimeout(
+            timeout,
+            drainStarted);
+
+        await Assert.That(remaining).IsEqualTo(timeout);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_RuntimeSupportedLargeTimeout_UsesBufferedFastPath()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+
+        var resultTask = consumer.ConsumeOneAsync(
+            TimeSpan.FromMilliseconds((long)int.MaxValue + 1),
+            CancellationToken.None);
+
+        await Assert.That(resultTask.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(await resultTask).IsNotNull();
     }
 
     [Test]
@@ -430,6 +594,45 @@ public sealed class ConsumeOneFastPathTests
         return consumer;
     }
 
+    [Test]
+    public async Task ConsumeOneAsync_EmptyPendingFetchWithQueuedEof_ReturnsEofSynchronously()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition, [CreateBatch(20)]);
+        await using var consumer = CreateInitializedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+        GetPendingEofEvents(consumer).Enqueue((new TopicPartition(Topic, Partition), 20L));
+
+        var resultTask = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(resultTask.IsCompletedSuccessfully).IsTrue();
+        var result = await resultTask;
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.IsPartitionEof).IsTrue();
+        await Assert.That(result.Value.Offset).IsEqualTo(20L);
+    }
+
+    private static KafkaConsumer<string, string> CreateInitializedGroupedConsumer(
+        PendingFetchData fetch,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual)
+    {
+        var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "consume-one-fast-path-tests",
+                OffsetCommitMode = offsetCommitMode,
+                QueuedMinMessages = 1,
+                FetchMaxWaitMs = 200
+            },
+            Serializers.String,
+            Serializers.String);
+
+        SetInitialized(consumer);
+        AssignTestPartition(consumer);
+        GetPendingFetches(consumer).Enqueue(fetch);
+        return consumer;
+    }
+
     private sealed class InvalidDataThrowingDeserializer : IDeserializer<string>
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
@@ -450,6 +653,71 @@ public sealed class ConsumeOneFastPathTests
             ?? throw new InvalidOperationException("_initialized field not found.");
 
         initializedField.SetValue(consumer, true);
+    }
+
+    private static void MarkManualAssignmentCurrent(KafkaConsumer<string, string> consumer)
+    {
+        var consumerType = typeof(KafkaConsumer<string, string>);
+        var assignmentVersion = consumerType.GetField(
+            "_assignmentEnsureVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_assignmentEnsureVersion field not found.");
+        var acknowledgedVersion = consumerType.GetField(
+            "_lastManualAssignmentEnsureVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_lastManualAssignmentEnsureVersion field not found.");
+        acknowledgedVersion.SetValue(consumer, assignmentVersion.GetValue(consumer));
+    }
+
+    private static bool IsTopicFilterRefreshDue(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "IsTopicFilterRefreshDue",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("IsTopicFilterRefreshDue method not found.");
+        return (bool)method.Invoke(consumer, null)!;
+    }
+
+    private static void SetPrivateField<T>(
+        KafkaConsumer<string, string> consumer,
+        string fieldName,
+        T value)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            fieldName,
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found.");
+        field.SetValue(consumer, value);
+    }
+
+    private static ConsumerCoordinator GetCoordinator(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_coordinator",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_coordinator field not found.");
+        return (ConsumerCoordinator)field.GetValue(consumer)!;
+    }
+
+    private static long GetCoordinatorPollVersion(ConsumerCoordinator coordinator)
+    {
+        var field = typeof(ConsumerCoordinator).GetField(
+            "_pollVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_pollVersion field not found.");
+        return (long)field.GetValue(coordinator)!;
+    }
+
+    private static int GetTimeoutCtsPoolCount(KafkaConsumer<string, string> consumer)
+    {
+        var ctsPoolField = typeof(KafkaConsumer<string, string>).GetField(
+            "_ctsPool",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_ctsPool field not found.");
+        var ctsPool = ctsPoolField.GetValue(consumer)!;
+        var countField = ctsPool.GetType().GetField("_count", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("CancellationTokenSourcePool._count field not found.");
+        return (int)countField.GetValue(ctsPool)!;
     }
 
     private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions(
