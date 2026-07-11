@@ -205,7 +205,8 @@ public sealed class ConsumerLeaderDiscoveryTests
         InvokeResetToDivergingEpoch(
             consumer,
             CreateDivergingEpochResponse(partition: 1, epoch: 8, endOffset: 18),
-            fetchBufferEpoch);
+            fetchBufferEpoch,
+            startsBatch: false);
 
         await Assert.That(GetFetchBufferEpoch(consumer)).IsEqualTo(fetchBufferEpoch);
         InvokeCompleteDivergingEpochResets(consumer);
@@ -894,14 +895,15 @@ public sealed class ConsumerLeaderDiscoveryTests
     private static bool InvokeResetToDivergingEpoch(
         KafkaConsumer<string, string> consumer,
         FetchResponsePartition partitionResponse,
-        int? fetchBufferEpoch = null)
+        int? fetchBufferEpoch = null,
+        bool startsBatch = true)
     {
         var method = typeof(KafkaConsumer<string, string>)
             .GetMethod("ResetToDivergingEpoch", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("ResetToDivergingEpoch method not found");
 
         var epoch = fetchBufferEpoch ?? GetFetchBufferEpoch(consumer);
-        var staged = (bool)method.Invoke(consumer, [Topic, partitionResponse, epoch])!;
+        var staged = (bool)method.Invoke(consumer, [Topic, partitionResponse, epoch, startsBatch])!;
 
         if (fetchBufferEpoch is null && staged)
             InvokeCompleteDivergingEpochResets(consumer);
