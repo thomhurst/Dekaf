@@ -5,6 +5,7 @@ from stress_report import (
     format_throughput_table,
     generate_scenario_tables,
     intra_run_throughput,
+    paired_latency_thresholds,
 )
 
 
@@ -33,6 +34,64 @@ def stress_result(client, effective_rate, median_rate=None, is_message_bounded=F
 
 
 class StressReportTests(unittest.TestCase):
+    def test_paired_latency_thresholds_flag_high_p99(self):
+        confluent = stress_result("Confluent", effective_rate=1000)
+        confluent.update({
+            "scenario": "producer-acks-all",
+            "brokerCount": 3,
+            "latency": {"p50Us": 7_250, "p99Us": 39_550},
+        })
+        dekaf = stress_result("Dekaf", effective_rate=1400)
+        dekaf.update({
+            "scenario": "producer-acks-all",
+            "brokerCount": 3,
+            "latency": {"p50Us": 48_850, "p99Us": 3_019_550},
+        })
+
+        evaluations = paired_latency_thresholds([confluent, dekaf])
+
+        self.assertEqual(2, len(evaluations))
+        by_metric = {item["metric"]: item for item in evaluations}
+        self.assertTrue(by_metric["latencyP50Ratio"]["thresholdBreach"])
+        self.assertTrue(by_metric["latencyP99Ratio"]["thresholdBreach"])
+        self.assertAlmostEqual(
+            3_019_550 / 39_550,
+            by_metric["latencyP99Ratio"]["current"],
+        )
+
+    def test_paired_latency_thresholds_ignore_unpaired_and_confluent_results(self):
+        unpaired = stress_result("Dekaf", effective_rate=1400)
+        unpaired["latency"] = {"p50Us": 50_000, "p99Us": 3_000_000}
+
+        self.assertEqual([], paired_latency_thresholds([unpaired]))
+
+    def test_paired_latency_thresholds_ignore_multi_connection_dekaf_results(self):
+        confluent = stress_result("Confluent", effective_rate=1000)
+        confluent["latency"] = {"p50Us": 10_000, "p99Us": 50_000}
+        multi_connection = stress_result("Dekaf (3conn)", effective_rate=2000)
+        multi_connection["latency"] = {"p50Us": 50_000, "p99Us": 500_000}
+
+        self.assertEqual(
+            [],
+            paired_latency_thresholds([confluent, multi_connection]),
+        )
+
+    def test_paired_latency_thresholds_require_matching_roundtrip_bound(self):
+        confluent = stress_result("Confluent", effective_rate=1000)
+        confluent.update({
+            "scenario": "producer-roundtrip",
+            "roundTripValidation": {"expectedMessages": 250_000},
+            "latency": {"p50Us": 10_000, "p99Us": 50_000},
+        })
+        dekaf = stress_result("Dekaf", effective_rate=1400)
+        dekaf.update({
+            "scenario": "producer-roundtrip",
+            "roundTripValidation": {"expectedMessages": 1_000_000},
+            "latency": {"p50Us": 50_000, "p99Us": 500_000},
+        })
+
+        self.assertEqual([], paired_latency_thresholds([confluent, dekaf]))
+
     def test_intra_run_throughput_detects_front_loaded_collapse(self):
         value = stress_result("Dekaf", effective_rate=1400)
         value.update({

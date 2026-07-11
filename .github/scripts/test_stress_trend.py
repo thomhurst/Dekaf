@@ -41,6 +41,29 @@ def history_run(index, messages_per_second=1000.0, cpu_micros_per_message=2.0, *
 
 
 class StressTrendTests(unittest.TestCase):
+    def test_paired_latency_threshold_breach_fails_without_history(self):
+        confluent = result(
+            client="Confluent",
+            latency={"p50Us": 10_000, "p99Us": 50_000},
+        )
+        dekaf = result(
+            client="Dekaf",
+            latency={"p50Us": 15_000, "p99Us": 150_000},
+        )
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": []},
+            [confluent, dekaf],
+            "2026-07-01T02:00:00Z",
+        )
+
+        latency = [item for item in evaluations if item.get("latencyThreshold")]
+        self.assertTrue(should_fail)
+        self.assertEqual(2, len(latency))
+        by_metric = {item["metric"]: item for item in latency}
+        self.assertFalse(by_metric["latencyP50Ratio"]["thresholdBreach"])
+        self.assertTrue(by_metric["latencyP99Ratio"]["thresholdBreach"])
+
     def test_intra_run_threshold_breach_fails_without_history(self):
         collapsing = result(
             steadyStatePeakRatio=0.6,

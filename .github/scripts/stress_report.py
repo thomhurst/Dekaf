@@ -18,6 +18,8 @@ SCENARIO_TITLES = {
     'consumer-raw-batch': 'Consumer (Raw Batch)',
 }
 
+LATENCY_RATIO_THRESHOLD = 2.0
+
 
 def group_by_scenario(results):
     """Group results by (scenario, broker_count) tuple, split into producer and consumer."""
@@ -171,6 +173,103 @@ def intra_run_throughput(result):
         return None
 
     return numeric_fields | boolean_fields
+
+
+def paired_latency_thresholds(results):
+    """Compare each Dekaf p50/p99 with its matching Confluent result."""
+    baselines = {}
+    for result in results:
+        if str(result.get('client', '')).casefold() != 'confluent':
+            continue
+        latency = result.get('latency')
+        if not isinstance(latency, dict):
+            continue
+        baselines[_latency_identity(result)] = latency
+
+    evaluations = []
+    for result in results:
+        client = str(result.get('client', ''))
+        if client.casefold() != 'dekaf':
+            continue
+        baseline = baselines.get(_latency_identity(result))
+        latency = result.get('latency')
+        if baseline is None or not isinstance(latency, dict):
+            continue
+
+        for field, metric, label in (
+            ('p50Us', 'latencyP50Ratio', 'Delivery latency p50 / Confluent'),
+            ('p99Us', 'latencyP99Ratio', 'Delivery latency p99 / Confluent'),
+        ):
+            current = latency.get(field)
+            reference = baseline.get(field)
+            if (
+                not _positive_finite_number(current)
+                or not _positive_finite_number(reference)
+            ):
+                continue
+            ratio = current / reference
+            breached = ratio > LATENCY_RATIO_THRESHOLD
+            evaluations.append({
+                'scenario': _latency_scenario_label(result),
+                'metric': metric,
+                'metricLabel': label,
+                'current': ratio,
+                'baselineCount': 0,
+                'median': None,
+                'mad': None,
+                'lower': None,
+                'upper': LATENCY_RATIO_THRESHOLD,
+                'status': 'regression' if breached else 'stable',
+                'repeatedRegression': False,
+                'thresholdBreach': breached,
+                'thresholdDirection': 'maximum',
+                'latencyThreshold': True,
+            })
+    return evaluations
+
+
+def _positive_finite_number(value):
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and isfinite(value)
+        and value > 0
+    )
+
+
+def _latency_identity(result):
+    return (
+        str(result.get('scenario', 'unknown')).casefold(),
+        result.get('brokerCount', 1),
+        result.get('durationMinutes'),
+        result.get('messageSizeBytes'),
+        _latency_consumer_seed_batch_size(result),
+        _latency_roundtrip_messages(result),
+    )
+
+
+def _latency_consumer_seed_batch_size(result):
+    value = result.get('consumerSeedBatchSizeBytes')
+    if value is not None:
+        return value
+    scenario = str(result.get('scenario', '')).casefold()
+    return 16_384 if scenario.startswith('consumer') else None
+
+
+def _latency_roundtrip_messages(result):
+    validation = result.get('roundTripValidation')
+    if isinstance(validation, dict):
+        return validation.get('expectedMessages', result.get('roundTripMessages'))
+    return result.get('roundTripMessages')
+
+
+def _latency_scenario_label(result):
+    brokers = result.get('brokerCount', 1)
+    return (
+        f"{result.get('scenario', 'unknown')} / {result.get('client', 'unknown')} / "
+        f"{brokers} broker{'s' if brokers != 1 else ''} / "
+        f"{result.get('messageSizeBytes', '?')}B / {result.get('durationMinutes', '?')}m"
+    )
 
 
 def comparison_rate(result):

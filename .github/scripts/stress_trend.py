@@ -10,6 +10,7 @@ from stress_report import (
     cpu_micros_per_message,
     effective_rate,
     intra_run_throughput,
+    paired_latency_thresholds,
 )
 
 
@@ -275,6 +276,12 @@ def evaluate_and_update(history, current_results, run_started_at):
 
         observations.append(observation)
 
+    latency_evaluations = paired_latency_thresholds(current_results)
+    evaluations.extend(latency_evaluations)
+    should_fail = should_fail or any(
+        item['thresholdBreach'] for item in latency_evaluations
+    )
+
     updated_runs = baseline_runs + [{
         "runStartedAtUtc": run_started_at,
         "results": observations,
@@ -311,7 +318,10 @@ def format_markdown(evaluations):
     for item in evaluations:
         if "thresholdBreach" in item:
             center = "-"
-            band = f">= {item['lower']:,.2f}"
+            if item.get("thresholdDirection") == "maximum":
+                band = f"<= {item['upper']:,.2f}"
+            else:
+                band = f">= {item['lower']:,.2f}"
         elif item["median"] is None:
             center = "-"
             band = f"{item['baselineCount']}/{MIN_BASELINE_RUNS} runs"
@@ -347,7 +357,11 @@ def emit_annotations(evaluations):
 
         if item.get("thresholdBreach"):
             level = "error"
-            prefix = "Intra-run threshold breach"
+            prefix = (
+                "Latency threshold breach"
+                if item.get("latencyThreshold")
+                else "Intra-run threshold breach"
+            )
         elif item["repeatedRegression"]:
             level = "error"
             prefix = "Repeated regression"
@@ -359,9 +373,13 @@ def emit_annotations(evaluations):
             prefix = "Improvement"
 
         if "thresholdBreach" in item:
+            if item.get("thresholdDirection") == "maximum":
+                requirement = f"required <= {item['upper']:.2f}"
+            else:
+                requirement = f"required >= {item['lower']:.2f}"
             message = (
                 f"{prefix}: {item['scenario']} {item['metricLabel']}={item['current']:.2f}; "
-                f"required >= {item['lower']:.2f}"
+                f"{requirement}"
             )
         else:
             message = (
