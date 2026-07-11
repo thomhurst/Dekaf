@@ -551,6 +551,45 @@ public sealed class AdaptiveScaleDownTests
         }
     }
 
+    [Test]
+    public async Task ScaleDown_MutedPartitionWithUnreadChannelTail_DoesNotShrink()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            scaleDownSustainedMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var topicPartition = new TopicPartition(Topic, 0);
+
+        try
+        {
+            SetField(sender, "_connectionCount", 4);
+            SetField(sender, "_totalMaxInFlight", 4);
+            SetField(sender, "_totalPendingResponseCount", 1);
+
+            typeof(BrokerSender).GetMethod(
+                "MutePartition",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, [topicPartition]);
+
+            InvokeMaybeScaleConnections(sender, hasUnreadEvent: true);
+            InvokeMaybeScaleConnections(sender, hasUnreadEvent: true);
+
+            await pool.DidNotReceive().ShrinkConnectionGroupAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>());
+            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(4);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
     private static object CreateCarryOver(ReadyBatch? batch = null)
     {
         var carryOverType = typeof(BrokerSender).GetNestedType(
@@ -570,11 +609,14 @@ public sealed class AdaptiveScaleDownTests
         return carryOver;
     }
 
-    private static void InvokeMaybeScaleConnections(BrokerSender sender, object? carryOver = null) =>
+    private static void InvokeMaybeScaleConnections(
+        BrokerSender sender,
+        object? carryOver = null,
+        bool hasUnreadEvent = false) =>
         typeof(BrokerSender).GetMethod(
             "MaybeScaleConnections",
             BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(sender, [carryOver ?? CreateCarryOver()]);
+            .Invoke(sender, [carryOver ?? CreateCarryOver(), hasUnreadEvent]);
 
     private static T GetField<T>(object instance, string fieldName) =>
         (T)instance.GetType().GetField(

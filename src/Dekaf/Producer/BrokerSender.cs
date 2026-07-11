@@ -1035,7 +1035,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // ── 4b. Adaptive connection scaling ──
                 if (_adaptiveScalingEnabled)
                 {
-                    var scaledToCount = MaybeScaleConnections(carryOver);
+                    var hasUnreadEvent = !_isIdempotent && eventReader.TryPeek(out _);
+                    var scaledToCount = MaybeScaleConnections(carryOver, hasUnreadEvent);
 
                     if (scaledToCount > 0)
                     {
@@ -4088,7 +4089,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// (polled each iteration).
     /// Returns the new connection count if scaling completed this iteration, or 0 otherwise.
     /// </summary>
-    private int MaybeScaleConnections(PartitionCarryOver carryOver)
+    private int MaybeScaleConnections(PartitionCarryOver carryOver, bool hasUnreadEvent)
     {
         // Phase 0: Poll draining connection for disposal
         MaybeDrainAndDisposeConnection();
@@ -4234,7 +4235,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ? (double)pendingResponseCount / _totalMaxInFlight
             : 0;
         if (inFlightUtilization >= ScaleDownInFlightUtilizationThreshold
-            || HasMutedPartitionLoad(carryOver))
+            || HasMutedPartitionLoad(carryOver, hasUnreadEvent))
         {
             _lowUtilizationStartTicks = 0;
             return 0;
@@ -4295,10 +4296,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         return 0;
     }
 
-    private bool HasMutedPartitionLoad(PartitionCarryOver carryOver)
+    private bool HasMutedPartitionLoad(PartitionCarryOver carryOver, bool hasUnreadEvent)
     {
         if (!_muteOnSend || _mutedPartitions.IsEmpty)
             return false;
+
+        // The channel is unified, so its unread tail can include wake-up signals as
+        // well as batches. For the non-idempotent acks=all workload this guard targets,
+        // conservatively defer until the single reader can classify the tail. Idempotent
+        // producers retain their existing ability to shrink under continuous traffic.
+        if (hasUnreadEvent)
+            return true;
 
         foreach (var (topicPartition, _) in _mutedPartitions)
         {
