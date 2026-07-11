@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.IO.Pipelines;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -51,85 +50,25 @@ internal static class ConnectionHelper
         // Incomplete data (ran out of bytes) or malformed (exceeded 5-byte VarInt limit)
         return (result, bytesRead, false);
     }
-    // Minimum pause threshold for pipeline backpressure (1 MB)
-    // Lowered from 16 MB: the input pipe only needs to buffer enough for the read pump
-    // to stay ahead of response parsing. Producer responses are small (< 1 KB) and consumer
-    // fetch responses are copied into PooledResponseBuffer immediately in TryReadResponse.
-    private const long MinimumPauseThresholdBytes = 1L * 1024 * 1024;
 
-    // Maximum pause threshold per connection (4 MB)
-    // Caps per-connection buffering to prevent a single connection from retaining excessive
-    // memory in the MemoryPool. Without this cap, a single-broker/single-connection setup
-    // with 256 MB BufferMemory would allow 64 MB per pipe — far more than needed for
-    // transient network buffering.
-    private const long MaximumPauseThresholdBytes = 4L * 1024 * 1024;
+    // Correlation ID is always first in the response header.
+    internal const int MinimumResponseFrameSize = 4;
 
-    // Divisor for per-connection pipeline budget allocation (25% = 1/4)
-    //
-    // Rationale for 25% allocation:
-    // - BufferMemory is primarily for producer batch accumulation (main memory pool)
-    // - Pipeline buffering is a separate, transient layer for network I/O
-    // - 25% provides sufficient headroom for TCP send buffers and in-flight data
-    // - Leaves 75% for producer batches, maintaining primary allocation semantics
-    // - Prevents pipeline from consuming producer's batch memory pool
-    //
-    // Example with 256 MB BufferMemory, 2 connections per broker, 3 brokers:
-    // - Total connections: 2 * 3 = 6
-    // - Per-connection budget: 256 MB / 6 / 4 = 10.7 MB (capped to 4 MB)
-    // - Total pipeline memory: 4 MB * 6 connections = 24 MB
-    // - Producer batch memory: ~232 MB
-    private const int BufferMemoryDivisor = 4;
-
-    /// <summary>
-    /// Calculates pipeline backpressure thresholds based on BufferMemory configuration.
-    /// Divides the pipeline budget across ALL connections (brokers * connectionsPerBroker)
-    /// and caps per-connection thresholds to prevent unbounded memory retention in the
-    /// shared MemoryPool. Uses 1 MB floor for low-memory configurations.
-    /// </summary>
-    /// <param name="bufferMemory">Total producer BufferMemory in bytes</param>
-    /// <param name="connectionsPerBroker">Number of connections per broker (must be positive)</param>
-    /// <param name="brokerCount">Number of brokers (must be positive, defaults to 1 for backward compatibility)</param>
-    /// <returns>Tuple of (pauseThreshold, resumeThreshold) in bytes</returns>
-    /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when connectionsPerBroker or brokerCount is less than or equal to zero.
-    /// </exception>
-    public static (long PauseThreshold, long ResumeThreshold) CalculatePipelineThresholds(
-        ulong bufferMemory,
-        int connectionsPerBroker,
-        int brokerCount = 1)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void ValidateResponseFrameSize(int frameSize, int maxFrameSize)
     {
-        if (connectionsPerBroker <= 0)
+        if (frameSize < MinimumResponseFrameSize || frameSize > maxFrameSize)
         {
-            throw new ArgumentOutOfRangeException(
-                nameof(connectionsPerBroker),
-                connectionsPerBroker,
-                "Connections per broker must be positive");
+            throw new KafkaException(
+                $"Invalid response frame size {frameSize}. Expected between {MinimumResponseFrameSize} and {maxFrameSize} bytes.");
         }
-
-        if (brokerCount <= 0)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(brokerCount),
-                brokerCount,
-                "Broker count must be positive");
-        }
-
-        // Calculate per-pipe budget: BufferMemory / TotalConnections / BufferMemoryDivisor
-        // TotalConnections = connectionsPerBroker * brokerCount
-        // Division by BufferMemoryDivisor reserves 1/4 of per-connection memory for pipeline buffering
-        var totalConnections = (ulong)connectionsPerBroker * (ulong)brokerCount;
-        var perPipeBudget = bufferMemory / totalConnections / BufferMemoryDivisor;
-
-        var pauseThreshold = Math.Clamp((long)perPipeBudget, MinimumPauseThresholdBytes, MaximumPauseThresholdBytes);
-
-        var resumeThreshold = pauseThreshold / 2;
-
-        return (pauseThreshold, resumeThreshold);
     }
 }
 
 /// <summary>
-/// A multiplexed connection to a Kafka broker using System.IO.Pipelines.
+/// A multiplexed connection to a Kafka broker. Requests are written directly to the
+/// socket/stream; responses are framed by <see cref="ResponseFrameReader"/> straight
+/// into pooled arrays (one user-space copy) and dispatched by correlation id.
 /// </summary>
 public sealed partial class KafkaConnection :
     IKafkaConnection,
@@ -142,18 +81,17 @@ public sealed partial class KafkaConnection :
     private readonly string? _clientId;
     private readonly ILogger _logger;
     private readonly ConnectionOptions _options;
-    private readonly ulong _bufferMemory;
-    private readonly int _connectionsPerBroker;
-    private readonly int _brokerCount;
     private readonly ResponseBufferPool _responseBufferPool;
 
     private Socket? _socket;
     private string? _resolvedTargetHost;
     private Stream? _stream;
-    private PipeReader? _reader;
-    private SocketPipe? _socketPipe;
-    private DuplexPipe? _duplexPipe;
+    // True once ConnectCoreAsync wrapped _stream in an SslStream. Captured at connect time
+    // so the reader construction and teardown ordering don't re-derive it from stream types.
+    private bool _isTls;
+    private ResponseFrameReader? _frameReader;
     private PipeMemoryPool? _pipeMemoryPool;
+    private readonly long _receiveTimeoutStopwatchTicks;
 
     // When non-null, this connection uses a shared pool owned by the ConnectionPool.
     // The connection must NOT dispose the shared pool — only its owner does.
@@ -171,7 +109,6 @@ public sealed partial class KafkaConnection :
     // so recent cancellations continue suppressing late responses after the cap is hit.
     private const int MaxCancelledCorrelationIds = 10_000;
     private const int PendingRequestShardCount = 16;
-    private const int MinimumResponseFrameSize = 4; // Correlation ID is always first in the response header.
     // SASL handshake/auth responses are small; this pre-auth path must not honor untrusted large frame claims.
     private const int MaxSaslResponseFrameSize = 1024 * 1024;
     internal const int DefaultPreSerializeInitialCapacity = 4096;
@@ -194,10 +131,6 @@ public sealed partial class KafkaConnection :
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
     private readonly ClientTelemetryMetricCollector? _telemetryMetricCollector;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
-
-    // Partial frame assembly state for incremental response consumption.
-    // Only accessed from ReceiveLoopAsync (single-threaded reader).
-    private PartialFrameContext _partialFrame;
 
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
@@ -270,6 +203,12 @@ public sealed partial class KafkaConnection :
         public Dictionary<int, PendingRequestEntry> Requests { get; }
     }
 
+    /// <remarks>
+    /// <paramref name="bufferMemory"/>, <paramref name="connectionsPerBroker"/> and
+    /// <paramref name="brokerCount"/> previously sized the input pipe's backpressure
+    /// thresholds; the direct-read receive path no longer buffers beyond one receive
+    /// buffer per connection. The parameters remain for API compatibility.
+    /// </remarks>
     public KafkaConnection(
         string host,
         int port,
@@ -279,7 +218,7 @@ public sealed partial class KafkaConnection :
         ulong bufferMemory = 33554432,
         int connectionsPerBroker = 1,
         int brokerCount = 1)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, ResponseBufferPool.Default)
+        : this(host, port, clientId, options, logger, ResponseBufferPool.Default)
     {
     }
 
@@ -289,9 +228,6 @@ public sealed partial class KafkaConnection :
         string? clientId,
         ConnectionOptions? options,
         ILogger<KafkaConnection>? logger,
-        ulong bufferMemory,
-        int connectionsPerBroker,
-        int brokerCount,
         ResponseBufferPool responseBufferPool,
         ClientTelemetryMetricCollector? telemetryMetricCollector = null)
     {
@@ -305,13 +241,13 @@ public sealed partial class KafkaConnection :
         _pendingRequestPool = new PendingRequestPool(connectionSizes.PendingRequests);
         _timeoutCtsPool = new CancellationTokenSourcePool(connectionSizes.CancellationTokenSources);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConnection>.Instance;
-        _bufferMemory = bufferMemory;
-        _connectionsPerBroker = connectionsPerBroker;
-        _brokerCount = Math.Max(1, brokerCount);
         _responseBufferPool = responseBufferPool;
         _telemetryMetricCollector = telemetryMetricCollector;
+        _receiveTimeoutStopwatchTicks =
+            (long)(_options.RequestTimeout.Ticks * (double)Stopwatch.Frequency / TimeSpan.TicksPerSecond);
     }
 
+    /// <inheritdoc cref="KafkaConnection(string, int, string?, ConnectionOptions?, ILogger{KafkaConnection}?, ulong, int, int)"/>
     public KafkaConnection(
         int brokerId,
         string host,
@@ -322,7 +258,7 @@ public sealed partial class KafkaConnection :
         ulong bufferMemory = 33554432,
         int connectionsPerBroker = 1,
         int brokerCount = 1)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, ResponseBufferPool.Default)
+        : this(host, port, clientId, options, logger, ResponseBufferPool.Default)
     {
         BrokerId = brokerId;
     }
@@ -341,13 +277,10 @@ public sealed partial class KafkaConnection :
         string? clientId,
         ConnectionOptions? options,
         ILogger<KafkaConnection>? logger,
-        ulong bufferMemory,
-        int connectionsPerBroker,
-        int brokerCount,
         ResponseBufferPool responseBufferPool,
         PipeMemoryPool? sharedPipeMemoryPool = null,
         ClientTelemetryMetricCollector? telemetryMetricCollector = null)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, brokerCount, responseBufferPool, telemetryMetricCollector)
+        : this(host, port, clientId, options, logger, responseBufferPool, telemetryMetricCollector)
     {
         BrokerId = brokerId;
         _sharedPipeMemoryPool = sharedPipeMemoryPool;
@@ -440,6 +373,7 @@ public sealed partial class KafkaConnection :
                 throw new AuthenticationException($"TLS handshake failed: {ex.Message}", ex);
             }
             networkStream = sslStream;
+            _isTls = true;
         }
 
         _stream = networkStream;
@@ -450,14 +384,9 @@ public sealed partial class KafkaConnection :
             await PerformSaslAuthenticationAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        // Calculate pipeline backpressure thresholds based on BufferMemory,
-        // dividing across all connections (brokers * connectionsPerBroker)
-        var (pauseThreshold, resumeThreshold) = ConnectionHelper.CalculatePipelineThresholds(
-            _bufferMemory,
-            _connectionsPerBroker,
-            _brokerCount);
-
-        LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
+        // Release the previous reader's buffer (reconnect path) before its source pool
+        // is potentially replaced below.
+        _frameReader?.Dispose();
 
         // Use a shared pool if provided by the ConnectionPool, otherwise create a per-connection
         // pool. The shared pool bounds total retained memory across all connections to a single
@@ -479,37 +408,19 @@ public sealed partial class KafkaConnection :
             _pipeMemoryPool = new PipeMemoryPool();
         }
 
-        // Use a read pump to decouple reads from PipeReader signaling.
-        // PipeReader.Create(Stream).ReadAsync can block indefinitely when concurrent reads
-        // and writes target the same underlying socket. The pump reads into an internal Pipe,
-        // ensuring PipeReader.ReadAsync always wakes promptly when data arrives.
-        // PipeScheduler.Inline eliminates thread pool context switches — the reader continuation
-        // runs directly on the pump thread (like Kestrel's SocketConnection).
-        var inputPipeOptions = new PipeOptions(
-            pool: _pipeMemoryPool,
-            readerScheduler: PipeScheduler.Inline,
-            writerScheduler: PipeScheduler.Inline,
-            minimumSegmentSize: _options.MinimumSegmentSize,
-            pauseWriterThreshold: pauseThreshold,
-            resumeWriterThreshold: resumeThreshold,
-            useSynchronizationContext: false);
-
         var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
 
-        if (_stream is NetworkStream plainStream)
-        {
-            // Plain TCP: read directly from the Socket, bypassing the Stream abstraction.
-            // SocketPipe takes full ownership of both the socket and the NetworkStream.
-            _socketPipe = new SocketPipe(_socket!, plainStream, inputPipeOptions, readBufferSize);
-            _reader = _socketPipe.Input;
-        }
-        else
-        {
-            // TLS: SslStream requires the Stream abstraction for decryption.
-            // DuplexPipe takes full ownership of the SslStream and the socket.
-            _duplexPipe = new DuplexPipe(_stream, _socket!, inputPipeOptions, readBufferSize);
-            _reader = _duplexPipe.Input;
-        }
+        // Plain TCP reads bypass the Stream abstraction and receive directly from the
+        // Socket; TLS reads must go through the SslStream for decryption. Either way the
+        // frame body is received straight into the pooled response array — there is no
+        // intermediate pipe, so response payloads are copied exactly once (issue #1757).
+        _frameReader = new ResponseFrameReader(
+            _socket,
+            _isTls ? _stream : null,
+            readBufferSize,
+            _responseBufferPool,
+            _pipeMemoryPool,
+            OnReceiveLoopBytesRead);
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
@@ -1286,7 +1197,9 @@ public sealed partial class KafkaConnection :
 
     private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
     {
-        if (_reader is null)
+        // Capture the reader so a concurrent reconnect can never swap it mid-loop.
+        var frameReader = _frameReader;
+        if (frameReader is null)
             return;
 
         LogReceiveLoopStarted(_host, _port);
@@ -1295,112 +1208,33 @@ public sealed partial class KafkaConnection :
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                ReadResult result;
+                ResponseFrame frame;
                 try
                 {
-                    // ReadResult state machine (System.IO.Pipelines):
-                    //
-                    // ReadAsync can complete in three ways:
-                    //
-                    // 1. IsCompleted=false, IsCanceled=false (normal data available):
-                    //    Data is available in result.Buffer. Process all complete responses,
-                    //    then call AdvanceTo to indicate consumed/examined positions.
-                    //
-                    // 2. IsCompleted=true:
-                    //    The PipeWriter was completed (end of stream). For PipeReader.Create(stream),
-                    //    this means the underlying stream reached EOF — the remote peer closed the
-                    //    connection. Any remaining data in the buffer is still valid and must be
-                    //    processed before exiting. We process responses first, then break out of
-                    //    the receive loop.
-                    //
-                    // 3. IsCanceled=true:
-                    //    The read was canceled. With Pipe.Reader (used via SocketPipe/DuplexPipe since
-                    //    PR #458), CancellationToken-based cancellation returns IsCanceled=true instead
-                    //    of throwing OperationCanceledException. Both paths must be handled.
-                    result = await _reader!.ReadAsync(cancellationToken)
-                        .ConfigureAwait(false);
+                    frame = await frameReader.ReadFrameAsync().ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                catch (Exception) when (cancellationToken.IsCancellationRequested)
                 {
+                    // Disposal aborted the read source underneath the in-flight read
+                    // (reads are not cancellable; Abort is the wake-up mechanism).
+                    // The post-loop block fails pending requests as "Connection closing".
                     break;
                 }
-
-                // Pipe.Reader.ReadAsync returns IsCanceled=true on token cancellation instead of
-                // throwing OperationCanceledException (unlike PipeReader.Create(Stream)). Without
-                // this check, timeouts are silently swallowed: the connection stays in the pool
-                // appearing healthy, and all subsequent requests on it also time out (#670).
-                if (result.IsCanceled)
+                catch (Exception) when (ConsumeReceiveTimeoutExpired())
                 {
-                    if (ConsumeReceiveTimeoutExpired() && !cancellationToken.IsCancellationRequested)
-                    {
-                        if (!HasPendingRequests())
-                        {
-                            _reader!.AdvanceTo(result.Buffer.Start, result.Buffer.Start);
-                            continue;
-                        }
-
-                        throw CreateReceiveTimeoutException();
-                    }
-
-                    if (!cancellationToken.IsCancellationRequested)
-                    {
-                        _reader!.AdvanceTo(result.Buffer.Start, result.Buffer.Start);
-                        continue;
-                    }
-
-                    // Outer cancellation (disposal) — exit cleanly
-                    break;
+                    // OnReceiveTimeout aborted the source: no bytes arrived within
+                    // RequestTimeout while requests were pending. Without this, the
+                    // connection stays in the pool appearing healthy and every
+                    // subsequent request on it also times out (#670).
+                    throw CreateReceiveTimeoutException();
                 }
 
-                var buffer = result.Buffer;
-
-                LogReceivedBytes(buffer.Length, _host, _port);
-
-                // Phase 1: Continue assembling a partial frame if one is in progress.
-                // The partial frame consumes data from the pipe buffer as it copies,
-                // keeping the buffer below the pause threshold for large responses.
-                if (_partialFrame.IsActive)
-                {
-                    if (ContinuePartialFrame(ref buffer, ref _partialFrame))
-                    {
-                        // Frame complete — dispatch it
-                        var responseData = new PooledResponseBuffer(
-                            _partialFrame.Buffer!, _partialFrame.FrameSize,
-                            _partialFrame.IsPooled, pool: _responseBufferPool);
-                        DispatchResponse(_partialFrame.CorrelationId, responseData);
-                        _partialFrame = default;
-                    }
-                }
-
-                // Phase 2: Process any complete responses available in the buffer.
-                // This is the fast path for small responses (e.g., producer acks)
-                // that fit entirely within the pipe buffer.
-                if (!_partialFrame.IsActive)
-                {
-                    while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
-                    {
-                        DispatchResponse(correlationId, responseData);
-                    }
-
-                    // Phase 3: Start incremental assembly for frames that don't fit
-                    // in the current buffer, keeping the pipe below the pause threshold.
-                    if (buffer.Length >= 8)
-                    {
-                        TryStartPartialFrame(ref buffer, ref _partialFrame, _responseBufferPool);
-                    }
-                }
-
-                _reader!.AdvanceTo(buffer.Start, buffer.End);
-                RefreshReceiveTimeout();
-
-                // After processing all available responses, check if the stream has ended.
-                // IsCompleted=true means the remote peer closed the connection (EOF).
-                // The remote peer closed the connection. Fail any pending requests
+                // The remote peer closed the connection (EOF). Fail any pending requests
                 // immediately so callers don't hang waiting for responses that will
                 // never arrive. Without this, pending requests rely on their individual
                 // RequestTimeout (30s default), which delays error detection and can
                 // cause indefinite hangs when combined with BrokerSender retry cycles.
-                if (result.IsCompleted)
+                if (frame.IsEndOfStream)
                 {
                     LogReceiveLoopCompleted(_host, _port);
                     MarkDisposed(); // Prevent new requests from being queued on a dead connection
@@ -1408,6 +1242,8 @@ public sealed partial class KafkaConnection :
                         "Connection closed by remote peer (EOF)"));
                     break;
                 }
+
+                DispatchResponse(frame.CorrelationId, frame.Buffer);
             }
 
             // While loop exited normally (no exception thrown, so no catch block runs).
@@ -1433,7 +1269,27 @@ public sealed partial class KafkaConnection :
         finally
         {
             DisarmReceiveTimeout();
+
+            // The loop is the only reader; once it exits nothing else touches the reader's
+            // buffers, so they can be returned eagerly (DisposeAsync's call is then a no-op).
+            frameReader.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Invoked by <see cref="ResponseFrameReader"/> after every successful source read.
+    /// Extends the receive-timeout deadline on byte progress (a large frame arriving
+    /// slowly must not trip the timeout while the broker is still sending). This is the
+    /// hot path — a single volatile store, no lock and no <see cref="Timer.Change(TimeSpan, TimeSpan)"/>;
+    /// <see cref="OnReceiveTimeout"/> re-arms itself for the remainder when it fires
+    /// before the extended deadline.
+    /// </summary>
+    private void OnReceiveLoopBytesRead(int bytesRead)
+    {
+        LogReceivedBytes(bytesRead, _host, _port);
+
+        if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) != 0)
+            Volatile.Write(ref _receiveTimeoutDeadlineTimestamp, GetReceiveTimeoutDeadlineTimestamp());
     }
 
     private KafkaException CreateReceiveTimeoutException()
@@ -1781,127 +1637,54 @@ public sealed partial class KafkaConnection :
             return;
 
         var deadlineTimestamp = Volatile.Read(ref _receiveTimeoutDeadlineTimestamp);
-        if (deadlineTimestamp == 0 || Stopwatch.GetTimestamp() < deadlineTimestamp)
+        if (deadlineTimestamp == 0)
             return;
 
+        var remainingTimestamp = deadlineTimestamp - Stopwatch.GetTimestamp();
+        if (remainingTimestamp > 0)
+        {
+            // Byte progress moved the deadline forward since the timer was armed
+            // (OnReceiveLoopBytesRead only stamps the deadline) — sleep out the remainder.
+            RearmReceiveTimeoutForRemainder(remainingTimestamp);
+            return;
+        }
+
         Volatile.Write(ref _receiveTimeoutExpired, 1);
-        _reader?.CancelPendingRead();
+
+        // Reads are not cancellable — aborting the source is how the timer interrupts an
+        // in-flight read (see ResponseFrameReader.Abort). The receive loop observes the
+        // faulted read together with the expired flag and tears the connection down.
+        // The pending-request check above keeps a drained connection alive; the remaining
+        // race window (last request completing between that check and the abort) at worst
+        // tears down a connection the pool would replace anyway.
+        _frameReader?.Abort();
+    }
+
+    private void RearmReceiveTimeoutForRemainder(long remainingTimestamp)
+    {
+        var remaining = TimeSpan.FromSeconds(remainingTimestamp / (double)Stopwatch.Frequency);
+        lock (_receiveTimeoutGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) == 0)
+                return;
+
+            try
+            {
+                GetOrCreateReceiveTimeoutTimer().Change(remaining, Timeout.InfiniteTimeSpan);
+            }
+            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+            {
+            }
+        }
     }
 
     private bool ConsumeReceiveTimeoutExpired()
         => Interlocked.Exchange(ref _receiveTimeoutExpired, 0) != 0;
 
     private long GetReceiveTimeoutDeadlineTimestamp()
-        => Stopwatch.GetTimestamp() + (long)(_options.RequestTimeout.Ticks * (double)Stopwatch.Frequency / TimeSpan.TicksPerSecond);
+        => Stopwatch.GetTimestamp() + _receiveTimeoutStopwatchTicks;
 
     private void Touch() => Volatile.Write(ref _lastUsedTimestampMs, Dekaf.MonotonicClock.GetMilliseconds());
-
-    private bool TryReadResponse(
-        ref ReadOnlySequence<byte> buffer,
-        out int correlationId,
-        out PooledResponseBuffer responseData)
-    {
-        correlationId = 0;
-        responseData = default;
-
-        if (buffer.Length < 4)
-            return false;
-
-        // Single-segment fast path: avoids ReadOnlySequence per-segment iteration overhead
-        if (buffer.IsSingleSegment)
-        {
-            return TryReadResponseSingleSegment(ref buffer, out correlationId, out responseData);
-        }
-
-        // Read size prefix
-        Span<byte> sizeBuffer = stackalloc byte[4];
-        buffer.Slice(0, 4).CopyTo(sizeBuffer);
-        var size = BinaryPrimitives.ReadInt32BigEndian(sizeBuffer);
-        ValidateResponseFrameSize(size, _responseBufferPool.MaxArrayLength);
-
-        var frameLength = 4L + size;
-        if (buffer.Length < frameLength)
-            return false;
-
-        // Extract response data (including header)
-        var responseBuffer = buffer.Slice(4, size);
-
-        // Read correlation ID from response header
-        Span<byte> correlationBuffer = stackalloc byte[4];
-        responseBuffer.Slice(0, 4).CopyTo(correlationBuffer);
-        correlationId = BinaryPrimitives.ReadInt32BigEndian(correlationBuffer);
-
-        var (responseArray, isPooled) = RentResponseArray(size);
-
-        responseBuffer.CopyTo(responseArray);
-        responseData = new PooledResponseBuffer(responseArray, size, isPooled, pool: _responseBufferPool);
-
-        buffer = buffer.Slice(frameLength);
-        return true;
-    }
-
-    /// <summary>
-    /// Fast path for single-segment buffers. Reads size prefix, correlation ID, and copies
-    /// response data using Span operations, avoiding ReadOnlySequence per-segment iteration overhead.
-    /// </summary>
-    private bool TryReadResponseSingleSegment(
-        ref ReadOnlySequence<byte> buffer,
-        out int correlationId,
-        out PooledResponseBuffer responseData)
-    {
-        correlationId = 0;
-        responseData = default;
-
-        var span = buffer.First.Span;
-
-        // Read size prefix directly from span
-        var size = BinaryPrimitives.ReadInt32BigEndian(span);
-        ValidateResponseFrameSize(size, _responseBufferPool.MaxArrayLength);
-
-        var frameLength = 4L + size;
-        if (span.Length < frameLength)
-            return false;
-
-        // Read correlation ID directly from span (offset 4 = past size prefix)
-        correlationId = BinaryPrimitives.ReadInt32BigEndian(span.Slice(4));
-
-        var (responseArray, isPooled) = RentResponseArray(size);
-
-        // Copy using Span.CopyTo — single memcpy, no segment iteration
-        span.Slice(4, size).CopyTo(responseArray);
-        responseData = new PooledResponseBuffer(responseArray, size, isPooled, pool: _responseBufferPool);
-
-        buffer = buffer.Slice(frameLength);
-        return true;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void ValidateResponseFrameSize(int frameSize, int maxFrameSize)
-    {
-        if (frameSize < MinimumResponseFrameSize || frameSize > maxFrameSize)
-        {
-            throw new KafkaException(
-                $"Invalid response frame size {frameSize}. Expected between {MinimumResponseFrameSize} and {maxFrameSize} bytes.");
-        }
-    }
-
-    /// <summary>
-    /// Rents a response buffer from the dedicated pool, or allocates directly for oversized responses.
-    /// Multi-partition fetch responses (e.g., 6 partitions x 1MB) easily exceed 4MB.
-    /// Unpooled responses go to LOH and require Gen2 GC to reclaim.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private (byte[] Array, bool IsPooled) RentResponseArray(int size)
-    {
-        ValidateResponseFrameSize(size, _responseBufferPool.MaxArrayLength);
-
-        if (size <= _responseBufferPool.MaxArrayLength)
-        {
-            return (_responseBufferPool.Pool.Rent(size), true);
-        }
-
-        return (new byte[size], false);
-    }
 
     /// <summary>
     /// After adding a pending request, double-check that the connection hasn't been disposed.
@@ -1923,15 +1706,6 @@ public sealed partial class KafkaConnection :
 
     private void FailAllPendingRequests(Exception ex)
     {
-        // Clean up any partial frame being assembled
-        if (_partialFrame.IsActive)
-        {
-            new PooledResponseBuffer(
-                _partialFrame.Buffer!, _partialFrame.FrameSize,
-                _partialFrame.IsPooled, pool: _responseBufferPool).Dispose();
-            _partialFrame = default;
-        }
-
         // Do NOT remove from _pendingRequests here. The awaiter's finally block in
         // AwaitAndParseResponseAsync (or the catch in SendAsync/SendPipelinedAsync)
         // will TryRemove and return the request to the pool.
@@ -2814,7 +2588,7 @@ public sealed partial class KafkaConnection :
         {
             await ReadExactlyAsync(_stream, sizeBuffer.AsMemory(0, 4), cancellationToken).ConfigureAwait(false);
             var responseSize = BinaryPrimitives.ReadInt32BigEndian(sizeBuffer);
-            ValidateResponseFrameSize(responseSize, MaxSaslResponseFrameSize);
+            ConnectionHelper.ValidateResponseFrameSize(responseSize, MaxSaslResponseFrameSize);
 
             var responseBuffer = ArrayPool<byte>.Shared.Rent(responseSize);
             try
@@ -2919,9 +2693,10 @@ public sealed partial class KafkaConnection :
         }
 
         _receiveCts?.Cancel();
-        // Wake an idle PipeReader.ReadAsync immediately; cancellation alone can leave
-        // disposal waiting for the fallback receive-loop timeout.
-        _reader?.CancelPendingRead();
+        // Reads are not cancellable — abort the read source so an in-flight
+        // ResponseFrameReader read faults and the receive loop observes the
+        // cancellation promptly instead of waiting for the fallback timeout below.
+        _frameReader?.Abort();
 
         if (_receiveTask is not null)
         {
@@ -2931,29 +2706,10 @@ public sealed partial class KafkaConnection :
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // The receive loop did not exit within 5 seconds (e.g., blocked on ReadAsync).
-                // Complete the pipe reader to force ReadAsync to return with IsCompleted=true,
-                // then wait briefly for the loop to observe it and exit gracefully. This prevents
-                // a race where the pipe is disposed while the receive loop still holds a ReadResult.
+                // The receive loop did not exit within 5 seconds despite the aborted
+                // source. Nothing further can unblock it — proceed with best-effort
+                // disposal (the reader skips buffer recycling while a read is in flight).
                 LogReceiveLoopShutdownFailed(ex, BrokerId);
-
-                if (_reader is not null)
-                {
-                    await _reader.CompleteAsync().ConfigureAwait(false);
-
-                    try
-                    {
-                        await _receiveTask.WaitAsync(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
-                    }
-                    catch (Exception innerEx) when (innerEx is not OperationCanceledException)
-                    {
-                        // Best effort — proceed with disposal regardless.
-                        LogReceiveLoopShutdownRetryFailed(innerEx, BrokerId);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                    }
-                }
             }
             catch (OperationCanceledException)
             {
@@ -2963,30 +2719,39 @@ public sealed partial class KafkaConnection :
         _receiveCts?.Dispose();
         _receiveTimeoutTimer?.Dispose();
 
-        // Invariant: at most one pipe type is created per connection (plain TCP or TLS, never both).
-        Debug.Assert(_socketPipe is null || _duplexPipe is null,
-            "Both _socketPipe and _duplexPipe are non-null — this should never happen.");
+        // Return the reader's pooled buffers. Normally a no-op (the receive loop's finally
+        // block already disposed it); covers connections that never started a receive loop.
+        // If a source read is somehow still in flight (hung teardown above), the reader
+        // internally skips buffer returns rather than recycling memory a stray receive
+        // could still write into.
+        _frameReader?.Dispose();
 
-        // Each pipe takes full ownership of all underlying resources (socket, streams).
-        // DisposeAsync handles reader completion, socket/stream closure, and read pump teardown.
-        if (_socketPipe is not null)
+        // Source teardown, mirroring the old pipe owners: TLS disposes the SslStream first
+        // (best-effort close_notify, cascades to the inner NetworkStream via
+        // leaveInnerStreamOpen: false), then the socket. Plain TCP closes the socket and
+        // then the NetworkStream wrapper (created with ownsSocket: false). Streams injected
+        // by tests (no TLS flag) take the plain branch, which also disposes them.
+        if (_isTls && _stream is not null)
         {
-            await _socketPipe.DisposeAsync().ConfigureAwait(false);
-        }
-        else if (_duplexPipe is not null)
-        {
-            await _duplexPipe.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                await _stream.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // The socket may already have been aborted (receive timeout/disposal wake).
+            }
+
+            _socket?.Dispose();
         }
         else
         {
-            // No pipe was created (e.g., connection failed during setup).
-            // Dispose both as a fallback since no pipe took ownership.
-            _stream?.Dispose();
             _socket?.Dispose();
+            _stream?.Dispose();
         }
 
-        // Placed after pipe completion so all outstanding IMemoryOwner<byte> objects are
-        // returned before the pool is released for GC.
+        // Placed after reader/source teardown so all outstanding IMemoryOwner<byte> objects
+        // are returned before the pool is released for GC.
         // Only dispose per-connection pools — shared pools are owned by the ConnectionPool.
         if (_sharedPipeMemoryPool is null)
         {
@@ -3030,9 +2795,6 @@ public sealed partial class KafkaConnection :
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Connecting to {Host}:{Port}")]
     private partial void LogConnecting(string host, int port);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Configuring pipe for broker {BrokerId}: pauseThreshold={PauseThreshold} bytes, resumeThreshold={ResumeThreshold} bytes")]
-    private partial void LogConfiguringPipe(int brokerId, long pauseThreshold, long resumeThreshold);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Connected to {Host}:{Port}")]
     private partial void LogConnected(string host, int port);
@@ -3135,106 +2897,7 @@ public sealed partial class KafkaConnection :
     [LoggerMessage(Level = LogLevel.Warning, Message = "Receive loop for broker {BrokerId} did not exit within 5s timeout during disposal")]
     private partial void LogReceiveLoopShutdownFailed(Exception ex, int brokerId);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Receive loop for broker {BrokerId} did not exit after pipe reader completion (500ms retry) during disposal")]
-    private partial void LogReceiveLoopShutdownRetryFailed(Exception ex, int brokerId);
-
     #endregion
-
-    /// <summary>
-    /// Tracks the state of a response frame being assembled incrementally
-    /// across multiple pipe read cycles. Used when the response is larger
-    /// than what's currently available in the pipe buffer.
-    /// </summary>
-    internal struct PartialFrameContext
-    {
-        public byte[]? Buffer;
-        public int FrameSize;
-        public int Offset;
-        public int CorrelationId;
-        public bool IsPooled;
-
-        public readonly bool IsActive => Buffer is not null;
-        public readonly int Remaining => FrameSize - Offset;
-    }
-
-    /// <summary>
-    /// Called when the pipe buffer has the 4-byte frame size header but not the full payload.
-    /// Rents a response buffer, copies all available data, and consumes it from the pipe.
-    /// Requires at least 8 bytes (4-byte size + 4-byte correlation ID).
-    /// </summary>
-    internal static bool TryStartPartialFrame(
-        ref ReadOnlySequence<byte> buffer,
-        ref PartialFrameContext context,
-        ResponseBufferPool responseBufferPool)
-    {
-        if (buffer.Length < 8) // Need size header + correlation ID
-            return false;
-
-        // Read frame size
-        Span<byte> sizeSpan = stackalloc byte[4];
-        buffer.Slice(0, 4).CopyTo(sizeSpan);
-        var frameSize = BinaryPrimitives.ReadInt32BigEndian(sizeSpan);
-        ValidateResponseFrameSize(frameSize, responseBufferPool.MaxArrayLength);
-
-        // If the full frame is available, don't start partial — let TryReadResponse handle it
-        var frameLength = 4L + frameSize;
-        if (buffer.Length >= frameLength)
-            return false;
-
-        // Read correlation ID (first 4 bytes of payload, at offset 4)
-        Span<byte> corrSpan = stackalloc byte[4];
-        buffer.Slice(4, 4).CopyTo(corrSpan);
-        var correlationId = BinaryPrimitives.ReadInt32BigEndian(corrSpan);
-
-        // Rent response buffer (same logic as RentResponseArray instance method)
-        var (responseArray, isPooled) = frameSize <= responseBufferPool.MaxArrayLength
-            ? (responseBufferPool.Pool.Rent(frameSize), true)
-            : (new byte[frameSize], false);
-
-        // Copy all available payload (skip the 4-byte size header, it's not part of the response)
-        var availablePayload = (int)(buffer.Length - 4);
-        buffer.Slice(4, availablePayload).CopyTo(responseArray);
-
-        context = new PartialFrameContext
-        {
-            Buffer = responseArray,
-            FrameSize = frameSize,
-            Offset = availablePayload,
-            CorrelationId = correlationId,
-            IsPooled = isPooled
-        };
-
-        // Consume everything from the pipe buffer
-        buffer = buffer.Slice(buffer.End);
-        return true;
-    }
-
-    /// <summary>
-    /// Copies available data from the pipe into the partial frame buffer.
-    /// Returns true when the frame is complete.
-    /// </summary>
-    internal static bool ContinuePartialFrame(
-        ref ReadOnlySequence<byte> buffer,
-        ref PartialFrameContext context)
-    {
-        var remaining = context.Remaining;
-        var available = (int)Math.Min(buffer.Length, remaining);
-
-        if (available > 0)
-        {
-            var destination = context.Buffer.AsSpan(context.Offset, available);
-
-            if (buffer.IsSingleSegment)
-                buffer.First.Span.Slice(0, available).CopyTo(destination);
-            else
-                buffer.Slice(0, available).CopyTo(destination);
-
-            context.Offset += available;
-            buffer = buffer.Slice(available);
-        }
-
-        return context.Remaining == 0;
-    }
 }
 
 /// <summary>
@@ -3345,11 +3008,15 @@ public sealed class ConnectionOptions
 
     /// <summary>
     /// Minimum segment size for pipe.
+    /// No longer used: the receive path reads frames directly into pooled response
+    /// buffers instead of going through a pipe. Retained for compatibility.
     /// </summary>
     public int MinimumSegmentSize { get; init; } = 4096;
 
     /// <summary>
     /// Minimum read size for pipe reader.
+    /// No longer used: the receive path reads frames directly into pooled response
+    /// buffers instead of going through a pipe. Retained for compatibility.
     /// </summary>
     public int MinimumReadSize { get; init; } = 256;
 

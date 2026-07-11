@@ -1,5 +1,3 @@
-using System.Buffers;
-using System.IO.Pipelines;
 using System.Reflection;
 using Dekaf.Errors;
 using Dekaf.Internal;
@@ -123,34 +121,36 @@ public sealed class KafkaConnectionPipelinedTests
     }
 
     [Test]
-    public async Task PendingRequests_ZeroOneTransitions_DoNotCancelPipeReader()
+    public async Task PendingRequests_ZeroOneTransitions_DoNotAbortReadSource()
     {
         var connection = new KafkaConnection("localhost", 9092);
-        var reader = new CountingPipeReader();
-        SetPrivateField(connection, "_reader", reader);
+        using var stream = new ScriptedReadStream([], blockAfterChunks: true);
+        using var frameReader = CreateFrameReader(stream);
+        SetPrivateField(connection, "_frameReader", frameReader);
 
         await ReservePendingRequestSlotAsync(connection);
         var request = new PooledPendingRequest();
         request.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
 
         AddPendingRequest(connection, correlationId: 1, request);
-        await Assert.That(reader.CancelPendingReadCount).IsEqualTo(0);
+        await Assert.That(stream.IsDisposed).IsFalse();
 
         await Assert.That(TryRemovePendingRequest(connection, correlationId: 1)).IsTrue();
-        await Assert.That(reader.CancelPendingReadCount).IsEqualTo(0);
+        await Assert.That(stream.IsDisposed).IsFalse();
 
         await connection.DisposeAsync();
     }
 
     [Test]
-    public async Task PendingRequests_OutstandingPastRequestTimeout_CancelsPipeReader()
+    public async Task PendingRequests_OutstandingPastRequestTimeout_AbortsReadSource()
     {
         var connection = new KafkaConnection(
             "localhost",
             9092,
             options: new ConnectionOptions { RequestTimeout = TimeSpan.FromHours(1) });
-        var reader = new CountingPipeReader();
-        SetPrivateField(connection, "_reader", reader);
+        using var stream = new ScriptedReadStream([], blockAfterChunks: true);
+        using var frameReader = CreateFrameReader(stream);
+        SetPrivateField(connection, "_frameReader", frameReader);
 
         await ReservePendingRequestSlotAsync(connection);
         var request = new PooledPendingRequest();
@@ -160,7 +160,8 @@ public sealed class KafkaConnectionPipelinedTests
         SetPrivateField(connection, "_receiveTimeoutDeadlineTimestamp", 1L);
         InvokeReceiveTimeout(connection);
 
-        await Assert.That(reader.CancelPendingReadCount).IsEqualTo(1);
+        await Assert.That(GetPrivateField<int>(connection, "_receiveTimeoutExpired")).IsEqualTo(1);
+        await Assert.That(stream.IsDisposed).IsTrue();
 
         await Assert.That(TryRemovePendingRequest(connection, correlationId: 1)).IsTrue();
         await connection.DisposeAsync();
@@ -195,15 +196,16 @@ public sealed class KafkaConnectionPipelinedTests
     }
 
     [Test]
-    public async Task ReceiveLoop_TimeoutCanceledRead_FailsPendingRequestWithReceiveTimeout()
+    public async Task ReceiveLoop_TimeoutAbortedRead_FailsPendingRequestWithReceiveTimeout()
     {
         var connection = new KafkaConnection(
             "localhost",
             9092,
             options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(50) });
-        var reader = new CancelablePipeReader();
+        using var stream = new ScriptedReadStream([], blockAfterChunks: true);
+        using var frameReader = CreateFrameReader(stream);
         using var receiveCts = new CancellationTokenSource();
-        SetPrivateField(connection, "_reader", reader);
+        SetPrivateField(connection, "_frameReader", frameReader);
 
         await ReservePendingRequestSlotAsync(connection);
         var request = new PooledPendingRequest();
@@ -212,7 +214,7 @@ public sealed class KafkaConnectionPipelinedTests
         AddPendingRequest(connection, correlationId: 1, request);
 
         var receiveTask = StartReceiveLoop(connection, receiveCts.Token);
-        await reader.ReadStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        await stream.ReadStarted.WaitAsync(TimeSpan.FromSeconds(1));
         SetPrivateField(connection, "_receiveTimeoutDeadlineTimestamp", 1L);
         InvokeReceiveTimeout(connection);
 
@@ -224,12 +226,13 @@ public sealed class KafkaConnectionPipelinedTests
     }
 
     [Test]
-    public async Task ReceiveLoop_DisposalCanceledRead_IgnoresStaleReceiveTimeout()
+    public async Task ReceiveLoop_DisposalAbortedRead_IgnoresStaleReceiveTimeout()
     {
         var connection = new KafkaConnection("localhost", 9092);
-        var reader = new CancelablePipeReader();
+        using var stream = new ScriptedReadStream([], blockAfterChunks: true);
+        using var frameReader = CreateFrameReader(stream);
         using var receiveCts = new CancellationTokenSource();
-        SetPrivateField(connection, "_reader", reader);
+        SetPrivateField(connection, "_frameReader", frameReader);
 
         await ReservePendingRequestSlotAsync(connection);
         var request = new PooledPendingRequest();
@@ -239,14 +242,69 @@ public sealed class KafkaConnectionPipelinedTests
         SetPrivateField(connection, "_receiveTimeoutExpired", 1);
 
         var receiveTask = StartReceiveLoop(connection, receiveCts.Token);
-        await reader.ReadStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        await stream.ReadStarted.WaitAsync(TimeSpan.FromSeconds(1));
         await receiveCts.CancelAsync();
-        reader.CancelPendingRead();
+        frameReader.Abort();
 
         await Assert.That(async () => await requestTask.WaitAsync(TimeSpan.FromSeconds(1)))
             .Throws<OperationCanceledException>()
             .WithMessageContaining("Connection closing");
         await receiveTask.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Test]
+    public async Task ReceiveLoop_RemotePeerEof_FailsPendingRequestAndMarksDisposed()
+    {
+        var connection = new KafkaConnection("localhost", 9092);
+        using var stream = new ScriptedReadStream([]);
+        using var frameReader = CreateFrameReader(stream);
+        using var receiveCts = new CancellationTokenSource();
+        SetPrivateField(connection, "_frameReader", frameReader);
+
+        await ReservePendingRequestSlotAsync(connection);
+        var request = new PooledPendingRequest();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
+        var requestTask = request.AsValueTask().AsTask();
+        AddPendingRequest(connection, correlationId: 1, request);
+
+        var receiveTask = StartReceiveLoop(connection, receiveCts.Token);
+
+        await Assert.That(async () => await requestTask.WaitAsync(TimeSpan.FromSeconds(1)))
+            .Throws<KafkaException>()
+            .WithMessageContaining("Connection closed by remote peer (EOF)");
+        await receiveTask.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(TryRemovePendingRequest(connection, correlationId: 1)).IsTrue();
+    }
+
+    [Test]
+    public async Task ReceiveLoop_DispatchesFrameToPendingRequest()
+    {
+        var connection = new KafkaConnection("localhost", 9092);
+        var correlationId = 123;
+        const int payloadSize = 8; // correlation id + a v0 header-only body
+        var frame = ResponseFrameTestHelpers.BuildFrame(correlationId, payloadSize);
+
+        using var stream = new ScriptedReadStream([frame], blockAfterChunks: true);
+        using var frameReader = CreateFrameReader(stream);
+        using var receiveCts = new CancellationTokenSource();
+        SetPrivateField(connection, "_frameReader", frameReader);
+
+        await ReservePendingRequestSlotAsync(connection);
+        var request = new PooledPendingRequest();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
+        var requestTask = request.AsValueTask().AsTask();
+        AddPendingRequest(connection, correlationId, request);
+
+        var receiveTask = StartReceiveLoop(connection, receiveCts.Token);
+
+        var response = await requestTask.WaitAsync(TimeSpan.FromSeconds(2));
+        await Assert.That(response.Length).IsEqualTo(payloadSize - 4); // header (correlation id) sliced off
+        response.Dispose();
+
+        await receiveCts.CancelAsync();
+        frameReader.Abort();
+        await receiveTask.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(TryRemovePendingRequest(connection, correlationId)).IsTrue();
     }
 
     [Test]
@@ -351,6 +409,9 @@ public sealed class KafkaConnectionPipelinedTests
         method.Invoke(connection, []);
     }
 
+    private static ResponseFrameReader CreateFrameReader(Stream stream)
+        => ResponseFrameTestHelpers.CreateReader(stream);
+
     private static void SetPrivateField<T>(KafkaConnection connection, string name, T value)
     {
         var field = typeof(KafkaConnection).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!;
@@ -361,82 +422,5 @@ public sealed class KafkaConnectionPipelinedTests
     {
         var field = typeof(KafkaConnection).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!;
         return (T)field.GetValue(connection)!;
-    }
-
-    private sealed class CountingPipeReader : PipeReader
-    {
-        private int _cancelPendingReadCount;
-
-        public int CancelPendingReadCount => Volatile.Read(ref _cancelPendingReadCount);
-
-        public override void AdvanceTo(SequencePosition consumed)
-        {
-        }
-
-        public override void AdvanceTo(SequencePosition consumed, SequencePosition examined)
-        {
-        }
-
-        public override void CancelPendingRead()
-            => Interlocked.Increment(ref _cancelPendingReadCount);
-
-        public override void Complete(Exception? exception = null)
-        {
-        }
-
-        public override ValueTask<ReadResult> ReadAsync(CancellationToken cancellationToken = default)
-            => ValueTask.FromResult(new ReadResult(ReadOnlySequence<byte>.Empty, isCanceled: false, isCompleted: false));
-
-        public override bool TryRead(out ReadResult result)
-        {
-            result = default;
-            return false;
-        }
-    }
-
-    private sealed class CancelablePipeReader : PipeReader
-    {
-        private readonly TaskCompletionSource<ReadResult> _readResult =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource _readStarted =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public Task ReadStarted => _readStarted.Task;
-
-        public override void AdvanceTo(SequencePosition consumed)
-        {
-        }
-
-        public override void AdvanceTo(SequencePosition consumed, SequencePosition examined)
-        {
-        }
-
-        public override void CancelPendingRead()
-            => _readResult.TrySetResult(
-                new ReadResult(ReadOnlySequence<byte>.Empty, isCanceled: true, isCompleted: false));
-
-        public override void Complete(Exception? exception = null)
-        {
-            if (exception is not null)
-            {
-                _readResult.TrySetException(exception);
-                return;
-            }
-
-            _readResult.TrySetResult(
-                new ReadResult(ReadOnlySequence<byte>.Empty, isCanceled: false, isCompleted: true));
-        }
-
-        public override ValueTask<ReadResult> ReadAsync(CancellationToken cancellationToken = default)
-        {
-            _readStarted.TrySetResult();
-            return new ValueTask<ReadResult>(_readResult.Task);
-        }
-
-        public override bool TryRead(out ReadResult result)
-        {
-            result = default;
-            return false;
-        }
     }
 }

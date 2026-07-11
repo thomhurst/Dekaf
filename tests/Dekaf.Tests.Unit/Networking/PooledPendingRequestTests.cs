@@ -855,8 +855,8 @@ public class PooledPendingRequestTests
     {
         // Regression test: RunContinuationsAsynchronously must remain true after
         // Reset() and pool reuse. If it reverts to false, response continuations
-        // run inline on the SocketPipe pump thread, causing deadlocks when
-        // Send() → .GetAwaiter().GetResult() blocks the pump thread.
+        // run inline on the receive loop thread, causing deadlocks when
+        // Send() → .GetAwaiter().GetResult() blocks that thread.
         var pool = new PendingRequestPool();
         var request = pool.Rent();
         request.Initialize(responseHeaderVersion: 0, CancellationToken.None);

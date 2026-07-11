@@ -43,23 +43,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// </summary>
     private readonly Func<int, string, int, int, CancellationToken, ValueTask<IKafkaConnection>>? _connectionFactory;
 
-    // Default BufferMemory if not configured (256 MB)
-    private const ulong DefaultBufferMemory = 268435456;
-
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
-
-    /// <summary>
-    /// Current broker count for pipeline threshold calculation. Returns at least 1
-    /// to avoid division by zero when connections are created before brokers are registered.
-    /// </summary>
-    /// <remarks>
-    /// Known limitation: BrokerCount is a stale snapshot at connection-creation time. Early
-    /// connections may be created before all brokers are discovered (e.g., BrokerCount=1 when
-    /// there are actually 3 brokers), resulting in a higher per-connection threshold than
-    /// intended. This is acceptable in practice because MaximumPauseThresholdBytes (4 MB)
-    /// caps the per-connection threshold regardless of how few brokers are known at the time.
-    /// </remarks>
-    private int BrokerCount => Math.Max(1, _brokers.Count);
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
     private readonly ConcurrentDictionary<int, IKafkaConnection> _connectionsById = new();
     // Per-endpoint semaphores to deduplicate concurrent single-connection creation
@@ -188,8 +172,6 @@ public sealed partial class ConnectionPool : IConnectionPool
             TcpKeepAliveTime = options.TcpKeepAliveTime,
             TcpKeepAliveInterval = options.TcpKeepAliveInterval,
             TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
-            MinimumSegmentSize = options.MinimumSegmentSize,
-            MinimumReadSize = options.MinimumReadSize,
             ConnectionTimeout = options.ConnectionTimeout,
             RequestTimeout = options.RequestTimeout,
             ReconnectBackoff = options.ReconnectBackoff,
@@ -724,8 +706,6 @@ public sealed partial class ConnectionPool : IConnectionPool
                 brokerId, host, port,
                 _clientId, _connectionOptions,
                 _loggerFactory?.CreateLogger<KafkaConnection>(),
-                DefaultBufferMemory, _connectionsPerBroker,
-                BrokerCount,
                 _responseBufferPool,
                 _sharedPipeMemoryPool,
                 _telemetryMetricCollector);
@@ -892,8 +872,6 @@ public sealed partial class ConnectionPool : IConnectionPool
                 brokerId, host, port,
                 _clientId, _connectionOptions,
                 _loggerFactory?.CreateLogger<KafkaConnection>(),
-                DefaultBufferMemory, _connectionsPerBroker,
-                BrokerCount,
                 _responseBufferPool,
                 _sharedPipeMemoryPool,
                 _telemetryMetricCollector);
