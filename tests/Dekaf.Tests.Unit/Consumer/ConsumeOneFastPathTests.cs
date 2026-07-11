@@ -64,6 +64,26 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_InvalidTimeoutsWithPendingFetch_ThrowBeforeConsuming()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+
+        await using var consumer = CreateInitializedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+
+        await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(-2), CancellationToken.None))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(0xffffffff), CancellationToken.None))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(GetPendingFetches(consumer).Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_WithPendingFetch_FlushesPositionWhenFetchExhausted()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,

@@ -3253,6 +3253,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
+        ValidateConsumeOneTimeout(timeout);
+
         if (CanUseBufferedConsumeOneFastPath(cancellationToken)
             && TryConsumeOneFromPendingFetches(out var bufferedResult))
         {
@@ -3290,6 +3292,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ValidateConsumeOneTimeout(TimeSpan timeout)
+    {
+        const long MaxSupportedTimeoutMilliseconds = 0xfffffffe;
+        var timeoutMilliseconds = (long)timeout.TotalMilliseconds;
+        if (timeoutMilliseconds < -1 || timeoutMilliseconds > MaxSupportedTimeoutMilliseconds)
+            throw new ArgumentOutOfRangeException(nameof(timeout));
     }
 
     private bool CanUseBufferedConsumeOneFastPath(CancellationToken cancellationToken)
