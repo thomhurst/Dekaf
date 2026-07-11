@@ -3272,7 +3272,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             try
             {
-                return await ConsumeOneCoreAsync(timeoutCts.Token, pollRecorded).ConfigureAwait(false);
+                return await ConsumeOneCoreAsync(pollRecorded, timeoutCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
             {
@@ -3286,7 +3286,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         try
         {
-            return await ConsumeOneCoreAsync(linkedCts.Token, pollRecorded).ConfigureAwait(false);
+            return await ConsumeOneCoreAsync(pollRecorded, linkedCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
@@ -3354,8 +3354,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(
-        CancellationToken cancellationToken,
-        bool pollRecorded)
+        bool pollRecorded,
+        CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
