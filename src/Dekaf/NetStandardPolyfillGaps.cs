@@ -172,6 +172,7 @@ internal sealed class PeriodicTimer : IDisposable
 {
     private readonly TimeSpan _period;
     private readonly CancellationTokenSource _disposed = new();
+    private int _disposeState;
 
     public PeriodicTimer(TimeSpan period)
     {
@@ -194,8 +195,10 @@ internal sealed class PeriodicTimer : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
+            return;
+
         _disposed.Cancel();
-        _disposed.Dispose();
     }
 }
 
