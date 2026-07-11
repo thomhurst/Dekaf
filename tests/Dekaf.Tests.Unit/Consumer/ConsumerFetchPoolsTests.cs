@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Messages;
@@ -17,6 +18,11 @@ public sealed class ConsumerFetchPoolsTests
             "_fetchRequestTemplateCache",
             BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("Could not find _fetchRequestTemplateCache");
+    private static readonly FieldInfo FetchPositionsField =
+        typeof(KafkaConsumer<string, string>).GetField(
+            "_fetchPositions",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("Could not find _fetchPositions");
 
     [Test]
     public async Task ReturnedPendingFetchDataLists_AreClearedBeforeRent()
@@ -184,9 +190,17 @@ public sealed class ConsumerFetchPoolsTests
         int startIndex,
         int count,
         int brokerId = 1)
-        => (List<FetchRequestTopic>)BuildFetchRequestTopicsMethod.Invoke(
+    {
+        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)FetchPositionsField.GetValue(consumer)!;
+        for (var i = startIndex; i < startIndex + count; i++)
+        {
+            fetchPositions.TryAdd(partitions[i], 0);
+        }
+
+        return (List<FetchRequestTopic>)BuildFetchRequestTopicsMethod.Invoke(
             consumer,
             [partitions, startIndex, count, brokerId])!;
+    }
 
     private static int GetFetchRequestTemplateCacheCount(KafkaConsumer<string, string> consumer)
     {

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -139,14 +140,50 @@ public class BuildFetchResultTests
     }
 
     [Test]
-    public async Task BuildFetchResult_MissingPosition_DefaultsToZero()
+    public async Task BuildFetchResult_MissingPosition_SkipsPartitionAndTopic()
     {
         var (templateDict, _) = CreateSinglePartitionTemplate();
         var fetchPositions = new ConcurrentDictionary<TopicPartition, long>();
 
         var result = KafkaConsumer<string, string>.BuildFetchResult(templateDict, fetchPositions);
 
-        await Assert.That(result[0].Partitions[0].FetchOffset).IsEqualTo(0);
+        await Assert.That(result).IsEmpty();
+    }
+
+    [Test]
+    public async Task BuildFetchResult_MixedPositions_SkipsOnlyMissingPartition()
+    {
+        var known = new TopicPartition("topic-a", 0);
+        var missing = new TopicPartition("topic-a", 1);
+        var templateDict = new Dictionary<string, List<(FetchRequestPartition, TopicPartition)>>
+        {
+            ["topic-a"] =
+            [
+                (new FetchRequestPartition { Partition = 0, FetchOffset = 0, PartitionMaxBytes = 1_048_576 }, known),
+                (new FetchRequestPartition { Partition = 1, FetchOffset = 0, PartitionMaxBytes = 1_048_576 }, missing)
+            ]
+        };
+        var fetchPositions = new ConcurrentDictionary<TopicPartition, long> { [known] = 42 };
+
+        var result = KafkaConsumer<string, string>.BuildFetchResult(templateDict, fetchPositions);
+
+        await Assert.That(result).Count().IsEqualTo(1);
+        await Assert.That(result[0].Partitions).Count().IsEqualTo(1);
+        await Assert.That(result[0].Partitions[0].Partition).IsEqualTo(0);
+        await Assert.That(result[0].Partitions[0].FetchOffset).IsEqualTo(42);
+    }
+
+    [Test]
+    public async Task OffsetResolutionUnavailableError_IsRetriableAndContextual()
+    {
+        var partition = new TopicPartition("topic-a", 7);
+
+        var error = KafkaConsumer<string, string>.CreateOffsetResolutionUnavailableException(partition);
+
+        await Assert.That(error).IsTypeOf<KafkaException>();
+        await Assert.That(error.IsRetriable).IsTrue();
+        await Assert.That(error.Message).Contains("topic-a");
+        await Assert.That(error.Message).Contains("7");
     }
 
     [Test]
