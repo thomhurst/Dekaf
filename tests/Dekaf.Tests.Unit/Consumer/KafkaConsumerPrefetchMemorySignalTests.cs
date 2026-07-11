@@ -31,6 +31,93 @@ public sealed class KafkaConsumerPrefetchMemorySignalTests
     }
 
     [Test]
+    public async Task ProcessingComplete_DrainsMemoryPressureOnConsumerThread()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            EnableAdaptiveFetchSizing = true,
+            AdaptiveFetchSizingOptions = new AdaptiveFetchSizingOptions
+            {
+                InitialPartitionFetchBytes = 4_000_000,
+                InitialFetchMaxBytes = 100_000_000,
+                StableWindowCount = 1
+            }
+        };
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        var sizer = GetPrivateField<AdaptiveFetchSizer>(consumer, "_adaptiveFetchSizer");
+        SetPrivateField(consumer, "_adaptiveFetchMemoryPressureSignals", 1);
+
+        GetReportAdaptiveProcessingComplete().Invoke(consumer, [TimeSpan.Zero]);
+
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsLessThan(4_000_000);
+        await Assert.That(sizer.CurrentFetchMaxBytes).IsLessThan(100_000_000);
+        await Assert.That(GetPrivateField<int>(consumer, "_adaptiveFetchMemoryPressureSignals")).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task FastProcessing_DoesNotEraseSustainedMemoryPressure()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            EnableAdaptiveFetchSizing = true,
+            AdaptiveFetchSizingOptions = new AdaptiveFetchSizingOptions
+            {
+                InitialPartitionFetchBytes = 4_000_000,
+                InitialFetchMaxBytes = 100_000_000,
+                StableWindowCount = 3
+            }
+        };
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        var sizer = GetPrivateField<AdaptiveFetchSizer>(consumer, "_adaptiveFetchSizer");
+
+        for (var i = 0; i < 3; i++)
+        {
+            SetFetchTiming(sizer, TimeSpan.FromSeconds(1));
+            SetPrivateField(consumer, "_adaptiveFetchMemoryPressureSignals", 1);
+            GetReportAdaptiveProcessingComplete().Invoke(consumer, [TimeSpan.FromMilliseconds(1)]);
+        }
+
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsLessThan(4_000_000);
+        await Assert.That(sizer.CurrentFetchMaxBytes).IsLessThan(100_000_000);
+    }
+
+    [Test]
+    public async Task FastProcessing_WithMemoryPressure_DoesNotGrowFetches()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            EnableAdaptiveFetchSizing = true,
+            AdaptiveFetchSizingOptions = new AdaptiveFetchSizingOptions
+            {
+                InitialPartitionFetchBytes = 4_000_000,
+                InitialFetchMaxBytes = 100_000_000,
+                StableWindowCount = 1
+            }
+        };
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        var sizer = GetPrivateField<AdaptiveFetchSizer>(consumer, "_adaptiveFetchSizer");
+        SetFetchTiming(sizer, TimeSpan.FromSeconds(1));
+        SetPrivateField(consumer, "_adaptiveFetchMemoryPressureSignals", 1);
+
+        GetReportAdaptiveProcessingComplete().Invoke(consumer, [TimeSpan.FromMilliseconds(1)]);
+
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsLessThan(4_000_000);
+        await Assert.That(sizer.CurrentFetchMaxBytes).IsLessThan(100_000_000);
+    }
+
+    [Test]
     public async Task AdaptiveFetchGrowth_RatchetsRecordWrapperPools()
     {
         var options = new ConsumerOptions
@@ -146,5 +233,22 @@ public sealed class KafkaConsumerPrefetchMemorySignalTests
         return typeof(KafkaConsumer<string, string>)
             .GetMethod("ReportAdaptiveProcessingComplete", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("ReportAdaptiveProcessingComplete method not found - was it renamed?");
+    }
+
+    private static T GetPrivateField<T>(KafkaConsumer<string, string> consumer, string fieldName) =>
+        (T)(typeof(KafkaConsumer<string, string>)
+            .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?.GetValue(consumer)
+        ?? throw new InvalidOperationException($"{fieldName} field not found - was it renamed?"));
+
+    private static void SetPrivateField<T>(
+        KafkaConsumer<string, string> consumer,
+        string fieldName,
+        T value)
+    {
+        var field = typeof(KafkaConsumer<string, string>)
+            .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found - was it renamed?");
+        field.SetValue(consumer, value);
     }
 }

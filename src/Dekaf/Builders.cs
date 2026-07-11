@@ -1381,6 +1381,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private bool _enableAdaptiveFetchSizing;
     private AdaptiveFetchSizingOptions? _adaptiveFetchSizingOptions;
+    private bool _usesHighThroughputAdaptiveDefaults;
     private bool _enableFetchSessions = true;
     private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
@@ -1610,6 +1611,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (maxBytes < 1)
             throw new ArgumentOutOfRangeException(nameof(maxBytes), "Fetch max bytes must be at least 1");
         _fetchMaxBytes = maxBytes;
+        if (_usesHighThroughputAdaptiveDefaults)
+            ApplyHighThroughputAdaptiveDefaults();
         return this;
     }
 
@@ -1625,6 +1628,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (maxBytes < 1)
             throw new ArgumentOutOfRangeException(nameof(maxBytes), "Max partition fetch bytes must be at least 1");
         _maxPartitionFetchBytes = maxBytes;
+        if (_usesHighThroughputAdaptiveDefaults)
+            ApplyHighThroughputAdaptiveDefaults();
         return this;
     }
 
@@ -1642,6 +1647,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         _enableAdaptiveFetchSizing = true;
         _adaptiveFetchSizingOptions = options;
+        _usesHighThroughputAdaptiveDefaults = false;
         return this;
     }
 
@@ -2242,7 +2248,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <item><description>FetchMaxBytes: 100MB (allow larger total fetch responses; note that the response buffer pool
     /// may retain up to 8 arrays of this size per consumer instance)</description></item>
     /// <item><description>PrefetchPipelineDepth: 5 (aggressive prefetching to hide network latency)</description></item>
-    /// <item><description>AdaptiveFetchSizing: enabled (auto-grows fetch sizes when consumer keeps up, shrinks when falling behind)</description></item>
+    /// <item><description>AdaptiveFetchSizing: enabled (auto-grows fetch sizes when consumer keeps up, shrinks under prefetch memory pressure)</description></item>
     /// <item><description>CheckCrcs: disabled (skips client-side CRC32C re-validation of fetched batches; TCP checksums and
     /// broker-side validation already cover corruption in transit — matches librdkafka's default. Re-enable with
     /// <see cref="WithCheckCrcs"/> after this preset if end-to-end validation is required)</description></item>
@@ -2263,14 +2269,32 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _prefetchPipelineDepth = 5;
         _checkCrcs = false;
         _enableAdaptiveFetchSizing = true; // Intentional: ForHighThroughput always enables adaptive sizing
-        _adaptiveFetchSizingOptions ??= new AdaptiveFetchSizingOptions
+        if (_adaptiveFetchSizingOptions is null || _usesHighThroughputAdaptiveDefaults)
         {
-            InitialPartitionFetchBytes = 4 * 1024 * 1024,
-            MaxPartitionFetchBytes = 16 * 1024 * 1024,
-            InitialFetchMaxBytes = 100 * 1024 * 1024,
-            MaxFetchMaxBytes = 200 * 1024 * 1024
-        };
+            _usesHighThroughputAdaptiveDefaults = true;
+            ApplyHighThroughputAdaptiveDefaults();
+        }
         return this;
+    }
+
+    private void ApplyHighThroughputAdaptiveDefaults()
+    {
+        var maxPartitionFetchBytes =
+            (int)Math.Min((long)_maxPartitionFetchBytes * 4, int.MaxValue);
+        var initialFetchMaxBytes = Math.Max(_fetchMaxBytes, _maxPartitionFetchBytes);
+        var maxFetchMaxBytes = Math.Max(
+            (int)Math.Min((long)_fetchMaxBytes * 2, int.MaxValue),
+            maxPartitionFetchBytes);
+
+        _adaptiveFetchSizingOptions = new AdaptiveFetchSizingOptions
+        {
+            MinPartitionFetchBytes = _maxPartitionFetchBytes,
+            InitialPartitionFetchBytes = _maxPartitionFetchBytes,
+            MaxPartitionFetchBytes = maxPartitionFetchBytes,
+            MinFetchMaxBytes = initialFetchMaxBytes,
+            InitialFetchMaxBytes = initialFetchMaxBytes,
+            MaxFetchMaxBytes = maxFetchMaxBytes
+        };
     }
 
     /// <summary>

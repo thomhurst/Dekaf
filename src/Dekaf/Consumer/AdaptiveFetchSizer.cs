@@ -4,20 +4,21 @@ using System.Runtime.CompilerServices;
 namespace Dekaf.Consumer;
 
 /// <summary>
-/// Dynamically adjusts fetch sizes based on the ratio of processing time to fetch wait time.
+/// Dynamically grows fetch sizes based on the ratio of processing time to fetch wait time
+/// and shrinks them only when the prefetch pipeline reports memory pressure.
 /// When the consumer is keeping up (processing finishes before the next fetch returns),
-/// fetch sizes grow to reduce round-trip overhead. When falling behind, fetch sizes shrink
-/// to reduce memory pressure and allow the consumer to catch up.
+/// fetch sizes grow to reduce round-trip overhead. Memory pressure shrinks fetch sizes.
 /// </summary>
 /// <remarks>
-/// <para>This class is not thread-safe and should be called from a single loop (the prefetch loop).</para>
+/// <para>Size adjustments are not thread-safe and must be called from the consumer processing thread.
+/// Fetch timing may be recorded by the prefetch loop.</para>
 /// <para>The feedback signal is the ratio of processing time to fetch latency:</para>
 /// <list type="bullet">
 /// <item><description>Ratio &lt; 1.0: consumer processes faster than it fetches (keeping up) — grow fetch size</description></item>
-/// <item><description>Ratio &gt; 1.0: consumer processes slower than it fetches (falling behind) — shrink fetch size</description></item>
+/// <item><description>Ratio &gt; 1.0: consumer is CPU-bound or backlogged — arm shrinkage, applied only if memory pressure also occurs</description></item>
 /// </list>
-/// <para>Growth is multiplicative (×1.5) and shrinkage is also multiplicative (×0.75),
-/// providing asymmetric scaling: growing is cautious, shrinking is responsive.</para>
+/// <para>Growth is multiplicative (×1.5) and memory-pressure shrinkage is
+/// multiplicative (×0.75).</para>
 /// </remarks>
 internal sealed class AdaptiveFetchSizer
 {
@@ -139,6 +140,22 @@ internal sealed class AdaptiveFetchSizer
     }
 
     /// <summary>
+    /// Reports that prefetched bytes reached the configured memory limit.
+    /// Sustained pressure shrinks fetch sizes after the stable window.
+    /// </summary>
+    internal void ReportMemoryPressure()
+    {
+        _consecutiveShrinkSignals++;
+        _consecutiveGrowSignals = 0;
+
+        if (_consecutiveShrinkSignals < _stableWindowCount)
+            return;
+
+        Shrink();
+        _consecutiveShrinkSignals = 0;
+    }
+
+    /// <summary>
     /// Evaluates the processing-to-fetch ratio and adjusts fetch sizes if thresholds
     /// have been sustained for the required window count.
     /// </summary>
@@ -153,7 +170,6 @@ internal sealed class AdaptiveFetchSizer
         {
             case var r when r < _growThreshold:
                 _consecutiveGrowSignals++;
-                _consecutiveShrinkSignals = 0;
 
                 if (_consecutiveGrowSignals >= _stableWindowCount)
                 {
@@ -163,20 +179,13 @@ internal sealed class AdaptiveFetchSizer
                 break;
 
             case var r when r > _shrinkThreshold:
-                _consecutiveShrinkSignals++;
                 _consecutiveGrowSignals = 0;
-
-                if (_consecutiveShrinkSignals >= _stableWindowCount)
-                {
-                    Shrink();
-                    _consecutiveShrinkSignals = 0;
-                }
                 break;
 
             default:
-                // In the stable zone — reset both counters
+                // In the stable zone — reset ratio-driven growth only. Memory-pressure
+                // signals accumulate independently until they trigger a shrink.
                 _consecutiveGrowSignals = 0;
-                _consecutiveShrinkSignals = 0;
                 break;
         }
     }
@@ -252,7 +261,7 @@ public sealed class AdaptiveFetchSizingOptions
     public double GrowthFactor { get; init; } = 1.5;
 
     /// <summary>
-    /// Multiplicative factor for shrinking fetch sizes. Applied when the consumer is falling behind.
+    /// Multiplicative factor for shrinking fetch sizes. Applied under sustained prefetch memory pressure.
     /// Default is 0.75 (25% reduction per step).
     /// </summary>
     public double ShrinkFactor { get; init; } = 0.75;
@@ -264,8 +273,8 @@ public sealed class AdaptiveFetchSizingOptions
     public double GrowThreshold { get; init; } = 0.5;
 
     /// <summary>
-    /// Processing-to-fetch ratio above which the consumer is considered "falling behind"
-    /// and fetch sizes should shrink. Default is 2.0 (processing takes more than twice the fetch time).
+    /// Processing-to-fetch ratio above which shrinkage is armed. Fetch sizes remain unchanged
+    /// until prefetch memory pressure is also reported. Default is 2.0.
     /// </summary>
     public double ShrinkThreshold { get; init; } = 2.0;
 

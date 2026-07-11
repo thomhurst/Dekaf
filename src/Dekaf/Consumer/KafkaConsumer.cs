@@ -809,6 +809,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _fetchApiVersion = -1;
     private readonly ConsumerConnectionScaler? _connectionScaler;
     private readonly AdaptiveFetchSizer? _adaptiveFetchSizer;
+    private int _adaptiveFetchMemoryPressureSignals;
 
     // Dead letter queue raw byte tracking (zero overhead when not enabled)
     private bool _rawRecordTrackingEnabled;
@@ -2193,6 +2194,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
                     if (PrefetchLoopControl.ShouldWaitForMemory(currentPrefetchedBytes, maxBytes))
                     {
+                        Interlocked.Increment(ref _adaptiveFetchMemoryPressureSignals);
                         LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await _prefetchMemoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
                         continue;
@@ -6530,7 +6532,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         var previousPartitionFetchBytes = sizer.CurrentPartitionFetchBytes;
         var previousFetchMaxBytes = sizer.CurrentFetchMaxBytes;
-        sizer.ReportProcessingComplete(processingDuration);
+
+        var pressureSignals = Interlocked.Exchange(ref _adaptiveFetchMemoryPressureSignals, 0);
+        if (pressureSignals == 0)
+        {
+            sizer.ReportProcessingComplete(processingDuration);
+        }
+        else
+        {
+            for (var i = 0; i < pressureSignals; i++)
+                sizer.ReportMemoryPressure();
+        }
 
         if (sizer.CurrentPartitionFetchBytes > previousPartitionFetchBytes
             || sizer.CurrentFetchMaxBytes > previousFetchMaxBytes)
