@@ -2,6 +2,7 @@ using Dekaf.Networking;
 
 namespace Dekaf.Tests.Unit.Networking;
 
+[NotInParallel]
 public class PipeMemoryPoolTests
 {
     [Test]
@@ -13,6 +14,15 @@ public class PipeMemoryPoolTests
 
         await Assert.That(first).IsSameReferenceAs(same);
         await Assert.That(first).IsNotSameReferenceAs(different);
+    }
+
+    [Test]
+    public async Task Create_BoundsSharedConfigurationCache()
+    {
+        for (var i = 1; i <= 32; i++)
+            _ = PipeMemoryPool.Create(maxArrayLength: 1024 * 1024, maxArraysPerBucket: i);
+
+        await Assert.That(PipeMemoryPool.SharedPoolCount).IsEqualTo(16);
     }
 
     [Test]

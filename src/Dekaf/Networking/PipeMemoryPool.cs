@@ -18,22 +18,28 @@ namespace Dekaf.Networking;
 /// WorkingSet growth proportional to the number of brokers — even though individual
 /// connections properly return their buffers.
 /// <para/>
-/// <b>Shared pool design:</b> <see cref="Create"/> shares one <see cref="PipeMemoryPool"/>
-/// process-wide for each size configuration. This bounds total retained memory to one set of
-/// array buckets (maxArraysPerBucket × bucketCount) regardless of how many clients or connections
-/// exist. Without sharing, each connection independently retained up to
+/// <b>Shared pool design:</b> <see cref="Create"/> shares a bounded set of
+/// <see cref="PipeMemoryPool"/> instances process-wide by size configuration. This bounds retained
+/// memory for common configurations to one set of array buckets (maxArraysPerBucket × bucketCount)
+/// regardless of how many clients or connections exist. Without sharing, each connection
+/// independently retained up to
 /// <c>maxArraysPerBucket</c> arrays per size class — with 3 brokers × 10 connections/broker
 /// = 30 independent pools, each retaining arrays in large buckets, causing multi-GB
 /// WorkingSet growth. With a shared pool, one configured bucket depth is recycled across
 /// all connections instead of multiplying retention by connection count.
+/// The cache retains at most 16 configurations. Eviction removes only the cache reference;
+/// active connections keep using their pool, which becomes GC-eligible after they release it.
 /// <para/>
 /// Connections created outside a <see cref="ConnectionPool"/> (e.g., in tests) fall back
 /// to creating their own per-connection pool for backward compatibility.
 /// </summary>
 internal sealed class PipeMemoryPool : MemoryPool<byte>
 {
-    private static readonly ConcurrentDictionary<(int MaxArrayLength, int MaxArraysPerBucket), PipeMemoryPool>
-        s_sharedPools = new();
+    private const int MaxSharedPoolConfigurations = 16;
+    private static readonly object s_sharedPoolsLock = new();
+    private static readonly Dictionary<(int MaxArrayLength, int MaxArraysPerBucket), PipeMemoryPool>
+        s_sharedPools = [];
+    private static readonly Queue<(int MaxArrayLength, int MaxArraysPerBucket)> s_sharedPoolOrder = [];
 
     private readonly ArrayPool<byte> _pool;
     private readonly ConcurrentStack<PooledMemoryOwner> _ownerPool = new();
@@ -80,11 +86,33 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     internal static PipeMemoryPool Create(
         int maxArrayLength = 4 * 1024 * 1024,
         int maxArraysPerBucket = 32)
-        => s_sharedPools.GetOrAdd(
-            (maxArrayLength, maxArraysPerBucket),
-            static configuration => new PipeMemoryPool(
-                configuration.MaxArrayLength,
-                configuration.MaxArraysPerBucket));
+    {
+        var configuration = (maxArrayLength, maxArraysPerBucket);
+
+        lock (s_sharedPoolsLock)
+        {
+            if (s_sharedPools.TryGetValue(configuration, out var sharedPool))
+                return sharedPool;
+
+            sharedPool = new PipeMemoryPool(maxArrayLength, maxArraysPerBucket);
+
+            if (s_sharedPools.Count == MaxSharedPoolConfigurations)
+                s_sharedPools.Remove(s_sharedPoolOrder.Dequeue());
+
+            s_sharedPools.Add(configuration, sharedPool);
+            s_sharedPoolOrder.Enqueue(configuration);
+            return sharedPool;
+        }
+    }
+
+    internal static int SharedPoolCount
+    {
+        get
+        {
+            lock (s_sharedPoolsLock)
+                return s_sharedPools.Count;
+        }
+    }
 
     // Returns int.MaxValue to match MemoryPool<byte>.Shared behavior.
     // System.IO.Pipelines does not rely on MaxBufferSize for sizing decisions;
