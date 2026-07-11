@@ -103,17 +103,30 @@ public sealed class FetchResponse : IKafkaResponse
 
         // Use pooled list to avoid per-fetch array allocation
         var responses = s_topicListPool.Rent();
-        reader.ReadCompactArrayInto(responses, static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v), version);
+        try
+        {
+            reader.ReadCompactArrayInto(responses, static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v), version);
 
-        var nodeEndpoints = ReadResponseTaggedFields(ref reader, version);
+            var nodeEndpoints = ReadResponseTaggedFields(ref reader, version);
 
-        var response = Rent();
-        response.ThrottleTimeMs = throttleTimeMs;
-        response.ErrorCode = errorCode;
-        response.SessionId = sessionId;
-        response.Responses = responses;
-        response.NodeEndpoints = nodeEndpoints;
-        return response;
+            var response = Rent();
+            response.ThrottleTimeMs = throttleTimeMs;
+            response.ErrorCode = errorCode;
+            response.SessionId = sessionId;
+            response.Responses = responses;
+            response.NodeEndpoints = nodeEndpoints;
+            return response;
+        }
+        catch
+        {
+            for (var i = 0; i < responses.Count; i++)
+            {
+                responses[i].ReturnToPoolAfterFailedParse();
+            }
+
+            s_topicListPool.Return(responses);
+            throw;
+        }
     }
 
     private static NodeEndpoint[] ReadResponseTaggedFields(ref KafkaProtocolReader reader, short version)
@@ -230,6 +243,22 @@ public sealed class FetchResponseTopic
         return item;
     }
 
+    internal void ReturnToPoolAfterFailedParse()
+    {
+        for (var i = 0; i < _partitions.Count; i++)
+        {
+            _partitions[i].ReturnToPoolAfterFailedParse();
+        }
+
+        if (_partitions is List<FetchResponsePartition> partitionList)
+        {
+            s_partitionListPool.Return(partitionList);
+            _partitions = Array.Empty<FetchResponsePartition>();
+        }
+
+        ReturnToPool();
+    }
+
     public static FetchResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
         Guid topicId = Guid.Empty;
@@ -249,15 +278,28 @@ public sealed class FetchResponseTopic
 
         // Use pooled list to avoid per-topic array allocation
         var partitions = s_partitionListPool.Rent();
-        reader.ReadCompactArrayInto(partitions, static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v), version);
+        try
+        {
+            reader.ReadCompactArrayInto(partitions, static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v), version);
 
-        reader.SkipTaggedFields();
+            reader.SkipTaggedFields();
 
-        var result = Rent();
-        result.Topic = topic;
-        result.TopicId = topicId;
-        result.Partitions = partitions;
-        return result;
+            var result = Rent();
+            result.Topic = topic;
+            result.TopicId = topicId;
+            result.Partitions = partitions;
+            return result;
+        }
+        catch
+        {
+            for (var i = 0; i < partitions.Count; i++)
+            {
+                partitions[i].ReturnToPoolAfterFailedParse();
+            }
+
+            s_partitionListPool.Return(partitions);
+            throw;
+        }
     }
 
     private sealed class FetchResponseTopicPool() : ObjectPool<FetchResponseTopic>(maxPoolSize: 32)
@@ -301,6 +343,19 @@ public sealed class FetchResponsePartition
     internal static List<RecordBatch> RentRecordBatchList() => s_recordBatchListPool.Rent();
 
     internal static void ReturnRecordBatchList(List<RecordBatch> list) => s_recordBatchListPool.Return(list);
+
+    internal static void ReturnRecordBatchListAfterFailedParse(List<RecordBatch>? list)
+    {
+        if (list is null)
+            return;
+
+        for (var i = 0; i < list.Count; i++)
+        {
+            list[i].Dispose();
+        }
+
+        s_recordBatchListPool.Return(list);
+    }
 
     /// <summary>
     /// Partition index.
@@ -374,8 +429,8 @@ public sealed class FetchResponsePartition
     }
 
     /// <summary>
-    /// Returns this FetchResponsePartition to the pool. Does NOT return Records or AbortedTransactions
-    /// since those are transferred to PendingFetchData and have separate lifecycles.
+    /// Returns this FetchResponsePartition to the pool. Non-empty Records lists are transferred
+    /// to PendingFetchData; empty Records and AbortedTransactions lists remain wrapper-owned.
     /// </summary>
     internal void ReturnToPool()
     {
@@ -391,7 +446,26 @@ public sealed class FetchResponsePartition
             _abortedTransactions = null;
         }
 
+        // Non-empty Records lists transfer to PendingFetchData. An empty list carries no
+        // transferable data, so this response wrapper retains and returns its ownership.
+        if (_records is List<RecordBatch> { Count: 0 } emptyRecords)
+        {
+            s_recordBatchListPool.Return(emptyRecords);
+            _records = null;
+        }
+
         s_pool.Return(this);
+    }
+
+    internal void ReturnToPoolAfterFailedParse()
+    {
+        if (_records is List<RecordBatch> records)
+        {
+            ReturnRecordBatchListAfterFailedParse(records);
+            _records = null;
+        }
+
+        ReturnToPool();
     }
 
     internal static FetchResponsePartition Rent()
@@ -417,75 +491,94 @@ public sealed class FetchResponsePartition
         // Use pooled list to avoid per-partition array allocation for aborted transactions
         IReadOnlyList<AbortedTransaction>? abortedTransactions = null;
         var abortedList = s_abortedTxListPool.Rent();
-        var abortedCount = reader.ReadCompactArrayInto(abortedList, static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v), version);
-
-        if (abortedCount > 0)
-        {
-            abortedTransactions = abortedList;
-        }
-        else
-        {
-            // No aborted transactions — return the empty list to the pool immediately
-            s_abortedTxListPool.Return(abortedList);
-        }
-
-        var preferredReadReplica = reader.ReadInt32();
-
-        // Read record batches
-        // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null)
-        var recordsLength = reader.ReadUnsignedVarInt() - 1;
-
+        var abortedListReturned = false;
         List<RecordBatch>? records = null;
-        if (recordsLength > 0)
+
+        try
         {
-            records = RentRecordBatchList();
-            var recordsEndPosition = reader.Consumed + recordsLength;
+            var abortedCount = reader.ReadCompactArrayInto(
+                abortedList,
+                static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v),
+                version);
 
-            while (reader.Consumed < recordsEndPosition && !reader.End)
+            if (abortedCount > 0)
             {
-                try
+                abortedTransactions = abortedList;
+            }
+            else
+            {
+                // No aborted transactions — return the empty list to the pool immediately
+                s_abortedTxListPool.Return(abortedList);
+                abortedListReturned = true;
+            }
+
+            var preferredReadReplica = reader.ReadInt32();
+
+            // Read record batches
+            // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null)
+            var recordsLength = reader.ReadUnsignedVarInt() - 1;
+
+            if (recordsLength > 0)
+            {
+                records = RentRecordBatchList();
+                var recordsEndPosition = reader.Consumed + recordsLength;
+
+                while (reader.Consumed < recordsEndPosition && !reader.End)
                 {
-                    var availableBytes = (int)(recordsEndPosition - reader.Consumed);
-                    records.Add(RecordBatch.Read(ref reader, availableBytes: availableBytes));
+                    try
+                    {
+                        var availableBytes = (int)(recordsEndPosition - reader.Consumed);
+                        records.Add(RecordBatch.Read(ref reader, availableBytes: availableBytes));
+                    }
+                    catch (InsufficientDataException)
+                    {
+                        // Partial batch at end of records section — not enough data to read a complete batch.
+                        // This is a normal Kafka scenario when the fetch response is truncated.
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        // Unexpected error parsing a record batch — log for visibility and skip remaining batches.
+                        // This should not happen under normal conditions and may indicate data corruption or a parsing bug.
+                        Trace.WriteLine($"Dekaf: Unexpected exception parsing RecordBatch: {ex}");
+                        break;
+                    }
                 }
-                catch (InsufficientDataException)
+
+                // Skip any remaining bytes
+                var remaining = (int)(recordsEndPosition - reader.Consumed);
+                if (remaining > 0)
                 {
-                    // Partial batch at end of records section — not enough data to read a complete batch.
-                    // This is a normal Kafka scenario when the fetch response is truncated.
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    // Unexpected error parsing a record batch — log for visibility and skip remaining batches.
-                    // This should not happen under normal conditions and may indicate data corruption or a parsing bug.
-                    Trace.WriteLine($"Dekaf: Unexpected exception parsing RecordBatch: {ex}");
-                    break;
+                    reader.Skip(remaining);
                 }
             }
 
-            // Skip any remaining bytes
-            var remaining = (int)(recordsEndPosition - reader.Consumed);
-            if (remaining > 0)
-            {
-                reader.Skip(remaining);
-            }
+            ReadPartitionTaggedFields(ref reader, version, out divergingEpoch, out currentLeader, out snapshotId);
+
+            var result = Rent();
+            result.PartitionIndex = partitionIndex;
+            result.ErrorCode = errorCode;
+            result.HighWatermark = highWatermark;
+            result.LastStableOffset = lastStableOffset;
+            result.LogStartOffset = logStartOffset;
+            result.DivergingEpoch = divergingEpoch;
+            result.CurrentLeader = currentLeader;
+            result.SnapshotId = snapshotId;
+            result.AbortedTransactions = abortedTransactions;
+            result.PreferredReadReplica = preferredReadReplica;
+            result.Records = records;
+            return result;
         }
+        catch
+        {
+            if (!abortedListReturned)
+            {
+                s_abortedTxListPool.Return(abortedList);
+            }
 
-        ReadPartitionTaggedFields(ref reader, version, out divergingEpoch, out currentLeader, out snapshotId);
-
-        var result = Rent();
-        result.PartitionIndex = partitionIndex;
-        result.ErrorCode = errorCode;
-        result.HighWatermark = highWatermark;
-        result.LastStableOffset = lastStableOffset;
-        result.LogStartOffset = logStartOffset;
-        result.DivergingEpoch = divergingEpoch;
-        result.CurrentLeader = currentLeader;
-        result.SnapshotId = snapshotId;
-        result.AbortedTransactions = abortedTransactions;
-        result.PreferredReadReplica = preferredReadReplica;
-        result.Records = records;
-        return result;
+            ReturnRecordBatchListAfterFailedParse(records);
+            throw;
+        }
     }
 
     private static void ReadPartitionTaggedFields(
