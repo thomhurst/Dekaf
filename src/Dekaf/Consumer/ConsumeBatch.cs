@@ -12,13 +12,54 @@ namespace Dekaf.Consumer
     internal readonly struct BatchIterationGuard(
         BatchIterationEpoch? epoch,
         int capturedVersion,
-        Func<TopicPartition, bool>? isInitiallyAssigned = null)
+        Func<TopicPartition, bool>? canContinue = null)
     {
-        public bool CanStart(TopicPartition partition) =>
-            (isInitiallyAssigned is null || isInitiallyAssigned(partition))
-            && IsCurrent;
+        public int CapturedVersion => capturedVersion;
 
-        public bool IsCurrent => epoch is null || Volatile.Read(ref epoch.Version) == capturedVersion;
+        public bool CanStart(TopicPartition partition, ref int observedVersion)
+        {
+            if (epoch is null)
+                return canContinue is null || canContinue(partition);
+
+            if (canContinue is null)
+                return Volatile.Read(ref epoch.Version) == observedVersion;
+
+            while (true)
+            {
+                var currentVersion = Volatile.Read(ref epoch.Version);
+                if (!canContinue(partition))
+                    return false;
+
+                if (Volatile.Read(ref epoch.Version) == currentVersion)
+                {
+                    observedVersion = currentVersion;
+                    return true;
+                }
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool IsCurrent(TopicPartition partition, ref int observedVersion)
+        {
+            if (epoch is null)
+                return canContinue is null || canContinue(partition);
+
+            while (true)
+            {
+                var currentVersion = Volatile.Read(ref epoch.Version);
+                if (currentVersion == observedVersion)
+                    return true;
+
+                if (canContinue is null || !canContinue(partition))
+                    return false;
+
+                if (Volatile.Read(ref epoch.Version) == currentVersion)
+                {
+                    observedVersion = currentVersion;
+                    return true;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -99,12 +140,16 @@ namespace Dekaf.Consumer
         {
             private readonly ConsumeBatch<TKey, TValue> _batch;
             private readonly bool _canContinue;
+            private int _observedVersion;
             private int _recordsYielded;
 
             internal Enumerator(ConsumeBatch<TKey, TValue> batch)
             {
                 _batch = batch;
-                _canContinue = batch._iterationGuard.CanStart(batch._pendingFetchData.TopicPartition);
+                _observedVersion = batch._iterationGuard.CapturedVersion;
+                _canContinue = batch._iterationGuard.CanStart(
+                    batch._pendingFetchData.TopicPartition,
+                    ref _observedVersion);
                 _recordsYielded = 0;
                 Current = default!;
             }
@@ -126,7 +171,7 @@ namespace Dekaf.Consumer
             {
                 PendingFetchData pending = _batch._pendingFetchData;
 
-                if (!_canContinue || !_batch._iterationGuard.IsCurrent)
+                if (!_canContinue || !_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                     return false;
 
                 if (_recordsYielded >= _batch._maxRecords)
@@ -167,7 +212,7 @@ namespace Dekaf.Consumer
                     keyDeserializer: _batch._keyDeserializer,
                     valueDeserializer: _batch._valueDeserializer);
 
-                if (!_batch._iterationGuard.IsCurrent)
+                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                     return false;
 
                 pending.TrackConsumed(offset, messageBytes);

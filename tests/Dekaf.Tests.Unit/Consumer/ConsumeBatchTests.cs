@@ -134,6 +134,35 @@ public class ConsumeBatchTests
         await Assert.That(batch.Count).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task ConsumeBatch_UnrelatedEpochChange_DoesNotDropRecord()
+    {
+        using var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 0, messageCount: 2);
+        var assignmentEpoch = new BatchIterationEpoch();
+        var membershipChecks = 0;
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            Serializers.String,
+            new BatchIterationGuard(
+                assignmentEpoch,
+                assignmentEpoch.Version,
+                _ =>
+                {
+                    membershipChecks++;
+                    return true;
+                }));
+        using var enumerator = batch.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        assignmentEpoch.Version++;
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        await Assert.That(enumerator.Current.Offset).IsEqualTo(1);
+        await Assert.That(batch.Count).IsEqualTo(2);
+        await Assert.That(membershipChecks).IsEqualTo(2);
+    }
+
     /// <summary>
     /// Creates a PendingFetchData with a single RecordBatch containing the specified number of records.
     /// </summary>

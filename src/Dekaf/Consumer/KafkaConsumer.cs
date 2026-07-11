@@ -4122,6 +4122,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
         {
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
+            Interlocked.Increment(ref _batchIterationEpoch.Version);
             recovered = true;
         }
 

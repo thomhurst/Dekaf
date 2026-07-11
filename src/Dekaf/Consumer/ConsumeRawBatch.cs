@@ -104,12 +104,16 @@ namespace Dekaf.Consumer
         {
             private readonly ConsumeRawBatch _batch;
             private readonly bool _canContinue;
+            private int _observedVersion;
             private int _recordsYielded;
 
             internal Enumerator(ConsumeRawBatch batch)
             {
                 _batch = batch;
-                _canContinue = batch._iterationGuard.CanStart(batch._pendingFetchData.TopicPartition);
+                _observedVersion = batch._iterationGuard.CapturedVersion;
+                _canContinue = batch._iterationGuard.CanStart(
+                    batch._pendingFetchData.TopicPartition,
+                    ref _observedVersion);
                 _recordsYielded = 0;
                 Current = default;
             }
@@ -130,7 +134,7 @@ namespace Dekaf.Consumer
             {
                 PendingFetchData pending = _batch._pendingFetchData;
 
-                if (!_canContinue || !_batch._iterationGuard.IsCurrent)
+                if (!_canContinue || !_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                     return false;
 
                 if (_recordsYielded >= _batch._maxRecords)
@@ -161,7 +165,7 @@ namespace Dekaf.Consumer
                     isKeyNull: record.IsKeyNull,
                     isValueNull: record.IsValueNull);
 
-                if (!_batch._iterationGuard.IsCurrent)
+                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                     return false;
 
                 pending.TrackConsumed(offset, messageBytes);
