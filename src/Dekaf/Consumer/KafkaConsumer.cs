@@ -4256,7 +4256,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 // Set equality alone is insufficient: the assignment can change away and back
                 // between polls. Unseen revocations require stale-fetch cleanup and position reset.
-                if (_assignment.SetEquals(coordinatorAssignment) && coordinatorRevocations is null)
+                if (_assignment.SetEquals(coordinatorAssignment)
+                    && coordinatorRevocations is null
+                    && HasInitializedFetchPositions(coordinatorAssignment))
                 {
                     Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
                     coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
@@ -4267,7 +4269,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 List<TopicPartition>? newPartitions = null;
                 foreach (var partition in coordinatorAssignment)
                 {
-                    if (!_assignment.Contains(partition))
+                    if (!_assignment.Contains(partition) || !_fetchPositions.ContainsKey(partition))
                     {
                         newPartitions ??= new List<TopicPartition>();
                         newPartitions.Add(partition);
@@ -4385,6 +4387,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         var assignmentEnsureVersion = Volatile.Read(ref _assignmentEnsureVersion);
         return Volatile.Read(ref _lastManualAssignmentEnsureVersion) == assignmentEnsureVersion;
+    }
+
+    private bool HasInitializedFetchPositions(TopicPartitionSet partitions)
+    {
+        foreach (var partition in partitions)
+        {
+            if (!_fetchPositions.ContainsKey(partition))
+                return false;
+        }
+
+        return true;
     }
 
     private async ValueTask InitializeManualAssignmentPositionsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
