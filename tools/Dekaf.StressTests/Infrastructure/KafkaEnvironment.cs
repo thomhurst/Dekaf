@@ -272,6 +272,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             try
             {
                 await using var producer = await Kafka.CreateProducer<string, string>()
+                    .WithLoggerFactory(StressClientLogging.LoggerFactory)
                     .WithBootstrapServers(bootstrapServers)
                     .WithClientId("kafka-ready-check")
                     .WithAcks(Producer.Acks.Leader)
@@ -326,6 +327,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         IReadOnlyDictionary<string, string>? configs)
     {
         await using var adminClient = Kafka.CreateAdminClient()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("stress-test-admin")
             .Build();

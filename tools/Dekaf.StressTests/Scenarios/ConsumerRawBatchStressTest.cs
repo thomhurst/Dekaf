@@ -25,6 +25,7 @@ internal sealed class ConsumerRawBatchStressTest : IStressTestScenario
         // feeder's rate, measuring the feeder instead of the consumer.
         // Consumer uses string types but ConsumeRawBatchAsync skips deserialization
         await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-consumer-raw-batch-dekaf")
             .WithGroupId($"stress-group-raw-batch-dekaf-{Guid.NewGuid():N}")

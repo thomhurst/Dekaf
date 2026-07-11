@@ -104,6 +104,7 @@ internal static class StressTestHelpers
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await using var adminClient = Kafka.CreateAdminClient()
+                .WithLoggerFactory(StressClientLogging.LoggerFactory)
                 .WithBootstrapServers(bootstrapServers)
                 .WithClientId("stress-watermark-query")
                 .Build();

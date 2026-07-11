@@ -23,6 +23,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
         var startedAt = DateTime.UtcNow;
 
         var builder = Kafka.CreateProducer<string, string>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-producer-dekaf")
             .WithIdempotence(false)

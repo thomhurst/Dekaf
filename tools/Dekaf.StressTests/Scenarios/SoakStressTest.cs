@@ -31,6 +31,7 @@ internal sealed class SoakStressTest : IStressTestScenario
         var consumedMessages = 0L;
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("soak-consumer-dekaf")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -51,6 +52,7 @@ internal sealed class SoakStressTest : IStressTestScenario
             consumerCts.Token);
 
         var producerBuilder = Kafka.CreateProducer<string, string>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("soak-producer-dekaf")
             .WithIdempotence(true)

@@ -25,6 +25,7 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         var startedAt = DateTime.UtcNow;
 
         var builder = Kafka.CreateProducer<string, string>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-producer-transactional-dekaf")
             .WithTransactionalId($"stress-{runId}")
@@ -272,6 +273,7 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
             return oracle.CreateSnapshot(acceptedMessages);
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-transaction-verifier")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
