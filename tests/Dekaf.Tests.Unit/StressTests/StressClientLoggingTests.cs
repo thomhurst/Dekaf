@@ -33,4 +33,11 @@ public sealed class StressClientLoggingTests
         await Assert.That(StressClientLogging.ParseLevel("verbose"))
             .IsEqualTo(LogLevel.Warning);
     }
+
+    [Test]
+    public async Task ParseLevel_UndefinedNumericValueFallsBackToWarning()
+    {
+        await Assert.That(StressClientLogging.ParseLevel("10"))
+            .IsEqualTo(LogLevel.Warning);
+    }
 }

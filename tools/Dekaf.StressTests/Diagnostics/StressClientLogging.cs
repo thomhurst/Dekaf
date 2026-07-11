@@ -16,6 +16,7 @@ internal static class StressClientLogging
 
     internal static LogLevel ParseLevel(string? configuredLevel) =>
         Enum.TryParse<LogLevel>(configuredLevel, ignoreCase: true, out var level)
+            && Enum.IsDefined(level)
             ? level
             : LogLevel.Warning;
 
