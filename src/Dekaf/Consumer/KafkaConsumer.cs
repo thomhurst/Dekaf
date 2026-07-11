@@ -928,7 +928,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             },
             loggerFactory,
             connectionsPerBroker: options.ConnectionsPerBroker,
-            ResponseBufferPool.Create(options.FetchMaxBytes),
+            ResponseBufferPool.Create(CalculateMaximumFetchResponsePayloadBytes(options)),
             telemetryMetricCollector: telemetryMetricCollector);
 
         var metadataManager = new MetadataManager(
@@ -939,6 +939,35 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         return (connectionPool, metadataManager, telemetryMetricCollector);
     }
+
+    internal static int CalculateMaximumFetchResponsePayloadBytes(ConsumerOptions options)
+    {
+        var maximumFetchBytes = options.FetchMaxBytes;
+        var maximumPartitionFetchBytes = options.MaxPartitionFetchBytes;
+
+        if (options.EnableAdaptiveFetchSizing)
+        {
+            var adaptiveOptions = ResolveAdaptiveFetchSizingOptions(options);
+            maximumFetchBytes = Math.Max(maximumFetchBytes, adaptiveOptions.MaxFetchMaxBytes);
+            maximumPartitionFetchBytes = Math.Max(
+                maximumPartitionFetchBytes,
+                adaptiveOptions.MaxPartitionFetchBytes);
+        }
+
+        // KIP-74 makes FetchRequest.MaxBytes a soft cap: the first record batch from the
+        // first non-empty partition is returned even when it crosses the total limit.
+        // Reserve one maximum partition batch beyond the total response maximum.
+        return (int)Math.Min(
+            (long)maximumFetchBytes + maximumPartitionFetchBytes,
+            int.MaxValue);
+    }
+
+    private static AdaptiveFetchSizingOptions ResolveAdaptiveFetchSizingOptions(ConsumerOptions options) =>
+        options.AdaptiveFetchSizingOptions ?? new AdaptiveFetchSizingOptions
+        {
+            InitialPartitionFetchBytes = options.MaxPartitionFetchBytes,
+            InitialFetchMaxBytes = options.FetchMaxBytes
+        };
 
     private KafkaConsumer(
         ConsumerOptions options,
@@ -1019,12 +1048,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Initialize adaptive fetch sizer if configured
         if (options.EnableAdaptiveFetchSizing)
         {
-            var sizingOptions = options.AdaptiveFetchSizingOptions ?? new AdaptiveFetchSizingOptions
-            {
-                InitialPartitionFetchBytes = options.MaxPartitionFetchBytes,
-                InitialFetchMaxBytes = options.FetchMaxBytes
-            };
-            _adaptiveFetchSizer = new AdaptiveFetchSizer(sizingOptions);
+            _adaptiveFetchSizer = new AdaptiveFetchSizer(ResolveAdaptiveFetchSizingOptions(options));
         }
 
         if (!string.IsNullOrEmpty(options.GroupId))
