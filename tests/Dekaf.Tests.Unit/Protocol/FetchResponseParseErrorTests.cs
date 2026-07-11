@@ -30,10 +30,18 @@ public sealed class FetchResponseParseErrorTests
 
         var buffer = CreateResponseWithMalformedBatch();
 
-        await Assert.That(() => ReadResponse(buffer))
-            .Throws<MalformedProtocolDataException>()
-            .WithMessageContaining("partition 7");
+        var response = ReadResponse(buffer);
+        var partition = response.Responses[0].Partitions[0];
+
+        await Assert.That(partition.RecordParseError).IsNotNull();
+        await Assert.That(partition.RecordParseError!.Message).Contains("partition 7");
+        await Assert.That(partition.Records).IsNull();
+        await Assert.That(response.Responses[0].Partitions).Count().IsEqualTo(2);
+        await Assert.That(response.Responses[0].Partitions[1].PartitionIndex).IsEqualTo(8);
+        await Assert.That(response.Responses[0].Partitions[1].RecordParseError).IsNull();
         await Assert.That(parseErrors).IsEqualTo(1);
+
+        response.ReturnToPool();
     }
 
     private static FetchResponse ReadResponse(ReadOnlyMemory<byte> buffer)
@@ -52,7 +60,7 @@ public sealed class FetchResponseParseErrorTests
         writer.WriteInt32(0);
         writer.WriteUnsignedVarInt(2);
         writer.WriteUuid(Guid.NewGuid());
-        writer.WriteUnsignedVarInt(2);
+        writer.WriteUnsignedVarInt(3);
         writer.WriteInt32(7);
         writer.WriteInt16((short)ErrorCode.None);
         writer.WriteInt64(10);
@@ -61,6 +69,15 @@ public sealed class FetchResponseParseErrorTests
         writer.WriteUnsignedVarInt(1);
         writer.WriteInt32(-1);
         writer.WriteCompactNullableBytes(new byte[RecordBatch.TotalBatchHeaderSize], isNull: false);
+        writer.WriteUnsignedVarInt(0);
+        writer.WriteInt32(8);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteInt64(10);
+        writer.WriteInt64(10);
+        writer.WriteInt64(0);
+        writer.WriteUnsignedVarInt(1);
+        writer.WriteInt32(-1);
+        writer.WriteUnsignedVarInt(0);
         writer.WriteUnsignedVarInt(0);
         writer.WriteUnsignedVarInt(0);
         writer.WriteUnsignedVarInt(0);

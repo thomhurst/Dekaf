@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
@@ -24,6 +25,22 @@ public sealed class ConsumeAsyncRecoveryTests
 {
     private const string Topic = "test-topic";
     private const int Partition = 0;
+
+    [Test]
+    public async Task ConsumeAsync_PendingProtocolError_ThrowsTypedConsumeExceptionOnce()
+    {
+        var parseError = new MalformedProtocolDataException("malformed record batch");
+        var pending = PendingFetchData.CreateError(
+            Topic,
+            Partition,
+            new ConsumeException($"Failed to parse record batch for {Topic}-{Partition}", parseError));
+        await using var consumer = CreateConsumerWithPendingFetches(null, pending);
+
+        await Assert.That(async () =>
+        {
+            await foreach (var _ in consumer.ConsumeAsync()) { }
+        }).Throws<ConsumeException>().WithMessageContaining($"{Topic}-{Partition}");
+    }
 
     /// <summary>
     /// Creates a KafkaConsumer with minimal configuration, sets internal state
