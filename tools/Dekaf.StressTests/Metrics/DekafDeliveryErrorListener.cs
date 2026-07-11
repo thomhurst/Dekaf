@@ -17,7 +17,7 @@ internal sealed class DekafDeliveryErrorListener : IDisposable
 {
     private readonly MeterListener _listener;
 
-    public DekafDeliveryErrorListener(ThroughputTracker throughput)
+    public DekafDeliveryErrorListener(ThroughputTracker throughput, string? topic = null)
     {
         // Resolved before the listener starts: touching DekafMetrics inside the
         // InstrumentPublished callback can re-enter its static initializer (the callback
@@ -36,9 +36,29 @@ internal sealed class DekafDeliveryErrorListener : IDisposable
             }
         };
 
-        _listener.SetMeasurementEventCallback<long>(
-            (_, measurement, _, _) => throughput.RecordDeliveryErrors(measurement));
+        _listener.SetMeasurementEventCallback<long>((_, measurement, tags, _) =>
+        {
+            if (topic is null || HasTopic(tags, topic))
+                throughput.RecordDeliveryErrors(measurement);
+        });
         _listener.Start();
+    }
+
+    private static bool HasTopic(
+        ReadOnlySpan<KeyValuePair<string, object?>> tags,
+        string expectedTopic)
+    {
+        foreach (var tag in tags)
+        {
+            if (tag.Key == DekafDiagnostics.MessagingDestinationName
+                && tag.Value is string topic
+                && topic == expectedTopic)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public void Dispose() => _listener.Dispose();

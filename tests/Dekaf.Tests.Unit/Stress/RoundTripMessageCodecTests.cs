@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Diagnostics;
@@ -308,9 +309,17 @@ public class RoundTripMessageCodecTests
     public async Task DekafDeliveryMetricFailure_CountsAsRoundTripDeliveryError()
     {
         var throughput = new ThroughputTracker();
-        using var listener = ProducerRoundTripStressTest.CreateDeliveryErrorListener(throughput);
+        var topic = $"delivery-errors-{Guid.NewGuid():N}";
+        using var listener = ProducerRoundTripStressTest.CreateDeliveryErrorListener(throughput, topic);
 
-        DekafMetrics.ProduceErrors.Add(2);
+        DekafMetrics.ProduceErrors.Add(1, new TagList
+        {
+            { DekafDiagnostics.MessagingDestinationName, "unrelated-topic" }
+        });
+        DekafMetrics.ProduceErrors.Add(2, new TagList
+        {
+            { DekafDiagnostics.MessagingDestinationName, topic }
+        });
 
         await Assert.That(throughput.DeliveryErrorCount).IsEqualTo(2);
         await Assert.That(throughput.ErrorCount).IsEqualTo(0);

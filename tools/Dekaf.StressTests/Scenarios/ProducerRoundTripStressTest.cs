@@ -172,8 +172,10 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             producerDiagnostics);
     }
 
-    internal static DekafDeliveryErrorListener CreateDeliveryErrorListener(ThroughputTracker throughput) =>
-        new(throughput);
+    internal static DekafDeliveryErrorListener CreateDeliveryErrorListener(
+        ThroughputTracker throughput,
+        string? topic = null) =>
+        new(throughput, topic);
 
     internal static async Task<bool> ConsumeAndValidateAsync(
         IKafkaConsumer<string, byte[]> consumer,
