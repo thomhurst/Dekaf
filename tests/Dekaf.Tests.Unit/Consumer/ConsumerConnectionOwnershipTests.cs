@@ -47,6 +47,47 @@ public sealed class ConsumerConnectionOwnershipTests
     }
 
     [Test]
+    public async Task ScaleDown_DrainsOldRoutingBeforeApplyingNewWidth()
+    {
+        var pool = CreatePool();
+        var shrinkCanComplete = new TaskCompletionSource<IKafkaConnection?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pool.ShrinkConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection?>(shrinkCanComplete.Task));
+        await using var consumer = CreateStandaloneConsumer(pool, CreateMetadataManager(pool));
+        var scheduler = GetField<BrokerPrefetchScheduler>(consumer, "_brokerPrefetchScheduler");
+        var oldFetchCanComplete = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), async () =>
+        {
+            await oldFetchCanComplete.Task.ConfigureAwait(false);
+        });
+        SetField(consumer, "_appliedConnectionCount", 3);
+
+        try
+        {
+            TriggerScaleDown(consumer);
+
+            await Assert.That(GetField<int>(consumer, "_appliedConnectionCount")).IsEqualTo(3);
+            _ = pool.DidNotReceive().ShrinkConnectionGroupAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>());
+
+            oldFetchCanComplete.SetResult();
+            await TestWait.UntilAsync(
+                () => GetField<int>(consumer, "_appliedConnectionCount") == 2,
+                TimeSpan.FromSeconds(5));
+            _ = pool.Received(1).ShrinkConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            oldFetchCanComplete.TrySetResult();
+            shrinkCanComplete.TrySetResult(null);
+        }
+    }
+
+    [Test]
     public async Task SharedConsumer_ScaleDown_DoesNotShrinkSiblingConnection()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -102,12 +143,9 @@ public sealed class ConsumerConnectionOwnershipTests
 
         try
         {
-            var fetchSessionsField = typeof(KafkaConsumer<string, string>).GetField(
-                "_fetchSessions",
-                BindingFlags.Instance | BindingFlags.NonPublic)
-                ?? throw new InvalidOperationException("_fetchSessions field not found");
-            var fetchSessions = (ConcurrentDictionary<(int BrokerId, int ConnectionIndex), FetchSessionHandler>)
-                fetchSessionsField.GetValue(consumer)!;
+            var fetchSessions = GetField<ConcurrentDictionary<
+                (int BrokerId, int ConnectionIndex),
+                FetchSessionHandler>>(consumer, "_fetchSessions");
             var handler = new FetchSessionHandler();
             _ = handler.Build([], clusterMetadata: null);
             _ = handler.HandleResponse(new FetchResponse
@@ -416,12 +454,7 @@ public sealed class ConsumerConnectionOwnershipTests
 
     private static void TriggerScaleDown(KafkaConsumer<string, string> consumer)
     {
-        var scalerField = typeof(KafkaConsumer<string, string>).GetField(
-            "_connectionScaler",
-            BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("_connectionScaler field not found");
-        var scaler = (ConsumerConnectionScaler?)scalerField.GetValue(consumer)
-            ?? throw new InvalidOperationException("Connection scaler was not created");
+        var scaler = GetField<ConsumerConnectionScaler>(consumer, "_connectionScaler");
 
         scaler.TestSetConnectionCount(3);
         scaler.ReportPipelineUtilization(0, pipelineDepth: 3);
@@ -437,6 +470,13 @@ public sealed class ConsumerConnectionOwnershipTests
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException($"{fieldName} field not found"))
         .GetValue(instance)!;
+
+    private static void SetField<T>(object instance, string fieldName, T value) =>
+        (instance.GetType().GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"{fieldName} field not found"))
+        .SetValue(instance, value);
 
     private sealed class TrackedConnection(
         bool hasPendingRequest,

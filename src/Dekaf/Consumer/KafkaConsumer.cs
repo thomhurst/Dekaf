@@ -1180,6 +1180,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         cancellationToken.ThrowIfCancellationRequested();
         if (scaleDown)
         {
+            // The narrower mapping is valid against both the old and target pool sizes.
+            // Publish it before physical shrink so a partial broker failure cannot leave
+            // routing pointed at a connection index another broker already retired.
+            Volatile.Write(ref _appliedConnectionCount, targetCount);
             if (_ownsInfrastructure)
                 await ScaleDownOwnedConnectionGroupsAsync(targetCount, cancellationToken).ConfigureAwait(false);
         }
@@ -1192,9 +1196,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     targetCount,
                     cancellationToken).ConfigureAwait(false);
             }
-        }
 
-        Volatile.Write(ref _appliedConnectionCount, targetCount);
+            Volatile.Write(ref _appliedConnectionCount, targetCount);
+        }
     }
 
     private async ValueTask ScaleDownOwnedConnectionGroupsAsync(
