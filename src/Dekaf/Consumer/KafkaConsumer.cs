@@ -2132,6 +2132,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 try
                 {
                     await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+                    TryRecoverMissingPendingFetchClearMarkers();
                     if (HasPendingCoordinatorRevocations())
                     {
                         // Only the user consume loop owns _pendingFetches. Let it discard
@@ -2342,6 +2343,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private Dictionary<int, List<TopicPartition>> ExcludePartitionsPendingFetchClear(
         Dictionary<int, List<TopicPartition>> partitionsByBroker)
     {
+        TryRecoverMissingPendingFetchClearMarkers();
         if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
             return partitionsByBroker;
 
@@ -3922,7 +3924,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TopicPartition partition,
         long endOffset,
         int epoch,
-        int fetchBufferEpoch)
+        int fetchBufferEpoch,
+        bool startsBatch)
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
             return TryQueueDivergingEpochResetLocked(
@@ -3930,7 +3933,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 endOffset,
                 epoch,
                 fetchBufferEpoch,
-                startsBatch: true);
+                startsBatch);
     }
 
     private bool TryQueueDivergingEpochResetLocked(
@@ -3969,37 +3972,54 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return false;
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+            return ClearFetchBufferForPendingCoordinatorRevocationsLocked();
+    }
+
+    private bool ClearFetchBufferForPendingCoordinatorRevocationsLocked()
+    {
+        if (!HasPendingCoordinatorRevocations())
+            return false;
+
+        if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
         {
-            if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
-            {
-                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
-                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
-                return false;
-            }
-
-            var partitionsToRemove = _coordinatorRevokedPartitionsPendingFetchClear.Keys.ToHashSet();
-
-            // Keep partitions marked while clearing. Background prefetches use this
-            // marker to avoid advancing positions for data that will be discarded.
-            ApplyPendingDivergingEpochResets(partitionsToRemove);
-            ClearFetchBufferForPartitions(partitionsToRemove);
-
-            foreach (var partition in partitionsToRemove)
-                _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
-
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
-            return true;
+            return false;
         }
+
+        var partitionsToRemove = _coordinatorRevokedPartitionsPendingFetchClear.Keys.ToHashSet();
+
+        // Keep partitions marked while clearing. Background prefetches use this
+        // marker to avoid advancing positions for data that will be discarded.
+        ApplyPendingDivergingEpochResets(partitionsToRemove);
+        ClearFetchBufferForPartitions(partitionsToRemove);
+
+        foreach (var partition in partitionsToRemove)
+            _coordinatorRevokedPartitionsPendingFetchClear.TryRemove(partition, out _);
+
+        Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
+        Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
+        return true;
     }
 
     private bool RecoverAndClearFetchBufferForPendingCoordinatorRevocations()
     {
+        if (!HasPendingCoordinatorRevocations()
+            && _coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+            return false;
+
+        bool recovered;
+        bool cleared;
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            TryRecoverMissingPendingFetchClearMarkers();
-            return ClearFetchBufferForPendingCoordinatorRevocations();
+            recovered = TryRecoverMissingPendingFetchClearMarkersLocked();
+            cleared = ClearFetchBufferForPendingCoordinatorRevocationsLocked();
         }
+
+        if (recovered)
+            LogRecoveredPendingFetchClearInvariant();
+
+        return cleared;
     }
 
     private void ApplyPendingDivergingEpochResets(IReadOnlyCollection<TopicPartition> partitions)
@@ -4062,31 +4082,37 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
             return false;
 
+        bool recovered;
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
-        {
-            if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
-                return false;
+            recovered = TryRecoverMissingPendingFetchClearMarkersLocked();
 
-            var recovered = false;
-            if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
-            {
-                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
-                recovered = true;
-            }
-
-            if (_stagedDivergingEpochResetBatches == 0
-                && Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) == 0)
-            {
-                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
-                recovered = true;
-            }
-
-            if (!recovered)
-                return false;
-        }
+        if (!recovered)
+            return false;
 
         LogRecoveredPendingFetchClearInvariant();
         return true;
+    }
+
+    private bool TryRecoverMissingPendingFetchClearMarkersLocked()
+    {
+        if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+            return false;
+
+        var recovered = false;
+        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
+        {
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
+            recovered = true;
+        }
+
+        if (_stagedDivergingEpochResetBatches == 0
+            && Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) == 0)
+        {
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+            recovered = true;
+        }
+
+        return recovered;
     }
 
     private bool CanContinueBatchIteration(TopicPartition partition) =>
@@ -5877,15 +5903,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
             return false;
 
-        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
-        {
-            return TryQueueDivergingEpochResetLocked(
-                partition,
-                divergingEpoch.EndOffset,
-                divergingEpoch.Epoch,
-                fetchBufferEpoch,
-                startsBatch);
-        }
+        return StageDivergingEpochReset(
+            partition,
+            divergingEpoch.EndOffset,
+            divergingEpoch.Epoch,
+            fetchBufferEpoch,
+            startsBatch);
     }
 
     private async ValueTask ResetOffsetOutOfRangeAsync(
