@@ -8,6 +8,9 @@ namespace Dekaf.StressTests.Reporting;
 
 internal sealed class StressTestResult
 {
+    internal const double SteadyStatePeakThreshold = 0.85;
+    internal const double SlopePercentPerMinuteThreshold = -1.0;
+
     public required string Scenario { get; init; }
     public required string Client { get; set; }
     public required int DurationMinutes { get; init; }
@@ -86,6 +89,31 @@ internal sealed class StressTestResult
     public double? MedianIntervalMessagesPerSecond =>
         IsMessageBounded ? null : GetMedian(Throughput.MessagesPerSecondSamples);
 
+    /// <summary>Last-third average divided by peak sampled throughput.</summary>
+    public double? SteadyStatePeakRatio =>
+        TryGetIntraRunThroughput(out var metrics) ? metrics.SteadyStatePeakRatio : null;
+
+    /// <summary>Percentage change from first-third to last-third average throughput.</summary>
+    public double? IntraRunDriftPercent =>
+        TryGetIntraRunThroughput(out var metrics) ? metrics.DriftPercent : null;
+
+    /// <summary>Least-squares sample trend normalized against first-third throughput.</summary>
+    public double? ThroughputSlopePercentPerMinute =>
+        TryGetIntraRunThroughput(out var metrics) ? metrics.SlopePercentPerMinute : null;
+
+    public double SteadyStatePeakRatioThreshold => SteadyStatePeakThreshold;
+
+    public double ThroughputSlopePercentPerMinuteThreshold => SlopePercentPerMinuteThreshold;
+
+    public bool SteadyStatePeakThresholdBreached =>
+        SteadyStatePeakRatio is { } ratio && ratio < SteadyStatePeakThreshold;
+
+    public bool ThroughputSlopeThresholdBreached =>
+        ThroughputSlopePercentPerMinute is { } slope && slope < SlopePercentPerMinuteThreshold;
+
+    public bool IntraRunThroughputThresholdBreached =>
+        SteadyStatePeakThresholdBreached || ThroughputSlopeThresholdBreached;
+
     /// <summary>
     /// Client-side append rate, reported only when it is distinct from the headline
     /// number (i.e. when delivered throughput was measured). Null means the headline
@@ -131,6 +159,60 @@ internal sealed class StressTestResult
             var count => (sorted[(count / 2) - 1] + sorted[count / 2]) / 2.0
         };
     }
+
+    private bool TryGetIntraRunThroughput(out IntraRunThroughputMetrics metrics)
+    {
+        metrics = default;
+        if (IsMessageBounded || Throughput.ElapsedSeconds <= 0)
+            return false;
+
+        var samples = Throughput.MessagesPerSecondSamples
+            .Where(sample => double.IsFinite(sample) && sample >= 0)
+            .ToArray();
+        if (samples.Length < 3)
+            return false;
+
+        var thirdCount = Math.Max(1, samples.Length / 3);
+        var firstThirdTotal = 0.0;
+        var lastThirdTotal = 0.0;
+        for (var index = 0; index < thirdCount; index++)
+        {
+            firstThirdTotal += samples[index];
+            lastThirdTotal += samples[samples.Length - thirdCount + index];
+        }
+        var firstThirdAverage = firstThirdTotal / thirdCount;
+        var lastThirdAverage = lastThirdTotal / thirdCount;
+        var peak = samples.Max();
+        if (firstThirdAverage <= 0 || peak <= 0)
+            return false;
+
+        var mean = samples.Average();
+        var midpoint = (samples.Length - 1) / 2.0;
+        var numerator = 0.0;
+        var denominator = 0.0;
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var centeredIndex = index - midpoint;
+            numerator += centeredIndex * (samples[index] - mean);
+            denominator += centeredIndex * centeredIndex;
+        }
+
+        var sampledElapsedSeconds = Throughput.SampledElapsedSeconds > 0
+            ? Throughput.SampledElapsedSeconds
+            : Throughput.ElapsedSeconds;
+        var sampleMinutes = sampledElapsedSeconds / samples.Length / 60.0;
+        var slopePerSample = numerator / denominator;
+        metrics = new IntraRunThroughputMetrics(
+            lastThirdAverage / peak,
+            (lastThirdAverage - firstThirdAverage) / firstThirdAverage * 100.0,
+            slopePerSample / sampleMinutes / firstThirdAverage * 100.0);
+        return true;
+    }
+
+    private readonly record struct IntraRunThroughputMetrics(
+        double SteadyStatePeakRatio,
+        double DriftPercent,
+        double SlopePercentPerMinute);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

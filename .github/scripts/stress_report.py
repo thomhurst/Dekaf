@@ -138,6 +138,41 @@ def median_interval_rate(result):
     return median(finite_samples)
 
 
+def intra_run_throughput(result):
+    """Return C#-computed intra-run metrics, or None for older result files."""
+    if result.get('isMessageBounded'):
+        return None
+
+    numeric_fields = {
+        'steadyStatePeakRatio': result.get('steadyStatePeakRatio'),
+        'driftPercent': result.get('intraRunDriftPercent'),
+        'slopePercentPerMinute': result.get('throughputSlopePercentPerMinute'),
+        'steadyStatePeakRatioThreshold': result.get('steadyStatePeakRatioThreshold'),
+        'slopePercentPerMinuteThreshold': result.get(
+            'throughputSlopePercentPerMinuteThreshold'
+        ),
+    }
+    if any(
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not isfinite(value)
+        for value in numeric_fields.values()
+    ):
+        return None
+
+    boolean_fields = {
+        'steadyStatePeakThresholdBreached': result.get(
+            'steadyStatePeakThresholdBreached'
+        ),
+        'slopeThresholdBreached': result.get('throughputSlopeThresholdBreached'),
+        'thresholdBreached': result.get('intraRunThroughputThresholdBreached'),
+    }
+    if any(not isinstance(value, bool) for value in boolean_fields.values()):
+        return None
+
+    return numeric_fields | boolean_fields
+
+
 def comparison_rate(result):
     """Rate used for ranking and ratios: median interval rate when present, else headline rate."""
     rate = median_interval_rate(result)
@@ -191,11 +226,11 @@ def format_throughput_table(results, title, include_ratio=False):
     lines.append("")
 
     if include_ratio:
-        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used | Comparison Ratio |")
-        lines.append("|--------|------------|--------------|--------------|--------|----------------|--------|------------|------------------|")
+        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used | Comparison Ratio |")
+        lines.append("|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|------------------|")
     else:
-        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |")
-        lines.append("|--------|------------|--------------|--------------|--------|----------------|--------|------------|")
+        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |")
+        lines.append("|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|")
 
     baseline = find_confluent_baseline(results) if include_ratio else 0
     sorted_results = sorted(results, key=throughput_sort_key)
@@ -207,6 +242,9 @@ def format_throughput_table(results, title, include_ratio=False):
         mb_sec = effective_mb_rate(r)
         median_rate = median_interval_rate(r)
         median_msg_sec = f"{median_rate:,.0f}" if median_rate is not None else '-'
+        intra_run = intra_run_throughput(r)
+        drift = f"{intra_run['driftPercent']:+.1f}%" if intra_run is not None else '-'
+        slope = f"{intra_run['slopePercentPerMinute']:+.2f}%" if intra_run is not None else '-'
         accepted_rate = accepted_messages_per_second(r)
         accepted = f"{accepted_rate:,.0f}" if accepted_rate is not None else '-'
         errors = throughput.get('totalErrors', 0)
@@ -214,9 +252,9 @@ def format_throughput_table(results, title, include_ratio=False):
 
         if include_ratio:
             ratio = comparison_rate(r) / baseline if baseline > 0 else 1.0
-            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} | {ratio:.2f}x |")
+            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} | {ratio:.2f}x |")
         else:
-            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} |")
+            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} |")
 
     lines.append("")
 
@@ -224,6 +262,22 @@ def format_throughput_table(results, title, include_ratio=False):
         lines.append("*Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*")
         lines.append("")
         lines.append("*Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*")
+        lines.append("")
+
+    intra_run_metrics = None
+    for result in results:
+        intra_run_metrics = intra_run_throughput(result)
+        if intra_run_metrics is not None:
+            break
+    if intra_run_metrics is not None:
+        peak_threshold = intra_run_metrics['steadyStatePeakRatioThreshold']
+        slope_threshold = intra_run_metrics['slopePercentPerMinuteThreshold']
+        lines.append(
+            "*Drift compares last-third with first-third average throughput. "
+            "Slope is the normalized least-squares trend; steady-state below "
+            f"{peak_threshold:.0%} of peak or slope below {slope_threshold:g}%/min "
+            "fails the regression gate.*"
+        )
         lines.append("")
 
     if any(r.get('deliveredMessages') is not None for r in results):
