@@ -438,6 +438,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     private ReadOnlyMemory<byte> _rawRecordData;
     private byte[]? _pooledRecordData;
     private Record[]? _parsedRecords;
+    private int _parsedRecordsOffset;
+    private bool _ownsParsedRecords;
     private int _recordCount;
     private int _parsedRecordCount;
     private int _nextRecordParseOffset;
@@ -468,7 +470,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
         EnsureLazyRecordsParsedUpTo(index);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _recordCount);
-        return _parsedRecords![index];
+        return _parsedRecords![_parsedRecordsOffset + index];
     }
 
     private IEnumerable<Record> EnumerateLazyRecords()
@@ -481,7 +483,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             if (i >= _recordCount)
                 yield break;
 
-            yield return _parsedRecords![i];
+            yield return _parsedRecords![_parsedRecordsOffset + i];
         }
     }
 
@@ -501,6 +503,21 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         _records = this;
     }
 
+    internal int UnparsedLazyRecordCount =>
+        ReferenceEquals(_records, this) && _parsedRecords is null ? _recordCount : -1;
+
+    internal void UseParsedRecordSlab(Record[] records, int offset)
+    {
+        if (!ReferenceEquals(_records, this) || _parsedRecords is not null)
+            throw new InvalidOperationException("A parsed-record slab can only be attached to an unparsed lazy batch.");
+        if ((uint)offset > (uint)records.Length || _recordCount > records.Length - offset)
+            throw new ArgumentOutOfRangeException(nameof(offset));
+
+        _parsedRecords = records;
+        _parsedRecordsOffset = offset;
+        _ownsParsedRecords = false;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void EnsureAllRecordsParsed()
     {
@@ -516,7 +533,10 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     internal Record[]? GetParsedRecordsArray() =>
         ReferenceEquals(_records, this) ? _parsedRecords : null;
 
-    private const int MaxReasonableLazyRecordCount = 1_000_000;
+    internal int GetParsedRecordsOffset() =>
+        ReferenceEquals(_records, this) ? _parsedRecordsOffset : 0;
+
+    internal const int MaxReasonableLazyRecordCount = 1_000_000;
 
     private void EnsureLazyRecordsParsedUpTo(int index)
     {
@@ -524,6 +544,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         {
             var capacity = _recordCount > MaxReasonableLazyRecordCount ? 16 : _recordCount;
             _parsedRecords = ArrayPool<Record>.Shared.Rent(capacity);
+            _ownsParsedRecords = true;
         }
 
         if (_parsedRecordCount > index || _parsedRecordCount >= _recordCount)
@@ -533,17 +554,21 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         var readerStartOffset = _nextRecordParseOffset;
         while (_parsedRecordCount <= index && _parsedRecordCount < _recordCount)
         {
-            if (_parsedRecordCount >= _parsedRecords.Length)
+            if (_parsedRecordCount >= _parsedRecords.Length - _parsedRecordsOffset)
             {
+                if (!_ownsParsedRecords)
+                    throw new InvalidOperationException("The shared parsed-record slab is smaller than the declared record count.");
+
                 var newArray = ArrayPool<Record>.Shared.Rent(_parsedRecords.Length * 2);
-                _parsedRecords.AsSpan(0, _parsedRecordCount).CopyTo(newArray);
+                _parsedRecords.AsSpan(_parsedRecordsOffset, _parsedRecordCount).CopyTo(newArray);
                 ArrayPool<Record>.Shared.Return(_parsedRecords, clearArray: true);
                 _parsedRecords = newArray;
+                _parsedRecordsOffset = 0;
             }
 
             try
             {
-                _parsedRecords[_parsedRecordCount] = Record.Read(ref reader);
+                _parsedRecords[_parsedRecordsOffset + _parsedRecordCount] = Record.Read(ref reader);
                 _parsedRecordCount++;
                 _nextRecordParseOffset = readerStartOffset + (int)reader.Consumed;
             }
@@ -569,16 +594,22 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         {
             for (var i = 0; i < _parsedRecordCount; i++)
             {
-                if (parsedRecords[i].Headers is { } headers)
+                var recordIndex = _parsedRecordsOffset + i;
+                if (parsedRecords[recordIndex].Headers is { } headers)
                     ArrayPool<Header>.Shared.Return(headers, clearArray: true);
+                if (!_ownsParsedRecords)
+                    parsedRecords[recordIndex] = default;
             }
 
-            ArrayPool<Record>.Shared.Return(parsedRecords, clearArray: true);
+            if (_ownsParsedRecords)
+                ArrayPool<Record>.Shared.Return(parsedRecords, clearArray: true);
         }
 
         _rawRecordData = default;
         _recordCount = 0;
         _parsedRecordCount = 0;
+        _parsedRecordsOffset = 0;
+        _ownsParsedRecords = false;
         _nextRecordParseOffset = 0;
     }
 
@@ -758,6 +789,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             item._rawRecordData = default;
             item._pooledRecordData = null;
             item._parsedRecords = null;
+            item._parsedRecordsOffset = 0;
+            item._ownsParsedRecords = false;
             item._recordCount = 0;
             item._parsedRecordCount = 0;
             item._nextRecordParseOffset = 0;
