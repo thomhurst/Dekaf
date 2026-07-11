@@ -61,6 +61,15 @@ public class FatalPrefetchErrorClassificationTests
         await Assert.That(KafkaConsumer<string, string>.IsFatalPrefetchError(ex)).IsTrue();
     }
 
+    [Test]
+    public async Task ConsumeException_NonRetriableCorruptMessage_IsFatal()
+    {
+        var ex = new ConsumeException(ErrorCode.CorruptMessage, "stuck fetch position", isRetriable: false);
+
+        await Assert.That(ex.IsRetriable).IsFalse();
+        await Assert.That(KafkaConsumer<string, string>.IsFatalPrefetchError(ex)).IsTrue();
+    }
+
     #endregion
 
     #region Transient errors — should return false
