@@ -536,7 +536,7 @@ public sealed class ConsumerAssignmentFastPathTests
             new Dictionary<int, List<TopicPartition>> { [0] = [partition] });
 
         await Assert.That(filtered[0]).Contains(partition);
-        await Assert.That(ShouldDropStaleFetchPartition(consumer, partition, GetFetchBufferEpoch(consumer))).IsFalse();
+        await Assert.That(ShouldDropStaleFetchPartition(consumer, partition, GetFetchBufferEpoch(consumer))).IsTrue();
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(0);
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();

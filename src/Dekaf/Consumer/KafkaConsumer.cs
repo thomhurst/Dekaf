@@ -4061,7 +4061,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool ShouldDropStaleFetchPartition(TopicPartition partition, int fetchBufferEpoch) =>
         IsFetchBufferEpochStale(partition, fetchBufferEpoch)
-        || HasPendingFetchClear(partition)
+        || _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition)
         || !IsCurrentlyAssigned(partition);
 
     private void InvalidateAllFetchesLocked()
