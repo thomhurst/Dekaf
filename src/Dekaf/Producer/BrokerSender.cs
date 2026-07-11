@@ -509,6 +509,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Scale-down thresholds
     private const double ScaleDownUtilizationThreshold = 0.3; // Buffer utilization below which scale-down is considered
+    private const double ScaleDownInFlightUtilizationThreshold = 0.3;
     private const long ScaleDownSustainedMs = 120_000; // 2 minutes of sustained low utilization required
 
     // Effective scaling timings: the constants above unless overridden via the internal
@@ -4223,6 +4224,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (now - _lowUtilizationStartTicks < _scaleDownSustainedMs)
             return 0; // Not sustained long enough
 
+        // Low buffer occupancy can mean the expanded connection group is keeping up, not
+        // that it is idle. In particular, acks=all non-idempotent producers mute each
+        // partition while its request is in flight; shrinking that load-bearing width
+        // reintroduces head-of-line blocking. Require both low aggregate in-flight use and
+        // no queued work behind a muted partition before retiring a connection.
+        var pendingResponseCount = Volatile.Read(ref _totalPendingResponseCount);
+        var inFlightUtilization = _totalMaxInFlight > 0
+            ? (double)pendingResponseCount / _totalMaxInFlight
+            : 0;
+        if (inFlightUtilization >= ScaleDownInFlightUtilizationThreshold
+            || HasMutedPartitionLoad())
+        {
+            _lowUtilizationStartTicks = 0;
+            return 0;
+        }
+
         // Idempotent producers require ALL connections to be drained before shrinking
         // because partitions remap (P % N -> P % (N-1)) and in-flight batches on any
         // connection could conflict with new batches post-remap, causing sequence errors.
@@ -4276,6 +4293,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _brokerId, targetShrinkCount, _cts.Token).AsTask();
 
         return 0;
+    }
+
+    private bool HasMutedPartitionLoad()
+    {
+        if (!_muteOnSend || _mutedPartitions.IsEmpty)
+            return false;
+
+        foreach (var (topicPartition, _) in _mutedPartitions)
+        {
+            if (_accumulator.GetPartitionQueueBytes(
+                    topicPartition.Topic,
+                    topicPartition.Partition) > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
