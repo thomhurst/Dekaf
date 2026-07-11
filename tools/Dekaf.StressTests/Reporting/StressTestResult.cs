@@ -101,10 +101,18 @@ internal sealed class StressTestResult
     public double? ThroughputSlopePercentPerMinute =>
         TryGetIntraRunThroughput(out var metrics) ? metrics.SlopePercentPerMinute : null;
 
+    public double SteadyStatePeakRatioThreshold => SteadyStatePeakThreshold;
+
+    public double ThroughputSlopePercentPerMinuteThreshold => SlopePercentPerMinuteThreshold;
+
+    public bool SteadyStatePeakThresholdBreached =>
+        SteadyStatePeakRatio is { } ratio && ratio < SteadyStatePeakThreshold;
+
+    public bool ThroughputSlopeThresholdBreached =>
+        ThroughputSlopePercentPerMinute is { } slope && slope < SlopePercentPerMinuteThreshold;
+
     public bool IntraRunThroughputThresholdBreached =>
-        TryGetIntraRunThroughput(out var metrics) &&
-        (metrics.SteadyStatePeakRatio < SteadyStatePeakThreshold ||
-         metrics.SlopePercentPerMinute < SlopePercentPerMinuteThreshold);
+        SteadyStatePeakThresholdBreached || ThroughputSlopeThresholdBreached;
 
     /// <summary>
     /// Client-side append rate, reported only when it is distinct from the headline

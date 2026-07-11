@@ -7,8 +7,6 @@ from pathlib import Path
 from statistics import median
 
 from stress_report import (
-    SLOPE_PERCENT_PER_MINUTE_THRESHOLD,
-    STEADY_STATE_PEAK_THRESHOLD,
     cpu_micros_per_message,
     effective_rate,
     intra_run_throughput,
@@ -246,15 +244,15 @@ def evaluate_and_update(history, current_results, run_started_at):
                     "steadyStatePeakRatio",
                     "Steady-state / peak",
                     intra_run["steadyStatePeakRatio"],
-                    STEADY_STATE_PEAK_THRESHOLD,
-                    intra_run["steadyStatePeakRatio"] < STEADY_STATE_PEAK_THRESHOLD,
+                    intra_run["steadyStatePeakRatioThreshold"],
+                    intra_run["steadyStatePeakThresholdBreached"],
                 ),
                 (
                     "slopePercentPerMinute",
                     "Slope %/min",
                     intra_run["slopePercentPerMinute"],
-                    SLOPE_PERCENT_PER_MINUTE_THRESHOLD,
-                    intra_run["slopePercentPerMinute"] < SLOPE_PERCENT_PER_MINUTE_THRESHOLD,
+                    intra_run["slopePercentPerMinuteThreshold"],
+                    intra_run["slopeThresholdBreached"],
                 ),
             )
             for metric, label, value, threshold, breached in threshold_metrics:

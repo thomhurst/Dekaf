@@ -35,13 +35,17 @@ def stress_result(client, effective_rate, median_rate=None, is_message_bounded=F
 class StressReportTests(unittest.TestCase):
     def test_intra_run_throughput_detects_front_loaded_collapse(self):
         value = stress_result("Dekaf", effective_rate=1400)
-        value["throughput"].update({
-            "elapsedSeconds": 900,
-            "messagesPerSecondSamples": [
-                1700, 1800, 1750, 2000, 2050, 1950,
-                1350, 1300, 1250, 1200, 1280, 1270,
-            ],
+        value.update({
+            "steadyStatePeakRatio": 0.62,
+            "intraRunDriftPercent": -31.03,
+            "throughputSlopePercentPerMinute": -4.2,
+            "steadyStatePeakRatioThreshold": 0.85,
+            "throughputSlopePercentPerMinuteThreshold": -1.0,
+            "steadyStatePeakThresholdBreached": True,
+            "throughputSlopeThresholdBreached": True,
+            "intraRunThroughputThresholdBreached": True,
         })
+        value["throughput"]["messagesPerSecondSamples"] = [1400, 1400, 1400]
 
         metrics = intra_run_throughput(value)
 
@@ -53,9 +57,15 @@ class StressReportTests(unittest.TestCase):
 
     def test_throughput_table_surfaces_drift_and_slope(self):
         value = stress_result("Dekaf", effective_rate=1400)
-        value["throughput"].update({
-            "elapsedSeconds": 360,
-            "messagesPerSecondSamples": [2000, 1900, 1800, 1400, 1300, 1200],
+        value.update({
+            "steadyStatePeakRatio": 0.6,
+            "intraRunDriftPercent": -35.9,
+            "throughputSlopePercentPerMinute": -8.0,
+            "steadyStatePeakRatioThreshold": 0.85,
+            "throughputSlopePercentPerMinuteThreshold": -1.0,
+            "steadyStatePeakThresholdBreached": True,
+            "throughputSlopeThresholdBreached": True,
+            "intraRunThroughputThresholdBreached": True,
         })
 
         report = "\n".join(format_throughput_table([value], "Producer Throughput"))
@@ -66,9 +76,15 @@ class StressReportTests(unittest.TestCase):
 
     def test_intra_run_throughput_accepts_stable_samples(self):
         value = stress_result("Dekaf", effective_rate=1400)
-        value["throughput"].update({
-            "elapsedSeconds": 360,
-            "messagesPerSecondSamples": [1400, 1410, 1390, 1405, 1395, 1400],
+        value.update({
+            "steadyStatePeakRatio": 0.99,
+            "intraRunDriftPercent": 0.0,
+            "throughputSlopePercentPerMinute": 0.0,
+            "steadyStatePeakRatioThreshold": 0.85,
+            "throughputSlopePercentPerMinuteThreshold": -1.0,
+            "steadyStatePeakThresholdBreached": False,
+            "throughputSlopeThresholdBreached": False,
+            "intraRunThroughputThresholdBreached": False,
         })
 
         metrics = intra_run_throughput(value)

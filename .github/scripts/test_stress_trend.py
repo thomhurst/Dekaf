@@ -43,9 +43,17 @@ def history_run(index, messages_per_second=1000.0, cpu_micros_per_message=2.0, *
 class StressTrendTests(unittest.TestCase):
     def test_intra_run_threshold_breach_fails_without_history(self):
         collapsing = result(
+            steadyStatePeakRatio=0.6,
+            intraRunDriftPercent=-35.9,
+            throughputSlopePercentPerMinute=-8.0,
+            steadyStatePeakRatioThreshold=0.85,
+            throughputSlopePercentPerMinuteThreshold=-1.0,
+            steadyStatePeakThresholdBreached=True,
+            throughputSlopeThresholdBreached=True,
+            intraRunThroughputThresholdBreached=True,
             throughput={
                 "elapsedSeconds": 360,
-                "messagesPerSecondSamples": [2000, 1900, 1800, 1400, 1300, 1200],
+                "messagesPerSecondSamples": [1400, 1400, 1400],
             },
         )
 

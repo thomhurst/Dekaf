@@ -4,9 +4,6 @@ from collections import defaultdict
 from math import isfinite
 from statistics import median
 
-STEADY_STATE_PEAK_THRESHOLD = 0.85
-SLOPE_PERCENT_PER_MINUTE_THRESHOLD = -1.0
-
 SCENARIO_TITLES = {
     'producer': 'Producer (Fire-and-Forget)',
     'producer-idempotent': 'Producer (Fire-and-Forget, Idempotent)',
@@ -142,53 +139,38 @@ def median_interval_rate(result):
 
 
 def intra_run_throughput(result):
-    """Return intra-run degradation metrics, or None when samples are unsuitable."""
+    """Return C#-computed intra-run metrics, or None for older result files."""
     if result.get('isMessageBounded'):
         return None
 
-    throughput = result.get('throughput', {})
-    samples = throughput.get('messagesPerSecondSamples') or []
-    samples = [
-        float(sample) for sample in samples
-        if isinstance(sample, (int, float))
-        and not isinstance(sample, bool)
-        and isfinite(sample)
-        and sample >= 0
-    ]
-    elapsed_seconds = throughput.get('elapsedSeconds')
-    if len(samples) < 3 or not isinstance(elapsed_seconds, (int, float)) or elapsed_seconds <= 0:
-        return None
-
-    third_count = max(1, len(samples) // 3)
-    first_third = sum(samples[:third_count]) / third_count
-    last_third = sum(samples[-third_count:]) / third_count
-    peak = max(samples)
-    if first_third <= 0 or peak <= 0:
-        return None
-
-    mean = sum(samples) / len(samples)
-    centered_x = [(index - ((len(samples) - 1) / 2)) for index in range(len(samples))]
-    denominator = sum(value * value for value in centered_x)
-    slope_per_sample = (
-        sum(x * (sample - mean) for x, sample in zip(centered_x, samples)) / denominator
-    )
-    sample_minutes = elapsed_seconds / len(samples) / 60.0
-    slope_percent_per_minute = slope_per_sample / sample_minutes / first_third * 100.0
-    steady_state_peak_ratio = last_third / peak
-    drift_percent = (last_third - first_third) / first_third * 100.0
-
-    return {
-        'firstThirdAverage': first_third,
-        'lastThirdAverage': last_third,
-        'peak': peak,
-        'steadyStatePeakRatio': steady_state_peak_ratio,
-        'driftPercent': drift_percent,
-        'slopePercentPerMinute': slope_percent_per_minute,
-        'thresholdBreached': (
-            steady_state_peak_ratio < STEADY_STATE_PEAK_THRESHOLD
-            or slope_percent_per_minute < SLOPE_PERCENT_PER_MINUTE_THRESHOLD
+    numeric_fields = {
+        'steadyStatePeakRatio': result.get('steadyStatePeakRatio'),
+        'driftPercent': result.get('intraRunDriftPercent'),
+        'slopePercentPerMinute': result.get('throughputSlopePercentPerMinute'),
+        'steadyStatePeakRatioThreshold': result.get('steadyStatePeakRatioThreshold'),
+        'slopePercentPerMinuteThreshold': result.get(
+            'throughputSlopePercentPerMinuteThreshold'
         ),
     }
+    if any(
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not isfinite(value)
+        for value in numeric_fields.values()
+    ):
+        return None
+
+    boolean_fields = {
+        'steadyStatePeakThresholdBreached': result.get(
+            'steadyStatePeakThresholdBreached'
+        ),
+        'slopeThresholdBreached': result.get('throughputSlopeThresholdBreached'),
+        'thresholdBreached': result.get('intraRunThroughputThresholdBreached'),
+    }
+    if any(not isinstance(value, bool) for value in boolean_fields.values()):
+        return None
+
+    return numeric_fields | boolean_fields
 
 
 def comparison_rate(result):
@@ -282,8 +264,20 @@ def format_throughput_table(results, title, include_ratio=False):
         lines.append("*Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*")
         lines.append("")
 
-    if any(intra_run_throughput(r) is not None for r in results):
-        lines.append("*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*")
+    intra_run_metrics = None
+    for result in results:
+        intra_run_metrics = intra_run_throughput(result)
+        if intra_run_metrics is not None:
+            break
+    if intra_run_metrics is not None:
+        peak_threshold = intra_run_metrics['steadyStatePeakRatioThreshold']
+        slope_threshold = intra_run_metrics['slopePercentPerMinuteThreshold']
+        lines.append(
+            "*Drift compares last-third with first-third average throughput. "
+            "Slope is the normalized least-squares trend; steady-state below "
+            f"{peak_threshold:.0%} of peak or slope below {slope_threshold:g}%/min "
+            "fails the regression gate.*"
+        )
         lines.append("")
 
     if any(r.get('deliveredMessages') is not None for r in results):
