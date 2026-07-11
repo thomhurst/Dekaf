@@ -2225,6 +2225,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         finally
         {
+            if (completionError is not null)
+                _prefetchCts?.Cancel();
+
             var drainError = await _brokerPrefetchScheduler
                 .DrainAllSafelyAsync(LogPrefetchLoopError, IsFatalPrefetchError)
                 .ConfigureAwait(false);
