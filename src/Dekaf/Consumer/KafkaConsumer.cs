@@ -3262,6 +3262,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             pollRecorded = _coordinator?.TryRecordPollFast() ?? true;
             if (pollRecorded && TryConsumeOneFromPendingFetches(out var bufferedResult))
                 return bufferedResult;
+
+            if (pollRecorded && _pendingEofEvents.TryDequeue(out var eofEvent))
+            {
+                return ConsumeResult<TKey, TValue>.CreatePartitionEof(
+                    eofEvent.Partition.Topic,
+                    eofEvent.Partition.Partition,
+                    eofEvent.Offset);
+            }
         }
 
         using var timeoutCts = _ctsPool.Rent();
@@ -3300,9 +3308,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void ValidateConsumeOneTimeout(TimeSpan timeout)
     {
-        const long MaxSupportedTimeoutMilliseconds = 0xfffffffe;
-        var timeoutMilliseconds = (long)timeout.TotalMilliseconds;
-        if (timeoutMilliseconds < -1 || timeoutMilliseconds > MaxSupportedTimeoutMilliseconds)
+        const long MaxSupportedTimeoutTicks = 0xfffffffeL * TimeSpan.TicksPerMillisecond;
+        if (timeout.Ticks < -TimeSpan.TicksPerMillisecond || timeout.Ticks > MaxSupportedTimeoutTicks)
             throw new ArgumentOutOfRangeException(nameof(timeout));
     }
 

@@ -112,6 +112,9 @@ public sealed class ConsumeOneFastPathTests
                 await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(-2), CancellationToken.None))
             .Throws<ArgumentOutOfRangeException>();
         await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond - 1), CancellationToken.None))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(async () =>
                 await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(0xffffffff), CancellationToken.None))
             .Throws<ArgumentOutOfRangeException>();
         await Assert.That(GetPendingFetches(consumer).Count).IsEqualTo(1);
@@ -499,6 +502,23 @@ public sealed class ConsumeOneFastPathTests
         AssignTestPartition(consumer);
         GetPendingFetches(consumer).Enqueue(fetch);
         return consumer;
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_EmptyPendingFetchWithQueuedEof_ReturnsEofSynchronously()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition, [CreateBatch(20)]);
+        await using var consumer = CreateInitializedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+        GetPendingEofEvents(consumer).Enqueue((new TopicPartition(Topic, Partition), 20L));
+
+        var resultTask = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(resultTask.IsCompletedSuccessfully).IsTrue();
+        var result = await resultTask;
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.IsPartitionEof).IsTrue();
+        await Assert.That(result.Value.Offset).IsEqualTo(20L);
     }
 
     private static KafkaConsumer<string, string> CreateInitializedGroupedConsumer(PendingFetchData fetch)
