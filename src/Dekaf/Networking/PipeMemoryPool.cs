@@ -18,10 +18,10 @@ namespace Dekaf.Networking;
 /// WorkingSet growth proportional to the number of brokers — even though individual
 /// connections properly return their buffers.
 /// <para/>
-/// <b>Shared pool design:</b> A single <see cref="PipeMemoryPool"/> is shared across all
-/// connections managed by a <see cref="ConnectionPool"/>. This bounds total retained memory
-/// to one set of array buckets (maxArraysPerBucket × bucketCount) regardless of how many
-/// connections exist. Without sharing, each connection independently retained up to
+/// <b>Shared pool design:</b> <see cref="Create"/> shares one <see cref="PipeMemoryPool"/>
+/// process-wide for each size configuration. This bounds total retained memory to one set of
+/// array buckets (maxArraysPerBucket × bucketCount) regardless of how many clients or connections
+/// exist. Without sharing, each connection independently retained up to
 /// <c>maxArraysPerBucket</c> arrays per size class — with 3 brokers × 10 connections/broker
 /// = 30 independent pools, each retaining arrays in large buckets, causing multi-GB
 /// WorkingSet growth. With a shared pool, one configured bucket depth is recycled across
@@ -32,6 +32,9 @@ namespace Dekaf.Networking;
 /// </summary>
 internal sealed class PipeMemoryPool : MemoryPool<byte>
 {
+    private static readonly ConcurrentDictionary<(int MaxArrayLength, int MaxArraysPerBucket), PipeMemoryPool>
+        s_sharedPools = new();
+
     private readonly ArrayPool<byte> _pool;
     private readonly ConcurrentStack<PooledMemoryOwner> _ownerPool = new();
     private int _ownerPoolCount;
@@ -73,6 +76,15 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     {
         _pool = ArrayPool<byte>.Create(maxArrayLength, maxArraysPerBucket);
     }
+
+    internal static PipeMemoryPool Create(
+        int maxArrayLength = 4 * 1024 * 1024,
+        int maxArraysPerBucket = 32)
+        => s_sharedPools.GetOrAdd(
+            (maxArrayLength, maxArraysPerBucket),
+            static configuration => new PipeMemoryPool(
+                configuration.MaxArrayLength,
+                configuration.MaxArraysPerBucket));
 
     // Returns int.MaxValue to match MemoryPool<byte>.Shared behavior.
     // System.IO.Pipelines does not rely on MaxBufferSize for sizing decisions;

@@ -5,6 +5,17 @@ namespace Dekaf.Tests.Unit.Networking;
 public class PipeMemoryPoolTests
 {
     [Test]
+    public async Task Create_SharesPoolsByConfiguration()
+    {
+        var first = PipeMemoryPool.Create(maxArrayLength: 1024 * 1024, maxArraysPerBucket: 17);
+        var same = PipeMemoryPool.Create(maxArrayLength: 1024 * 1024, maxArraysPerBucket: 17);
+        var different = PipeMemoryPool.Create(maxArrayLength: 1024 * 1024, maxArraysPerBucket: 18);
+
+        await Assert.That(first).IsSameReferenceAs(same);
+        await Assert.That(first).IsNotSameReferenceAs(different);
+    }
+
+    [Test]
     public async Task Rent_ReturnsMemoryOwner_WithRequestedSize()
     {
         using var pool = new PipeMemoryPool();
