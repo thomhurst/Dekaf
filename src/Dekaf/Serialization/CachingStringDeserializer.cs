@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.IO.Hashing;
 using System.Runtime.CompilerServices;
@@ -8,18 +9,17 @@ namespace Dekaf.Serialization;
 /// String deserializer that caches bounded repeated strings to avoid per-message allocation.
 /// </summary>
 /// <remarks>
-/// <para><b>Hash collision behavior:</b> On a 64-bit hash collision, the first key to claim a
-/// hash slot wins. The second key will always miss the cache (byte-level equality check fails)
-/// and fall through to the inner deserializer, returning correct values but without caching
-/// benefit. This is an acceptable tradeoff given the ~2^64 hash space makes collisions
-/// astronomically unlikely in practice.</para>
+/// <para><b>Hash collision behavior:</b> A 128-bit hash is used as the cache key without a
+/// byte-level equality check. This avoids a second full pass over every cached payload. The
+/// risk of returning the wrong value is acceptable because collisions in the ~2^128 hash
+/// space are astronomically unlikely in practice.</para>
 /// </remarks>
 internal sealed class CachingStringDeserializer : ISerde<string>
 {
     private readonly ISerde<string> _inner;
     private readonly int _maxCachedBytes;
     private readonly int _maxCachedEntries;
-    private readonly ConcurrentDictionary<ulong, CacheEntry> _cache = new();
+    private readonly ConcurrentDictionary<Hash128Key, string> _cache = new();
     private int _cacheCount;
 
     internal CachingStringDeserializer(
@@ -56,10 +56,9 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         var span = data.Span;
         var hash = ComputeHash(span);
 
-        // Lookup by hash; verify with byte-level equality on hit to handle collisions.
-        if (_cache.TryGetValue(hash, out var entry) && entry.Matches(span))
+        if (_cache.TryGetValue(hash, out var cachedValue))
         {
-            return entry.Value;
+            return cachedValue;
         }
 
         var result = _inner.Deserialize(data, context);
@@ -68,8 +67,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         // transiently overshooting by the number of racing threads. Bounded and acceptable.
         if (Volatile.Read(ref _cacheCount) < _maxCachedEntries)
         {
-            var newEntry = new CacheEntry(span.ToArray(), result);
-            if (_cache.TryAdd(hash, newEntry))
+            if (_cache.TryAdd(hash, result))
             {
                 Interlocked.Increment(ref _cacheCount);
             }
@@ -79,21 +77,14 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ulong ComputeHash(ReadOnlySpan<byte> data)
+    private static Hash128Key ComputeHash(ReadOnlySpan<byte> data)
     {
-        return XxHash64.HashToUInt64(data);
+        Span<byte> hash = stackalloc byte[16];
+        XxHash128.Hash(data, hash);
+        return new Hash128Key(
+            BinaryPrimitives.ReadUInt64LittleEndian(hash),
+            BinaryPrimitives.ReadUInt64LittleEndian(hash[sizeof(ulong)..]));
     }
 
-    /// <summary>
-    /// Stores the original UTF-8 bytes alongside the cached string for collision-safe equality.
-    /// One allocation per unique key (amortized over millions of messages).
-    /// </summary>
-    private readonly struct CacheEntry(byte[] utf8Bytes, string value)
-    {
-        private readonly byte[] _utf8Bytes = utf8Bytes;
-        public string Value { get; } = value;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool Matches(ReadOnlySpan<byte> data) => data.SequenceEqual(_utf8Bytes);
-    }
+    private readonly record struct Hash128Key(ulong Low, ulong High);
 }

@@ -33,6 +33,24 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
+    public async Task Cache_Uses128BitHashKeys()
+    {
+        var cacheField = typeof(CachingStringDeserializer).GetField(
+            "_cache",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_cache field not found.");
+
+        var keyType = cacheField.FieldType.GetGenericArguments()[0];
+
+        var keyWords = keyType
+            .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
+            .Where(field => field.FieldType == typeof(ulong))
+            .ToArray();
+
+        await Assert.That(keyWords).Count().IsEqualTo(2);
+    }
+
+    [Test]
     public async Task CacheHit_ReturnsSameReference()
     {
         var sut = CreateKeyCache();
@@ -89,11 +107,6 @@ public class CachingStringDeserializerTests
     [Test]
     public async Task TwoDistinctKeys_BothCachedCorrectly()
     {
-        // We cannot easily force a real XxHash64 collision, so we test the behavior
-        // by deserializing two distinct keys and verifying both return correct strings.
-        // The cache handles collisions by byte-level equality check: the first key to
-        // claim a hash slot wins caching; a colliding second key falls through to the
-        // inner deserializer (correct value, just no caching benefit).
         var sut = CreateKeyCache();
         var context = KeyContext();
 
@@ -110,9 +123,7 @@ public class CachingStringDeserializerTests
         await Assert.That(resultB1).IsEqualTo("key-bravo");
         await Assert.That(resultB2).IsEqualTo("key-bravo");
 
-        // First key should be cached (same reference).
         await Assert.That(ReferenceEquals(resultA1, resultA2)).IsTrue();
-        // Second key should also be cached (different hash, same reference).
         await Assert.That(ReferenceEquals(resultB1, resultB2)).IsTrue();
     }
 
