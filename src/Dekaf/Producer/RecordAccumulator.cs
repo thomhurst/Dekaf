@@ -1686,20 +1686,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Re-notify so Ready() picks up any sealed batches that were skipped while muted.
-        if (_partitionDeques.TryGetValue(tp, out var pd))
-        {
-            bool hasBatches;
-            {
-                using var guard = new SpinLockGuard(ref pd.Lock);
-                hasBatches = pd.PeekFirst() is not null;
-            }
-            if (hasBatches)
-                _readyPartitions.Enqueue(tp);
-        }
+        if (HasQueuedBatches(tp))
+            _readyPartitions.Enqueue(tp);
 
         SignalWakeup(); // Wake sender loop so it can drain the newly-unmuted partition
     }
     internal bool IsMuted(TopicPartition tp) => _mutedPartitions.ContainsKey(tp);
+
+    internal bool HasQueuedBatches(TopicPartition tp)
+    {
+        if (!_partitionDeques.TryGetValue(tp, out var pd))
+            return false;
+
+        using var guard = new SpinLockGuard(ref pd.Lock);
+        return pd.PeekFirst() is not null;
+    }
 
     internal void SignalWakeup()
     {

@@ -4302,12 +4302,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         foreach (var (topicPartition, _) in _mutedPartitions)
         {
-            if (_accumulator.GetPartitionQueueBytes(
-                    topicPartition.Topic,
-                    topicPartition.Partition) > 0)
-            {
+            if (_accumulator.HasQueuedBatches(topicPartition))
                 return true;
-            }
         }
 
         return false;
