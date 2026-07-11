@@ -3308,8 +3308,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void ValidateConsumeOneTimeout(TimeSpan timeout)
     {
-        const long MaxSupportedTimeoutTicks = 0xfffffffeL * TimeSpan.TicksPerMillisecond;
-        if (timeout.Ticks < -TimeSpan.TicksPerMillisecond || timeout.Ticks > MaxSupportedTimeoutTicks)
+        const long MaxSupportedTimeoutMilliseconds = 0xfffffffe;
+        var timeoutMilliseconds = (long)timeout.TotalMilliseconds;
+        if (timeoutMilliseconds < -1 || timeoutMilliseconds > MaxSupportedTimeoutMilliseconds)
             throw new ArgumentOutOfRangeException(nameof(timeout));
     }
 

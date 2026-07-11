@@ -112,12 +112,26 @@ public sealed class ConsumeOneFastPathTests
                 await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(-2), CancellationToken.None))
             .Throws<ArgumentOutOfRangeException>();
         await Assert.That(async () =>
-                await consumer.ConsumeOneAsync(TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond - 1), CancellationToken.None))
-            .Throws<ArgumentOutOfRangeException>();
-        await Assert.That(async () =>
                 await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(0xffffffff), CancellationToken.None))
             .Throws<ArgumentOutOfRangeException>();
         await Assert.That(GetPendingFetches(consumer).Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_FractionalNegativeTimeout_MatchesCancelAfterTruncation()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(
+            TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond - 1),
+            CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
     }
 
     [Test]
