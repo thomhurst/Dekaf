@@ -509,6 +509,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Scale-down thresholds
     private const double ScaleDownUtilizationThreshold = 0.3; // Buffer utilization below which scale-down is considered
+    private const double ScaleDownInFlightUtilizationThreshold = 0.3;
     private const long ScaleDownSustainedMs = 120_000; // 2 minutes of sustained low utilization required
 
     // Effective scaling timings: the constants above unless overridden via the internal
@@ -1034,7 +1035,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // ── 4b. Adaptive connection scaling ──
                 if (_adaptiveScalingEnabled)
                 {
-                    var scaledToCount = MaybeScaleConnections();
+                    var hasUnreadEvent = !_isIdempotent && eventReader.TryPeek(out _);
+                    var scaledToCount = MaybeScaleConnections(carryOver, hasUnreadEvent);
 
                     if (scaledToCount > 0)
                     {
@@ -4087,7 +4089,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// (polled each iteration).
     /// Returns the new connection count if scaling completed this iteration, or 0 otherwise.
     /// </summary>
-    private int MaybeScaleConnections()
+    private int MaybeScaleConnections(PartitionCarryOver carryOver, bool hasUnreadEvent)
     {
         // Phase 0: Poll draining connection for disposal
         MaybeDrainAndDisposeConnection();
@@ -4223,6 +4225,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (now - _lowUtilizationStartTicks < _scaleDownSustainedMs)
             return 0; // Not sustained long enough
 
+        // Low buffer occupancy can mean the expanded connection group is keeping up, not
+        // that it is idle. In particular, acks=all non-idempotent producers mute each
+        // partition while its request is in flight; shrinking that load-bearing width
+        // reintroduces head-of-line blocking. Require both low aggregate in-flight use and
+        // no queued work behind a muted partition before retiring a connection.
+        var pendingResponseCount = Volatile.Read(ref _totalPendingResponseCount);
+        var inFlightUtilization = _totalMaxInFlight > 0
+            ? (double)pendingResponseCount / _totalMaxInFlight
+            : 0;
+        if (inFlightUtilization >= ScaleDownInFlightUtilizationThreshold
+            || HasMutedPartitionLoad(carryOver, hasUnreadEvent))
+        {
+            _lowUtilizationStartTicks = 0;
+            return 0;
+        }
+
         // Idempotent producers require ALL connections to be drained before shrinking
         // because partitions remap (P % N -> P % (N-1)) and in-flight batches on any
         // connection could conflict with new batches post-remap, causing sequence errors.
@@ -4276,6 +4294,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _brokerId, targetShrinkCount, _cts.Token).AsTask();
 
         return 0;
+    }
+
+    private bool HasMutedPartitionLoad(PartitionCarryOver carryOver, bool hasUnreadEvent)
+    {
+        if (!_muteOnSend || _mutedPartitions.IsEmpty)
+            return false;
+
+        // The channel is unified, so its unread tail can include wake-up signals as
+        // well as batches. For the non-idempotent acks=all workload this guard targets,
+        // conservatively defer until the single reader can classify the tail. Idempotent
+        // producers retain their existing ability to shrink under continuous traffic.
+        if (hasUnreadEvent)
+            return true;
+
+        foreach (var (topicPartition, _) in _mutedPartitions)
+        {
+            if ((carryOver.Partitions.TryGetValue(topicPartition, out var carryOverQueue)
+                 && carryOverQueue.Count > 0)
+                || _accumulator.HasQueuedBatches(topicPartition))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
