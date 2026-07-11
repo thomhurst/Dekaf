@@ -535,10 +535,10 @@ public sealed class ConsumerAssignmentFastPathTests
             consumer,
             new Dictionary<int, List<TopicPartition>> { [0] = [partition] });
 
-        await Assert.That(filtered[0]).Contains(partition);
+        await Assert.That(filtered).IsEmpty();
         await Assert.That(ShouldDropStaleFetchPartition(consumer, partition, GetFetchBufferEpoch(consumer))).IsTrue();
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(0);
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(1);
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(1);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).IsEmpty();
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(0);
@@ -1361,7 +1361,7 @@ public sealed class ConsumerAssignmentFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("StageDivergingEpochReset method not found.");
 
-        method.Invoke(consumer, [partition, endOffset, epoch, fetchBufferEpoch]);
+        method.Invoke(consumer, [partition, endOffset, epoch, fetchBufferEpoch, true]);
     }
 
     private static void CompleteDivergingEpochResets(KafkaConsumer<string, string> consumer)
