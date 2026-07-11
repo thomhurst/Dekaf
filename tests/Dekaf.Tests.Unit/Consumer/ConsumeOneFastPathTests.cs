@@ -64,6 +64,22 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task TopicFilterRefreshDue_TracksRefreshInterval()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(fetch);
+        SetPrivateField<Func<string, bool>>(consumer, "_topicFilter", static _ => true);
+
+        await Assert.That(IsTopicFilterRefreshDue(consumer)).IsTrue();
+
+        SetPrivateField(consumer, "_lastFilterRefreshTicks", Math.Max(1, Dekaf.MonotonicClock.GetMilliseconds()));
+        await Assert.That(IsTopicFilterRefreshDue(consumer)).IsFalse();
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_InvalidTimeoutsWithPendingFetch_ThrowBeforeConsuming()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
@@ -501,6 +517,27 @@ public sealed class ConsumeOneFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("_lastManualAssignmentEnsureVersion field not found.");
         acknowledgedVersion.SetValue(consumer, assignmentVersion.GetValue(consumer));
+    }
+
+    private static bool IsTopicFilterRefreshDue(KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "IsTopicFilterRefreshDue",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("IsTopicFilterRefreshDue method not found.");
+        return (bool)method.Invoke(consumer, null)!;
+    }
+
+    private static void SetPrivateField<T>(
+        KafkaConsumer<string, string> consumer,
+        string fieldName,
+        T value)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            fieldName,
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found.");
+        field.SetValue(consumer, value);
     }
 
     private static int GetTimeoutCtsPoolCount(KafkaConsumer<string, string> consumer)

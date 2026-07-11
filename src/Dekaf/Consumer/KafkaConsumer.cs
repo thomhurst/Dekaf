@@ -1098,7 +1098,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 getConnectionCount: _connectionScaler is not null
                     ? () => _connectionScaler.CurrentConnectionCount
                     : null,
-                onPartitionsRevoked: QueueCoordinatorRevokedPartitionsForFetchClear);
+                onPartitionsRevoking: QueueCoordinatorRevokedPartitionsForFetchClear);
         }
 
         _prefetchBuffer = new MpscFetchBuffer(CalculatePrefetchBufferCapacity(options));
@@ -3314,6 +3314,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return false;
         }
 
+        if (IsTopicFilterRefreshDue())
+            return false;
+
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto
             && _coordinator is not null
             && Volatile.Read(ref _autoCommitTask) is not { IsCompleted: false })
@@ -3338,6 +3341,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return IsManualAssignmentEnsureCurrent();
+    }
+
+    private bool IsTopicFilterRefreshDue()
+    {
+        const long filterRefreshIntervalMilliseconds = 30_000;
+        var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
+        return _topicFilter is not null
+               && (lastRefresh == 0
+                   || Dekaf.MonotonicClock.GetMilliseconds() - lastRefresh >= filterRefreshIntervalMilliseconds);
     }
 
     private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(CancellationToken cancellationToken)

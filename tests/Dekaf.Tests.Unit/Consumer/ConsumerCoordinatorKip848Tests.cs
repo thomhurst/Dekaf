@@ -1649,8 +1649,16 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             });
 
         ConsumerCoordinator? coordinator = null;
+        HashSet<TopicPartition>? assignmentObservedByRevokingCallback = null;
+        var versionObservedByRevokingCallback = -1;
         HashSet<TopicPartition>? assignmentObservedByCallback = null;
         var versionObservedByCallback = -1;
+
+        void OnPartitionsRevoking(IReadOnlyList<TopicPartition> _)
+        {
+            assignmentObservedByRevokingCallback = coordinator!.Assignment.ToHashSet();
+            versionObservedByRevokingCallback = coordinator.AssignmentVersion;
+        }
 
         void OnPartitionsRevoked(IReadOnlyList<TopicPartition> _)
         {
@@ -1663,7 +1671,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             options,
             _connectionPool,
             _metadataManager,
-            onPartitionsRevoked: OnPartitionsRevoked);
+            onPartitionsRevoked: OnPartitionsRevoked,
+            onPartitionsRevoking: OnPartitionsRevoking);
         await using var coordinatorLifetime = coordinator;
         var topics = new HashSet<string> { "test-topic" };
 
@@ -1675,6 +1684,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
 
+        await Assert.That(assignmentObservedByRevokingCallback).IsNotNull();
+        await Assert.That(assignmentObservedByRevokingCallback!).Contains(new TopicPartition("test-topic", 0));
+        await Assert.That(assignmentObservedByRevokingCallback).Contains(new TopicPartition("test-topic", 1));
+        await Assert.That(versionObservedByRevokingCallback).IsEqualTo(versionAfterInitialAssignment);
         await Assert.That(assignmentObservedByCallback).IsNotNull();
         await Assert.That(assignmentObservedByCallback!).Contains(new TopicPartition("test-topic", 1));
         await Assert.That(assignmentObservedByCallback).DoesNotContain(new TopicPartition("test-topic", 0));
