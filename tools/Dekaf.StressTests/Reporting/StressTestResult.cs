@@ -89,7 +89,7 @@ internal sealed class StressTestResult
     public double? MedianIntervalMessagesPerSecond =>
         IsMessageBounded ? null : GetMedian(Throughput.MessagesPerSecondSamples);
 
-    /// <summary>Last-third average divided by peak sampled throughput.</summary>
+    /// <summary>Last-third average divided by p95 sampled throughput.</summary>
     public double? SteadyStatePeakRatio =>
         TryGetIntraRunThroughput(out var metrics) ? metrics.SteadyStatePeakRatio : null;
 
@@ -182,7 +182,7 @@ internal sealed class StressTestResult
         }
         var firstThirdAverage = firstThirdTotal / thirdCount;
         var lastThirdAverage = lastThirdTotal / thirdCount;
-        var peak = samples.Max();
+        var peak = GetPercentile(samples, 0.95);
         if (firstThirdAverage <= 0 || peak <= 0)
             return false;
 
@@ -203,10 +203,18 @@ internal sealed class StressTestResult
         var sampleMinutes = sampledElapsedSeconds / samples.Length / 60.0;
         var slopePerSample = numerator / denominator;
         metrics = new IntraRunThroughputMetrics(
-            lastThirdAverage / peak,
+            Math.Min(lastThirdAverage / peak, 1.0),
             (lastThirdAverage - firstThirdAverage) / firstThirdAverage * 100.0,
             slopePerSample / sampleMinutes / firstThirdAverage * 100.0);
         return true;
+    }
+
+    private static double GetPercentile(double[] samples, double percentile)
+    {
+        var sorted = samples.ToArray();
+        Array.Sort(sorted);
+        var rank = Math.Max(0, (int)Math.Ceiling(percentile * sorted.Length) - 1);
+        return sorted[rank];
     }
 
     private readonly record struct IntraRunThroughputMetrics(

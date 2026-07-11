@@ -30,6 +30,16 @@ public sealed class IntraRunThroughputReportingTests
     }
 
     [Test]
+    public async Task SteadyStatePeakRatio_IgnoresSingleTransientSpike()
+    {
+        var samples = Enumerable.Repeat(1_000.0, 99).Append(10_000.0).ToList();
+        var result = CreateResult(samples, elapsedSeconds: 100, sampledElapsedSeconds: 100);
+
+        await Assert.That(result.SteadyStatePeakRatio!.Value).IsEqualTo(1.0);
+        await Assert.That(result.SteadyStatePeakThresholdBreached).IsFalse();
+    }
+
+    [Test]
     [Arguments("message-bounded")]
     [Arguments("zero-elapsed")]
     [Arguments("too-few-samples")]
