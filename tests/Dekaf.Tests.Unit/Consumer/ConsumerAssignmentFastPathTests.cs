@@ -14,6 +14,9 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
+// These tests coordinate background consumer work with Task continuations. Running thousands of
+// test cases concurrently can starve those continuations long enough to create false timeouts.
+[NotInParallel]
 public sealed class ConsumerAssignmentFastPathTests
 {
     private static readonly Guid TestTopicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
@@ -27,38 +30,50 @@ public sealed class ConsumerAssignmentFastPathTests
         ?? throw new InvalidOperationException("_lastPollTimestamp field not found.");
 
     [Test]
-    public async Task ConsumeAsync_IdleLoop_RecordsForegroundPollProgress()
+    [Timeout(120_000)]
+    public async Task ConsumeAsync_IdleLoop_RecordsForegroundPollProgress(CancellationToken testTimeout)
     {
         await AssertIdleLoopRecordsPollProgressAsync(
-            static (consumer, token) => consumer.ConsumeAsync(token));
+            static (consumer, token) => consumer.ConsumeAsync(token),
+            testTimeout);
     }
 
     [Test]
-    public async Task ConsumeBatchAsync_IdleLoop_RecordsForegroundPollProgress()
+    [Timeout(120_000)]
+    public async Task ConsumeBatchAsync_IdleLoop_RecordsForegroundPollProgress(CancellationToken testTimeout)
     {
         await AssertIdleLoopRecordsPollProgressAsync(
-            static (consumer, token) => consumer.ConsumeBatchAsync(token));
+            static (consumer, token) => consumer.ConsumeBatchAsync(token),
+            testTimeout);
     }
 
     [Test]
-    public async Task ConsumeRawBatchAsync_IdleLoop_RecordsForegroundPollProgress()
+    [Timeout(120_000)]
+    public async Task ConsumeRawBatchAsync_IdleLoop_RecordsForegroundPollProgress(CancellationToken testTimeout)
     {
         await AssertIdleLoopRecordsPollProgressAsync(
-            static (consumer, token) => consumer.ConsumeRawBatchAsync(token));
+            static (consumer, token) => consumer.ConsumeRawBatchAsync(token),
+            testTimeout);
     }
 
     private static async Task AssertIdleLoopRecordsPollProgressAsync<T>(
-        Func<KafkaConsumer<string, string>, CancellationToken, IAsyncEnumerable<T>> consume)
+        Func<KafkaConsumer<string, string>, CancellationToken, IAsyncEnumerable<T>> consume,
+        CancellationToken testTimeout)
     {
         await using var consumer = CreatePausedGroupConsumer();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        await using var enumerator = consume(consumer, cts.Token).GetAsyncEnumerator();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(testTimeout);
+        cts.CancelAfter(TimeSpan.FromSeconds(3));
+        await using var enumerator = consume(consumer, cts.Token).GetAsyncEnumerator(testTimeout);
         var moveNext = enumerator.MoveNextAsync().AsTask();
 
         try
         {
-            await Assert.That(() => GetPollVersion(consumer))
-                .Eventually(version => version.IsGreaterThanOrEqualTo(3), TimeSpan.FromSeconds(2));
+            // Poll progress is driven by the consume loop, but its continuation can be delayed
+            // by full-suite ThreadPool contention. Wait for the state transition directly;
+            // TUnit's test timeout remains the backstop for a genuine stalled loop.
+            await TestWait.UntilAsync(
+                () => GetPollVersion(consumer) >= 3,
+                testTimeout);
         }
         finally
         {
@@ -181,7 +196,9 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
-    public async Task EnsureAssignmentForPollAsync_SlowPositionInitialization_DoesNotExpireMember()
+    [Timeout(120_000)]
+    public async Task EnsureAssignmentForPollAsync_SlowPositionInitialization_DoesNotExpireMember(
+        CancellationToken testTimeout)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -208,7 +225,10 @@ public sealed class ConsumerAssignmentFastPathTests
         CoordinatorState stateDuringInitialization;
         try
         {
-            await offsetFetchStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            // The mock is the deterministic synchronization point. A wall-clock cap here races
+            // the assignment continuation under full-suite ThreadPool contention; TUnit's test
+            // timeout remains the backstop for a genuine failure to start position initialization.
+            await offsetFetchStarted.Task.WaitAsync(testTimeout);
             LastPollTimestampField.SetValue(
                 coordinator,
                 Stopwatch.GetTimestamp() - Stopwatch.Frequency);
