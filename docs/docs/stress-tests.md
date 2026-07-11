@@ -6,7 +6,7 @@ sidebar_position: 14
 
 Long-running stress tests comparing sustained performance between Dekaf and Confluent.Kafka under real-world load.
 
-**Last Updated:** 2026-07-11 16:56 UTC
+**Last Updated:** 2026-07-11 19:22 UTC
 
 :::info
 These tests run weekly (Sunday 2 AM UTC) and can be manually triggered. 
@@ -15,116 +15,128 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 
 ## Producer (Fire-and-Forget) Throughput (15 minutes, 1000B messages)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf | 0.78 | 1,899,584 | 1,942,544 | 1811.58 | 1,899,584 | 0 | 1.49 |
-| Dekaf (3conn) | 0.76 | 1,925,012 | 1,927,808 | 1835.83 | 1,925,012 | 0 | 1.45 |
-| Confluent | 1.25 | 1,428,823 | 1,456,527 | 1362.63 | 1,428,823 | 0 | 1.78 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 0.82 | 1,715,016 | 1,719,807 | +1.5% | +0.24% | 1635.57 | 1,715,016 | 0 | 1.41 |
+| Dekaf (3conn) | 0.96 | 1,580,880 | 1,670,369 | -23.6% | -2.23% | 1507.65 | 1,580,880 | 0 | 1.52 |
+| Confluent | 1.35 | 1,281,262 | 1,326,052 | -3.9% | -0.40% | 1221.91 | 1,281,262 | 0 | 1.73 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
 
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
+
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf uses 1.59x less CPU per message** than Confluent.Kafka for producer (fire-and-forget); comparison throughput is 1.33x.
+**Dekaf uses 1.64x less CPU per message** than Confluent.Kafka for producer (fire-and-forget); comparison throughput is 1.30x.
 :::
 
 ## Producer (Fire-and-Forget), 3 Brokers Throughput (15 minutes, 1000B messages)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf | 1.28 | 1,127,151 | 1,119,031 | 1074.93 | 1,127,151 | 0 | 1.44 |
-| Dekaf (3conn) | 1.27 | 1,114,037 | 1,101,879 | 1062.43 | 1,114,037 | 0 | 1.42 |
-| Confluent | 1.79 | 845,887 | 852,420 | 806.70 | 845,887 | 0 | 1.51 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 1.26 | 1,199,524 | 1,225,868 | +12.0% | +1.29% | 1143.95 | 1,199,524 | 0 | 1.51 |
+| Dekaf (3conn) | 1.28 | 1,173,288 | 1,191,531 | -9.6% | -0.72% | 1118.93 | 1,173,288 | 0 | 1.50 |
+| Confluent | 1.94 | 776,065 | 797,381 | -9.9% | -0.96% | 740.11 | 776,065 | 0 | 1.51 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
 
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
+
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf uses 1.39x less CPU per message** than Confluent.Kafka for producer (fire-and-forget), 3 brokers; comparison throughput is 1.31x.
+**Dekaf uses 1.55x less CPU per message** than Confluent.Kafka for producer (fire-and-forget), 3 brokers; comparison throughput is 1.54x.
 :::
 
 ## Producer (Acks All) Throughput (15 minutes, 1000B messages)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Confluent | 1.31 | 1,377,646 | 1,397,279 | 1313.83 | 1,377,646 | 0 | 1.80 |
-| Dekaf | 1.15 | 1,441,027 | 1,385,441 | 1374.27 | 1,441,027 | 0 | 1.66 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 0.94 | 1,384,210 | 1,368,284 | -1.2% | +0.01% | 1320.09 | 1,384,210 | 0 | 1.31 |
+| Confluent | 1.73 | 947,552 | 947,444 | +13.5% | +1.15% | 903.66 | 947,552 | 0 | 1.64 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
 
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
+
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf uses 1.14x less CPU per message** than Confluent.Kafka for producer (acks all); comparison throughput is 0.99x.
+**Dekaf uses 1.83x less CPU per message** than Confluent.Kafka for producer (acks all); comparison throughput is 1.44x.
 :::
 
 ## Producer (Acks All), 3 Brokers Throughput (15 minutes, 1000B messages)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf | 1.68 | 942,973 | 943,191 | 899.29 | 942,973 | 0 | 1.58 |
-| Confluent | 1.77 | 867,379 | 863,211 | 827.20 | 867,379 | 0 | 1.54 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 1.84 | 899,400 | 931,435 | -1.3% | -0.26% | 857.73 | 899,400 | 0 | 1.65 |
+| Confluent | 1.98 | 786,336 | 807,330 | -1.0% | -0.10% | 749.91 | 786,336 | 0 | 1.56 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
 
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
+
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf uses 1.06x less CPU per message** than Confluent.Kafka for producer (acks all), 3 brokers; comparison throughput is 1.09x.
+**Dekaf uses 1.08x less CPU per message** than Confluent.Kafka for producer (acks all), 3 brokers; comparison throughput is 1.15x.
 :::
 
 ## Producer (Fire-and-Forget, Idempotent) Throughput (15 minutes, 1000B messages)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf | 0.79 | 1,647,258 | 1,646,284 | 1570.95 | 1,647,258 | 0 | 1.30 |
-| Dekaf (3conn) | 0.79 | 1,635,300 | 1,644,749 | 1559.54 | 1,635,300 | 0 | 1.29 |
-| Confluent | 1.64 | 1,025,980 | 1,022,699 | 978.45 | 1,025,980 | 0 | 1.68 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 0.77 | 1,714,830 | 1,719,761 | +1.4% | +0.14% | 1635.39 | 1,714,830 | 0 | 1.32 |
+| Dekaf (3conn) | 0.81 | 1,621,440 | 1,619,989 | +6.8% | +0.74% | 1546.33 | 1,621,440 | 0 | 1.31 |
+| Confluent | 1.39 | 1,261,381 | 1,266,397 | -7.0% | -0.64% | 1202.95 | 1,261,381 | 0 | 1.75 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
 
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
+
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf uses 2.07x less CPU per message** than Confluent.Kafka for producer (fire-and-forget, idempotent); comparison throughput is 1.61x.
+**Dekaf uses 1.80x less CPU per message** than Confluent.Kafka for producer (fire-and-forget, idempotent); comparison throughput is 1.36x.
 :::
 
 ## Producer (Fire-and-Forget, Idempotent), 3 Brokers Throughput (15 minutes, 1000B messages)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf (3conn) | 1.09 | 1,100,268 | 1,106,897 | 1049.30 | 1,100,268 | 0 | 1.20 |
-| Dekaf | 1.17 | 1,021,315 | 1,046,578 | 974.00 | 1,021,315 | 0 | 1.20 |
-| Confluent | 1.90 | 826,309 | 833,769 | 788.03 | 826,309 | 0 | 1.57 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf (3conn) | 1.19 | 1,078,854 | 1,090,703 | +2.9% | +0.43% | 1028.87 | 1,078,854 | 0 | 1.28 |
+| Dekaf | 1.12 | 1,057,946 | 1,069,505 | +1.7% | +0.22% | 1008.94 | 1,057,946 | 0 | 1.19 |
+| Confluent | 2.00 | 787,575 | 790,893 | -7.9% | -0.90% | 751.09 | 787,575 | 0 | 1.58 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
 
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
+
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
 :::tip
-**Dekaf uses 1.62x less CPU per message** than Confluent.Kafka for producer (fire-and-forget, idempotent), 3 brokers; comparison throughput is 1.26x.
+**Dekaf uses 1.78x less CPU per message** than Confluent.Kafka for producer (fire-and-forget, idempotent), 3 brokers; comparison throughput is 1.35x.
 :::
 
 ## Producer → Consumer Round-Trip Throughput (15 minutes, 1000B messages)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf | 5.43 | 248,062 | - | 236.57 | 248,062 | 0 | 1.35 |
-| Confluent | 6.96 | 110,018 | - | 104.92 | 110,018 | 0 | 0.77 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 9.44 | 136,039 | - | - | - | 129.74 | 136,039 | 0 | 1.28 |
+| Confluent | 5.74 | 87,456 | - | - | - | 83.40 | 87,456 | 0 | 0.50 |
 
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
@@ -135,19 +147,21 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 | Confluent | 250,000 | 250,000 | 0 | 0 | 0 | 0 | 0 | 0 | no | PASS |
 | Dekaf | 250,000 | 250,000 | 0 | 0 | 0 | 0 | 0 | 0 | no | PASS |
 
-:::tip
-**Dekaf uses 1.28x less CPU per message** than Confluent.Kafka for producer → consumer round-trip; comparison throughput is 2.25x.
+:::note
+Confluent.Kafka uses 1.65x less CPU per message for producer → consumer round-trip; comparison throughput is 1.56x.
 :::
 
 ## Producer (Transactional EOS), 3 Brokers Throughput (15 minutes, 1000B messages)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf | 399.97 | 330 | 443 | 0.31 | 440 | 0 | 0.18 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 482.15 | 320 | 438 | +12.2% | +1.52% | 0.31 | 427 | 0 | 0.21 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
+
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
 
 *Messages/sec counts broker-confirmed deliveries (end-offset delta). Accepted msg/s is the client-side append rate — a large gap means messages were buffered or dropped without ever reaching the broker.*
 
@@ -155,81 +169,89 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 
 | Client | Accepted | Committed | Aborted | Delivered | Duplicates | Shortfall | Aborted leaks | Unexpected | Missing sentinels | Status |
 |--------|----------|-----------|---------|-----------|------------|-----------|---------------|------------|-------------------|--------|
-| Dekaf | 396,000 | 297,000 | 99,000 | 297,000 | 0 | 0 | 0 | 0 | 0 | PASS |
+| Dekaf | 383,900 | 288,000 | 95,900 | 288,000 | 0 | 0 | 0 | 0 | 0 | PASS |
 
 ## Consumer Throughput (15 minutes, 1000B messages, 16,384B seed batches)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf | 0.51 | 3,002,995 | 3,119,165 | 2863.88 | - | 0 | 1.54 |
-| Confluent | 1.03 | 1,065,666 | 1,124,886 | 1016.30 | - | 0 | 1.09 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 0.54 | 2,706,588 | 2,661,923 | +4.1% | +0.33% | 2581.20 | - | 0 | 1.45 |
+| Confluent | 0.95 | 1,030,812 | 1,034,895 | +3.2% | +0.30% | 983.06 | - | 0 | 0.98 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
 
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
+
 :::tip
-**Dekaf uses 2.00x less CPU per message** than Confluent.Kafka for consumer; comparison throughput is 2.77x.
+**Dekaf uses 1.77x less CPU per message** than Confluent.Kafka for consumer; comparison throughput is 2.57x.
 :::
 
 ## Consumer (Batch) Throughput (15 minutes, 1000B messages, 16,384B seed batches)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf | 0.48 | 3,194,072 | 3,201,732 | 3046.10 | - | 0 | 1.54 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 0.48 | 3,193,742 | 3,205,622 | +3.2% | +0.26% | 3045.79 | - | 0 | 1.54 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
+
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
 
 ## Consumer (Raw Bytes) Throughput (15 minutes, 1000B messages, 16,384B seed batches)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf | 0.38 | 3,286,685 | 3,289,531 | 3134.43 | - | 0 | 1.26 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 0.39 | 3,302,238 | 3,310,265 | +8.5% | +0.76% | 3149.26 | - | 0 | 1.28 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
+
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
 
 ## Consumer (Raw Batch) Throughput (15 minutes, 1000B messages, 16,384B seed batches)
 
-| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |
-|--------|------------|--------------|--------------|--------|----------------|--------|------------|
-| Dekaf | 0.34 | 3,254,766 | 3,224,289 | 3103.99 | - | 0 | 1.11 |
+| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |
+|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|
+| Dekaf | 0.32 | 3,538,733 | 3,614,464 | +10.2% | +1.06% | 3374.80 | - | 0 | 1.15 |
 
 *Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*
 
 *Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*
+
+*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*
 
 ## Memory & GC Statistics
 
 | Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated | Alloc/msg |
 |--------|----------|------|------|------|-----------------|-----------|
-| Confluent | Consumer | 463639 | 0 | 0 | 2179.57 GB | 2.38 KB |
-| Confluent | Producer (Fire-and-Forget) | 323690 | 1 | 1 | 1543.13 GB | 1.26 KB |
-| Confluent | Producer (Fire-and-Forget), 3 Brokers | 194938 | 1 | 1 | 913.60 GB | 1.26 KB |
-| Confluent | Producer (Acks All) | 307077 | 1 | 1 | 1487.94 GB | 1.26 KB |
-| Confluent | Producer (Acks All), 3 Brokers | 201332 | 1 | 1 | 936.81 GB | 1.26 KB |
-| Confluent | Producer (Fire-and-Forget, Idempotent) | 226380 | 1 | 1 | 1108.06 GB | 1.26 KB |
-| Confluent | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 190664 | 0 | 0 | 892.45 GB | 1.26 KB |
-| Confluent | Producer → Consumer Round-Trip | 92 | 13 | 4 | 789.73 MB | 3.23 KB |
-| Dekaf | Consumer | 619 | 610 | 608 | 431.95 GB | 172 B |
-| Dekaf | Consumer (Batch) | 666 | 587 | 586 | 406.66 GB | 152 B |
-| Dekaf | Consumer (Raw Bytes) | 35 | 10 | 9 | 1.53 GB | 1 B |
-| Dekaf | Consumer (Raw Batch) | 110 | 9 | 7 | 1.30 GB | 0 B |
-| Dekaf | Producer (Fire-and-Forget) | 882 | 36 | 34 | N/A | N/A |
-| Dekaf | Producer (Fire-and-Forget), 3 Brokers | 428 | 47 | 40 | N/A | N/A |
-| Dekaf | Producer (Acks All) | 332 | 25 | 22 | N/A | N/A |
-| Dekaf | Producer (Acks All), 3 Brokers | 116 | 65 | 21 | N/A | N/A |
-| Dekaf | Producer (Fire-and-Forget, Idempotent) | 685 | 11 | 10 | N/A | N/A |
-| Dekaf | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 182 | 59 | 14 | N/A | N/A |
-| Dekaf | Producer → Consumer Round-Trip | 94 | 9 | 8 | 767.95 MB | 3.15 KB |
-| Dekaf | Producer (Transactional EOS), 3 Brokers | 178 | 1 | 1 | 403.31 MB | 1.04 KB |
-| Dekaf (3conn) | Producer (Fire-and-Forget) | 850 | 20 | 18 | 3.93 GB | 2 B |
-| Dekaf (3conn) | Producer (Fire-and-Forget), 3 Brokers | 413 | 43 | 41 | 2.40 GB | 3 B |
-| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent) | 771 | 17 | 15 | 3.49 GB | 3 B |
-| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 189 | 94 | 16 | 2.74 GB | 3 B |
+| Confluent | Consumer | 448223 | 303 | 1 | 2118.98 GB | 2.39 KB |
+| Confluent | Producer (Fire-and-Forget) | 294803 | 49 | 1 | 1384.12 GB | 1.26 KB |
+| Confluent | Producer (Fire-and-Forget), 3 Brokers | 177587 | 120 | 1 | 838.64 GB | 1.26 KB |
+| Confluent | Producer (Acks All) | 212775 | 169 | 1 | 1023.51 GB | 1.26 KB |
+| Confluent | Producer (Acks All), 3 Brokers | 181845 | 83 | 1 | 849.86 GB | 1.26 KB |
+| Confluent | Producer (Fire-and-Forget, Idempotent) | 288927 | 180 | 1 | 1362.47 GB | 1.26 KB |
+| Confluent | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 182148 | 127 | 1 | 851.14 GB | 1.26 KB |
+| Confluent | Producer → Consumer Round-Trip | 60 | 15 | 0 | 796.48 MB | 3.26 KB |
+| Dekaf | Consumer | 731 | 724 | 723 | 538.37 GB | 237 B |
+| Dekaf | Consumer (Batch) | 443 | 368 | 366 | 239.30 GB | 89 B |
+| Dekaf | Consumer (Raw Bytes) | 59 | 38 | 37 | 9.85 GB | 4 B |
+| Dekaf | Consumer (Raw Batch) | 152 | 7 | 6 | 1.30 GB | 0 B |
+| Dekaf | Producer (Fire-and-Forget) | 553 | 37 | 35 | 5.64 GB | 4 B |
+| Dekaf | Producer (Fire-and-Forget), 3 Brokers | 478 | 73 | 64 | 3.02 GB | 3 B |
+| Dekaf | Producer (Acks All) | 461 | 12 | 10 | 2.23 GB | 2 B |
+| Dekaf | Producer (Acks All), 3 Brokers | 132 | 38 | 20 | 1.49 GB | 2 B |
+| Dekaf | Producer (Fire-and-Forget, Idempotent) | 655 | 12 | 11 | 2.79 GB | 2 B |
+| Dekaf | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 180 | 61 | 17 | 2.79 GB | 3 B |
+| Dekaf | Producer → Consumer Round-Trip | 101 | 11 | 10 | 785.04 MB | 3.22 KB |
+| Dekaf | Producer (Transactional EOS), 3 Brokers | 183 | 1 | 1 | 431.34 MB | 1.15 KB |
+| Dekaf (3conn) | Producer (Fire-and-Forget) | 608 | 58 | 50 | 8.22 GB | 6 B |
+| Dekaf (3conn) | Producer (Fire-and-Forget), 3 Brokers | 402 | 86 | 71 | 3.26 GB | 3 B |
+| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent) | 647 | 7 | 6 | 2.10 GB | 2 B |
+| Dekaf (3conn) | Producer (Fire-and-Forget, Idempotent), 3 Brokers | 421 | 48 | 45 | 3.22 GB | 4 B |
 
 *Confluent.Kafka uses native librdkafka; .NET GC allocation counters exclude unmanaged allocations.*
 
