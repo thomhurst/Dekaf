@@ -10,7 +10,8 @@ namespace Dekaf.Consumer;
 /// fetch sizes grow to reduce round-trip overhead. Memory pressure shrinks fetch sizes.
 /// </summary>
 /// <remarks>
-/// <para>This class is not thread-safe and should be called from a single loop (the prefetch loop).</para>
+/// <para>Size adjustments are not thread-safe and must be called from the consumer processing thread.
+/// Fetch timing may be recorded by the prefetch loop.</para>
 /// <para>The feedback signal is the ratio of processing time to fetch latency:</para>
 /// <list type="bullet">
 /// <item><description>Ratio &lt; 1.0: consumer processes faster than it fetches (keeping up) — grow fetch size</description></item>
