@@ -623,6 +623,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private const int AllPartitionsPausedDelayMs = 100;
     private const int MaxConsecutivePrefetchErrors = 50;
+    private const int MaxConsecutiveEmptyParsedFetches = 3;
     private static readonly TimeSpan PartitionStopListenerTimeout = TimeSpan.FromSeconds(5);
 
     private readonly ConsumerOptions _options;
@@ -751,6 +752,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), List<PendingFetchData>> _prefetchPendingItemsByBroker = new();
     private readonly BrokerPrefetchScheduler _brokerPrefetchScheduler = new();
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), FetchSessionHandler> _fetchSessions = new();
+    private readonly StuckFetchPositionTracker _stuckFetchPositionTracker = new(MaxConsecutiveEmptyParsedFetches);
 
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
@@ -2073,6 +2075,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     break;
                 }
+                catch (Exception ex) when (IsFatalPrefetchError(ex))
+                {
+                    LogPrefetchLoopError(ex);
+                    completionError = ex;
+                    break;
+                }
                 catch (Exception ex)
                 {
                     consecutiveErrors++;
@@ -2506,6 +2514,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (partitionResponse.DivergingEpoch is not null)
                         {
+                            _stuckFetchPositionTracker.Reset(tp);
                             queuedDivergingEpochReset |= ResetToDivergingEpoch(
                                 topic,
                                 partitionResponse,
@@ -2515,6 +2524,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (partitionResponse.ErrorCode != ErrorCode.None)
                         {
+                            _stuckFetchPositionTracker.Reset(tp);
                             if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
                             {
                                 await ResetOffsetOutOfRangeAsync(tp, fetchBufferEpoch, cancellationToken).ConfigureAwait(false);
@@ -2541,6 +2551,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (records is { Count: > 0 })
                         {
+                            _stuckFetchPositionTracker.Reset(tp);
                             // We have new records - reset EOF state for this partition
                             _eofEmitted.TryRemove(tp, out _);
 
@@ -2554,16 +2565,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             // Collect for later - we'll assign memory owner to the last one
                             pendingItems.Add(pending);
                         }
-                        else if (_options.EnablePartitionEof)
+                        else
                         {
-                            // No records returned - check if we're at EOF
-                            var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
-
-                            // EOF condition: position >= high watermark and we haven't emitted EOF yet
-                            if (fetchPosition >= partitionResponse.HighWatermark && _eofEmitted.TryAdd(tp, 0))
+                            var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark);
+                            if (stuckError is not null)
                             {
-                                // Queue EOF event and mark as emitted
-                                _pendingEofEvents.Enqueue((tp, fetchPosition));
+                                DisposePendingFetches(pendingItems);
+                                memoryOwner?.Dispose();
+                                memoryOwner = null;
+                                throw stuckError;
                             }
                         }
                     }
@@ -2907,6 +2917,37 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     ? currentPos
                     : Math.Max(currentPos, update.NextOffset),
             update);
+    }
+
+    private Errors.ConsumeException? HandleEmptyFetchResponse(
+        TopicPartition partition,
+        IReadOnlyList<RecordBatch>? records,
+        long highWatermark)
+    {
+        // FetchResponsePartition creates Records only when record bytes were present.
+        // A non-null empty list therefore means parsing produced no complete batches.
+        if (records is not { Count: 0 }
+            || !_fetchPositions.TryGetValue(partition, out var fetchPosition))
+        {
+            _stuckFetchPositionTracker.Reset(partition);
+            if (!_options.EnablePartitionEof)
+                return null;
+
+            fetchPosition = _fetchPositions.GetValueOrDefault(partition, 0);
+        }
+        else if (_stuckFetchPositionTracker.ObserveEmptyParsedFetch(partition, fetchPosition) is { } stuckError)
+        {
+            return stuckError;
+        }
+
+        if (_options.EnablePartitionEof
+            && fetchPosition >= highWatermark
+            && _eofEmitted.TryAdd(partition, 0))
+        {
+            _pendingEofEvents.Enqueue((partition, fetchPosition));
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -3529,6 +3570,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void ClearFetchBuffer()
     {
+        _stuckFetchPositionTracker.Clear();
+
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
             InvalidateAllFetchesLocked();
@@ -3562,6 +3605,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         if (removeSet.Count == 0)
             return;
+
+        foreach (var partition in removeSet)
+            _stuckFetchPositionTracker.Reset(partition);
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
@@ -5169,6 +5215,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     if (partitionResponse.DivergingEpoch is not null)
                     {
+                        _stuckFetchPositionTracker.Reset(tp);
                         queuedDivergingEpochReset |= ResetToDivergingEpoch(
                             topic,
                             partitionResponse,
@@ -5178,6 +5225,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     if (partitionResponse.ErrorCode != ErrorCode.None)
                     {
+                        _stuckFetchPositionTracker.Reset(tp);
                         if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
                         {
                             await ResetOffsetOutOfRangeAsync(tp, fetchBufferEpoch, cancellationToken).ConfigureAwait(false);
@@ -5204,6 +5252,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     if (records is { Count: > 0 })
                     {
+                        _stuckFetchPositionTracker.Reset(tp);
                         // We have new records - reset EOF state for this partition
                         _eofEmitted.TryRemove(tp, out _);
 
@@ -5216,16 +5265,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             partitionResponse.AbortedTransactions,
                             activityName: activityName));
                     }
-                    else if (_options.EnablePartitionEof)
+                    else
                     {
-                        // No records returned - check if we're at EOF
-                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
-
-                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
-                        if (fetchPosition >= partitionResponse.HighWatermark && _eofEmitted.TryAdd(tp, 0))
+                        var stuckError = HandleEmptyFetchResponse(tp, records, partitionResponse.HighWatermark);
+                        if (stuckError is not null)
                         {
-                            // Queue EOF event and mark as emitted
-                            _pendingEofEvents.Enqueue((tp, fetchPosition));
+                            if (pendingItems is not null)
+                            {
+                                DisposePendingFetches(pendingItems);
+                                ConsumerFetchPools.ReturnPendingFetchDataList(pendingItems);
+                                pendingItems = null;
+                            }
+
+                            memoryOwner?.Dispose();
+                            memoryOwner = null;
+                            throw stuckError;
                         }
                     }
                 }
@@ -5264,6 +5318,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             pendingItems[i].SetMemoryOwner(shared);
         }
+    }
+
+    private static void DisposePendingFetches(List<PendingFetchData> pendingItems)
+    {
+        for (var i = 0; i < pendingItems.Count; i++)
+        {
+            pendingItems[i].Dispose();
+        }
+
+        pendingItems.Clear();
     }
 
     /// <summary>
