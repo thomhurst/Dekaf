@@ -536,7 +536,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     internal int GetParsedRecordsOffset() =>
         ReferenceEquals(_records, this) ? _parsedRecordsOffset : 0;
 
-    private const int MaxReasonableLazyRecordCount = 1_000_000;
+    internal const int MaxReasonableLazyRecordCount = 1_000_000;
 
     private void EnsureLazyRecordsParsedUpTo(int index)
     {

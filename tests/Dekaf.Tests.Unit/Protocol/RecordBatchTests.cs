@@ -30,6 +30,9 @@ public class RecordBatchTests
         });
         using var pending = PendingFetchData.Create("topic", 0, [first, second]);
 
+        await Assert.That(first.GetParsedRecordsArray()).IsNull();
+        await Assert.That(second.GetParsedRecordsArray()).IsNull();
+
         pending.EagerParseAll();
 
         var slab = first.GetParsedRecordsArray();
@@ -75,6 +78,24 @@ public class RecordBatchTests
         await Assert.That(next.GetParsedRecordsOffset()).IsEqualTo(3);
         await Assert.That(slab![0].Value.ToArray()).IsEquivalentTo("first"u8.ToArray());
         await Assert.That(slab[3].Value.ToArray()).IsEquivalentTo("next"u8.ToArray());
+    }
+
+    [Test]
+    public async Task PendingFetchData_MixedBatchKindsFallBackToOwnedParsedArray()
+    {
+        var lazy = ReadWrittenBatch(CreateTwoRecordBatch());
+        var assigned = new RecordBatch
+        {
+            Records = [new Record { Value = "assigned"u8.ToArray() }]
+        };
+        using var pending = PendingFetchData.Create("topic", 0, [lazy, assigned]);
+
+        pending.EagerParseAll();
+
+        await Assert.That(lazy.GetParsedRecordsArray()).IsNotNull();
+        await Assert.That(lazy.GetParsedRecordsOffset()).IsEqualTo(0);
+        await Assert.That(assigned.GetParsedRecordsArray()).IsNull();
+        await Assert.That(assigned.Records[0].Value.ToArray()).IsEquivalentTo("assigned"u8.ToArray());
     }
 
     private static RecordBatch ReadWrittenBatch(RecordBatch batch)

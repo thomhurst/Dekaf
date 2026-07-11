@@ -154,7 +154,6 @@ internal sealed class PendingFetchData : IDisposable
         instance.TopicPartition = new TopicPartition(topic, partitionIndex);
         instance._batches = batches;
         instance._memoryOwner = memoryOwner;
-        instance.AttachParsedRecordSlab(batches);
 
         if (abortedTransactions is { Count: > 0 })
         {
@@ -176,13 +175,12 @@ internal sealed class PendingFetchData : IDisposable
 
     private void AttachParsedRecordSlab(IReadOnlyList<RecordBatch> batches)
     {
-        const int maxSlabRecordCount = 1_000_000;
         var totalRecordCount = 0;
 
         for (var i = 0; i < batches.Count; i++)
         {
             var recordCount = batches[i].UnparsedLazyRecordCount;
-            if (recordCount < 0 || recordCount > maxSlabRecordCount - totalRecordCount)
+            if (recordCount < 0 || recordCount > RecordBatch.MaxReasonableLazyRecordCount - totalRecordCount)
                 return;
             totalRecordCount += recordCount;
         }
@@ -329,6 +327,8 @@ internal sealed class PendingFetchData : IDisposable
 
         if (_eagerParsed)
             return;
+
+        AttachParsedRecordSlab(_batches);
 
         for (var i = 0; i < _batches.Count; i++)
         {
