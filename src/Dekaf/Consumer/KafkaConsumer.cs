@@ -4528,10 +4528,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 ]
             };
 
-            var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-                request,
-                listOffsetsVersion,
-                cancellationToken).ConfigureAwait(false);
+            ListOffsetsResponse response;
+            try
+            {
+                response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                    request,
+                    listOffsetsVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException ex)
+            {
+                throw new KafkaException(
+                    ErrorCode.RequestTimedOut,
+                    $"ListOffsets request timed out for {partition}.",
+                    ex);
+            }
 
             ListOffsetsResponsePartition? partitionResponse = null;
             foreach (var topic in response.Topics)

@@ -36,7 +36,7 @@ internal static class RetryHelper
             }
             catch (KafkaException ex) when (ex.IsRetriable && attempt < maxRetries)
             {
-                await metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+                await RefreshMetadataForRetryAsync(metadataManager, cancellationToken).ConfigureAwait(false);
 
                 if (onRetry is not null)
                     await onRetry(cancellationToken).ConfigureAwait(false);
@@ -69,7 +69,7 @@ internal static class RetryHelper
             }
             catch (KafkaException ex) when (ex.IsRetriable && attempt < maxRetries)
             {
-                await metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+                await RefreshMetadataForRetryAsync(metadataManager, cancellationToken).ConfigureAwait(false);
 
                 if (onRetry is not null)
                     await onRetry(cancellationToken).ConfigureAwait(false);
@@ -77,6 +77,23 @@ internal static class RetryHelper
                 var jitter = Random.Shared.Next(0, 100);
                 await Task.Delay(RetryDelayMs + jitter, cancellationToken).ConfigureAwait(false);
             }
+        }
+    }
+
+    private static async ValueTask RefreshMetadataForRetryAsync(
+        MetadataManager metadataManager,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex) when (
+            ex is not ObjectDisposedException
+            && !cancellationToken.IsCancellationRequested)
+        {
+            // Refresh is best-effort. Keep retrying the original operation so its typed
+            // Kafka failure remains the final error when every broker is unavailable.
         }
     }
 }
