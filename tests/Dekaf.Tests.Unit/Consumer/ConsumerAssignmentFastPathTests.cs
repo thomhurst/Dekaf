@@ -546,6 +546,23 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task PendingFetchClear_MissingPendingFlag_RepairsAndDrains()
+    {
+        await using var consumer = CreateConsumer();
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, 0)]);
+
+        GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)[partition] = 0;
+        SetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer, 1);
+
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).IsEmpty();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(0);
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task PendingFetchClear_StagedDivergence_WaitsForCompletion()
     {
         await using var consumer = CreateConsumer();

@@ -4033,7 +4033,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool TryRecoverMissingPendingFetchClearMarkers()
     {
-        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
+        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0
+            && Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0)
             return false;
 
         if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
@@ -4041,13 +4042,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
-                return false;
-
             if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
                 return false;
-
-            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
 
             // A diverging-epoch reset is staged before response processing completes.
             // Restore visibility immediately, but let CompleteDivergingEpochResets publish
@@ -4062,8 +4058,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
             }
 
-            if (!hasStagedDivergingEpochReset)
+            var recovered = false;
+            if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
+            {
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
+                recovered = true;
+            }
+
+            if (!hasStagedDivergingEpochReset
+                && Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) == 0)
+            {
                 Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+                recovered = true;
+            }
+
+            if (!recovered)
+                return false;
         }
 
         LogRecoveredPendingFetchClearInvariant();
