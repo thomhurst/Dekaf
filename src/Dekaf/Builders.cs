@@ -2242,7 +2242,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <item><description>FetchMaxBytes: 100MB (allow larger total fetch responses; note that the response buffer pool
     /// may retain up to 8 arrays of this size per consumer instance)</description></item>
     /// <item><description>PrefetchPipelineDepth: 5 (aggressive prefetching to hide network latency)</description></item>
-    /// <item><description>AdaptiveFetchSizing: enabled (auto-grows fetch sizes when consumer keeps up, shrinks when falling behind)</description></item>
+    /// <item><description>AdaptiveFetchSizing: enabled (auto-grows fetch sizes when consumer keeps up, shrinks under prefetch memory pressure)</description></item>
     /// <item><description>CheckCrcs: disabled (skips client-side CRC32C re-validation of fetched batches; TCP checksums and
     /// broker-side validation already cover corruption in transit — matches librdkafka's default. Re-enable with
     /// <see cref="WithCheckCrcs"/> after this preset if end-to-end validation is required)</description></item>
@@ -2265,8 +2265,10 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _enableAdaptiveFetchSizing = true; // Intentional: ForHighThroughput always enables adaptive sizing
         _adaptiveFetchSizingOptions ??= new AdaptiveFetchSizingOptions
         {
+            MinPartitionFetchBytes = 4 * 1024 * 1024,
             InitialPartitionFetchBytes = 4 * 1024 * 1024,
             MaxPartitionFetchBytes = 16 * 1024 * 1024,
+            MinFetchMaxBytes = 100 * 1024 * 1024,
             InitialFetchMaxBytes = 100 * 1024 * 1024,
             MaxFetchMaxBytes = 200 * 1024 * 1024
         };

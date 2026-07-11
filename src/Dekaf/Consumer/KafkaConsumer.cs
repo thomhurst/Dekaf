@@ -2182,6 +2182,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
                     if (PrefetchLoopControl.ShouldWaitForMemory(currentPrefetchedBytes, maxBytes))
                     {
+                        _adaptiveFetchSizer?.ReportMemoryPressure();
                         LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await _prefetchMemoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
                         continue;

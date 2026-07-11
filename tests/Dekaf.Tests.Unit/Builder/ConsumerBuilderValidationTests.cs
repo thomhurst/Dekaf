@@ -383,6 +383,20 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task ForHighThroughput_AdaptiveFloorsMatchPresetFetchSizes()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .ForHighThroughput()
+            .Build();
+
+        var options = ((KafkaConsumer<string, string>)consumer).Options.AdaptiveFetchSizingOptions!;
+
+        await Assert.That(options.MinPartitionFetchBytes).IsEqualTo(4 * 1024 * 1024);
+        await Assert.That(options.MinFetchMaxBytes).IsEqualTo(100 * 1024 * 1024);
+    }
+
+    [Test]
     public async Task ForHighThroughput_ThenWithCheckCrcs_OverridesPreset()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()

@@ -89,7 +89,7 @@ public class AdaptiveFetchSizerTests
     #region Shrinkage — consumer falling behind
 
     [Test]
-    public async Task EvaluateAndAdjust_ShrinksWhenFallingBehind_AfterStableWindow()
+    public async Task ReportMemoryPressure_ShrinksAfterStableWindow()
     {
         var options = new AdaptiveFetchSizingOptions
         {
@@ -99,16 +99,16 @@ public class AdaptiveFetchSizerTests
         };
         var sizer = new AdaptiveFetchSizer(options);
 
-        // Send enough shrink signals to hit the stable window
+        // Send enough memory-pressure signals to hit the stable window
         for (var i = 0; i < 3; i++)
-            sizer.EvaluateAndAdjust(3.0); // Above shrink threshold of 2.0
+            sizer.ReportMemoryPressure();
 
         await Assert.That(sizer.CurrentPartitionFetchBytes).IsLessThan(4_000_000);
         await Assert.That(sizer.CurrentFetchMaxBytes).IsLessThan(100_000_000);
     }
 
     [Test]
-    public async Task EvaluateAndAdjust_DoesNotShrinkBeforeStableWindow()
+    public async Task ReportMemoryPressure_DoesNotShrinkBeforeStableWindow()
     {
         var options = new AdaptiveFetchSizingOptions
         {
@@ -117,15 +117,15 @@ public class AdaptiveFetchSizerTests
         };
         var sizer = new AdaptiveFetchSizer(options);
 
-        sizer.EvaluateAndAdjust(3.0);
-        sizer.EvaluateAndAdjust(3.0);
+        sizer.ReportMemoryPressure();
+        sizer.ReportMemoryPressure();
 
         await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(4_000_000);
         await Assert.That(sizer.ConsecutiveShrinkSignals).IsEqualTo(2);
     }
 
     [Test]
-    public async Task EvaluateAndAdjust_ShrinksByExpectedFactor()
+    public async Task ReportMemoryPressure_ShrinksByExpectedFactor()
     {
         var options = new AdaptiveFetchSizingOptions
         {
@@ -136,13 +136,31 @@ public class AdaptiveFetchSizerTests
         };
         var sizer = new AdaptiveFetchSizer(options);
 
-        sizer.EvaluateAndAdjust(3.0);
+        sizer.ReportMemoryPressure();
 
         await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(2_000_000);
         await Assert.That(sizer.CurrentFetchMaxBytes).IsEqualTo(50_000_000);
     }
 
     #endregion
+
+    [Test]
+    public async Task EvaluateAndAdjust_HighProcessingRatioAlone_DoesNotShrink()
+    {
+        var options = new AdaptiveFetchSizingOptions
+        {
+            InitialPartitionFetchBytes = 4_000_000,
+            InitialFetchMaxBytes = 100_000_000,
+            StableWindowCount = 3
+        };
+        var sizer = new AdaptiveFetchSizer(options);
+
+        for (var i = 0; i < 10; i++)
+            sizer.EvaluateAndAdjust(10.0);
+
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(4_000_000);
+        await Assert.That(sizer.CurrentFetchMaxBytes).IsEqualTo(100_000_000);
+    }
 
     #region Bounds enforcement
 
@@ -176,7 +194,7 @@ public class AdaptiveFetchSizerTests
         var sizer = new AdaptiveFetchSizer(options);
 
         // Shrink to 750K — should clamp to min of 1048576
-        sizer.EvaluateAndAdjust(3.0);
+        sizer.ReportMemoryPressure();
 
         await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(1_048_576);
     }
@@ -211,7 +229,7 @@ public class AdaptiveFetchSizerTests
         var sizer = new AdaptiveFetchSizer(options);
 
         // Shrink to 500K — should clamp to min of 1048576
-        sizer.EvaluateAndAdjust(3.0);
+        sizer.ReportMemoryPressure();
 
         await Assert.That(sizer.CurrentFetchMaxBytes).IsEqualTo(1_048_576);
     }
@@ -374,7 +392,7 @@ public class AdaptiveFetchSizerTests
         };
         var sizer = new AdaptiveFetchSizer(options);
 
-        sizer.EvaluateAndAdjust(3.0); // Triggers shrink, resets counter
+        sizer.ReportMemoryPressure(); // Triggers shrink, resets counter
         await Assert.That(sizer.ConsecutiveShrinkSignals).IsEqualTo(0);
     }
 
