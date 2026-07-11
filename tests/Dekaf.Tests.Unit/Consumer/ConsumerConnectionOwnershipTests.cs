@@ -50,10 +50,16 @@ public sealed class ConsumerConnectionOwnershipTests
     public async Task ScaleDown_DrainsOldRoutingBeforeApplyingNewWidth()
     {
         var pool = CreatePool();
+        var shrinkStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var shrinkCanComplete = new TaskCompletionSource<IKafkaConnection?>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         pool.ShrinkConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>())
-            .Returns(new ValueTask<IKafkaConnection?>(shrinkCanComplete.Task));
+            .Returns(_ =>
+            {
+                shrinkStarted.TrySetResult();
+                return new ValueTask<IKafkaConnection?>(shrinkCanComplete.Task);
+            });
         await using var consumer = CreateStandaloneConsumer(pool, CreateMetadataManager(pool));
         var scheduler = GetField<BrokerPrefetchScheduler>(consumer, "_brokerPrefetchScheduler");
         var oldFetchCanComplete = new TaskCompletionSource(
@@ -78,6 +84,7 @@ public sealed class ConsumerConnectionOwnershipTests
             await TestWait.UntilAsync(
                 () => GetField<int>(consumer, "_appliedConnectionCount") == 2,
                 TimeSpan.FromSeconds(5));
+            await shrinkStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
             _ = pool.Received(1).ShrinkConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>());
         }
         finally
@@ -236,6 +243,45 @@ public sealed class ConsumerConnectionOwnershipTests
         await TestWait.UntilAsync(
             () => removedConnection.DisposeCount == 1,
             TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
+    public async Task StandaloneConsumer_Dispose_WaitsForRetiredConnectionDisposal()
+    {
+        var pool = CreatePool();
+        var removedConnection = new TrackedConnection(
+            hasPendingRequest: false,
+            hasLease: true);
+        pool.ShrinkConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection?>(removedConnection));
+        var consumer = CreateStandaloneConsumer(pool, CreateMetadataManager(pool));
+        var leaseReleased = false;
+
+        TriggerScaleDown(consumer);
+        await TestWait.UntilAsync(
+            () => GetField<Task>(consumer, "_connectionRoutingTransitionTask").IsCompleted,
+            TimeSpan.FromSeconds(5));
+        var disposeTask = consumer.DisposeAsync().AsTask();
+
+        try
+        {
+            await Task.Delay(100);
+            await Assert.That(disposeTask.IsCompleted).IsFalse();
+            _ = pool.DidNotReceive().DisposeAsync();
+
+            removedConnection.ReleaseLease();
+            leaseReleased = true;
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            if (!leaseReleased)
+                removedConnection.ReleaseLease();
+            await consumer.DisposeAsync();
+        }
+
+        await Assert.That(removedConnection.DisposeCount).IsEqualTo(1);
+        _ = pool.Received(1).DisposeAsync();
     }
 
     [Test]
