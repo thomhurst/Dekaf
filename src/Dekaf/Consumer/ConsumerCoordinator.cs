@@ -44,6 +44,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private volatile string? _memberId;
     private volatile int _generationId = -1;
     private int _assignmentVersion;
+    private int _assignmentProcessingCount;
     // Volatile ensures cross-thread visibility of the reference. Thread-safety relies on
     // all writes replacing the reference entirely (never in-place mutation) — verified at
     // every assignment site: ProcessConsumerGroupAssignment() and DisposeAsync().
@@ -243,6 +244,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal bool IsAssignmentSyncCurrent(int assignmentVersion) =>
         _state == CoordinatorState.Stable
         && Volatile.Read(ref _assignmentVersion) == assignmentVersion
+        && Volatile.Read(ref _assignmentProcessingCount) == 0
         && _revokedPartitionsSinceLastSync.IsEmpty
         && Volatile.Read(ref _fatalHeartbeatException) is null
         && Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0;
@@ -1084,6 +1086,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 request, version, cancellationToken).ConfigureAwait(false);
         }
 
+        using var assignmentProcessing = BeginAssignmentProcessing(response.Assignment);
+
         if (!discardIfMembershipChanged)
             return ProcessConsumerGroupHeartbeatResponse(
                 response,
@@ -1130,6 +1134,29 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         // Steady-heartbeat callbacks are fired above while publication is fenced against
         // max-poll expiry. The heartbeat loop must not fire the result a second time.
         return default;
+    }
+
+    private AssignmentProcessingScope BeginAssignmentProcessing(
+        ConsumerGroupHeartbeatAssignment? assignment)
+    {
+        if (assignment is null)
+            return default;
+
+        Interlocked.Increment(ref _assignmentProcessingCount);
+        return new AssignmentProcessingScope(this);
+    }
+
+    private readonly struct AssignmentProcessingScope : IDisposable
+    {
+        private readonly ConsumerCoordinator? _coordinator;
+
+        public AssignmentProcessingScope(ConsumerCoordinator coordinator) => _coordinator = coordinator;
+
+        public void Dispose()
+        {
+            if (_coordinator is { } coordinator)
+                Interlocked.Decrement(ref coordinator._assignmentProcessingCount);
+        }
     }
 
     private ConsumerHeartbeatResult ProcessConsumerGroupHeartbeatResponse(

@@ -1651,6 +1651,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         ConsumerCoordinator? coordinator = null;
         HashSet<TopicPartition>? assignmentObservedByRevokingCallback = null;
         var versionObservedByRevokingCallback = -1;
+        var assignmentSyncObservedByRevokingCallback = true;
         HashSet<TopicPartition>? assignmentObservedByCallback = null;
         var versionObservedByCallback = -1;
 
@@ -1658,6 +1659,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         {
             assignmentObservedByRevokingCallback = coordinator!.Assignment.ToHashSet();
             versionObservedByRevokingCallback = coordinator.AssignmentVersion;
+            assignmentSyncObservedByRevokingCallback =
+                coordinator.IsAssignmentSyncCurrent(versionObservedByRevokingCallback);
         }
 
         void OnPartitionsRevoked(IReadOnlyList<TopicPartition> _)
@@ -1688,6 +1691,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(assignmentObservedByRevokingCallback!).Contains(new TopicPartition("test-topic", 0));
         await Assert.That(assignmentObservedByRevokingCallback).Contains(new TopicPartition("test-topic", 1));
         await Assert.That(versionObservedByRevokingCallback).IsEqualTo(versionAfterInitialAssignment);
+        await Assert.That(assignmentSyncObservedByRevokingCallback).IsFalse();
         await Assert.That(assignmentObservedByCallback).IsNotNull();
         await Assert.That(assignmentObservedByCallback!).Contains(new TopicPartition("test-topic", 1));
         await Assert.That(assignmentObservedByCallback).DoesNotContain(new TopicPartition("test-topic", 0));
@@ -3157,6 +3161,22 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             coordinator,
             "_fatalHeartbeatException",
             new GroupException(ErrorCode.GroupAuthorizationFailed, "fatal heartbeat"));
+
+        await Assert.That(coordinator.IsAssignmentSyncCurrent(assignmentVersion)).IsFalse();
+    }
+
+    [Test]
+    public async Task IsAssignmentSyncCurrent_HeartbeatAssignmentProcessing_ReturnsFalse()
+    {
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        const int assignmentVersion = 7;
+        SetPrivateField(coordinator, "_state", CoordinatorState.Stable);
+        SetPrivateField(coordinator, "_assignmentVersion", assignmentVersion);
+
+        await Assert.That(coordinator.IsAssignmentSyncCurrent(assignmentVersion)).IsTrue();
+
+        SetPrivateField(coordinator, "_assignmentProcessingCount", 1);
 
         await Assert.That(coordinator.IsAssignmentSyncCurrent(assignmentVersion)).IsFalse();
     }
