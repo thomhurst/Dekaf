@@ -14,6 +14,90 @@ namespace Dekaf.Tests.Integration.NetworkPartition;
 public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
 {
     [Test]
+    [Timeout(60_000)]
+    public async Task Consumer_LatestOffsetResolutionFailure_DoesNotReplayFromZero(
+        CancellationToken cancellationToken)
+    {
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("offset-resolution-setup-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken))
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = 0,
+                Key = "before",
+                Value = "before"
+            }, cancellationToken);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("offset-resolution-consumer")
+            .WithAutoOffsetReset(AutoOffsetReset.Latest)
+            .WithQueuedMinMessages(1)
+            .WithRequestTimeout(TimeSpan.FromSeconds(1))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+        var partition = new TopicPartition(topic, 0);
+
+        await kafka.PauseAsync();
+        try
+        {
+            consumer.Assign(partition);
+            using var unavailableCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            unavailableCts.CancelAfter(TimeSpan.FromSeconds(15));
+
+            await Assert.That(async () =>
+            {
+                _ = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), unavailableCts.Token)
+                    .ConfigureAwait(false);
+            }).Throws<KafkaException>();
+        }
+        finally
+        {
+            await kafka.TryUnpauseAsync();
+        }
+
+        using var recoveryCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        recoveryCts.CancelAfter(TimeSpan.FromSeconds(20));
+        var consumeTask = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), recoveryCts.Token).AsTask();
+
+        while (consumer.GetPosition(partition) != 1)
+        {
+            if (consumeTask.IsCompleted)
+                _ = await consumeTask.ConfigureAwait(false);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(50), recoveryCts.Token).ConfigureAwait(false);
+        }
+
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("offset-resolution-recovery-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(recoveryCts.Token))
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = 0,
+                Key = "after",
+                Value = "after"
+            }, recoveryCts.Token).ConfigureAwait(false);
+        }
+
+        var result = await consumeTask.ConfigureAwait(false);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Key).IsEqualTo("after");
+        await Assert.That(result.Value.Offset).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Consumer_RejoinsGroup_AfterNetworkPartition()
     {
         // Arrange: short session timeout and heartbeat interval for fast detection
