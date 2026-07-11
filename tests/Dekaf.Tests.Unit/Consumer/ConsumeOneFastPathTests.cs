@@ -82,6 +82,38 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_PrefetchNotStarted_UsesSlowPath()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(queuedMinMessages: 2, fetch);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_GroupedAutoCommitNotStarted_UsesSlowPath()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedGroupedConsumer(fetch, OffsetCommitMode.Auto);
+        MarkManualAssignmentCurrent(consumer);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task TopicFilterRefreshDue_TracksRefreshInterval()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
@@ -553,14 +585,16 @@ public sealed class ConsumeOneFastPathTests
         await Assert.That(result.Value.Offset).IsEqualTo(20L);
     }
 
-    private static KafkaConsumer<string, string> CreateInitializedGroupedConsumer(PendingFetchData fetch)
+    private static KafkaConsumer<string, string> CreateInitializedGroupedConsumer(
+        PendingFetchData fetch,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual)
     {
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
                 GroupId = "consume-one-fast-path-tests",
-                OffsetCommitMode = OffsetCommitMode.Manual,
+                OffsetCommitMode = offsetCommitMode,
                 QueuedMinMessages = 1,
                 FetchMaxWaitMs = 200
             },

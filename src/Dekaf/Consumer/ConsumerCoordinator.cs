@@ -28,10 +28,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly IRebalanceListener? _rebalanceListener;
-    // Heartbeats can revoke and reassign a partition between poll-loop snapshots.
-    // Preserve both the immediate stale-fetch signal and the revocation history needed
-    // to defeat assignment ABA (A -> B -> A with the same final set).
+    // Retained for the public six-parameter constructor and direct coordinator callers.
+    // KafkaConsumer uses the pre-publication hook below to invalidate buffered fetches.
     private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoked;
+    // Heartbeats can revoke and reassign a partition between poll-loop snapshots.
+    // Signal before publication to defeat assignment ABA (A -> B -> A with the same final set).
     private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoking;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
     // Assignment publication and revocation history form one snapshot. Rebalance callbacks
@@ -270,7 +271,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     internal bool TryRecordPollFast()
     {
         // The fatal can be published after the assignment-currency gate. Recheck here,
-        // immediately before the caller dequeues a buffered record, so the slow path throws it.
+        // immediately before the caller dequeues a buffered record, so a group-managed
+        // slow path surfaces it. Manual assignment does not run the heartbeat loop.
         if (Volatile.Read(ref _fatalHeartbeatException) is not null)
             return false;
 

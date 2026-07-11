@@ -3267,13 +3267,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (pollRecorded && TryConsumeOneFromPendingFetches(out var bufferedResult))
                 return bufferedResult;
 
-            if (pollRecorded && _pendingEofEvents.TryDequeue(out var eofEvent))
-            {
-                return ConsumeResult<TKey, TValue>.CreatePartitionEof(
-                    eofEvent.Partition.Topic,
-                    eofEvent.Partition.Partition,
-                    eofEvent.Offset);
-            }
+            if (pollRecorded && TryDequeuePendingEofResult(out var eofResult))
+                return eofResult;
         }
 
         using var timeoutCts = _ctsPool.Rent();
@@ -3348,7 +3343,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto
             && _coordinator is not null
-            && Volatile.Read(ref _autoCommitTask) is not { IsCompleted: false })
+            && !IsAutoCommitRunning())
         {
             return false;
         }
@@ -3380,6 +3375,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     private bool HasPrefetchStarted() => Volatile.Read(ref _prefetchTask) is not null;
+
+    private bool IsAutoCommitRunning() => Volatile.Read(ref _autoCommitTask) is { IsCompleted: false };
 
     private bool IsCoordinatorAssignmentSyncCurrent(
         ConsumerCoordinator coordinator,
@@ -3443,16 +3440,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (TryConsumeOneFromPendingFetches(out var result))
                 return result;
 
-            if (_pendingEofEvents.TryDequeue(out var eofEvent))
-            {
-                return ConsumeResult<TKey, TValue>.CreatePartitionEof(
-                    eofEvent.Partition.Topic,
-                    eofEvent.Partition.Partition,
-                    eofEvent.Offset);
-            }
+            if (TryDequeuePendingEofResult(out var eofResult))
+                return eofResult;
         }
 
         return null;
+    }
+
+    private bool TryDequeuePendingEofResult(out ConsumeResult<TKey, TValue> result)
+    {
+        if (_pendingEofEvents.TryDequeue(out var eofEvent))
+        {
+            result = ConsumeResult<TKey, TValue>.CreatePartitionEof(
+                eofEvent.Partition.Topic,
+                eofEvent.Partition.Partition,
+                eofEvent.Offset);
+            return true;
+        }
+
+        result = default;
+        return false;
     }
 
     private async ValueTask<bool> FillPendingFetchesForSingleConsumeAsync(bool prefetchEnabled, CancellationToken cancellationToken)
@@ -6553,7 +6560,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _consumerDisposed) != 0 || Volatile.Read(ref _closed) != 0)
             return;
 
-        if (Volatile.Read(ref _autoCommitTask) is { IsCompleted: false })
+        if (IsAutoCommitRunning())
             return;
 
         Task? oldTask;
@@ -6564,7 +6571,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return;
 
             var currentTask = _autoCommitTask;
-            if (currentTask is { IsCompleted: false })
+            if (IsAutoCommitRunning())
                 return;
 
             oldTask = currentTask;
