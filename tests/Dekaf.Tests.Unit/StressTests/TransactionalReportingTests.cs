@@ -103,6 +103,7 @@ public sealed class TransactionalReportingTests
         LeakedAbortedMessages = 0,
         UnexpectedMessages = 0,
         MissingSentinelPartitions = 0,
+        SentinelCommitFailed = false,
         FailureSamples = duplicateMessages == 0 ? [] : ["Duplicate committed index 1."]
     };
 }

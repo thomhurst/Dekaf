@@ -156,6 +156,7 @@ internal sealed class TransactionVerificationSnapshot
     public required long LeakedAbortedMessages { get; init; }
     public required long UnexpectedMessages { get; init; }
     public required int MissingSentinelPartitions { get; init; }
+    public bool SentinelCommitFailed { get; init; }
     public required List<string> FailureSamples { get; init; }
 
     public bool IsSuccessful =>
@@ -163,7 +164,8 @@ internal sealed class TransactionVerificationSnapshot
         ShortfallMessages == 0 &&
         LeakedAbortedMessages == 0 &&
         UnexpectedMessages == 0 &&
-        MissingSentinelPartitions == 0;
+        MissingSentinelPartitions == 0 &&
+        !SentinelCommitFailed;
 }
 
 internal sealed class StressTestResults

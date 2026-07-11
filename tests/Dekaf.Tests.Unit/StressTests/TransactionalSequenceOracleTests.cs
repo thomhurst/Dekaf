@@ -100,4 +100,23 @@ public sealed class TransactionalSequenceOracleTests
         await Assert.That(snapshot.IsSuccessful).IsFalse();
         await Assert.That(snapshot.FailureSamples).Contains(sample => sample.Contains("partition 1"));
     }
+
+    [Test]
+    public async Task CreateSnapshot_SentinelCommitFailed_IsDistinctFailure()
+    {
+        var oracle = new TransactionalSequenceOracle(
+            runId: "run-sentinel-failure",
+            committedMessages: 0,
+            abortedMessages: 0,
+            partitionCount: 2);
+
+        var snapshot = oracle.CreateSnapshot(
+            acceptedMessages: 0,
+            sentinelCommitFailed: true);
+
+        await Assert.That(snapshot.SentinelCommitFailed).IsTrue();
+        await Assert.That(snapshot.IsSuccessful).IsFalse();
+        await Assert.That(snapshot.FailureSamples)
+            .Contains(sample => sample.Contains("sentinel transaction failed to commit"));
+    }
 }

@@ -169,7 +169,8 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
             $"delivered={verification.DeliveredMessages:N0}, duplicates={verification.DuplicateMessages:N0}, " +
             $"shortfall={verification.ShortfallMessages:N0}, leakedAborted={verification.LeakedAbortedMessages:N0}, " +
             $"unexpected={verification.UnexpectedMessages:N0}, " +
-            $"missingSentinels={verification.MissingSentinelPartitions:N0}");
+            $"missingSentinels={verification.MissingSentinelPartitions:N0}, " +
+            $"sentinelCommitFailed={verification.SentinelCommitFailed}");
 
         return new StressTestResult
         {
@@ -269,7 +270,14 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
             options.Partitions,
             failedCommitMessages);
         if (!sentinelsCommitted)
-            return oracle.CreateSnapshot(acceptedMessages);
+            return oracle.CreateSnapshot(acceptedMessages, sentinelCommitFailed: true);
+
+        var verificationProgress = new ThroughputTracker();
+        verificationProgress.Start();
+        using var verificationWatchdog = options.ProgressWatchdog.Track(
+            verificationProgress,
+            client: "Dekaf",
+            scenario: "producer-transactional-read-committed-verification");
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
@@ -291,6 +299,7 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         {
             await foreach (var record in consumer.ConsumeAsync(verificationCts.Token).ConfigureAwait(false))
             {
+                verificationProgress.RecordMessage(0);
                 oracle.Observe(record.Key);
                 if (oracle.AllSentinelsSeen)
                     break;
@@ -300,6 +309,10 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         {
             Console.WriteLine(
                 $"  Warning: read_committed verification timed out after {verificationMinutes:N0} minute(s).");
+        }
+        finally
+        {
+            verificationProgress.Stop();
         }
 
         return oracle.CreateSnapshot(acceptedMessages);
