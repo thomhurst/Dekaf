@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using Dekaf.Diagnostics;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 
@@ -538,10 +538,9 @@ public sealed class FetchResponsePartition
                     }
                     catch (Exception ex)
                     {
-                        // Unexpected error parsing a record batch — log for visibility and skip remaining batches.
-                        // This should not happen under normal conditions and may indicate data corruption or a parsing bug.
-                        Trace.WriteLine($"Dekaf: Unexpected exception parsing RecordBatch: {ex}");
-                        break;
+                        DekafMetrics.BatchParseErrors.Add(1);
+                        throw new MalformedProtocolDataException(
+                            $"Failed to parse record batch for partition {partitionIndex}", ex);
                     }
                 }
 

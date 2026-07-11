@@ -65,6 +65,12 @@ internal static class DekafMetrics
             unit: "s",
             description: "Round-trip time of fetch requests to Kafka brokers.");
 
+    internal static readonly Counter<long> BatchParseErrors =
+        DekafDiagnostics.Meter.CreateCounter<long>(
+            "messaging.consumer.batch.parse.errors",
+            unit: "{error}",
+            description: "Number of record batches that failed protocol parsing.");
+
     // Consumer lag — single static gauge with shared callback registry.
     // Each KafkaConsumer instance registers/unregisters its callback, avoiding
     // duplicate instrument registration and ensuring disposed consumers stop reporting.

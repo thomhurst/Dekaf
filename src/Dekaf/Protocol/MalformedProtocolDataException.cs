@@ -6,4 +6,10 @@ namespace Dekaf.Protocol;
 /// <see cref="InsufficientDataException"/> which indicates truncated but
 /// structurally valid data.
 /// </summary>
-internal sealed class MalformedProtocolDataException(string message) : Exception(message);
+internal sealed class MalformedProtocolDataException : Exception
+{
+    public MalformedProtocolDataException(string message) : base(message) { }
+
+    public MalformedProtocolDataException(string message, Exception innerException)
+        : base(message, innerException) { }
+}
