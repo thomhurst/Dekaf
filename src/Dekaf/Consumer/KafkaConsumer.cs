@@ -562,6 +562,9 @@ internal static class ConsumerFetchPools
         return list;
     }
 
+    internal static void ReturnFetchRequestPartitionList(List<FetchRequestPartition> list)
+        => s_fetchRequestPartitionLists.Return(list);
+
     internal static void ReturnFetchRequestTopics(List<FetchRequestTopic> topics)
     {
         for (var i = 0; i < topics.Count; i++)
@@ -2205,7 +2208,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
                 catch (Exception ex)
                 {
-                    consecutiveErrors++;
+                    consecutiveErrors = PrefetchLoopControl.RecordConsecutiveError(consecutiveErrors, ex);
                     LogPrefetchLoopError(ex);
 
                     if (PrefetchLoopControl.ShouldBreakOnConsecutiveError(
@@ -4532,7 +4535,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                 // Set equality alone is insufficient: the assignment can change away and back
                 // between polls. Unseen revocations require stale-fetch cleanup and position reset.
-                if (_assignment.SetEquals(coordinatorAssignment) && coordinatorRevocations is null)
+                if (_assignment.SetEquals(coordinatorAssignment)
+                    && coordinatorRevocations is null
+                    && HasInitializedFetchPositions(coordinatorAssignment))
                 {
                     Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
                     coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
@@ -4543,7 +4548,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 List<TopicPartition>? newPartitions = null;
                 foreach (var partition in coordinatorAssignment)
                 {
-                    if (!_assignment.Contains(partition))
+                    if (!_assignment.Contains(partition) || !_fetchPositions.ContainsKey(partition))
                     {
                         newPartitions ??= new List<TopicPartition>();
                         newPartitions.Add(partition);
@@ -4663,6 +4668,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return Volatile.Read(ref _lastManualAssignmentEnsureVersion) == assignmentEnsureVersion;
     }
 
+    private bool HasInitializedFetchPositions(TopicPartitionSet partitions)
+    {
+        foreach (var partition in partitions)
+        {
+            if (!_fetchPositions.ContainsKey(partition))
+                return false;
+        }
+
+        return true;
+    }
+
     private async ValueTask InitializeManualAssignmentPositionsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
         // For manual assignment without a group, use auto offset reset to determine starting position
@@ -4739,7 +4755,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         for (var i = startIndex; i < endIndex; i++)
         {
             var partition = partitions[i];
-            var fetchPosition = _fetchPositions.GetValueOrDefault(partition, 0);
+            if (!_fetchPositions.TryGetValue(partition, out var fetchPosition))
+                continue;
+
             if (fetchPosition == -1 || fetchPosition == -2)
             {
                 // -1 = latest, -2 = earliest
@@ -4758,7 +4776,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var connectionLease = await GetPartitionLeaderControlConnectionAsync(partition, cancellationToken)
                 .ConfigureAwait(false);
             if (connectionLease is null)
-                return 0;
+                throw CreateOffsetResolutionUnavailableException(partition);
             using var lease = connectionLease.Value;
             var connection = lease.Connection;
 
@@ -4789,10 +4807,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 ]
             };
 
-            var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-                request,
-                listOffsetsVersion,
-                cancellationToken).ConfigureAwait(false);
+            ListOffsetsResponse response;
+            try
+            {
+                response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                    request,
+                    listOffsetsVersion,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException ex)
+            {
+                throw new KafkaException(
+                    ErrorCode.RequestTimedOut,
+                    $"ListOffsets request timed out for {partition}.",
+                    ex);
+            }
 
             ListOffsetsResponsePartition? partitionResponse = null;
             foreach (var topic in response.Topics)
@@ -4817,9 +4846,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     $"ListOffsets failed for {partition}: {partitionResponse.ErrorCode}");
             }
 
-            return partitionResponse?.Offset ?? 0;
+            if (partitionResponse is null)
+            {
+                throw new KafkaException(
+                    ErrorCode.UnknownTopicOrPartition,
+                    $"ListOffsets response did not contain {partition}.");
+            }
+
+            return partitionResponse.Offset;
         }, _metadataManager, cancellationToken);
     }
+
+    internal static KafkaException CreateOffsetResolutionUnavailableException(TopicPartition partition) =>
+        new(
+            ErrorCode.LeaderNotAvailable,
+            $"No partition leader connection is available to resolve the offset for {partition}.");
 
     private async ValueTask<KafkaConnectionLease?> GetPartitionLeaderControlConnectionAsync(
         TopicPartition partition,
@@ -6142,16 +6183,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
             foreach (var (template, tp) in cachedPartitions)
             {
+                if (!fetchPositions.TryGetValue(tp, out var fetchOffset))
+                    continue;
+
                 var currentLeaderEpoch = clusterMetadata?.GetPartitionInfo(tp.Topic, tp.Partition)?.LeaderEpoch ?? -1;
                 partitionList.Add(new FetchRequestPartition
                 {
                     Partition = template.Partition,
-                    FetchOffset = fetchPositions.GetValueOrDefault(tp, 0),
+                    FetchOffset = fetchOffset,
                     CurrentLeaderEpoch = currentLeaderEpoch,
                     LastFetchedEpoch = lastConsumedLeaderEpochs?.GetValueOrDefault(tp, -1) ?? -1,
                     LogStartOffset = template.LogStartOffset,
                     PartitionMaxBytes = adaptivePartitionMaxBytes ?? template.PartitionMaxBytes
                 });
+            }
+
+            if (partitionList.Count == 0)
+            {
+                ConsumerFetchPools.ReturnFetchRequestPartitionList(partitionList);
+                continue;
             }
 
             result.Add(new FetchRequestTopic

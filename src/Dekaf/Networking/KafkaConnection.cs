@@ -1191,6 +1191,7 @@ public sealed partial class KafkaConnection :
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
+                    ErrorCode.RequestTimedOut,
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
             }
         }
@@ -1211,6 +1212,7 @@ public sealed partial class KafkaConnection :
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
+                    ErrorCode.RequestTimedOut,
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
             }
         }
@@ -1440,6 +1442,7 @@ public sealed partial class KafkaConnection :
         MarkDisposed();
 
         return new KafkaException(
+            ErrorCode.RequestTimedOut,
             $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
     }
 

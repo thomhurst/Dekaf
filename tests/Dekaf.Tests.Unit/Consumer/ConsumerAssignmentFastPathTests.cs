@@ -189,15 +189,18 @@ public sealed class ConsumerAssignmentFastPathTests
 
         await using var metadataManager = CreateMetadataManager(connectionPool);
         SetupFindCoordinator(connection);
-        SetupChangingConsumerGroupHeartbeat(connection);
-        var offsetFetchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseOffsetFetch = new TaskCompletionSource<OffsetFetchResponse>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        SetupBlockingSecondOffsetFetch(connection, offsetFetchStarted, releaseOffsetFetch);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetch(connection);
 
         await using var consumer = CreateGroupConsumer(connectionPool, metadataManager, maxPollIntervalMs: 100);
         consumer.Subscribe("test-topic");
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var offsetFetchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOffsetFetch = new TaskCompletionSource<OffsetFetchResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0, 1));
+        SetupBlockingOffsetFetch(connection, offsetFetchStarted, releaseOffsetFetch);
 
         var coordinator = GetCoordinator(consumer);
         coordinator.RequestRejoin();
@@ -428,6 +431,34 @@ public sealed class ConsumerAssignmentFastPathTests
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         await Assert.That(GetFetchPositions(consumer)[reassignedPartition]).IsEqualTo(20L);
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_InitialPositionFailure_RetriesUnchangedAssignment()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetchFailureThenSuccess(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+
+        _ = await Assert.That(async () =>
+                await consumer.EnsureAssignmentAsync(CancellationToken.None))
+            .Throws<GroupException>();
+
+        var partition = new TopicPartition("test-topic", 0);
+        await Assert.That(consumer.Assignment).Contains(partition);
+        await Assert.That(GetFetchPositions(consumer).ContainsKey(partition)).IsFalse();
+
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(10L);
     }
 
     [Test]
@@ -898,21 +929,17 @@ public sealed class ConsumerAssignmentFastPathTests
             .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
     }
 
-    private static void SetupBlockingSecondOffsetFetch(
+    private static void SetupBlockingOffsetFetch(
         IKafkaConnection connection,
         TaskCompletionSource offsetFetchStarted,
         TaskCompletionSource<OffsetFetchResponse> releaseOffsetFetch)
     {
-        var callCount = 0;
         connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
                 Arg.Any<OffsetFetchRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
-                if (Interlocked.Increment(ref callCount) == 1)
-                    return ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse());
-
                 offsetFetchStarted.TrySetResult();
                 return new ValueTask<OffsetFetchResponse>(releaseOffsetFetch.Task);
             });
@@ -926,6 +953,29 @@ public sealed class ConsumerAssignmentFastPathTests
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
             .Returns(_ => Interlocked.Increment(ref callCount) == 2
+                ? ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = "group-a",
+                            Topics = [],
+                            ErrorCode = ErrorCode.StaleMemberEpoch
+                        }
+                    ]
+                })
+                : ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+    }
+
+    private static void SetupOffsetFetchFailureThenSuccess(IKafkaConnection connection)
+    {
+        var callCount = 0;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref callCount) == 1
                 ? ValueTask.FromResult(new OffsetFetchResponse
                 {
                     Groups =

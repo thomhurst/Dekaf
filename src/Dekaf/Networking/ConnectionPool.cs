@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using Dekaf.Internal;
+using Dekaf.Protocol;
 using Dekaf.Security.Sasl;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -425,11 +426,13 @@ public sealed partial class ConnectionPool : IConnectionPool
         catch (TimeoutException)
         {
             throw new KafkaException(
+                ErrorCode.RequestTimedOut,
                 $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw new KafkaException(
+                ErrorCode.RequestTimedOut,
                 $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
         }
         finally
@@ -665,6 +668,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw new KafkaException(
+                ErrorCode.RequestTimedOut,
                 $"Connection replacement timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
         }
         finally
@@ -826,6 +830,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             throw new KafkaException(
+                ErrorCode.RequestTimedOut,
                 $"Connection timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} ({host}:{port})");
         }
         finally
