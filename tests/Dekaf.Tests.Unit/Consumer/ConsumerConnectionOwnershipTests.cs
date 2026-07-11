@@ -28,10 +28,7 @@ public sealed class ConsumerConnectionOwnershipTests
         });
 
         var scaler = GetField<ConsumerConnectionScaler>(consumer, "_connectionScaler");
-        scaler.ReportPipelineUtilization(3, pipelineDepth: 3);
-        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
-        scaler.ReportPipelineUtilization(3, pipelineDepth: 3);
-        scaler.MaybeScale();
+        TriggerScaleUp(scaler);
 
         await Assert.That(GetField<int>(consumer, "_appliedConnectionCount")).IsEqualTo(2);
         _ = pool.DidNotReceive().ScaleConnectionGroupAsync(
@@ -44,6 +41,35 @@ public sealed class ConsumerConnectionOwnershipTests
             () => GetField<int>(consumer, "_appliedConnectionCount") == 3,
             TimeSpan.FromSeconds(5));
         _ = pool.Received(1).ScaleConnectionGroupAsync(1, 3, Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task FailedScaleUp_RollsBackTargetAndRetries()
+    {
+        var pool = CreatePool();
+        pool.ScaleConnectionGroupAsync(1, 3, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(3));
+        pool.ScaleConnectionGroupAsync(2, 3, Arg.Any<CancellationToken>())
+            .Returns(
+                ValueTask.FromException<int>(new IOException("scale failed")),
+                ValueTask.FromResult(3));
+        await using var consumer = CreateStandaloneConsumer(
+            pool,
+            CreateMetadataManager(pool, includeSecondBroker: true));
+        var scaler = GetField<ConsumerConnectionScaler>(consumer, "_connectionScaler");
+
+        TriggerScaleUp(scaler);
+        await TestWait.UntilAsync(
+            () => scaler.CurrentConnectionCount == 2,
+            TimeSpan.FromSeconds(5));
+        await Assert.That(GetField<int>(consumer, "_appliedConnectionCount")).IsEqualTo(2);
+
+        TriggerScaleUp(scaler);
+        await TestWait.UntilAsync(
+            () => GetField<int>(consumer, "_appliedConnectionCount") == 3,
+            TimeSpan.FromSeconds(5));
+        _ = pool.Received(2).ScaleConnectionGroupAsync(1, 3, Arg.Any<CancellationToken>());
+        _ = pool.Received(2).ScaleConnectionGroupAsync(2, 3, Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -510,6 +536,14 @@ public sealed class ConsumerConnectionOwnershipTests
         scaler.MaybeScale();
         scaler.TestAdvanceTime(TimeSpan.FromSeconds(121));
         scaler.ReportPipelineUtilization(0, pipelineDepth: 3);
+        scaler.MaybeScale();
+    }
+
+    private static void TriggerScaleUp(ConsumerConnectionScaler scaler)
+    {
+        scaler.ReportPipelineUtilization(3, pipelineDepth: 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.ReportPipelineUtilization(3, pipelineDepth: 3);
         scaler.MaybeScale();
     }
 

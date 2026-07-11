@@ -1190,15 +1190,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         else
         {
-            foreach (var broker in _metadataManager.Metadata.GetBrokers())
+            try
             {
-                await _connectionPool.ScaleConnectionGroupAsync(
-                    broker.NodeId,
-                    targetCount,
-                    cancellationToken).ConfigureAwait(false);
-            }
+                foreach (var broker in _metadataManager.Metadata.GetBrokers())
+                {
+                    await _connectionPool.ScaleConnectionGroupAsync(
+                        broker.NodeId,
+                        targetCount,
+                        cancellationToken).ConfigureAwait(false);
+                }
 
-            Volatile.Write(ref _appliedConnectionCount, targetCount);
+                Volatile.Write(ref _appliedConnectionCount, targetCount);
+            }
+            catch
+            {
+                // The new routing width was never published. Roll scaler bookkeeping
+                // back so sustained saturation can retry, including failures at max.
+                _connectionScaler!.RollbackFailedScaleUp(targetCount);
+                throw;
+            }
         }
     }
 
