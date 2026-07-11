@@ -4674,12 +4674,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 // the bottleneck (slowest broker) which is the right signal for adaptive sizing.
                 _adaptiveFetchSizer?.RecordFetchStart();
 
+                try
+                {
 #if NETSTANDARD2_0
-                await Task.WhenAll(fetchTasks.Take(taskCount)).ConfigureAwait(false);
+                    await Task.WhenAll(fetchTasks.Take(taskCount)).ConfigureAwait(false);
 #else
-                // ReadOnlySpan overload: same zero-copy benefit as above
-                await Task.WhenAll(new ReadOnlySpan<Task<List<PendingFetchData>?>>(fetchTasks, 0, taskCount)).ConfigureAwait(false);
+                    // ReadOnlySpan overload: same zero-copy benefit as above
+                    await Task.WhenAll(new ReadOnlySpan<Task<List<PendingFetchData>?>>(fetchTasks, 0, taskCount)).ConfigureAwait(false);
 #endif
+                }
+                catch
+                {
+                    DisposeCompletedFetchResults(fetchTasks, taskCount);
+                    throw;
+                }
 
                 _adaptiveFetchSizer?.RecordFetchEnd();
 
@@ -4719,6 +4727,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _activeConsumeCancellationSources.TryRemove(consumeCts, out _);
             consumeCts.Dispose();
             _coordinator?.EndForegroundPollActivity();
+        }
+    }
+
+    internal static void DisposeCompletedFetchResults(
+        Task<List<PendingFetchData>?>[] fetchTasks,
+        int taskCount)
+    {
+        for (var i = 0; i < taskCount; i++)
+        {
+            var task = fetchTasks[i];
+            if (task.Status != TaskStatus.RanToCompletion || task.Result is not { } pendingItems)
+                continue;
+
+            DisposePendingFetches(pendingItems);
+            ConsumerFetchPools.ReturnPendingFetchDataList(pendingItems);
         }
     }
 
