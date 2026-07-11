@@ -227,7 +227,9 @@ internal static class PoolSizing
         // the owning batch completes, so they need the same working-set depth.
         var headerArrays = producerDataArrays;
 
-        // PipeMemoryPool: 32 arrays per peak connection (covers pipelined segments).
+        // PipeMemoryPool: 32 arrays per peak connection. Each connection's
+        // ResponseFrameReader holds one receive buffer for the connection's lifetime;
+        // the generous depth keeps headroom for reconnect churn.
         // Use max connections because adaptive single-broker load concentrates all
         // traffic on one shared pool before metadata/broker spread can help.
         // ArrayPool<T>.Create eagerly allocates per-bucket metadata based on depth,

@@ -8,8 +8,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 
 /// <summary>
 /// Measures the cost of copying a <see cref="ReadOnlySequence{T}"/> into a contiguous
-/// pooled <c>byte[]</c>, isolating the operation that <c>KafkaConnection.TryReadResponse</c>
-/// performs on every fetch response.
+/// pooled <c>byte[]</c>, isolating the second copy the pipe-based receive path performed
+/// on every response before <c>ResponseFrameReader</c> removed it (issue #1757 — the
+/// direct-read path now receives frame bodies straight into the pooled array; see
+/// <see cref="ResponseFrameReaderBenchmarks"/> for the replacement path's cost).
 ///
 /// Hypothesis under test: at 95k msg/s with ~1KB records, the per-response memcpy
 /// (<c>FetchMaxBytes + 1MB</c> ≈ 53MB sized buffer, but typically 1-4MB filled) is
@@ -48,7 +50,7 @@ public class ReceiveLoopCopyBenchmark
     }
 
     /// <summary>
-    /// Exactly what <c>KafkaConnection.TryReadResponse</c> does today: bulk copy the entire
+    /// Exactly what the old pipe-based <c>TryReadResponse</c> did: bulk copy the entire
     /// response sequence into a pooled contiguous array.
     /// </summary>
     [Benchmark(Baseline = true)]

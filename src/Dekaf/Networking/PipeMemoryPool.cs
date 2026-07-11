@@ -13,8 +13,8 @@ namespace Dekaf.Networking;
 /// <c>MemoryPool&lt;byte&gt;.Shared</c> wraps <c>ArrayPool&lt;byte&gt;.Shared</c>, which
 /// is a <c>TlsOverPerCoreLockedStacksArrayPool</c>. It retains returned arrays in
 /// per-thread (TLS) and per-core stacks that grow to accommodate the access pattern
-/// but never shrink. With multiple Kafka broker connections, each connection's read
-/// pump thread adds to the shared pool's retained set. Over time this causes continuous
+/// but never shrink. With multiple Kafka broker connections, each connection's receive
+/// loop thread adds to the shared pool's retained set. Over time this causes continuous
 /// WorkingSet growth proportional to the number of brokers — even though individual
 /// connections properly return their buffers.
 /// <para/>
@@ -39,9 +39,9 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
 
     /// <summary>
     /// Maximum number of <see cref="PooledMemoryOwner"/> wrapper objects to retain.
-    /// With pipelined sends, the input pipe can hold 16-32 active segments and the output
-    /// PipeWriter uses 1-2 segments per write. 64 covers peak concurrent demand with headroom
-    /// for burst scenarios, while bounding retained wrapper objects to ~2 KB total.
+    /// Each connection's <see cref="ResponseFrameReader"/> holds one receive buffer for the
+    /// connection's lifetime; 64 covers peak connection counts and reconnect churn with
+    /// headroom, while bounding retained wrapper objects to ~2 KB total.
     /// </summary>
     private const int MaxOwnerPoolSize = 64;
 
@@ -54,12 +54,10 @@ internal sealed class PipeMemoryPool : MemoryPool<byte>
     /// plus header/framing overhead, and coalesced multi-batch requests. If BatchSize is
     /// increased beyond ~3.5 MB, this value should be increased accordingly.</param>
     /// <param name="maxArraysPerBucket">Maximum number of arrays to retain per size bucket.
-    /// Must be large enough to cover the concurrent segment demand from both the input
-    /// pipe (read pump creating ~64 KB segments that stay alive until AdvanceTo) and the
-    /// output PipeWriter (large GetMemory calls for serialized requests). With pipelined
-    /// ProduceResponses (idempotent producers), the input pipe can hold 16-32 active
-    /// segments simultaneously. Defaults to 32 to prevent pool overflow allocations under
-    /// high-throughput pipelining.
+    /// Must cover the concurrent demand for receive buffers: each connection's
+    /// <see cref="ResponseFrameReader"/> rents one ~64 KB buffer for the connection's
+    /// lifetime. Defaults to 32 to cover peak connection counts and reconnect churn
+    /// without pool overflow allocations.
     /// <para/>
     /// <b>Memory tradeoff:</b> <c>ArrayPool.Create()</c> applies the same bucket count to all
     /// size classes. <c>ConfigurableArrayPool</c> pre-allocates <paramref name="maxArraysPerBucket"/>
