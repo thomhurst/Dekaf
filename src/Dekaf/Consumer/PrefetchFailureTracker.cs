@@ -27,7 +27,6 @@ internal sealed class PrefetchFailureTracker
 
     public PrefetchFailureDecision Observe(
         PrefetchFailureKey key,
-        Type exceptionType,
         PrefetchPosition[] positions,
         bool deterministic)
     {
@@ -36,7 +35,7 @@ internal sealed class PrefetchFailureTracker
             int count;
             PrefetchPosition[] storedPositions;
             if (_failures.TryGetValue(key, out var current)
-                && current.ExceptionType == exceptionType
+                && current.Deterministic == deterministic
                 && PositionsEqual(current.Positions, positions))
             {
                 count = current.Count + 1;
@@ -48,7 +47,7 @@ internal sealed class PrefetchFailureTracker
                 storedPositions = (PrefetchPosition[])positions.Clone();
             }
 
-            _failures[key] = new FailureState(exceptionType, storedPositions, count);
+            _failures[key] = new FailureState(deterministic, storedPositions, count);
 
             var shift = Math.Min(count - 1, 30);
             var delayMs = (int)Math.Min(_maxDelayMs, (long)_initialDelayMs << shift);
@@ -81,5 +80,5 @@ internal sealed class PrefetchFailureTracker
         return true;
     }
 
-    private readonly record struct FailureState(Type ExceptionType, PrefetchPosition[] Positions, int Count);
+    private readonly record struct FailureState(bool Deterministic, PrefetchPosition[] Positions, int Count);
 }

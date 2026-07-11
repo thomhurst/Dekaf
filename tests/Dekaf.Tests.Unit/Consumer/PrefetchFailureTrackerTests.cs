@@ -16,9 +16,9 @@ public sealed class PrefetchFailureTrackerTests
     {
         var tracker = new PrefetchFailureTracker(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 5_000);
 
-        var first = tracker.Observe(Key, typeof(InvalidDataException), Positions, deterministic: true);
-        var second = tracker.Observe(Key, typeof(InvalidDataException), Positions, deterministic: true);
-        var third = tracker.Observe(Key, typeof(InvalidDataException), Positions, deterministic: true);
+        var first = tracker.Observe(Key, Positions, deterministic: true);
+        var second = tracker.Observe(Key, Positions, deterministic: true);
+        var third = tracker.Observe(Key, Positions, deterministic: true);
 
         await Assert.That(first).IsEqualTo(new PrefetchFailureDecision(100, IsTerminal: false, Count: 1));
         await Assert.That(second).IsEqualTo(new PrefetchFailureDecision(200, IsTerminal: false, Count: 2));
@@ -29,27 +29,27 @@ public sealed class PrefetchFailureTrackerTests
     public async Task Observe_ChangedPositionRestartsFailureCount()
     {
         var tracker = new PrefetchFailureTracker(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 5_000);
-        tracker.Observe(Key, typeof(InvalidDataException), Positions, deterministic: true);
-        tracker.Observe(Key, typeof(InvalidDataException), Positions, deterministic: true);
+        tracker.Observe(Key, Positions, deterministic: true);
+        tracker.Observe(Key, Positions, deterministic: true);
         PrefetchPosition[] advanced =
         [
             new(new TopicPartition("topic", 0), Offset: 43),
             new(new TopicPartition("topic", 1), Offset: 84)
         ];
 
-        var decision = tracker.Observe(Key, typeof(InvalidDataException), advanced, deterministic: true);
+        var decision = tracker.Observe(Key, advanced, deterministic: true);
 
         await Assert.That(decision).IsEqualTo(new PrefetchFailureDecision(100, IsTerminal: false, Count: 1));
     }
 
     [Test]
-    public async Task Observe_ChangedExceptionTypeRestartsFailureCount()
+    public async Task Observe_ChangedFailureClassificationRestartsFailureCount()
     {
         var tracker = new PrefetchFailureTracker(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 5_000);
-        tracker.Observe(Key, typeof(InvalidDataException), Positions, deterministic: true);
-        tracker.Observe(Key, typeof(InvalidDataException), Positions, deterministic: true);
+        tracker.Observe(Key, Positions, deterministic: false);
+        tracker.Observe(Key, Positions, deterministic: false);
 
-        var decision = tracker.Observe(Key, typeof(FormatException), Positions, deterministic: true);
+        var decision = tracker.Observe(Key, Positions, deterministic: true);
 
         await Assert.That(decision).IsEqualTo(new PrefetchFailureDecision(100, IsTerminal: false, Count: 1));
     }
@@ -62,7 +62,7 @@ public sealed class PrefetchFailureTrackerTests
 
         for (var i = 0; i < 10; i++)
         {
-            decision = tracker.Observe(Key, typeof(IOException), Positions, deterministic: false);
+            decision = tracker.Observe(Key, Positions, deterministic: false);
         }
 
         await Assert.That(decision.DelayMs).IsEqualTo(500);
@@ -74,11 +74,11 @@ public sealed class PrefetchFailureTrackerTests
     public async Task Reset_RestartsFailureCount()
     {
         var tracker = new PrefetchFailureTracker(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 5_000);
-        tracker.Observe(Key, typeof(InvalidDataException), Positions, deterministic: true);
-        tracker.Observe(Key, typeof(InvalidDataException), Positions, deterministic: true);
+        tracker.Observe(Key, Positions, deterministic: true);
+        tracker.Observe(Key, Positions, deterministic: true);
 
         tracker.Reset(Key);
-        var decision = tracker.Observe(Key, typeof(InvalidDataException), Positions, deterministic: true);
+        var decision = tracker.Observe(Key, Positions, deterministic: true);
 
         await Assert.That(decision.Count).IsEqualTo(1);
     }

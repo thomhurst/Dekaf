@@ -2473,7 +2473,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var deterministic = ProtocolDataErrorClassifier.IsProtocolDataError(ex);
             var decision = _prefetchFailureTracker.Observe(
                 failureKey,
-                ex.GetType(),
                 positions,
                 deterministic);
 
