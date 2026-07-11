@@ -95,7 +95,7 @@ internal sealed class ProgressWatchdog : IDisposable
     private readonly TimeSpan _pollInterval;
     private readonly Action<int> _exitProcess;
     private readonly Func<string> _captureManagedStackReport;
-    private readonly TimeSpan _producerDiagnosticsTimeout;
+    private readonly TimeSpan _diagnosticsCaptureTimeout;
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly AutoResetEvent _wakeUp = new(initialState: false);
     private readonly object _sync = new();
@@ -122,12 +122,12 @@ internal sealed class ProgressWatchdog : IDisposable
         _pollInterval = pollInterval ?? DefaultPollInterval;
         _exitProcess = exitProcess ?? Environment.Exit;
         _captureManagedStackReport = captureManagedStackReport ?? CaptureManagedStackReport;
-        _producerDiagnosticsTimeout = producerDiagnosticsTimeout ?? DefaultProducerDiagnosticsTimeout;
+        _diagnosticsCaptureTimeout = producerDiagnosticsTimeout ?? DefaultProducerDiagnosticsTimeout;
 
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_captureAfter, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_exitAfter, _captureAfter);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_pollInterval, TimeSpan.Zero);
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_producerDiagnosticsTimeout, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_diagnosticsCaptureTimeout, TimeSpan.Zero);
 
         Directory.CreateDirectory(_diagnosticsDirectory);
         _thread = new Thread(Run)
@@ -183,7 +183,7 @@ internal sealed class ProgressWatchdog : IDisposable
             _wakeUp.Set();
         }
 
-        if (_thread.Join(StackCaptureTimeout + (_producerDiagnosticsTimeout * 2) + TimeSpan.FromSeconds(5)))
+        if (_thread.Join(StackCaptureTimeout + (_diagnosticsCaptureTimeout * 2) + TimeSpan.FromSeconds(5)))
             _wakeUp.Dispose();
     }
 
@@ -368,9 +368,9 @@ internal sealed class ProgressWatchdog : IDisposable
         };
         captureThread.Start();
 
-        if (!captureThread.Join(_producerDiagnosticsTimeout))
+        if (!captureThread.Join(_diagnosticsCaptureTimeout))
         {
-            var error = $"Producer diagnostics capture timed out after {_producerDiagnosticsTimeout}.";
+            var error = $"Producer diagnostics capture timed out after {_diagnosticsCaptureTimeout}.";
             WriteProducerDiagnosticsError(path, activeRun, capturedAt, error);
             Console.Error.WriteLine($"PROGRESS WATCHDOG: {error}");
             return;
@@ -437,9 +437,9 @@ internal sealed class ProgressWatchdog : IDisposable
         };
         captureThread.Start();
 
-        if (!captureThread.Join(_producerDiagnosticsTimeout))
+        if (!captureThread.Join(_diagnosticsCaptureTimeout))
         {
-            var error = $"Consumer diagnostics capture timed out after {_producerDiagnosticsTimeout}.";
+            var error = $"Consumer diagnostics capture timed out after {_diagnosticsCaptureTimeout}.";
             WriteConsumerDiagnosticsError(path, activeRun, capturedAt, error);
             Console.Error.WriteLine($"PROGRESS WATCHDOG: {error}");
             return;

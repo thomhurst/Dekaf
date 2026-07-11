@@ -701,6 +701,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
+    private int _pendingFetchDepth;
     // Auto-commit reads this snapshot from its background task instead of touching _pendingFetches.
     private string? _activeConsumedTopic;
     private int _activeConsumedPartition;
@@ -1121,7 +1122,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 entry.Value.EndOffset,
                 entry.Value.Epoch))
             .ToArray();
-        var pendingFetchDepth = _pendingFetches.Count;
+        var pendingFetchDepth = Volatile.Read(ref _pendingFetchDepth);
         var prefetchBufferDepth = _prefetchBuffer.Count;
 
         return new ConsumerDiagnosticSnapshot
@@ -1146,6 +1147,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             AdaptiveFetchMaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes
         };
     }
+
     public string? MemberId => _coordinator?.MemberId;
     public TopicPartitionSet Paused => _pausedSnapshot;
     public IConsumerPositions Positions => this;
@@ -1478,7 +1480,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Try to read from prefetch buffer, draining available items up to a bound
                     if (_prefetchBuffer.TryRead(out var prefetched))
                     {
-                        _pendingFetches.Enqueue(prefetched);
+                        EnqueuePendingFetch(prefetched);
                         TrackPrefetchedBytes(prefetched, release: true);
                         DrainPrefetchBuffer();
                     }
@@ -1495,7 +1497,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             {
                                 if (_prefetchBuffer.TryRead(out var fetched))
                                 {
-                                    _pendingFetches.Enqueue(fetched);
+                                    EnqueuePendingFetch(fetched);
                                     TrackPrefetchedBytes(fetched, release: true);
                                     DrainPrefetchBuffer();
                                 }
@@ -1706,7 +1708,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
 
                     // Dequeue and dispose the pending fetch (releases pooled network buffer memory)
-                    _pendingFetches.Dequeue().Dispose();
+                    DequeuePendingFetch().Dispose();
                 }
             }
             finally
@@ -1784,7 +1786,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Try to read from prefetch buffer, draining available items up to a bound
                     if (_prefetchBuffer.TryRead(out PendingFetchData? prefetched))
                     {
-                        _pendingFetches.Enqueue(prefetched);
+                        EnqueuePendingFetch(prefetched);
                         TrackPrefetchedBytes(prefetched, release: true);
                         DrainPrefetchBuffer();
                     }
@@ -1800,7 +1802,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             {
                                 if (_prefetchBuffer.TryRead(out PendingFetchData? fetched))
                                 {
-                                    _pendingFetches.Enqueue(fetched);
+                                    EnqueuePendingFetch(fetched);
                                     TrackPrefetchedBytes(fetched, release: true);
                                     DrainPrefetchBuffer();
                                 }
@@ -1923,7 +1925,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Try to read from prefetch buffer, draining available items up to a bound
                     if (_prefetchBuffer.TryRead(out PendingFetchData? prefetched))
                     {
-                        _pendingFetches.Enqueue(prefetched);
+                        EnqueuePendingFetch(prefetched);
                         TrackPrefetchedBytes(prefetched, release: true);
                         DrainPrefetchBuffer();
                     }
@@ -1939,7 +1941,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             {
                                 if (_prefetchBuffer.TryRead(out PendingFetchData? fetched))
                                 {
-                                    _pendingFetches.Enqueue(fetched);
+                                    EnqueuePendingFetch(fetched);
                                     TrackPrefetchedBytes(fetched, release: true);
                                     DrainPrefetchBuffer();
                                 }
@@ -2038,7 +2040,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         if (disposePending || pending.IsExhausted || !IsCurrentlyAssigned(pending.TopicPartition))
         {
-            _pendingFetches.Dequeue().Dispose();
+            DequeuePendingFetch().Dispose();
         }
     }
 
@@ -2988,7 +2990,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         for (var i = 0; i < maxDrain && _prefetchBuffer.TryRead(out var additional); i++)
         {
-            _pendingFetches.Enqueue(additional);
+            EnqueuePendingFetch(additional);
             TrackPrefetchedBytes(additional, release: true);
         }
     }
@@ -3170,7 +3172,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         if (_prefetchBuffer.TryRead(out var prefetched))
         {
-            _pendingFetches.Enqueue(prefetched);
+            EnqueuePendingFetch(prefetched);
             TrackPrefetchedBytes(prefetched, release: true);
             DrainPrefetchBuffer();
             return true;
@@ -3184,7 +3186,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 if (_prefetchBuffer.TryRead(out var fetched))
                 {
-                    _pendingFetches.Enqueue(fetched);
+                    EnqueuePendingFetch(fetched);
                     TrackPrefetchedBytes(fetched, release: true);
                     DrainPrefetchBuffer();
                 }
@@ -3319,7 +3321,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
             }
 
-            _pendingFetches.Dequeue().Dispose();
+            DequeuePendingFetch().Dispose();
         }
 
         return false;
@@ -3588,6 +3590,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         pending.Dispose();
     }
 
+    private void EnqueuePendingFetch(PendingFetchData pending)
+    {
+        _pendingFetches.Enqueue(pending);
+        Interlocked.Increment(ref _pendingFetchDepth);
+    }
+
+    private PendingFetchData DequeuePendingFetch()
+    {
+        var pending = _pendingFetches.Dequeue();
+        Interlocked.Decrement(ref _pendingFetchDepth);
+        return pending;
+    }
+
     private void ClearFetchBuffer()
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -3599,6 +3614,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Dispose and clear pending fetches to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
         {
+            Interlocked.Decrement(ref _pendingFetchDepth);
             DisposeQueuedFetch(pending);
         }
         // Also drain prefetched items that haven't been moved to _pendingFetches yet.
@@ -3641,14 +3657,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         for (var i = 0; i < count; i++)
         {
-            var pending = _pendingFetches.Dequeue();
+            var pending = DequeuePendingFetch();
 
             // Check if this partition should be kept
             // Build TopicPartition inline for the Contains check
             if (!removeSet.Contains(pending.TopicPartition))
             {
                 // Keep this item by re-enqueueing it
-                _pendingFetches.Enqueue(pending);
+                EnqueuePendingFetch(pending);
             }
             else
             {
@@ -4730,7 +4746,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     continue;
                                 }
 
-                                _pendingFetches.Enqueue(pending);
+                                EnqueuePendingFetch(pending);
                             }
                         }
                         finally
@@ -6214,6 +6230,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Step 10: Clear pending fetch data and dispose to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
         {
+            Interlocked.Decrement(ref _pendingFetchDepth);
             pending.Dispose();
         }
         while (_prefetchBuffer.TryRead(out var prefetched))
@@ -6502,6 +6519,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Clear and dispose any pending fetch data to release pooled memory
         while (_pendingFetches.TryDequeue(out var pending))
         {
+            Interlocked.Decrement(ref _pendingFetchDepth);
             pending.Dispose();
         }
 
