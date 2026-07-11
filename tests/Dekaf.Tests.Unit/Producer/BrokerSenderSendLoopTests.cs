@@ -29,7 +29,7 @@ public sealed class BrokerSenderSendLoopTests
         int retryBackoffMs = 100, int retryBackoffMaxMs = 1000,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
         int connectionsPerBroker = 1, bool enableAdaptiveConnections = true,
-        bool enableIdempotence = true) => new()
+        bool enableIdempotence = true, int batchSize = 1_048_576) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
@@ -41,6 +41,7 @@ public sealed class BrokerSenderSendLoopTests
             RetryBackoffMs = retryBackoffMs,
             RetryBackoffMaxMs = retryBackoffMaxMs,
             RequestTimeoutMs = requestTimeoutMs,
+            BatchSize = batchSize,
             LingerMs = 0
         };
 
@@ -68,6 +69,11 @@ public sealed class BrokerSenderSendLoopTests
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+        pool.GetConnectionByIndexAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
             .Returns(connection);
 
         return (pool, connection);
@@ -196,7 +202,8 @@ public sealed class BrokerSenderSendLoopTests
         Action<ReadyBatch, int>? rerouteBatch = null,
         Action<int>? onBrokerThrottle = null,
         Func<long>? getTimestamp = null,
-        Func<int, CancellationToken, ValueTask>? delayForThrottle = null) =>
+        Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
+        Action? onBlockedBucketRequeued = null) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -214,7 +221,8 @@ public sealed class BrokerSenderSendLoopTests
             logger: null,
             onBrokerThrottle: onBrokerThrottle,
             getTimestamp: getTimestamp,
-            delayForThrottle: delayForThrottle);
+            delayForThrottle: delayForThrottle,
+            onBlockedBucketRequeued: onBlockedBucketRequeued);
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {
@@ -610,6 +618,229 @@ public sealed class BrokerSenderSendLoopTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_InFlightByteBudget_SecondLargeRequestWaitsForFirstResponse(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, secondResponse]);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendCount = 0;
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(
+            maxInFlight: 100,
+            enableAdaptiveConnections: false,
+            enableIdempotence: false,
+            batchSize: 100);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 5_000));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1, dataSize: 5_000));
+
+            var observationWindow = Task.Delay(100, cancellationToken);
+            var firstCompleted = await Task.WhenAny(sendSignals[1].Task, observationWindow);
+            await Assert.That(firstCompleted).IsSameReferenceAs(observationWindow);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+
+            firstResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 200));
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_InFlightByteBudget_DoesNotBlockIdleConnection(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, secondResponse]);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendCount = 0;
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(
+            maxInFlight: 100,
+            connectionsPerBroker: 2,
+            enableAdaptiveConnections: false,
+            enableIdempotence: false,
+            batchSize: 100);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 5_000));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1, dataSize: 5_000));
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+
+            firstResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 200));
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_BlockedBucket_DoesNotPreventFreshWorkOnIdleConnection(
+        CancellationToken cancellationToken)
+    {
+        var responses = new[]
+        {
+            new TaskCompletionSource<ProduceResponse>(),
+            new TaskCompletionSource<ProduceResponse>(),
+            new TaskCompletionSource<ProduceResponse>(),
+            new TaskCompletionSource<ProduceResponse>()
+        };
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(responses);
+        var sendSignals = new[]
+        {
+            new TaskCompletionSource(),
+            new TaskCompletionSource(),
+            new TaskCompletionSource(),
+            new TaskCompletionSource()
+        };
+        var sendCount = 0;
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(
+            maxInFlight: 100,
+            connectionsPerBroker: 2,
+            enableAdaptiveConnections: false,
+            enableIdempotence: false,
+            batchSize: 100);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var blockedBucketRequeued = new TaskCompletionSource();
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            onBlockedBucketRequeued: () => blockedBucketRequeued.TrySetResult());
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 5_000));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            // Partition 2 shares the saturated connection with partition 0. Partition 1
+            // can send immediately, and partition 3 must remain serviceable afterward.
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 2, dataSize: 5_000));
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1, dataSize: 10));
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+
+            await blockedBucketRequeued.Task.WaitAsync(cancellationToken);
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 3, dataSize: 10));
+            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+
+            responses[0].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
+            responses[1].SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 200));
+            responses[2].SetResult(CreateSuccessResponse("test-topic", 3, baseOffset: 300));
+            await sendSignals[3].Task.WaitAsync(cancellationToken);
+            responses[3].SetResult(CreateSuccessResponse("test-topic", 2, baseOffset: 400));
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_StaleAfterWrite_ByteAccountingSkipsNulledBatch(
+        CancellationToken cancellationToken)
+    {
+        var responses = new[]
+        {
+            new TaskCompletionSource<ProduceResponse>(),
+            new TaskCompletionSource<ProduceResponse>()
+        };
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(responses);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        ReadyBatch? staleBatch = null;
+        var sendCount = 0;
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            if (index == 0)
+                Interlocked.Exchange(ref staleBatch!._returnedToPool, 1);
+            sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(
+            maxInFlight: 100,
+            enableAdaptiveConnections: false,
+            enableIdempotence: false);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource();
+        var sender = CreateSender(pool, options, accumulator, (tp, _, _, _, ex) =>
+        {
+            if (tp.Partition == 1 && ex is null)
+                acknowledged.TrySetResult();
+        });
+
+        try
+        {
+            staleBatch = CreateTestBatch(valueTaskSourcePool, "test-topic", 0);
+            sender.Enqueue(staleBatch);
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+            responses[0].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            responses[1].SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 200));
+            await acknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
         }
     }
 

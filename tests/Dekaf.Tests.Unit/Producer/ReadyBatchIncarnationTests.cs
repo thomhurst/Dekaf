@@ -165,7 +165,9 @@ public sealed class ReadyBatchIncarnationTests
         var generations = new[] { capturedGeneration };
         var responseTask = Task.FromResult(new ProduceResponse());
         var create = PendingResponseType.GetMethod("Create", BindingFlags.Public | BindingFlags.Static)!;
-        var pending = create.Invoke(null, [responseTask, batches, generations, 1, Stopwatch.GetTimestamp()])!;
+        var pending = create.Invoke(
+            null,
+            [responseTask, batches, generations, 1, (long)batch.EncodedSize, Stopwatch.GetTimestamp()])!;
         var isSameIncarnation = PendingResponseType.GetMethod("IsSameIncarnation")!;
 
         Interlocked.Exchange(ref batch._returnedToPool, 1);
