@@ -228,6 +228,9 @@ public sealed class ConsumerConnectionOwnershipTests
         TriggerScaleDown(consumer);
 
         await Assert.That(removedConnection.DisposeCount).IsEqualTo(0);
+        await TestWait.UntilAsync(
+            () => GetField<Task>(consumer, "_connectionRoutingTransitionTask").IsCompleted,
+            TimeSpan.FromSeconds(5));
 
         removedConnection.ReleaseLease();
         await TestWait.UntilAsync(

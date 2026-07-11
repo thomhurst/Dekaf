@@ -851,6 +851,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConsumerConnectionScaler? _connectionScaler;
     private int _appliedConnectionCount;
     private Task? _connectionRoutingTransitionTask;
+    private readonly ConcurrentDictionary<Task, byte> _retiredConnectionDisposalTasks = new();
     private readonly AdaptiveFetchSizer? _adaptiveFetchSizer;
     private int _adaptiveFetchMemoryPressureSignals;
 
@@ -1228,11 +1229,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (removedConnection is null)
             return;
 
-        // Once detached from the pool, the retired connection must finish draining even if
-        // consumer shutdown cancels further pool operations; otherwise it has no remaining owner.
-        await RetiredConnectionDisposer.DrainAndDisposeAsync(
-            removedConnection,
-            CancellationToken.None).ConfigureAwait(false);
+        // Pool detachment completes the routing transition. Drain leases and operations in
+        // the background so a slow retired socket cannot pause all consumer prefetch.
+        StartRetiredConnectionDisposal(removedConnection);
+    }
+
+    private void StartRetiredConnectionDisposal(IKafkaConnection connection)
+    {
+        var disposalTask = RetiredConnectionDisposer.DrainAndDisposeAsync(
+            connection,
+            CancellationToken.None).AsTask();
+        _retiredConnectionDisposalTasks.TryAdd(disposalTask, 0);
+        _ = disposalTask.ContinueWith(
+            static (task, state) =>
+                ((KafkaConsumer<TKey, TValue>)state!).ObserveRetiredConnectionDisposal(task),
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private void ObserveRetiredConnectionDisposal(Task task)
+    {
+        _retiredConnectionDisposalTasks.TryRemove(task, out _);
+        _ = task.Exception;
     }
 
     public StringSet Subscription => _subscriptionSnapshot;
@@ -7271,6 +7291,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 await _connectionScaler.StopAndDrainAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
             _connectionScaler.Dispose();
+        }
+
+        var retiredConnectionDisposals = _retiredConnectionDisposalTasks.Keys.ToArray();
+        if (retiredConnectionDisposals.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(retiredConnectionDisposals).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Completion continuations observe individual disposal failures.
+            }
         }
 
         autoCommitCts?.Dispose();
