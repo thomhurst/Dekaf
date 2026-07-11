@@ -189,15 +189,18 @@ public sealed class ConsumerAssignmentFastPathTests
 
         await using var metadataManager = CreateMetadataManager(connectionPool);
         SetupFindCoordinator(connection);
-        SetupChangingConsumerGroupHeartbeat(connection);
-        var offsetFetchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseOffsetFetch = new TaskCompletionSource<OffsetFetchResponse>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        SetupBlockingSecondOffsetFetch(connection, offsetFetchStarted, releaseOffsetFetch);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetch(connection);
 
         await using var consumer = CreateGroupConsumer(connectionPool, metadataManager, maxPollIntervalMs: 100);
         consumer.Subscribe("test-topic");
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var offsetFetchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOffsetFetch = new TaskCompletionSource<OffsetFetchResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0, 1));
+        SetupBlockingOffsetFetch(connection, offsetFetchStarted, releaseOffsetFetch);
 
         var coordinator = GetCoordinator(consumer);
         coordinator.RequestRejoin();
@@ -886,21 +889,17 @@ public sealed class ConsumerAssignmentFastPathTests
             .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
     }
 
-    private static void SetupBlockingSecondOffsetFetch(
+    private static void SetupBlockingOffsetFetch(
         IKafkaConnection connection,
         TaskCompletionSource offsetFetchStarted,
         TaskCompletionSource<OffsetFetchResponse> releaseOffsetFetch)
     {
-        var callCount = 0;
         connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
                 Arg.Any<OffsetFetchRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
-                if (Interlocked.Increment(ref callCount) == 1)
-                    return ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse());
-
                 offsetFetchStarted.TrySetResult();
                 return new ValueTask<OffsetFetchResponse>(releaseOffsetFetch.Task);
             });
