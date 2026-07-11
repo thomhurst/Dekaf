@@ -105,6 +105,22 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    public async Task ParseFetchResponse_WhenParsingThrows_ReturnsPooledBuffer()
+    {
+        var pool = new ResponseBufferPool(1024);
+        var array = pool.Pool.Rent(16);
+        Array.Clear(array);
+        var buffer = new PooledResponseBuffer(array, 1, isPooled: true, pool: pool);
+
+        await Assert.That(() => KafkaConnection.ParseFetchResponse<FetchRequest, FetchResponse>(buffer, 16))
+            .ThrowsException();
+
+        var returned = pool.Pool.Rent(16);
+        await Assert.That(returned).IsSameReferenceAs(array);
+        pool.Pool.Return(returned);
+    }
+
+    [Test]
     public async Task Host_ReturnsConstructorValue()
     {
         var connection = new KafkaConnection("my-broker.example.com", 9092);
