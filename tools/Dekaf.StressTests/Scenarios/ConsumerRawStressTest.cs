@@ -110,6 +110,7 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
             DurationMinutes = options.DurationMinutes,
             BrokerCount = options.BrokerCount,
             MessageSizeBytes = options.MessageSizeBytes,
+            ConsumerSeedBatchSizeBytes = options.ConsumerSeedBatchSizeBytes,
             StartedAtUtc = startedAt,
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),

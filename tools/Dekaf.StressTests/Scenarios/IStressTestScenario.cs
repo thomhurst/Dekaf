@@ -20,6 +20,7 @@ internal sealed class StressTestOptions
     public int Partitions { get; init; } = 6;
     public int LingerMs { get; init; } = 5;
     public int BatchSize { get; init; } = 16384;
+    public int? ConsumerSeedBatchSizeBytes { get; init; }
     public string Compression { get; init; } = "none";
     public int BrokerCount { get; init; } = 1;
     public int ConnectionsPerBroker { get; init; } = 1;

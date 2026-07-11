@@ -39,6 +39,7 @@ namespace Dekaf.StressTests;
 /// </summary>
 public static class Program
 {
+    private const int ConsumerSeedBatchSizeBytes = 16 * 1024;
     private static readonly ConcurrentQueue<Exception> UnobservedTaskExceptions = new();
 
     public static async Task<int> Main(string[] args)
@@ -210,6 +211,7 @@ public static class Program
             Partitions = options.Partitions,
             LingerMs = options.LingerMs,
             BatchSize = options.BatchSize,
+            ConsumerSeedBatchSizeBytes = UsesProducerTopic(scenarioName) ? null : ConsumerSeedBatchSizeBytes,
             Compression = options.Compression,
             BrokerCount = options.Brokers,
             ConnectionsPerBroker = connectionsPerBroker,
@@ -658,7 +660,7 @@ public static class Program
             .WithClientId("stress-seeder")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(5))
-            .WithBatchSize(16384)
+            .WithBatchSize(ConsumerSeedBatchSizeBytes)
             .BuildAsync();
 
         var batchSize = 10_000;
