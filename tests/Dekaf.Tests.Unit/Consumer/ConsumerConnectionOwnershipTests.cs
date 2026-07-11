@@ -14,6 +14,39 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class ConsumerConnectionOwnershipTests
 {
     [Test]
+    public async Task ScaleUp_DrainsOldRoutingBeforeApplyingNewWidth()
+    {
+        var pool = CreatePool();
+        var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateStandaloneConsumer(pool, metadataManager);
+        var scheduler = GetField<BrokerPrefetchScheduler>(consumer, "_brokerPrefetchScheduler");
+        var oldFetchCanComplete = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), async () =>
+        {
+            await oldFetchCanComplete.Task.ConfigureAwait(false);
+        });
+
+        var scaler = GetField<ConsumerConnectionScaler>(consumer, "_connectionScaler");
+        scaler.ReportPipelineUtilization(3, pipelineDepth: 3);
+        scaler.TestAdvanceTime(TimeSpan.FromSeconds(6));
+        scaler.ReportPipelineUtilization(3, pipelineDepth: 3);
+        scaler.MaybeScale();
+
+        await Assert.That(GetField<int>(consumer, "_appliedConnectionCount")).IsEqualTo(2);
+        _ = pool.DidNotReceive().ScaleConnectionGroupAsync(
+            Arg.Any<int>(),
+            Arg.Any<int>(),
+            Arg.Any<CancellationToken>());
+
+        oldFetchCanComplete.SetResult();
+        await TestWait.UntilAsync(
+            () => GetField<int>(consumer, "_appliedConnectionCount") == 3,
+            TimeSpan.FromSeconds(5));
+        _ = pool.Received(1).ScaleConnectionGroupAsync(1, 3, Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task SharedConsumer_ScaleDown_DoesNotShrinkSiblingConnection()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -397,6 +430,13 @@ public sealed class ConsumerConnectionOwnershipTests
         scaler.ReportPipelineUtilization(0, pipelineDepth: 3);
         scaler.MaybeScale();
     }
+
+    private static T GetField<T>(object instance, string fieldName) =>
+        (T)(instance.GetType().GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"{fieldName} field not found"))
+        .GetValue(instance)!;
 
     private sealed class TrackedConnection(
         bool hasPendingRequest,
