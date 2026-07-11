@@ -189,7 +189,7 @@ def paired_latency_thresholds(results):
     evaluations = []
     for result in results:
         client = str(result.get('client', ''))
-        if client.casefold() == 'confluent':
+        if client.casefold() != 'dekaf':
             continue
         baseline = baselines.get(_latency_identity(result))
         latency = result.get('latency')
