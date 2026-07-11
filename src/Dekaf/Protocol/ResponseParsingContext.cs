@@ -25,6 +25,7 @@ internal static class ResponseParsingContext
     {
         public IPooledMemory? PooledMemory;
         public bool MemoryUsed;
+        public bool CheckCrcs;
     }
 
     /// <summary>
@@ -33,7 +34,7 @@ internal static class ResponseParsingContext
     /// Must be called before parsing a FetchResponse. Use with <c>using</c>:
     /// <code>using var scope = ResponseParsingContext.SetPooledMemory(memory);</code>
     /// </summary>
-    public static ParsingScope SetPooledMemory(IPooledMemory memory)
+    public static ParsingScope SetPooledMemory(IPooledMemory memory, bool checkCrcs = false)
     {
         var state = t_state ??= new ParsingContextState();
 
@@ -42,6 +43,7 @@ internal static class ResponseParsingContext
         // path that bypassed the scope disposal).
         state.PooledMemory = memory;
         state.MemoryUsed = false;
+        state.CheckCrcs = checkCrcs;
         return new ParsingScope();
     }
 
@@ -49,6 +51,8 @@ internal static class ResponseParsingContext
     /// Returns true if pooled memory is available for zero-copy parsing.
     /// </summary>
     public static bool HasPooledMemory => t_state?.PooledMemory is not null;
+
+    public static bool CheckCrcs => t_state?.CheckCrcs ?? false;
 
     /// <summary>
     /// Marks the pooled memory as being used by at least one batch.
@@ -97,6 +101,7 @@ internal static class ResponseParsingContext
         {
             state.PooledMemory = null;
             state.MemoryUsed = false;
+            state.CheckCrcs = false;
         }
     }
 

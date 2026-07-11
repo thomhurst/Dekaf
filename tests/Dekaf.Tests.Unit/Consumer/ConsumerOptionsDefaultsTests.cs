@@ -167,10 +167,10 @@ public class ConsumerOptionsDefaultsTests
     }
 
     [Test]
-    public async Task CheckCrcs_DefaultsTo_False()
+    public async Task CheckCrcs_DefaultsTo_True()
     {
         var options = CreateOptions();
-        await Assert.That(options.CheckCrcs).IsFalse();
+        await Assert.That(options.CheckCrcs).IsTrue();
     }
 
     [Test]

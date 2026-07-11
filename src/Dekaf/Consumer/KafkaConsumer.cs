@@ -2545,6 +2545,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             request.MaxWaitMs = _options.FetchMaxWaitMs;
             request.MinBytes = _options.FetchMinBytes;
             request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
+            request.CheckCrcs = _options.CheckCrcs;
             request.IsolationLevel = _options.IsolationLevel;
             request.RackId = _options.ClientRack;
             request.Topics = fetchSessionBuild?.Topics ?? topicData;
@@ -5336,6 +5337,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         request.MaxWaitMs = _options.FetchMaxWaitMs;
         request.MinBytes = _options.FetchMinBytes;
         request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
+        request.CheckCrcs = _options.CheckCrcs;
         request.IsolationLevel = _options.IsolationLevel;
         request.RackId = _options.ClientRack;
         request.Topics = fetchSessionBuild?.Topics ?? topicData;

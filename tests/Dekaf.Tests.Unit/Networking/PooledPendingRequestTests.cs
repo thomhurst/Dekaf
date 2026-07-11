@@ -7,6 +7,24 @@ namespace Dekaf.Tests.Unit.Networking;
 public class PooledPendingRequestTests
 {
     [Test]
+    public async Task PoolReturn_ResetsCheckCrcs()
+    {
+        var pool = new PendingRequestPool(maxPoolSize: 1);
+        var request = pool.Rent();
+        request.Initialize(
+            responseHeaderVersion: 0,
+            CancellationToken.None,
+            checkCrcs: true);
+        await Assert.That(request.CheckCrcs).IsTrue();
+
+        pool.Return(request);
+        var reused = pool.Rent();
+
+        await Assert.That(reused.CheckCrcs).IsFalse();
+        pool.Return(reused);
+    }
+
+    [Test]
     public async Task TryComplete_WithValidBuffer_CompletesWithSlicedResult()
     {
         var pool = new PendingRequestPool();
