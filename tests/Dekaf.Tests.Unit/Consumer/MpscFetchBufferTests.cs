@@ -268,6 +268,32 @@ public class MpscFetchBufferTests
     }
 
     [Test]
+    public async Task WaitToReadAsync_DataArrivesBeforePark_SkipsWaiter()
+    {
+        var item = CreateDummy();
+        MpscFetchBuffer? buffer = null;
+        buffer = new MpscFetchBuffer(
+            4,
+            afterProducerWaiterCountIncrementedForTesting: null,
+            beforeConsumerWaitSpinForTesting: () => buffer!.TryWrite(item));
+
+        try
+        {
+            var result = await buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
+
+            await Assert.That(result).IsTrue();
+            await Assert.That(GetConsumerWaiting(buffer)).IsEqualTo(0);
+            await Assert.That(GetDataAvailableWaiter(buffer)).IsNull();
+            await Assert.That(buffer.TryRead(out var read)).IsTrue();
+            await Assert.That(read).IsSameReferenceAs(item);
+        }
+        finally
+        {
+            item.Dispose();
+        }
+    }
+
+    [Test]
     public async Task WaitToReadAsync_Timeout_ReturnsFalseAndClearsWaiterState()
     {
         var buffer = new MpscFetchBuffer(4);

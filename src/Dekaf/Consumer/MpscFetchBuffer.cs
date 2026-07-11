@@ -26,6 +26,7 @@ internal sealed class MpscFetchBuffer
     private readonly SemaphoreSlim _spaceAvailable = new(0, int.MaxValue);
     private readonly object _dataAvailableWaiterLock = new();
     private readonly Action? _afterProducerWaiterCountIncrementedForTesting;
+    private readonly Action? _beforeConsumerWaitSpinForTesting;
     private TaskCompletionSource<bool>? _dataAvailableWaiter;
     private int _producerWaiterCount;
     private int _consumerWaiting;
@@ -33,11 +34,17 @@ internal sealed class MpscFetchBuffer
     private volatile Exception? _completionError;
 
     public MpscFetchBuffer(int capacity)
-        : this(capacity, afterProducerWaiterCountIncrementedForTesting: null)
+        : this(
+            capacity,
+            afterProducerWaiterCountIncrementedForTesting: null,
+            beforeConsumerWaitSpinForTesting: null)
     {
     }
 
-    internal MpscFetchBuffer(int capacity, Action? afterProducerWaiterCountIncrementedForTesting)
+    internal MpscFetchBuffer(
+        int capacity,
+        Action? afterProducerWaiterCountIncrementedForTesting,
+        Action? beforeConsumerWaitSpinForTesting = null)
     {
         if (capacity < 1)
             throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be positive.");
@@ -52,6 +59,7 @@ internal sealed class MpscFetchBuffer
         _buffer = new PendingFetchData?[size];
         _mask = size - 1;
         _afterProducerWaiterCountIncrementedForTesting = afterProducerWaiterCountIncrementedForTesting;
+        _beforeConsumerWaitSpinForTesting = beforeConsumerWaitSpinForTesting;
     }
 
     internal int Capacity => _buffer.Length;
@@ -237,6 +245,19 @@ internal sealed class MpscFetchBuffer
             if (_completionError is not null)
                 throw _completionError;
             return HasDataAvailable();
+        }
+
+        // Catch near-simultaneous producer arrivals without publishing a TCS and forcing its
+        // continuation through the ThreadPool. Stop before SpinWait would yield or sleep so the
+        // optimization remains bounded and does not delay unrelated work on a busy host.
+        _beforeConsumerWaitSpinForTesting?.Invoke();
+        var spin = new SpinWait();
+        while (!spin.NextSpinWillYield)
+        {
+            if (HasDataAvailable())
+                return true;
+
+            spin.SpinOnce();
         }
 
         TaskCompletionSource<bool>? waiter = null;
