@@ -1,4 +1,5 @@
 #if NET10_0
+using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.StressTests.Diagnostics;
 using Dekaf.StressTests.Metrics;
@@ -45,6 +46,62 @@ public sealed class SoakStressTestTests
             var contents = await File.ReadAllTextAsync(producerArtifact);
             await Assert.That(contents).Contains("\"scenario\": \"soak\"");
             await Assert.That(contents).Contains("\"diagnosticsEnabled\": true");
+        }
+        finally
+        {
+            Directory.Delete(outputDirectory, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task TrackConsumerMeasurementProgress_StallCapturesConsumerDiagnostics()
+    {
+        var outputDirectory = Path.Combine(Path.GetTempPath(), $"dekaf-soak-consumer-watchdog-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+
+        try
+        {
+            var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var consumerThroughput = new ThroughputTracker();
+            consumerThroughput.Start();
+
+            using var watchdog = new ProgressWatchdog(
+                outputDirectory,
+                captureAfter: TimeSpan.FromMilliseconds(20),
+                exitAfter: TimeSpan.FromMilliseconds(60),
+                pollInterval: TimeSpan.FromMilliseconds(10),
+                exitProcess: code => exited.TrySetResult(code),
+                captureManagedStackReport: () => "fake managed stack");
+            using var registration = new SoakStressTest().TrackConsumerMeasurementProgress(
+                watchdog,
+                consumerThroughput,
+                () => new ConsumerDiagnosticSnapshot
+                {
+                    CapturedAtUtc = DateTimeOffset.UtcNow,
+                    Assignment = [],
+                    FetchPositions = [],
+                    PrefetchedBytes = 0,
+                    PendingFetchDepth = 0,
+                    PrefetchBufferDepth = 0,
+                    PrefetchDepth = 0,
+                    PendingRevocations = [],
+                    PendingRevocationMarkerPresent = false,
+                    PendingRevocationClearPending = false,
+                    PendingDivergingEpochResets = [],
+                    FetchBufferEpoch = 0,
+                    MinimumFetchBufferEpoch = 0,
+                    MinimumFetchBufferEpochsByPartition = [],
+                    AdaptivePartitionFetchBytes = null,
+                    AdaptiveFetchMaxBytes = null
+                });
+
+            await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var consumerArtifact = Directory.GetFiles(
+                Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName),
+                "*-fatal-consumer.json").Single();
+            var contents = await File.ReadAllTextAsync(consumerArtifact);
+            await Assert.That(contents).Contains("\"scenario\": \"soak-consumer\"");
         }
         finally
         {

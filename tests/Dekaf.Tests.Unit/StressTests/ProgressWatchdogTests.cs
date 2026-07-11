@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.StressTests.Diagnostics;
 using Dekaf.StressTests.Metrics;
@@ -31,7 +32,8 @@ public sealed class ProgressWatchdogTests
                 {
                     DiagnosticsEnabled = true,
                     CapturedAtUtc = DateTimeOffset.UtcNow
-                });
+                },
+                CreateConsumerSnapshot);
 
             var exitCode = await exited.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -39,11 +41,17 @@ public sealed class ProgressWatchdogTests
             var diagnosticsDirectory = GetDiagnosticsDirectory(outputDirectory);
             var stackArtifacts = Directory.GetFiles(diagnosticsDirectory, "*-stacks.txt");
             var producerArtifacts = Directory.GetFiles(diagnosticsDirectory, "*-producer.json");
+            var consumerArtifacts = Directory.GetFiles(diagnosticsDirectory, "*-consumer.json");
             await Assert.That(stackArtifacts.Length).IsEqualTo(2);
             await Assert.That(producerArtifacts.Length).IsEqualTo(2);
+            await Assert.That(consumerArtifacts.Length).IsEqualTo(2);
             await Assert.That(Directory.GetFiles(outputDirectory, "*.json")).IsEmpty();
             await Assert.That(await File.ReadAllTextAsync(stackArtifacts[0])).Contains("fake managed stack");
             await Assert.That(await File.ReadAllTextAsync(producerArtifacts[0])).Contains("\"diagnosticsEnabled\": true");
+            var consumerJson = await File.ReadAllTextAsync(consumerArtifacts[0]);
+            await Assert.That(consumerJson).Contains("\"fetchPositions\"");
+            await Assert.That(consumerJson).Contains("\"prefetchedBytes\": 1024");
+            await Assert.That(consumerJson).Contains("\"fetchBufferEpoch\": 7");
         }
         finally
         {
@@ -141,4 +149,24 @@ public sealed class ProgressWatchdogTests
 
     private static string GetDiagnosticsDirectory(string outputDirectory) =>
         Path.Combine(outputDirectory, ProgressWatchdog.ArtifactsDirectoryName);
+
+    private static ConsumerDiagnosticSnapshot CreateConsumerSnapshot() => new()
+    {
+        CapturedAtUtc = DateTimeOffset.UtcNow,
+        FetchPositions = [new ConsumerPartitionOffsetDiagnostic("topic", 0, 42)],
+        Assignment = [new ConsumerTopicPartitionDiagnostic("topic", 0)],
+        PrefetchedBytes = 1_024,
+        PendingFetchDepth = 1,
+        PrefetchBufferDepth = 2,
+        PrefetchDepth = 3,
+        PendingRevocations = [new ConsumerTopicPartitionDiagnostic("topic", 1)],
+        PendingRevocationMarkerPresent = true,
+        PendingRevocationClearPending = true,
+        PendingDivergingEpochResets = [],
+        FetchBufferEpoch = 7,
+        MinimumFetchBufferEpoch = 6,
+        MinimumFetchBufferEpochsByPartition = [new ConsumerPartitionEpochDiagnostic("topic", 0, 6)],
+        AdaptivePartitionFetchBytes = 1_048_576,
+        AdaptiveFetchMaxBytes = 50_000_000
+    };
 }

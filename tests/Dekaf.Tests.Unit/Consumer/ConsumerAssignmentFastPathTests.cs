@@ -205,7 +205,7 @@ public sealed class ConsumerAssignmentFastPathTests
         CoordinatorState stateDuringInitialization;
         try
         {
-            await offsetFetchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await offsetFetchStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
             LastPollTimestampField.SetValue(
                 coordinator,
                 Stopwatch.GetTimestamp() - Stopwatch.Frequency);

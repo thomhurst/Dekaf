@@ -56,6 +56,11 @@ internal sealed class MpscFetchBuffer
 
     internal int Capacity => _buffer.Length;
 
+    internal int Count => (int)Math.Clamp(
+        Volatile.Read(ref _headCommitted.Value) - Volatile.Read(ref _tail.Value),
+        0,
+        _buffer.Length);
+
     internal int ProducerWaiterCount => Volatile.Read(ref _producerWaiterCount);
 
     /// <summary>

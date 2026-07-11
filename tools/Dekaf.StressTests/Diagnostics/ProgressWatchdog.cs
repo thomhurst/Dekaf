@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
 
@@ -94,7 +95,7 @@ internal sealed class ProgressWatchdog : IDisposable
     private readonly TimeSpan _pollInterval;
     private readonly Action<int> _exitProcess;
     private readonly Func<string> _captureManagedStackReport;
-    private readonly TimeSpan _producerDiagnosticsTimeout;
+    private readonly TimeSpan _diagnosticsCaptureTimeout;
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly AutoResetEvent _wakeUp = new(initialState: false);
     private readonly object _sync = new();
@@ -121,12 +122,12 @@ internal sealed class ProgressWatchdog : IDisposable
         _pollInterval = pollInterval ?? DefaultPollInterval;
         _exitProcess = exitProcess ?? Environment.Exit;
         _captureManagedStackReport = captureManagedStackReport ?? CaptureManagedStackReport;
-        _producerDiagnosticsTimeout = producerDiagnosticsTimeout ?? DefaultProducerDiagnosticsTimeout;
+        _diagnosticsCaptureTimeout = producerDiagnosticsTimeout ?? DefaultProducerDiagnosticsTimeout;
 
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_captureAfter, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_exitAfter, _captureAfter);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_pollInterval, TimeSpan.Zero);
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_producerDiagnosticsTimeout, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_diagnosticsCaptureTimeout, TimeSpan.Zero);
 
         Directory.CreateDirectory(_diagnosticsDirectory);
         _thread = new Thread(Run)
@@ -141,7 +142,8 @@ internal sealed class ProgressWatchdog : IDisposable
         ThroughputTracker throughput,
         string client,
         string scenario,
-        Func<ProducerDeliveryDiagnosticsSnapshot?>? captureProducerDiagnostics = null)
+        Func<ProducerDeliveryDiagnosticsSnapshot?>? captureProducerDiagnostics = null,
+        Func<ConsumerDiagnosticSnapshot?>? captureConsumerDiagnostics = null)
     {
         ArgumentNullException.ThrowIfNull(throughput);
         ArgumentException.ThrowIfNullOrWhiteSpace(client);
@@ -162,11 +164,22 @@ internal sealed class ProgressWatchdog : IDisposable
                 client,
                 scenario,
                 captureProducerDiagnostics,
+                captureConsumerDiagnostics,
                 detector);
             _wakeUp.Set();
             return new Registration(this, registrationId);
         }
     }
+
+    internal ProgressWatchdog CreateSibling() =>
+        new(
+            Path.GetDirectoryName(_diagnosticsDirectory)!,
+            _captureAfter,
+            _exitAfter,
+            _pollInterval,
+            _exitProcess,
+            _captureManagedStackReport,
+            _diagnosticsCaptureTimeout);
 
     public void Dispose()
     {
@@ -180,7 +193,7 @@ internal sealed class ProgressWatchdog : IDisposable
             _wakeUp.Set();
         }
 
-        if (_thread.Join(StackCaptureTimeout + _producerDiagnosticsTimeout + TimeSpan.FromSeconds(5)))
+        if (_thread.Join(StackCaptureTimeout + (_diagnosticsCaptureTimeout * 2) + TimeSpan.FromSeconds(5)))
             _wakeUp.Dispose();
     }
 
@@ -262,6 +275,7 @@ internal sealed class ProgressWatchdog : IDisposable
             stalledFor,
             _captureManagedStackReport);
         CaptureProducerDiagnostics($"{prefix}-producer.json", activeRun, capturedAt, stalledFor);
+        CaptureConsumerDiagnostics($"{prefix}-consumer.json", activeRun, capturedAt, stalledFor);
 
         if (action == StallAction.CaptureAndExit)
         {
@@ -364,9 +378,9 @@ internal sealed class ProgressWatchdog : IDisposable
         };
         captureThread.Start();
 
-        if (!captureThread.Join(_producerDiagnosticsTimeout))
+        if (!captureThread.Join(_diagnosticsCaptureTimeout))
         {
-            var error = $"Producer diagnostics capture timed out after {_producerDiagnosticsTimeout}.";
+            var error = $"Producer diagnostics capture timed out after {_diagnosticsCaptureTimeout}.";
             WriteProducerDiagnosticsError(path, activeRun, capturedAt, error);
             Console.Error.WriteLine($"PROGRESS WATCHDOG: {error}");
             return;
@@ -393,6 +407,75 @@ internal sealed class ProgressWatchdog : IDisposable
     }
 
     private static void WriteProducerDiagnosticsError(
+        string path,
+        ActiveRun activeRun,
+        DateTimeOffset capturedAt,
+        string error) =>
+        WriteArtifact(path, JsonSerializer.Serialize(new
+        {
+            CapturedAtUtc = capturedAt,
+            activeRun.Client,
+            activeRun.Scenario,
+            Error = error
+        }, JsonOptions));
+
+    private void CaptureConsumerDiagnostics(
+        string path,
+        ActiveRun activeRun,
+        DateTimeOffset capturedAt,
+        TimeSpan stalledFor)
+    {
+        if (activeRun.CaptureConsumerDiagnostics is null)
+            return;
+
+        ConsumerDiagnosticSnapshot? snapshot = null;
+        Exception? captureException = null;
+        var captureThread = new Thread(() =>
+        {
+            try
+            {
+                snapshot = activeRun.CaptureConsumerDiagnostics();
+            }
+            catch (Exception exception)
+            {
+                captureException = exception;
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "Dekaf consumer diagnostics capture"
+        };
+        captureThread.Start();
+
+        if (!captureThread.Join(_diagnosticsCaptureTimeout))
+        {
+            var error = $"Consumer diagnostics capture timed out after {_diagnosticsCaptureTimeout}.";
+            WriteConsumerDiagnosticsError(path, activeRun, capturedAt, error);
+            Console.Error.WriteLine($"PROGRESS WATCHDOG: {error}");
+            return;
+        }
+
+        if (captureException is not null)
+        {
+            WriteConsumerDiagnosticsError(path, activeRun, capturedAt, captureException.ToString());
+            Console.Error.WriteLine(
+                $"PROGRESS WATCHDOG: consumer diagnostics capture failed: {captureException.Message}");
+            return;
+        }
+
+        var artifact = new
+        {
+            CapturedAtUtc = capturedAt,
+            activeRun.Client,
+            activeRun.Scenario,
+            MessageCount = activeRun.Throughput.MessageCount,
+            StalledFor = stalledFor,
+            ConsumerDiagnostics = snapshot
+        };
+        WriteArtifact(path, JsonSerializer.Serialize(artifact, JsonOptions));
+    }
+
+    private static void WriteConsumerDiagnosticsError(
         string path,
         ActiveRun activeRun,
         DateTimeOffset capturedAt,
@@ -432,6 +515,7 @@ internal sealed class ProgressWatchdog : IDisposable
         string Client,
         string Scenario,
         Func<ProducerDeliveryDiagnosticsSnapshot?>? CaptureProducerDiagnostics,
+        Func<ConsumerDiagnosticSnapshot?>? CaptureConsumerDiagnostics,
         StallDetector Detector);
 
     private sealed class Registration(ProgressWatchdog owner, long registrationId) : IDisposable

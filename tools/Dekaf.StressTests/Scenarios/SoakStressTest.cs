@@ -26,6 +26,7 @@ internal sealed class SoakStressTest : IStressTestScenario
     {
         var messageValue = new string('x', options.MessageSizeBytes);
         var throughput = new ThroughputTracker();
+        var consumerThroughput = new ThroughputTracker();
         var warmupSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var measurementActive = 0;
         var consumedMessages = 0L;
@@ -48,7 +49,11 @@ internal sealed class SoakStressTest : IStressTestScenario
             throughput,
             warmupSeen,
             () => Volatile.Read(ref measurementActive) != 0,
-            () => Interlocked.Increment(ref consumedMessages),
+            () =>
+            {
+                Interlocked.Increment(ref consumedMessages);
+                consumerThroughput.RecordMessage(options.MessageSizeBytes);
+            },
             consumerCts.Token);
 
         var producerBuilder = Kafka.CreateProducer<string, string>()
@@ -106,14 +111,21 @@ internal sealed class SoakStressTest : IStressTestScenario
                 $"trend warmup {options.ResourceTrendThresholds.WarmupMinutes:N0}m");
 
             throughput.Start();
+            consumerThroughput.Start();
             Volatile.Write(ref measurementActive, 1);
             var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, measurementCts.Token);
             var monitorTask = monitor.RunAsync(measurementCts.Token);
 
+            using var consumerProgressWatchdog = options.ProgressWatchdog.CreateSibling();
             using (var measurementWatchdog = TrackMeasurementProgress(
                        options.ProgressWatchdog,
                        throughput,
-                       () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options)))
+                       () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options),
+                       () => StressTestHelpers.CaptureConsumerDiagnostics(consumer)))
+            using (var consumerMeasurementWatchdog = TrackConsumerMeasurementProgress(
+                       consumerProgressWatchdog,
+                       consumerThroughput,
+                       () => StressTestHelpers.CaptureConsumerDiagnostics(consumer)))
             {
                 await RunPacedProducerAsync(
                     producer,
@@ -232,8 +244,24 @@ internal sealed class SoakStressTest : IStressTestScenario
     internal IDisposable TrackMeasurementProgress(
         ProgressWatchdog watchdog,
         ThroughputTracker throughput,
-        Func<ProducerDeliveryDiagnosticsSnapshot?> captureProducerDiagnostics) =>
-        watchdog.Track(throughput, Client, Name, captureProducerDiagnostics);
+        Func<ProducerDeliveryDiagnosticsSnapshot?> captureProducerDiagnostics,
+        Func<ConsumerDiagnosticSnapshot?>? captureConsumerDiagnostics = null) =>
+        watchdog.Track(
+            throughput,
+            Client,
+            Name,
+            captureProducerDiagnostics,
+            captureConsumerDiagnostics);
+
+    internal IDisposable TrackConsumerMeasurementProgress(
+        ProgressWatchdog watchdog,
+        ThroughputTracker throughput,
+        Func<ConsumerDiagnosticSnapshot?> captureConsumerDiagnostics) =>
+        watchdog.Track(
+            throughput,
+            Client,
+            $"{Name}-consumer",
+            captureConsumerDiagnostics: captureConsumerDiagnostics);
 
     internal static bool IsBrokerDeliveryExact(long acceptedMessages, long deliveredMessages) =>
         acceptedMessages == deliveredMessages;

@@ -352,6 +352,10 @@ internal static class StressTestHelpers
         return snapshot;
     }
 
+    internal static ConsumerDiagnosticSnapshot? CaptureConsumerDiagnostics<TKey, TValue>(
+        IKafkaConsumer<TKey, TValue> consumer) =>
+        (consumer as KafkaConsumer<TKey, TValue>)?.CaptureDiagnosticSnapshot();
+
     /// <summary>
     /// Produces one message via ProduceAsync and records the full delivery round-trip
     /// into <paramref name="latency"/> when it completes. The append (including
