@@ -2341,7 +2341,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private Dictionary<int, List<TopicPartition>> ExcludePartitionsPendingFetchClear(
         Dictionary<int, List<TopicPartition>> partitionsByBroker)
     {
-        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
+        if (!HasAnyPendingFetchClear())
             return partitionsByBroker;
 
         var filtered = new Dictionary<int, List<TopicPartition>>(partitionsByBroker.Count);
@@ -4013,7 +4013,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     private bool HasPendingCoordinatorRevocations() =>
-        Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0;
+        Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0
+        || TryRecoverMissingPendingFetchClearMarkers();
 
     private bool IsCurrentlyAssigned(TopicPartition partition)
     {
@@ -4022,8 +4023,41 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool HasPendingFetchClear(TopicPartition partition) =>
-        Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0
+        HasAnyPendingFetchClear()
         && _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition);
+
+    private bool HasAnyPendingFetchClear()
+    {
+        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
+            return true;
+
+        TryRecoverMissingPendingFetchClearMarkers();
+        return Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0;
+    }
+
+    private bool TryRecoverMissingPendingFetchClearMarkers()
+    {
+        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
+            return false;
+
+        if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+            return false;
+
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
+                return false;
+
+            if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
+                return false;
+
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+        }
+
+        LogRecoveredPendingFetchClearInvariant();
+        return true;
+    }
 
     private bool CanContinueBatchIteration(TopicPartition partition) =>
         !HasPendingFetchClear(partition)
@@ -4036,7 +4070,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool ShouldDropStaleFetchPartition(TopicPartition partition, int fetchBufferEpoch) =>
         IsFetchBufferEpochStale(partition, fetchBufferEpoch)
-        || _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition)
+        || HasPendingFetchClear(partition)
         || !IsCurrentlyAssigned(partition);
 
     private void InvalidateAllFetchesLocked()
@@ -6909,6 +6943,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         long resumeOffset,
         long endOffset,
         int leaderEpoch);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Recovered pending fetch-clear state with missing coordination markers")]
+    private partial void LogRecoveredPendingFetchClearInvariant();
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Preferred read replica {ReplicaId} selected for {Topic}-{Partition}")]
     private partial void LogPreferredReadReplicaSelected(string topic, int partition, int replicaId);
