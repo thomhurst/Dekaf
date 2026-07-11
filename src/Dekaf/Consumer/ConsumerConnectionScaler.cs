@@ -300,4 +300,10 @@ internal sealed class ConsumerConnectionScaler : IDisposable
 
     internal void TestSetConnectionCount(int count)
         => _currentConnectionCount = count;
+
+    internal void RollbackFailedScaleUp(int failedTargetCount)
+        => Interlocked.CompareExchange(
+            ref _currentConnectionCount,
+            failedTargetCount - 1,
+            failedTargetCount);
 }

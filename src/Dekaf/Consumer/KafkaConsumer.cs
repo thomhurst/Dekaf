@@ -849,6 +849,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
     private readonly ConsumerConnectionScaler? _connectionScaler;
+    private int _appliedConnectionCount;
+    private Task? _connectionRoutingTransitionTask;
+    private readonly ConcurrentDictionary<Task, byte> _retiredConnectionDisposalTasks = new();
     private readonly AdaptiveFetchSizer? _adaptiveFetchSizer;
     private int _adaptiveFetchMemoryPressureSignals;
 
@@ -1105,6 +1108,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _telemetryMetricCollector);
 
         _compressionCodecs = CompressionCodecRegistry.Default;
+        _appliedConnectionCount = options.ConnectionsPerBroker;
 
         // Initialize adaptive connection scaler if configured (before coordinator, which needs the connection count)
         if (options.EnableAdaptiveConnections && options.MaxConnectionsPerBroker > options.ConnectionsPerBroker)
@@ -1114,15 +1118,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _connectionScaler = new ConsumerConnectionScaler(
                 initialConnectionCount: options.ConnectionsPerBroker,
                 maxConnectionCount: options.MaxConnectionsPerBroker,
-                scaleUpAsync: async ct =>
-                {
-                    var newCount = _connectionScaler!.CurrentConnectionCount;
-                    foreach (var broker in _metadataManager.Metadata.GetBrokers())
-                        await _connectionPool.ScaleConnectionGroupAsync(broker.NodeId, newCount, ct).ConfigureAwait(false);
-                },
-                scaleDownAsync: ownsInfrastructure
-                    ? ScaleDownOwnedConnectionGroupsAsync
-                    : static _ => ValueTask.CompletedTask,
+                scaleUpAsync: ct => BeginConnectionRoutingTransitionAsync(scaleDown: false, ct),
+                scaleDownAsync: ct => BeginConnectionRoutingTransitionAsync(scaleDown: true, ct),
                 logError: ex => _logger.LogWarning(ex, "Adaptive connection scaling operation failed"));
         }
 
@@ -1141,7 +1138,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 _metadataManager,
                 loggerFactory?.CreateLogger<ConsumerCoordinator>(),
                 getConnectionCount: _connectionScaler is not null
-                    ? () => _connectionScaler.CurrentConnectionCount
+                    ? () => Volatile.Read(ref _appliedConnectionCount)
                     : null,
                 onPartitionsRevoked: null,
                 onPartitionsRevoking: QueueCoordinatorRevokedPartitionsForFetchClear);
@@ -1154,15 +1151,77 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         Diagnostics.DekafMetrics.RegisterConsumerLagCallback(ObserveConsumerLag);
     }
 
-    private async ValueTask ScaleDownOwnedConnectionGroupsAsync(CancellationToken cancellationToken)
+    private ValueTask BeginConnectionRoutingTransitionAsync(
+        bool scaleDown,
+        CancellationToken cancellationToken)
     {
-        var newCount = _connectionScaler!.CurrentConnectionCount;
+        var targetCount = _connectionScaler!.CurrentConnectionCount;
+        var transition = ApplyConnectionRoutingTransitionAsync(
+            targetCount,
+            scaleDown,
+            cancellationToken);
+        Volatile.Write(ref _connectionRoutingTransitionTask, transition);
+        return new ValueTask(transition);
+    }
+
+    private async Task ApplyConnectionRoutingTransitionAsync(
+        int targetCount,
+        bool scaleDown,
+        CancellationToken cancellationToken)
+    {
+        // Routing width changes remap partitions across fetch connections. Drain every
+        // request issued with the old mapping before publishing the new width, otherwise
+        // old and new connections can fetch overlapping offsets for the same partition.
+        var drainError = await _brokerPrefetchScheduler
+            .DrainAllSafelyAsync(LogPrefetchLoopError, IsFatalPrefetchError)
+            .ConfigureAwait(false);
+        if (drainError is not null)
+            ExceptionDispatchInfo.Capture(drainError).Throw();
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (scaleDown)
+        {
+            // The narrower mapping is valid against both the old and target pool sizes.
+            // Publish it before physical shrink so a partial broker failure cannot leave
+            // routing pointed at a connection index another broker already retired.
+            Volatile.Write(ref _appliedConnectionCount, targetCount);
+            if (_ownsInfrastructure)
+                await ScaleDownOwnedConnectionGroupsAsync(targetCount, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            try
+            {
+                foreach (var broker in _metadataManager.Metadata.GetBrokers())
+                {
+                    await _connectionPool.ScaleConnectionGroupAsync(
+                        broker.NodeId,
+                        targetCount,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                Volatile.Write(ref _appliedConnectionCount, targetCount);
+            }
+            catch
+            {
+                // The new routing width was never published. Roll scaler bookkeeping
+                // back so sustained saturation can retry, including failures at max.
+                _connectionScaler!.RollbackFailedScaleUp(targetCount);
+                throw;
+            }
+        }
+    }
+
+    private async ValueTask ScaleDownOwnedConnectionGroupsAsync(
+        int targetCount,
+        CancellationToken cancellationToken)
+    {
         var brokers = _metadataManager.Metadata.GetBrokers();
         var scaleDownTasks = new Task[brokers.Count];
         for (var i = 0; i < brokers.Count; i++)
             scaleDownTasks[i] = ScaleDownOwnedConnectionGroupAsync(
                 brokers[i].NodeId,
-                newCount,
+                targetCount,
                 cancellationToken).AsTask();
 
         await Task.WhenAll(scaleDownTasks).ConfigureAwait(false);
@@ -1180,11 +1239,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (removedConnection is null)
             return;
 
-        // Once detached from the pool, the retired connection must finish draining even if
-        // consumer shutdown cancels further pool operations; otherwise it has no remaining owner.
-        await RetiredConnectionDisposer.DrainAndDisposeAsync(
-            removedConnection,
-            CancellationToken.None).ConfigureAwait(false);
+        // Pool detachment completes the routing transition. Drain leases and operations in
+        // the background so a slow retired socket cannot pause all consumer prefetch.
+        StartRetiredConnectionDisposal(removedConnection);
+    }
+
+    private void StartRetiredConnectionDisposal(IKafkaConnection connection)
+    {
+        var disposalTask = RetiredConnectionDisposer.DrainAndDisposeAsync(
+            connection,
+            CancellationToken.None).AsTask();
+        _retiredConnectionDisposalTasks.TryAdd(disposalTask, 0);
+        _ = disposalTask.ContinueWith(
+            static (task, state) =>
+                ((KafkaConsumer<TKey, TValue>)state!).ObserveRetiredConnectionDisposal(task),
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private void ObserveRetiredConnectionDisposal(Task task)
+    {
+        _retiredConnectionDisposalTasks.TryRemove(task, out _);
+        _ = task.Exception;
     }
 
     public StringSet Subscription => _subscriptionSnapshot;
@@ -2216,6 +2294,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         continue;
                     }
 
+                    if (await WaitForConnectionRoutingTransitionAsync().ConfigureAwait(false))
+                        continue;
+
                     var drained = await _brokerPrefetchScheduler.DrainCompletedAsync().ConfigureAwait(false);
                     if (PrefetchLoopControl.ShouldResetConsecutiveErrors(drained))
                         consecutiveErrors = 0;
@@ -2319,6 +2400,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+    private async ValueTask<bool> WaitForConnectionRoutingTransitionAsync()
+    {
+        var transition = Volatile.Read(ref _connectionRoutingTransitionTask);
+        if (transition is null)
+            return false;
+
+        try
+        {
+            await transition.ConfigureAwait(false);
+        }
+        finally
+        {
+            _ = Interlocked.CompareExchange(ref _connectionRoutingTransitionTask, null, transition);
+        }
+
+        return true;
+    }
+
     private async ValueTask<(int Started, int TargetCount)> DispatchReadyBrokerPrefetchesAsync(CancellationToken cancellationToken)
     {
         var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
@@ -2326,7 +2425,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var fetchSessionSnapshot = ShouldUseFetchSessions && !_fetchSessions.IsEmpty
             ? _fetchSessions.ToArray()
             : Array.Empty<KeyValuePair<(int BrokerId, int ConnectionIndex), FetchSessionHandler>>();
-        var currentConnections = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
+        var currentConnections = Volatile.Read(ref _appliedConnectionCount);
         var fetchConnectionCount = ConsumerConnectionScaler.GetFetchConnectionCount(currentConnections);
 
         // Lazily prune stale entries from scaled-down connections.
@@ -5202,7 +5301,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Keep offset-control requests off fetch connections. A delayed fetch response must not
         // block assignment position initialization or watermark queries during a rebalance.
-        var connectionCount = _connectionScaler?.CurrentConnectionCount ?? _options.ConnectionsPerBroker;
+        var connectionCount = Volatile.Read(ref _appliedConnectionCount);
         var connectionIndex = ConsumerCoordinator.GetCoordinationConnectionIndex(connectionCount);
         return await _connectionPool.LeaseConnectionByIndexAsync(leader.NodeId, connectionIndex, cancellationToken)
             .ConfigureAwait(false);
@@ -7202,6 +7301,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 await _connectionScaler.StopAndDrainAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
             _connectionScaler.Dispose();
+        }
+
+        var retiredConnectionDisposals = _retiredConnectionDisposalTasks.Keys.ToArray();
+        if (retiredConnectionDisposals.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(retiredConnectionDisposals).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Completion continuations observe individual disposal failures.
+            }
         }
 
         autoCommitCts?.Dispose();
