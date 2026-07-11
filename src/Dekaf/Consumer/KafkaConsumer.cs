@@ -1088,6 +1088,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (options.EnableAdaptiveFetchSizing)
         {
             _adaptiveFetchSizer = new AdaptiveFetchSizer(ResolveAdaptiveFetchSizingOptions(options));
+            RatchetRecordWrapperPools(partitionCount: 64);
         }
 
         if (!string.IsNullOrEmpty(options.GroupId))
@@ -1770,7 +1771,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (batchProcessingStarted.HasValue)
                     {
                         var processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-                        _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+                        ReportAdaptiveProcessingComplete(processingDuration);
                     }
 
                     // Dequeue and dispose the pending fetch (releases pooled network buffer memory)
@@ -2101,7 +2102,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (batchProcessingStarted.HasValue)
         {
             TimeSpan processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-            _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+            ReportAdaptiveProcessingComplete(processingDuration);
         }
 
         if (disposePending || pending.IsExhausted || !IsCurrentlyAssigned(pending.TopicPartition))
@@ -3520,7 +3521,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (batchProcessingStarted.HasValue)
             {
                 var processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
-                _adaptiveFetchSizer!.ReportProcessingComplete(processingDuration);
+                ReportAdaptiveProcessingComplete(processingDuration);
             }
 
             DequeuePendingFetch().Dispose();
@@ -6447,12 +6448,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var prefetchMaxBytes = CalculatePrefetchMaxBytes(
             (int)Math.Min(CurrentQueuedMaxBytes / 1024, int.MaxValue),
             Math.Max(1, partitionCount),
-            _options.MaxPartitionFetchBytes,
-            _options.FetchMaxBytes,
+            _adaptiveFetchSizer?.CurrentPartitionFetchBytes ?? _options.MaxPartitionFetchBytes,
+            _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes,
             _options.PrefetchPipelineDepth);
         var wrapperPoolSize = PoolSizing.ForConsumerRecordWrappers(prefetchMaxBytes);
         RecordBatch.RatchetPoolSize(wrapperPoolSize);
         LazyRecordList.RatchetPoolSize(wrapperPoolSize);
+    }
+
+    private void ReportAdaptiveProcessingComplete(TimeSpan processingDuration)
+    {
+        var sizer = _adaptiveFetchSizer;
+        if (sizer is null)
+            return;
+
+        var previousPartitionFetchBytes = sizer.CurrentPartitionFetchBytes;
+        var previousFetchMaxBytes = sizer.CurrentFetchMaxBytes;
+        sizer.ReportProcessingComplete(processingDuration);
+
+        if (sizer.CurrentPartitionFetchBytes > previousPartitionFetchBytes
+            || sizer.CurrentFetchMaxBytes > previousFetchMaxBytes)
+        {
+            RatchetRecordWrapperPools(_assignmentSnapshot.Count);
+        }
     }
 
     private async Task StartAutoCommitAsync(CancellationToken cancellationToken)

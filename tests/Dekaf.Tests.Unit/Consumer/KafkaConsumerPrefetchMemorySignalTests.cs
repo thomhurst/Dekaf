@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Internal;
@@ -25,6 +26,45 @@ public sealed class KafkaConsumerPrefetchMemorySignalTests
         ((IBudgetedInstance)consumer).OnBudgetChanged(512UL * 1024 * 1024);
         var expected = PoolSizing.ForConsumerRecordWrappers(512L * 1024 * 1024);
 
+        await Assert.That(RecordBatch.MaxPoolSizeValue).IsGreaterThanOrEqualTo(expected);
+        await Assert.That(LazyRecordList.MaxPoolSizeValue).IsGreaterThanOrEqualTo(expected);
+    }
+
+    [Test]
+    public async Task AdaptiveFetchGrowth_RatchetsRecordWrapperPools()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            QueuedMinMessages = 2,
+            EnableAdaptiveFetchSizing = true,
+            AdaptiveFetchSizingOptions = new AdaptiveFetchSizingOptions
+            {
+                MinPartitionFetchBytes = 1024 * 1024,
+                InitialPartitionFetchBytes = 1024 * 1024,
+                MaxPartitionFetchBytes = 256 * 1024 * 1024,
+                MinFetchMaxBytes = 1024 * 1024,
+                InitialFetchMaxBytes = 16 * 1024 * 1024,
+                MaxFetchMaxBytes = 512 * 1024 * 1024,
+                GrowthFactor = 2,
+                StableWindowCount = 1
+            }
+        };
+
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        var sizer = GetAdaptiveFetchSizer(consumer);
+        SetFetchTiming(sizer, TimeSpan.FromSeconds(1));
+
+        GetReportAdaptiveProcessingComplete().Invoke(consumer, [TimeSpan.FromMilliseconds(1)]);
+
+        var expectedBytes = Math.Min(
+            (long)sizer.CurrentFetchMaxBytes,
+            64L * sizer.CurrentPartitionFetchBytes);
+        var expected = PoolSizing.ForConsumerRecordWrappers(expectedBytes);
+        await Assert.That(sizer.CurrentFetchMaxBytes).IsEqualTo(32 * 1024 * 1024);
         await Assert.That(RecordBatch.MaxPoolSizeValue).IsGreaterThanOrEqualTo(expected);
         await Assert.That(LazyRecordList.MaxPoolSizeValue).IsGreaterThanOrEqualTo(expected);
     }
@@ -78,5 +118,33 @@ public sealed class KafkaConsumerPrefetchMemorySignalTests
         return typeof(KafkaConsumer<string, string>)
             .GetMethod("TrackPrefetchedBytes", BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("TrackPrefetchedBytes method not found - was it renamed?");
+    }
+
+    private static AdaptiveFetchSizer GetAdaptiveFetchSizer(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>)
+            .GetField("_adaptiveFetchSizer", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_adaptiveFetchSizer field not found - was it renamed?");
+
+        return (AdaptiveFetchSizer)field.GetValue(consumer)!;
+    }
+
+    private static void SetFetchTiming(AdaptiveFetchSizer sizer, TimeSpan duration)
+    {
+        var startField = typeof(AdaptiveFetchSizer)
+            .GetField("_lastFetchStartTimestamp", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var endField = typeof(AdaptiveFetchSizer)
+            .GetField("_lastFetchEndTimestamp", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var end = Stopwatch.GetTimestamp();
+        var start = end - (long)(duration.TotalSeconds * Stopwatch.Frequency);
+        startField.SetValue(sizer, start);
+        endField.SetValue(sizer, end);
+    }
+
+    private static MethodInfo GetReportAdaptiveProcessingComplete()
+    {
+        return typeof(KafkaConsumer<string, string>)
+            .GetMethod("ReportAdaptiveProcessingComplete", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("ReportAdaptiveProcessingComplete method not found - was it renamed?");
     }
 }
