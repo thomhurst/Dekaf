@@ -197,7 +197,10 @@ internal sealed class StressTestResult
             denominator += centeredIndex * centeredIndex;
         }
 
-        var sampleMinutes = Throughput.ElapsedSeconds / samples.Length / 60.0;
+        var sampledElapsedSeconds = Throughput.SampledElapsedSeconds > 0
+            ? Throughput.SampledElapsedSeconds
+            : Throughput.ElapsedSeconds;
+        var sampleMinutes = sampledElapsedSeconds / samples.Length / 60.0;
         var slopePerSample = numerator / denominator;
         metrics = new IntraRunThroughputMetrics(
             lastThirdAverage / peak,

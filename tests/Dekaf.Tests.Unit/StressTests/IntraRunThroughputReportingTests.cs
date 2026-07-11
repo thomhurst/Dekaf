@@ -25,6 +25,7 @@ public sealed class IntraRunThroughputReportingTests
                 ElapsedSeconds = 900,
                 AverageMessagesPerSecond = 1400,
                 AverageMegabytesPerSecond = 1.34,
+                SampledElapsedSeconds = 12,
                 MessagesPerSecondSamples =
                 [
                     1700, 1800, 1750, 2000, 2050, 1950,
@@ -48,5 +49,8 @@ public sealed class IntraRunThroughputReportingTests
         await Assert.That(json).Contains("\"steadyStatePeakThresholdBreached\": true");
         await Assert.That(json).Contains("\"throughputSlopeThresholdBreached\": true");
         await Assert.That(json).Contains("\"intraRunThroughputThresholdBreached\": true");
+        var slope = result.ThroughputSlopePercentPerMinute;
+        await Assert.That(slope).IsNotNull();
+        await Assert.That(slope!.Value).IsLessThan(-100);
     }
 }

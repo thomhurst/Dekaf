@@ -23,7 +23,8 @@ internal sealed class ThroughputTracker
     // the produce loop just to discard samples.
     private volatile bool _errorSamplesFull;
     private long _lastSampleMessageCount;
-    private DateTime _lastSampleTime;
+    private long _lastSampleTimestamp;
+    private double _sampledElapsedSeconds;
     private TimeSpan _cpuTimeStart;
     private double _cpuTimeSeconds;
 
@@ -44,8 +45,9 @@ internal sealed class ThroughputTracker
     {
         _stopwatch.Start();
         _cpuTimeStart = Environment.CpuUsage.TotalTime;
-        _lastSampleTime = DateTime.UtcNow;
+        _lastSampleTimestamp = Stopwatch.GetTimestamp();
         _lastSampleMessageCount = 0;
+        _sampledElapsedSeconds = 0;
     }
 
     public void Stop()
@@ -182,10 +184,10 @@ internal sealed class ThroughputTracker
 
     public void TakeSample()
     {
-        var now = DateTime.UtcNow;
+        var now = Stopwatch.GetTimestamp();
         var currentCount = MessageCount;
 
-        var elapsedSeconds = (now - _lastSampleTime).TotalSeconds;
+        var elapsedSeconds = Stopwatch.GetElapsedTime(_lastSampleTimestamp, now).TotalSeconds;
         if (elapsedSeconds > 0)
         {
             var messagesInInterval = currentCount - _lastSampleMessageCount;
@@ -194,10 +196,11 @@ internal sealed class ThroughputTracker
             lock (_samplesLock)
             {
                 _messagesPerSecondSamples.Add(rate);
+                _sampledElapsedSeconds += elapsedSeconds;
             }
         }
 
-        _lastSampleTime = now;
+        _lastSampleTimestamp = now;
         _lastSampleMessageCount = currentCount;
     }
 
@@ -229,9 +232,11 @@ internal sealed class ThroughputTracker
     public ThroughputSnapshot GetSnapshot()
     {
         List<double> samplesCopy;
+        double sampledElapsedSeconds;
         lock (_samplesLock)
         {
             samplesCopy = [.. _messagesPerSecondSamples];
+            sampledElapsedSeconds = _sampledElapsedSeconds;
         }
 
         List<ThroughputErrorSample> errorSamplesCopy;
@@ -250,6 +255,7 @@ internal sealed class ThroughputTracker
             AverageMessagesPerSecond = GetAverageMessagesPerSecond(),
             AverageMegabytesPerSecond = GetAverageMegabytesPerSecond(),
             MessagesPerSecondSamples = samplesCopy,
+            SampledElapsedSeconds = sampledElapsedSeconds,
             ErrorSamples = errorSamplesCopy
         };
     }
@@ -271,6 +277,13 @@ internal sealed class ThroughputSnapshot
     public required double AverageMessagesPerSecond { get; init; }
     public required double AverageMegabytesPerSecond { get; init; }
     public required List<double> MessagesPerSecondSamples { get; init; }
+
+    /// <summary>
+    /// Sum of intervals represented by <see cref="MessagesPerSecondSamples"/>. Excludes
+    /// unsampled work after sampler shutdown, such as a producer's final flush.
+    /// </summary>
+    public double SampledElapsedSeconds { get; init; }
+
     public List<ThroughputErrorSample> ErrorSamples { get; init; } = [];
 }
 
