@@ -6488,11 +6488,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         var previousPartitionFetchBytes = sizer.CurrentPartitionFetchBytes;
         var previousFetchMaxBytes = sizer.CurrentFetchMaxBytes;
-        sizer.ReportProcessingComplete(processingDuration);
 
         var pressureSignals = Interlocked.Exchange(ref _adaptiveFetchMemoryPressureSignals, 0);
-        for (var i = 0; i < pressureSignals; i++)
-            sizer.ReportMemoryPressure();
+        if (pressureSignals == 0)
+        {
+            sizer.ReportProcessingComplete(processingDuration);
+        }
+        else
+        {
+            for (var i = 0; i < pressureSignals; i++)
+                sizer.ReportMemoryPressure();
+        }
 
         if (sizer.CurrentPartitionFetchBytes > previousPartitionFetchBytes
             || sizer.CurrentFetchMaxBytes > previousFetchMaxBytes)

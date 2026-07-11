@@ -1381,6 +1381,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private bool _enableAdaptiveFetchSizing;
     private AdaptiveFetchSizingOptions? _adaptiveFetchSizingOptions;
+    private bool _usesHighThroughputAdaptiveDefaults;
     private bool _enableFetchSessions = true;
     private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
@@ -1610,6 +1611,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (maxBytes < 1)
             throw new ArgumentOutOfRangeException(nameof(maxBytes), "Fetch max bytes must be at least 1");
         _fetchMaxBytes = maxBytes;
+        if (_usesHighThroughputAdaptiveDefaults)
+            ApplyHighThroughputAdaptiveDefaults();
         return this;
     }
 
@@ -1625,6 +1628,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (maxBytes < 1)
             throw new ArgumentOutOfRangeException(nameof(maxBytes), "Max partition fetch bytes must be at least 1");
         _maxPartitionFetchBytes = maxBytes;
+        if (_usesHighThroughputAdaptiveDefaults)
+            ApplyHighThroughputAdaptiveDefaults();
         return this;
     }
 
@@ -1642,6 +1647,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         _enableAdaptiveFetchSizing = true;
         _adaptiveFetchSizingOptions = options;
+        _usesHighThroughputAdaptiveDefaults = false;
         return this;
     }
 
@@ -2263,16 +2269,25 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _prefetchPipelineDepth = 5;
         _checkCrcs = false;
         _enableAdaptiveFetchSizing = true; // Intentional: ForHighThroughput always enables adaptive sizing
-        _adaptiveFetchSizingOptions ??= new AdaptiveFetchSizingOptions
+        if (_adaptiveFetchSizingOptions is null || _usesHighThroughputAdaptiveDefaults)
         {
-            MinPartitionFetchBytes = 4 * 1024 * 1024,
-            InitialPartitionFetchBytes = 4 * 1024 * 1024,
-            MaxPartitionFetchBytes = 16 * 1024 * 1024,
-            MinFetchMaxBytes = 100 * 1024 * 1024,
-            InitialFetchMaxBytes = 100 * 1024 * 1024,
-            MaxFetchMaxBytes = 200 * 1024 * 1024
-        };
+            _usesHighThroughputAdaptiveDefaults = true;
+            ApplyHighThroughputAdaptiveDefaults();
+        }
         return this;
+    }
+
+    private void ApplyHighThroughputAdaptiveDefaults()
+    {
+        _adaptiveFetchSizingOptions = new AdaptiveFetchSizingOptions
+        {
+            MinPartitionFetchBytes = _maxPartitionFetchBytes,
+            InitialPartitionFetchBytes = _maxPartitionFetchBytes,
+            MaxPartitionFetchBytes = (int)Math.Min((long)_maxPartitionFetchBytes * 4, int.MaxValue),
+            MinFetchMaxBytes = _fetchMaxBytes,
+            InitialFetchMaxBytes = _fetchMaxBytes,
+            MaxFetchMaxBytes = (int)Math.Min((long)_fetchMaxBytes * 2, int.MaxValue)
+        };
     }
 
     /// <summary>
