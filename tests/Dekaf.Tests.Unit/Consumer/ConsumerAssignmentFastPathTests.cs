@@ -535,15 +535,10 @@ public sealed class ConsumerAssignmentFastPathTests
             consumer,
             new Dictionary<int, List<TopicPartition>> { [0] = [partition] });
 
-        await Assert.That(filtered).IsEmpty();
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(1);
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(1);
-
-        SetCoordinatorRevokedPartitionsPendingFetchClearMarkers(consumer, markerPresent: 0, pending: 0);
-
-        await Assert.That(ShouldDropStaleFetchPartition(consumer, partition, GetFetchBufferEpoch(consumer))).IsTrue();
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(1);
-        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(1);
+        await Assert.That(filtered[0]).Contains(partition);
+        await Assert.That(ShouldDropStaleFetchPartition(consumer, partition, GetFetchBufferEpoch(consumer))).IsFalse();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(0);
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).IsEmpty();
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(0);
@@ -564,6 +559,7 @@ public sealed class ConsumerAssignmentFastPathTests
             epoch: 7,
             GetFetchBufferEpoch(consumer));
 
+        // A staged reset has a marker but is not drainable until the fetch response is complete.
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(1);
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
@@ -1191,25 +1187,6 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_coordinatorRevokedPartitionsPendingFetchClearMarkerPresent field not found.");
 
         return (int)field.GetValue(consumer)!;
-    }
-
-    private static void SetCoordinatorRevokedPartitionsPendingFetchClearMarkers(
-        KafkaConsumer<string, string> consumer,
-        int markerPresent,
-        int pending)
-    {
-        var consumerType = typeof(KafkaConsumer<string, string>);
-        var markerField = consumerType.GetField(
-            "_coordinatorRevokedPartitionsPendingFetchClearMarkerPresent",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("_coordinatorRevokedPartitionsPendingFetchClearMarkerPresent field not found.");
-        var pendingField = consumerType.GetField(
-            "_coordinatorRevokedPartitionsPendingFetchClearPending",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("_coordinatorRevokedPartitionsPendingFetchClearPending field not found.");
-
-        markerField.SetValue(consumer, markerPresent);
-        pendingField.SetValue(consumer, pending);
     }
 
     private static Dictionary<int, List<TopicPartition>> ExcludePartitionsPendingFetchClear(

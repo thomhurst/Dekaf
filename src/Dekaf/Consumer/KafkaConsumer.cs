@@ -2341,7 +2341,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private Dictionary<int, List<TopicPartition>> ExcludePartitionsPendingFetchClear(
         Dictionary<int, List<TopicPartition>> partitionsByBroker)
     {
-        if (!HasAnyPendingFetchClear())
+        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
             return partitionsByBroker;
 
         var filtered = new Dictionary<int, List<TopicPartition>>(partitionsByBroker.Count);
@@ -3946,7 +3946,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool ClearFetchBufferForPendingCoordinatorRevocations()
     {
-        if (!HasPendingCoordinatorRevocations())
+        if (!HasPendingCoordinatorRevocations()
+            && !TryRecoverMissingPendingFetchClearMarkers())
             return false;
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -4013,8 +4014,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     private bool HasPendingCoordinatorRevocations() =>
-        Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0
-        || TryRecoverMissingPendingFetchClearMarkers();
+        Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0;
 
     private bool IsCurrentlyAssigned(TopicPartition partition)
     {
@@ -4023,17 +4023,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool HasPendingFetchClear(TopicPartition partition) =>
-        HasAnyPendingFetchClear()
+        Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0
         && _coordinatorRevokedPartitionsPendingFetchClear.ContainsKey(partition);
-
-    private bool HasAnyPendingFetchClear()
-    {
-        if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0)
-            return true;
-
-        TryRecoverMissingPendingFetchClearMarkers();
-        return Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0;
-    }
 
     private bool TryRecoverMissingPendingFetchClearMarkers()
     {
