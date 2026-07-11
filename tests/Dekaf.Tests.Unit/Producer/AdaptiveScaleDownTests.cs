@@ -552,7 +552,7 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
-    public async Task ScaleDown_RecentMutedLoad_SurvivesMomentaryClear()
+    public async Task ScaleDown_MutedActivityBetweenChecks_SurvivesMomentaryClear()
     {
         var options = CreateOptions(
             idempotent: false,
@@ -574,8 +574,6 @@ public sealed class AdaptiveScaleDownTests
                 "MutePartition",
                 BindingFlags.Instance | BindingFlags.NonPublic)!
                 .Invoke(sender, [topicPartition]);
-            InvokeMaybeScaleConnections(sender);
-
             typeof(BrokerSender).GetMethod(
                 "UnmutePartition",
                 BindingFlags.Instance | BindingFlags.NonPublic)!

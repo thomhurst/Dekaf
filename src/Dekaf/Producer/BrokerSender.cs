@@ -438,6 +438,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // different threads. HashSet<T> is not thread-safe for concurrent writes.
     private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
     private int _mutedPartitionCount;
+    private long _mutedPartitionActivityVersion;
 
     // Epoch bump recovery flag (Java Kafka Sender pattern): set by response handlers
     // when OutOfOrderSequenceNumber is received. The single-threaded send loop checks
@@ -474,6 +475,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Scale-down state (send-loop owned, single-threaded)
     private long _lowUtilizationStartTicks; // When low utilization was first detected (0 = not tracking)
     private long _lastMutedPartitionLoadTicks; // Last observed mute-on-send activity
+    private long _lastObservedMutedPartitionActivityVersion;
     private Task<IKafkaConnection?>? _pendingShrinkTask; // Background shrink, polled by send loop
     private IKafkaConnection? _drainingConnection; // Connection being drained before disposal
 
@@ -3639,6 +3641,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_mutedPartitions.TryAdd(tp, 0))
         {
             Interlocked.Increment(ref _mutedPartitionCount);
+            Interlocked.Increment(ref _mutedPartitionActivityVersion);
             _accumulator.MutePartition(tp);
         }
     }
@@ -4166,8 +4169,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var activeMutedPartitionCount = _muteOnSend
             ? Volatile.Read(ref _mutedPartitionCount)
             : 0;
-        if (activeMutedPartitionCount > 0)
+        var mutedPartitionActivityVersion = Volatile.Read(ref _mutedPartitionActivityVersion);
+        if (activeMutedPartitionCount > 0
+            || mutedPartitionActivityVersion != _lastObservedMutedPartitionActivityVersion)
+        {
             _lastMutedPartitionLoadTicks = now;
+            _lastObservedMutedPartitionActivityVersion = mutedPartitionActivityVersion;
+        }
 
         // Cooldown applies to both scale-up and scale-down
         if (now - _lastScaleTimeTicks < _scaleCooldownMs)
