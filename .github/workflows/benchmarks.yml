@@ -240,101 +240,57 @@ jobs:
           # Add the BenchmarkDotNet markdown reports directly
           # They have proper tables with Ratio columns
 
-          # Producer benchmarks
-          producer_md = glob.glob("benchmark-results/Client/results/*ProducerBenchmarks*-github.md")
-          if producer_md:
-              output.append("## Producer Benchmarks (Dekaf vs Confluent.Kafka)\n")
-              output.append("> **Ratio < 1.0 means Dekaf is faster than Confluent**\n")
-              with open(producer_md[0]) as f:
-                  content = f.read()
-                  # Remove the ``` code block wrapper
-                  lines = content.split('\n')
-                  in_table = False
-                  for line in lines:
-                      if line.startswith('|'):
-                          in_table = True
-                      if in_table:
-                          output.append(line)
-              output.append("")
-
-          # Consumer benchmarks
-          consumer_md = glob.glob("benchmark-results/Client/results/*ConsumerBenchmarks*-github.md")
-          if consumer_md:
-              output.append("## Consumer Benchmarks (Dekaf vs Confluent.Kafka)\n")
-              with open(consumer_md[0]) as f:
-                  content = f.read()
-                  lines = content.split('\n')
-                  in_table = False
-                  for line in lines:
-                      if line.startswith('|'):
-                          in_table = True
-                      if in_table:
-                          output.append(line)
-              output.append("")
-
-          # Native memory benchmarks (Windows, ETW-based NativeMemoryProfiler)
-          native_md = glob.glob("benchmark-results/ClientNative/results/*ConsumerBenchmarks*-github.md")
-          native_md += glob.glob("benchmark-results/ClientNative/results/*ProducerBenchmarks*-github.md")
-          if native_md:
-              output.append("## Native Memory Comparison (Windows, ETW)\n")
-              output.append("> **'Allocated native memory' captures librdkafka's unmanaged allocations, invisible to the managed Allocated column.** Compare Dekaf's Allocated against Confluent's Allocated + Allocated native memory for a fair total.\n")
-              for md in native_md:
+          def append_tables(paths):
+              # Extract the markdown tables (all '|' lines onward) from each report file.
+              for md in paths:
                   with open(md) as f:
-                      content = f.read()
-                      lines = content.split('\n')
                       in_table = False
-                      for line in lines:
+                      for line in f.read().split('\n'):
                           if line.startswith('|'):
                               in_table = True
                           if in_table:
                               output.append(line)
                   output.append("")
 
+          # Producer benchmarks
+          producer_md = sorted(glob.glob("benchmark-results/Client/results/*ProducerBenchmarks*-github.md"))
+          if producer_md:
+              output.append("## Producer Benchmarks (Dekaf vs Confluent.Kafka)\n")
+              output.append("> **Ratio < 1.0 means Dekaf is faster than Confluent**\n")
+              append_tables(producer_md)
+
+          # Consumer benchmarks (ConsumerBenchmarks + ConsumerPollBenchmarks)
+          consumer_md = sorted(glob.glob("benchmark-results/Client/results/*Consumer*Benchmarks*-github.md"))
+          if consumer_md:
+              output.append("## Consumer Benchmarks (Dekaf vs Confluent.Kafka)\n")
+              append_tables(consumer_md)
+
+          # Native memory benchmarks (Windows, ETW-based NativeMemoryProfiler)
+          native_md = sorted(glob.glob("benchmark-results/ClientNative/results/*Consumer*Benchmarks*-github.md"))
+          native_md += sorted(glob.glob("benchmark-results/ClientNative/results/*ProducerBenchmarks*-github.md"))
+          if native_md:
+              output.append("## Native Memory Comparison (Windows, ETW)\n")
+              output.append("> **'Allocated native memory' captures librdkafka's unmanaged allocations, invisible to the managed Allocated column.** Compare Dekaf's Allocated against Confluent's Allocated + Allocated native memory for a fair total.\n")
+              append_tables(native_md)
+
           # Protocol benchmarks (zero-allocation)
-          protocol_md = glob.glob("benchmark-results/Unit/results/*ProtocolBenchmarks*-github.md")
+          protocol_md = sorted(glob.glob("benchmark-results/Unit/results/*ProtocolBenchmarks*-github.md"))
           if protocol_md:
               output.append("## Protocol Benchmarks (Zero-Allocation Wire Protocol)\n")
               output.append("> **Allocated = `-` means zero heap allocations** ✓\n")
-              with open(protocol_md[0]) as f:
-                  content = f.read()
-                  lines = content.split('\n')
-                  in_table = False
-                  for line in lines:
-                      if line.startswith('|'):
-                          in_table = True
-                      if in_table:
-                          output.append(line)
-              output.append("")
+              append_tables(protocol_md)
 
           # Serializer benchmarks
-          serializer_md = glob.glob("benchmark-results/Unit/results/*SerializerBenchmarks*-github.md")
+          serializer_md = sorted(glob.glob("benchmark-results/Unit/results/*SerializerBenchmarks*-github.md"))
           if serializer_md:
               output.append("## Serializer Benchmarks\n")
-              with open(serializer_md[0]) as f:
-                  content = f.read()
-                  lines = content.split('\n')
-                  in_table = False
-                  for line in lines:
-                      if line.startswith('|'):
-                          in_table = True
-                      if in_table:
-                          output.append(line)
-              output.append("")
+              append_tables(serializer_md)
 
           # Compression benchmarks
-          compression_md = glob.glob("benchmark-results/Unit/results/*CompressionBenchmarks*-github.md")
+          compression_md = sorted(glob.glob("benchmark-results/Unit/results/*CompressionBenchmarks*-github.md"))
           if compression_md:
               output.append("## Compression Benchmarks (Snappy)\n")
-              with open(compression_md[0]) as f:
-                  content = f.read()
-                  lines = content.split('\n')
-                  in_table = False
-                  for line in lines:
-                      if line.startswith('|'):
-                          in_table = True
-                      if in_table:
-                          output.append(line)
-              output.append("")
+              append_tables(compression_md)
 
           output.append("---\n")
           output.append("*Benchmarks run on GitHub Actions (ubuntu-latest) with BenchmarkDotNet*")
@@ -451,48 +407,42 @@ jobs:
           output.append("")
           output.append(":::info")
           output.append("These benchmarks run on GitHub Actions (ubuntu-latest) using BenchmarkDotNet. ")
-          output.append("**Ratio < 1.0 means Dekaf is faster than Confluent.Kafka**")
+          output.append("Ratio semantics differ per table — see 'How to Read These Results' below.")
           output.append(":::")
           output.append("")
 
+          def append_tables(paths):
+              # Extract the markdown tables (all '|' lines onward) from each report file.
+              for md in paths:
+                  with open(md) as f:
+                      in_table = False
+                      for line in f.read().split('\n'):
+                          if line.startswith('|'):
+                              in_table = True
+                          if in_table:
+                              output.append(line)
+                  output.append("")
+
           # Producer benchmarks
-          producer_md = glob.glob("benchmark-results/Client/results/*ProducerBenchmarks*-github.md")
+          producer_md = sorted(glob.glob("benchmark-results/Client/results/*ProducerBenchmarks*-github.md"))
           if producer_md:
               output.append("## Producer Benchmarks")
               output.append("")
               output.append("Comparing Dekaf vs Confluent.Kafka for message production across different scenarios.")
               output.append("")
-              with open(producer_md[0]) as f:
-                  content = f.read()
-                  lines = content.split('\n')
-                  in_table = False
-                  for line in lines:
-                      if line.startswith('|'):
-                          in_table = True
-                      if in_table:
-                          output.append(line)
-              output.append("")
+              append_tables(producer_md)
 
-          # Consumer benchmarks
-          consumer_md = glob.glob("benchmark-results/Client/results/*ConsumerBenchmarks*-github.md")
+          # Consumer benchmarks (ConsumerBenchmarks + ConsumerPollBenchmarks)
+          consumer_md = sorted(glob.glob("benchmark-results/Client/results/*Consumer*Benchmarks*-github.md"))
           if consumer_md:
               output.append("## Consumer Benchmarks")
               output.append("")
               output.append("Comparing Dekaf vs Confluent.Kafka for message consumption.")
               output.append("")
-              with open(consumer_md[0]) as f:
-                  content = f.read()
-                  lines = content.split('\n')
-                  in_table = False
-                  for line in lines:
-                      if line.startswith('|'):
-                          in_table = True
-                      if in_table:
-                          output.append(line)
-              output.append("")
+              append_tables(consumer_md)
 
           # Protocol benchmarks (zero-allocation)
-          protocol_md = glob.glob("benchmark-results/Unit/results/*ProtocolBenchmarks*-github.md")
+          protocol_md = sorted(glob.glob("benchmark-results/Unit/results/*ProtocolBenchmarks*-github.md"))
           if protocol_md:
               output.append("## Protocol Benchmarks")
               output.append("")
@@ -502,48 +452,21 @@ jobs:
               output.append("**Allocated = `-` means zero heap allocations** - the goal of Dekaf's design!")
               output.append(":::")
               output.append("")
-              with open(protocol_md[0]) as f:
-                  content = f.read()
-                  lines = content.split('\n')
-                  in_table = False
-                  for line in lines:
-                      if line.startswith('|'):
-                          in_table = True
-                      if in_table:
-                          output.append(line)
-              output.append("")
+              append_tables(protocol_md)
 
           # Serializer benchmarks
-          serializer_md = glob.glob("benchmark-results/Unit/results/*SerializerBenchmarks*-github.md")
+          serializer_md = sorted(glob.glob("benchmark-results/Unit/results/*SerializerBenchmarks*-github.md"))
           if serializer_md:
               output.append("## Serializer Benchmarks")
               output.append("")
-              with open(serializer_md[0]) as f:
-                  content = f.read()
-                  lines = content.split('\n')
-                  in_table = False
-                  for line in lines:
-                      if line.startswith('|'):
-                          in_table = True
-                      if in_table:
-                          output.append(line)
-              output.append("")
+              append_tables(serializer_md)
 
           # Compression benchmarks
-          compression_md = glob.glob("benchmark-results/Unit/results/*CompressionBenchmarks*-github.md")
+          compression_md = sorted(glob.glob("benchmark-results/Unit/results/*CompressionBenchmarks*-github.md"))
           if compression_md:
               output.append("## Compression Benchmarks")
               output.append("")
-              with open(compression_md[0]) as f:
-                  content = f.read()
-                  lines = content.split('\n')
-                  in_table = False
-                  for line in lines:
-                      if line.startswith('|'):
-                          in_table = True
-                      if in_table:
-                          output.append(line)
-              output.append("")
+              append_tables(compression_md)
 
           output.append("---")
           output.append("")
@@ -552,10 +475,9 @@ jobs:
           output.append("- **Mean**: Average execution time")
           output.append("- **Error**: Half of 99.9% confidence interval")
           output.append("- **StdDev**: Standard deviation of all measurements")
-          output.append("- **Ratio**: Performance relative to baseline (Confluent.Kafka)")
-          output.append("  - `< 1.0` = Dekaf is faster")
-          output.append("  - `> 1.0` = Confluent is faster")
-          output.append("  - `1.0` = Same performance")
+          output.append("- **Ratio**: Performance relative to that table's baseline row")
+          output.append("  - Producer/Consumer tables: baseline is Confluent.Kafka, so `< 1.0` = Dekaf is faster, `> 1.0` = Confluent is faster")
+          output.append("  - Unit tables (Protocol/Serializer/Compression): baseline is an internal reference implementation, not Confluent")
           output.append("- **Allocated**: Heap memory allocated per operation")
           output.append("  - `-` = Zero allocations (ideal!)")
           output.append("")
