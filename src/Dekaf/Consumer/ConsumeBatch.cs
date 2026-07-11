@@ -4,6 +4,105 @@ using Dekaf.Serialization;
 
 namespace Dekaf.Consumer
 {
+    internal sealed class BatchIterationEpoch
+    {
+        // Seqlock: even versions are stable; odd versions mean assignment/revocation state
+        // is being published and must not be adopted by a batch iterator.
+        private readonly object _publicationLock = new();
+        public int Version;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Invalidate()
+        {
+            lock (_publicationLock)
+                Interlocked.Add(ref Version, 2);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void BeginPublication()
+        {
+            Monitor.Enter(_publicationLock);
+            Interlocked.Increment(ref Version);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void EndPublication()
+        {
+            Interlocked.Increment(ref Version);
+            Monitor.Exit(_publicationLock);
+        }
+    }
+
+    internal readonly struct BatchIterationGuard(
+        BatchIterationEpoch? epoch,
+        int capturedVersion,
+        Func<TopicPartition, bool>? canContinue = null)
+    {
+        public int CapturedVersion => capturedVersion;
+
+        public bool CanStart(TopicPartition partition, ref int observedVersion)
+        {
+            if (epoch is null)
+                return canContinue is null || canContinue(partition);
+
+            if (canContinue is null)
+            {
+                var currentVersion = Volatile.Read(ref epoch.Version);
+                return (currentVersion & 1) == 0 && currentVersion == observedVersion;
+            }
+
+            var spin = new SpinWait();
+            while (true)
+            {
+                var currentVersion = Volatile.Read(ref epoch.Version);
+                if ((currentVersion & 1) != 0)
+                {
+                    spin.SpinOnce();
+                    continue;
+                }
+
+                if (!canContinue(partition))
+                    return false;
+
+                if (Volatile.Read(ref epoch.Version) == currentVersion)
+                {
+                    observedVersion = currentVersion;
+                    return true;
+                }
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool IsCurrent(TopicPartition partition, ref int observedVersion)
+        {
+            if (epoch is null)
+                return canContinue is null || canContinue(partition);
+
+            var spin = new SpinWait();
+            while (true)
+            {
+                var currentVersion = Volatile.Read(ref epoch.Version);
+                if ((currentVersion & 1) != 0)
+                {
+                    spin.SpinOnce();
+                    continue;
+                }
+
+                if (currentVersion == observedVersion)
+                    return true;
+
+                if (canContinue is null || !canContinue(partition))
+                    return false;
+
+                if (Volatile.Read(ref epoch.Version) == currentVersion)
+                {
+                    observedVersion = currentVersion;
+                    return true;
+                }
+            }
+        }
+    }
+
     /// <summary>
     /// Represents a batch of consume results from a single partition fetch response.
     /// Records within the batch are iterated synchronously, eliminating async state machine
@@ -16,21 +115,21 @@ namespace Dekaf.Consumer
         private readonly PendingFetchData _pendingFetchData;
         private readonly IDeserializer<TKey>? _keyDeserializer;
         private readonly IDeserializer<TValue>? _valueDeserializer;
-        private readonly Func<TopicPartition, bool>? _isPartitionStillAssigned;
+        private readonly BatchIterationGuard _iterationGuard;
         private readonly int _maxRecords;
         private long _count;
 
         internal ConsumeBatch(PendingFetchData pendingFetchData,
             IDeserializer<TKey>? keyDeserializer,
             IDeserializer<TValue>? valueDeserializer,
-            Func<TopicPartition, bool>? isPartitionStillAssigned = null,
+            BatchIterationGuard iterationGuard = default,
             int maxRecords = int.MaxValue)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
             _keyDeserializer = keyDeserializer;
             _valueDeserializer = valueDeserializer;
-            _isPartitionStillAssigned = isPartitionStillAssigned;
+            _iterationGuard = iterationGuard;
             _maxRecords = maxRecords;
         }
 
@@ -81,11 +180,17 @@ namespace Dekaf.Consumer
         public struct Enumerator : IEnumerator<ConsumeResult<TKey, TValue>>
         {
             private readonly ConsumeBatch<TKey, TValue> _batch;
+            private readonly bool _canContinue;
+            private int _observedVersion;
             private int _recordsYielded;
 
             internal Enumerator(ConsumeBatch<TKey, TValue> batch)
             {
                 _batch = batch;
+                _observedVersion = batch._iterationGuard.CapturedVersion;
+                _canContinue = batch._iterationGuard.CanStart(
+                    batch._pendingFetchData.TopicPartition,
+                    ref _observedVersion);
                 _recordsYielded = 0;
                 Current = default!;
             }
@@ -107,11 +212,8 @@ namespace Dekaf.Consumer
             {
                 PendingFetchData pending = _batch._pendingFetchData;
 
-                if (_batch._isPartitionStillAssigned is not null
-                    && !_batch._isPartitionStillAssigned(pending.TopicPartition))
-                {
+                if (!_canContinue || !_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                     return false;
-                }
 
                 if (_recordsYielded >= _batch._maxRecords)
                 {
@@ -151,11 +253,8 @@ namespace Dekaf.Consumer
                     keyDeserializer: _batch._keyDeserializer,
                     valueDeserializer: _batch._valueDeserializer);
 
-                if (_batch._isPartitionStillAssigned is not null
-                    && !_batch._isPartitionStillAssigned(pending.TopicPartition))
-                {
+                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                     return false;
-                }
 
                 pending.TrackConsumed(offset, messageBytes);
                 _recordsYielded++;

@@ -118,20 +118,68 @@ public class ConsumeBatchTests
     public async Task ConsumeBatch_StopsEnumerationWhenPartitionIsNoLongerAssigned()
     {
         using var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 0, messageCount: 3);
-        var assigned = true;
+        var assignmentEpoch = new BatchIterationEpoch();
         var batch = new ConsumeBatch<string, string>(
             pending,
             Serializers.String,
             Serializers.String,
-            _ => assigned);
+            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version));
 
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
-        assigned = false;
+        assignmentEpoch.Invalidate();
 
         await Assert.That(enumerator.MoveNext()).IsFalse();
         await Assert.That(batch.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeBatch_UnrelatedEpochChange_DoesNotDropRecord()
+    {
+        using var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 0, messageCount: 2);
+        var assignmentEpoch = new BatchIterationEpoch();
+        var membershipChecks = 0;
+        var batch = new ConsumeBatch<string, string>(
+            pending,
+            Serializers.String,
+            Serializers.String,
+            new BatchIterationGuard(
+                assignmentEpoch,
+                assignmentEpoch.Version,
+                _ =>
+                {
+                    membershipChecks++;
+                    return true;
+                }));
+        using var enumerator = batch.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        assignmentEpoch.Invalidate();
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        await Assert.That(enumerator.Current.Offset).IsEqualTo(1);
+        await Assert.That(batch.Count).IsEqualTo(2);
+        await Assert.That(membershipChecks).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task BatchIterationGuard_DoesNotAdoptInProgressPublication()
+    {
+        var assignmentEpoch = new BatchIterationEpoch();
+        assignmentEpoch.BeginPublication();
+        var observedVersion = assignmentEpoch.Version;
+        var guard = new BatchIterationGuard(assignmentEpoch, observedVersion);
+
+        try
+        {
+            await Assert.That(guard.CanStart(new TopicPartition("test-topic", 0), ref observedVersion))
+                .IsFalse();
+        }
+        finally
+        {
+            assignmentEpoch.EndPublication();
+        }
     }
 
     /// <summary>

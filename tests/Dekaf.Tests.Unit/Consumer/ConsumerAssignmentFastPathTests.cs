@@ -621,10 +621,12 @@ public sealed class ConsumerAssignmentFastPathTests
         // before the fetch response is complete.
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(1);
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+        var batchIterationVersion = GetBatchIterationVersion(consumer);
         SetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer, 0);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(1);
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+        await Assert.That(GetBatchIterationVersion(consumer)).IsEqualTo(batchIterationVersion + 2);
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).ContainsKey(partition);
 
         CompleteDivergingEpochResets(consumer);
@@ -1238,6 +1240,16 @@ public sealed class ConsumerAssignmentFastPathTests
             ?? throw new InvalidOperationException("_fetchBufferEpoch field not found.");
 
         return (int)field.GetValue(consumer)!;
+    }
+
+    private static int GetBatchIterationVersion(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_batchIterationEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_batchIterationEpoch field not found.");
+
+        return ((BatchIterationEpoch)field.GetValue(consumer)!).Version;
     }
 
     private static int GetMinimumFetchBufferEpoch(KafkaConsumer<string, string> consumer)

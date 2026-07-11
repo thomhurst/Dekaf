@@ -41,18 +41,18 @@ namespace Dekaf.Consumer
     public sealed class ConsumeRawBatch : IEnumerable<ConsumeRawRecord>
     {
         private readonly PendingFetchData _pendingFetchData;
-        private readonly Func<TopicPartition, bool>? _isPartitionStillAssigned;
+        private readonly BatchIterationGuard _iterationGuard;
         private readonly int _maxRecords;
         private long _count;
 
         internal ConsumeRawBatch(
             PendingFetchData pendingFetchData,
-            Func<TopicPartition, bool>? isPartitionStillAssigned = null,
+            BatchIterationGuard iterationGuard = default,
             int maxRecords = int.MaxValue)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
-            _isPartitionStillAssigned = isPartitionStillAssigned;
+            _iterationGuard = iterationGuard;
             _maxRecords = maxRecords;
         }
 
@@ -103,11 +103,17 @@ namespace Dekaf.Consumer
         public struct Enumerator : IEnumerator<ConsumeRawRecord>
         {
             private readonly ConsumeRawBatch _batch;
+            private readonly bool _canContinue;
+            private int _observedVersion;
             private int _recordsYielded;
 
             internal Enumerator(ConsumeRawBatch batch)
             {
                 _batch = batch;
+                _observedVersion = batch._iterationGuard.CapturedVersion;
+                _canContinue = batch._iterationGuard.CanStart(
+                    batch._pendingFetchData.TopicPartition,
+                    ref _observedVersion);
                 _recordsYielded = 0;
                 Current = default;
             }
@@ -128,11 +134,8 @@ namespace Dekaf.Consumer
             {
                 PendingFetchData pending = _batch._pendingFetchData;
 
-                if (_batch._isPartitionStillAssigned is not null
-                    && !_batch._isPartitionStillAssigned(pending.TopicPartition))
-                {
+                if (!_canContinue || !_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                     return false;
-                }
 
                 if (_recordsYielded >= _batch._maxRecords)
                 {
@@ -162,11 +165,8 @@ namespace Dekaf.Consumer
                     isKeyNull: record.IsKeyNull,
                     isValueNull: record.IsValueNull);
 
-                if (_batch._isPartitionStillAssigned is not null
-                    && !_batch._isPartitionStillAssigned(pending.TopicPartition))
-                {
+                if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                     return false;
-                }
 
                 pending.TrackConsumed(offset, messageBytes);
                 _recordsYielded++;

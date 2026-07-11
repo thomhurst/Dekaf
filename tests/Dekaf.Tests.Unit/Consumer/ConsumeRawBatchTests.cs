@@ -150,16 +150,78 @@ public class ConsumeRawBatchTests
     public async Task ConsumeRawBatch_StopsEnumerationWhenPartitionIsNoLongerAssigned()
     {
         using var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 0, messageCount: 3);
-        var assigned = true;
-        var batch = new ConsumeRawBatch(pending, _ => assigned);
+        var assignmentEpoch = new BatchIterationEpoch();
+        var batch = new ConsumeRawBatch(
+            pending,
+            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version));
 
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
-        assigned = false;
+        assignmentEpoch.Invalidate();
 
         await Assert.That(enumerator.MoveNext()).IsFalse();
         await Assert.That(batch.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeRawBatch_ChecksPartitionMembershipOncePerEnumeration()
+    {
+        using var pending = CreatePendingFetchData(
+            "test-topic",
+            partitionIndex: 0,
+            baseOffset: 0,
+            messageCount: 3);
+        var assignmentEpoch = new BatchIterationEpoch();
+        var membershipChecks = 0;
+        var batch = new ConsumeRawBatch(
+            pending,
+            new BatchIterationGuard(
+                assignmentEpoch,
+                assignmentEpoch.Version,
+                _ =>
+                {
+                    membershipChecks++;
+                    return true;
+                }));
+
+        foreach (var _ in batch)
+        {
+        }
+
+        await Assert.That(batch.Count).IsEqualTo(3);
+        await Assert.That(membershipChecks).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ConsumeRawBatch_UnrelatedEpochChange_DoesNotDropRecord()
+    {
+        using var pending = CreatePendingFetchData(
+            "test-topic",
+            partitionIndex: 0,
+            baseOffset: 0,
+            messageCount: 2);
+        var assignmentEpoch = new BatchIterationEpoch();
+        var membershipChecks = 0;
+        var batch = new ConsumeRawBatch(
+            pending,
+            new BatchIterationGuard(
+                assignmentEpoch,
+                assignmentEpoch.Version,
+                _ =>
+                {
+                    membershipChecks++;
+                    return true;
+                }));
+        using var enumerator = batch.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        assignmentEpoch.Invalidate();
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        await Assert.That(enumerator.Current.Offset).IsEqualTo(1);
+        await Assert.That(batch.Count).IsEqualTo(2);
+        await Assert.That(membershipChecks).IsEqualTo(2);
     }
 
     /// <summary>
