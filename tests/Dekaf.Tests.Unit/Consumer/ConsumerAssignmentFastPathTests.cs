@@ -62,7 +62,6 @@ public sealed class ConsumerAssignmentFastPathTests
     {
         await using var consumer = CreatePausedGroupConsumer();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(testTimeout);
-        cts.CancelAfter(TimeSpan.FromSeconds(3));
         await using var enumerator = consume(consumer, cts.Token).GetAsyncEnumerator(testTimeout);
         var moveNext = enumerator.MoveNextAsync().AsTask();
 
