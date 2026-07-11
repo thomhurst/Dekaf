@@ -4059,36 +4059,47 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var pending = pendingItems[i];
             var tracked = false;
-            while (true)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+                while (true)
                 {
-                    // Seek uses this same lock, so a fetch is either published before its
-                    // invalidation and drained, or observes the new epoch and is dropped.
-                    if (ShouldDropStaleFetchPartition(pending.TopicPartition, fetchBufferEpoch))
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
                     {
-                        if (tracked)
-                            TrackPrefetchedBytes(pending, release: true);
-                        pending.Dispose();
-                        break;
+                        // Seek uses this same lock, so a fetch is either published before its
+                        // invalidation and drained, or observes the new epoch and is dropped.
+                        if (ShouldDropStaleFetchPartition(pending.TopicPartition, fetchBufferEpoch))
+                        {
+                            if (tracked)
+                                TrackPrefetchedBytes(pending, release: true);
+                            pending.Dispose();
+                            break;
+                        }
+
+                        if (!tracked)
+                        {
+                            TrackPrefetchedBytes(pending, release: false);
+                            UpdateFetchPositionsFromPrefetch(pending, fetchBufferEpoch);
+                            tracked = true;
+                        }
+
+                        if (_prefetchBuffer.TryWrite(pending))
+                            break;
                     }
 
-                    if (!tracked)
-                    {
-                        TrackPrefetchedBytes(pending, release: false);
-                        UpdateFetchPositionsFromPrefetch(pending, fetchBufferEpoch);
-                        tracked = true;
-                    }
-
-                    if (_prefetchBuffer.TryWrite(pending))
-                    {
-                        break;
-                    }
+                    await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
                 }
+            }
+            catch
+            {
+                if (tracked)
+                    TrackPrefetchedBytes(pending, release: true);
 
-                await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
+                for (var j = i; j < pendingItems.Count; j++)
+                    pendingItems[j].Dispose();
+
+                throw;
             }
         }
     }
