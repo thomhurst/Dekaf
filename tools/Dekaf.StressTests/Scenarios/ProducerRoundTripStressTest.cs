@@ -201,6 +201,9 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
 
         try
         {
+            // ConsumeAsync is intentional: ConsumeOneAsync and ConsumeBatchAsync currently
+            // violate per-partition order across buffered fetches (#1813), which would make
+            // this strict validator report false client correctness failures.
             await foreach (var record in consumer.ConsumeAsync(timeout.Token).ConfigureAwait(false))
             {
                 recordProgress?.Invoke();

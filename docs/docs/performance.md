@@ -410,3 +410,26 @@ Capture detailed traces:
 ```bash
 dotnet-trace collect --process-id <pid> --providers Microsoft-DotNETCore-SampleProfiler
 ```
+
+#### Interpreting round-trip CPU results
+
+The `producer-roundtrip` stress scenario measures one process across both phases: bulk
+production, then consumption and strict record validation. Its CPU-per-message result is
+therefore not a producer-only measurement.
+
+A controlled 250,000-message CPU-sampling investigation compared the three Dekaf consumer
+surfaces in that validation phase. Absolute times include tracing overhead, so use the
+relative differences:
+
+| Consumer surface | CPU µs/message | Ordering violations | Relative result |
+|------------------|---------------:|--------------------:|-----------------|
+| `ConsumeAsync` | 25.875 | 0 | Correct baseline |
+| `ConsumeOneAsync` | 24.063 | 982 | 7% lower CPU, invalid result |
+| `ConsumeBatchAsync` | 15.620 | 11,784 | 40% lower CPU, invalid result |
+
+This attributes a material part of the round-trip CPU gap to per-record async-enumerable
+work rather than producer acknowledgement handling. The strict stress scenario remains on
+`ConsumeAsync`, the only surface that preserved per-partition ordering in this experiment.
+The buffered-path correctness defect is tracked in
+[#1813](https://github.com/thomhurst/Dekaf/issues/1813); lower CPU is not accepted when it
+changes record order.

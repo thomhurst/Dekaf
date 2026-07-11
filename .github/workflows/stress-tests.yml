@@ -571,6 +571,7 @@ jobs:
           output.append("- **Consumer Loop Replay**: Consumer tests re-read a pre-seeded topic (seek to beginning when drained) instead of racing a live feeder, so the consumer itself is measured; table headings report the 16KB seed batch size because it amplifies per-batch costs relative to well-batched workloads")
           output.append("- **Delivery Latency Sampling**: 1 in 1000 produced messages is awaited end-to-end to record true broker round-trip latency")
           output.append("- **Round-Trip Correctness**: Bounded sequenced payloads are consumed back and checked for corruption, wrong partitions, gaps, duplicates, and reordering")
+          output.append("- **Round-Trip CPU Scope**: CPU time covers both bulk production and consumer validation; it is not a producer-only metric")
           output.append("- **CPU Efficiency**: CPU time per message differentiates client efficiency even at equal throughput")
           output.append("- **Noise-Aware Trends**: each scenario is compared with its last 10 matching runs using a median ± 2×MAD band; one adverse excursion warns and two consecutive regressions fail the workflow")
           output.append("- **Parallel Execution**: Each scenario runs in its own isolated environment")
