@@ -70,6 +70,20 @@ public class FatalPrefetchErrorClassificationTests
         await Assert.That(KafkaConsumer<string, string>.IsFatalPrefetchError(ex)).IsTrue();
     }
 
+    [Test]
+    public async Task ConsumeException_NonRetriableCorruption_IsFatalAndPreservesCause()
+    {
+        var cause = new InvalidDataException("invalid compressed payload");
+        var ex = new ConsumeException(
+            ErrorCode.CorruptMessage,
+            "repeated deterministic fetch failure",
+            isRetriable: false,
+            cause);
+
+        await Assert.That(KafkaConsumer<string, string>.IsFatalPrefetchError(ex)).IsTrue();
+        await Assert.That(ex.InnerException).IsSameReferenceAs(cause);
+    }
+
     #endregion
 
     #region Transient errors — should return false
