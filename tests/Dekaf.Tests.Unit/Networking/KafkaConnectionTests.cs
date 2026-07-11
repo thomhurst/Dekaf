@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using Dekaf.Errors;
 using Dekaf.Networking;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security;
 
@@ -517,10 +518,10 @@ public sealed class KafkaConnectionTests
 
         // The caller's timeout fires while the frame is in flight: the wait is abandoned,
         // but the socket write itself must never be cancelled mid-frame.
-        await Assert.That(async () =>
-                await InvokeAwaitFrameWriteAsync(connection, writeTask, callerOwnsTimeout: true, cts.Token))
-            .Throws<KafkaException>()
-            .WithMessageContaining("Flush timeout");
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await InvokeAwaitFrameWriteAsync(connection, writeTask, callerOwnsTimeout: true, cts.Token));
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await Assert.That(exception.Message).Contains("Flush timeout");
 
         await Assert.That(writeTask.IsCompleted).IsFalse();
         await Assert.That(GetPrivateField<int>(connection, "_disposed")).IsEqualTo(0);

@@ -4,6 +4,7 @@ using System.Reflection;
 using Dekaf.Errors;
 using Dekaf.Internal;
 using Dekaf.Networking;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Unit.Networking;
@@ -215,9 +216,10 @@ public sealed class KafkaConnectionPipelinedTests
         SetPrivateField(connection, "_receiveTimeoutDeadlineTimestamp", 1L);
         InvokeReceiveTimeout(connection);
 
-        await Assert.That(async () => await requestTask.WaitAsync(TimeSpan.FromSeconds(1)))
-            .Throws<KafkaException>()
-            .WithMessageContaining("Receive timeout");
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await requestTask.WaitAsync(TimeSpan.FromSeconds(1)));
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await Assert.That(exception.Message).Contains("Receive timeout");
         await receiveTask.WaitAsync(TimeSpan.FromSeconds(1));
     }
 
