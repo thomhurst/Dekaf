@@ -768,6 +768,35 @@ public class RecordBatchTests
     }
 
     [Test]
+    public async Task IReadOnlyList_ProducerBatch_ForwardsToAssignedRecords()
+    {
+        using var batch = CreateTwoRecordBatch();
+        var records = (IReadOnlyList<Record>)batch;
+
+        await Assert.That(records.Count).IsEqualTo(2);
+        await Assert.That(records[1].OffsetDelta).IsEqualTo(1);
+        await Assert.That(records.Select(record => record.OffsetDelta)).IsEquivalentTo([0, 1]);
+    }
+
+    [Test]
+    public async Task LazyRecords_TruncatedAfterValidRecords_DoesNotExposeDefaultRecord()
+    {
+        using var originalBatch = CreateTwoRecordBatch();
+        var buffer = new ArrayBufferWriter<byte>();
+        originalBatch.Write(buffer);
+        var bytes = buffer.WrittenSpan.ToArray();
+        BinaryPrimitives.WriteInt32BigEndian(
+            bytes.AsSpan(RecordBatch.TotalBatchHeaderSize - sizeof(int)),
+            3);
+
+        using var parsed = ReadBatch(bytes, checkCrcs: false);
+        var records = parsed.Records.ToArray();
+
+        await Assert.That(records.Length).IsEqualTo(2);
+        await Assert.That(records.Select(record => record.OffsetDelta)).IsEquivalentTo([0, 1]);
+    }
+
+    [Test]
     public async Task Read_ThreeParameterOverload_RemainsAvailable()
     {
         var method = typeof(RecordBatch).GetMethod(

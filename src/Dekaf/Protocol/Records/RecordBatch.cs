@@ -442,14 +442,17 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     private int _parsedRecordCount;
     private int _nextRecordParseOffset;
 
-    int IReadOnlyCollection<Record>.Count => GetLazyRecordCount();
+    int IReadOnlyCollection<Record>.Count =>
+        ReferenceEquals(_records, this) ? GetLazyRecordCount() : Records.Count;
 
-    Record IReadOnlyList<Record>.this[int index] => GetLazyRecord(index);
+    Record IReadOnlyList<Record>.this[int index] =>
+        ReferenceEquals(_records, this) ? GetLazyRecord(index) : Records[index];
 
-    IEnumerator<Record> IEnumerable<Record>.GetEnumerator() => EnumerateLazyRecords().GetEnumerator();
+    IEnumerator<Record> IEnumerable<Record>.GetEnumerator() =>
+        ReferenceEquals(_records, this) ? EnumerateLazyRecords().GetEnumerator() : Records.GetEnumerator();
 
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
-        EnumerateLazyRecords().GetEnumerator();
+        ((IEnumerable<Record>)this).GetEnumerator();
 
     private int GetLazyRecordCount()
     {
@@ -540,7 +543,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
             try
             {
-                _parsedRecords[_parsedRecordCount++] = Record.Read(ref reader);
+                _parsedRecords[_parsedRecordCount] = Record.Read(ref reader);
+                _parsedRecordCount++;
                 _nextRecordParseOffset = readerStartOffset + (int)reader.Consumed;
             }
             catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
