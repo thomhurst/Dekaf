@@ -3976,8 +3976,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool RecoverAndClearFetchBufferForPendingCoordinatorRevocations()
     {
-        TryRecoverMissingPendingFetchClearMarkers();
-        return ClearFetchBufferForPendingCoordinatorRevocations();
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            TryRecoverMissingPendingFetchClearMarkers();
+            return ClearFetchBufferForPendingCoordinatorRevocations();
+        }
     }
 
     private void ApplyPendingDivergingEpochResets(IReadOnlyCollection<TopicPartition> partitions)
