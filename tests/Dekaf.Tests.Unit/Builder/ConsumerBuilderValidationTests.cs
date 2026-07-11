@@ -370,6 +370,33 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task ForHighThroughput_DisablesCheckCrcs()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .ForHighThroughput()
+            .Build();
+
+        var options = ((KafkaConsumer<string, string>)consumer).Options;
+
+        await Assert.That(options.CheckCrcs).IsFalse();
+    }
+
+    [Test]
+    public async Task ForHighThroughput_ThenWithCheckCrcs_OverridesPreset()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .ForHighThroughput()
+            .WithCheckCrcs(true)
+            .Build();
+
+        var options = ((KafkaConsumer<string, string>)consumer).Options;
+
+        await Assert.That(options.CheckCrcs).IsTrue();
+    }
+
+    [Test]
     public async Task ForLowLatency_ThenBuild_Succeeds()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()

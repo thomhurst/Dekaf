@@ -31,7 +31,9 @@ internal static class ConfluentStressTestHelpers
     // the preset's fields are private, so there is no compile-time link (same constraint as
     // QueueBufferingMaxMessages above). librdkafka has no adaptive-fetch-sizing or explicit
     // max-poll-records equivalent, so these pin the preset's base fetch sizes; the consume loop
-    // is single-message (consumer.Consume) either way.
+    // is single-message (consumer.Consume) either way. CRC validation is aligned implicitly:
+    // ForHighThroughput() sets CheckCrcs=false, matching librdkafka's check.crcs default (false),
+    // so neither client re-validates CRC32C on fetch.
 
     /// <summary>Dekaf <c>_fetchMinBytes</c> — fetch.min.bytes.</summary>
     internal const int FetchMinBytes = 1024;

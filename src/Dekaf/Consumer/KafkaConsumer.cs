@@ -651,6 +651,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private readonly ConsumerOptions _options;
 
+    /// <summary>
+    /// The effective options this consumer was built with. Exposed for tests that
+    /// verify builder/preset-to-options mapping.
+    /// </summary>
+    internal ConsumerOptions Options => _options;
+
     // Current budget limit in bytes (mutated live by DekafMemoryBudget rebalancing).
     private long _currentQueuedMaxBytes;
 
