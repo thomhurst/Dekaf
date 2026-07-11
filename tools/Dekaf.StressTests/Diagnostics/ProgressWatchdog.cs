@@ -171,6 +171,16 @@ internal sealed class ProgressWatchdog : IDisposable
         }
     }
 
+    internal ProgressWatchdog CreateSibling() =>
+        new(
+            Path.GetDirectoryName(_diagnosticsDirectory)!,
+            _captureAfter,
+            _exitAfter,
+            _pollInterval,
+            _exitProcess,
+            _captureManagedStackReport,
+            _diagnosticsCaptureTimeout);
+
     public void Dispose()
     {
         lock (_sync)
