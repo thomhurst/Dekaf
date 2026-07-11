@@ -1083,6 +1083,69 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     public StringSet Subscription => _subscriptionSnapshot;
     public string? SubscriptionPattern => _topicPattern;
     public TopicPartitionSet Assignment => _assignmentSnapshot;
+
+    internal ConsumerDiagnosticSnapshot CaptureDiagnosticSnapshot()
+    {
+        var assignment = _assignmentSnapshot
+            .OrderBy(partition => partition.Topic, StringComparer.Ordinal)
+            .ThenBy(partition => partition.Partition)
+            .Select(partition => new ConsumerTopicPartitionDiagnostic(partition.Topic, partition.Partition))
+            .ToArray();
+        var fetchPositions = _fetchPositions
+            .OrderBy(entry => entry.Key.Topic, StringComparer.Ordinal)
+            .ThenBy(entry => entry.Key.Partition)
+            .Select(entry => new ConsumerPartitionOffsetDiagnostic(
+                entry.Key.Topic,
+                entry.Key.Partition,
+                entry.Value))
+            .ToArray();
+        var pendingRevocations = _coordinatorRevokedPartitionsPendingFetchClear.Keys
+            .OrderBy(partition => partition.Topic, StringComparer.Ordinal)
+            .ThenBy(partition => partition.Partition)
+            .Select(partition => new ConsumerTopicPartitionDiagnostic(partition.Topic, partition.Partition))
+            .ToArray();
+        var minimumEpochs = _minimumFetchBufferEpochsByPartition
+            .OrderBy(entry => entry.Key.Topic, StringComparer.Ordinal)
+            .ThenBy(entry => entry.Key.Partition)
+            .Select(entry => new ConsumerPartitionEpochDiagnostic(
+                entry.Key.Topic,
+                entry.Key.Partition,
+                entry.Value))
+            .ToArray();
+        var divergingEpochResets = _pendingDivergingEpochResets
+            .OrderBy(entry => entry.Key.Topic, StringComparer.Ordinal)
+            .ThenBy(entry => entry.Key.Partition)
+            .Select(entry => new ConsumerDivergingEpochResetDiagnostic(
+                entry.Key.Topic,
+                entry.Key.Partition,
+                entry.Value.EndOffset,
+                entry.Value.Epoch))
+            .ToArray();
+        var pendingFetchDepth = _pendingFetches.Count;
+        var prefetchBufferDepth = _prefetchBuffer.Count;
+
+        return new ConsumerDiagnosticSnapshot
+        {
+            CapturedAtUtc = DateTimeOffset.UtcNow,
+            FetchPositions = fetchPositions,
+            Assignment = assignment,
+            PrefetchedBytes = Interlocked.Read(ref _prefetchedBytes),
+            PendingFetchDepth = pendingFetchDepth,
+            PrefetchBufferDepth = prefetchBufferDepth,
+            PrefetchDepth = pendingFetchDepth + prefetchBufferDepth,
+            PendingRevocations = pendingRevocations,
+            PendingRevocationMarkerPresent =
+                Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) != 0,
+            PendingRevocationClearPending =
+                Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0,
+            PendingDivergingEpochResets = divergingEpochResets,
+            FetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch),
+            MinimumFetchBufferEpoch = Volatile.Read(ref _minimumFetchBufferEpoch),
+            MinimumFetchBufferEpochsByPartition = minimumEpochs,
+            AdaptivePartitionFetchBytes = _adaptiveFetchSizer?.CurrentPartitionFetchBytes,
+            AdaptiveFetchMaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes
+        };
+    }
     public string? MemberId => _coordinator?.MemberId;
     public TopicPartitionSet Paused => _pausedSnapshot;
     public IConsumerPositions Positions => this;

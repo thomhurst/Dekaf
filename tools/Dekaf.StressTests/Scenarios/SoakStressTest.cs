@@ -111,7 +111,8 @@ internal sealed class SoakStressTest : IStressTestScenario
             using (var measurementWatchdog = TrackMeasurementProgress(
                        options.ProgressWatchdog,
                        throughput,
-                       () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options)))
+                       () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options),
+                       () => StressTestHelpers.CaptureConsumerDiagnostics(consumer)))
             {
                 await RunPacedProducerAsync(
                     producer,
@@ -230,8 +231,14 @@ internal sealed class SoakStressTest : IStressTestScenario
     internal IDisposable TrackMeasurementProgress(
         ProgressWatchdog watchdog,
         ThroughputTracker throughput,
-        Func<ProducerDeliveryDiagnosticsSnapshot?> captureProducerDiagnostics) =>
-        watchdog.Track(throughput, Client, Name, captureProducerDiagnostics);
+        Func<ProducerDeliveryDiagnosticsSnapshot?> captureProducerDiagnostics,
+        Func<ConsumerDiagnosticSnapshot?>? captureConsumerDiagnostics = null) =>
+        watchdog.Track(
+            throughput,
+            Client,
+            Name,
+            captureProducerDiagnostics,
+            captureConsumerDiagnostics);
 
     internal static bool IsBrokerDeliveryExact(long acceptedMessages, long deliveredMessages) =>
         acceptedMessages == deliveredMessages;

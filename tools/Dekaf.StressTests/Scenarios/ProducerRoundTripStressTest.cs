@@ -126,15 +126,31 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         var endOffsets = queriedEndOffsets ?? startOffsets;
         var delivered = RoundTripScenarioHelpers.CountRecords(startOffsets, endOffsets);
         var validator = new RoundTripValidator(factory.ExpectedPerPartition);
-        var timedOut = queriedEndOffsets is null || await ConsumeAndValidateAsync(
-                consumer,
-                options,
-                startOffsets,
-                endOffsets,
-                validator,
-                throughput,
-                cancellationToken)
-            .ConfigureAwait(false);
+        var consumeProgress = new ThroughputTracker();
+        consumeProgress.Start();
+        using var consumeWatchdog = options.ProgressWatchdog.Track(
+            consumeProgress,
+            Client,
+            $"{Name}-consume",
+            captureConsumerDiagnostics: () => StressTestHelpers.CaptureConsumerDiagnostics(consumer));
+        bool timedOut;
+        try
+        {
+            timedOut = queriedEndOffsets is null || await ConsumeAndValidateAsync(
+                    consumer,
+                    options,
+                    startOffsets,
+                    endOffsets,
+                    validator,
+                    throughput,
+                    cancellationToken,
+                    () => consumeProgress.RecordMessage(0))
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            consumeProgress.Stop();
+        }
 
         throughput.Stop();
 
@@ -164,7 +180,8 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         long[] endOffsets,
         RoundTripValidator validator,
         ThroughputTracker throughput,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? recordProgress = null)
     {
         var completion = new RoundTripCompletionTracker(startOffsets, endOffsets);
         if (completion.IsComplete)
@@ -182,6 +199,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         {
             await foreach (var record in consumer.ConsumeAsync(timeout.Token).ConfigureAwait(false))
             {
+                recordProgress?.Invoke();
                 var partition = record.Partition;
                 if (completion.Record(partition, record.Offset))
                 {

@@ -57,7 +57,11 @@ internal sealed class ConsumerRawBatchStressTest : IStressTestScenario
         StressTestHelpers.LogResourceUsage("Initial");
 
         throughput.Start();
-        using var watchdog = options.ProgressWatchdog.Track(throughput, Client, Name);
+        using var watchdog = options.ProgressWatchdog.Track(
+            throughput,
+            Client,
+            Name,
+            captureConsumerDiagnostics: () => StressTestHelpers.CaptureConsumerDiagnostics(consumer));
         var progress = new PeriodicProgressReporter(throughput);
 
         var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);
