@@ -1733,7 +1733,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         }
 
                         yield return nextResult;
-                        await RecordPollAsync(cancellationToken).ConfigureAwait(false);
 
                         // User code at the yield point may have called Seek/Assign, which
                         // clears _pendingFetches and disposes `pending` while it is still
@@ -2899,6 +2898,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void PublishActiveConsumedPosition(TopicPartition partition, long position, int leaderEpoch)
     {
+        var observedVersion = Volatile.Read(ref _activeConsumedPositionVersion);
+        if ((observedVersion & 1) == 0
+            && Volatile.Read(ref _activeConsumedPartition) == partition.Partition
+            && Volatile.Read(ref _activeConsumedLeaderEpoch) == leaderEpoch
+            && string.Equals(
+                Volatile.Read(ref _activeConsumedTopic),
+                partition.Topic,
+                StringComparison.Ordinal))
+        {
+            Volatile.Write(ref _activeConsumedPosition, position);
+
+            if (Volatile.Read(ref _activeConsumedPositionVersion) == observedVersion)
+                return;
+        }
+
         var version = BeginActiveConsumedPositionWrite();
         Volatile.Write(ref _activeConsumedTopic, partition.Topic);
         Volatile.Write(ref _activeConsumedPartition, partition.Partition);

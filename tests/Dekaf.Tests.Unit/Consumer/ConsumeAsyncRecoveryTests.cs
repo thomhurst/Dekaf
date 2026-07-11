@@ -107,16 +107,17 @@ public sealed class ConsumeAsyncRecoveryTests
     /// via reflection so ConsumeAsync can iterate pre-loaded pending fetches
     /// without hitting the network.
     /// </summary>
-    private static KafkaConsumer<string, string> CreateConsumerWithPendingFetches(
+    private static KafkaConsumer<string, string> CreateConsumerWithPendingFetchesCore(
         ILoggerFactory? loggerFactory,
         string topic,
         int partition,
+        OffsetCommitMode offsetCommitMode,
         params PendingFetchData[] fetches)
     {
         var options = new ConsumerOptions
         {
             BootstrapServers = ["localhost:9092"],
-            OffsetCommitMode = OffsetCommitMode.Manual,
+            OffsetCommitMode = offsetCommitMode,
             QueuedMinMessages = 1 // Disable prefetching
         };
 
@@ -156,8 +157,30 @@ public sealed class ConsumeAsyncRecoveryTests
 
     private static KafkaConsumer<string, string> CreateConsumerWithPendingFetches(
         ILoggerFactory? loggerFactory,
+        string topic,
+        int partition,
+        params PendingFetchData[] fetches)
+        => CreateConsumerWithPendingFetchesCore(
+            loggerFactory,
+            topic,
+            partition,
+            OffsetCommitMode.Manual,
+            fetches);
+
+    private static KafkaConsumer<string, string> CreateConsumerWithPendingFetches(
+        ILoggerFactory? loggerFactory,
         params PendingFetchData[] fetches)
         => CreateConsumerWithPendingFetches(loggerFactory, Topic, Partition, fetches);
+
+    private static KafkaConsumer<string, string> CreateConsumerWithPendingFetches(
+        OffsetCommitMode offsetCommitMode,
+        params PendingFetchData[] fetches)
+        => CreateConsumerWithPendingFetchesCore(
+            null,
+            Topic,
+            Partition,
+            offsetCommitMode,
+            fetches);
 
     private static ConcurrentDictionary<TopicPartition, long> GetPositions(
         KafkaConsumer<string, string> consumer)
@@ -480,6 +503,40 @@ public sealed class ConsumeAsyncRecoveryTests
         await Assert.That(results[0].Offset).IsEqualTo(20L);
         await Assert.That(results[1].Offset).IsEqualTo(21L);
         await Assert.That(results[2].Offset).IsEqualTo(22L);
+    }
+
+    [Test]
+    public async Task ConsumeAsync_AutoCommit_ReusesActivePositionPublicationWithinFetch()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "1"),
+                CreateRecord(1, "b", "2"),
+                CreateRecord(2, "c", "3"))
+        ]);
+
+        await using var consumer = CreateConsumerWithPendingFetches(OffsetCommitMode.Auto, fetch);
+
+        using var cts = new CancellationTokenSource();
+        var versionField = typeof(KafkaConsumer<string, string>).GetField(
+            "_activeConsumedPositionVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_activeConsumedPositionVersion field not found.");
+        var consumed = 0;
+        var activeVersion = 0;
+        await foreach (var _ in consumer.ConsumeAsync(cts.Token))
+        {
+            if (++consumed == 3)
+            {
+                activeVersion = (int)versionField.GetValue(consumer)!;
+                cts.Cancel();
+                break;
+            }
+        }
+
+        await Assert.That(activeVersion).IsEqualTo(2);
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, Partition))).IsEqualTo(23L);
     }
 
     [Test]
