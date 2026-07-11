@@ -3442,53 +3442,51 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         LogSeek(offset.Topic, offset.Partition, offset.Offset);
         var tp = new TopicPartition(offset.Topic, offset.Partition);
-        // Update positions (thread-safe with ConcurrentDictionary)
-        if (offset.LeaderEpoch >= 0)
-            SetLastConsumedLeaderEpoch(tp, offset.LeaderEpoch);
-        else
-            ClearLastConsumedLeaderEpoch(tp);
-        SetPosition(tp, offset.Offset, dirty: true);
-        _fetchPositions[tp] = offset.Offset;
+        // Keep invalidation, buffer drain, and position replacement atomic with prefetch publication.
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            ClearFetchBufferForPartitions([tp]);
 
-        // Reset EOF state for this partition so it can fire again
-        _eofEmitted.TryRemove(tp, out _);
-        ClearFetchBufferForPartitions([tp]);
+            if (offset.LeaderEpoch >= 0)
+                SetLastConsumedLeaderEpoch(tp, offset.LeaderEpoch);
+            else
+                ClearLastConsumedLeaderEpoch(tp);
+            SetPosition(tp, offset.Offset, dirty: true);
+            _fetchPositions[tp] = offset.Offset;
+            _eofEmitted.TryRemove(tp, out _);
+        }
     }
 
     public void SeekToBeginning(params TopicPartition[] partitions)
     {
-        // Update positions (thread-safe with ConcurrentDictionary)
-        foreach (var partition in partitions)
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            ClearLastConsumedLeaderEpoch(partition);
-            SetPosition(partition, 0, dirty: true);
-            _fetchPositions[partition] = 0;
-        }
+            ClearFetchBufferForPartitions(partitions);
 
-        // Reset EOF state
-        foreach (var partition in partitions)
-        {
-            _eofEmitted.TryRemove(partition, out _);
+            foreach (var partition in partitions)
+            {
+                ClearLastConsumedLeaderEpoch(partition);
+                SetPosition(partition, 0, dirty: true);
+                _fetchPositions[partition] = 0;
+                _eofEmitted.TryRemove(partition, out _);
+            }
         }
-        ClearFetchBufferForPartitions(partitions);
     }
 
     public void SeekToEnd(params TopicPartition[] partitions)
     {
-        // Update positions (thread-safe with ConcurrentDictionary)
-        foreach (var partition in partitions)
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            ClearLastConsumedLeaderEpoch(partition);
-            SetPosition(partition, -1, dirty: true); // Special value meaning end
-            _fetchPositions[partition] = -1; // Special value meaning end
-        }
+            ClearFetchBufferForPartitions(partitions);
 
-        // Reset EOF state
-        foreach (var partition in partitions)
-        {
-            _eofEmitted.TryRemove(partition, out _);
+            foreach (var partition in partitions)
+            {
+                ClearLastConsumedLeaderEpoch(partition);
+                SetPosition(partition, -1, dirty: true); // Special value meaning end
+                _fetchPositions[partition] = -1; // Special value meaning end
+                _eofEmitted.TryRemove(partition, out _);
+            }
         }
-        ClearFetchBufferForPartitions(partitions);
     }
 
     /// <summary>
@@ -3792,20 +3790,36 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         for (var i = 0; i < pendingItems.Count; i++)
         {
             var pending = pendingItems[i];
-            if (ShouldDropStaleFetchPartition(pending.TopicPartition, fetchBufferEpoch))
-            {
-                pending.Dispose();
-                continue;
-            }
-
-            // Track memory and advance fetch positions only after confirming
-            // this pipelined response still belongs to the current assignment.
-            TrackPrefetchedBytes(pending, release: false);
-            UpdateFetchPositionsFromPrefetch(pending, fetchBufferEpoch);
-
-            while (!_prefetchBuffer.TryWrite(pending))
+            var tracked = false;
+            while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+
+                lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+                {
+                    // Seek uses this same lock, so a fetch is either published before its
+                    // invalidation and drained, or observes the new epoch and is dropped.
+                    if (ShouldDropStaleFetchPartition(pending.TopicPartition, fetchBufferEpoch))
+                    {
+                        if (tracked)
+                            TrackPrefetchedBytes(pending, release: true);
+                        pending.Dispose();
+                        break;
+                    }
+
+                    if (!tracked)
+                    {
+                        TrackPrefetchedBytes(pending, release: false);
+                        UpdateFetchPositionsFromPrefetch(pending, fetchBufferEpoch);
+                        tracked = true;
+                    }
+
+                    if (_prefetchBuffer.TryWrite(pending))
+                    {
+                        break;
+                    }
+                }
+
                 await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
             }
         }

@@ -603,6 +603,38 @@ public sealed class ConsumerAssignmentFastPathTests
         await Assert.That(GetPrefetchedBytes(consumer)).IsEqualTo(0L);
     }
 
+    [Test]
+    public async Task WritePrefetchedItemsAsync_SeekWhileWaitingToWrite_DropsStaleFetch()
+    {
+        await using var consumer = CreateConsumer();
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, 0)]);
+
+        var prefetchBuffer = GetPrefetchBuffer(consumer);
+        while (true)
+        {
+            var filler = CreateFetch(partition: 0, baseOffset: 0, value: "filler");
+            if (prefetchBuffer.TryWrite(filler))
+                continue;
+
+            filler.Dispose();
+            break;
+        }
+
+        var staleEpoch = GetFetchBufferEpoch(consumer);
+        var staleFetch = CreateFetch(partition: 0, baseOffset: 1_999_999, value: "stale-prefetch");
+        var writeTask = StartWritePrefetchedItemsAsync(consumer, [staleFetch], staleEpoch).AsTask();
+
+        await Assert.That(writeTask.IsCompleted).IsFalse();
+
+        consumer.SeekToBeginning(partition);
+        await writeTask.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(0L);
+        await Assert.That(prefetchBuffer.TryRead(out _)).IsFalse();
+        SetPrefetchedBytes(consumer, 0);
+    }
+
     private static KafkaConsumer<string, string> CreateConsumer()
     {
         return new KafkaConsumer<string, string>(
@@ -1094,15 +1126,25 @@ public sealed class ConsumerAssignmentFastPathTests
         IReadOnlyList<PendingFetchData> pendingItems,
         int? fetchBufferEpoch = null)
     {
+        await StartWritePrefetchedItemsAsync(
+            consumer,
+            pendingItems,
+            fetchBufferEpoch ?? GetFetchBufferEpoch(consumer));
+    }
+
+    private static ValueTask StartWritePrefetchedItemsAsync(
+        KafkaConsumer<string, string> consumer,
+        IReadOnlyList<PendingFetchData> pendingItems,
+        int fetchBufferEpoch)
+    {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "WritePrefetchedItemsAsync",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("WritePrefetchedItemsAsync method not found.");
 
-        var valueTask = (ValueTask)method.Invoke(
+        return (ValueTask)method.Invoke(
             consumer,
-            [pendingItems, fetchBufferEpoch ?? GetFetchBufferEpoch(consumer), CancellationToken.None])!;
-        await valueTask;
+            [pendingItems, fetchBufferEpoch, CancellationToken.None])!;
     }
 
     private static void SetPrefetchedBytes(KafkaConsumer<string, string> consumer, long bytes)
