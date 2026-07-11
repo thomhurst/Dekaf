@@ -88,21 +88,30 @@ internal sealed class TransactionalSequenceOracle
         }
     }
 
-    internal TransactionVerificationSnapshot CreateSnapshot(long acceptedMessages)
+    internal TransactionVerificationSnapshot CreateSnapshot(
+        long acceptedMessages,
+        bool sentinelCommitFailed = false)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(acceptedMessages);
 
         var samples = new List<string>(_failureSamples);
-        for (var index = 0; index < _seenCommitted.Length && samples.Count < MaxFailureSamples; index++)
+        if (sentinelCommitFailed)
         {
-            if (!_seenCommitted[index])
-                samples.Add($"Missing committed index {index:N0}.");
+            samples.Add("Partition sentinel transaction failed to commit; read_committed verification was not run.");
         }
-
-        for (var partition = 0; partition < _seenSentinels.Length && samples.Count < MaxFailureSamples; partition++)
+        else
         {
-            if (!_seenSentinels[partition])
-                samples.Add($"Missing terminal sentinel for partition {partition}.");
+            for (var index = 0; index < _seenCommitted.Length && samples.Count < MaxFailureSamples; index++)
+            {
+                if (!_seenCommitted[index])
+                    samples.Add($"Missing committed index {index:N0}.");
+            }
+
+            for (var partition = 0; partition < _seenSentinels.Length && samples.Count < MaxFailureSamples; partition++)
+            {
+                if (!_seenSentinels[partition])
+                    samples.Add($"Missing terminal sentinel for partition {partition}.");
+            }
         }
 
         return new TransactionVerificationSnapshot
@@ -116,6 +125,7 @@ internal sealed class TransactionalSequenceOracle
             LeakedAbortedMessages = _leakedAbortedMessages,
             UnexpectedMessages = _unexpectedMessages,
             MissingSentinelPartitions = _seenSentinels.Length - _sentinelsSeen,
+            SentinelCommitFailed = sentinelCommitFailed,
             FailureSamples = samples
         };
     }

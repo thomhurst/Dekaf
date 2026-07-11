@@ -548,7 +548,8 @@ public static class Program
             $"shortfall={verification.ShortfallMessages:N0}, " +
             $"leakedAborted={verification.LeakedAbortedMessages:N0}, " +
             $"unexpected={verification.UnexpectedMessages:N0}, " +
-            $"missingSentinels={verification.MissingSentinelPartitions:N0}");
+            $"missingSentinels={verification.MissingSentinelPartitions:N0}, " +
+            $"sentinelCommitFailed={verification.SentinelCommitFailed}");
 
         foreach (var sample in verification.FailureSamples)
         {

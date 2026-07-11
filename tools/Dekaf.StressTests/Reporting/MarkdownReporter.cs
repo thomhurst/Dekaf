@@ -203,8 +203,8 @@ internal static class MarkdownReporter
 
         sb.AppendLine($"## {title}");
         sb.AppendLine();
-        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Accepted | Committed | Aborted | Delivered | Duplicates | Shortfall | Aborted leaks | Unexpected | Missing sentinels | Status |");
-        sb.AppendLine($"|{new string('-', clientWidth + 2)}|----------|-----------|---------|-----------|------------|-----------|---------------|------------|-------------------|--------|");
+        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Accepted | Committed | Aborted | Delivered | Duplicates | Shortfall | Aborted leaks | Unexpected | Missing sentinels | Sentinel commit | Status |");
+        sb.AppendLine($"|{new string('-', clientWidth + 2)}|----------|-----------|---------|-----------|------------|-----------|---------------|------------|-------------------|-----------------|--------|");
 
         foreach (var result in results.OrderBy(r => r.Client))
         {
@@ -215,7 +215,8 @@ internal static class MarkdownReporter
                 $"{verification.CommittedMessages,9:N0} | {verification.AbortedMessages,7:N0} | " +
                 $"{verification.DeliveredMessages,9:N0} | {verification.DuplicateMessages,10:N0} | " +
                 $"{verification.ShortfallMessages,9:N0} | {verification.LeakedAbortedMessages,13:N0} | " +
-                $"{verification.UnexpectedMessages,10:N0} | {verification.MissingSentinelPartitions,17:N0} | {status} |");
+                $"{verification.UnexpectedMessages,10:N0} | {verification.MissingSentinelPartitions,17:N0} | " +
+                $"{(verification.SentinelCommitFailed ? "FAILED" : "OK"),15} | {status} |");
         }
 
         sb.AppendLine();
