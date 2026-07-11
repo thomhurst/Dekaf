@@ -64,6 +64,24 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_ManualAssignmentWithCoordinator_RecordsPollOnce()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedGroupedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+        var coordinator = GetCoordinator(consumer);
+        var initialPollVersion = GetCoordinatorPollVersion(coordinator);
+
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(GetCoordinatorPollVersion(coordinator)).IsEqualTo(initialPollVersion + 1);
+    }
+
+    [Test]
     public async Task TopicFilterRefreshDue_TracksRefreshInterval()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
@@ -483,6 +501,26 @@ public sealed class ConsumeOneFastPathTests
         return consumer;
     }
 
+    private static KafkaConsumer<string, string> CreateInitializedGroupedConsumer(PendingFetchData fetch)
+    {
+        var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "consume-one-fast-path-tests",
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                QueuedMinMessages = 1,
+                FetchMaxWaitMs = 200
+            },
+            Serializers.String,
+            Serializers.String);
+
+        SetInitialized(consumer);
+        AssignTestPartition(consumer);
+        GetPendingFetches(consumer).Enqueue(fetch);
+        return consumer;
+    }
+
     private sealed class InvalidDataThrowingDeserializer : IDeserializer<string>
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
@@ -538,6 +576,24 @@ public sealed class ConsumeOneFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException($"{fieldName} field not found.");
         field.SetValue(consumer, value);
+    }
+
+    private static ConsumerCoordinator GetCoordinator(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_coordinator",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_coordinator field not found.");
+        return (ConsumerCoordinator)field.GetValue(consumer)!;
+    }
+
+    private static long GetCoordinatorPollVersion(ConsumerCoordinator coordinator)
+    {
+        var field = typeof(ConsumerCoordinator).GetField(
+            "_pollVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_pollVersion field not found.");
+        return (long)field.GetValue(coordinator)!;
     }
 
     private static int GetTimeoutCtsPoolCount(KafkaConsumer<string, string> consumer)

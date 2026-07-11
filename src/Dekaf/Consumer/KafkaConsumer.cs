@@ -647,6 +647,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private const int MaxRepeatedDeterministicPrefetchFailures = 3;
     private const int InitialPrefetchFailureBackoffMs = 100;
     private const int MaxPrefetchFailureBackoffMs = 5_000;
+    private const long FilterRefreshIntervalMilliseconds = 30_000;
     private static readonly TimeSpan PartitionStopListenerTimeout = TimeSpan.FromSeconds(5);
 
     private readonly ConsumerOptions _options;
@@ -3255,10 +3256,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         ValidateConsumeOneTimeout(timeout);
 
-        if (CanUseBufferedConsumeOneFastPath(cancellationToken)
-            && TryConsumeOneFromPendingFetches(out var bufferedResult))
+        var pollRecorded = false;
+        if (CanUseBufferedConsumeOneFastPath(cancellationToken))
         {
-            return bufferedResult;
+            pollRecorded = _coordinator?.TryRecordPollFast() ?? true;
+            if (pollRecorded && TryConsumeOneFromPendingFetches(out var bufferedResult))
+                return bufferedResult;
         }
 
         using var timeoutCts = _ctsPool.Rent();
@@ -3269,7 +3272,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             try
             {
-                return await ConsumeOneCoreAsync(timeoutCts.Token).ConfigureAwait(false);
+                return await ConsumeOneCoreAsync(timeoutCts.Token, pollRecorded).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
             {
@@ -3283,7 +3286,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         try
         {
-            return await ConsumeOneCoreAsync(linkedCts.Token).ConfigureAwait(false);
+            return await ConsumeOneCoreAsync(linkedCts.Token, pollRecorded).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
@@ -3336,8 +3339,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var assignmentVersion = coordinator.AssignmentVersion;
             return Volatile.Read(ref _lastCoordinatorAssignmentVersion) == assignmentVersion
-                   && coordinator.IsAssignmentSyncCurrent(assignmentVersion)
-                   && coordinator.TryRecordPollFast();
+                   && coordinator.IsAssignmentSyncCurrent(assignmentVersion);
         }
 
         return IsManualAssignmentEnsureCurrent();
@@ -3345,14 +3347,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool IsTopicFilterRefreshDue()
     {
-        const long filterRefreshIntervalMilliseconds = 30_000;
         var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
         return _topicFilter is not null
                && (lastRefresh == 0
-                   || Dekaf.MonotonicClock.GetMilliseconds() - lastRefresh >= filterRefreshIntervalMilliseconds);
+                   || Dekaf.MonotonicClock.GetMilliseconds() - lastRefresh >= FilterRefreshIntervalMilliseconds);
     }
 
-    private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(CancellationToken cancellationToken)
+    private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneCoreAsync(
+        CancellationToken cancellationToken,
+        bool pollRecorded)
     {
         if (Volatile.Read(ref _consumerDisposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
@@ -3373,7 +3376,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            await RecordPollAsync(cancellationToken).ConfigureAwait(false);
+            if (pollRecorded)
+            {
+                pollRecorded = false;
+            }
+            else
+            {
+                await RecordPollAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
             RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
@@ -4556,13 +4566,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <returns>True if the subscription changed.</returns>
     private async ValueTask<bool> RefreshFilteredTopicsAsync(Func<string, bool> filter, CancellationToken cancellationToken)
     {
-        const long refreshIntervalTicks = 30 * TimeSpan.TicksPerSecond;
-
         var now = Dekaf.MonotonicClock.GetMilliseconds();
         var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
 
         // Rate-limit: skip if we refreshed recently (unless this is the first call)
-        if (lastRefresh != 0 && (now - lastRefresh) < (refreshIntervalTicks / TimeSpan.TicksPerMillisecond))
+        if (lastRefresh != 0 && now - lastRefresh < FilterRefreshIntervalMilliseconds)
         {
             return false;
         }

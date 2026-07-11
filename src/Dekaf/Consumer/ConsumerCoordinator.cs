@@ -260,14 +260,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return true;
         }
 
-        var now = Stopwatch.GetTimestamp();
-        if (_state == CoordinatorState.Stable
-            && now - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks)
-        {
+        if (IsCurrentPollGenerationExpired())
             return false;
-        }
 
-        RecordPollIfLossNotificationComplete(now);
+        RecordPollIfLossNotificationComplete(Stopwatch.GetTimestamp());
         return true;
     }
 

@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 
@@ -186,6 +187,70 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         await Assert.That(result.Value.Value).IsEqualTo("partition-2-message");
         // Assignment should reflect what we manually assigned
         await Assert.That(consumer.Assignment).Contains(new TopicPartition(topic, 2));
+    }
+
+    [Test]
+    public async Task Consumer_SubscribeThenAssign_BufferedConsumeRecordsGroupPoll()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-subscribe-assign")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 20; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer-subscribe-assign")
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithQueuedMinMessages(1)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30))).IsNotNull();
+
+        consumer.Assign(new TopicPartition(topic, 0));
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30))).IsNotNull();
+
+        var coordinator = GetCoordinator((KafkaConsumer<string, string>)consumer);
+        var pollVersion = GetPollVersion(coordinator);
+        var bufferedConsume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30));
+
+        await Assert.That(bufferedConsume.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(await bufferedConsume).IsNotNull();
+        await Assert.That(GetPollVersion(coordinator)).IsEqualTo(pollVersion + 1);
+    }
+
+    private static ConsumerCoordinator GetCoordinator(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_coordinator",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_coordinator field not found.");
+        return (ConsumerCoordinator)field.GetValue(consumer)!;
+    }
+
+    private static long GetPollVersion(ConsumerCoordinator coordinator)
+    {
+        var field = typeof(ConsumerCoordinator).GetField(
+            "_pollVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_pollVersion field not found.");
+        return (long)field.GetValue(coordinator)!;
     }
 
     [Test]
