@@ -192,6 +192,7 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
     {
         var replicationFactor = (short)Math.Min(3, BrokerCount);
         await using var admin = Kafka.CreateAdminClient()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(BootstrapServers)
             .WithClientId("fault-injection-admin")
             .Build();

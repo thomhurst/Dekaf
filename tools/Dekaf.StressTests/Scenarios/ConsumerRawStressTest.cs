@@ -27,6 +27,7 @@ internal sealed class ConsumerRawStressTest : IStressTestScenario
         // feeder's rate, measuring the feeder instead of the consumer.
         // Consumer uses Ignore for key (don't care) and ReadOnlyMemory<byte> for zero-copy value access
         await using var consumer = await Kafka.CreateConsumer<Ignore, ReadOnlyMemory<byte>>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-consumer-raw-dekaf")
             .WithGroupId($"stress-group-raw-dekaf-{Guid.NewGuid():N}")

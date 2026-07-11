@@ -126,6 +126,8 @@ public static class Program
             Console.WriteLine($"Resource sample interval: {options.ResourceSampleIntervalSeconds:N0} seconds");
         }
         Console.WriteLine($"Producer delivery diagnostics: {(options.EnableProducerDeliveryDiagnostics ? "enabled" : "disabled")}");
+        Console.WriteLine($"Dekaf client logs: {StressClientLogging.MinimumLevel}+ " +
+            $"(set {StressClientLogging.LogLevelEnvironmentVariable}=Debug for verbose diagnostics)");
         Console.WriteLine($"Progress watchdog: stacks at {ProgressWatchdog.DefaultCaptureAfter.TotalSeconds:F0}s; " +
             $"fail at {ProgressWatchdog.DefaultExitAfter.TotalMinutes:F0} minutes");
         if (options.ConnectionsPerBroker > 1)
@@ -650,6 +652,7 @@ public static class Program
         var totalMessages = options.SeedMessages;
 
         await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("stress-seeder")
             .WithAcks(Acks.Leader)

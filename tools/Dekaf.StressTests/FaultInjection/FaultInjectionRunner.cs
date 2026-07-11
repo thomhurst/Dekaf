@@ -168,6 +168,7 @@ internal static class FaultInjectionRunner
         try
         {
             producer = await Kafka.CreateProducer<string, string>()
+                .WithLoggerFactory(StressClientLogging.LoggerFactory)
                 .WithBootstrapServers(environment.BootstrapServers)
                 .WithClientId($"fault-producer-{definition.Name}")
                 .WithIdempotence(true)
@@ -551,6 +552,7 @@ internal static class FaultInjectionRunner
         try
         {
             await using var consumer = await Kafka.CreateConsumer<string, string>()
+                .WithLoggerFactory(StressClientLogging.LoggerFactory)
                 .WithBootstrapServers(bootstrapServers)
                 .WithClientId($"fault-live-consumer-{Guid.NewGuid():N}")
                 .WithGroupId($"fault-live-{Guid.NewGuid():N}")

@@ -24,6 +24,7 @@ internal sealed class ConsumerBatchStressTest : IStressTestScenario
         // A live feeder would compete with the consumer for CPU and cap throughput at the
         // feeder's rate, measuring the feeder instead of the consumer.
         await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-consumer-batch-dekaf")
             .WithGroupId($"stress-group-batch-dekaf-{Guid.NewGuid():N}")

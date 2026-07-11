@@ -23,6 +23,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         var startedAt = DateTime.UtcNow;
 
         await using var consumer = await Kafka.CreateConsumer<string, byte[]>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-roundtrip-consumer-dekaf")
             .WithGroupId($"stress-roundtrip-dekaf-{Guid.NewGuid():N}")
@@ -36,6 +37,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             cancellationToken);
 
         var builder = Kafka.CreateProducer<string, byte[]>()
+            .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-roundtrip-producer-dekaf")
             // Deliberately exercise retry duplicate detection; idempotent producers
