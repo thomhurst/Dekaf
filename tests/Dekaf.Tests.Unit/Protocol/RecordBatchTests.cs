@@ -145,6 +145,7 @@ public class RecordBatchTests
         await Assert.That(parsedBatch.ProducerId).IsEqualTo(123L);
         await Assert.That(parsedBatch.ProducerEpoch).IsEqualTo((short)0);
         await Assert.That(parsedBatch.BaseSequence).IsEqualTo(0);
+        await Assert.That(ReferenceEquals(parsedBatch.Records, parsedBatch)).IsTrue();
         await Assert.That(parsedBatch.Records.Count).IsEqualTo(1);
 
         var record = parsedBatch.Records[0];

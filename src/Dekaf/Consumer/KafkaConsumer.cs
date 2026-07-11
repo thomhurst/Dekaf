@@ -219,7 +219,7 @@ internal sealed class PendingFetchData : IDisposable
         Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _headerGeneration) == generation;
 
     /// <summary>
-    /// Gets the current record via direct array access, bypassing the LazyRecordList
+    /// Gets the current record via direct array access, bypassing lazy record-list
     /// indexer overhead (Volatile.Read + disposed check + EnsureParsedUpTo per access).
     /// Safe because EagerParseAll() is called before iteration begins.
     /// </summary>
@@ -232,7 +232,7 @@ internal sealed class PendingFetchData : IDisposable
     }
 
     // Cached batch state updated only on batch transitions, amortizing per-record cost.
-    // _currentRecordsArray bypasses IReadOnlyList<Record> virtual dispatch + LazyRecordList
+    // _currentRecordsArray bypasses IReadOnlyList<Record> virtual dispatch + lazy parsing
     // indexer overhead by caching the underlying Record[] directly.
     private Record[]? _currentRecordsArray;
     private IReadOnlyList<Record>? _currentRecords;
@@ -300,10 +300,10 @@ internal sealed class PendingFetchData : IDisposable
 
         for (var i = 0; i < _batches.Count; i++)
         {
-            if (_batches[i].Records is Protocol.Records.LazyRecordList lazyList)
-            {
+            var batch = _batches[i];
+            batch.EnsureAllRecordsParsed();
+            if (batch.Records is Protocol.Records.LazyRecordList lazyList)
                 lazyList.EnsureAllParsed();
-            }
         }
         _eagerParsed = true;
     }
@@ -320,10 +320,9 @@ internal sealed class PendingFetchData : IDisposable
         _currentRecords = records;
         _currentRecordsCount = records.Count;
 
-        // Cache raw array for direct indexing (bypasses LazyRecordList indexer overhead).
-        _currentRecordsArray = records is Protocol.Records.LazyRecordList lazyList
-            ? lazyList.GetParsedArray()
-            : null;
+        // Cache raw array for direct indexing (bypasses lazy-list indexer overhead).
+        _currentRecordsArray = batch.GetParsedRecordsArray()
+            ?? (records is Protocol.Records.LazyRecordList lazyList ? lazyList.GetParsedArray() : null);
 
         CurrentBaseOffset = batch.BaseOffset;
         CurrentPartitionLeaderEpoch = batch.PartitionLeaderEpoch;
