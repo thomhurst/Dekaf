@@ -641,6 +641,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private const int AllPartitionsPausedDelayMs = 100;
     private const int MaxConsecutivePrefetchErrors = 50;
     private const int MaxConsecutiveEmptyParsedFetches = 3;
+    private const int MaxRepeatedDeterministicPrefetchFailures = 3;
+    private const int InitialPrefetchFailureBackoffMs = 100;
+    private const int MaxPrefetchFailureBackoffMs = 5_000;
     private static readonly TimeSpan PartitionStopListenerTimeout = TimeSpan.FromSeconds(5);
 
     private readonly ConsumerOptions _options;
@@ -771,6 +774,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly BrokerPrefetchScheduler _brokerPrefetchScheduler = new();
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), FetchSessionHandler> _fetchSessions = new();
     private readonly StuckFetchPositionTracker _stuckFetchPositionTracker = new(MaxConsecutiveEmptyParsedFetches);
+    private readonly PrefetchFailureTracker _prefetchFailureTracker = new(
+        MaxRepeatedDeterministicPrefetchFailures,
+        InitialPrefetchFailureBackoffMs,
+        MaxPrefetchFailureBackoffMs);
 
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
@@ -1612,6 +1619,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         // Wrap MoveNext + record parsing in try-catch so a corrupted fetch
                         // does not kill the consumer permanently. The yield must be outside
                         // the try block (CS1626), so we build the result first then yield below.
+                        var readingProtocolData = true;
                         try
                         {
                             if (!pending.MoveNext())
@@ -1652,7 +1660,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     previousActivity = activity;
                             }
 
-                            // Create result - deserialization happens eagerly in the constructor
+                            // Create result - deserialization happens eagerly in the constructor.
+                            // Exceptions from user deserializers must never be classified as wire corruption.
+                            readingProtocolData = false;
                             nextResult = new ConsumeResult<TKey, TValue>(
                                 topic: pending.Topic,
                                 partition: pending.PartitionIndex,
@@ -1700,7 +1710,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         {
                             throw;
                         }
-                        catch (Exception ex) when (ex is InsufficientDataException or ArgumentOutOfRangeException or MalformedProtocolDataException)
+                        catch (Exception ex) when (
+                            readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
                         {
                             // Protocol-layer data errors from corrupted/truncated wire data should not
                             // kill the consumer. User-facing exceptions (deserializer errors, etc.)
@@ -2131,7 +2142,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     if (_assignmentSnapshot.Count == 0)
                     {
-                        await _brokerPrefetchScheduler.DrainAllSafelyAsync(LogPrefetchLoopError).ConfigureAwait(false);
+                        var drainError = await _brokerPrefetchScheduler
+                            .DrainAllSafelyAsync(LogPrefetchLoopError, IsFatalPrefetchError)
+                            .ConfigureAwait(false);
+                        if (drainError is not null)
+                            ExceptionDispatchInfo.Capture(drainError).Throw();
+
                         await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -2209,7 +2225,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         finally
         {
-            await _brokerPrefetchScheduler.DrainAllSafelyAsync(LogPrefetchLoopError).ConfigureAwait(false);
+            if (completionError is not null)
+                _prefetchCts?.Cancel();
+
+            var drainError = await _brokerPrefetchScheduler
+                .DrainAllSafelyAsync(LogPrefetchLoopError, IsFatalPrefetchError)
+                .ConfigureAwait(false);
+            if (completionError is null && drainError is not null && IsFatalPrefetchError(drainError))
+                completionError = drainError;
+
             _prefetchBuffer.Complete(completionError);
         }
     }
@@ -2416,6 +2440,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         CancellationToken linkedToken,
         CancellationToken consumeCancellationToken)
     {
+        var failureKey = new PrefetchFailureKey(brokerId, connectionIndex);
+
         try
         {
             await PrefetchFromBrokerAsync(
@@ -2426,13 +2452,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 connectionIndex,
                 fetchBufferEpoch,
                 linkedToken).ConfigureAwait(false);
+            _prefetchFailureTracker.Reset(failureKey);
         }
         catch (OperationCanceledException) when (consumeCancellationToken.IsCancellationRequested)
         {
+            _prefetchFailureTracker.Reset(failureKey);
             // Consume cancellation requested, exit silently
         }
         catch (Exception ex) when (IsFatalPrefetchError(ex))
         {
+            _prefetchFailureTracker.Reset(failureKey);
             // Non-recoverable errors that should propagate to the broker prefetch loop's
             // consecutive error counter. See IsFatalPrefetchError for classification logic.
             LogFatalPrefetchError(ex, brokerId);
@@ -2440,12 +2469,50 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         catch (Exception ex)
         {
-            // Transient errors (connection timeouts, broker unavailable, etc.) — log and
-            // suppress. The pipeline retries on the next cycle, and in multi-broker setups
-            // other brokers may still succeed in this cycle.
+            var positions = CapturePrefetchPositions(
+                partitions,
+                partitionStartIndex,
+                partitionCount);
+            var deterministic = ProtocolDataErrorClassifier.IsProtocolDataError(ex);
+            var decision = _prefetchFailureTracker.Observe(
+                failureKey,
+                positions,
+                deterministic);
+
             ClearPreferredReadReplicasForBroker(brokerId, partitions, partitionStartIndex, partitionCount);
             LogPrefetchFromBrokerError(ex, brokerId);
+
+            if (decision.IsTerminal)
+            {
+                var terminalError = new Errors.ConsumeException(
+                    ErrorCode.CorruptMessage,
+                    $"Broker {brokerId} connection {connectionIndex} failed to parse the same fetch positions " +
+                    $"{decision.Count} consecutive times: {ex.Message}",
+                    isRetriable: false,
+                    ex);
+                LogFatalPrefetchError(terminalError, brokerId);
+                throw terminalError;
+            }
+
+            await Task.Delay(decision.DelayMs, linkedToken).ConfigureAwait(false);
         }
+    }
+
+    private PrefetchPosition[] CapturePrefetchPositions(
+        List<TopicPartition> partitions,
+        int partitionStartIndex,
+        int partitionCount)
+    {
+        var positions = new PrefetchPosition[partitionCount];
+        var endIndex = partitionStartIndex + partitionCount;
+        for (var i = partitionStartIndex; i < endIndex; i++)
+        {
+            var partition = partitions[i];
+            var offset = _fetchPositions.GetValueOrDefault(partition, long.MinValue);
+            positions[i - partitionStartIndex] = new PrefetchPosition(partition, offset);
+        }
+
+        return positions;
     }
 
     /// <summary>
@@ -3346,6 +3413,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 while (true)
                 {
+                    var readingProtocolData = true;
                     try
                     {
                         if (!pending.MoveNext())
@@ -3368,6 +3436,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             activity = StartConsumeActivity(pending, headers, offset, messageBytes);
                         }
 
+                        // User deserialization begins in this constructor. Its exceptions
+                        // must propagate even when their type also occurs in protocol codecs.
+                        readingProtocolData = false;
                         result = new ConsumeResult<TKey, TValue>(
                             topic: pending.Topic,
                             partition: pending.PartitionIndex,
@@ -3410,7 +3481,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         throw;
                     }
-                    catch (Exception ex) when (ex is InsufficientDataException or ArgumentOutOfRangeException or MalformedProtocolDataException)
+                    catch (Exception ex) when (
+                        readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
                     {
                         LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                         break;
@@ -3987,36 +4059,47 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             var pending = pendingItems[i];
             var tracked = false;
-            while (true)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+                while (true)
                 {
-                    // Seek uses this same lock, so a fetch is either published before its
-                    // invalidation and drained, or observes the new epoch and is dropped.
-                    if (ShouldDropStaleFetchPartition(pending.TopicPartition, fetchBufferEpoch))
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
                     {
-                        if (tracked)
-                            TrackPrefetchedBytes(pending, release: true);
-                        pending.Dispose();
-                        break;
+                        // Seek uses this same lock, so a fetch is either published before its
+                        // invalidation and drained, or observes the new epoch and is dropped.
+                        if (ShouldDropStaleFetchPartition(pending.TopicPartition, fetchBufferEpoch))
+                        {
+                            if (tracked)
+                                TrackPrefetchedBytes(pending, release: true);
+                            pending.Dispose();
+                            break;
+                        }
+
+                        if (!tracked)
+                        {
+                            TrackPrefetchedBytes(pending, release: false);
+                            UpdateFetchPositionsFromPrefetch(pending, fetchBufferEpoch);
+                            tracked = true;
+                        }
+
+                        if (_prefetchBuffer.TryWrite(pending))
+                            break;
                     }
 
-                    if (!tracked)
-                    {
-                        TrackPrefetchedBytes(pending, release: false);
-                        UpdateFetchPositionsFromPrefetch(pending, fetchBufferEpoch);
-                        tracked = true;
-                    }
-
-                    if (_prefetchBuffer.TryWrite(pending))
-                    {
-                        break;
-                    }
+                    await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
                 }
+            }
+            catch
+            {
+                if (tracked)
+                    TrackPrefetchedBytes(pending, release: true);
 
-                await _prefetchBuffer.WaitToWriteAsync(cancellationToken).ConfigureAwait(false);
+                for (var j = i; j < pendingItems.Count; j++)
+                    pendingItems[j].Dispose();
+
+                throw;
             }
         }
     }

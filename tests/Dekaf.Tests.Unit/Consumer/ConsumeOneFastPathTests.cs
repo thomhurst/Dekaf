@@ -317,6 +317,23 @@ public sealed class ConsumeOneFastPathTests
         await Assert.That(parsingErrorLog.Exception).IsNotNull();
     }
 
+    [Test]
+    public async Task ConsumeOneAsync_DeserializerInvalidDataException_Propagates()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(0, CreateRecord(0, "key", "value"))
+        ]);
+        await using var consumer = CreateInitializedConsumerWithValueDeserializer(
+            new InvalidDataThrowingDeserializer(),
+            fetch);
+
+        await Assert.That(async () =>
+            await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("user deserializer");
+    }
+
     private static KafkaConsumer<string, string> CreateInitializedConsumer(params PendingFetchData[] fetches)
     {
         return CreateInitializedConsumer(queuedMinMessages: 1, fetchMaxWaitMs: 200, fetches);
@@ -390,6 +407,33 @@ public sealed class ConsumeOneFastPathTests
             pendingFetches.Enqueue(fetch);
 
         return consumer;
+    }
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumerWithValueDeserializer(
+        IDeserializer<string> valueDeserializer,
+        PendingFetchData fetch)
+    {
+        var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                QueuedMinMessages = 1,
+                FetchMaxWaitMs = 200
+            },
+            Serializers.String,
+            valueDeserializer);
+
+        SetInitialized(consumer);
+        AssignTestPartition(consumer);
+        GetPendingFetches(consumer).Enqueue(fetch);
+        return consumer;
+    }
+
+    private sealed class InvalidDataThrowingDeserializer : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            throw new InvalidDataException("user deserializer failed");
     }
 
     private static void AssignTestPartition(KafkaConsumer<string, string> consumer)

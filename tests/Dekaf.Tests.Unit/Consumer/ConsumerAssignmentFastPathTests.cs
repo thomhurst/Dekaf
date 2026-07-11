@@ -635,6 +635,46 @@ public sealed class ConsumerAssignmentFastPathTests
         SetPrefetchedBytes(consumer, 0);
     }
 
+    [Test]
+    public async Task WritePrefetchedItemsAsync_CancellationDisposesUnpublishedSharedMemory()
+    {
+        await using var consumer = CreateConsumer();
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, 0)]);
+
+        var prefetchBuffer = GetPrefetchBuffer(consumer);
+        while (true)
+        {
+            var filler = CreateFetch(partition: 0, baseOffset: 0, value: "filler");
+            if (prefetchBuffer.TryWrite(filler))
+                continue;
+
+            filler.Dispose();
+            break;
+        }
+
+        var memory = new TrackingPooledMemory();
+        var shared = RefCountedMemoryOwner.Create(memory, initialRefCount: 2);
+        var first = CreateFetch(partition: 0, baseOffset: 10, value: "first");
+        var second = CreateFetch(partition: 0, baseOffset: 11, value: "second");
+        first.SetMemoryOwner(shared);
+        second.SetMemoryOwner(shared);
+        using var cts = new CancellationTokenSource();
+
+        var writeTask = StartWritePrefetchedItemsAsync(
+            consumer,
+            [first, second],
+            GetFetchBufferEpoch(consumer),
+            cts.Token).AsTask();
+        await Assert.That(writeTask.IsCompleted).IsFalse();
+
+        cts.Cancel();
+        await Assert.That(async () => await writeTask).Throws<OperationCanceledException>();
+
+        await Assert.That(memory.DisposeCount).IsEqualTo(1);
+        await Assert.That(GetPrefetchedBytes(consumer)).IsEqualTo(0L);
+    }
+
     private static KafkaConsumer<string, string> CreateConsumer()
     {
         return new KafkaConsumer<string, string>(
@@ -1135,7 +1175,8 @@ public sealed class ConsumerAssignmentFastPathTests
     private static ValueTask StartWritePrefetchedItemsAsync(
         KafkaConsumer<string, string> consumer,
         IReadOnlyList<PendingFetchData> pendingItems,
-        int fetchBufferEpoch)
+        int fetchBufferEpoch,
+        CancellationToken cancellationToken = default)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "WritePrefetchedItemsAsync",
@@ -1144,7 +1185,14 @@ public sealed class ConsumerAssignmentFastPathTests
 
         return (ValueTask)method.Invoke(
             consumer,
-            [pendingItems, fetchBufferEpoch, CancellationToken.None])!;
+            [pendingItems, fetchBufferEpoch, cancellationToken])!;
+    }
+
+    private sealed class TrackingPooledMemory : IPooledMemory
+    {
+        public ReadOnlyMemory<byte> Memory => ReadOnlyMemory<byte>.Empty;
+        public int DisposeCount { get; private set; }
+        public void Dispose() => DisposeCount++;
     }
 
     private static void SetPrefetchedBytes(KafkaConsumer<string, string> consumer, long bytes)

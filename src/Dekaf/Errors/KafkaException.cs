@@ -38,6 +38,13 @@ public class KafkaException : Exception
         _isRetriableOverride = isRetriable;
     }
 
+    internal KafkaException(ErrorCode errorCode, string message, bool isRetriable, Exception innerException)
+        : base(message, innerException)
+    {
+        ErrorCode = errorCode;
+        _isRetriableOverride = isRetriable;
+    }
+
     /// <summary>
     /// Creates a new KafkaException with an inner exception.
     /// </summary>
@@ -297,6 +304,11 @@ public sealed class ConsumeException : KafkaException
     }
 
     internal ConsumeException(ErrorCode errorCode, string message, bool isRetriable) : base(errorCode, message, isRetriable)
+    {
+    }
+
+    internal ConsumeException(ErrorCode errorCode, string message, bool isRetriable, Exception innerException)
+        : base(errorCode, message, isRetriable, innerException)
     {
     }
 
