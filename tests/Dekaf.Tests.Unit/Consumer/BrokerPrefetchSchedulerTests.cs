@@ -47,4 +47,28 @@ public sealed class BrokerPrefetchSchedulerTests
         await Assert.That(async () => await scheduler.DrainCompletedAsync().ConfigureAwait(false))
             .Throws<InvalidOperationException>();
     }
+
+    [Test]
+    public async Task DrainAllSafely_ReturnsFirstFailureAndObservesRemainingFailures()
+    {
+        var scheduler = new BrokerPrefetchScheduler();
+        var firstFailure = new InvalidOperationException("first");
+        var secondFailure = new InvalidOperationException("second");
+        var loggedFailures = new List<Exception>();
+
+        scheduler.TryStart(
+            (BrokerId: 1, ConnectionIndex: 0),
+            () => Task.FromException(firstFailure));
+        scheduler.TryStart(
+            (BrokerId: 2, ConnectionIndex: 0),
+            () => Task.FromException(secondFailure));
+
+        var drainedFailure = await scheduler.DrainAllSafelyAsync(loggedFailures.Add).ConfigureAwait(false);
+
+        await Assert.That(drainedFailure).IsSameReferenceAs(firstFailure);
+        await Assert.That(loggedFailures).Count().IsEqualTo(2);
+        await Assert.That(loggedFailures[0]).IsSameReferenceAs(firstFailure);
+        await Assert.That(loggedFailures[1]).IsSameReferenceAs(secondFailure);
+        await Assert.That(scheduler.HasInFlight).IsFalse();
+    }
 }
