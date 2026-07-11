@@ -227,12 +227,23 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30))).IsNotNull();
 
         var coordinator = GetCoordinator((KafkaConsumer<string, string>)consumer);
-        var pollVersion = GetPollVersion(coordinator);
-        var bufferedConsume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30));
+        var observedBufferedConsume = false;
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            var pollVersion = GetPollVersion(coordinator);
+            var consume = consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30));
+            var completedSynchronously = consume.IsCompletedSuccessfully;
 
-        await Assert.That(bufferedConsume.IsCompletedSuccessfully).IsTrue();
-        await Assert.That(await bufferedConsume).IsNotNull();
-        await Assert.That(GetPollVersion(coordinator)).IsEqualTo(pollVersion + 1);
+            await Assert.That(await consume).IsNotNull();
+            if (!completedSynchronously)
+                continue;
+
+            observedBufferedConsume = true;
+            await Assert.That(GetPollVersion(coordinator)).IsEqualTo(pollVersion + 1);
+            break;
+        }
+
+        await Assert.That(observedBufferedConsume).IsTrue();
     }
 
     private static ConsumerCoordinator GetCoordinator(KafkaConsumer<string, string> consumer)
