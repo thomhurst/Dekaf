@@ -47,6 +47,27 @@ public sealed class ConsumerAssignmentFastPathTests
             static (consumer, token) => consumer.ConsumeRawBatchAsync(token));
     }
 
+    [Test]
+    public async Task ConsumeAsync_LargePendingBatch_RefreshesPollProgress()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        SetInitialized(consumer);
+        consumer.IncrementalAssign([new TopicPartitionOffset("test-topic", 0, 0)]);
+        GetPendingFetches(consumer).Enqueue(CreateFetchWithRecords(recordCount: 33));
+        var initialPollVersion = GetPollVersion(consumer);
+        var consumed = 0;
+
+        await foreach (var _ in consumer.ConsumeAsync())
+        {
+            if (++consumed == 33)
+                break;
+        }
+
+        await Assert.That(GetPollVersion(consumer)).IsGreaterThanOrEqualTo(initialPollVersion + 2);
+    }
+
     private static async Task AssertIdleLoopRecordsPollProgressAsync<T>(
         Func<KafkaConsumer<string, string>, CancellationToken, IAsyncEnumerable<T>> consume)
     {
@@ -1508,6 +1529,36 @@ public sealed class ConsumerAssignmentFastPathTests
                         HeaderCount = 0
                     }
                 ]
+            }
+        ]);
+    }
+
+    private static PendingFetchData CreateFetchWithRecords(int recordCount)
+    {
+        var records = new List<Record>(recordCount);
+        for (var i = 0; i < recordCount; i++)
+        {
+            records.Add(new Record
+            {
+                OffsetDelta = i,
+                TimestampDelta = i,
+                Key = Encoding.UTF8.GetBytes($"key-{i}"),
+                IsKeyNull = false,
+                Value = Encoding.UTF8.GetBytes($"value-{i}"),
+                IsValueNull = false,
+                Headers = null,
+                HeaderCount = 0
+            });
+        }
+
+        return PendingFetchData.Create("test-topic", 0,
+        [
+            new RecordBatch
+            {
+                BaseOffset = 0,
+                BaseTimestamp = 1700000000000L,
+                Attributes = 0,
+                Records = records
             }
         ]);
     }
