@@ -524,7 +524,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
-    public async Task ConsumerProtocol_SteadyHeartbeat_CrossesMaxPollWhileAwaitingResponse_DiscardsResponse()
+    [Timeout(30_000)]
+    [NotInParallel]
+    public async Task ConsumerProtocol_SteadyHeartbeat_CrossesMaxPollWhileAwaitingResponse_DiscardsResponse(
+        CancellationToken cancellationToken)
     {
         SetupSuccessfulConsumerProtocolJoin();
         var options = CreateConsumerProtocolOptions(
@@ -548,7 +551,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             });
 
         var heartbeat = InvokeSteadyConsumerGroupHeartbeatAsync(coordinator).AsTask();
-        await heartbeatSent.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await heartbeatSent.Task.WaitAsync(cancellationToken);
         SetCoordinatorLongField(
             coordinator,
             "_lastPollTimestamp",
@@ -561,7 +564,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             HeartbeatIntervalMs = 60_000
         });
 
-        await heartbeat.WaitAsync(TimeSpan.FromSeconds(1));
+        await heartbeat.WaitAsync(cancellationToken);
 
         await Assert.That(coordinator.GenerationId).IsEqualTo(1);
     }
