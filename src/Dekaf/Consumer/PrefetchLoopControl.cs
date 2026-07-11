@@ -1,3 +1,5 @@
+using Dekaf.Errors;
+
 namespace Dekaf.Consumer;
 
 internal enum PrefetchLoopAction
@@ -19,6 +21,11 @@ internal static class PrefetchLoopControl
 
     public static bool ShouldBreakOnConsecutiveError(int consecutiveErrors, int threshold)
         => consecutiveErrors >= threshold;
+
+    public static int RecordConsecutiveError(int consecutiveErrors, Exception exception)
+        => exception is KafkaException { IsRetriable: true }
+            ? 0
+            : consecutiveErrors + 1;
 
     public static bool ShouldResetConsecutiveErrors(int drained)
         => drained > 0;

@@ -1,4 +1,6 @@
 using Dekaf.Consumer;
+using Dekaf.Errors;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
@@ -68,6 +70,26 @@ public sealed class PrefetchLoopControlTests
     {
         await Assert.That(PrefetchLoopControl.ShouldBreakOnConsecutiveError(49, 50)).IsFalse();
         await Assert.That(PrefetchLoopControl.ShouldBreakOnConsecutiveError(50, 50)).IsTrue();
+    }
+
+    [Test]
+    public async Task RecordConsecutiveError_RetriableKafkaFailureDoesNotPoisonLoop()
+    {
+        var error = new KafkaException(ErrorCode.RequestTimedOut, "offset resolution timed out");
+
+        var consecutiveErrors = PrefetchLoopControl.RecordConsecutiveError(49, error);
+
+        await Assert.That(consecutiveErrors).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RecordConsecutiveError_UnexpectedFailureIncrementsCount()
+    {
+        var consecutiveErrors = PrefetchLoopControl.RecordConsecutiveError(
+            49,
+            new InvalidOperationException("unexpected"));
+
+        await Assert.That(consecutiveErrors).IsEqualTo(50);
     }
 
     [Test]

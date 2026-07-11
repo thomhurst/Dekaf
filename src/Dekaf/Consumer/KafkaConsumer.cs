@@ -2078,7 +2078,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
                 catch (Exception ex)
                 {
-                    consecutiveErrors++;
+                    consecutiveErrors = PrefetchLoopControl.RecordConsecutiveError(consecutiveErrors, ex);
                     LogPrefetchLoopError(ex);
 
                     if (PrefetchLoopControl.ShouldBreakOnConsecutiveError(
