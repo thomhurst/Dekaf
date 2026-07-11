@@ -1505,7 +1505,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // This converts per-record lazy parse overhead (disposed check +
                     // bounds check + EnsureParsedUpTo per indexer call) into a single
                     // batch-level cost. Parsing is cache-friendly in a tight loop.
-                    pending.EagerParseAll();
+                    EagerParsePendingOrRemove(pending);
 
                     // Compiler requires definite assignment; always assigned inside try before yield.
                     ConsumeResult<TKey, TValue> nextResult = default!;
@@ -3171,6 +3171,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return true;
     }
 
+    private void EagerParsePendingOrRemove(PendingFetchData pending)
+    {
+        try
+        {
+            pending.EagerParseAll();
+        }
+        catch
+        {
+            if (_pendingFetches.Count > 0
+                && ReferenceEquals(_pendingFetches.Peek(), pending))
+            {
+                DisposeQueuedFetch(_pendingFetches.Dequeue());
+            }
+
+            throw;
+        }
+    }
+
     private bool TryConsumeOneFromPendingFetches(out ConsumeResult<TKey, TValue> result)
     {
         result = default!;
@@ -3190,7 +3208,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             long? batchProcessingStarted = _adaptiveFetchSizer is not null
                 ? Stopwatch.GetTimestamp() : null;
 
-            pending.EagerParseAll();
+            EagerParsePendingOrRemove(pending);
 
             System.Diagnostics.Activity? activity = null;
             try

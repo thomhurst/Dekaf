@@ -34,12 +34,72 @@ public sealed class ConsumeAsyncRecoveryTests
             Topic,
             Partition,
             new ConsumeException($"Failed to parse record batch for {Topic}-{Partition}", parseError));
-        await using var consumer = CreateConsumerWithPendingFetches(null, pending);
+        var goodFetch = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(100, CreateRecord(0, "next", "value"))]);
+        await using var consumer = CreateConsumerWithPendingFetches(null, pending, goodFetch);
 
         await Assert.That(async () =>
         {
             await foreach (var _ in consumer.ConsumeAsync()) { }
         }).Throws<ConsumeException>().WithMessageContaining($"{Topic}-{Partition}");
+        await Assert.That(GetPendingFetchCount(consumer)).IsEqualTo(1);
+
+        ConsumeResult<string, string>? recovered = null;
+        await foreach (var result in consumer.ConsumeAsync())
+        {
+            recovered = result;
+            break;
+        }
+
+        await Assert.That(recovered).IsNotNull();
+        await Assert.That(recovered!.Value.Key).IsEqualTo("next");
+    }
+
+    [Test]
+    public async Task ConsumeOne_PendingProtocolError_RemovesErrorBeforeNextPoll()
+    {
+        var pending = PendingFetchData.CreateError(
+            Topic,
+            Partition,
+            new ConsumeException($"Failed to parse record batch for {Topic}-{Partition}"));
+        var goodFetch = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(100, CreateRecord(0, "next", "value"))]);
+        await using var consumer = CreateConsumerWithPendingFetches(null, pending, goodFetch);
+        var method = typeof(KafkaConsumer<string, string>)
+            .GetMethod("TryConsumeOneFromPendingFetches", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("TryConsumeOneFromPendingFetches method not found.");
+
+        Exception? error = null;
+        try
+        {
+            method.Invoke(consumer, [null]);
+        }
+        catch (TargetInvocationException exception)
+        {
+            error = exception.InnerException;
+        }
+
+        await Assert.That(GetPendingFetchCount(consumer)).IsEqualTo(1);
+
+        var arguments = new object?[] { null };
+        var consumed = (bool)method.Invoke(consumer, arguments)!;
+        var result = (ConsumeResult<string, string>)arguments[0]!;
+
+        await Assert.That(error).IsTypeOf<ConsumeException>();
+        await Assert.That(consumed).IsTrue();
+        await Assert.That(result.Key).IsEqualTo("next");
+    }
+
+    private static int GetPendingFetchCount(KafkaConsumer<string, string> consumer)
+    {
+        var field = typeof(KafkaConsumer<string, string>)
+            .GetField("_pendingFetches", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_pendingFetches field not found.");
+        return ((Queue<PendingFetchData>)field.GetValue(consumer)!).Count;
     }
 
     /// <summary>
