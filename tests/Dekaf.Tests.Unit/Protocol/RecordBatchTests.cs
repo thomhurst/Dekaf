@@ -417,6 +417,23 @@ public class RecordBatchTests
     }
 
     [Test]
+    [NotInParallel]
+    public async Task RecordBatch_DisposedDuringEnumeration_ThrowsOnNextRecord()
+    {
+        using var originalBatch = CreateTwoRecordBatch();
+        var buffer = new ArrayBufferWriter<byte>();
+        originalBatch.Write(buffer);
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        using var parsedBatch = RecordBatch.Read(ref reader);
+        using var enumerator = parsedBatch.Records.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        parsedBatch.Dispose();
+
+        await Assert.That(() => enumerator.MoveNext()).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
     public async Task RecordBatch_Dispose_IsIdempotent()
     {
         var buffer = new ArrayBufferWriter<byte>();

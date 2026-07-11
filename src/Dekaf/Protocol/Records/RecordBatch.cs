@@ -470,9 +470,10 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     private IEnumerable<Record> EnumerateLazyRecords()
     {
-        ThrowIfNotLazyRecordList();
-        for (var i = 0; i < _recordCount; i++)
+        var initialRecordCount = _recordCount;
+        for (var i = 0; i < initialRecordCount; i++)
         {
+            ThrowIfNotLazyRecordList();
             EnsureLazyRecordsParsedUpTo(i);
             if (i >= _recordCount)
                 yield break;
