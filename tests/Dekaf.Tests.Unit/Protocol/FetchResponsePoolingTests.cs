@@ -1,5 +1,7 @@
+using System.Buffers;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 
 namespace Dekaf.Tests.Unit.Protocol;
 
@@ -158,6 +160,133 @@ public class FetchResponsePoolingTests
         await Assert.That(reused.SnapshotId).IsNull();
 
         reused.ReturnToPool();
+    }
+
+    [Test]
+    public async Task FetchResponsePartition_ReturnToPool_ReturnsEmptyRecordsList()
+    {
+        var heldLists = Enumerable.Range(0, 65)
+            .Select(_ => FetchResponsePartition.RentRecordBatchList())
+            .ToArray();
+        var expected = heldLists[0];
+        var partition = FetchResponsePartition.Rent();
+        partition.Records = expected;
+
+        partition.ReturnToPool();
+        var actual = FetchResponsePartition.RentRecordBatchList();
+
+        await Assert.That(actual).IsSameReferenceAs(expected);
+
+        FetchResponsePartition.ReturnRecordBatchList(actual);
+        for (var i = 1; i < heldLists.Length; i++)
+        {
+            FetchResponsePartition.ReturnRecordBatchList(heldLists[i]);
+        }
+    }
+
+    [Test]
+    public async Task FetchResponse_ReadFailure_ReturnsParsedBatchesAndLists()
+    {
+        var responseBytes = CreateResponseWithMalformedSecondTopic();
+        var heldPartitions = Enumerable.Range(0, 65)
+            .Select(_ => FetchResponsePartition.Rent())
+            .ToArray();
+        var heldLists = Enumerable.Range(0, 65)
+            .Select(_ => FetchResponsePartition.RentRecordBatchList())
+            .ToArray();
+        var heldBatches = Enumerable.Range(0, 2_049)
+            .Select(_ => RecordBatch.RentFromPool())
+            .ToArray();
+        var expectedPartition = heldPartitions[0];
+        var expectedList = heldLists[0];
+        var expectedBatch = heldBatches[0];
+        expectedPartition.ReturnToPool();
+        FetchResponsePartition.ReturnRecordBatchList(expectedList);
+        expectedBatch.ReturnToPool();
+
+        var threw = ParseMalformedResponse(responseBytes);
+        var actualPartition = FetchResponsePartition.Rent();
+        var actualList = FetchResponsePartition.RentRecordBatchList();
+        var actualBatch = RecordBatch.RentFromPool();
+
+        try
+        {
+            await Assert.That(threw).IsTrue();
+            await Assert.That(actualPartition).IsSameReferenceAs(expectedPartition);
+            await Assert.That(actualList).IsSameReferenceAs(expectedList);
+            await Assert.That(actualBatch).IsSameReferenceAs(expectedBatch);
+        }
+        finally
+        {
+            actualPartition.ReturnToPool();
+            FetchResponsePartition.ReturnRecordBatchList(actualList);
+            actualBatch.ReturnToPool();
+
+            for (var i = 1; i < heldPartitions.Length; i++)
+            {
+                heldPartitions[i].ReturnToPool();
+                FetchResponsePartition.ReturnRecordBatchList(heldLists[i]);
+                heldBatches[i].ReturnToPool();
+            }
+
+            for (var i = heldPartitions.Length; i < heldBatches.Length; i++)
+            {
+                heldBatches[i].ReturnToPool();
+            }
+        }
+    }
+
+    private static bool ParseMalformedResponse(byte[] responseBytes)
+    {
+        var reader = new KafkaProtocolReader(responseBytes);
+        try
+        {
+            FetchResponse.Read(ref reader, version: 12);
+            return false;
+        }
+        catch (MalformedProtocolDataException)
+        {
+            return true;
+        }
+    }
+
+    private static byte[] CreateResponseWithMalformedSecondTopic()
+    {
+        var batchBuffer = new ArrayBufferWriter<byte>();
+        using (var batch = new RecordBatch
+        {
+            BaseOffset = 10,
+            PartitionLeaderEpoch = -1,
+            BaseTimestamp = 1_000,
+            MaxTimestamp = 1_000,
+            Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, Value = "value"u8.ToArray() }]
+        })
+        {
+            batch.Write(batchBuffer);
+        }
+
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteInt32(0);
+        writer.WriteUnsignedVarInt(3); // two topics
+        writer.WriteCompactString("valid-topic");
+        writer.WriteUnsignedVarInt(2); // one partition
+        writer.WriteInt32(0);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteInt64(100);
+        writer.WriteInt64(100);
+        writer.WriteInt64(0);
+        writer.WriteUnsignedVarInt(1); // empty aborted transactions
+        writer.WriteInt32(-1);
+        writer.WriteUnsignedVarInt(batchBuffer.WrittenCount + 1);
+        writer.WriteRawBytes(batchBuffer.WrittenSpan);
+        writer.WriteUnsignedVarInt(0); // partition tagged fields
+        writer.WriteUnsignedVarInt(0); // topic tagged fields
+        writer.WriteUnsignedVarInt(10); // malformed compact-string length for second topic
+        writer.WriteUInt8(0x41);
+        return buffer.WrittenSpan.ToArray();
     }
 
     // ── Thread-safety ──
