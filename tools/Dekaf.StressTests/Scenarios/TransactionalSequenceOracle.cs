@@ -96,18 +96,22 @@ internal sealed class TransactionalSequenceOracle
 
         var samples = new List<string>(_failureSamples);
         if (sentinelCommitFailed)
+        {
             samples.Add("Partition sentinel transaction failed to commit; read_committed verification was not run.");
-
-        for (var index = 0; index < _seenCommitted.Length && samples.Count < MaxFailureSamples; index++)
-        {
-            if (!_seenCommitted[index])
-                samples.Add($"Missing committed index {index:N0}.");
         }
-
-        for (var partition = 0; partition < _seenSentinels.Length && samples.Count < MaxFailureSamples; partition++)
+        else
         {
-            if (!_seenSentinels[partition])
-                samples.Add($"Missing terminal sentinel for partition {partition}.");
+            for (var index = 0; index < _seenCommitted.Length && samples.Count < MaxFailureSamples; index++)
+            {
+                if (!_seenCommitted[index])
+                    samples.Add($"Missing committed index {index:N0}.");
+            }
+
+            for (var partition = 0; partition < _seenSentinels.Length && samples.Count < MaxFailureSamples; partition++)
+            {
+                if (!_seenSentinels[partition])
+                    samples.Add($"Missing terminal sentinel for partition {partition}.");
+            }
         }
 
         return new TransactionVerificationSnapshot
