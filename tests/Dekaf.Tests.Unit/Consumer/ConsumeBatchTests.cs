@@ -128,7 +128,7 @@ public class ConsumeBatchTests
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
-        assignmentEpoch.Version++;
+        assignmentEpoch.Invalidate();
 
         await Assert.That(enumerator.MoveNext()).IsFalse();
         await Assert.That(batch.Count).IsEqualTo(1);
@@ -155,12 +155,31 @@ public class ConsumeBatchTests
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
-        assignmentEpoch.Version++;
+        assignmentEpoch.Invalidate();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
         await Assert.That(enumerator.Current.Offset).IsEqualTo(1);
         await Assert.That(batch.Count).IsEqualTo(2);
         await Assert.That(membershipChecks).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task BatchIterationGuard_DoesNotAdoptInProgressPublication()
+    {
+        var assignmentEpoch = new BatchIterationEpoch();
+        assignmentEpoch.BeginPublication();
+        var observedVersion = assignmentEpoch.Version;
+        var guard = new BatchIterationGuard(assignmentEpoch, observedVersion);
+
+        try
+        {
+            await Assert.That(guard.CanStart(new TopicPartition("test-topic", 0), ref observedVersion))
+                .IsFalse();
+        }
+        finally
+        {
+            assignmentEpoch.EndPublication();
+        }
     }
 
     /// <summary>

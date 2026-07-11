@@ -585,7 +585,7 @@ public sealed class ConsumerAssignmentFastPathTests
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(1);
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
-        await Assert.That(GetBatchIterationVersion(consumer)).IsEqualTo(batchIterationVersion + 1);
+        await Assert.That(GetBatchIterationVersion(consumer)).IsEqualTo(batchIterationVersion + 2);
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).ContainsKey(partition);
 
         CompleteDivergingEpochResets(consumer);

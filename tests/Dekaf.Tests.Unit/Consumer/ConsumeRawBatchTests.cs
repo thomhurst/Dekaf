@@ -158,7 +158,7 @@ public class ConsumeRawBatchTests
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
-        assignmentEpoch.Version++;
+        assignmentEpoch.Invalidate();
 
         await Assert.That(enumerator.MoveNext()).IsFalse();
         await Assert.That(batch.Count).IsEqualTo(1);
@@ -216,7 +216,7 @@ public class ConsumeRawBatchTests
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
-        assignmentEpoch.Version++;
+        assignmentEpoch.Invalidate();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
         await Assert.That(enumerator.Current.Offset).IsEqualTo(1);

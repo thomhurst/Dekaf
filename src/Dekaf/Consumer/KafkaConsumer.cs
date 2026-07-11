@@ -3933,9 +3933,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Waiting for the consume loop to drain the queued clear lets an ABA reassignment
             // make a stale response look current and advance the reinitialized fetch position.
             InvalidateFetchesForPartitionsLocked(partitions);
-            Interlocked.Increment(ref _batchIterationEpoch.Version);
-            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
-            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+            _batchIterationEpoch.BeginPublication();
+            try
+            {
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+            }
+            finally
+            {
+                _batchIterationEpoch.EndPublication();
+            }
         }
     }
 
@@ -3969,8 +3976,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
         if (startsBatch)
             _stagedDivergingEpochResetBatches++;
-        Interlocked.Increment(ref _batchIterationEpoch.Version);
-        Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
+        _batchIterationEpoch.BeginPublication();
+        try
+        {
+            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
+        }
+        finally
+        {
+            _batchIterationEpoch.EndPublication();
+        }
         return true;
     }
 
@@ -4121,8 +4135,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var recovered = false;
         if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
         {
-            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
-            Interlocked.Increment(ref _batchIterationEpoch.Version);
+            _batchIterationEpoch.BeginPublication();
+            try
+            {
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
+            }
+            finally
+            {
+                _batchIterationEpoch.EndPublication();
+            }
             recovered = true;
         }
 
@@ -5181,8 +5202,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private void PublishAssignmentSnapshot()
     {
-        _assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
-        Interlocked.Increment(ref _batchIterationEpoch.Version);
+        var assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
+        _batchIterationEpoch.BeginPublication();
+        try
+        {
+            _assignmentSnapshot = assignmentSnapshot;
+        }
+        finally
+        {
+            _batchIterationEpoch.EndPublication();
+        }
         Interlocked.Increment(ref _assignmentEnsureVersion);
         Volatile.Write(ref _lastCoordinatorAssignmentVersion, -1);
     }

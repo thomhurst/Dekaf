@@ -6,7 +6,31 @@ namespace Dekaf.Consumer
 {
     internal sealed class BatchIterationEpoch
     {
+        // Seqlock: even versions are stable; odd versions mean assignment/revocation state
+        // is being published and must not be adopted by a batch iterator.
+        private readonly object _publicationLock = new();
         public int Version;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Invalidate()
+        {
+            lock (_publicationLock)
+                Interlocked.Add(ref Version, 2);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void BeginPublication()
+        {
+            Monitor.Enter(_publicationLock);
+            Interlocked.Increment(ref Version);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void EndPublication()
+        {
+            Interlocked.Increment(ref Version);
+            Monitor.Exit(_publicationLock);
+        }
     }
 
     internal readonly struct BatchIterationGuard(
@@ -22,11 +46,21 @@ namespace Dekaf.Consumer
                 return canContinue is null || canContinue(partition);
 
             if (canContinue is null)
-                return Volatile.Read(ref epoch.Version) == observedVersion;
+            {
+                var currentVersion = Volatile.Read(ref epoch.Version);
+                return (currentVersion & 1) == 0 && currentVersion == observedVersion;
+            }
 
+            var spin = new SpinWait();
             while (true)
             {
                 var currentVersion = Volatile.Read(ref epoch.Version);
+                if ((currentVersion & 1) != 0)
+                {
+                    spin.SpinOnce();
+                    continue;
+                }
+
                 if (!canContinue(partition))
                     return false;
 
@@ -44,9 +78,16 @@ namespace Dekaf.Consumer
             if (epoch is null)
                 return canContinue is null || canContinue(partition);
 
+            var spin = new SpinWait();
             while (true)
             {
                 var currentVersion = Volatile.Read(ref epoch.Version);
+                if ((currentVersion & 1) != 0)
+                {
+                    spin.SpinOnce();
+                    continue;
+                }
+
                 if (currentVersion == observedVersion)
                     return true;
 
