@@ -3257,10 +3257,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
-        ValidateConsumeOneTimeout(timeout);
+        var timeoutMilliseconds = ValidateConsumeOneTimeout(timeout);
 
         var pollRecorded = false;
-        if (CanUseBufferedConsumeOneFastPath(cancellationToken))
+        if (!RequiresRuntimeTimeoutValidation(timeoutMilliseconds)
+            && CanUseBufferedConsumeOneFastPath(cancellationToken))
         {
             pollRecorded = _coordinator?.TryRecordPollFast() ?? true;
             if (pollRecorded && TryConsumeOneFromPendingFetches(out var bufferedResult))
@@ -3309,12 +3310,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ValidateConsumeOneTimeout(TimeSpan timeout)
+    private static long ValidateConsumeOneTimeout(TimeSpan timeout)
     {
         const long MaxSupportedTimeoutMilliseconds = 0xfffffffe;
         var timeoutMilliseconds = (long)timeout.TotalMilliseconds;
         if (timeoutMilliseconds < -1 || timeoutMilliseconds > MaxSupportedTimeoutMilliseconds)
             throw new ArgumentOutOfRangeException(nameof(timeout));
+
+        return timeoutMilliseconds;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool RequiresRuntimeTimeoutValidation(long timeoutMilliseconds)
+    {
+#if NETSTANDARD2_0
+        // Legacy runtimes consuming this asset may cap CancelAfter at Int32.MaxValue.
+        // Route ambiguous values through the CTS path so the actual runtime decides.
+        return timeoutMilliseconds > int.MaxValue;
+#else
+        return false;
+#endif
     }
 
     private bool CanUseBufferedConsumeOneFastPath(CancellationToken cancellationToken)

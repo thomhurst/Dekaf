@@ -135,6 +135,24 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    public async Task ConsumeOneAsync_RuntimeSupportedLargeTimeout_UsesBufferedFastPath()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(fetch);
+        MarkManualAssignmentCurrent(consumer);
+
+        var resultTask = consumer.ConsumeOneAsync(
+            TimeSpan.FromMilliseconds((long)int.MaxValue + 1),
+            CancellationToken.None);
+
+        await Assert.That(resultTask.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(await resultTask).IsNotNull();
+    }
+
+    [Test]
     public async Task ConsumeOneAsync_WithPendingFetch_FlushesPositionWhenFetchExhausted()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
