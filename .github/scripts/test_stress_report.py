@@ -65,6 +65,22 @@ class StressReportTests(unittest.TestCase):
 
         self.assertEqual([], paired_latency_thresholds([unpaired]))
 
+    def test_paired_latency_thresholds_require_matching_roundtrip_bound(self):
+        confluent = stress_result("Confluent", effective_rate=1000)
+        confluent.update({
+            "scenario": "producer-roundtrip",
+            "roundTripValidation": {"expectedMessages": 250_000},
+            "latency": {"p50Us": 10_000, "p99Us": 50_000},
+        })
+        dekaf = stress_result("Dekaf", effective_rate=1400)
+        dekaf.update({
+            "scenario": "producer-roundtrip",
+            "roundTripValidation": {"expectedMessages": 1_000_000},
+            "latency": {"p50Us": 50_000, "p99Us": 500_000},
+        })
+
+        self.assertEqual([], paired_latency_thresholds([confluent, dekaf]))
+
     def test_intra_run_throughput_detects_front_loaded_collapse(self):
         value = stress_result("Dekaf", effective_rate=1400)
         value.update({

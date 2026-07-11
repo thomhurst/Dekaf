@@ -243,7 +243,24 @@ def _latency_identity(result):
         result.get('brokerCount', 1),
         result.get('durationMinutes'),
         result.get('messageSizeBytes'),
+        _latency_consumer_seed_batch_size(result),
+        _latency_roundtrip_messages(result),
     )
+
+
+def _latency_consumer_seed_batch_size(result):
+    value = result.get('consumerSeedBatchSizeBytes')
+    if value is not None:
+        return value
+    scenario = str(result.get('scenario', '')).casefold()
+    return 16_384 if scenario.startswith('consumer') else None
+
+
+def _latency_roundtrip_messages(result):
+    validation = result.get('roundTripValidation')
+    if isinstance(validation, dict):
+        return validation.get('expectedMessages', result.get('roundTripMessages'))
+    return result.get('roundTripMessages')
 
 
 def _latency_scenario_label(result):
