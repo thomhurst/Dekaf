@@ -241,6 +241,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _state == CoordinatorState.Stable
         && Volatile.Read(ref _assignmentVersion) == assignmentVersion
         && _revokedPartitionsSinceLastSync.IsEmpty
+        && Volatile.Read(ref _fatalHeartbeatException) is null
         && Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0;
 
     internal bool TryRecordPollFast()

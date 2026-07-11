@@ -141,6 +141,7 @@ public sealed class FetchResponseBatchBoundaryTests
                 }
 
                 FetchResponsePartition.ReturnRecordBatchList(batches);
+                partition.Records = null;
             }
         }
     }

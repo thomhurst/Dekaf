@@ -3129,7 +3129,35 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(Guid.TryParse(coordinator.MemberId, out _)).IsTrue();
     }
 
+    [Test]
+    public async Task IsAssignmentSyncCurrent_PendingFatalHeartbeat_ReturnsFalse()
+    {
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        const int assignmentVersion = 7;
+        SetPrivateField(coordinator, "_state", CoordinatorState.Stable);
+        SetPrivateField(coordinator, "_assignmentVersion", assignmentVersion);
+
+        await Assert.That(coordinator.IsAssignmentSyncCurrent(assignmentVersion)).IsTrue();
+
+        SetPrivateField(
+            coordinator,
+            "_fatalHeartbeatException",
+            new GroupException(ErrorCode.GroupAuthorizationFailed, "fatal heartbeat"));
+
+        await Assert.That(coordinator.IsAssignmentSyncCurrent(assignmentVersion)).IsFalse();
+    }
+
     #endregion
+
+    private static void SetPrivateField<T>(ConsumerCoordinator coordinator, string fieldName, T value)
+    {
+        var field = typeof(ConsumerCoordinator).GetField(
+            fieldName,
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found.");
+        field.SetValue(coordinator, value);
+    }
 
     private sealed class RetirableTestConnection(IKafkaConnection inner) :
         IKafkaConnection,
