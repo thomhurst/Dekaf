@@ -1517,7 +1517,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await RecordPollAsync(cancellationToken).ConfigureAwait(false);
 
             await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
-            ClearFetchBufferForPendingCoordinatorRevocations();
+            RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -1827,7 +1827,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await RecordPollAsync(cancellationToken).ConfigureAwait(false);
 
             await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
-            ClearFetchBufferForPendingCoordinatorRevocations();
+            RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -1966,7 +1966,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await RecordPollAsync(cancellationToken).ConfigureAwait(false);
 
             await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
-            ClearFetchBufferForPendingCoordinatorRevocations();
+            RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -3294,7 +3294,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await RecordPollAsync(cancellationToken).ConfigureAwait(false);
 
             await EnsureAssignmentForPollAsync(cancellationToken).ConfigureAwait(false);
-            ClearFetchBufferForPendingCoordinatorRevocations();
+            RecoverAndClearFetchBufferForPendingCoordinatorRevocations();
 
             if (_assignmentSnapshot.Count == 0)
             {
@@ -3946,8 +3946,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool ClearFetchBufferForPendingCoordinatorRevocations()
     {
-        if (!HasPendingCoordinatorRevocations()
-            && !TryRecoverMissingPendingFetchClearMarkers())
+        if (!HasPendingCoordinatorRevocations())
             return false;
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -3973,6 +3972,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
             return true;
         }
+    }
+
+    private bool RecoverAndClearFetchBufferForPendingCoordinatorRevocations()
+    {
+        TryRecoverMissingPendingFetchClearMarkers();
+        return ClearFetchBufferForPendingCoordinatorRevocations();
     }
 
     private void ApplyPendingDivergingEpochResets(IReadOnlyCollection<TopicPartition> partitions)
@@ -4043,7 +4048,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return false;
 
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
-            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+
+            // A diverging-epoch reset is staged before response processing completes.
+            // Restore visibility immediately, but let CompleteDivergingEpochResets publish
+            // the drain only after the in-flight response has finished.
+            var hasStagedDivergingEpochReset = false;
+            foreach (var entry in _coordinatorRevokedPartitionsPendingFetchClear)
+            {
+                if (_pendingDivergingEpochResets.ContainsKey(entry.Key))
+                {
+                    hasStagedDivergingEpochReset = true;
+                    break;
+                }
+            }
+
+            if (!hasStagedDivergingEpochReset)
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
         }
 
         LogRecoveredPendingFetchClearInvariant();

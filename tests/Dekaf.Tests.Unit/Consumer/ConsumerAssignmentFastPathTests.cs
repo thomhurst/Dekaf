@@ -559,10 +559,14 @@ public sealed class ConsumerAssignmentFastPathTests
             epoch: 7,
             GetFetchBufferEpoch(consumer));
 
-        // A staged reset has a marker but is not drainable until the fetch response is complete.
+        // Recovery must restore a missing marker without making a staged reset drainable
+        // before the fetch response is complete.
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(1);
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
+        SetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer, 0);
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(consumer)).IsEqualTo(1);
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer)).IsEqualTo(0);
         await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).ContainsKey(partition);
 
         CompleteDivergingEpochResets(consumer);
@@ -1189,6 +1193,18 @@ public sealed class ConsumerAssignmentFastPathTests
         return (int)field.GetValue(consumer)!;
     }
 
+    private static void SetCoordinatorRevokedPartitionsPendingFetchClearMarkerPresent(
+        KafkaConsumer<string, string> consumer,
+        int value)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_coordinatorRevokedPartitionsPendingFetchClearMarkerPresent",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_coordinatorRevokedPartitionsPendingFetchClearMarkerPresent field not found.");
+
+        field.SetValue(consumer, value);
+    }
+
     private static Dictionary<int, List<TopicPartition>> ExcludePartitionsPendingFetchClear(
         KafkaConsumer<string, string> consumer,
         Dictionary<int, List<TopicPartition>> partitionsByBroker)
@@ -1289,9 +1305,9 @@ public sealed class ConsumerAssignmentFastPathTests
     private static bool ClearFetchBufferForPendingCoordinatorRevocations(KafkaConsumer<string, string> consumer)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
-            "ClearFetchBufferForPendingCoordinatorRevocations",
+            "RecoverAndClearFetchBufferForPendingCoordinatorRevocations",
             BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("ClearFetchBufferForPendingCoordinatorRevocations method not found.");
+            ?? throw new InvalidOperationException("RecoverAndClearFetchBufferForPendingCoordinatorRevocations method not found.");
 
         return (bool)method.Invoke(consumer, [])!;
     }
