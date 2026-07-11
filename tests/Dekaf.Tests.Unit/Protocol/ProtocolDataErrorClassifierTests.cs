@@ -5,13 +5,15 @@ namespace Dekaf.Tests.Unit.Protocol;
 public sealed class ProtocolDataErrorClassifierTests
 {
     [Test]
-    public async Task IsProtocolDataError_ClassifiesWireFailures()
+    public async Task IsProtocolDataError_ClassifiesWireAndCodecFailures()
     {
         Exception[] protocolErrors =
         [
             new InsufficientDataException(),
             new MalformedProtocolDataException("malformed"),
-            new ArgumentOutOfRangeException("length")
+            new InvalidDataException("invalid compressed payload"),
+            new ArgumentOutOfRangeException("length"),
+            new NotSupportedException("unsupported record format")
         ];
 
         foreach (var error in protocolErrors)
@@ -26,8 +28,6 @@ public sealed class ProtocolDataErrorClassifierTests
         Exception[] otherErrors =
         [
             new IOException("connection reset"),
-            new InvalidDataException("user or unwrapped codec failure"),
-            new NotSupportedException("user or unwrapped codec failure"),
             new FormatException("user deserializer failed"),
             new OperationCanceledException()
         ];
