@@ -552,7 +552,7 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
-    public async Task ScaleDown_MutedActivityBetweenChecks_SurvivesMomentaryClear()
+    public async Task ScaleDown_LoadBearingMutedActivityBetweenChecks_SurvivesMomentaryClear()
     {
         var options = CreateOptions(
             idempotent: false,
@@ -562,7 +562,6 @@ public sealed class AdaptiveScaleDownTests
         var accumulator = new RecordAccumulator(options);
         var pool = Substitute.For<IConnectionPool>();
         var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
-        var topicPartition = new TopicPartition(Topic, 0);
 
         try
         {
@@ -570,14 +569,16 @@ public sealed class AdaptiveScaleDownTests
             SetField(sender, "_totalMaxInFlight", 300);
             SetField(sender, "_totalPendingResponseCount", 1);
             SetField(sender, "_lowUtilizationStartTicks", 1L);
-            typeof(BrokerSender).GetMethod(
+            var mutePartition = typeof(BrokerSender).GetMethod(
                 "MutePartition",
-                BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(sender, [topicPartition]);
-            typeof(BrokerSender).GetMethod(
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var unmutePartition = typeof(BrokerSender).GetMethod(
                 "UnmutePartition",
-                BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(sender, [topicPartition]);
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            for (var partition = 0; partition < 3; partition++)
+                mutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
+            for (var partition = 0; partition < 3; partition++)
+                unmutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
             SetField(sender, "_totalPendingResponseCount", 0);
             SetField(sender, "_lowUtilizationStartTicks", 1L);
             InvokeMaybeScaleConnections(sender);
