@@ -95,8 +95,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         MetadataManager metadataManager,
         ILogger<ConsumerCoordinator>? logger = null,
         Func<int>? getConnectionCount = null,
-        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked = null,
-        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking = null)
+        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked = null)
+        : this(
+            options,
+            connectionPool,
+            metadataManager,
+            logger,
+            getConnectionCount,
+            onPartitionsRevoked,
+            onPartitionsRevoking: null)
+    {
+    }
+
+    internal ConsumerCoordinator(
+        ConsumerOptions options,
+        IConnectionPool connectionPool,
+        MetadataManager metadataManager,
+        ILogger<ConsumerCoordinator>? logger,
+        Func<int>? getConnectionCount,
+        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked,
+        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking)
     {
         _options = options;
         _connectionPool = connectionPool;

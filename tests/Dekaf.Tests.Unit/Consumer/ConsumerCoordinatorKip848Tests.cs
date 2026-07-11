@@ -17,6 +17,25 @@ namespace Dekaf.Tests.Unit.Consumer;
 /// </summary>
 public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 {
+    [Test]
+    public async Task PublicConstructor_PreservesSixParameterBinarySignature()
+    {
+        var constructor = typeof(ConsumerCoordinator).GetConstructor(
+            BindingFlags.Public | BindingFlags.Instance,
+            binder: null,
+            [
+                typeof(ConsumerOptions),
+                typeof(IConnectionPool),
+                typeof(MetadataManager),
+                typeof(Microsoft.Extensions.Logging.ILogger<ConsumerCoordinator>),
+                typeof(Func<int>),
+                typeof(Action<IReadOnlyList<TopicPartition>>)
+            ],
+            modifiers: null);
+
+        await Assert.That(constructor).IsNotNull();
+    }
+
     private static readonly Guid TestTopicId = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
     private readonly IConnectionPool _connectionPool;
@@ -1674,6 +1693,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             options,
             _connectionPool,
             _metadataManager,
+            logger: null,
+            getConnectionCount: null,
             onPartitionsRevoked: OnPartitionsRevoked,
             onPartitionsRevoking: OnPartitionsRevoking);
         await using var coordinatorLifetime = coordinator;

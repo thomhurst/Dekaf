@@ -1099,6 +1099,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 getConnectionCount: _connectionScaler is not null
                     ? () => _connectionScaler.CurrentConnectionCount
                     : null,
+                onPartitionsRevoked: null,
                 onPartitionsRevoking: QueueCoordinatorRevokedPartitionsForFetchClear);
         }
 
