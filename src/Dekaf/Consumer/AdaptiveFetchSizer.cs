@@ -170,7 +170,6 @@ internal sealed class AdaptiveFetchSizer
         {
             case var r when r < _growThreshold:
                 _consecutiveGrowSignals++;
-                _consecutiveShrinkSignals = 0;
 
                 if (_consecutiveGrowSignals >= _stableWindowCount)
                 {
@@ -181,15 +180,12 @@ internal sealed class AdaptiveFetchSizer
 
             case var r when r > _shrinkThreshold:
                 _consecutiveGrowSignals = 0;
-                _consecutiveShrinkSignals = Math.Min(
-                    _consecutiveShrinkSignals + 1,
-                    _stableWindowCount);
                 break;
 
             default:
-                // In the stable zone — reset both counters
+                // In the stable zone — reset ratio-driven growth only. Memory-pressure
+                // signals accumulate independently until they trigger a shrink.
                 _consecutiveGrowSignals = 0;
-                _consecutiveShrinkSignals = 0;
                 break;
         }
     }

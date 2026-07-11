@@ -274,7 +274,7 @@ public class AdaptiveFetchSizerTests
     #region Signal interruption — opposing signals reset counters
 
     [Test]
-    public async Task EvaluateAndAdjust_ShrinkSignalResetsGrowCounter()
+    public async Task EvaluateAndAdjust_HighRatioResetsGrowCounter()
     {
         var sizer = CreateSizer();
 
@@ -283,25 +283,25 @@ public class AdaptiveFetchSizerTests
         sizer.EvaluateAndAdjust(0.3);
         await Assert.That(sizer.ConsecutiveGrowSignals).IsEqualTo(2);
 
-        // A shrink signal should reset the grow counter
+        // A high ratio should stop growth without pretending memory pressure occurred.
         sizer.EvaluateAndAdjust(3.0);
         await Assert.That(sizer.ConsecutiveGrowSignals).IsEqualTo(0);
-        await Assert.That(sizer.ConsecutiveShrinkSignals).IsEqualTo(1);
+        await Assert.That(sizer.ConsecutiveShrinkSignals).IsEqualTo(0);
     }
 
     [Test]
-    public async Task EvaluateAndAdjust_GrowSignalResetsShrinkCounter()
+    public async Task EvaluateAndAdjust_GrowSignalPreservesMemoryPressureCounter()
     {
         var sizer = CreateSizer();
 
-        // Accumulate 2 shrink signals
-        sizer.EvaluateAndAdjust(3.0);
-        sizer.EvaluateAndAdjust(3.0);
+        // Accumulate 2 independent memory-pressure signals.
+        sizer.ReportMemoryPressure();
+        sizer.ReportMemoryPressure();
         await Assert.That(sizer.ConsecutiveShrinkSignals).IsEqualTo(2);
 
-        // A grow signal should reset the shrink counter
+        // A grow-zone ratio must not erase sustained memory pressure.
         sizer.EvaluateAndAdjust(0.3);
-        await Assert.That(sizer.ConsecutiveShrinkSignals).IsEqualTo(0);
+        await Assert.That(sizer.ConsecutiveShrinkSignals).IsEqualTo(2);
         await Assert.That(sizer.ConsecutiveGrowSignals).IsEqualTo(1);
     }
 
