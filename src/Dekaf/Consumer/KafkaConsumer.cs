@@ -1601,6 +1601,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 var hasTraceListeners = Diagnostics.DekafDiagnostics.Source.HasListeners();
                 var hasInterceptors = _interceptors is not null;
                 var rawTrackingEnabled = _rawRecordTrackingEnabled;
+                const int pollRefreshRecordInterval = 32;
+                var recordsUntilPollRefresh = pollRefreshRecordInterval;
 
                 while (_pendingFetches.Count > 0)
                 {
@@ -1740,6 +1742,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         // pooled buffers.
                         if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
                             break;
+
+                        if (--recordsUntilPollRefresh == 0)
+                        {
+                            await RecordPollAsync(cancellationToken).ConfigureAwait(false);
+                            recordsUntilPollRefresh = pollRefreshRecordInterval;
+                        }
                     }
 
                     // Dispose last activity from this pending fetch
