@@ -46,6 +46,8 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
     /// </summary>
     public int MaxBytes { get; internal set; } = 0x7FFFFFFF;
 
+    internal bool CheckCrcs { get; set; } = true;
+
     /// <summary>
     /// Isolation level (v4+).
     /// </summary>
@@ -99,6 +101,7 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
             item.MaxWaitMs = 0;
             item.MinBytes = 0;
             item.MaxBytes = 0x7FFFFFFF;
+            item.CheckCrcs = true;
             item.IsolationLevel = IsolationLevel.ReadUncommitted;
             item.SessionId = 0;
             item.SessionEpoch = -1;

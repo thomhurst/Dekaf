@@ -306,6 +306,7 @@ public sealed class RecordBatch : IDisposable
     internal const int BatchBodyOffset = BatchLengthOffset + sizeof(int);
     internal const int CrcOffset = BatchBodyOffset + sizeof(int) + sizeof(byte);
     internal const int CrcContentOffset = CrcOffset + sizeof(uint);
+    internal const int CrcContentFixedSize = 40;
     internal const int BatchHeaderSize = sizeof(int) + sizeof(byte) + sizeof(uint) + sizeof(short) +
                                          sizeof(int) + sizeof(long) + sizeof(long) + sizeof(long) +
                                          sizeof(short) + sizeof(int) + sizeof(int);
@@ -791,8 +792,7 @@ public sealed class RecordBatch : IDisposable
             // CRC content size: 2 (attributes) + 4 (lastOffsetDelta) + 8 (baseTimestamp) +
             // 8 (maxTimestamp) + 8 (producerId) + 2 (producerEpoch) + 4 (baseSequence) +
             // 4 (recordsCount) + compressedRecords = 40 + records
-            const int crcContentFixedSize = 40;
-            var crcContentSize = crcContentFixedSize + compressedRecords.Length;
+            var crcContentSize = CrcContentFixedSize + compressedRecords.Length;
 
             // Get one contiguous span for CRC (4 bytes) + content, write content directly,
             // calculate CRC, and backpatch. This avoids a crcBuffer intermediate copy, but
@@ -823,7 +823,7 @@ public sealed class RecordBatch : IDisposable
             offset += 4;
             BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], records.Count);
             offset += 4;
-            var headerCrc = Crc32C.Compute(contentSpan[..crcContentFixedSize]);
+            var headerCrc = Crc32C.Compute(contentSpan[..CrcContentFixedSize]);
             compressedRecords.CopyTo(contentSpan[offset..]);
 
             var crc = Crc32C.Combine(headerCrc, compressedRecordsCrc, compressedRecords.Length);
@@ -986,7 +986,11 @@ public sealed class RecordBatch : IDisposable
     /// of the pooled memory, and subsequent batches will share it.
     /// Call Dispose() on the batch to release the pooled memory when done.
     /// </remarks>
-    public static RecordBatch Read(ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs = null, int availableBytes = int.MaxValue)
+    public static RecordBatch Read(
+        ref KafkaProtocolReader reader,
+        CompressionCodecRegistry? codecs = null,
+        int availableBytes = int.MaxValue,
+        bool checkCrcs = false)
     {
         var baseOffset = reader.ReadInt64();
         var batchLength = reader.ReadInt32();
@@ -1023,6 +1027,21 @@ public sealed class RecordBatch : IDisposable
 
         // Capture the raw record data
         var rawRecordData = reader.ReadMemorySlice(recordsLength);
+
+        if (checkCrcs || ResponseParsingContext.CheckCrcs)
+        {
+            ValidateCrc(
+                crc,
+                attributes,
+                lastOffsetDelta,
+                baseTimestamp,
+                maxTimestamp,
+                producerId,
+                producerEpoch,
+                baseSequence,
+                recordCount,
+                rawRecordData.Span);
+        }
 
         // Determine how to handle the record data based on compression and pooled memory availability
         LazyRecordList lazyRecords;
@@ -1077,6 +1096,37 @@ public sealed class RecordBatch : IDisposable
         batch.BaseSequence = baseSequence;
         batch.Records = lazyRecords;
         return batch;
+    }
+
+    private static void ValidateCrc(
+        uint expectedCrc,
+        RecordBatchAttributes attributes,
+        int lastOffsetDelta,
+        long baseTimestamp,
+        long maxTimestamp,
+        long producerId,
+        short producerEpoch,
+        int baseSequence,
+        int recordCount,
+        ReadOnlySpan<byte> recordData)
+    {
+        Span<byte> header = stackalloc byte[CrcContentFixedSize];
+        BinaryPrimitives.WriteInt16BigEndian(header, (short)attributes);
+        BinaryPrimitives.WriteInt32BigEndian(header[2..], lastOffsetDelta);
+        BinaryPrimitives.WriteInt64BigEndian(header[6..], baseTimestamp);
+        BinaryPrimitives.WriteInt64BigEndian(header[14..], maxTimestamp);
+        BinaryPrimitives.WriteInt64BigEndian(header[22..], producerId);
+        BinaryPrimitives.WriteInt16BigEndian(header[30..], producerEpoch);
+        BinaryPrimitives.WriteInt32BigEndian(header[32..], baseSequence);
+        BinaryPrimitives.WriteInt32BigEndian(header[36..], recordCount);
+
+        var headerCrc = Crc32C.Compute(header);
+        var actualCrc = Crc32C.Combine(headerCrc, Crc32C.Compute(recordData), recordData.Length);
+        if (actualCrc != expectedCrc)
+        {
+            throw new InvalidDataException(
+                $"Record batch CRC mismatch: expected 0x{expectedCrc:X8}, computed 0x{actualCrc:X8}.");
+        }
     }
 }
 

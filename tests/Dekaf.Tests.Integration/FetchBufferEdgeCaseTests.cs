@@ -13,6 +13,44 @@ namespace Dekaf.Tests.Integration;
 public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    public async Task CheckCrcs_DefaultAndOptOut_ConsumeValidBatch()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "crc-key",
+            Value = "crc-value"
+        }, CancellationToken.None);
+
+        await using var checkedConsumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        checkedConsumer.Assign(new TopicPartition(topic, 0));
+
+        await using var uncheckedConsumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithCheckCrcs(false)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        uncheckedConsumer.Assign(new TopicPartition(topic, 0));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var checkedResult = await checkedConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts.Token);
+        var uncheckedResult = await uncheckedConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts.Token);
+
+        await Assert.That(checkedResult!.Value.Value).IsEqualTo("crc-value");
+        await Assert.That(uncheckedResult!.Value.Value).IsEqualTo("crc-value");
+    }
+
+    [Test]
     public async Task FetchMinBytes_SetHigh_ConsumerWaitsForEnoughData()
     {
         // Arrange - produce a small message that won't meet the min bytes threshold

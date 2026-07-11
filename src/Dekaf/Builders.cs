@@ -1334,7 +1334,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int? _heartbeatIntervalMs;
     private int _rebalanceTimeoutMs = 60000;
     private int _requestTimeoutMs = 30000;
-    private bool _checkCrcs;
+    private bool _checkCrcs = true;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private List<IConsumerInterceptor<TKey, TValue>>? _interceptors;
@@ -2383,7 +2383,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
-    internal ConsumerBuilder<TKey, TValue> WithCheckCrcs(bool checkCrcs)
+    /// <summary>
+    /// Enables or disables CRC-32C verification for consumed record batches.
+    /// Enabled by default; disable only when throughput is preferred over corruption detection.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithCheckCrcs(bool checkCrcs)
     {
         _checkCrcs = checkCrcs;
         return this;

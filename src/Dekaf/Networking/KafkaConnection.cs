@@ -599,7 +599,11 @@ public sealed partial class KafkaConnection :
 
         await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
         var pending = _pendingRequestPool.Rent();
-        pending.Initialize(responseHeaderVersion, cancellationToken, registerCancellation: false);
+        pending.Initialize(
+            responseHeaderVersion,
+            cancellationToken,
+            registerCancellation: false,
+            checkCrcs: request is FetchRequest { CheckCrcs: true });
         try
         {
             AddPendingRequest(correlationId, pending);
@@ -800,7 +804,11 @@ public sealed partial class KafkaConnection :
 
         await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
         var pending = _pendingRequestPool.Rent();
-        pending.Initialize(responseHeaderVersion, cancellationToken, registerCancellation: false);
+        pending.Initialize(
+            responseHeaderVersion,
+            cancellationToken,
+            registerCancellation: false,
+            checkCrcs: request is FetchRequest { CheckCrcs: true });
         try
         {
             AddPendingRequest(correlationId, pending);
@@ -932,7 +940,10 @@ public sealed partial class KafkaConnection :
 
             if (isFetchResponse)
             {
-                return ParseFetchResponse<TRequest, TResponse>(pooledBuffer, apiVersion);
+                return ParseFetchResponse<TRequest, TResponse>(
+                    pooledBuffer,
+                    apiVersion,
+                    pending.CheckCrcs);
             }
             else
             {
@@ -967,12 +978,13 @@ public sealed partial class KafkaConnection :
 
     internal static TResponse ParseFetchResponse<TRequest, TResponse>(
         PooledResponseBuffer pooledBuffer,
-        short apiVersion)
+        short apiVersion,
+        bool checkCrcs = false)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
         var memoryOwner = pooledBuffer.TransferOwnership();
-        using var parsingScope = ResponseParsingContext.SetPooledMemory(memoryOwner);
+        using var parsingScope = ResponseParsingContext.SetPooledMemory(memoryOwner, checkCrcs);
 
         try
         {
@@ -3689,15 +3701,21 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     private short _responseHeaderVersion;
     private CancellationTokenRegistration _cancellationRegistration;
     private CancellationToken _cancellationToken;
+    private bool _checkCrcs;
     private int _state; // High 16 bits = core version; low 16 bits = State*
 
     /// <summary>
     /// Initializes the request for a new operation.
     /// </summary>
-    public void Initialize(short responseHeaderVersion, CancellationToken cancellationToken, bool registerCancellation = true)
+    public void Initialize(
+        short responseHeaderVersion,
+        CancellationToken cancellationToken,
+        bool registerCancellation = true,
+        bool checkCrcs = false)
     {
         _responseHeaderVersion = responseHeaderVersion;
         _cancellationToken = cancellationToken;
+        _checkCrcs = checkCrcs;
         _state = CreateState(_core.Version, StatePending);
 
         // Register for cancellation if the token can be cancelled
@@ -3751,6 +3769,8 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// Gets the current version token.
     /// </summary>
     public short Version => _core.Version;
+
+    public bool CheckCrcs => _checkCrcs;
 
     /// <summary>
     /// Attempts to complete the request with response data.
@@ -3966,6 +3986,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         _cancellationRegistration.Dispose();
         _cancellationRegistration = default;
         _cancellationToken = default;
+        _checkCrcs = false;
 
         // Reset the core for reuse
         _core.Reset();

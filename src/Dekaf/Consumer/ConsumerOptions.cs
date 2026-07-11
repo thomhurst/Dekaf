@@ -200,9 +200,9 @@ public sealed class ConsumerOptions
     public int TcpKeepAliveRetryCount { get; init; } = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
 
     /// <summary>
-    /// Check CRCs.
+    /// Whether to verify CRC-32C for consumed record batches. Enabled by default.
     /// </summary>
-    public bool CheckCrcs { get; init; }
+    public bool CheckCrcs { get; init; } = true;
 
     /// <summary>
     /// Use TLS.

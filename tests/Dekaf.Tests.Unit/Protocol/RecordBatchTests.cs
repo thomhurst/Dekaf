@@ -709,6 +709,52 @@ public class RecordBatchTests
         await Assert.That(readBatch.Records[1].Value.ToArray()).IsEquivalentTo("value-1"u8.ToArray());
     }
 
+    [Test]
+    public async Task Read_CheckCrcs_ValidBatchSucceeds()
+    {
+        using var batch = CreateTwoRecordBatch();
+        var buffer = new ArrayBufferWriter<byte>();
+        batch.Write(buffer);
+
+        using var parsed = ReadBatch(buffer.WrittenSpan.ToArray(), checkCrcs: true);
+
+        await Assert.That(parsed.Records.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Read_CheckCrcs_CorruptHeaderThrows()
+    {
+        using var batch = CreateTwoRecordBatch();
+        var buffer = new ArrayBufferWriter<byte>();
+        batch.Write(buffer);
+        var bytes = buffer.WrittenSpan.ToArray();
+        bytes[RecordBatch.CrcContentOffset + 6] ^= 0x01;
+
+        await Assert.That(() => ReadBatch(bytes, checkCrcs: true))
+            .Throws<InvalidDataException>()
+            .WithMessageContaining("CRC mismatch");
+    }
+
+    [Test]
+    public async Task Read_CheckCrcsDisabled_CorruptHeaderSucceeds()
+    {
+        using var batch = CreateTwoRecordBatch();
+        var buffer = new ArrayBufferWriter<byte>();
+        batch.Write(buffer);
+        var bytes = buffer.WrittenSpan.ToArray();
+        bytes[RecordBatch.CrcContentOffset + 6] ^= 0x01;
+
+        using var parsed = ReadBatch(bytes, checkCrcs: false);
+
+        await Assert.That(parsed.Records.Count).IsEqualTo(2);
+    }
+
+    private static RecordBatch ReadBatch(byte[] bytes, bool checkCrcs)
+    {
+        var reader = new KafkaProtocolReader(bytes);
+        return RecordBatch.Read(ref reader, checkCrcs: checkCrcs);
+    }
+
     private static RecordBatch CreateTwoRecordBatch() => new()
     {
         BaseOffset = 0,
