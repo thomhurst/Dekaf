@@ -2143,7 +2143,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (_assignmentSnapshot.Count == 0)
                     {
                         var drainError = await _brokerPrefetchScheduler
-                            .DrainAllSafelyAsync(LogPrefetchLoopError)
+                            .DrainAllSafelyAsync(LogPrefetchLoopError, IsFatalPrefetchError)
                             .ConfigureAwait(false);
                         if (drainError is not null)
                             ExceptionDispatchInfo.Capture(drainError).Throw();
@@ -2226,7 +2226,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         finally
         {
             var drainError = await _brokerPrefetchScheduler
-                .DrainAllSafelyAsync(LogPrefetchLoopError)
+                .DrainAllSafelyAsync(LogPrefetchLoopError, IsFatalPrefetchError)
                 .ConfigureAwait(false);
             if (completionError is null && drainError is not null && IsFatalPrefetchError(drainError))
                 completionError = drainError;

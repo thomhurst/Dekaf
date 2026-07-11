@@ -30,7 +30,7 @@ public sealed class BrokerPrefetchSchedulerTests
         await Assert.That(scheduler.TryStart((BrokerId: 1, ConnectionIndex: 0), static () => Task.CompletedTask)).IsFalse();
 
         slowBrokerCanComplete.SetResult();
-        await scheduler.DrainAllSafelyAsync(static _ => { }).ConfigureAwait(false);
+        await scheduler.DrainAllSafelyAsync(static _ => { }, static _ => false).ConfigureAwait(false);
     }
 
     [Test]
@@ -49,7 +49,7 @@ public sealed class BrokerPrefetchSchedulerTests
     }
 
     [Test]
-    public async Task DrainAllSafely_ReturnsFirstFailureAndObservesRemainingFailures()
+    public async Task DrainAllSafely_ReturnsFirstMatchingFailureAndObservesAll()
     {
         var scheduler = new BrokerPrefetchScheduler();
         var firstFailure = new InvalidOperationException("first");
@@ -63,9 +63,11 @@ public sealed class BrokerPrefetchSchedulerTests
             (BrokerId: 2, ConnectionIndex: 0),
             () => Task.FromException(secondFailure));
 
-        var drainedFailure = await scheduler.DrainAllSafelyAsync(loggedFailures.Add).ConfigureAwait(false);
+        var drainedFailure = await scheduler.DrainAllSafelyAsync(
+            loggedFailures.Add,
+            exception => ReferenceEquals(exception, secondFailure)).ConfigureAwait(false);
 
-        await Assert.That(drainedFailure).IsSameReferenceAs(firstFailure);
+        await Assert.That(drainedFailure).IsSameReferenceAs(secondFailure);
         await Assert.That(loggedFailures).Count().IsEqualTo(2);
         await Assert.That(loggedFailures[0]).IsSameReferenceAs(firstFailure);
         await Assert.That(loggedFailures[1]).IsSameReferenceAs(secondFailure);

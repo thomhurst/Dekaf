@@ -5,7 +5,5 @@ internal static class ProtocolDataErrorClassifier
     public static bool IsProtocolDataError(Exception exception) => exception is
         InsufficientDataException or
         MalformedProtocolDataException or
-        InvalidDataException or
-        ArgumentOutOfRangeException or
-        NotSupportedException;
+        ArgumentOutOfRangeException;
 }

@@ -54,7 +54,9 @@ internal sealed class BrokerPrefetchScheduler
         await Task.WhenAny(tasks).WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public async ValueTask<Exception?> DrainAllSafelyAsync(Action<Exception> logError)
+    public async ValueTask<Exception?> DrainAllSafelyAsync(
+        Action<Exception> logError,
+        Func<Exception, bool> shouldReturn)
     {
         if (_inFlight.Count == 0)
             return null;
@@ -75,7 +77,8 @@ internal sealed class BrokerPrefetchScheduler
             catch (Exception ex)
             {
                 logError(ex);
-                firstFailure ??= ex;
+                if (firstFailure is null && shouldReturn(ex))
+                    firstFailure = ex;
             }
         }
 
