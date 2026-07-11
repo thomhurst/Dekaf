@@ -1619,6 +1619,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         // Wrap MoveNext + record parsing in try-catch so a corrupted fetch
                         // does not kill the consumer permanently. The yield must be outside
                         // the try block (CS1626), so we build the result first then yield below.
+                        var readingProtocolData = true;
                         try
                         {
                             if (!pending.MoveNext())
@@ -1659,7 +1660,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     previousActivity = activity;
                             }
 
-                            // Create result - deserialization happens eagerly in the constructor
+                            // Create result - deserialization happens eagerly in the constructor.
+                            // Exceptions from user deserializers must never be classified as wire corruption.
+                            readingProtocolData = false;
                             nextResult = new ConsumeResult<TKey, TValue>(
                                 topic: pending.Topic,
                                 partition: pending.PartitionIndex,
@@ -1707,7 +1710,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         {
                             throw;
                         }
-                        catch (Exception ex) when (ProtocolDataErrorClassifier.IsProtocolDataError(ex))
+                        catch (Exception ex) when (
+                            readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
                         {
                             // Protocol-layer data errors from corrupted/truncated wire data should not
                             // kill the consumer. User-facing exceptions (deserializer errors, etc.)
@@ -3397,6 +3401,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 while (true)
                 {
+                    var readingProtocolData = true;
                     try
                     {
                         if (!pending.MoveNext())
@@ -3419,6 +3424,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             activity = StartConsumeActivity(pending, headers, offset, messageBytes);
                         }
 
+                        // User deserialization begins in this constructor. Its exceptions
+                        // must propagate even when their type also occurs in protocol codecs.
+                        readingProtocolData = false;
                         result = new ConsumeResult<TKey, TValue>(
                             topic: pending.Topic,
                             partition: pending.PartitionIndex,
@@ -3461,7 +3469,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         throw;
                     }
-                    catch (Exception ex) when (ProtocolDataErrorClassifier.IsProtocolDataError(ex))
+                    catch (Exception ex) when (
+                        readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
                     {
                         LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                         break;
