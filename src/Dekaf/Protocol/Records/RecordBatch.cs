@@ -989,8 +989,17 @@ public sealed class RecordBatch : IDisposable
     public static RecordBatch Read(
         ref KafkaProtocolReader reader,
         CompressionCodecRegistry? codecs = null,
-        int availableBytes = int.MaxValue,
-        bool checkCrcs = false)
+        int availableBytes = int.MaxValue) =>
+        Read(ref reader, codecs, availableBytes, checkCrcs: false);
+
+    /// <summary>
+    /// Reads a RecordBatch and optionally verifies its CRC-32C before decompression.
+    /// </summary>
+    public static RecordBatch Read(
+        ref KafkaProtocolReader reader,
+        CompressionCodecRegistry? codecs,
+        int availableBytes,
+        bool checkCrcs)
     {
         var baseOffset = reader.ReadInt64();
         var batchLength = reader.ReadInt32();

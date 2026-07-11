@@ -749,10 +749,28 @@ public class RecordBatchTests
         await Assert.That(parsed.Records.Count).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task Read_ThreeParameterOverload_RemainsAvailable()
+    {
+        var method = typeof(RecordBatch).GetMethod(
+            nameof(RecordBatch.Read),
+            [
+                typeof(KafkaProtocolReader).MakeByRefType(),
+                typeof(CompressionCodecRegistry),
+                typeof(int)
+            ]);
+
+        await Assert.That(method).IsNotNull();
+    }
+
     private static RecordBatch ReadBatch(byte[] bytes, bool checkCrcs)
     {
         var reader = new KafkaProtocolReader(bytes);
-        return RecordBatch.Read(ref reader, checkCrcs: checkCrcs);
+        return RecordBatch.Read(
+            ref reader,
+            codecs: null,
+            availableBytes: int.MaxValue,
+            checkCrcs);
     }
 
     private static RecordBatch CreateTwoRecordBatch() => new()
