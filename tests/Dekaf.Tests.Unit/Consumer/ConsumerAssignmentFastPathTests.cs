@@ -593,6 +593,49 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task PendingFetchClear_CompletedDivergence_RepairsLostPendingFlag()
+    {
+        await using var consumer = CreateConsumer();
+        var partition = new TopicPartition("test-topic", 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, 0)]);
+
+        StageDivergingEpochReset(
+            consumer,
+            partition,
+            endOffset: 42,
+            epoch: 7,
+            GetFetchBufferEpoch(consumer));
+        CompleteDivergingEpochResets(consumer);
+        SetCoordinatorRevokedPartitionsPendingFetchClearPending(consumer, 0);
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).IsEmpty();
+    }
+
+    [Test]
+    public async Task PendingFetchClear_MultipleStagedBatches_WaitsForAllCompletions()
+    {
+        await using var consumer = CreateConsumer();
+        var first = new TopicPartition("test-topic", 0);
+        var second = new TopicPartition("test-topic", 1);
+        consumer.IncrementalAssign(
+        [
+            new TopicPartitionOffset(first.Topic, first.Partition, 0),
+            new TopicPartitionOffset(second.Topic, second.Partition, 0)
+        ]);
+
+        StageDivergingEpochReset(consumer, first, 42, 7, GetFetchBufferEpoch(consumer));
+        StageDivergingEpochReset(consumer, second, 84, 8, GetFetchBufferEpoch(consumer));
+
+        CompleteDivergingEpochResets(consumer);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
+
+        CompleteDivergingEpochResets(consumer);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer)).IsEmpty();
+    }
+
+    [Test]
     public async Task IncrementalUnassign_InvalidatesOnlyRemovedPartitionFetches()
     {
         await using var consumer = CreateConsumer();
@@ -1218,6 +1261,18 @@ public sealed class ConsumerAssignmentFastPathTests
             "_coordinatorRevokedPartitionsPendingFetchClearMarkerPresent",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("_coordinatorRevokedPartitionsPendingFetchClearMarkerPresent field not found.");
+
+        field.SetValue(consumer, value);
+    }
+
+    private static void SetCoordinatorRevokedPartitionsPendingFetchClearPending(
+        KafkaConsumer<string, string> consumer,
+        int value)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            "_coordinatorRevokedPartitionsPendingFetchClearPending",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_coordinatorRevokedPartitionsPendingFetchClearPending field not found.");
 
         field.SetValue(consumer, value);
     }

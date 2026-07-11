@@ -752,6 +752,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly object _coordinatorRevokedPartitionsPendingFetchClearLock = new();
     private readonly ConcurrentDictionary<TopicPartition, byte> _coordinatorRevokedPartitionsPendingFetchClear = new();
     private readonly ConcurrentDictionary<TopicPartition, (long EndOffset, int Epoch)> _pendingDivergingEpochResets = new();
+    private int _stagedDivergingEpochResetBatches;
     private int _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent;
     private int _coordinatorRevokedPartitionsPendingFetchClearPending;
 
@@ -2703,10 +2704,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (partitionResponse.DivergingEpoch is not null)
                         {
                             _stuckFetchPositionTracker.Reset(tp);
-                            queuedDivergingEpochReset |= ResetToDivergingEpoch(
+                            if (ResetToDivergingEpoch(
                                 topic,
                                 partitionResponse,
-                                fetchBufferEpoch);
+                                fetchBufferEpoch,
+                                startsBatch: !queuedDivergingEpochReset))
+                            {
+                                queuedDivergingEpochReset = true;
+                            }
                             continue;
                         }
 
@@ -3920,20 +3925,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int fetchBufferEpoch)
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
-            return TryQueueDivergingEpochResetLocked(partition, endOffset, epoch, fetchBufferEpoch);
+            return TryQueueDivergingEpochResetLocked(
+                partition,
+                endOffset,
+                epoch,
+                fetchBufferEpoch,
+                startsBatch: true);
     }
 
     private bool TryQueueDivergingEpochResetLocked(
         TopicPartition partition,
         long endOffset,
         int epoch,
-        int fetchBufferEpoch)
+        int fetchBufferEpoch,
+        bool startsBatch)
     {
         if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
             return false;
 
         _pendingDivergingEpochResets[partition] = (endOffset, epoch);
         _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
+        if (startsBatch)
+            _stagedDivergingEpochResetBatches++;
         Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
         return true;
     }
@@ -3941,7 +3954,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void CompleteDivergingEpochResets()
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
-            Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+        {
+            if (_stagedDivergingEpochResetBatches > 0)
+                _stagedDivergingEpochResetBatches--;
+
+            if (_stagedDivergingEpochResetBatches == 0)
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+        }
     }
 
     private bool ClearFetchBufferForPendingCoordinatorRevocations()
@@ -4048,19 +4067,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (_coordinatorRevokedPartitionsPendingFetchClear.IsEmpty)
                 return false;
 
-            // A diverging-epoch reset is staged before response processing completes.
-            // Restore visibility immediately, but let CompleteDivergingEpochResets publish
-            // the drain only after the in-flight response has finished.
-            var hasStagedDivergingEpochReset = false;
-            foreach (var entry in _coordinatorRevokedPartitionsPendingFetchClear)
-            {
-                if (_pendingDivergingEpochResets.ContainsKey(entry.Key))
-                {
-                    hasStagedDivergingEpochReset = true;
-                    break;
-                }
-            }
-
             var recovered = false;
             if (Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent) == 0)
             {
@@ -4068,7 +4074,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 recovered = true;
             }
 
-            if (!hasStagedDivergingEpochReset
+            if (_stagedDivergingEpochResetBatches == 0
                 && Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) == 0)
             {
                 Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
@@ -5603,10 +5609,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (partitionResponse.DivergingEpoch is not null)
                     {
                         _stuckFetchPositionTracker.Reset(tp);
-                        queuedDivergingEpochReset |= ResetToDivergingEpoch(
+                        if (ResetToDivergingEpoch(
                             topic,
                             partitionResponse,
-                            fetchBufferEpoch);
+                            fetchBufferEpoch,
+                            startsBatch: !queuedDivergingEpochReset))
+                        {
+                            queuedDivergingEpochReset = true;
+                        }
                         continue;
                     }
 
@@ -5857,7 +5867,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private bool ResetToDivergingEpoch(
         string topic,
         FetchResponsePartition partitionResponse,
-        int fetchBufferEpoch)
+        int fetchBufferEpoch,
+        bool startsBatch)
     {
         if (partitionResponse.DivergingEpoch is not { } divergingEpoch)
             return false;
@@ -5866,11 +5877,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (ShouldDropStaleFetchPartition(partition, fetchBufferEpoch))
             return false;
 
-        return StageDivergingEpochReset(
-            partition,
-            divergingEpoch.EndOffset,
-            divergingEpoch.Epoch,
-            fetchBufferEpoch);
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            return TryQueueDivergingEpochResetLocked(
+                partition,
+                divergingEpoch.EndOffset,
+                divergingEpoch.Epoch,
+                fetchBufferEpoch,
+                startsBatch);
+        }
     }
 
     private async ValueTask ResetOffsetOutOfRangeAsync(
