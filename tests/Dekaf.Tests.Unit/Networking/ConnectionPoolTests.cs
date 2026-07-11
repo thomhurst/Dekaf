@@ -143,14 +143,20 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    public async Task DisposeAsync_DisposesSharedPipeMemoryPool()
+    public async Task ConnectionPools_WithSameConfiguration_SharePipeMemoryPool()
     {
-        var pool = new ConnectionPool("test-client");
-        var sharedPool = GetSharedPipeMemoryPool(pool);
+        var first = new ConnectionPool("first-client");
+        var second = new ConnectionPool("second-client");
+        var firstSharedPool = GetSharedPipeMemoryPool(first);
+        var secondSharedPool = GetSharedPipeMemoryPool(second);
 
-        await pool.DisposeAsync();
+        await first.DisposeAsync();
 
-        await Assert.That(() => sharedPool.Rent(1)).Throws<ObjectDisposedException>();
+        await Assert.That(firstSharedPool).IsSameReferenceAs(secondSharedPool);
+        using var owner = secondSharedPool.Rent(1);
+        await Assert.That(owner.Memory.Length).IsGreaterThanOrEqualTo(1);
+
+        await second.DisposeAsync();
     }
 
     [Test]

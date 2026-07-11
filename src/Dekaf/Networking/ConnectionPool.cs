@@ -26,9 +26,9 @@ public sealed partial class ConnectionPool : IConnectionPool
     private Task? _idleReaperTask;
 
     /// <summary>
-    /// Shared memory pool for all connections. Bounds total retained memory to one set of
-    /// array buckets regardless of connection count, preventing multi-GB WorkingSet growth
-    /// in multi-broker scenarios with adaptive scaling. See <see cref="PipeMemoryPool"/>.
+    /// Process-shared memory pool for all clients with this size configuration. Bounds total
+    /// retained memory to one set of array buckets, preventing per-client cold starts and
+    /// multi-GB WorkingSet growth in multi-broker scenarios. See <see cref="PipeMemoryPool"/>.
     /// Bucket capacity is either provided by broker-aware producer sizing or falls back to
     /// scaling by <c>_connectionsPerBroker</c> for direct ConnectionPool use.
     /// </summary>
@@ -96,7 +96,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         _responseBufferPool = responseBufferPool;
         _telemetryMetricCollector = telemetryMetricCollector;
         var bucketCapacity = pipeMemoryBucketCapacity ?? ScaledBucketCapacity(_connectionsPerBroker);
-        _sharedPipeMemoryPool = new PipeMemoryPool(maxArraysPerBucket: bucketCapacity);
+        _sharedPipeMemoryPool = PipeMemoryPool.Create(maxArraysPerBucket: bucketCapacity);
         _currentPipeMemoryBucketCapacity = bucketCapacity;
         StartIdleConnectionReaper();
     }
@@ -202,9 +202,8 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// exceeds the current value. New connections will use the larger pool; existing connections
     /// continue using the previous pool until they are recycled.
     /// <para/>
-    /// The previous pool is not disposed during the swap because active pipes may still return
-    /// segments to it. Its lifetime is bounded by the connections that captured it: once those
-    /// connections and their in-flight pipe segments are gone, the old pool becomes GC-eligible.
+    /// Pools remain process-wide so active pipes and later client sessions can reuse returned
+    /// segments without disposal races or cold-start allocations.
     /// </summary>
     internal void RatchetPipeMemoryBucketCapacity(int bucketCapacity)
     {
@@ -216,7 +215,9 @@ public sealed partial class ConnectionPool : IConnectionPool
             if (bucketCapacity <= _currentPipeMemoryBucketCapacity)
                 return;
 
-            Volatile.Write(ref _sharedPipeMemoryPool, new PipeMemoryPool(maxArraysPerBucket: bucketCapacity));
+            Volatile.Write(
+                ref _sharedPipeMemoryPool,
+                PipeMemoryPool.Create(maxArraysPerBucket: bucketCapacity));
             Volatile.Write(ref _currentPipeMemoryBucketCapacity, bucketCapacity);
         }
     }
@@ -1345,11 +1346,6 @@ public sealed partial class ConnectionPool : IConnectionPool
         _idleReaperCts?.Dispose();
 
         await CloseAllAsync().ConfigureAwait(false);
-
-        // Dispose the shared memory pool only when the pool itself is disposed.
-        // Public CloseAllAsync is a reset/reconnect operation; keeping the pool alive
-        // lets subsequent connections reuse it without tripping ObjectDisposedException.
-        _sharedPipeMemoryPool?.Dispose();
 
         _sharedOAuthBearerTokenProvider?.Dispose();
         _disposeLock.Dispose();

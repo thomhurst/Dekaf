@@ -2,8 +2,29 @@ using Dekaf.Networking;
 
 namespace Dekaf.Tests.Unit.Networking;
 
+[NotInParallel]
 public class PipeMemoryPoolTests
 {
+    [Test]
+    public async Task Create_SharesPoolsByConfiguration()
+    {
+        var first = PipeMemoryPool.Create(maxArrayLength: 1024 * 1024, maxArraysPerBucket: 17);
+        var same = PipeMemoryPool.Create(maxArrayLength: 1024 * 1024, maxArraysPerBucket: 17);
+        var different = PipeMemoryPool.Create(maxArrayLength: 1024 * 1024, maxArraysPerBucket: 18);
+
+        await Assert.That(first).IsSameReferenceAs(same);
+        await Assert.That(first).IsNotSameReferenceAs(different);
+    }
+
+    [Test]
+    public async Task Create_BoundsSharedConfigurationCache()
+    {
+        for (var i = 1; i <= 32; i++)
+            _ = PipeMemoryPool.Create(maxArrayLength: 1024 * 1024, maxArraysPerBucket: i);
+
+        await Assert.That(PipeMemoryPool.SharedPoolCount).IsEqualTo(16);
+    }
+
     [Test]
     public async Task Rent_ReturnsMemoryOwner_WithRequestedSize()
     {
