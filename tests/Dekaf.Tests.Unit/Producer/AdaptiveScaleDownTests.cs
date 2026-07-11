@@ -362,14 +362,10 @@ public sealed class AdaptiveScaleDownTests
                 BindingFlags.Instance | BindingFlags.NonPublic)!
                 .SetValue(sender, 2);
 
-            var maybeScaleConnections = typeof(BrokerSender).GetMethod(
-                "MaybeScaleConnections",
-                BindingFlags.Instance | BindingFlags.NonPublic)!;
-
             // First pass starts low-utilization tracking; zero sustained window makes
             // the second pass eligible to shrink if shared-pool protection is absent.
-            maybeScaleConnections.Invoke(sender, null);
-            maybeScaleConnections.Invoke(sender, null);
+            InvokeMaybeScaleConnections(sender);
+            InvokeMaybeScaleConnections(sender);
 
             var connectionCount = (int)typeof(BrokerSender).GetField(
                 "_connectionCount",
@@ -513,11 +509,72 @@ public sealed class AdaptiveScaleDownTests
         }
     }
 
-    private static void InvokeMaybeScaleConnections(BrokerSender sender) =>
+    [Test]
+    public async Task ScaleDown_MutedPartitionWithCarryOverBatch_DoesNotShrink()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            scaleDownSustainedMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        var topicPartition = new TopicPartition(Topic, 0);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var carryOver = CreateCarryOver(CreateTestBatch(valueTaskSourcePool, partition: 0));
+
+        try
+        {
+            SetField(sender, "_connectionCount", 4);
+            SetField(sender, "_totalMaxInFlight", 4);
+            SetField(sender, "_totalPendingResponseCount", 1);
+
+            typeof(BrokerSender).GetMethod(
+                "MutePartition",
+                BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, [topicPartition]);
+
+            InvokeMaybeScaleConnections(sender, carryOver);
+            InvokeMaybeScaleConnections(sender, carryOver);
+
+            await pool.DidNotReceive().ShrinkConnectionGroupAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>());
+            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(4);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    private static object CreateCarryOver(ReadyBatch? batch = null)
+    {
+        var carryOverType = typeof(BrokerSender).GetNestedType(
+            "PartitionCarryOver",
+            BindingFlags.NonPublic)!;
+        var carryOver = Activator.CreateInstance(carryOverType)!;
+        if (batch is null)
+            return carryOver;
+
+        var batchReferenceType = typeof(BrokerSender).GetNestedType(
+            "BatchReference",
+            BindingFlags.NonPublic)!;
+        var batchReference = Activator.CreateInstance(
+            batchReferenceType,
+            [batch, batch.Generation])!;
+        carryOverType.GetMethod("Add")!.Invoke(carryOver, [batchReference]);
+        return carryOver;
+    }
+
+    private static void InvokeMaybeScaleConnections(BrokerSender sender, object? carryOver = null) =>
         typeof(BrokerSender).GetMethod(
             "MaybeScaleConnections",
             BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(sender, null);
+            .Invoke(sender, [carryOver ?? CreateCarryOver()]);
 
     private static T GetField<T>(object instance, string fieldName) =>
         (T)instance.GetType().GetField(

@@ -1035,7 +1035,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // ── 4b. Adaptive connection scaling ──
                 if (_adaptiveScalingEnabled)
                 {
-                    var scaledToCount = MaybeScaleConnections();
+                    var scaledToCount = MaybeScaleConnections(carryOver);
 
                     if (scaledToCount > 0)
                     {
@@ -4088,7 +4088,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// (polled each iteration).
     /// Returns the new connection count if scaling completed this iteration, or 0 otherwise.
     /// </summary>
-    private int MaybeScaleConnections()
+    private int MaybeScaleConnections(PartitionCarryOver carryOver)
     {
         // Phase 0: Poll draining connection for disposal
         MaybeDrainAndDisposeConnection();
@@ -4234,7 +4234,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ? (double)pendingResponseCount / _totalMaxInFlight
             : 0;
         if (inFlightUtilization >= ScaleDownInFlightUtilizationThreshold
-            || HasMutedPartitionLoad())
+            || HasMutedPartitionLoad(carryOver))
         {
             _lowUtilizationStartTicks = 0;
             return 0;
@@ -4295,14 +4295,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         return 0;
     }
 
-    private bool HasMutedPartitionLoad()
+    private bool HasMutedPartitionLoad(PartitionCarryOver carryOver)
     {
         if (!_muteOnSend || _mutedPartitions.IsEmpty)
             return false;
 
         foreach (var (topicPartition, _) in _mutedPartitions)
         {
-            if (_accumulator.HasQueuedBatches(topicPartition))
+            if ((carryOver.Partitions.TryGetValue(topicPartition, out var carryOverQueue)
+                 && carryOverQueue.Count > 0)
+                || _accumulator.HasQueuedBatches(topicPartition))
                 return true;
         }
 
