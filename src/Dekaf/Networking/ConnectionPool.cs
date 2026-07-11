@@ -1217,7 +1217,11 @@ public sealed partial class ConnectionPool : IConnectionPool
         try
         {
             using var timer = new PeriodicTimer(GetIdleReaperInterval(_connectionOptions.ConnectionsMaxIdleMs));
-            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            using var cancellationRegistration = cancellationToken.UnsafeRegister(
+                static state => ((PeriodicTimer)state!).Dispose(),
+                timer);
+
+            while (await timer.WaitForNextTickAsync(CancellationToken.None).ConfigureAwait(false))
             {
                 await ReapIdleConnectionsAsync().ConfigureAwait(false);
             }

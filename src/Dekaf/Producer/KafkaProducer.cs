@@ -2977,7 +2977,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         try
         {
-            while (await _lingerTimer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            using var cancellationRegistration = cancellationToken.UnsafeRegister(
+                static state => ((PeriodicTimer)state!).Dispose(),
+                _lingerTimer);
+
+            while (await _lingerTimer.WaitForNextTickAsync(CancellationToken.None).ConfigureAwait(false))
             {
                 try
                 {
