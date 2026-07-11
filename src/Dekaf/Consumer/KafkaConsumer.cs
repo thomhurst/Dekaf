@@ -4738,6 +4738,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Consume cancellation requested, exit silently
             return null;
         }
+        catch (Exception ex) when (IsFatalPrefetchError(ex))
+        {
+            LogFatalPrefetchError(ex, brokerId);
+            throw;
+        }
         catch (Exception ex)
         {
             ClearPreferredReadReplicasForBroker(brokerId, partitions);
