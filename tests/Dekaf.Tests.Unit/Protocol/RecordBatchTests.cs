@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using Dekaf.Compression;
+using Dekaf.Consumer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
@@ -15,6 +16,86 @@ namespace Dekaf.Tests.Unit.Protocol;
 public class RecordBatchTests
 {
     #region RecordBatch Structure Tests
+
+    [Test]
+    public async Task PendingFetchData_MultipleBatchesShareParsedRecordSlab()
+    {
+        var first = ReadWrittenBatch(CreateTwoRecordBatch());
+        var second = ReadWrittenBatch(new RecordBatch
+        {
+            BaseOffset = 2,
+            BaseTimestamp = 1002,
+            MaxTimestamp = 1002,
+            Records = [new Record { OffsetDelta = 0, Value = "value-2"u8.ToArray() }]
+        });
+        using var pending = PendingFetchData.Create("topic", 0, [first, second]);
+
+        pending.EagerParseAll();
+
+        var slab = first.GetParsedRecordsArray();
+        await Assert.That(slab).IsNotNull();
+        await Assert.That(second.GetParsedRecordsArray()).IsSameReferenceAs(slab);
+        await Assert.That(first.GetParsedRecordsOffset()).IsEqualTo(0);
+        await Assert.That(second.GetParsedRecordsOffset()).IsEqualTo(2);
+        await Assert.That(slab![0].Value.ToArray()).IsEquivalentTo("value-0"u8.ToArray());
+        await Assert.That(slab[2].Value.ToArray()).IsEquivalentTo("value-2"u8.ToArray());
+        await Assert.That(pending.MoveNext()).IsTrue();
+        await Assert.That(pending.CurrentRecord.Value.ToArray()).IsEquivalentTo("value-0"u8.ToArray());
+        await Assert.That(pending.MoveNext()).IsTrue();
+        await Assert.That(pending.CurrentRecord.Value.ToArray()).IsEquivalentTo("value-1"u8.ToArray());
+        await Assert.That(pending.MoveNext()).IsTrue();
+        await Assert.That(pending.CurrentRecord.Value.ToArray()).IsEquivalentTo("value-2"u8.ToArray());
+
+        first.Dispose();
+
+        await Assert.That(slab[0]).IsEqualTo(default(Record));
+        await Assert.That(slab[1]).IsEqualTo(default(Record));
+        await Assert.That(slab[2].Value.ToArray()).IsEquivalentTo("value-2"u8.ToArray());
+    }
+
+    [Test]
+    public async Task PendingFetchData_TruncatedBatchDoesNotOverwriteNextSlabSlice()
+    {
+        var truncated = ReadWrittenBatchWithDeclaredRecordCount(new RecordBatch
+        {
+            Records = [new Record { Value = "first"u8.ToArray() }]
+        }, declaredRecordCount: 3);
+        var next = ReadWrittenBatch(new RecordBatch
+        {
+            BaseOffset = 3,
+            Records = [new Record { Value = "next"u8.ToArray() }]
+        });
+        using var pending = PendingFetchData.Create("topic", 0, [truncated, next]);
+
+        pending.EagerParseAll();
+
+        var slab = truncated.GetParsedRecordsArray();
+        await Assert.That(truncated.Records.Count).IsEqualTo(1);
+        await Assert.That(next.GetParsedRecordsArray()).IsSameReferenceAs(slab);
+        await Assert.That(next.GetParsedRecordsOffset()).IsEqualTo(3);
+        await Assert.That(slab![0].Value.ToArray()).IsEquivalentTo("first"u8.ToArray());
+        await Assert.That(slab[3].Value.ToArray()).IsEquivalentTo("next"u8.ToArray());
+    }
+
+    private static RecordBatch ReadWrittenBatch(RecordBatch batch)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        batch.Write(buffer);
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        return RecordBatch.Read(ref reader);
+    }
+
+    private static RecordBatch ReadWrittenBatchWithDeclaredRecordCount(RecordBatch batch, int declaredRecordCount)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        batch.Write(buffer);
+        var bytes = buffer.WrittenSpan.ToArray();
+        BinaryPrimitives.WriteInt32BigEndian(
+            bytes.AsSpan(RecordBatch.TotalBatchHeaderSize - sizeof(int)),
+            declaredRecordCount);
+        var reader = new KafkaProtocolReader(bytes);
+        return RecordBatch.Read(ref reader);
+    }
 
     [Test]
     public async Task RecordBatch_MagicByte_IsTwo()

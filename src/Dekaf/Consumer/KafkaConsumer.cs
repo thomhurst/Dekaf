@@ -77,6 +77,7 @@ internal sealed class PendingFetchData : IDisposable
     private IReadOnlyList<RecordBatch> _batches = null!;
     private Dictionary<long, Queue<long>>? _abortedProducers;
     private IPooledMemory? _memoryOwner;
+    private Record[]? _parsedRecordSlab;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
     private int _disposed;
@@ -153,6 +154,7 @@ internal sealed class PendingFetchData : IDisposable
         instance.TopicPartition = new TopicPartition(topic, partitionIndex);
         instance._batches = batches;
         instance._memoryOwner = memoryOwner;
+        instance.AttachParsedRecordSlab(batches);
 
         if (abortedTransactions is { Count: > 0 })
         {
@@ -170,6 +172,35 @@ internal sealed class PendingFetchData : IDisposable
         }
 
         return instance;
+    }
+
+    private void AttachParsedRecordSlab(IReadOnlyList<RecordBatch> batches)
+    {
+        const int maxSlabRecordCount = 1_000_000;
+        var totalRecordCount = 0;
+
+        for (var i = 0; i < batches.Count; i++)
+        {
+            var recordCount = batches[i].UnparsedLazyRecordCount;
+            if (recordCount < 0 || recordCount > maxSlabRecordCount - totalRecordCount)
+                return;
+            totalRecordCount += recordCount;
+        }
+
+        if (totalRecordCount == 0)
+            return;
+
+        var slab = ArrayPool<Record>.Shared.Rent(totalRecordCount);
+        var offset = 0;
+        for (var i = 0; i < batches.Count; i++)
+        {
+            var batch = batches[i];
+            var recordCount = batch.UnparsedLazyRecordCount;
+            batch.UseParsedRecordSlab(slab, offset);
+            offset += recordCount;
+        }
+
+        _parsedRecordSlab = slab;
     }
 
     public static PendingFetchData CreateError(string topic, int partitionIndex, ConsumeException error)
@@ -227,7 +258,7 @@ internal sealed class PendingFetchData : IDisposable
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get => _currentRecordsArray is not null
-            ? _currentRecordsArray[_recordIndex]
+            ? _currentRecordsArray[_currentRecordsArrayOffset + _recordIndex]
             : _currentRecords![_recordIndex];
     }
 
@@ -235,6 +266,7 @@ internal sealed class PendingFetchData : IDisposable
     // _currentRecordsArray bypasses IReadOnlyList<Record> virtual dispatch + lazy parsing
     // indexer overhead by caching the underlying Record[] directly.
     private Record[]? _currentRecordsArray;
+    private int _currentRecordsArrayOffset;
     private IReadOnlyList<Record>? _currentRecords;
     private int _currentRecordsCount;
 
@@ -323,6 +355,7 @@ internal sealed class PendingFetchData : IDisposable
         // Cache raw array for direct indexing (bypasses lazy-list indexer overhead).
         _currentRecordsArray = batch.GetParsedRecordsArray()
             ?? (records is Protocol.Records.LazyRecordList lazyList ? lazyList.GetParsedArray() : null);
+        _currentRecordsArrayOffset = batch.GetParsedRecordsOffset();
 
         CurrentBaseOffset = batch.BaseOffset;
         CurrentPartitionLeaderEpoch = batch.PartitionLeaderEpoch;
@@ -485,6 +518,11 @@ internal sealed class PendingFetchData : IDisposable
             batches[i].Dispose();
         }
 
+        var parsedRecordSlab = _parsedRecordSlab;
+        _parsedRecordSlab = null;
+        if (parsedRecordSlab is not null)
+            ArrayPool<Record>.Shared.Return(parsedRecordSlab, clearArray: false);
+
         // Return the batch list to the pool for reuse
         if (_batches is List<RecordBatch> batchList)
         {
@@ -500,6 +538,7 @@ internal sealed class PendingFetchData : IDisposable
         _batchIndex = -1;
         _recordIndex = -1;
         _currentRecordsArray = null;
+        _currentRecordsArrayOffset = 0;
         _currentRecords = null;
         _currentRecordsCount = 0;
         _eagerParsed = false;
