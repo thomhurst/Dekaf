@@ -187,6 +187,32 @@ class StressTrendTests(unittest.TestCase):
         self.assertFalse(should_fail)
         self.assertEqual({"insufficient-history"}, {item["status"] for item in evaluations})
 
+    def test_consumer_seed_batch_size_preserves_legacy_baseline_and_separates_new_shapes(self):
+        history = {
+            "version": 1,
+            "runs": [history_run(i, scenario="consumer") for i in range(1, 4)],
+        }
+
+        legacy_evaluations, _, _ = evaluate_and_update(
+            history,
+            [result(scenario="consumer", consumerSeedBatchSizeBytes=16_384)],
+            "2026-07-01T02:00:00Z",
+        )
+        large_batch_evaluations, _, _ = evaluate_and_update(
+            history,
+            [result(scenario="consumer", consumerSeedBatchSizeBytes=1_048_576)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        self.assertNotEqual(
+            {"insufficient-history"},
+            {item["status"] for item in legacy_evaluations},
+        )
+        self.assertEqual(
+            {"insufficient-history"},
+            {item["status"] for item in large_batch_evaluations},
+        )
+
     def test_different_roundtrip_bound_does_not_supply_baseline(self):
         history = {
             "version": 1,

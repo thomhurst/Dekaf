@@ -64,6 +64,14 @@ class StressReportTests(unittest.TestCase):
         self.assertTrue(rows[0].startswith("| Dekaf"))
         self.assertIn("| 2.00x |", rows[0])
 
+    def test_consumer_table_reports_seed_batch_size(self):
+        result = stress_result("Dekaf", effective_rate=2000)
+        result["consumerSeedBatchSizeBytes"] = 16_384
+
+        lines = format_throughput_table([result], "Consumer Throughput")
+
+        self.assertIn("16,384B seed batches", lines[0])
+
     def test_message_bounded_table_ignores_producer_only_median(self):
         lines = format_throughput_table(
             [

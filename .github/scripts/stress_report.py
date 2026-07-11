@@ -182,8 +182,12 @@ def format_throughput_table(results, title, include_ratio=False):
     lines = []
     duration = results[0].get('durationMinutes', 'N/A')
     message_size = results[0].get('messageSizeBytes', 'N/A')
+    seed_batch_size = results[0].get('consumerSeedBatchSizeBytes')
 
-    lines.append(f"## {title} ({duration} minutes, {message_size}B messages)")
+    workload = f"{duration} minutes, {message_size}B messages"
+    if seed_batch_size is not None:
+        workload += f", {seed_batch_size:,}B seed batches"
+    lines.append(f"## {title} ({workload})")
     lines.append("")
 
     if include_ratio:
