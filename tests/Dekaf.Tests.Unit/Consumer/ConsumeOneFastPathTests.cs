@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Diagnostics;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
@@ -164,6 +165,31 @@ public sealed class ConsumeOneFastPathTests
             CancellationToken.None);
 
         await Assert.That(result).IsNotNull();
+    }
+
+    [Test]
+    public async Task CalculateRemainingConsumeOneTimeout_IncludesBufferedDrainTime()
+    {
+        var drainStarted = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+
+        var remaining = KafkaConsumer<string, string>.CalculateRemainingConsumeOneTimeout(
+            TimeSpan.FromMilliseconds(100),
+            drainStarted);
+
+        await Assert.That(remaining).IsEqualTo(TimeSpan.Zero);
+    }
+
+    [Test]
+    public async Task CalculateRemainingConsumeOneTimeout_PreservesInfiniteSentinel()
+    {
+        var timeout = TimeSpan.FromTicks(-TimeSpan.TicksPerMillisecond - 1);
+        var drainStarted = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+
+        var remaining = KafkaConsumer<string, string>.CalculateRemainingConsumeOneTimeout(
+            timeout,
+            drainStarted);
+
+        await Assert.That(remaining).IsEqualTo(timeout);
     }
 
     [Test]

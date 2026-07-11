@@ -3260,19 +3260,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var timeoutMilliseconds = ValidateConsumeOneTimeout(timeout);
 
         var pollRecorded = false;
+        long? bufferedDrainStarted = null;
         if (!RequiresRuntimeTimeoutValidation(timeoutMilliseconds)
             && CanUseBufferedConsumeOneFastPath(cancellationToken))
         {
             pollRecorded = _coordinator?.TryRecordPollFast() ?? true;
-            if (pollRecorded && TryConsumeOneFromPendingFetches(out var bufferedResult))
-                return bufferedResult;
+            if (pollRecorded)
+            {
+                bufferedDrainStarted = Stopwatch.GetTimestamp();
+                if (TryConsumeOneFromPendingFetches(out var bufferedResult))
+                    return bufferedResult;
 
-            if (pollRecorded && TryDequeuePendingEofResult(out var eofResult))
-                return eofResult;
+                if (TryDequeuePendingEofResult(out var eofResult))
+                    return eofResult;
+            }
         }
 
         using var timeoutCts = _ctsPool.Rent();
-        timeoutCts.CancelAfter(timeout);
+        timeoutCts.CancelAfter(CalculateRemainingConsumeOneTimeout(timeout, bufferedDrainStarted));
 
         // Fast path: if no external cancellation, use timeout CTS directly (avoids allocation)
         if (!cancellationToken.CanBeCanceled)
@@ -3325,6 +3330,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 #else
         return false;
 #endif
+    }
+
+    internal static TimeSpan CalculateRemainingConsumeOneTimeout(TimeSpan timeout, long? bufferedDrainStarted)
+    {
+        if (bufferedDrainStarted is not { } startedAt || timeout < TimeSpan.Zero)
+            return timeout;
+
+        var remaining = timeout - Stopwatch.GetElapsedTime(startedAt);
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
     }
 
     private bool CanUseBufferedConsumeOneFastPath(CancellationToken cancellationToken)

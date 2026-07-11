@@ -270,11 +270,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     internal bool TryRecordPollFast()
     {
-        // The fatal can be published after the assignment-currency gate. Recheck here,
-        // immediately before the caller dequeues a buffered record, so a group-managed
-        // slow path surfaces it. Manual assignment does not run the heartbeat loop.
-        if (Volatile.Read(ref _fatalHeartbeatException) is not null)
-            return false;
+        // The fatal can be published after the assignment-currency gate. Surface it here,
+        // before either a buffered dequeue or the timeout-bound coordinator lock path.
+        ThrowIfFatalHeartbeatException();
 
         // Heartbeat expiry invokes user callbacks outside _lock. Keep its poll generation
         // unchanged so EnsureActiveGroup cannot rejoin until notification completes.
