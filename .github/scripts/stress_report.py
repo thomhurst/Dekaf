@@ -4,6 +4,9 @@ from collections import defaultdict
 from math import isfinite
 from statistics import median
 
+STEADY_STATE_PEAK_THRESHOLD = 0.85
+SLOPE_PERCENT_PER_MINUTE_THRESHOLD = -1.0
+
 SCENARIO_TITLES = {
     'producer': 'Producer (Fire-and-Forget)',
     'producer-idempotent': 'Producer (Fire-and-Forget, Idempotent)',
@@ -138,6 +141,56 @@ def median_interval_rate(result):
     return median(finite_samples)
 
 
+def intra_run_throughput(result):
+    """Return intra-run degradation metrics, or None when samples are unsuitable."""
+    if result.get('isMessageBounded'):
+        return None
+
+    throughput = result.get('throughput', {})
+    samples = throughput.get('messagesPerSecondSamples') or []
+    samples = [
+        float(sample) for sample in samples
+        if isinstance(sample, (int, float))
+        and not isinstance(sample, bool)
+        and isfinite(sample)
+        and sample >= 0
+    ]
+    elapsed_seconds = throughput.get('elapsedSeconds')
+    if len(samples) < 3 or not isinstance(elapsed_seconds, (int, float)) or elapsed_seconds <= 0:
+        return None
+
+    third_count = max(1, len(samples) // 3)
+    first_third = sum(samples[:third_count]) / third_count
+    last_third = sum(samples[-third_count:]) / third_count
+    peak = max(samples)
+    if first_third <= 0 or peak <= 0:
+        return None
+
+    mean = sum(samples) / len(samples)
+    centered_x = [(index - ((len(samples) - 1) / 2)) for index in range(len(samples))]
+    denominator = sum(value * value for value in centered_x)
+    slope_per_sample = (
+        sum(x * (sample - mean) for x, sample in zip(centered_x, samples)) / denominator
+    )
+    sample_minutes = elapsed_seconds / len(samples) / 60.0
+    slope_percent_per_minute = slope_per_sample / sample_minutes / first_third * 100.0
+    steady_state_peak_ratio = last_third / peak
+    drift_percent = (last_third - first_third) / first_third * 100.0
+
+    return {
+        'firstThirdAverage': first_third,
+        'lastThirdAverage': last_third,
+        'peak': peak,
+        'steadyStatePeakRatio': steady_state_peak_ratio,
+        'driftPercent': drift_percent,
+        'slopePercentPerMinute': slope_percent_per_minute,
+        'thresholdBreached': (
+            steady_state_peak_ratio < STEADY_STATE_PEAK_THRESHOLD
+            or slope_percent_per_minute < SLOPE_PERCENT_PER_MINUTE_THRESHOLD
+        ),
+    }
+
+
 def comparison_rate(result):
     """Rate used for ranking and ratios: median interval rate when present, else headline rate."""
     rate = median_interval_rate(result)
@@ -191,11 +244,11 @@ def format_throughput_table(results, title, include_ratio=False):
     lines.append("")
 
     if include_ratio:
-        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used | Comparison Ratio |")
-        lines.append("|--------|------------|--------------|--------------|--------|----------------|--------|------------|------------------|")
+        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used | Comparison Ratio |")
+        lines.append("|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|------------------|")
     else:
-        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used |")
-        lines.append("|--------|------------|--------------|--------------|--------|----------------|--------|------------|")
+        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |")
+        lines.append("|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|")
 
     baseline = find_confluent_baseline(results) if include_ratio else 0
     sorted_results = sorted(results, key=throughput_sort_key)
@@ -207,6 +260,9 @@ def format_throughput_table(results, title, include_ratio=False):
         mb_sec = effective_mb_rate(r)
         median_rate = median_interval_rate(r)
         median_msg_sec = f"{median_rate:,.0f}" if median_rate is not None else '-'
+        intra_run = intra_run_throughput(r)
+        drift = f"{intra_run['driftPercent']:+.1f}%" if intra_run is not None else '-'
+        slope = f"{intra_run['slopePercentPerMinute']:+.2f}%" if intra_run is not None else '-'
         accepted_rate = accepted_messages_per_second(r)
         accepted = f"{accepted_rate:,.0f}" if accepted_rate is not None else '-'
         errors = throughput.get('totalErrors', 0)
@@ -214,9 +270,9 @@ def format_throughput_table(results, title, include_ratio=False):
 
         if include_ratio:
             ratio = comparison_rate(r) / baseline if baseline > 0 else 1.0
-            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} | {ratio:.2f}x |")
+            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} | {ratio:.2f}x |")
         else:
-            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} |")
+            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} |")
 
     lines.append("")
 
@@ -224,6 +280,10 @@ def format_throughput_table(results, title, include_ratio=False):
         lines.append("*Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*")
         lines.append("")
         lines.append("*Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*")
+        lines.append("")
+
+    if any(intra_run_throughput(r) is not None for r in results):
+        lines.append("*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below 85% of peak or slope below -1%/min fails the regression gate.*")
         lines.append("")
 
     if any(r.get('deliveredMessages') is not None for r in results):

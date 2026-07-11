@@ -6,7 +6,13 @@ from math import isfinite
 from pathlib import Path
 from statistics import median
 
-from stress_report import cpu_micros_per_message, effective_rate
+from stress_report import (
+    SLOPE_PERCENT_PER_MINUTE_THRESHOLD,
+    STEADY_STATE_PEAK_THRESHOLD,
+    cpu_micros_per_message,
+    effective_rate,
+    intra_run_throughput,
+)
 
 
 HISTORY_VERSION = 1
@@ -233,6 +239,42 @@ def evaluate_and_update(history, current_results, run_started_at):
             observation[f"{metric}Trend"] = evaluation["status"]
             evaluations.append(evaluation)
 
+        intra_run = intra_run_throughput(result)
+        if intra_run is not None:
+            threshold_metrics = (
+                (
+                    "steadyStatePeakRatio",
+                    "Steady-state / peak",
+                    intra_run["steadyStatePeakRatio"],
+                    STEADY_STATE_PEAK_THRESHOLD,
+                    intra_run["steadyStatePeakRatio"] < STEADY_STATE_PEAK_THRESHOLD,
+                ),
+                (
+                    "slopePercentPerMinute",
+                    "Slope %/min",
+                    intra_run["slopePercentPerMinute"],
+                    SLOPE_PERCENT_PER_MINUTE_THRESHOLD,
+                    intra_run["slopePercentPerMinute"] < SLOPE_PERCENT_PER_MINUTE_THRESHOLD,
+                ),
+            )
+            for metric, label, value, threshold, breached in threshold_metrics:
+                evaluations.append({
+                    "scenario": _scenario_label(result),
+                    "metric": metric,
+                    "metricLabel": label,
+                    "current": value,
+                    "baselineCount": 0,
+                    "median": None,
+                    "mad": None,
+                    "lower": threshold,
+                    "upper": None,
+                    "status": "regression" if breached else "stable",
+                    "repeatedRegression": False,
+                    "thresholdBreach": breached,
+                })
+                observation[metric] = value
+                should_fail = should_fail or breached
+
         observations.append(observation)
 
     updated_runs = baseline_runs + [{
@@ -269,7 +311,10 @@ def format_markdown(evaluations):
     }
 
     for item in evaluations:
-        if item["median"] is None:
+        if "thresholdBreach" in item:
+            center = "-"
+            band = f">= {item['lower']:,.2f}"
+        elif item["median"] is None:
             center = "-"
             band = f"{item['baselineCount']}/{MIN_BASELINE_RUNS} runs"
         else:
@@ -277,7 +322,9 @@ def format_markdown(evaluations):
             band = f"{item['lower']:,.2f} – {item['upper']:,.2f}"
 
         status = labels[item["status"]]
-        if item["repeatedRegression"]:
+        if item.get("thresholdBreach"):
+            status = "Threshold breach (fail)"
+        elif item["repeatedRegression"]:
             status = "Repeated regression (fail)"
         elif item["status"] == "regression":
             status = "Regression (warning)"
@@ -300,7 +347,10 @@ def emit_annotations(evaluations):
         if item["status"] not in {"regression", "improvement"}:
             continue
 
-        if item["repeatedRegression"]:
+        if item.get("thresholdBreach"):
+            level = "error"
+            prefix = "Intra-run threshold breach"
+        elif item["repeatedRegression"]:
             level = "error"
             prefix = "Repeated regression"
         elif item["status"] == "regression":
@@ -310,10 +360,16 @@ def emit_annotations(evaluations):
             level = "notice"
             prefix = "Improvement"
 
-        message = (
-            f"{prefix}: {item['scenario']} {item['metricLabel']}={item['current']:.2f}; "
-            f"baseline {item['median']:.2f}, band {item['lower']:.2f}-{item['upper']:.2f}"
-        )
+        if "thresholdBreach" in item:
+            message = (
+                f"{prefix}: {item['scenario']} {item['metricLabel']}={item['current']:.2f}; "
+                f"required >= {item['lower']:.2f}"
+            )
+        else:
+            message = (
+                f"{prefix}: {item['scenario']} {item['metricLabel']}={item['current']:.2f}; "
+                f"baseline {item['median']:.2f}, band {item['lower']:.2f}-{item['upper']:.2f}"
+            )
         print(f"::{level} title=Stress performance trend::{_annotation_escape(message)}")
 
 

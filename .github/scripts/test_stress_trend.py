@@ -41,6 +41,27 @@ def history_run(index, messages_per_second=1000.0, cpu_micros_per_message=2.0, *
 
 
 class StressTrendTests(unittest.TestCase):
+    def test_intra_run_threshold_breach_fails_without_history(self):
+        collapsing = result(
+            throughput={
+                "elapsedSeconds": 360,
+                "messagesPerSecondSamples": [2000, 1900, 1800, 1400, 1300, 1200],
+            },
+        )
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": []},
+            [collapsing],
+            "2026-07-01T02:00:00Z",
+        )
+
+        intra_run = [item for item in evaluations if item.get("thresholdBreach")]
+        self.assertTrue(should_fail)
+        self.assertEqual(
+            {"steadyStatePeakRatio", "slopePercentPerMinute"},
+            {item["metric"] for item in intra_run},
+        )
+
     def test_empty_history_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unsupported stress history version"):
             evaluate_and_update({}, [result()], "2026-07-01T02:00:00Z")
@@ -362,6 +383,20 @@ class StressTrendTests(unittest.TestCase):
         create_directory = step.index("mkdir -p merged-results")
         find_result = step.index("result_file=$(find merged-results")
         self.assertLess(create_directory, find_result)
+
+    def test_workflow_regression_gate_consumes_all_failure_kinds(self):
+        workflow = (
+            Path(__file__).parent.parent / "workflows" / "stress-tests.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "regression_failure: ${{ steps.stress-trends.outputs.should_fail }}",
+            workflow,
+        )
+        self.assertIn(
+            "needs.generate-summary.outputs.regression_failure == 'true'",
+            workflow,
+        )
 
     def test_history_merge_wait_retries_one_transient_state_query_failure(self):
         workflow = (

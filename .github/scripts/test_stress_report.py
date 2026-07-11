@@ -4,6 +4,7 @@ from stress_report import (
     format_roundtrip_validation_table,
     format_throughput_table,
     generate_scenario_tables,
+    intra_run_throughput,
 )
 
 
@@ -32,6 +33,49 @@ def stress_result(client, effective_rate, median_rate=None, is_message_bounded=F
 
 
 class StressReportTests(unittest.TestCase):
+    def test_intra_run_throughput_detects_front_loaded_collapse(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["throughput"].update({
+            "elapsedSeconds": 900,
+            "messagesPerSecondSamples": [
+                1700, 1800, 1750, 2000, 2050, 1950,
+                1350, 1300, 1250, 1200, 1280, 1270,
+            ],
+        })
+
+        metrics = intra_run_throughput(value)
+
+        self.assertIsNotNone(metrics)
+        self.assertAlmostEqual(-31.03, metrics["driftPercent"], places=2)
+        self.assertLess(metrics["steadyStatePeakRatio"], 0.85)
+        self.assertLess(metrics["slopePercentPerMinute"], -1.0)
+        self.assertTrue(metrics["thresholdBreached"])
+
+    def test_throughput_table_surfaces_drift_and_slope(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["throughput"].update({
+            "elapsedSeconds": 360,
+            "messagesPerSecondSamples": [2000, 1900, 1800, 1400, 1300, 1200],
+        })
+
+        report = "\n".join(format_throughput_table([value], "Producer Throughput"))
+
+        self.assertIn("Drift", report)
+        self.assertIn("Slope %/min", report)
+        self.assertIn("-35.9%", report)
+
+    def test_intra_run_throughput_accepts_stable_samples(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["throughput"].update({
+            "elapsedSeconds": 360,
+            "messagesPerSecondSamples": [1400, 1410, 1390, 1405, 1395, 1400],
+        })
+
+        metrics = intra_run_throughput(value)
+
+        self.assertIsNotNone(metrics)
+        self.assertFalse(metrics["thresholdBreached"])
+
     def test_throughput_table_orders_and_ratios_by_median_when_available(self):
         lines = format_throughput_table(
             [

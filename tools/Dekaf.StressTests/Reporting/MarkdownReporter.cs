@@ -95,8 +95,8 @@ internal static class MarkdownReporter
             var messageSizeKb = messageSize >= 1024 ? $"{messageSize / 1024.0:F1}KB" : $"{messageSize}B";
             sb.AppendLine($"## {title} ({durationMinutes} minutes, {messageSizeKb} messages)");
             sb.AppendLine();
-            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | CPU μs/msg | Messages/sec | Median msg/s | MB/sec | Accepted msg/s | Errors | Cores Used | Comparison Ratio |");
-            sb.AppendLine($"|{new string('-', clientWidth + 2)}|------------|--------------|--------------|--------|----------------|--------|------------|------------------|");
+            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used | Comparison Ratio |");
+            sb.AppendLine($"|{new string('-', clientWidth + 2)}|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|------------------|");
 
             var baseline = sizeResults
                 .Where(r => r.Client.Equals("Confluent", StringComparison.OrdinalIgnoreCase))
@@ -114,6 +114,8 @@ internal static class MarkdownReporter
                 var comparisonRate = ComparisonMessagesPerSecond(result);
                 var ratio = baseline > 0 ? comparisonRate / baseline : 1.0;
                 var median = result.MedianIntervalMessagesPerSecond is { } medianRate ? medianRate.ToString("N0") : "-";
+                var drift = result.IntraRunDriftPercent is { } driftPercent ? $"{driftPercent:+0.0;-0.0;0.0}%" : "-";
+                var slope = result.ThroughputSlopePercentPerMinute is { } slopePercent ? $"{slopePercent:+0.00;-0.00;0.00}%" : "-";
                 var accepted = result.AcceptedMessagesPerSecond is { } acceptedRate ? acceptedRate.ToString("N0") : "-";
                 var cpuPerMessage = result.CpuMicrosPerMessage is { } cpu ? $"{cpu:F2}" : "-";
                 var coresUsed = result.AverageCoresUsed is { } cores ? $"{cores:F2}" : "-";
@@ -124,7 +126,7 @@ internal static class MarkdownReporter
                 var errors = deliveryErrors > 0
                     ? $"{result.Throughput.TotalErrors} (+{deliveryErrors} dlv)"
                     : result.Throughput.TotalErrors.ToString()!;
-                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {cpuPerMessage,10} | {rate,12:N0} | {median,12} | {result.EffectiveMegabytesPerSecond,6:F2} | {accepted,14} | {errors,6} | {coresUsed,10} | {ratio:F2}x |");
+                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {cpuPerMessage,10} | {rate,12:N0} | {median,12} | {drift,7} | {slope,11} | {result.EffectiveMegabytesPerSecond,6:F2} | {accepted,14} | {errors,6} | {coresUsed,10} | {ratio:F2}x |");
             }
 
             sb.AppendLine();
@@ -134,6 +136,12 @@ internal static class MarkdownReporter
                 sb.AppendLine("*Median msg/s is the median sampled client-side throughput interval; it shows steady-state throughput without letting a short late-run stall dominate the whole-run average.*");
                 sb.AppendLine();
                 sb.AppendLine("*Rows and Comparison Ratio use Median msg/s when available; older result files without interval samples fall back to Messages/sec.*");
+                sb.AppendLine();
+            }
+
+            if (sizeResults.Any(r => r.IntraRunDriftPercent is not null))
+            {
+                sb.AppendLine($"*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below {StressTestResult.SteadyStatePeakThreshold:P0} of peak or slope below {StressTestResult.SlopePercentPerMinuteThreshold:F0}%/min fails the regression gate.*");
                 sb.AppendLine();
             }
 
