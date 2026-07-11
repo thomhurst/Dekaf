@@ -38,9 +38,9 @@ namespace Dekaf.Producer;
 /// response handlers signal a flag, and the single-threaded send loop bumps the epoch
 /// before the next send. This eliminates all races between concurrent handlers.
 ///
-/// In-flight request limiting uses <see cref="_pendingResponsesByConnection"/> count (exclusively owned
-/// by the send loop) as the in-flight measure. Completed responses are processed by polling
-/// <c>_pendingResponsesByConnection</c> for completed tasks on each iteration.
+/// In-flight limiting uses both request count and encoded bytes. The byte ceiling keeps
+/// acknowledged pipelines near broker BDP instead of filling the full admission buffer.
+/// Completed responses are processed by polling <c>_pendingResponsesByConnection</c>.
 ///
 /// All writes go through the send loop — there are no out-of-loop write paths.
 /// </summary>
@@ -57,7 +57,7 @@ namespace Dekaf.Producer;
 /// Response completion is detected by polling <c>_pendingResponsesByConnection</c> for completed tasks
 /// (checking <c>ResponseTask.IsCompleted</c>). <c>UnsafeOnCompleted</c> callbacks write lightweight
 /// <see cref="SendLoopEvent.ResponseReady"/> signals to wake up the send loop when responses
-/// arrive. In-flight capacity is measured by <c>_totalPendingResponseCount</c>.
+/// arrive. In-flight capacity is measured by request count and encoded bytes.
 /// </para>
 /// <para>
 /// External threads (producer callers) interact with BrokerSender only through the unbounded
@@ -93,6 +93,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private const int SendCoalescedTimeoutMs = 1500;
 
     private const int ResponsePollIntervalMs = 100;
+    private const int BlockedBucketPollIntervalMs = 1;
     private static readonly TimeSpan DisposalDrainTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
@@ -115,6 +116,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// high for non-idempotent producers, but coalescing capacity should stay bounded.
     /// </summary>
     private const int MaxCoalescedBatchesPerPass = 1024;
+    // The historical multi-broker workload drains about 1 GB/s with roughly 30 ms broker
+    // acknowledgement latency, making 32 MB a practical default BDP per connection. This
+    // also prevents the 100-request non-idempotent count limit from turning BufferMemory
+    // into an acknowledgement queue.
+    private const int InFlightByteBudgetBatchMultiplier = 32;
 
     private static int s_instanceCounter;
     private readonly int _instanceId = Interlocked.Increment(ref s_instanceCounter);
@@ -132,6 +138,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Func<short>? _getCurrentEpoch;
     private readonly ILogger _logger;
     private readonly Action<int>? _onBrokerThrottle;
+    private readonly Action? _onBlockedBucketRequeued;
     private readonly Func<long> _getTimestamp;
     private readonly Func<int, CancellationToken, ValueTask> _delayForThrottle;
 
@@ -148,6 +155,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ReadyBatch[] Batches,
         int[] BatchGenerations,
         int Count,
+        long EncodedBytes,
         long RequestStartTime)
     {
         /// <summary>
@@ -158,8 +166,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// it is returned by <see cref="ReturnBatchesArray"/>.
         /// </summary>
         public static PendingResponse Create(
-            Task<ProduceResponse> responseTask, ReadyBatch[] batches, int[] generations, int count, long requestStartTime)
-            => new(responseTask, batches, generations, count, requestStartTime);
+            Task<ProduceResponse> responseTask, ReadyBatch[] batches, int[] generations,
+            int count, long encodedBytes, long requestStartTime)
+            => new(responseTask, batches, generations, count, encodedBytes, requestStartTime);
 
         /// <summary>
         /// Returns true if the batch at index <paramref name="i"/> is the same incarnation
@@ -528,6 +537,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // different threads. Non-atomic ++ silently loses increments, causing the send
     // loop to undercount pending responses and enter idle wait prematurely.
     private int _totalPendingResponseCount;
+    private long _totalPendingResponseBytes;
+    private long _totalMaxInFlightBytes;
+    private readonly long _maxInFlightBytesPerConnection;
+    private readonly long[] _pendingResponseBytesByConnection;
 
     // Broker quota throttling is scoped per broker, not per connection. A positive
     // ProduceResponse.ThrottleTimeMs pauses every connection owned by this BrokerSender.
@@ -587,7 +600,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         bool canPhysicallyShrinkConnections = true,
         Action<int>? onBrokerThrottle = null,
         Func<long>? getTimestamp = null,
-        Func<int, CancellationToken, ValueTask>? delayForThrottle = null)
+        Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
+        Action? onBlockedBucketRequeued = null)
     {
         _brokerId = brokerId;
         _connectionPool = connectionPool;
@@ -608,6 +622,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _onBrokerThrottle = onBrokerThrottle;
         _getTimestamp = getTimestamp ?? Stopwatch.GetTimestamp;
         _delayForThrottle = delayForThrottle ?? DelayForThrottleAsync;
+        _onBlockedBucketRequeued = onBlockedBucketRequeued;
 
         _eventChannel = Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
         {
@@ -626,6 +641,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // locality. Idempotent producers additionally need affinity for sequence ordering.
         _connectionCount = options.ConnectionsPerBroker;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
+        _maxInFlightBytesPerConnection = GetInFlightByteBudget(connectionCount: 1);
+        _totalMaxInFlightBytes = GetInFlightByteBudget(_connectionCount);
 
         // Transactions are excluded because coordinator requests require a single connection.
         // Acks.None is excluded because no broker acknowledgement establishes a safe boundary
@@ -649,6 +666,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             : _connectionCount;
         _pinnedConnections = new IKafkaConnection?[connectionCapacity];
         _pendingResponsesByConnection = new List<PendingResponse>[connectionCapacity];
+        _pendingResponseBytesByConnection = new long[connectionCapacity];
         for (var i = 0; i < connectionCapacity; i++)
             _pendingResponsesByConnection[i] = new List<PendingResponse>();
 
@@ -1159,6 +1177,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // ── 6. Send or wait ──
                 var sentThisIteration = false;
+                var requeuedBlockedBuckets = false;
                 if (coalescedCount > 0)
                 {
                     var pendingCount = Volatile.Read(ref _totalPendingResponseCount);
@@ -1168,13 +1187,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogWaitingForInFlightCapacity(_brokerId, pendingCount, _totalMaxInFlight);
                     }
 
-                    while (pendingCount >= _totalMaxInFlight)
+                    var pendingBytes = Interlocked.Read(ref _totalPendingResponseBytes);
+                    while (pendingCount >= _totalMaxInFlight
+                        || (_connectionCount == 1 && pendingBytes >= _totalMaxInFlightBytes))
                     {
                         // Poll for completed responses to free in-flight slots.
                         ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
                         pendingCount = Volatile.Read(ref _totalPendingResponseCount);
+                        pendingBytes = Interlocked.Read(ref _totalPendingResponseBytes);
 
-                        if (pendingCount >= _totalMaxInFlight)
+                        if (pendingCount >= _totalMaxInFlight
+                            || (_connectionCount == 1 && pendingBytes >= _totalMaxInFlightBytes))
                         {
                             RecordSendLoopPressureIfScaleUseful();
 
@@ -1183,7 +1206,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // never completes.
                             HandleTimedOutRequests(carryOver, cancellationToken);
                             pendingCount = Volatile.Read(ref _totalPendingResponseCount);
-                            if (pendingCount < _totalMaxInFlight)
+                            pendingBytes = Interlocked.Read(ref _totalPendingResponseBytes);
+                            if (pendingCount < _totalMaxInFlight
+                                && (_connectionCount > 1 || pendingBytes < _totalMaxInFlightBytes))
                                 break;
 
                             // Wait for any pending response to complete.
@@ -1193,6 +1218,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // prevents I/O completion callbacks from running.
                             await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
                             pendingCount = Volatile.Read(ref _totalPendingResponseCount);
+                            pendingBytes = Interlocked.Read(ref _totalPendingResponseBytes);
                         }
                     }
 
@@ -1416,6 +1442,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             {
                                 if (!connectionBuckets[c].HasBatches) continue;
                                 if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
+                                if (Interlocked.Read(ref _pendingResponseBytesByConnection[c])
+                                    >= _maxInFlightBytesPerConnection) continue;
 
                                 ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
                                 parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
@@ -1427,61 +1455,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             if (completedSends > 0) sentThisIteration = true;
                             remainingBuckets -= completedSends;
 
-                            // Wait for capacity on blocked connections
-                            var bucketsRequeuedForThrottle = false;
-                            while (remainingBuckets > 0)
+                            // Do not wait here for a saturated connection. Requeue its batches
+                            // so the outer loop can read fresh events and keep other connections
+                            // busy. Step 7 waits for a response when no bucket made progress.
+                            if (remainingBuckets > 0)
                             {
-                                ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
-
-                                // Handle timed-out requests to free zombie entries from stale connections.
-                                HandleTimedOutRequests(carryOver, cancellationToken);
-
-                                // A response processed above may start a broker-wide throttle.
-                                // Requeue every unsent bucket so the outer send gate observes it
-                                // before another connection can send during the quota pause.
-                                if (GetRemainingBrokerThrottleMs() > 0)
-                                {
-                                    for (var c = 0; c < _connectionCount; c++)
-                                    {
-                                        ref var bucket = ref connectionBuckets[c];
-                                        if (!bucket.HasBatches) continue;
-
-                                        MoveCoalescedToCarryOver(
-                                            bucket.Batches, bucket.Generations, ref bucket.Count, carryOver);
-                                    }
-
-                                    bucketsRequeuedForThrottle = true;
-                                    break;
-                                }
-
-                                // Try sending on connections that now have capacity (parallel)
-                                var sent = false;
-                                pendingSendCount = 0;
+                                requeuedBlockedBuckets = true;
                                 for (var c = 0; c < _connectionCount; c++)
                                 {
-                                    if (!connectionBuckets[c].HasBatches) continue;
-                                    if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
+                                    ref var bucket = ref connectionBuckets[c];
+                                    if (!bucket.HasBatches) continue;
 
-                                    ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
-                                    parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
-                                        scratches[c], metadataRefreshTopics, bucketTimeoutCts[c].Token);
+                                    MoveCoalescedToCarryOver(
+                                        bucket.Batches, bucket.Generations, ref bucket.Count, carryOver);
                                 }
-
-                                var waitCompletedSends = await AwaitParallelSendsAsync(parallelSends, pendingSendCount)
-                                    .ConfigureAwait(false);
-                                if (waitCompletedSends > 0)
-                                {
-                                    sentThisIteration = true;
-                                    sent = true;
-                                    remainingBuckets -= waitCompletedSends;
-                                }
-
-                                if (remainingBuckets > 0 && !sent)
-                                    await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+                                _onBlockedBucketRequeued?.Invoke();
                             }
-
-                            if (bucketsRequeuedForThrottle)
-                                continue;
                         }
                     }
                     else
@@ -1539,7 +1528,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // their same-partition batches remain in carry-over while muted.
                     var canPipeline = sentThisIteration
                         && carryOver.Count == 0
-                        && waitPendingCount < _totalMaxInFlight;
+                        && waitPendingCount < _totalMaxInFlight
+                        && (_connectionCount > 1
+                            || Interlocked.Read(ref _totalPendingResponseBytes) < _totalMaxInFlightBytes);
 
                     if (canPipeline)
                     {
@@ -1549,6 +1540,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         if (!await eventReader.WaitToReadAsync(cancellationToken)
                             .ConfigureAwait(false))
                             break;
+                    }
+                    else if (requeuedBlockedBuckets)
+                    {
+                        // A queued same-connection batch makes WaitToReadAsync complete
+                        // synchronously and can starve response callbacks. Poll briefly so
+                        // fresh work for another connection waits at most 1 ms while the
+                        // guaranteed asynchronous yield lets acknowledgements make progress.
+                        await WaitForAnyResponseAsync(cancellationToken, BlockedBucketPollIntervalMs)
+                            .ConfigureAwait(false);
                     }
                     else
                     {
@@ -1666,6 +1666,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         pr.ReturnBatchesArray();
                     }
                     Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
+                    var removedBytes = SumEncodedBytes(pendingList);
+                    Interlocked.Add(ref _totalPendingResponseBytes, -removedBytes);
+                    Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -removedBytes);
                     pendingList.Clear();
                     // No TrimExcess — lists are unreachable after disposal
                 }
@@ -2146,6 +2149,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (pendingList.Count == 0) continue;
 
             var writeIdx = 0;
+            long completedResponseBytes = 0;
             for (var i = 0; i < pendingList.Count; i++)
             {
                 var pending = pendingList[i];
@@ -2157,6 +2161,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 var task = pending.ResponseTask;
+                completedResponseBytes += pending.EncodedBytes;
                 var batches = pending.Batches;
                 var count = pending.Count;
 
@@ -2234,6 +2239,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (writeIdx < pendingList.Count)
             {
                 Interlocked.Add(ref _totalPendingResponseCount, -(pendingList.Count - writeIdx));
+                Interlocked.Add(ref _totalPendingResponseBytes, -completedResponseBytes);
+                Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -completedResponseBytes);
                 pendingList.RemoveRange(writeIdx, pendingList.Count - writeIdx);
 
                 // Prevent unbounded capacity ratcheting: when the list shrinks well below
@@ -2513,6 +2520,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Remove all entries. Response tasks are orphaned — they'll eventually complete
             // (via CTS timeout or connection disposal) but nobody polls them.
             Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
+            var removedBytes = SumEncodedBytes(pendingList);
+            Interlocked.Add(ref _totalPendingResponseBytes, -removedBytes);
+            Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -removedBytes);
             pendingList.Clear();
 
             // After clearing all entries due to timeout, trim the internal array to
@@ -2748,6 +2758,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     internal static int ComputeThrottledResponseWaitMs(int throttleDelayMs, int batchDeadlineMs)
         => Math.Min(ResponsePollIntervalMs, Math.Min(throttleDelayMs, batchDeadlineMs));
 
+    private long GetInFlightByteBudget(int connectionCount)
+        => (long)connectionCount
+            * Math.Max(1, _options.BatchSize)
+            * InFlightByteBudgetBatchMultiplier;
+
+    private static long SumEncodedBytes(List<PendingResponse> pendingResponses)
+    {
+        long total = 0;
+        for (var i = 0; i < pendingResponses.Count; i++)
+            total += pendingResponses[i].EncodedBytes;
+
+        return total;
+    }
+
     /// <summary>
     /// Sends coalesced batches (one per partition) as a single ProduceRequest.
     /// The in-flight count was already incremented by the send loop before calling this method.
@@ -2968,12 +2992,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 resourcePinCount = 0;
 
                 // Release buffer memory now that data is written to the TCP buffer.
-                // The untracked gap (between release and response) is bounded by
-                // MaxInFlightRequestsPerConnection × BatchSize (e.g. 5 × 1MB = 5MB).
+                // The untracked gap (between release and response) is bounded by the
+                // per-connection in-flight byte ceiling, independent of request-count depth.
                 // This is safe because: (1) the kernel has a copy in the TCP send buffer,
                 // (2) the gap is bounded and small, (3) it unblocks producers waiting on
                 // BufferMemory without the unbounded growth caused by drain-time release.
                 // CleanupBatch still releases for error paths where TCP send wasn't reached.
+                long encodedBytes = 0;
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
@@ -2985,12 +3010,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
 
                     _accumulator.ReleaseBatchMemory(batch);
+                    // EncodedSize is unavailable for some synthetic/test batches. DataSize
+                    // is a conservative fallback and deliberately overestimates compression.
+                    encodedBytes += Math.Max(batch.EncodedSize, batch.DataSize);
                 }
 
-                var pendingResponse = PendingResponse.Create(responseTask, batches, generations, count, requestStartTime);
+                var pendingResponse = PendingResponse.Create(
+                    responseTask,
+                    batches,
+                    generations,
+                    count,
+                    encodedBytes,
+                    requestStartTime);
                 _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
                 pendingResponseAdded = true; // Array ownership transferred to PendingResponse
                 Interlocked.Increment(ref _totalPendingResponseCount);
+                Interlocked.Add(ref _totalPendingResponseBytes, encodedBytes);
+                Interlocked.Add(ref _pendingResponseBytesByConnection[connectionIndex], encodedBytes);
 
                 // Diagnostic: log instance+task+partitions at PendingResponse creation time.
                 // This traces which batches are paired with which response task.
@@ -3006,7 +3042,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Diagnostic: mark batches as successfully pipelined to _pendingResponsesByConnection.
                 // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
                 for (var i = 0; i < count; i++)
-                    batches[i].AppendDiag('W');
+                    batches[i]?.AppendDiag('W');
 
                 // Signal the send loop to wake up and poll when the response arrives.
                 // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
@@ -4037,6 +4073,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
+                var removedBytes = SumEncodedBytes(pendingList);
+                Interlocked.Add(ref _totalPendingResponseBytes, -removedBytes);
+                Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -removedBytes);
                 pendingList.Clear();
                 // No TrimExcess — lists are unreachable after disposal
             }
@@ -4173,6 +4212,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // other scale event can start.
                 _connectionCount++;
                 _totalMaxInFlight = _connectionCount * _maxInFlight;
+                _totalMaxInFlightBytes = GetInFlightByteBudget(_connectionCount);
             }
 
             return 0;
@@ -4318,6 +4358,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // its pending list stays in place because per-connection arrays are never resized.
         _connectionCount = targetShrinkCount;
         _totalMaxInFlight = targetShrinkCount * _maxInFlight;
+        _totalMaxInFlightBytes = GetInFlightByteBudget(targetShrinkCount);
 
         // The drain gates above guarantee no in-flight batches that require routing to the
         // removed slot, so any leftover migration fences are stale — clear them so no
@@ -4380,6 +4421,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _hasScaledConnectionGroup = true;
         _connectionCount = actualCount;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
+        _totalMaxInFlightBytes = GetInFlightByteBudget(_connectionCount);
         // Only reset on successful growth — intentional. If the pool returned fewer
         // connections than requested, stale pressure keeps accumulating so the next
         // cooldown window retries with the full delta rather than starting from zero.
