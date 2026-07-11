@@ -183,6 +183,8 @@ internal sealed class StressTestResult
         var firstThirdAverage = firstThirdTotal / thirdCount;
         var lastThirdAverage = lastThirdTotal / thirdCount;
         var peak = GetPercentile(samples, 0.95);
+        if (peak <= 0)
+            peak = samples.Max();
         if (firstThirdAverage <= 0 || peak <= 0)
             return false;
 
