@@ -597,11 +597,12 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
                 var recordIndex = _parsedRecordsOffset + i;
                 if (parsedRecords[recordIndex].Headers is { } headers)
                     ArrayPool<Header>.Shared.Return(headers, clearArray: true);
-                parsedRecords[recordIndex] = default;
+                if (!_ownsParsedRecords)
+                    parsedRecords[recordIndex] = default;
             }
 
             if (_ownsParsedRecords)
-                ArrayPool<Record>.Shared.Return(parsedRecords, clearArray: false);
+                ArrayPool<Record>.Shared.Return(parsedRecords, clearArray: true);
         }
 
         _rawRecordData = default;

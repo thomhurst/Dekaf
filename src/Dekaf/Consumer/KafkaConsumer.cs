@@ -189,6 +189,7 @@ internal sealed class PendingFetchData : IDisposable
             return;
 
         var slab = ArrayPool<Record>.Shared.Rent(totalRecordCount);
+        slab.AsSpan().Clear();
         var offset = 0;
         for (var i = 0; i < batches.Count; i++)
         {

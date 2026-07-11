@@ -77,6 +77,8 @@ public class RecordBatchTests
         await Assert.That(next.GetParsedRecordsArray()).IsSameReferenceAs(slab);
         await Assert.That(next.GetParsedRecordsOffset()).IsEqualTo(3);
         await Assert.That(slab![0].Value.ToArray()).IsEquivalentTo("first"u8.ToArray());
+        await Assert.That(slab[1]).IsEqualTo(default(Record));
+        await Assert.That(slab[2]).IsEqualTo(default(Record));
         await Assert.That(slab[3].Value.ToArray()).IsEquivalentTo("next"u8.ToArray());
     }
 
