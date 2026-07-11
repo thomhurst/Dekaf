@@ -437,6 +437,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // sends, concurrent Z handlers (catch blocks in SendCoalescedAsync) can write from
     // different threads. HashSet<T> is not thread-safe for concurrent writes.
     private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
+    private int _mutedPartitionCount;
+    private int _mutedPartitionHighWatermark;
 
     // Epoch bump recovery flag (Java Kafka Sender pattern): set by response handlers
     // when OutOfOrderSequenceNumber is received. The single-threaded send loop checks
@@ -472,6 +474,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Scale-down state (send-loop owned, single-threaded)
     private long _lowUtilizationStartTicks; // When low utilization was first detected (0 = not tracking)
+    private long _lastMutedPartitionLoadTicks; // Last observed load-bearing muted width
     private Task<IKafkaConnection?>? _pendingShrinkTask; // Background shrink, polled by send loop
     private IKafkaConnection? _drainingConnection; // Connection being drained before disposal
 
@@ -1741,6 +1744,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 foreach (var (tp, _) in _mutedPartitions)
                     _accumulator.UnmutePartition(tp);
                 _mutedPartitions.Clear();
+                Interlocked.Exchange(ref _mutedPartitionCount, 0);
+                Interlocked.Exchange(ref _mutedPartitionHighWatermark, 0);
             }
         }
     }
@@ -3634,7 +3639,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void MutePartition(TopicPartition tp)
     {
         if (_mutedPartitions.TryAdd(tp, 0))
+        {
+            var mutedPartitionCount = Interlocked.Increment(ref _mutedPartitionCount);
+            AtomicMax(ref _mutedPartitionHighWatermark, mutedPartitionCount);
             _accumulator.MutePartition(tp);
+        }
     }
 
     private void MutePartitionsForSend(ReadyBatch[] batches, int count)
@@ -3653,8 +3662,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void UnmutePartition(TopicPartition tp)
     {
         if (_mutedPartitions.TryRemove(tp, out _))
+        {
+            Interlocked.Decrement(ref _mutedPartitionCount);
             _accumulator.UnmutePartition(tp);
+        }
         _eventChannel.Writer.TryWrite(SendLoopEvent.Unmute());
+    }
+
+    private static void AtomicMax(ref int target, int value)
+    {
+        var current = Volatile.Read(ref target);
+        while (value > current)
+        {
+            var original = Interlocked.CompareExchange(ref target, value, current);
+            if (original == current)
+                return;
+
+            current = original;
+        }
     }
 
     private bool RegisterLoopExitRecovery(ReadyBatch batch, int expectedGeneration)
@@ -4154,6 +4179,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         var now = Dekaf.MonotonicClock.GetMilliseconds();
+        var activeMutedPartitionCount = _muteOnSend
+            ? Volatile.Read(ref _mutedPartitionCount)
+            : 0;
+        var mutedPartitionHighWatermark = _muteOnSend
+            ? Interlocked.Exchange(ref _mutedPartitionHighWatermark, activeMutedPartitionCount)
+            : 0;
+        if (Math.Max(activeMutedPartitionCount, mutedPartitionHighWatermark) >= _connectionCount)
+        {
+            _lastMutedPartitionLoadTicks = now;
+        }
 
         // Cooldown applies to both scale-up and scale-down
         if (now - _lastScaleTimeTicks < _scaleCooldownMs)
@@ -4226,15 +4261,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0; // Not sustained long enough
 
         // Low buffer occupancy can mean the expanded connection group is keeping up, not
-        // that it is idle. In particular, acks=all non-idempotent producers mute each
-        // partition while its request is in flight; shrinking that load-bearing width
-        // reintroduces head-of-line blocking. Require both low aggregate in-flight use and
-        // no queued work behind a muted partition before retiring a connection.
+        // that it is idle. Mute-on-send limits each active partition to one request, so
+        // connectionCount * maxInFlight overstates usable capacity by up to two orders of
+        // magnitude. Compare occupancy with active partition capacity and require a full
+        // sustained window after the muted width was large enough to occupy every
+        // connection. Tracking the peak catches mute/unmute cycles between scale checks
+        // without treating continuous single-partition trickle as full-width load.
         var pendingResponseCount = Volatile.Read(ref _totalPendingResponseCount);
-        var inFlightUtilization = _totalMaxInFlight > 0
-            ? (double)pendingResponseCount / _totalMaxInFlight
+        var effectiveInFlightCapacity = activeMutedPartitionCount > 0
+            ? Math.Min(_totalMaxInFlight, activeMutedPartitionCount)
+            : _totalMaxInFlight;
+        var inFlightUtilization = effectiveInFlightCapacity > 0
+            ? (double)pendingResponseCount / effectiveInFlightCapacity
             : 0;
+        var hasRecentMutedPartitionLoad = _muteOnSend
+            && _lastMutedPartitionLoadTicks > 0
+            && now - _lastMutedPartitionLoadTicks < _scaleDownSustainedMs;
+        var hasLoadBearingMutedWidth = _muteOnSend
+            && activeMutedPartitionCount >= _connectionCount;
         if (inFlightUtilization >= ScaleDownInFlightUtilizationThreshold
+            || hasLoadBearingMutedWidth
+            || hasRecentMutedPartitionLoad
             || HasMutedPartitionLoad(carryOver, hasUnreadEvent))
         {
             _lowUtilizationStartTicks = 0;

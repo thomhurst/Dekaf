@@ -34,11 +34,12 @@ public sealed class AdaptiveScaleDownTests
     private static ProducerOptions CreateOptions(
         bool idempotent,
         int deliveryTimeoutMs = 30_000,
+        int maxInFlightRequests = 1,
         long? scaleCooldownMs = null,
         long? scaleDownSustainedMs = null) => new()
         {
             BootstrapServers = ["localhost:9092"],
-            MaxInFlightRequestsPerConnection = 1,
+            MaxInFlightRequestsPerConnection = maxInFlightRequests,
             Acks = Acks.All,
             EnableIdempotence = idempotent,
             DeliveryTimeoutMs = deliveryTimeoutMs,
@@ -466,7 +467,7 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
-    public async Task ScaleDown_MutedPartitionWithOnlyInFlightBatch_Shrinks()
+    public async Task ScaleDown_MutedPartitionWithOnlyInFlightBatch_DoesNotShrink()
     {
         var options = CreateOptions(
             idempotent: false,
@@ -496,9 +497,95 @@ public sealed class AdaptiveScaleDownTests
             InvokeMaybeScaleConnections(sender);
             InvokeMaybeScaleConnections(sender);
 
-            await pool.Received(1).ShrinkConnectionGroupAsync(
+            await pool.DidNotReceive().ShrinkConnectionGroupAsync(
                 Arg.Any<int>(),
-                3,
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>());
+            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(4);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Arguments(1)]
+    [Arguments(4)]
+    public async Task ScaleDown_MuteOnSend_ActiveLoadDoesNotShrink(int activePartitionCount)
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            maxInFlightRequests: 100,
+            scaleCooldownMs: 0,
+            scaleDownSustainedMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            SetField(sender, "_connectionCount", 3);
+            SetField(sender, "_totalMaxInFlight", 300);
+            SetField(sender, "_totalPendingResponseCount", 1);
+            var mutePartition = typeof(BrokerSender).GetMethod(
+                "MutePartition",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            for (var partition = 0; partition < activePartitionCount; partition++)
+                mutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
+
+            InvokeMaybeScaleConnections(sender);
+            InvokeMaybeScaleConnections(sender);
+
+            await pool.DidNotReceive().ShrinkConnectionGroupAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>());
+            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(3);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ScaleDown_LoadBearingMutedActivityBetweenChecks_SurvivesMomentaryClear()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            maxInFlightRequests: 100,
+            scaleCooldownMs: 0,
+            scaleDownSustainedMs: 60_000);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            SetField(sender, "_connectionCount", 3);
+            SetField(sender, "_totalMaxInFlight", 300);
+            SetField(sender, "_totalPendingResponseCount", 1);
+            SetField(sender, "_lowUtilizationStartTicks", 1L);
+            var mutePartition = typeof(BrokerSender).GetMethod(
+                "MutePartition",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var unmutePartition = typeof(BrokerSender).GetMethod(
+                "UnmutePartition",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            for (var partition = 0; partition < 3; partition++)
+                mutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
+            for (var partition = 0; partition < 3; partition++)
+                unmutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
+            SetField(sender, "_totalPendingResponseCount", 0);
+            SetField(sender, "_lowUtilizationStartTicks", 1L);
+            InvokeMaybeScaleConnections(sender);
+
+            await pool.DidNotReceive().ShrinkConnectionGroupAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
                 Arg.Any<CancellationToken>());
             await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(3);
         }
