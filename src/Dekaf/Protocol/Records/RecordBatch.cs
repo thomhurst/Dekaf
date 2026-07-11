@@ -988,6 +988,16 @@ public sealed class RecordBatch : IDisposable
     /// </remarks>
     public static RecordBatch Read(ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs = null, int availableBytes = int.MaxValue)
     {
+        if (availableBytes < TotalBatchHeaderSize)
+        {
+            if (availableBytes > 0)
+            {
+                reader.Skip(availableBytes);
+            }
+
+            throw new InsufficientDataException();
+        }
+
         var baseOffset = reader.ReadInt64();
         var batchLength = reader.ReadInt32();
         var partitionLeaderEpoch = reader.ReadInt32();
