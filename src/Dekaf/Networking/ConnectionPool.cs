@@ -1226,9 +1226,6 @@ public sealed partial class ConnectionPool : IConnectionPool
                 await ReapIdleConnectionsAsync().ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
         catch (Exception ex)
         {
             LogIdleConnectionReaperFailed(ex);

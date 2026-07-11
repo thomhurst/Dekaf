@@ -29,6 +29,17 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task DisposeAsync_StopsPendingIdleReaperPromptly()
+    {
+        var pool = new ConnectionPool("test-client");
+
+        var disposal = pool.DisposeAsync().AsTask();
+
+        await disposal.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(disposal.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
     public async Task GetConnectionAsync_UnknownBrokerId_ThrowsInvalidOperationException()
     {
         await using var pool = new ConnectionPool("test-client");

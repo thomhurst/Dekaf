@@ -2975,39 +2975,32 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var orphanSweepIntervalTicks = (long)(5.0 * Stopwatch.Frequency);
         var lastOrphanSweepTicks = Stopwatch.GetTimestamp();
 
-        try
+        using var cancellationRegistration = cancellationToken.UnsafeRegister(
+            static state => ((PeriodicTimer)state!).Dispose(),
+            _lingerTimer);
+
+        while (await _lingerTimer.WaitForNextTickAsync(CancellationToken.None).ConfigureAwait(false))
         {
-            using var cancellationRegistration = cancellationToken.UnsafeRegister(
-                static state => ((PeriodicTimer)state!).Dispose(),
-                _lingerTimer);
-
-            while (await _lingerTimer.WaitForNextTickAsync(CancellationToken.None).ConfigureAwait(false))
+            try
             {
-                try
-                {
-                    await _accumulator.ExpireLingerAsync(cancellationToken).ConfigureAwait(false);
+                await _accumulator.ExpireLingerAsync(cancellationToken).ConfigureAwait(false);
 
-                    // Periodic orphan sweep: fail in-flight batches that exceeded delivery timeout.
-                    var now = Stopwatch.GetTimestamp();
-                    if (now - lastOrphanSweepTicks >= orphanSweepIntervalTicks)
-                    {
-                        lastOrphanSweepTicks = now;
-                        _accumulator.SweepExpiredInFlightBatches();
-                    }
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                // Periodic orphan sweep: fail in-flight batches that exceeded delivery timeout.
+                var now = Stopwatch.GetTimestamp();
+                if (now - lastOrphanSweepTicks >= orphanSweepIntervalTicks)
                 {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    LogLingerLoopError(ex);
+                    lastOrphanSweepTicks = now;
+                    _accumulator.SweepExpiredInFlightBatches();
                 }
             }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // Expected during shutdown
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                LogLingerLoopError(ex);
+            }
         }
     }
 

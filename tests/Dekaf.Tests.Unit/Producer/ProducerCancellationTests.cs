@@ -10,6 +10,20 @@ namespace Dekaf.Tests.Unit.Producer;
 public class ProducerCancellationTests
 {
     [Test]
+    public async Task DisposeAsync_StopsPendingLingerTimerPromptly()
+    {
+        var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithLinger(TimeSpan.FromMinutes(1))
+            .Build();
+
+        var disposal = producer.DisposeAsync().AsTask();
+
+        await disposal.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(disposal.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
     public async Task RecordAccumulator_FlushAsync_PreCancelledToken_ThrowsImmediately()
     {
         // Arrange
