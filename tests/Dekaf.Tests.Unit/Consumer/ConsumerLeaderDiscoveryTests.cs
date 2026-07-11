@@ -383,7 +383,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             pending,
             Serializers.String,
             Serializers.String,
-            GetCanContinueBatchIteration(consumer));
+            GetBatchIterationGuard(consumer));
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
@@ -418,7 +418,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             pending,
             keyDeserializer,
             Serializers.String,
-            GetCanContinueBatchIteration(consumer));
+            GetBatchIterationGuard(consumer));
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsFalse();
@@ -570,7 +570,7 @@ public sealed class ConsumerLeaderDiscoveryTests
 
         var pending = CreatePendingFetchData();
         GetPendingFetches(consumer).Enqueue(pending);
-        var batch = new ConsumeRawBatch(pending, GetCanContinueBatchIteration(consumer));
+        var batch = new ConsumeRawBatch(pending, GetBatchIterationGuard(consumer));
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
@@ -579,24 +579,6 @@ public sealed class ConsumerLeaderDiscoveryTests
         await Assert.That(enumerator.MoveNext()).IsFalse();
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(1);
-    }
-
-    [Test]
-    public async Task RawBatch_RechecksAssignmentBeforeTrackingRecord()
-    {
-        var pool = Substitute.For<IConnectionPool>();
-        await using var metadataManager = CreateMetadataManager(pool);
-        await using var consumer = CreateConsumer(pool, metadataManager);
-        var pending = CreatePendingFetchData();
-        GetPendingFetches(consumer).Enqueue(pending);
-        var assignmentChecks = 0;
-        var batch = new ConsumeRawBatch(
-            pending,
-            _ => Interlocked.Increment(ref assignmentChecks) == 1);
-        using var enumerator = batch.GetEnumerator();
-
-        await Assert.That(enumerator.MoveNext()).IsFalse();
-        await Assert.That(assignmentChecks).IsEqualTo(2);
     }
 
     [Test]
@@ -865,15 +847,22 @@ public sealed class ConsumerLeaderDiscoveryTests
         return pending;
     }
 
-    private static Func<TopicPartition, bool> GetCanContinueBatchIteration(
+    private static BatchIterationGuard GetBatchIterationGuard(
         KafkaConsumer<string, string> consumer)
     {
-        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+        var consumerType = typeof(KafkaConsumer<string, string>);
+        var assignmentMethod = consumerType.GetMethod(
             "CanContinueBatchIteration",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("CanContinueBatchIteration method not found");
+        var epochField = consumerType.GetField(
+            "_batchIterationEpoch",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_batchIterationEpoch field not found");
 
-        return method.CreateDelegate<Func<TopicPartition, bool>>(consumer);
+        var isAssigned = assignmentMethod.CreateDelegate<Func<TopicPartition, bool>>(consumer);
+        var epoch = (BatchIterationEpoch)epochField.GetValue(consumer)!;
+        return new BatchIterationGuard(epoch, Volatile.Read(ref epoch.Version), isAssigned);
     }
 
     private static async ValueTask InvokeHandleLeaderEpochRefreshAsync(

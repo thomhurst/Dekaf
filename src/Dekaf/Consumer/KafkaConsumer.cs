@@ -761,6 +761,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private int _stagedDivergingEpochResetBatches;
     private int _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent;
     private int _coordinatorRevokedPartitionsPendingFetchClearPending;
+    private readonly BatchIterationEpoch _batchIterationEpoch = new();
 
     // Background prefetch support
     private readonly MpscFetchBuffer _prefetchBuffer;
@@ -1914,11 +1915,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     pending.EagerParseAll();
 
                     // Yield the batch to the caller for synchronous iteration
+                    var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
                     ConsumeBatch<TKey, TValue> batch = new(
                         pending,
                         _keyDeserializer,
                         _valueDeserializer,
-                        CanContinueBatchIteration,
+                        new BatchIterationGuard(
+                            _batchIterationEpoch,
+                            batchIterationVersion,
+                            CanContinueBatchIteration),
                         _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
@@ -2053,7 +2058,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     pending.EagerParseAll();
 
                     // Yield the raw batch to the caller for synchronous iteration
-                    ConsumeRawBatch batch = new(pending, CanContinueBatchIteration, _options.MaxPollRecords);
+                    var batchIterationVersion = Volatile.Read(ref _batchIterationEpoch.Version);
+                    ConsumeRawBatch batch = new(
+                        pending,
+                        new BatchIterationGuard(
+                            _batchIterationEpoch,
+                            batchIterationVersion,
+                            CanContinueBatchIteration),
+                        _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
                     await RecordPollAsync(cancellationToken).ConfigureAwait(false);
@@ -3921,6 +3933,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Waiting for the consume loop to drain the queued clear lets an ABA reassignment
             // make a stale response look current and advance the reinitialized fetch position.
             InvalidateFetchesForPartitionsLocked(partitions);
+            Interlocked.Increment(ref _batchIterationEpoch.Version);
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
             Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
         }
@@ -3956,6 +3969,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
         if (startsBatch)
             _stagedDivergingEpochResetBatches++;
+        Interlocked.Increment(ref _batchIterationEpoch.Version);
         Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
         return true;
     }
@@ -5167,6 +5181,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void PublishAssignmentSnapshot()
     {
         _assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
+        Interlocked.Increment(ref _batchIterationEpoch.Version);
         Interlocked.Increment(ref _assignmentEnsureVersion);
         Volatile.Write(ref _lastCoordinatorAssignmentVersion, -1);
     }

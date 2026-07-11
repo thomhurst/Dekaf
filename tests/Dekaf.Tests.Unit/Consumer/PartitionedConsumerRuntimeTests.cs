@@ -1261,7 +1261,7 @@ public sealed class PartitionedConsumerRuntimeTests
                     pending,
                     Serializers.String,
                     Serializers.String,
-                    IsAssigned);
+                    new BatchIterationGuard(null, 0, IsAssigned));
             }
         }
 

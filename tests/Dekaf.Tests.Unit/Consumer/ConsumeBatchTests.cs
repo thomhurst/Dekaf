@@ -118,17 +118,17 @@ public class ConsumeBatchTests
     public async Task ConsumeBatch_StopsEnumerationWhenPartitionIsNoLongerAssigned()
     {
         using var pending = CreatePendingFetchData("test-topic", partitionIndex: 0, baseOffset: 0, messageCount: 3);
-        var assigned = true;
+        var assignmentEpoch = new BatchIterationEpoch();
         var batch = new ConsumeBatch<string, string>(
             pending,
             Serializers.String,
             Serializers.String,
-            _ => assigned);
+            new BatchIterationGuard(assignmentEpoch, assignmentEpoch.Version));
 
         using var enumerator = batch.GetEnumerator();
 
         await Assert.That(enumerator.MoveNext()).IsTrue();
-        assigned = false;
+        assignmentEpoch.Version++;
 
         await Assert.That(enumerator.MoveNext()).IsFalse();
         await Assert.That(batch.Count).IsEqualTo(1);

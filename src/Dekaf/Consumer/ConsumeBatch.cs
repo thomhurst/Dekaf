@@ -4,6 +4,23 @@ using Dekaf.Serialization;
 
 namespace Dekaf.Consumer
 {
+    internal sealed class BatchIterationEpoch
+    {
+        public int Version;
+    }
+
+    internal readonly struct BatchIterationGuard(
+        BatchIterationEpoch? epoch,
+        int capturedVersion,
+        Func<TopicPartition, bool>? isInitiallyAssigned = null)
+    {
+        public bool CanStart(TopicPartition partition) =>
+            (isInitiallyAssigned is null || isInitiallyAssigned(partition))
+            && IsCurrent;
+
+        public bool IsCurrent => epoch is null || Volatile.Read(ref epoch.Version) == capturedVersion;
+    }
+
     /// <summary>
     /// Represents a batch of consume results from a single partition fetch response.
     /// Records within the batch are iterated synchronously, eliminating async state machine
@@ -16,21 +33,21 @@ namespace Dekaf.Consumer
         private readonly PendingFetchData _pendingFetchData;
         private readonly IDeserializer<TKey>? _keyDeserializer;
         private readonly IDeserializer<TValue>? _valueDeserializer;
-        private readonly Func<TopicPartition, bool>? _isPartitionStillAssigned;
+        private readonly BatchIterationGuard _iterationGuard;
         private readonly int _maxRecords;
         private long _count;
 
         internal ConsumeBatch(PendingFetchData pendingFetchData,
             IDeserializer<TKey>? keyDeserializer,
             IDeserializer<TValue>? valueDeserializer,
-            Func<TopicPartition, bool>? isPartitionStillAssigned = null,
+            BatchIterationGuard iterationGuard = default,
             int maxRecords = int.MaxValue)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
             _keyDeserializer = keyDeserializer;
             _valueDeserializer = valueDeserializer;
-            _isPartitionStillAssigned = isPartitionStillAssigned;
+            _iterationGuard = iterationGuard;
             _maxRecords = maxRecords;
         }
 
@@ -81,11 +98,13 @@ namespace Dekaf.Consumer
         public struct Enumerator : IEnumerator<ConsumeResult<TKey, TValue>>
         {
             private readonly ConsumeBatch<TKey, TValue> _batch;
+            private readonly bool _canContinue;
             private int _recordsYielded;
 
             internal Enumerator(ConsumeBatch<TKey, TValue> batch)
             {
                 _batch = batch;
+                _canContinue = batch._iterationGuard.CanStart(batch._pendingFetchData.TopicPartition);
                 _recordsYielded = 0;
                 Current = default!;
             }
@@ -107,11 +126,8 @@ namespace Dekaf.Consumer
             {
                 PendingFetchData pending = _batch._pendingFetchData;
 
-                if (_batch._isPartitionStillAssigned is not null
-                    && !_batch._isPartitionStillAssigned(pending.TopicPartition))
-                {
+                if (!_canContinue || !_batch._iterationGuard.IsCurrent)
                     return false;
-                }
 
                 if (_recordsYielded >= _batch._maxRecords)
                 {
@@ -151,11 +167,8 @@ namespace Dekaf.Consumer
                     keyDeserializer: _batch._keyDeserializer,
                     valueDeserializer: _batch._valueDeserializer);
 
-                if (_batch._isPartitionStillAssigned is not null
-                    && !_batch._isPartitionStillAssigned(pending.TopicPartition))
-                {
+                if (!_batch._iterationGuard.IsCurrent)
                     return false;
-                }
 
                 pending.TrackConsumed(offset, messageBytes);
                 _recordsYielded++;
