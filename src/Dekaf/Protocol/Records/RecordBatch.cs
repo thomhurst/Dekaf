@@ -277,10 +277,10 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
 /// </summary>
 /// <remarks>
 /// When created via Read() during FetchResponse parsing with pooled memory context,
-/// the Records property returns a LazyRecordList that references the pooled network buffer.
+/// the batch itself lazily parses records that reference the pooled network buffer.
 /// Call DisposeRecords() to release the pooled memory when done consuming records.
 /// </remarks>
-public sealed class RecordBatch : IDisposable
+public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 {
     /// <summary>
     /// Size of the batch header fields after batchLength: partitionLeaderEpoch(4) + magic(1) +
@@ -435,6 +435,152 @@ public sealed class RecordBatch : IDisposable
     }
 
     private IReadOnlyList<Record> _records = null!;
+    private ReadOnlyMemory<byte> _rawRecordData;
+    private byte[]? _pooledRecordData;
+    private Record[]? _parsedRecords;
+    private int _recordCount;
+    private int _parsedRecordCount;
+    private int _nextRecordParseOffset;
+
+    int IReadOnlyCollection<Record>.Count =>
+        ReferenceEquals(_records, this) ? GetLazyRecordCount() : Records.Count;
+
+    Record IReadOnlyList<Record>.this[int index] =>
+        ReferenceEquals(_records, this) ? GetLazyRecord(index) : Records[index];
+
+    IEnumerator<Record> IEnumerable<Record>.GetEnumerator() =>
+        ReferenceEquals(_records, this) ? EnumerateLazyRecords().GetEnumerator() : Records.GetEnumerator();
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+        ((IEnumerable<Record>)this).GetEnumerator();
+
+    private int GetLazyRecordCount()
+    {
+        ThrowIfNotLazyRecordList();
+        return _recordCount;
+    }
+
+    private Record GetLazyRecord(int index)
+    {
+        ThrowIfNotLazyRecordList();
+        if (index < 0 || index >= _recordCount)
+            throw new ArgumentOutOfRangeException(nameof(index));
+
+        EnsureLazyRecordsParsedUpTo(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _recordCount);
+        return _parsedRecords![index];
+    }
+
+    private IEnumerable<Record> EnumerateLazyRecords()
+    {
+        var initialRecordCount = _recordCount;
+        for (var i = 0; i < initialRecordCount; i++)
+        {
+            ThrowIfNotLazyRecordList();
+            EnsureLazyRecordsParsedUpTo(i);
+            if (i >= _recordCount)
+                yield break;
+
+            yield return _parsedRecords![i];
+        }
+    }
+
+    private void ThrowIfNotLazyRecordList()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(RecordBatch));
+        if (!ReferenceEquals(_records, this))
+            throw new InvalidOperationException("This batch does not own a lazy record list.");
+    }
+
+    private void InitializeLazyRecords(ReadOnlyMemory<byte> rawData, byte[]? pooledArray, int count)
+    {
+        _rawRecordData = rawData;
+        _pooledRecordData = pooledArray;
+        _recordCount = count;
+        _records = this;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void EnsureAllRecordsParsed()
+    {
+        if (ReferenceEquals(_records, this)
+            && _recordCount > 0
+            && (_parsedRecords is null || _parsedRecordCount < _recordCount))
+        {
+            EnsureLazyRecordsParsedUpTo(_recordCount - 1);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal Record[]? GetParsedRecordsArray() =>
+        ReferenceEquals(_records, this) ? _parsedRecords : null;
+
+    private const int MaxReasonableLazyRecordCount = 1_000_000;
+
+    private void EnsureLazyRecordsParsedUpTo(int index)
+    {
+        if (_parsedRecords is null)
+        {
+            var capacity = _recordCount > MaxReasonableLazyRecordCount ? 16 : _recordCount;
+            _parsedRecords = ArrayPool<Record>.Shared.Rent(capacity);
+        }
+
+        if (_parsedRecordCount > index || _parsedRecordCount >= _recordCount)
+            return;
+
+        var reader = new KafkaProtocolReader(_rawRecordData.Slice(_nextRecordParseOffset));
+        var readerStartOffset = _nextRecordParseOffset;
+        while (_parsedRecordCount <= index && _parsedRecordCount < _recordCount)
+        {
+            if (_parsedRecordCount >= _parsedRecords.Length)
+            {
+                var newArray = ArrayPool<Record>.Shared.Rent(_parsedRecords.Length * 2);
+                _parsedRecords.AsSpan(0, _parsedRecordCount).CopyTo(newArray);
+                ArrayPool<Record>.Shared.Return(_parsedRecords, clearArray: true);
+                _parsedRecords = newArray;
+            }
+
+            try
+            {
+                _parsedRecords[_parsedRecordCount] = Record.Read(ref reader);
+                _parsedRecordCount++;
+                _nextRecordParseOffset = readerStartOffset + (int)reader.Consumed;
+            }
+            catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
+            {
+                Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedRecordCount} of {_recordCount} records parsed successfully.");
+                _recordCount = _parsedRecordCount;
+                break;
+            }
+        }
+    }
+
+    private void DisposeLazyRecords()
+    {
+        var pooledArray = _pooledRecordData;
+        _pooledRecordData = null;
+        if (pooledArray is not null)
+            ArrayPool<byte>.Shared.Return(pooledArray, clearArray: false);
+
+        var parsedRecords = _parsedRecords;
+        _parsedRecords = null;
+        if (parsedRecords is not null)
+        {
+            for (var i = 0; i < _parsedRecordCount; i++)
+            {
+                if (parsedRecords[i].Headers is { } headers)
+                    ArrayPool<Header>.Shared.Return(headers, clearArray: true);
+            }
+
+            ArrayPool<Record>.Shared.Return(parsedRecords, clearArray: true);
+        }
+
+        _rawRecordData = default;
+        _recordCount = 0;
+        _parsedRecordCount = 0;
+        _nextRecordParseOffset = 0;
+    }
 
     /// <summary>
     /// Pre-compressed records data. When set, <see cref="Write"/> skips compression
@@ -562,7 +708,11 @@ public sealed class RecordBatch : IDisposable
 
     internal void DisposeRecordList()
     {
-        if (_records is IDisposable disposable)
+        if (ReferenceEquals(_records, this))
+        {
+            DisposeLazyRecords();
+        }
+        else if (_records is IDisposable disposable)
         {
             disposable.Dispose();
         }
@@ -605,6 +755,12 @@ public sealed class RecordBatch : IDisposable
         {
             // Clear references to avoid holding onto GC-tracked objects
             item._records = null!;
+            item._rawRecordData = default;
+            item._pooledRecordData = null;
+            item._parsedRecords = null;
+            item._recordCount = 0;
+            item._parsedRecordCount = 0;
+            item._nextRecordParseOffset = 0;
             item.PreCompressedRecords = null;
             item.PreCompressedLength = 0;
             item.PreCompressedType = CompressionType.None;
@@ -1067,12 +1223,13 @@ public sealed class RecordBatch : IDisposable
         }
 
         // Determine how to handle the record data based on compression and pooled memory availability
-        LazyRecordList lazyRecords;
+        ReadOnlyMemory<byte> lazyRecordData;
+        byte[]? pooledRecordData;
 
         if (compression != CompressionType.None)
         {
             // Decompress directly into an ArrayPool<byte>.Shared-backed writer, then
-            // detach the array for zero-copy handoff to LazyRecordList.
+            // detach the array for zero-copy handoff to the pooled RecordBatch.
             // This eliminates the previous decompress-to-scratch-then-copy pattern.
             var registry = codecs ?? CompressionCodecRegistry.Default;
             var codec = registry.GetCodec(compression);
@@ -1082,8 +1239,8 @@ public sealed class RecordBatch : IDisposable
 
             // Transfer ownership of the pooled array — Dispose is a no-op after DetachBuffer.
             var pooledArray = decompressWriter.DetachBuffer(out var writtenLength);
-            var pooledData = new PooledRecordData(pooledArray, writtenLength);
-            lazyRecords = LazyRecordList.Create(pooledData, recordCount);
+            lazyRecordData = pooledArray.AsMemory(0, writtenLength);
+            pooledRecordData = pooledArray;
         }
         else if (ResponseParsingContext.HasPooledMemory)
         {
@@ -1091,7 +1248,8 @@ public sealed class RecordBatch : IDisposable
             // Mark that at least one batch used the pooled memory, so ownership
             // will be transferred to PendingFetchData after parsing completes
             ResponseParsingContext.MarkMemoryUsed();
-            lazyRecords = LazyRecordList.Create(rawRecordData, recordCount);
+            lazyRecordData = rawRecordData;
+            pooledRecordData = null;
         }
         else
         {
@@ -1100,8 +1258,8 @@ public sealed class RecordBatch : IDisposable
             var length = rawRecordData.Length;
             var pooledArray = ArrayPool<byte>.Shared.Rent(length);
             rawRecordData.Span.CopyTo(pooledArray);
-            var pooledData = new PooledRecordData(pooledArray, length);
-            lazyRecords = LazyRecordList.Create(pooledData, recordCount);
+            lazyRecordData = pooledArray.AsMemory(0, length);
+            pooledRecordData = pooledArray;
         }
 
         var batch = RentFromPool();
@@ -1117,7 +1275,7 @@ public sealed class RecordBatch : IDisposable
         batch.ProducerId = producerId;
         batch.ProducerEpoch = producerEpoch;
         batch.BaseSequence = baseSequence;
-        batch.Records = lazyRecords;
+        batch.InitializeLazyRecords(lazyRecordData, pooledRecordData, recordCount);
         return batch;
     }
 

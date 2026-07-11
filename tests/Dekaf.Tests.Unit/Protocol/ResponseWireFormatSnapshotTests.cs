@@ -304,6 +304,26 @@ public class ResponseWireFormatSnapshotTests
                 };
             }
 
+            if (value is RecordBatch batch)
+            {
+                return new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    [nameof(RecordBatch.Attributes)] = batch.Attributes,
+                    [nameof(RecordBatch.BaseOffset)] = batch.BaseOffset,
+                    [nameof(RecordBatch.BaseSequence)] = batch.BaseSequence,
+                    [nameof(RecordBatch.BaseTimestamp)] = batch.BaseTimestamp,
+                    [nameof(RecordBatch.BatchLength)] = batch.BatchLength,
+                    [nameof(RecordBatch.Crc)] = batch.Crc,
+                    [nameof(RecordBatch.LastOffsetDelta)] = batch.LastOffsetDelta,
+                    [nameof(RecordBatch.Magic)] = batch.Magic,
+                    [nameof(RecordBatch.MaxTimestamp)] = batch.MaxTimestamp,
+                    [nameof(RecordBatch.PartitionLeaderEpoch)] = batch.PartitionLeaderEpoch,
+                    [nameof(RecordBatch.ProducerEpoch)] = batch.ProducerEpoch,
+                    [nameof(RecordBatch.ProducerId)] = batch.ProducerId,
+                    [nameof(RecordBatch.Records)] = NormalizeValue(batch.Records.ToArray(), ancestors)
+                };
+            }
+
             var trackReference = !type.IsValueType;
             if (trackReference && !ancestors.Add(value))
             {

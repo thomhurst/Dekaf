@@ -145,6 +145,7 @@ public class RecordBatchTests
         await Assert.That(parsedBatch.ProducerId).IsEqualTo(123L);
         await Assert.That(parsedBatch.ProducerEpoch).IsEqualTo((short)0);
         await Assert.That(parsedBatch.BaseSequence).IsEqualTo(0);
+        await Assert.That(ReferenceEquals(parsedBatch.Records, parsedBatch)).IsTrue();
         await Assert.That(parsedBatch.Records.Count).IsEqualTo(1);
 
         var record = parsedBatch.Records[0];
@@ -413,6 +414,23 @@ public class RecordBatchTests
             _ = batch.Records;
             return Task.CompletedTask;
         });
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task RecordBatch_DisposedDuringEnumeration_ThrowsOnNextRecord()
+    {
+        using var originalBatch = CreateTwoRecordBatch();
+        var buffer = new ArrayBufferWriter<byte>();
+        originalBatch.Write(buffer);
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        using var parsedBatch = RecordBatch.Read(ref reader);
+        using var enumerator = parsedBatch.Records.GetEnumerator();
+
+        await Assert.That(enumerator.MoveNext()).IsTrue();
+        parsedBatch.Dispose();
+
+        await Assert.That(() => enumerator.MoveNext()).Throws<ObjectDisposedException>();
     }
 
     [Test]
@@ -747,6 +765,35 @@ public class RecordBatchTests
         using var parsed = ReadBatch(bytes, checkCrcs: false);
 
         await Assert.That(parsed.Records.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task IReadOnlyList_ProducerBatch_ForwardsToAssignedRecords()
+    {
+        using var batch = CreateTwoRecordBatch();
+        var records = (IReadOnlyList<Record>)batch;
+
+        await Assert.That(records.Count).IsEqualTo(2);
+        await Assert.That(records[1].OffsetDelta).IsEqualTo(1);
+        await Assert.That(records.Select(record => record.OffsetDelta)).IsEquivalentTo([0, 1]);
+    }
+
+    [Test]
+    public async Task LazyRecords_TruncatedAfterValidRecords_DoesNotExposeDefaultRecord()
+    {
+        using var originalBatch = CreateTwoRecordBatch();
+        var buffer = new ArrayBufferWriter<byte>();
+        originalBatch.Write(buffer);
+        var bytes = buffer.WrittenSpan.ToArray();
+        BinaryPrimitives.WriteInt32BigEndian(
+            bytes.AsSpan(RecordBatch.TotalBatchHeaderSize - sizeof(int)),
+            3);
+
+        using var parsed = ReadBatch(bytes, checkCrcs: false);
+        var records = parsed.Records.ToArray();
+
+        await Assert.That(records.Length).IsEqualTo(2);
+        await Assert.That(records.Select(record => record.OffsetDelta)).IsEquivalentTo([0, 1]);
     }
 
     [Test]
