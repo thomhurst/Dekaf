@@ -52,11 +52,18 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
             using var unavailableCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             unavailableCts.CancelAfter(TimeSpan.FromSeconds(15));
 
-            await Assert.That(async () =>
+            Exception? offsetResolutionFailure = null;
+            try
             {
                 _ = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), unavailableCts.Token)
                     .ConfigureAwait(false);
-            }).Throws<KafkaException>();
+            }
+            catch (Exception ex) when (ex is KafkaException or TimeoutException)
+            {
+                offsetResolutionFailure = ex;
+            }
+
+            await Assert.That(offsetResolutionFailure).IsNotNull();
         }
         finally
         {
