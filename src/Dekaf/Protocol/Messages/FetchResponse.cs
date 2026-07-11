@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using Dekaf.Diagnostics;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 
@@ -415,6 +415,8 @@ public sealed class FetchResponsePartition
     /// </summary>
     public int PreferredReadReplica { get; internal set; } = -1;
 
+    internal MalformedProtocolDataException? RecordParseError { get; private set; }
+
     /// <summary>
     /// Record batches.
     /// </summary>
@@ -493,6 +495,7 @@ public sealed class FetchResponsePartition
         var abortedList = s_abortedTxListPool.Rent();
         var abortedListReturned = false;
         List<RecordBatch>? records = null;
+        MalformedProtocolDataException? recordParseError = null;
 
         try
         {
@@ -538,9 +541,13 @@ public sealed class FetchResponsePartition
                     }
                     catch (Exception ex)
                     {
-                        // Unexpected error parsing a record batch — log for visibility and skip remaining batches.
-                        // This should not happen under normal conditions and may indicate data corruption or a parsing bug.
-                        Trace.WriteLine($"Dekaf: Unexpected exception parsing RecordBatch: {ex}");
+                        DekafMetrics.BatchParseErrors.Add(1);
+                        recordParseError = new MalformedProtocolDataException(
+                            $"Failed to parse record batch for partition {partitionIndex}", ex);
+                        foreach (var record in records)
+                            record.Dispose();
+                        ReturnRecordBatchList(records);
+                        records = null;
                         break;
                     }
                 }
@@ -567,6 +574,7 @@ public sealed class FetchResponsePartition
             result.AbortedTransactions = abortedTransactions;
             result.PreferredReadReplica = preferredReadReplica;
             result.Records = records;
+            result.RecordParseError = recordParseError;
             return result;
         }
         catch
@@ -643,6 +651,7 @@ public sealed class FetchResponsePartition
             item._abortedTransactions = null;
             item.PreferredReadReplica = -1;
             item._records = null;
+            item.RecordParseError = null;
         }
     }
 

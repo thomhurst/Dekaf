@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using Dekaf.Errors;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using Dekaf.Compression;
@@ -82,6 +83,7 @@ internal sealed class PendingFetchData : IDisposable
     private int _headerGeneration;
     private bool _eagerParsed;
     private bool _hasBufferedCurrent;
+    private ConsumeException? _error;
 
     public string Topic { get; private set; } = null!;
     public int PartitionIndex { get; private set; }
@@ -167,6 +169,17 @@ internal sealed class PendingFetchData : IDisposable
             }
         }
 
+        return instance;
+    }
+
+    public static PendingFetchData CreateError(string topic, int partitionIndex, ConsumeException error)
+    {
+        var instance = Rent();
+        instance.Topic = topic;
+        instance.PartitionIndex = partitionIndex;
+        instance.TopicPartition = new TopicPartition(topic, partitionIndex);
+        instance._batches = Array.Empty<RecordBatch>();
+        instance._error = error;
         return instance;
     }
 
@@ -279,6 +292,9 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public void EagerParseAll()
     {
+        if (Interlocked.Exchange(ref _error, null) is { } error)
+            throw error;
+
         if (_eagerParsed)
             return;
 
@@ -489,6 +505,7 @@ internal sealed class PendingFetchData : IDisposable
         _currentRecordsCount = 0;
         _eagerParsed = false;
         _hasBufferedCurrent = false;
+        _error = null;
         unchecked
         {
             _headerGeneration++;
@@ -1512,7 +1529,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // This converts per-record lazy parse overhead (disposed check +
                     // bounds check + EnsureParsedUpTo per indexer call) into a single
                     // batch-level cost. Parsing is cache-friendly in a tight loop.
-                    pending.EagerParseAll();
+                    EagerParsePendingOrRemove(pending);
 
                     // Compiler requires definite assignment; always assigned inside try before yield.
                     ConsumeResult<TKey, TValue> nextResult = default!;
@@ -2528,6 +2545,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         UpdateWatermarksFromFetchResponse(topic, partitionResponse);
                         UpdatePreferredReadReplica(topic, partitionResponse);
 
+                        if (partitionResponse.RecordParseError is { } parseError)
+                        {
+                            pendingItems.Add(PendingFetchData.CreateError(
+                                topic,
+                                partitionResponse.PartitionIndex,
+                                new ConsumeException(
+                                    $"Failed to parse record batch for {topic}-{partitionResponse.PartitionIndex}",
+                                    parseError)));
+                            continue;
+                        }
+
                         if (partitionResponse.DivergingEpoch is not null)
                         {
                             queuedDivergingEpochReset |= ResetToDivergingEpoch(
@@ -3167,6 +3195,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return true;
     }
 
+    private void EagerParsePendingOrRemove(PendingFetchData pending)
+    {
+        try
+        {
+            pending.EagerParseAll();
+        }
+        catch
+        {
+            if (_pendingFetches.Count > 0
+                && ReferenceEquals(_pendingFetches.Peek(), pending))
+            {
+                DisposeQueuedFetch(_pendingFetches.Dequeue());
+            }
+
+            throw;
+        }
+    }
+
     private bool TryConsumeOneFromPendingFetches(out ConsumeResult<TKey, TValue> result)
     {
         result = default!;
@@ -3186,7 +3232,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             long? batchProcessingStarted = _adaptiveFetchSizer is not null
                 ? Stopwatch.GetTimestamp() : null;
 
-            pending.EagerParseAll();
+            EagerParsePendingOrRemove(pending);
 
             System.Diagnostics.Activity? activity = null;
             try
@@ -5204,6 +5250,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Update watermark cache from fetch response (even on errors, watermarks may be valid)
                     UpdateWatermarksFromFetchResponse(topic, partitionResponse);
                     UpdatePreferredReadReplica(topic, partitionResponse);
+
+                    if (partitionResponse.RecordParseError is { } parseError)
+                    {
+                        pendingItems ??= ConsumerFetchPools.RentPendingFetchDataList();
+                        pendingItems.Add(PendingFetchData.CreateError(
+                            topic,
+                            partitionResponse.PartitionIndex,
+                            new ConsumeException(
+                                $"Failed to parse record batch for {topic}-{partitionResponse.PartitionIndex}",
+                                parseError)));
+                        continue;
+                    }
 
                     if (partitionResponse.DivergingEpoch is not null)
                     {
