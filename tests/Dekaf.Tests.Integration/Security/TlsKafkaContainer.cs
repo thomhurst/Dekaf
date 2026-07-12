@@ -81,7 +81,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         var serverCertPemPath = Path.Combine(_certGenerator.CertificateDirectory, "server-cert.pem");
         var serverKeyPemPath = Path.Combine(_certGenerator.CertificateDirectory, "server-key.pem");
         TestCertificateGenerator.ExportCertificateToPemFile(_certGenerator.ServerCertificate, serverCertPemPath);
-        TestCertificateGenerator.ExportPrivateKeyToPemFile(_certGenerator.ServerCertificate, serverKeyPemPath);
+        File.WriteAllText(serverKeyPemPath, _certGenerator.ServerPrivateKeyPem);
 
         _container = new KafkaBuilder("apache/kafka:4.0.2")
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")

@@ -27,6 +27,10 @@ internal sealed class TestCertificateGenerator : IDisposable
     /// </summary>
     public X509Certificate2 ClientCertificate { get; }
 
+    internal string ServerPrivateKeyPem { get; }
+
+    internal string ClientPrivateKeyPem { get; }
+
     /// <summary>
     /// Directory containing the generated certificate files.
     /// </summary>
@@ -74,13 +78,17 @@ internal sealed class TestCertificateGenerator : IDisposable
         ServerCertificate = GenerateSignedCertificate(
             CaCertificate,
             "CN=kafka-broker, O=Dekaf Test, C=US",
-            isServer: true);
+            isServer: true,
+            out var serverPrivateKeyPem);
+        ServerPrivateKeyPem = serverPrivateKeyPem;
 
         // Generate client certificate signed by CA
         ClientCertificate = GenerateSignedCertificate(
             CaCertificate,
             "CN=dekaf-client, O=Dekaf Test, C=US",
-            isServer: false);
+            isServer: false,
+            out var clientPrivateKeyPem);
+        ClientPrivateKeyPem = clientPrivateKeyPem;
 
         // Export certificates to files
         CaCertPemPath = Path.Combine(CertificateDirectory, "ca-cert.pem");
@@ -130,7 +138,8 @@ internal sealed class TestCertificateGenerator : IDisposable
     private static X509Certificate2 GenerateSignedCertificate(
         X509Certificate2 caCert,
         string subjectName,
-        bool isServer)
+        bool isServer,
+        out string privateKeyPem)
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(
@@ -197,6 +206,7 @@ internal sealed class TestCertificateGenerator : IDisposable
 
         // Combine signed certificate with private key
         using var certWithKey = cert.CopyWithPrivateKey(rsa);
+        privateKeyPem = rsa.ExportPkcs8PrivateKeyPem();
 
         // Re-import to ensure private key is exportable
         return LoadPkcs12(
@@ -225,28 +235,15 @@ internal sealed class TestCertificateGenerator : IDisposable
         File.WriteAllText(ClientCertPemPath, clientCertPem);
 
         // Export client private key as PEM
-        var clientKeyPem = ExportPrivateKeyToPem(ClientCertificate);
-        File.WriteAllText(ClientKeyPemPath, clientKeyPem);
+        File.WriteAllText(ClientKeyPemPath, ClientPrivateKeyPem);
     }
 
     internal static string ExportCertificateToPem(X509Certificate2 cert)
         => cert.ExportCertificatePem();
 
-    internal static string ExportPrivateKeyToPem(X509Certificate2 cert)
-    {
-        using var rsa = cert.GetRSAPrivateKey()
-            ?? throw new InvalidOperationException("Certificate does not have an RSA private key");
-        return rsa.ExportPkcs8PrivateKeyPem();
-    }
-
     internal static void ExportCertificateToPemFile(X509Certificate2 cert, string path)
     {
         File.WriteAllText(path, ExportCertificateToPem(cert));
-    }
-
-    internal static void ExportPrivateKeyToPemFile(X509Certificate2 cert, string path)
-    {
-        File.WriteAllText(path, ExportPrivateKeyToPem(cert));
     }
 
     /// <summary>
