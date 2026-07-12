@@ -346,6 +346,28 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task PeriodicProbe_FastGateFallsThroughForDeadlineCheck()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.5,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+
+        for (var i = 0; i <= 8; i++)
+            budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(i * 0.100));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        budget.Charge(5_500);
+
+        await Assert.That(budget.IsOverBudget()).IsTrue()
+            .Because("occupancy above the normal budget must reach the deadline-aware gate");
+        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(0.900))).IsFalse()
+            .Because("the active probe still admits against its larger budget");
+        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(1.601))).IsTrue()
+            .Because("the expired probe must fall back without requiring another ack");
+    }
+
+    [Test]
     public async Task PeriodicProbe_WaitsForSampleWhollyAdmittedUnderProbe()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);

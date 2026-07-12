@@ -135,9 +135,14 @@ internal sealed class BrokerUnackedByteBudget
     // Volatile.Read (a plain acquire load) rather than Interlocked.Read: this runs per
     // message from every appender thread, and a locked read would take the cache line
     // exclusive on every call, turning a read-mostly gate into a contention point.
+    // During a capacity probe, use the lower normal budget as the fast threshold. The
+    // deadline-aware gate then admits against the larger probe budget while it is current,
+    // but expired probes cannot bypass that gate merely because _budgetBytes is stale.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsOverBudget()
-        => Volatile.Read(ref _unackedBytes) >= Volatile.Read(ref _budgetBytes);
+        => Volatile.Read(ref _unackedBytes) >= Math.Min(
+            Volatile.Read(ref _budgetBytes),
+            Volatile.Read(ref _budgetAfterMinRttProbeBytes));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsOverBudgetAt(long nowTicks)
