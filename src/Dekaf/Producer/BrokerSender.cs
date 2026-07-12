@@ -450,13 +450,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Func<bool> _isTransactional;
     private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
 
-    // Send-time muting limits each partition to 1 in-flight batch when producer sequence
-    // numbers are unavailable, or when the configured request limit is already 1.
-    // Idempotent producers with MaxInFlight > 1 rely on sequence numbers instead.
+    // Send-time muting is needed when the configured request limit is already 1 or when
+    // Acks.None provides no broker acknowledgement boundary.
+    // With a deeper pipeline, partition affinity keeps every batch on one connection and
+    // Kafka processes requests on that connection in wire order. Errors still mute the
+    // partition through HandleRetriableBatch until its retry is ordered on the wire.
     private readonly bool _muteOnSend;
 
-    // Muted partitions: partitions with a retry in progress or limited to 1 in-flight
-    // batch by _muteOnSend. Prevents newer batches from being sent, maintaining
+    // Muted partitions: partitions with a retry in progress or configured for only one
+    // in-flight request. Prevents newer batches from being sent, maintaining
     // per-partition ordering. Aligned with Java Kafka producer's mute mechanism.
     // Uses ConcurrentDictionary as a concurrent set (byte value unused): with multi-connection
     // sends, concurrent Z handlers (catch blocks in SendCoalescedAsync) can write from
@@ -676,9 +678,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
         _isIdempotent = options.EnableIdempotence;
 
-        // Non-idempotent batches have no sequence numbers, so concurrent requests for the
-        // same partition can be appended out of order even when no retry occurs.
-        _muteOnSend = !_isIdempotent || _maxInFlight <= 1;
+        // Kafka processes requests in wire order on each connection. Partition affinity
+        // therefore permits non-idempotent same-partition pipelining without sequence
+        // numbers; retry errors still install a partition mute before new work is drained.
+        _muteOnSend = _maxInFlight <= 1 || options.Acks == Acks.None;
 
         // All producers use partition affinity (partition % connectionCount) for CPU cache
         // locality. Idempotent producers additionally need affinity for sequence ordering.
@@ -1854,6 +1857,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return;
             }
 
+            // Non-idempotent retries have no sequence numbers to reconcile requests that
+            // were already written after the failed batch. Keep the partition muted until
+            // that same-connection pipeline drains, then order the retry before new work.
+            if (!_isIdempotent && HasPendingResponseForPartition(batch.TopicPartition))
+            {
+                carryOver.Add(batchRef);
+                return;
+            }
+
             // Check if leader changed (synchronous cache check — no async needed)
             if (_rerouteBatch is not null)
             {
@@ -2088,6 +2100,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 UnmutePartition(batch.TopicPartition);
             }
         }
+    }
+
+    private bool HasPendingResponseForPartition(TopicPartition topicPartition)
+    {
+        foreach (var pendingResponses in _pendingResponsesByConnection)
+        {
+            foreach (var pending in pendingResponses)
+            {
+                for (var i = 0; i < pending.Count; i++)
+                {
+                    if (pending.IsSameIncarnation(i)
+                        && pending.Batches[i].TopicPartition == topicPartition)
+                        return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2991,8 +3021,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var resourcePinCount = count;
 
-            var requestStartTime = Stopwatch.GetTimestamp();
-
             try
             {
                 // Build coalesced ProduceRequest (reuses pre-allocated scratch structures)
@@ -3061,6 +3089,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     connection,
                     request,
                     (short)apiVersion).ConfigureAwait(false);
+                // Response RTT starts after the request is written. Including request
+                // construction and TCP write time biases admission-rate samples low.
+                var requestStartTime = Stopwatch.GetTimestamp();
 
                 // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
                 scratch.ClearReferences();
@@ -3142,10 +3173,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         .UnsafeOnCompleted(_responseCompletionCallback);
                 }
 
-                // Mute partitions when producer sequence numbers cannot preserve order, or when
-                // the configured request limit already permits only 1 in-flight request.
-                // This ensures at most one batch per partition in-flight across all requests.
-                // Idempotent producers with maxInFlight > 1 use sequence numbers instead.
+                // A request limit of one keeps its partition muted until the response.
+                // Deeper pipelines preserve order through same-connection wire ordering;
+                // retry errors install their own mute in HandleRetriableBatch.
                 MutePartitionsForSend(batches, count);
 
                 LogPipelinedSend(_brokerId, count, _totalPendingResponseCount);
@@ -4278,12 +4308,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         var now = Dekaf.MonotonicClock.GetMilliseconds();
-        var activeMutedPartitionCount = _muteOnSend
-            ? Volatile.Read(ref _mutedPartitionCount)
-            : 0;
-        var mutedPartitionHighWatermark = _muteOnSend
-            ? Interlocked.Exchange(ref _mutedPartitionHighWatermark, activeMutedPartitionCount)
-            : 0;
+        var activeMutedPartitionCount = Volatile.Read(ref _mutedPartitionCount);
+        var mutedPartitionHighWatermark =
+            Interlocked.Exchange(ref _mutedPartitionHighWatermark, activeMutedPartitionCount);
         if (Math.Max(activeMutedPartitionCount, mutedPartitionHighWatermark) >= _connectionCount)
         {
             _lastMutedPartitionLoadTicks = now;
@@ -4406,11 +4433,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var inFlightUtilization = effectiveInFlightCapacity > 0
             ? (double)pendingResponseCount / effectiveInFlightCapacity
             : 0;
-        var hasRecentMutedPartitionLoad = _muteOnSend
-            && _lastMutedPartitionLoadTicks > 0
+        var hasRecentMutedPartitionLoad = _lastMutedPartitionLoadTicks > 0
             && now - _lastMutedPartitionLoadTicks < _scaleDownSustainedMs;
-        var hasLoadBearingMutedWidth = _muteOnSend
-            && activeMutedPartitionCount >= _connectionCount;
+        var hasLoadBearingMutedWidth = activeMutedPartitionCount >= _connectionCount;
         if (inFlightUtilization >= ScaleDownInFlightUtilizationThreshold
             || hasLoadBearingMutedWidth
             || hasRecentMutedPartitionLoad
@@ -4476,7 +4501,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private bool HasMutedPartitionLoad(PartitionCarryOver carryOver, bool hasUnreadEvent)
     {
-        if (!_muteOnSend || _mutedPartitions.IsEmpty)
+        if (_mutedPartitions.IsEmpty)
             return false;
 
         // The channel is unified, so its unread tail can include wake-up signals as
