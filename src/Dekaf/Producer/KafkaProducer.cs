@@ -61,6 +61,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly CancellationTokenSource _senderCts;
     private readonly Task _senderTask;
     private readonly Task _lingerTask;
+    private readonly ConcurrentDictionary<Task, byte> _partitionEnrollmentTasks = new();
 
     // Per-broker sender threads: each broker gets a dedicated BrokerSender with its own
     // channel and send loop. The per-broker in-flight semaphore enables pipelining across
@@ -97,6 +98,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
+    private readonly HashSet<TopicPartition> _pendingTransactionPartitions = [];
+    private readonly HashSet<TopicPartition> _transactionPartitionsBeingEnrolled = [];
+    private readonly HashSet<Action<Exception?>> _partitionEnrollmentWaiters = [];
+    private readonly Dictionary<TopicPartition, Exception> _partitionEnrollmentErrors = [];
+    private bool _partitionEnrollmentActive;
+    private long _partitionEnrollmentGeneration;
+    private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask> _addPartitionsToTransaction;
     internal volatile bool _currentTransactionUsesTV2;
 
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
@@ -195,7 +203,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ConnectionPool connectionPool,
         MetadataManager metadataManager,
         IDekafMemoryBudget memoryBudget,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null)
         : this(
             options,
             keySerializer,
@@ -203,7 +212,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer)),
             loggerFactory,
             ownsInfrastructure: false,
-            memoryBudget)
+            memoryBudget,
+            addPartitionsToTransaction)
     {
     }
 
@@ -271,9 +281,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         (ConnectionPool Pool, MetadataManager Metadata, ClientTelemetryMetricCollector TelemetryMetricCollector) infrastructure,
         ILoggerFactory? loggerFactory,
         bool ownsInfrastructure,
-        IDekafMemoryBudget memoryBudget)
+        IDekafMemoryBudget memoryBudget,
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null)
     {
         _options = options;
+        _addPartitionsToTransaction = addPartitionsToTransaction ?? AddPartitionsToTransactionAsync;
         _keySerializer = keySerializer;
         _valueSerializer = valueSerializer;
         _keyPreparer = keySerializer as IAsyncSerializerPreparer<TKey>;
@@ -1733,10 +1745,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _transactionState = TransactionState.InTransaction;
         _preparedTransactionState = PreparedTransactionState.Empty;
         _lastTransactionError = ErrorCode.None;
-        lock (_partitionsInTransactionLock)
-        {
-            _partitionsInTransaction.Clear();
-        }
+        NotifyPartitionEnrollmentResetWaiters(ResetPartitionEnrollmentState());
 
         return new Transaction<TKey, TValue>(this);
     }
@@ -1908,10 +1917,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     internal void FinalizeCompletedTransactionState(bool preserveAbortableError = true)
     {
-        lock (_partitionsInTransactionLock)
-        {
-            _partitionsInTransaction.Clear();
-        }
+        NotifyPartitionEnrollmentResetWaiters(ResetPartitionEnrollmentState());
 
         _preparedTransactionState = PreparedTransactionState.Empty;
 
@@ -2898,7 +2904,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             () => _produceApiVersion,
             version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
-            EnsurePartitionInTransactionAsync,
+            TryEnsurePartitionsInTransaction,
             bumpEpoch: useEpochRecovery ? BumpEpochLocally : null,
             getCurrentEpoch: useEpochRecovery ? () => _producerEpoch : null,
             RerouteBatchToCurrentLeader,
@@ -2977,27 +2983,227 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// Ensures a partition is registered in the current transaction.
-    /// Used as a callback by BrokerSender for transactional producers.
+    /// Queues every new partition in a coalesced broker pass for one background TV1
+    /// AddPartitionsToTxn request. Returns false while any requested partition is pending.
     /// </summary>
-    private async ValueTask EnsurePartitionInTransactionAsync(
-        TopicPartition topicPartition, CancellationToken cancellationToken)
+    internal TransactionPartitionEnrollmentResult TryEnsurePartitionsInTransaction(
+        ReadyBatch[] batches,
+        int count,
+        Action<Exception?> enrollmentCompleted,
+        HashSet<TopicPartition> enrollmentPendingPartitions,
+        HashSet<TopicPartition> enrollmentFailedPartitions)
     {
-        bool needsRegistration;
+        var startEnrollment = false;
+        long enrollmentGeneration = 0;
+
         lock (_partitionsInTransactionLock)
         {
-            needsRegistration = _partitionsInTransaction.Add(topicPartition);
+            var usesImplicitEnrollment = _currentTransactionUsesTV2
+                && _produceApiVersion >= ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion;
+            if (usesImplicitEnrollment)
+            {
+                for (var i = 0; i < count; i++)
+                    _partitionsInTransaction.Add(batches[i].TopicPartition);
+                return TransactionPartitionEnrollmentResult.Enrolled;
+            }
+
+            Exception? enrollmentError = null;
+            for (var i = 0; i < count; i++)
+            {
+                var topicPartition = batches[i].TopicPartition;
+                if (!_partitionEnrollmentErrors.TryGetValue(topicPartition, out var partitionError))
+                    continue;
+
+                enrollmentFailedPartitions.Add(topicPartition);
+                enrollmentError ??= partitionError;
+            }
+
+            if (enrollmentError is not null)
+                return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
+
+            var allEnrolled = true;
+            for (var i = 0; i < count; i++)
+            {
+                var topicPartition = batches[i].TopicPartition;
+                if (_partitionsInTransaction.Contains(topicPartition))
+                    continue;
+
+                allEnrolled = false;
+                enrollmentPendingPartitions.Add(topicPartition);
+                if (!_transactionPartitionsBeingEnrolled.Contains(topicPartition))
+                    _pendingTransactionPartitions.Add(topicPartition);
+            }
+
+            if (allEnrolled)
+                return TransactionPartitionEnrollmentResult.Enrolled;
+
+            _partitionEnrollmentWaiters.Add(enrollmentCompleted);
+            if (!_partitionEnrollmentActive)
+            {
+                _partitionEnrollmentActive = true;
+                startEnrollment = true;
+                enrollmentGeneration = _partitionEnrollmentGeneration;
+            }
         }
 
-        var usesImplicitEnrollment = _currentTransactionUsesTV2
-            && _produceApiVersion >= ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion;
-        if (!needsRegistration || usesImplicitEnrollment)
+        if (startEnrollment)
+            TrackPartitionEnrollmentTask(EnrollPendingTransactionPartitionsAsync(enrollmentGeneration));
+
+        return TransactionPartitionEnrollmentResult.Pending;
+    }
+
+    private async Task EnrollPendingTransactionPartitionsAsync(long enrollmentGeneration)
+    {
+        while (true)
+        {
+            TopicPartition[] partitions;
+            lock (_partitionsInTransactionLock)
+            {
+                if (enrollmentGeneration != _partitionEnrollmentGeneration)
+                    return;
+
+                if (_pendingTransactionPartitions.Count == 0)
+                {
+                    _partitionEnrollmentActive = false;
+                    return;
+                }
+
+                partitions = [.. _pendingTransactionPartitions];
+                _pendingTransactionPartitions.Clear();
+                foreach (var partition in partitions)
+                    _transactionPartitionsBeingEnrolled.Add(partition);
+            }
+
+            try
+            {
+                await EnrollTransactionPartitionsWithRetryAsync(partitions, _senderCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                Action<Exception?>[] waiters;
+                lock (_partitionsInTransactionLock)
+                {
+                    if (enrollmentGeneration != _partitionEnrollmentGeneration)
+                        return;
+
+                    foreach (var partition in partitions)
+                    {
+                        _transactionPartitionsBeingEnrolled.Remove(partition);
+                        _partitionEnrollmentErrors[partition] = exception;
+                    }
+                    waiters = [.. _partitionEnrollmentWaiters];
+                    _partitionEnrollmentWaiters.Clear();
+                }
+
+                NotifyPartitionEnrollmentWaiters(waiters, null);
+                continue;
+            }
+
+            Action<Exception?>[] completedWaiters;
+            lock (_partitionsInTransactionLock)
+            {
+                if (enrollmentGeneration != _partitionEnrollmentGeneration)
+                    return;
+
+                foreach (var partition in partitions)
+                {
+                    _transactionPartitionsBeingEnrolled.Remove(partition);
+                    _partitionsInTransaction.Add(partition);
+                }
+
+                completedWaiters = [.. _partitionEnrollmentWaiters];
+                _partitionEnrollmentWaiters.Clear();
+            }
+
+            NotifyPartitionEnrollmentWaiters(completedWaiters, null);
+        }
+    }
+
+    private static void NotifyPartitionEnrollmentWaiters(
+        Action<Exception?>[] waiters,
+        Exception? error)
+    {
+        foreach (var waiter in waiters)
+            waiter(error);
+    }
+
+    private static void NotifyPartitionEnrollmentResetWaiters(Action<Exception?>[] waiters)
+    {
+        if (waiters.Length == 0)
             return;
 
-        // KIP-890 requires both transaction.version 2 and Produce v12. Older Produce
-        // versions must explicitly enroll even when the broker feature is enabled.
-        await AddPartitionsToTransactionAsync([topicPartition], cancellationToken)
-            .ConfigureAwait(false);
+        NotifyPartitionEnrollmentWaiters(
+            waiters,
+            new TransactionException("Transaction partition enrollment was reset before completion."));
+    }
+
+    private async ValueTask EnrollTransactionPartitionsWithRetryAsync(
+        IReadOnlyList<TopicPartition> partitions,
+        CancellationToken cancellationToken)
+    {
+        const int maxRetries = 5;
+        var retryDelayMs = 100;
+        var retryDeadline = Stopwatch.GetTimestamp() + _options.DeliveryTimeoutTicks;
+
+        for (var attempt = 0; attempt < maxRetries; attempt++)
+        {
+            try
+            {
+                await _addPartitionsToTransaction(partitions, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception exception) when (attempt < maxRetries - 1
+                && IsRetriablePartitionEnrollmentException(exception)
+                && Stopwatch.GetTimestamp() < retryDeadline)
+            {
+                LogAddPartitionsToTxnTransportRetry(attempt + 1, retryDelayMs);
+                var remainingTicks = retryDeadline - Stopwatch.GetTimestamp();
+                var remainingMs = Math.Max(1, remainingTicks * 1000d / Stopwatch.Frequency);
+                await Task.Delay((int)Math.Min(retryDelayMs, remainingMs), cancellationToken)
+                    .ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+            }
+        }
+    }
+
+    private static bool IsRetriablePartitionEnrollmentException(Exception exception) =>
+        exception is IOException or System.Net.Sockets.SocketException or TimeoutException
+        || exception is KafkaException { IsRetriable: true };
+
+    private Action<Exception?>[] ResetPartitionEnrollmentState()
+    {
+        lock (_partitionsInTransactionLock)
+        {
+            _partitionEnrollmentGeneration++;
+            _partitionsInTransaction.Clear();
+            _pendingTransactionPartitions.Clear();
+            _transactionPartitionsBeingEnrolled.Clear();
+            Action<Exception?>[] waiters = [.. _partitionEnrollmentWaiters];
+            _partitionEnrollmentWaiters.Clear();
+            _partitionEnrollmentErrors.Clear();
+            _partitionEnrollmentActive = false;
+            return waiters;
+        }
+    }
+
+    private void TrackPartitionEnrollmentTask(Task task)
+    {
+        _partitionEnrollmentTasks.TryAdd(task, 0);
+        if (task.IsCompleted)
+        {
+            _partitionEnrollmentTasks.TryRemove(task, out _);
+            return;
+        }
+
+        _ = task.ContinueWith(static (completedTask, state) =>
+        {
+            var tasks = (ConcurrentDictionary<Task, byte>)state!;
+            tasks.TryRemove(completedTask, out _);
+        }, _partitionEnrollmentTasks,
+        CancellationToken.None,
+        TaskContinuationOptions.ExecuteSynchronously,
+        TaskScheduler.Default);
     }
 
     private async Task LingerLoopAsync(CancellationToken cancellationToken)
@@ -3909,6 +4115,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // that entered the pipeline between the first sweep and BrokerSender disposal.
         _accumulator.ForceFailAllInFlightBatches();
 
+        var partitionEnrollmentTasks = _partitionEnrollmentTasks.Keys.ToArray();
+        if (partitionEnrollmentTasks.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(partitionEnrollmentTasks).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Enrollment failures are surfaced to their parked batches.
+            }
+        }
+
         _senderCts.Dispose();
         _transactionLock.Dispose();
         _initLock.Dispose();
@@ -4031,6 +4250,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "AddPartitionsToTxn retriable error (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
     private partial void LogAddPartitionsToTxnRetriableError(int attempt, int maxRetries, int delay);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "AddPartitionsToTxn transport failure (attempt {Attempt}), retrying in {Delay}ms")]
+    private partial void LogAddPartitionsToTxnTransportRetry(int attempt, int delay);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "EndTxn retriable error ({ErrorCode}, attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
     private partial void LogEndTxnRetriableError(ErrorCode errorCode, int attempt, int maxRetries, int delay);

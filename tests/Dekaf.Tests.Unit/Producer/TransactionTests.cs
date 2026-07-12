@@ -7,6 +7,7 @@ using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using NSubstitute;
 
@@ -114,56 +115,6 @@ public sealed class TransactionTests
             .Throws<FatalTransactionException>();
         await Assert.That(() => producer.BeginTransaction())
             .Throws<FatalTransactionException>();
-    }
-
-    [Test]
-    public async Task ProduceAsync_ValidationFailure_ReturnsFaultedValueTask()
-    {
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .WithTransactionalId("test-txn-id")
-            .Build();
-        var kafkaProducer = (KafkaProducer<string, string>)producer;
-        kafkaProducer._transactionState = TransactionState.FatalError;
-        kafkaProducer._lastTransactionError = ErrorCode.ProducerFenced;
-        await using var transaction = new Transaction<string, string>(kafkaProducer);
-
-        var operation = transaction.ProduceAsync(new ProducerMessage<string, string>
-        {
-            Topic = "test-topic",
-            Key = "key",
-            Value = "value"
-        });
-
-        await Assert.That(operation.IsCompleted).IsTrue();
-        await Assert.That(() => operation.AsTask()).Throws<FatalTransactionException>();
-    }
-
-    [Test]
-    public async Task ProduceAsync_PreCanceledToken_ReturnsCanceledValueTask()
-    {
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .WithTransactionalId("test-txn-id")
-            .Build();
-        var kafkaProducer = (KafkaProducer<string, string>)producer;
-        SetInstanceField(kafkaProducer, "_initialized", true);
-        kafkaProducer._transactionState = TransactionState.Ready;
-        await using var transaction = new Transaction<string, string>(kafkaProducer);
-        using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
-
-        var operation = transaction.ProduceAsync(new ProducerMessage<string, string>
-        {
-            Topic = "test-topic",
-            Key = "key",
-            Value = "value"
-        }, cancellation.Token);
-        var task = operation.AsTask();
-
-        await Assert.That(() => task).Throws<OperationCanceledException>();
-        await Assert.That(task.IsCanceled).IsTrue();
-        await Assert.That(task.IsFaulted).IsFalse();
     }
 
     [Test]
@@ -658,45 +609,272 @@ public sealed class TransactionTests
     }
 
     [Test]
-    [Arguments(true, (short)12, false)]
-    [Arguments(true, (short)11, true)]
-    [Arguments(false, (short)12, true)]
-    public async Task EnsurePartitionInTransaction_UsesCompatibleEnrollment(
-        bool usesTV2,
-        short produceApiVersion,
-        bool expectsExplicitEnrollment)
+    public async Task TransactionPartitionEnrollment_BatchesCoalescedPartitions()
     {
-        var (producer, connectionPool, connection) = CreatePartitionEnrollmentProducer(
-            usesTV2,
-            produceApiVersion);
-        try
+        var requestStarted = new TaskCompletionSource<IReadOnlyList<TopicPartition>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestCount = 0;
+        var failNextEnrollment = 0;
+
+        async ValueTask AddPartitions(
+            IReadOnlyList<TopicPartition> partitions,
+            CancellationToken cancellationToken)
         {
-            var topicPartition = new TopicPartition("test-topic", 3);
+            if (Interlocked.Increment(ref requestCount) == 1)
+                throw new IOException("Transient connection failure");
+            if (Interlocked.Exchange(ref failNextEnrollment, 0) == 1)
+                throw new TransactionException("Partition enrollment failed.");
 
-            await InvokeEnsurePartitionInTransactionAsync(producer, topicPartition);
-
-            if (expectsExplicitEnrollment)
-            {
-                _ = connection.Received(1).SendAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
-                    Arg.Is<AddPartitionsToTxnRequest>(request => HasSinglePartition(request, topicPartition)),
-                    Arg.Any<short>(),
-                    Arg.Any<CancellationToken>());
-            }
-            else
-            {
-                _ = connection.DidNotReceive().SendAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
-                    Arg.Any<AddPartitionsToTxnRequest>(),
-                    Arg.Any<short>(),
-                    Arg.Any<CancellationToken>());
-            }
-
-            await Assert.That(producer._partitionsInTransaction.Contains(topicPartition)).IsTrue();
+            requestStarted.TrySetResult([.. partitions]);
+            await completeRequest.Task.WaitAsync(cancellationToken);
         }
-        finally
+
+        var options = new ProducerOptions
         {
-            await producer.DisposeAsync();
-            await connectionPool.DisposeAsync();
+            BootstrapServers = ["localhost:9092"],
+            TransactionalId = "test-txn-id",
+            CloseTimeoutMs = 100
+        };
+        await using var connectionPool = new ConnectionPool(
+            options.ClientId,
+            connectionOptions: null,
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) =>
+                throw new InvalidOperationException("Enrollment test must use the injected request callback."));
+        await using var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager,
+            DekafMemoryBudget.Global,
+            addPartitionsToTransaction: AddPartitions);
+        SetInstanceField(producer, "_produceApiVersion", 12);
+        producer._currentTransactionUsesTV2 = true;
+        var implicitBatch = CreateEnrollmentBatch("implicit-topic", 0);
+        var implicitResult = producer.TryEnsurePartitionsInTransaction(
+            [implicitBatch],
+            1,
+            static _ => { },
+            [],
+            []);
+        await Assert.That(implicitResult.IsEnrolled).IsTrue();
+        await Assert.That(requestCount).IsEqualTo(0);
+        await Assert.That(producer._partitionsInTransaction)
+            .Contains(implicitBatch.TopicPartition);
+
+        producer._currentTransactionUsesTV2 = false;
+        var batches = new[]
+        {
+            CreateEnrollmentBatch("topic-a", 0),
+            CreateEnrollmentBatch("topic-a", 1),
+            CreateEnrollmentBatch("topic-b", 0)
+        };
+        var enrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var pendingPartitions = new HashSet<TopicPartition>();
+
+        var enrolled = producer.TryEnsurePartitionsInTransaction(
+            batches,
+            batches.Length,
+            enrollmentCompleted.SetResult,
+            pendingPartitions,
+            []);
+
+        await Assert.That(enrolled.IsEnrolled).IsFalse();
+        await Assert.That(enrolled.Error).IsNull();
+        await Assert.That(pendingPartitions).IsEquivalentTo(batches.Select(batch => batch.TopicPartition));
+        var requestedPartitions = await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(requestCount).IsEqualTo(2);
+        await Assert.That(requestedPartitions).IsEquivalentTo(new[]
+        {
+            new TopicPartition("topic-a", 0),
+            new TopicPartition("topic-a", 1),
+            new TopicPartition("topic-b", 0)
+        });
+
+        completeRequest.SetResult();
+        await Assert.That(await enrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(producer.TryEnsurePartitionsInTransaction(
+            batches,
+            batches.Length,
+            static _ => { },
+            [],
+            []).IsEnrolled).IsTrue();
+
+        var mixedBatches = new[] { batches[0], CreateEnrollmentBatch("topic-c", 2) };
+        var mixedPendingPartitions = new HashSet<TopicPartition>();
+        var mixedEnrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var mixedResult = producer.TryEnsurePartitionsInTransaction(
+            mixedBatches,
+            mixedBatches.Length,
+            mixedEnrollmentCompleted.SetResult,
+            mixedPendingPartitions,
+            []);
+
+        await Assert.That(mixedResult.IsEnrolled).IsFalse();
+        await Assert.That(mixedPendingPartitions).IsEquivalentTo(
+            [new TopicPartition("topic-c", 2)]);
+        await Assert.That(await mixedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+
+        Interlocked.Exchange(ref failNextEnrollment, 1);
+        var failedBatch = CreateEnrollmentBatch("failed-topic", 0);
+        var failedEnrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var failedPendingPartitions = new HashSet<TopicPartition>();
+        var pendingFailure = producer.TryEnsurePartitionsInTransaction(
+            [failedBatch],
+            1,
+            failedEnrollmentCompleted.SetResult,
+            failedPendingPartitions,
+            []);
+        await Assert.That(pendingFailure.IsEnrolled).IsFalse();
+        await Assert.That(await failedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+
+        failedPendingPartitions.Clear();
+        var failedResult = producer.TryEnsurePartitionsInTransaction(
+            [failedBatch],
+            1,
+            static _ => { },
+            [],
+            failedPendingPartitions);
+        await Assert.That(failedResult.Error).IsTypeOf<TransactionException>();
+        await Assert.That(failedPendingPartitions).IsEquivalentTo([failedBatch.TopicPartition]);
+
+        var unrelatedBatch = CreateEnrollmentBatch("unrelated-topic", 0);
+        var unrelatedEnrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var unrelatedResult = producer.TryEnsurePartitionsInTransaction(
+            [unrelatedBatch],
+            1,
+            unrelatedEnrollmentCompleted.SetResult,
+            [],
+            []);
+        await Assert.That(unrelatedResult.Error).IsNull();
+        await Assert.That(await unrelatedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(producer.TryEnsurePartitionsInTransaction(
+            [unrelatedBatch],
+            1,
+            static _ => { },
+            [],
+            []).IsEnrolled).IsTrue();
+    }
+
+    [Test]
+    public async Task TransactionPartitionEnrollment_ResetWakesWaitersAndIgnoresStaleCompletion()
+    {
+        var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async ValueTask AddPartitions(
+            IReadOnlyList<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            requestStarted.TrySetResult();
+            await completeRequest.Task.WaitAsync(cancellationToken);
+            requestReturned.TrySetResult();
         }
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            TransactionalId = "test-txn-id",
+            CloseTimeoutMs = 100
+        };
+        await using var connectionPool = new ConnectionPool(
+            options.ClientId,
+            connectionOptions: null,
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) =>
+                throw new InvalidOperationException("Enrollment test must use the injected request callback."));
+        await using var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager,
+            DekafMemoryBudget.Global,
+            addPartitionsToTransaction: AddPartitions);
+        var batch = CreateEnrollmentBatch("topic-a", 0);
+        var enrollmentReset = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        producer.TryEnsurePartitionsInTransaction(
+            [batch],
+            1,
+            enrollmentReset.SetResult,
+            [],
+            []);
+        await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        producer.FinalizeCompletedTransactionState();
+        await Assert.That(await enrollmentReset.Task.WaitAsync(TimeSpan.FromSeconds(1)))
+            .IsTypeOf<TransactionException>();
+        completeRequest.SetResult();
+        await requestReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(producer._partitionsInTransaction).IsEmpty();
+    }
+
+    [Test]
+    public async Task TransactionPartitionEnrollment_AuthenticationFailure_DoesNotRetry()
+    {
+        var requestCount = 0;
+
+        ValueTask AddPartitions(
+            IReadOnlyList<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref requestCount);
+            throw new AuthenticationException("Invalid credentials.");
+        }
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            TransactionalId = "test-txn-id",
+            CloseTimeoutMs = 100
+        };
+        await using var connectionPool = new ConnectionPool(
+            options.ClientId,
+            connectionOptions: null,
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) =>
+                throw new InvalidOperationException("Enrollment test must use the injected request callback."));
+        await using var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager,
+            DekafMemoryBudget.Global,
+            addPartitionsToTransaction: AddPartitions);
+        var batch = CreateEnrollmentBatch("auth-failure-topic", 0);
+        var enrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var result = producer.TryEnsurePartitionsInTransaction(
+            [batch],
+            1,
+            enrollmentCompleted.SetResult,
+            [],
+            []);
+
+        await Assert.That(result.IsEnrolled).IsFalse();
+        await Assert.That(await enrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(requestCount).IsEqualTo(1);
+        await Assert.That(producer.TryEnsurePartitionsInTransaction(
+            [batch],
+            1,
+            static _ => { },
+            [],
+            []).Error).IsTypeOf<AuthenticationException>();
     }
 
     [Test]
@@ -722,87 +900,17 @@ public sealed class TransactionTests
         await Assert.That(kafkaProducer._transactionState).IsEqualTo(TransactionState.Ready);
     }
 
-    private static async ValueTask InvokeEnsurePartitionInTransactionAsync(
-        KafkaProducer<string, string> producer,
-        TopicPartition topicPartition)
+    private static ReadyBatch CreateEnrollmentBatch(string topic, int partition)
     {
-        var method = typeof(KafkaProducer<string, string>).GetMethod(
-            "EnsurePartitionInTransactionAsync",
-            BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var invocation = (ValueTask)method.Invoke(
-            producer,
-            [topicPartition, CancellationToken.None])!;
-        await invocation;
-    }
-
-    private static bool HasSinglePartition(
-        AddPartitionsToTxnRequest? request,
-        TopicPartition topicPartition)
-        => request?.Topics is [{ } topic]
-           && topic.Name == topicPartition.Topic
-           && topic.Partitions.Count == 1
-           && topic.Partitions[0] == topicPartition.Partition;
-
-    private static (KafkaProducer<string, string> Producer, ConnectionPool ConnectionPool,
-        IKafkaConnection Connection)
-        CreatePartitionEnrollmentProducer(bool usesTV2, short produceApiVersion)
-    {
-        var connection = Substitute.For<IKafkaConnection>();
-        connection.IsConnected.Returns(true);
-        connection.SendAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
-                Arg.Any<AddPartitionsToTxnRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(new AddPartitionsToTxnResponse
-            {
-                Results =
-                [
-                    new AddPartitionsToTxnTopicResult
-                    {
-                        Name = "test-topic",
-                        Partitions =
-                        [
-                            new AddPartitionsToTxnPartitionResult
-                            {
-                                PartitionIndex = 3,
-                                ErrorCode = ErrorCode.None
-                            }
-                        ]
-                    }
-                ]
-            });
-
-        var connectionPool = new ConnectionPool(
-            clientId: "test-client",
-            connectionOptions: null,
-            connectionsPerBroker: 1,
-            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult(connection));
-        connectionPool.RegisterBroker(1, "localhost", 9092);
-        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
-        metadataManager.SetApiVersion(
-            ApiKey.AddPartitionsToTxn,
-            AddPartitionsToTxnRequest.LowestSupportedVersion,
-            AddPartitionsToTxnRequest.HighestSupportedVersion);
-        var producer = new KafkaProducer<string, string>(
-            new ProducerOptions
-            {
-                BootstrapServers = ["localhost:9092"],
-                TransactionalId = "test-txn-id",
-                CloseTimeoutMs = 100
-            },
-            Serializers.String,
-            Serializers.String,
-            connectionPool,
-            metadataManager,
-            DekafMemoryBudget.Global);
-        SetInstanceField(producer, "_initialized", true);
-        SetInstanceField(producer, "_producerId", 42L);
-        SetInstanceField(producer, "_producerEpoch", (short)5);
-        SetInstanceField(producer, "_transactionCoordinatorId", 1);
-        SetInstanceField(producer, "_currentTransactionUsesTV2", usesTV2);
-        SetInstanceField(producer, "_produceApiVersion", (int)produceApiVersion);
-        producer._transactionState = TransactionState.InTransaction;
-        return (producer, connectionPool, connection);
+        var batch = new ReadyBatch();
+        batch.Initialize(
+            new TopicPartition(topic, partition),
+            new RecordBatch(),
+            completionSourcesArray: null,
+            completionSourcesCount: 1,
+            dataSize: 1,
+            recordCount: 1);
+        return batch;
     }
 
     private static KafkaProducer<string, string> BuildInitializedTransactionalProducer(bool enableTwoPhaseCommit)

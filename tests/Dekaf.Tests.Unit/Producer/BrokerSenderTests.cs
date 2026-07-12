@@ -69,7 +69,7 @@ public sealed class BrokerSenderTests
             getProduceApiVersion: () => -1,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
-            ensurePartitionInTransaction: null,
+            tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
             getCurrentEpoch: null,
             rerouteBatch: null,
@@ -108,7 +108,7 @@ public sealed class BrokerSenderTests
             getProduceApiVersion: () => -1,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
-            ensurePartitionInTransaction: null,
+            tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
             getCurrentEpoch: null,
             rerouteBatch: null,
@@ -149,7 +149,7 @@ public sealed class BrokerSenderTests
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
-            ensurePartitionInTransaction: null,
+            tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
             getCurrentEpoch: null,
             rerouteBatch: null,
@@ -183,7 +183,11 @@ public sealed class BrokerSenderTests
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => true,
-            ensurePartitionInTransaction: (_, _) => { transactionCalled = true; return ValueTask.CompletedTask; },
+            tryEnsurePartitionsInTransaction: (_, _, _, _, _) =>
+            {
+                transactionCalled = true;
+                return TransactionPartitionEnrollmentResult.Enrolled;
+            },
             bumpEpoch: null,
             getCurrentEpoch: null,
             rerouteBatch: null,

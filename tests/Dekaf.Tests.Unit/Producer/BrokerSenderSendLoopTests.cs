@@ -361,7 +361,10 @@ public sealed class BrokerSenderSendLoopTests
         BrokerUnackedByteBudget? unackedBudget = null,
         int produceApiVersion = 9,
         bool isTransactional = false,
-        bool usesTransactionV2 = false) =>
+        bool usesTransactionV2 = false,
+        Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
+            TransactionPartitionEnrollmentResult>?
+            tryEnsurePartitionsInTransaction = null) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -371,7 +374,7 @@ public sealed class BrokerSenderSendLoopTests
             getProduceApiVersion: () => produceApiVersion,
             setProduceApiVersion: _ => { },
             isTransactional: () => isTransactional,
-            ensurePartitionInTransaction: null,
+            tryEnsurePartitionsInTransaction: tryEnsurePartitionsInTransaction,
             bumpEpoch: null,
             getCurrentEpoch: null,
             rerouteBatch,
@@ -587,6 +590,361 @@ public sealed class BrokerSenderSendLoopTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionEnrollmentPending_SendsAlreadyEnrolledPartition(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]);
+        var sendCount = 0;
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            if (index < sendSignals.Length)
+                sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(maxInFlight: 2, transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
+        var enrollmentStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Action<Exception?>? completeEnrollment = null;
+        var partitionZeroEnrolled = false;
+
+        TransactionPartitionEnrollmentResult TryEnsure(
+            ReadyBatch[] batches,
+            int count,
+            Action<Exception?> completed,
+            HashSet<TopicPartition> pendingPartitions,
+            HashSet<TopicPartition> failedPartitions)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                if (batches[i].TopicPartition.Partition == 0 && !partitionZeroEnrolled)
+                {
+                    pendingPartitions.Add(batches[i].TopicPartition);
+                    completeEnrollment = completed;
+                    enrollmentStarted.TrySetResult();
+                    return TransactionPartitionEnrollmentResult.Pending;
+                }
+            }
+
+            return TransactionPartitionEnrollmentResult.Enrolled;
+        }
+
+        var acknowledged = 0;
+        var allAcknowledged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) =>
+            {
+                if (exception is null && Interlocked.Increment(ref acknowledged) == 2)
+                    allAcknowledged.TrySetResult();
+            },
+            isTransactional: true,
+            tryEnsurePartitionsInTransaction: TryEnsure);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 0));
+            await enrollmentStarted.Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 1));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            firstResponse.SetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 10));
+            partitionZeroEnrolled = true;
+            completeEnrollment!(null);
+
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 11));
+            await allAcknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            firstResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 10));
+            secondResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 11));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionEnrollmentReset_FailsParkedBatch(
+        CancellationToken cancellationToken)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var options = CreateOptions(transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
+        var enrollmentStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgedError = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Action<Exception?>? completeEnrollment = null;
+
+        TransactionPartitionEnrollmentResult TryEnsure(
+            ReadyBatch[] batches,
+            int count,
+            Action<Exception?> completed,
+            HashSet<TopicPartition> pendingPartitions,
+            HashSet<TopicPartition> failedPartitions)
+        {
+            pendingPartitions.Add(batches[0].TopicPartition);
+            completeEnrollment = completed;
+            enrollmentStarted.TrySetResult();
+            return TransactionPartitionEnrollmentResult.Pending;
+        }
+
+        var sender = CreateSender(
+            connectionPool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledgedError.TrySetResult(exception),
+            isTransactional: true,
+            tryEnsurePartitionsInTransaction: TryEnsure);
+
+        try
+        {
+            var batch = CreateTestBatch(valueTaskPool, "test-topic", partition: 0);
+            var completion = batch.DoneTask;
+            sender.Enqueue(batch);
+            await enrollmentStarted.Task.WaitAsync(cancellationToken);
+
+            var enrollmentError = new TransactionException(
+                "Transaction partition enrollment was reset before completion.");
+            completeEnrollment!(enrollmentError);
+
+            await Assert.That(await completion.AsTask().WaitAsync(cancellationToken)).IsFalse();
+            await Assert.That(await acknowledgedError.Task.WaitAsync(cancellationToken))
+                .IsSameReferenceAs(enrollmentError);
+            await connectionPool.DidNotReceiveWithAnyArgs()
+                .GetConnectionAsync(default, default);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionEnrollmentFailure_FailsAffectedBatch(
+        CancellationToken cancellationToken)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var options = CreateOptions(transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
+        var enrollmentError = new TransactionException(
+            ErrorCode.ProducerFenced,
+            "Transaction partition enrollment failed.");
+        var sender = CreateSender(
+            connectionPool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            isTransactional: true,
+            tryEnsurePartitionsInTransaction: (batches, _, _, _, failedPartitions) =>
+            {
+                failedPartitions.Add(batches[0].TopicPartition);
+                return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
+            });
+
+        try
+        {
+            var batch = CreateTestBatch(valueTaskPool, "test-topic", partition: 0);
+            var completion = batch.DoneTask;
+
+            sender.Enqueue(batch);
+
+            await Assert.That(await completion.AsTask().WaitAsync(cancellationToken)).IsFalse();
+            await connectionPool.DidNotReceiveWithAnyArgs()
+                .GetConnectionAsync(default, default);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionEnrollmentFailure_DoesNotFailLaterPendingPartition(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (connectionPool, _) = CreateMockConnection(responses, sendStarted.SetResult);
+        var options = CreateOptions(transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
+        var enrollmentCalls = 0;
+        var firstPartitionPending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var twoPartitionsPending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Action<Exception?>? enrollmentCompleted = null;
+        var failedAcknowledgement = new TaskCompletionSource<Exception?>();
+        var successfulAcknowledgement = new TaskCompletionSource<Exception?>();
+        var enrollmentError = new TransactionException("Partition enrollment failed.");
+
+        TransactionPartitionEnrollmentResult TryEnsure(
+            ReadyBatch[] batches,
+            int count,
+            Action<Exception?> completed,
+            HashSet<TopicPartition> pendingPartitions,
+            HashSet<TopicPartition> failedPartitions)
+        {
+            var call = Interlocked.Increment(ref enrollmentCalls);
+            if (call <= 2)
+            {
+                pendingPartitions.Add(batches[0].TopicPartition);
+                enrollmentCompleted = completed;
+                if (call == 1)
+                    firstPartitionPending.TrySetResult();
+                else
+                    twoPartitionsPending.TrySetResult();
+                return TransactionPartitionEnrollmentResult.Pending;
+            }
+
+            if (call == 3)
+            {
+                var failedPartition = new TopicPartition("test-topic", 0);
+                var laterPartition = new TopicPartition("test-topic", 1);
+                failedPartitions.Add(failedPartition);
+                pendingPartitions.Add(laterPartition); // Simulates the long-lived pending accumulator.
+                return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
+            }
+
+            return TransactionPartitionEnrollmentResult.Enrolled;
+        }
+
+        var sender = CreateSender(
+            connectionPool,
+            options,
+            accumulator,
+            (topicPartition, _, _, _, exception) =>
+            {
+                var completion = topicPartition.Partition == 0
+                    ? failedAcknowledgement
+                    : successfulAcknowledgement;
+                completion.TrySetResult(exception);
+            },
+            isTransactional: true,
+            tryEnsurePartitionsInTransaction: TryEnsure);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 0));
+            await firstPartitionPending.Task.WaitAsync(cancellationToken);
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 1));
+            await twoPartitionsPending.Task.WaitAsync(cancellationToken);
+            enrollmentCompleted!(null);
+
+            await Assert.That(await failedAcknowledgement.Task.WaitAsync(cancellationToken))
+                .IsSameReferenceAs(enrollmentError);
+            await sendStarted.Task.WaitAsync(cancellationToken);
+            response.SetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 42));
+            await Assert.That(await successfulAcknowledgement.Task.WaitAsync(cancellationToken)).IsNull();
+        }
+        finally
+        {
+            response.TrySetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 42));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionEnrollmentFailure_UnmutesRetryPartition(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, secondResponse]);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendCount = 0;
+        var (connectionPool, _) = CreateMockConnection(responses, () =>
+            sendSignals[Interlocked.Increment(ref sendCount) - 1].TrySetResult());
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledgements = new[]
+        {
+            new TaskCompletionSource<Exception?>(),
+            new TaskCompletionSource<Exception?>()
+        };
+        var acknowledgementCount = 0;
+        var enrollmentAttempts = 0;
+        var enrollmentError = new TransactionException("Partition enrollment failed.");
+
+        TransactionPartitionEnrollmentResult TryEnsure(
+            ReadyBatch[] batches,
+            int count,
+            Action<Exception?> completed,
+            HashSet<TopicPartition> pendingPartitions,
+            HashSet<TopicPartition> failedPartitions)
+        {
+            if (Interlocked.Increment(ref enrollmentAttempts) != 2)
+                return TransactionPartitionEnrollmentResult.Enrolled;
+
+            failedPartitions.Add(batches[0].TopicPartition);
+            return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
+        }
+
+        var sender = CreateSender(
+            connectionPool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) =>
+            {
+                var index = Interlocked.Increment(ref acknowledgementCount) - 1;
+                acknowledgements[index].TrySetResult(exception);
+            },
+            isTransactional: true,
+            tryEnsurePartitionsInTransaction: TryEnsure);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 0));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+            firstResponse.SetResult(CreateErrorResponse(
+                "test-topic", partition: 0, ErrorCode.NotLeaderOrFollower));
+            await Assert.That(await acknowledgements[0].Task.WaitAsync(cancellationToken))
+                .IsSameReferenceAs(enrollmentError);
+
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 0));
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+            await Assert.That(await acknowledgements[1].Task.WaitAsync(cancellationToken)).IsNull();
+        }
+        finally
+        {
+            firstResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 41));
+            secondResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskPool.DisposeAsync();
         }
     }
 

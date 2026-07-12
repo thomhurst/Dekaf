@@ -17,6 +17,15 @@ using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Producer;
 
+internal readonly record struct TransactionPartitionEnrollmentResult(
+    bool IsEnrolled,
+    Exception? Error)
+{
+    public static TransactionPartitionEnrollmentResult Enrolled => new(true, null);
+    public static TransactionPartitionEnrollmentResult Pending => new(false, null);
+    public static TransactionPartitionEnrollmentResult Failed(Exception error) => new(false, error);
+}
+
 /// <summary>
 /// Per-broker sender that serializes all writes to a single broker connection.
 /// A single-threaded send loop drains events from a unified channel, coalesces batches into
@@ -217,7 +226,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         NewBatch,
         ResponseReady, // Lightweight signal: a response task completed, poll _pendingResponsesByConnection
-        Unmute
+        Unmute,
+        TransactionEnrollmentReady
     }
 
     private readonly struct BatchReference
@@ -241,12 +251,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public readonly SendLoopEventType Type;
         public readonly ReadyBatch? Batch;
         public readonly int BatchGeneration;
+        public readonly Exception? EnrollmentError;
 
-        private SendLoopEvent(SendLoopEventType type, ReadyBatch? batch = null, int batchGeneration = 0)
+        private SendLoopEvent(
+            SendLoopEventType type,
+            ReadyBatch? batch = null,
+            int batchGeneration = 0,
+            Exception? enrollmentError = null)
         {
             Type = type;
             Batch = batch;
             BatchGeneration = batchGeneration;
+            EnrollmentError = enrollmentError;
         }
 
         public static SendLoopEvent NewBatch(ReadyBatch batch) => NewBatch(batch, batch.Generation);
@@ -259,6 +275,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public static SendLoopEvent ResponseReady() => new(SendLoopEventType.ResponseReady);
 
         public static SendLoopEvent Unmute() => new(SendLoopEventType.Unmute);
+
+        public static SendLoopEvent TransactionEnrollmentReady(Exception? error) =>
+            new(SendLoopEventType.TransactionEnrollmentReady, enrollmentError: error);
     }
 
     /// <summary>
@@ -471,7 +490,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Transaction support
     private readonly Func<bool> _isTransactional;
     private readonly Func<bool> _usesTransactionV2;
-    private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
+    private readonly Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
+        TransactionPartitionEnrollmentResult>?
+        _tryEnsurePartitionsInTransaction;
+    private readonly Action<Exception?> _transactionEnrollmentCompleted;
+    private readonly HashSet<TopicPartition> _transactionEnrollmentPendingPartitions = [];
+    private readonly HashSet<TopicPartition> _transactionEnrollmentFailedPartitions = [];
 
     // Send-time muting is needed when the configured request limit is already 1 or when
     // Acks.None provides no broker acknowledgement boundary.
@@ -672,7 +696,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<int> getProduceApiVersion,
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
-        Func<TopicPartition, CancellationToken, ValueTask>? ensurePartitionInTransaction,
+        Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
+            TransactionPartitionEnrollmentResult>?
+            tryEnsurePartitionsInTransaction,
         Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? bumpEpoch,
         Func<short>? getCurrentEpoch,
         Action<ReadyBatch, int>? rerouteBatch,
@@ -699,8 +725,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _getProduceApiVersion = getProduceApiVersion;
         _setProduceApiVersion = setProduceApiVersion;
         _isTransactional = isTransactional;
+        _tryEnsurePartitionsInTransaction = tryEnsurePartitionsInTransaction;
         _usesTransactionV2 = usesTransactionV2 ?? (static () => false);
-        _ensurePartitionInTransaction = ensurePartitionInTransaction;
         _bumpEpoch = bumpEpoch;
         _getCurrentEpoch = getCurrentEpoch;
         _rerouteBatch = rerouteBatch;
@@ -718,6 +744,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             SingleReader = true,
             SingleWriter = false
         });
+        _transactionEnrollmentCompleted = error =>
+            _eventChannel.Writer.TryWrite(SendLoopEvent.TransactionEnrollmentReady(error));
 
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
         _isIdempotent = options.EnableIdempotence;
@@ -1144,6 +1172,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 cancellationToken.ThrowIfCancellationRequested();
 
                 LogSendLoopIteration(_brokerId, carryOver.Count, _totalPendingResponseCount);
+                var transactionEnrollmentReady = false;
 
                 // ── 1. Poll pending responses (like Java's client.poll()) ──
                 // Signal events (ResponseReady, Unmute) may have woken us up — processing
@@ -1292,6 +1321,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     break;
                             }
                         }
+                        else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
+                        {
+                            if (evt.EnrollmentError is not null)
+                            {
+                                FailPendingTransactionEnrollmentBatches(
+                                    carryOver,
+                                    _transactionEnrollmentPendingPartitions,
+                                    evt.EnrollmentError);
+                            }
+                            _transactionEnrollmentPendingPartitions.Clear();
+                            transactionEnrollmentReady = true;
+                            break;
+                        }
                         // ResponseReady/Unmute: consumed as wake-up signals, no data to process
                     }
                 }
@@ -1339,6 +1381,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver);
                             if (coalescedCount > MicroLingerBatchThreshold)
                                 break;
+                        }
+                        else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
+                        {
+                            if (evt.EnrollmentError is not null)
+                            {
+                                FailPendingTransactionEnrollmentBatches(
+                                    carryOver,
+                                    _transactionEnrollmentPendingPartitions,
+                                    evt.EnrollmentError);
+                            }
+                            _transactionEnrollmentPendingPartitions.Clear();
+                            transactionEnrollmentReady = true;
+                            break;
                         }
                     }
                 }
@@ -1484,6 +1539,45 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         coalescedCount = CompactCurrentBatches(coalescedBatches, coalescedGenerations, coalescedCount);
                         if (coalescedCount == 0)
                             continue;
+
+                        if (_isTransactional() && _tryEnsurePartitionsInTransaction is not null)
+                        {
+                            _transactionEnrollmentFailedPartitions.Clear();
+                            var enrollment = _tryEnsurePartitionsInTransaction(
+                                coalescedBatches,
+                                coalescedCount,
+                                _transactionEnrollmentCompleted,
+                                _transactionEnrollmentPendingPartitions,
+                                _transactionEnrollmentFailedPartitions);
+                            if (enrollment.Error is not null)
+                            {
+                                FailCoalescedTransactionEnrollmentBatches(
+                                    coalescedBatches,
+                                    coalescedGenerations,
+                                    ref coalescedCount,
+                                    _transactionEnrollmentFailedPartitions,
+                                    enrollment.Error);
+                                _transactionEnrollmentPendingPartitions.Clear();
+                                MoveCoalescedToCarryOver(
+                                    coalescedBatches,
+                                    coalescedGenerations,
+                                    ref coalescedCount,
+                                    carryOver);
+                                continue;
+                            }
+
+                            if (!enrollment.IsEnrolled)
+                            {
+                                MoveEnrollmentPendingToCarryOver(
+                                    coalescedBatches,
+                                    coalescedGenerations,
+                                    ref coalescedCount,
+                                    carryOver,
+                                    _transactionEnrollmentPendingPartitions);
+                                if (coalescedCount == 0)
+                                    continue;
+                            }
+                        }
 
                         // Finalize retry batches now that we know they will actually be sent
                         // (epoch bump check passed). Clear IsRetry and unmute partitions.
@@ -1655,6 +1749,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 7. Compute timeout and wait ──
+                if (transactionEnrollmentReady)
+                    continue;
+
                 var waitPendingCount = Volatile.Read(ref _totalPendingResponseCount);
                 if (carryOver.Count == 0
                     && waitPendingCount == 0
@@ -2065,7 +2162,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Normal batch: skip any local retry/recovery mute and crash barriers owned by
         // another sender. The accumulator check closes the handoff gap before the first
         // recovered batch reaches this replacement sender.
-        if (_mutedPartitions.ContainsKey(batch.TopicPartition)
+        if (_transactionEnrollmentPendingPartitions.Contains(batch.TopicPartition)
+            || _mutedPartitions.ContainsKey(batch.TopicPartition)
             || _accumulator.IsMuted(batch.TopicPartition))
         {
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
@@ -2320,6 +2418,128 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Array.Clear(batches, 0, count);
         Array.Clear(generations, 0, count);
         count = 0;
+    }
+
+    private void MoveEnrollmentPendingToCarryOver(
+        ReadyBatch[] batches,
+        int[] generations,
+        ref int count,
+        PartitionCarryOver carryOver,
+        HashSet<TopicPartition> pendingPartitions)
+    {
+        var writeIdx = 0;
+        for (var readIdx = 0; readIdx < count; readIdx++)
+        {
+            var batch = batches[readIdx];
+            var generation = generations[readIdx];
+            if (!batch.IsCurrentIncarnation(generation))
+            {
+                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                continue;
+            }
+
+            if (pendingPartitions.Contains(batch.TopicPartition))
+            {
+                var batchReference = new BatchReference(batch, generation);
+                if (batch.IsRetry)
+                    carryOver.AddFirst(batchReference);
+                else
+                    carryOver.AddAfterRetries(batchReference);
+                continue;
+            }
+
+            batches[writeIdx] = batch;
+            generations[writeIdx] = generation;
+            writeIdx++;
+        }
+
+        Array.Clear(batches, writeIdx, count - writeIdx);
+        Array.Clear(generations, writeIdx, count - writeIdx);
+        count = writeIdx;
+    }
+
+    private void FailPendingTransactionEnrollmentBatches(
+        PartitionCarryOver carryOver,
+        HashSet<TopicPartition> pendingPartitions,
+        Exception error)
+    {
+        foreach (var topicPartition in pendingPartitions)
+        {
+            if (!carryOver.Partitions.TryGetValue(topicPartition, out var queue))
+                continue;
+
+            while (queue.Count > 0)
+            {
+                var batchReference = queue[0];
+                carryOver.RemoveAt(queue, 0);
+                if (!batchReference.IsCurrentIncarnation())
+                {
+                    LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                    continue;
+                }
+
+                FinalizeFailedTransactionEnrollmentRetry(batchReference.Batch);
+                try
+                {
+                    FailAndCleanupBatch(batchReference.Batch, batchReference.Generation, error);
+                }
+                catch (Exception cleanupError)
+                {
+                    LogBatchCleanupStepFailed(cleanupError, _brokerId);
+                }
+            }
+        }
+    }
+
+    private void FailCoalescedTransactionEnrollmentBatches(
+        ReadyBatch[] batches,
+        int[] generations,
+        ref int count,
+        HashSet<TopicPartition> failedPartitions,
+        Exception error)
+    {
+        var writeIdx = 0;
+        for (var readIdx = 0; readIdx < count; readIdx++)
+        {
+            var batch = batches[readIdx];
+            var generation = generations[readIdx];
+            if (!batch.IsCurrentIncarnation(generation))
+            {
+                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                continue;
+            }
+
+            if (!failedPartitions.Contains(batch.TopicPartition))
+            {
+                batches[writeIdx] = batch;
+                generations[writeIdx] = generation;
+                writeIdx++;
+                continue;
+            }
+
+            FinalizeFailedTransactionEnrollmentRetry(batch);
+            try
+            {
+                FailAndCleanupBatch(batch, generation, error);
+            }
+            catch (Exception cleanupError)
+            {
+                LogBatchCleanupStepFailed(cleanupError, _brokerId);
+            }
+        }
+
+        Array.Clear(batches, writeIdx, count - writeIdx);
+        Array.Clear(generations, writeIdx, count - writeIdx);
+        count = writeIdx;
+    }
+
+    private void FinalizeFailedTransactionEnrollmentRetry(ReadyBatch batch)
+    {
+        if (!batch.IsRetry)
+            return;
+
+        batch.IsRetry = false;
+        UnmutePartition(batch.TopicPartition);
     }
 
     private void ObserveBrokerThrottle(int throttleTimeMs)
@@ -3170,23 +3390,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 batches[i].AppendDiag('G');
 
             var apiVersion = EnsureApiVersion();
-
-            // Register new partitions in transaction if needed
-            if (_isTransactional() && _ensurePartitionInTransaction is not null)
-            {
-                for (var i = 0; i < count; i++)
-                {
-                    await _ensurePartitionInTransaction(batches[i].TopicPartition, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-
-                count = CompactCurrentBatches(batches, generations, count);
-                if (count == 0)
-                {
-                    ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
-                    return;
-                }
-            }
 
             count = AcquireResourcePins(batches, generations, count);
             if (count == 0)
