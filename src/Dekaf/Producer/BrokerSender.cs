@@ -130,6 +130,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly ConnectionPool? _retainedConnectionGroupPool;
     private readonly bool[] _retainedConnectionIndices;
+    private int _retainedConnectionIndexCount;
     private readonly MetadataManager _metadataManager;
     private readonly RecordAccumulator _accumulator;
     private readonly ProducerOptions _options;
@@ -764,6 +765,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         _retainedConnectionGroupPool.RetainConnectionGroupIndex(_brokerId, connectionIndex);
         _retainedConnectionIndices[connectionIndex] = true;
+        _retainedConnectionIndexCount++;
     }
 
     private void ReleaseConnectionIndex(int connectionIndex)
@@ -773,6 +775,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
 
         _retainedConnectionIndices[connectionIndex] = false;
+        _retainedConnectionIndexCount--;
         _retainedConnectionGroupPool.ReleaseConnectionGroupIndex(_brokerId, connectionIndex);
     }
 
@@ -1687,8 +1690,33 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && !eventReader.TryPeek(out _))
                 {
                     // No carry-over, no pending responses, no retries, no events — wait for new batch.
-                    if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                    ReleaseRetainedConnectionsIfBrokerIdle();
+                    RefreshPartitionRouting();
+                    if (_retainedConnectionIndexCount > 0 && _options.ConnectionsMaxIdleMs >= 0)
+                    {
+                        using var routingRefreshCts = CancellationTokenSource.CreateLinkedTokenSource(
+                            cancellationToken);
+                        routingRefreshCts.CancelAfter(Math.Clamp(
+                            _options.ConnectionsMaxIdleMs / 2,
+                            1000,
+                            60000));
+                        try
+                        {
+                            if (!await eventReader.WaitToReadAsync(routingRefreshCts.Token)
+                                    .ConfigureAwait(false))
+                            {
+                                break;
+                            }
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            // Re-check the immutable broker-partition snapshot on the next pass.
+                        }
+                    }
+                    else if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
                         break;
+                    }
                 }
             }
         }
@@ -3792,6 +3820,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
 
         _partitionRoutingSnapshot = metadataPartitions;
+    }
+
+    private void ReleaseRetainedConnectionsIfBrokerIdle()
+    {
+        if (_retainedConnectionIndexCount > 0
+            && _metadataManager.GetPartitionsForNode(_brokerId).Count == 0)
+        {
+            ReleaseConnectionIndices();
+        }
     }
 
     /// <summary>

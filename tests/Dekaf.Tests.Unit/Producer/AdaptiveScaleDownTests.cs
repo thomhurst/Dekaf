@@ -240,6 +240,83 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    public async Task MetadataWithoutBrokerPartitions_ReleasesRoutedSlot()
+    {
+        var (pool, connections) = CreateIdleConnectionPool(connectionCount: 2);
+        var options = CreateOptions(idempotent: false, connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        await using (pool)
+        {
+            try
+            {
+                sender.RequestCancellation();
+                await GetField<Task>(sender, "_sendLoopTask");
+                pool.RegisterBroker(1, "localhost", 9092);
+                await pool.GetConnectionAsync(1);
+
+                typeof(BrokerSender).GetMethod(
+                        "GetConnectionForPartition",
+                        BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(sender, [new TopicPartition(Topic, 0)]);
+                var reapedBeforeLeadershipLoss = await pool.ReapIdleConnectionsAsync();
+                await Assert.That(reapedBeforeLeadershipLoss).IsEqualTo(1)
+                    .Because("the routed slot remains retained while the broker still owns work");
+
+                var metadataManager = GetField<MetadataManager>(sender, "_metadataManager");
+                metadataManager.Metadata.Update(new MetadataResponse
+                {
+                    Brokers =
+                    [
+                        new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 },
+                        new BrokerMetadata { NodeId = 2, Host = "localhost", Port = 9093 }
+                    ],
+                    Topics =
+                    [
+                        new TopicMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            Name = Topic,
+                            Partitions =
+                            [
+                                new PartitionMetadata
+                                {
+                                    ErrorCode = ErrorCode.None,
+                                    PartitionIndex = 0,
+                                    LeaderId = 2,
+                                    ReplicaNodes = [2],
+                                    IsrNodes = [2]
+                                }
+                            ]
+                        }
+                    ]
+                });
+                typeof(BrokerSender).GetMethod(
+                        "ReleaseRetainedConnectionsIfBrokerIdle",
+                        BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(sender, null);
+
+                await Assert.That(metadataManager.GetPartitionsForNode(1)).IsEmpty();
+                await Assert.That(GetField<int>(sender, "_retainedConnectionIndexCount")).IsEqualTo(0);
+                foreach (var connection in connections)
+                    connection.LastUsedTimestampMs = 0;
+
+                var reaped = await pool.ReapIdleConnectionsAsync();
+
+                await Assert.That(reaped).IsEqualTo(1);
+                await Assert.That(connections.Sum(static connection => connection.DisposeCount))
+                    .IsEqualTo(2);
+            }
+            finally
+            {
+                await sender.DisposeAsync();
+                await accumulator.DisposeAsync();
+            }
+        }
+    }
+
+    [Test]
     public async Task HighIndexRetention_DoesNotAliasIndexZero()
     {
         const int connectionCount = 33;
