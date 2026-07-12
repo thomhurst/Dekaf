@@ -95,6 +95,7 @@ internal sealed class BrokerUnackedByteBudget
     private long _minRttProbeUntilTimestamp;
     private long _nextProbeTimestamp;
     private long _capacityProbeStartTimestamp;
+    private long _capacityProbeDeadlineTimestamp;
     private double _capacityProbeBaselineRate;
     private bool _capacityProbeActive;
 
@@ -142,12 +143,21 @@ internal sealed class BrokerUnackedByteBudget
     public bool IsOverBudgetAt(long nowTicks)
     {
         var budget = Volatile.Read(ref _budgetBytes);
+        var capacityProbeActive = Volatile.Read(ref _capacityProbeActive);
+        var capacityProbeDeadline = Volatile.Read(ref _capacityProbeDeadlineTimestamp);
+        var capacityProbeCurrent = capacityProbeActive
+            && capacityProbeDeadline != 0
+            && nowTicks < capacityProbeDeadline;
         var minRttProbeUntilTimestamp = Volatile.Read(ref _minRttProbeUntilTimestamp);
         if (minRttProbeUntilTimestamp != 0 && nowTicks >= minRttProbeUntilTimestamp)
         {
-            budget = Volatile.Read(ref _capacityProbeActive)
+            budget = capacityProbeCurrent
                 ? Volatile.Read(ref _probeBudgetAfterMinRttProbeBytes)
                 : Volatile.Read(ref _budgetAfterMinRttProbeBytes);
+        }
+        else if (capacityProbeActive && !capacityProbeCurrent)
+        {
+            budget = Volatile.Read(ref _budgetAfterMinRttProbeBytes);
         }
 
         return Volatile.Read(ref _unackedBytes) >= budget;
@@ -159,11 +169,22 @@ internal sealed class BrokerUnackedByteBudget
     /// </summary>
     internal int GetAdmissionRecheckDelayMilliseconds(long nowTicks)
     {
-        var probeUntilTimestamp = Volatile.Read(ref _minRttProbeUntilTimestamp);
-        if (probeUntilTimestamp == 0 || nowTicks >= probeUntilTimestamp)
+        var recheckTimestamp = long.MaxValue;
+        var minRttProbeUntilTimestamp = Volatile.Read(ref _minRttProbeUntilTimestamp);
+        if (minRttProbeUntilTimestamp > nowTicks)
+            recheckTimestamp = minRttProbeUntilTimestamp;
+
+        if (Volatile.Read(ref _capacityProbeActive))
+        {
+            var capacityProbeDeadline = Volatile.Read(ref _capacityProbeDeadlineTimestamp);
+            if (capacityProbeDeadline > nowTicks)
+                recheckTimestamp = Math.Min(recheckTimestamp, capacityProbeDeadline);
+        }
+
+        if (recheckTimestamp == long.MaxValue)
             return Timeout.Infinite;
 
-        var remainingTicks = probeUntilTimestamp - nowTicks;
+        var remainingTicks = recheckTimestamp - nowTicks;
         return Math.Max(1, (int)Math.Min(
             int.MaxValue,
             Math.Ceiling((double)remainingTicks * 1000 / Stopwatch.Frequency)));
@@ -209,6 +230,8 @@ internal sealed class BrokerUnackedByteBudget
     {
         _capBytes = Math.Max(_floorBytes, capBytes);
         CompleteExpiredMinRttProbe(nowTicks);
+        if (_capacityProbeActive && nowTicks >= _capacityProbeDeadlineTimestamp)
+            DeactivateCapacityProbe();
         RecomputeBudget();
     }
 
@@ -384,6 +407,13 @@ internal sealed class BrokerUnackedByteBudget
 
         if (_capacityProbeActive)
         {
+            if (nowTicks >= _capacityProbeDeadlineTimestamp)
+            {
+                DeactivateCapacityProbe();
+                _nextProbeTimestamp = nowTicks + probeIntervalTicks;
+                return;
+            }
+
             // A response can confirm the probe only when its oldest request was created
             // after the larger budget was published. If observed rate grows, retain the
             // probe and require another wholly-probed sample at the new level.
@@ -394,10 +424,11 @@ internal sealed class BrokerUnackedByteBudget
             {
                 _capacityProbeBaselineRate = bytesPerSecond;
                 _capacityProbeStartTimestamp = nowTicks;
+                Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeIntervalTicks);
             }
             else
             {
-                _capacityProbeActive = false;
+                DeactivateCapacityProbe();
                 _nextProbeTimestamp = nowTicks + probeIntervalTicks;
             }
 
@@ -409,14 +440,21 @@ internal sealed class BrokerUnackedByteBudget
 
         if (nowTicks - _nextProbeTimestamp < probeIntervalTicks)
         {
-            _capacityProbeActive = true;
             _capacityProbeStartTimestamp = nowTicks;
             _capacityProbeBaselineRate = _windowMaxRate;
+            Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeIntervalTicks);
+            Volatile.Write(ref _capacityProbeActive, true);
         }
 
         // A schedule missed by a full interval represents producer idle time, not an
         // active-pipeline probe opportunity. Re-arm instead of probing on resume.
         _nextProbeTimestamp = nowTicks + probeIntervalTicks;
+    }
+
+    private void DeactivateCapacityProbe()
+    {
+        Volatile.Write(ref _capacityProbeActive, false);
+        Volatile.Write(ref _capacityProbeDeadlineTimestamp, 0);
     }
 
     private static double Max(double[] values)
@@ -440,30 +478,31 @@ internal sealed class BrokerUnackedByteBudget
     private void RecomputeBudget()
     {
         var minRttProbeActive = _minRttProbeUntilTimestamp != 0;
-        var budget = ComputeBudget(
-            minRttProbeActive,
-            _capacityProbeActive,
-            _minRttSeconds);
+        var postProbeMinRttSeconds = _minRttSeconds;
+        if (minRttProbeActive && _minRttProbeMinimumSeconds != double.MaxValue)
+            postProbeMinRttSeconds = _minRttProbeMinimumSeconds;
+        var normalBudget = ComputeBudget(
+            minRttProbeActive: false,
+            capacityProbeActive: false,
+            postProbeMinRttSeconds);
+        var probeBudget = ComputeBudget(
+            minRttProbeActive: false,
+            capacityProbeActive: true,
+            postProbeMinRttSeconds);
+        Volatile.Write(ref _budgetAfterMinRttProbeBytes, normalBudget);
+        Volatile.Write(ref _probeBudgetAfterMinRttProbeBytes, probeBudget);
+
+        long budget;
         if (minRttProbeActive)
         {
-            var postProbeMinRttSeconds = _minRttProbeMinimumSeconds != double.MaxValue
-                ? _minRttProbeMinimumSeconds
-                : _minRttSeconds;
-            Volatile.Write(ref _budgetAfterMinRttProbeBytes,
-                ComputeBudget(
-                    minRttProbeActive: false,
-                    capacityProbeActive: false,
-                    minRttSeconds: postProbeMinRttSeconds));
-            Volatile.Write(ref _probeBudgetAfterMinRttProbeBytes,
-                ComputeBudget(
-                    minRttProbeActive: false,
-                    capacityProbeActive: true,
-                    minRttSeconds: postProbeMinRttSeconds));
+            budget = ComputeBudget(
+                minRttProbeActive: true,
+                capacityProbeActive: false,
+                _minRttSeconds);
         }
         else
         {
-            Volatile.Write(ref _budgetAfterMinRttProbeBytes, budget);
-            Volatile.Write(ref _probeBudgetAfterMinRttProbeBytes, budget);
+            budget = _capacityProbeActive ? probeBudget : normalBudget;
         }
 
         Volatile.Write(ref _budgetBytes, budget);
@@ -493,8 +532,13 @@ internal sealed class BrokerUnackedByteBudget
             budget = (long)estimatedBytes;
         }
 
-        var occupancyFloor = (long)(_windowMaxOccupancyBytes * OccupancySafetyMultiplier);
-        budget = Math.Clamp(Math.Max(budget, occupancyFloor), _floorBytes, _capBytes);
+        if (!minRttProbeActive)
+        {
+            var occupancyFloor = (long)(_windowMaxOccupancyBytes * OccupancySafetyMultiplier);
+            budget = Math.Max(budget, occupancyFloor);
+        }
+
+        budget = Math.Clamp(budget, _floorBytes, _capBytes);
 
         return budget;
     }

@@ -392,6 +392,24 @@ public sealed class BrokerUnackedByteBudgetTests
 
         budget.ObserveWrittenUnackedBytes(20_000);
         budget.OnAcked(ackedBytes: 100, rttTicks: Seconds(0.100), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 100, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(0.101));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(30_000);
+    }
+
+    [Test]
+    public async Task MinimumRttProbe_IgnoresRecentOccupancyUntilQueueDrains()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.ObserveWrittenUnackedBytes(20_000);
+        budget.OnAcked(ackedBytes: 100, rttTicks: Seconds(0.100), nowTicks: T0);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200)
+            .Because("minimum-RTT probes must publish a target-only budget that drains standing queueing");
+
+        budget.ObserveWrittenUnackedBytes(20_000);
+        budget.OnAcked(ackedBytes: 100, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(0.101));
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(30_000);
     }
@@ -406,6 +424,24 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.OnAcked(ackedBytes: 100, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(2.1));
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(200);
+    }
+
+    [Test]
+    public async Task PeriodicProbe_WithoutFurtherAck_RevertsAfterEightRtts()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        for (var i = 0; i <= 8; i++)
+            budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(i * 0.100));
+
+        budget.Charge(5_500);
+
+        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(0.900))).IsFalse();
+        await Assert.That(budget.GetAdmissionRecheckDelayMilliseconds(T0 + Seconds(0.900)))
+            .IsEqualTo(700);
+        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(1.601))).IsTrue();
+
+        budget.Release(5_500);
     }
 
     [Test]
