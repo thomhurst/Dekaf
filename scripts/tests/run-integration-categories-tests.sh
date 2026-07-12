@@ -31,4 +31,7 @@ bash scripts/run-integration-categories.sh net10.0 "Messaging,Interop,Serializat
 grep -q 'Category=Interop' "$CALLS_FILE"
 grep -q 'Category=Serialization.*--maximum-parallel-tests 1' "$CALLS_FILE"
 
+grep -Eq 'MaximumParallelTests[[:space:]]*=>[[:space:]]*4' \
+  "$repo_root/tools/Dekaf.Pipeline/Modules/RunProducerIntegrationTestsModule.cs"
+
 echo "run-integration-categories tests passed"
