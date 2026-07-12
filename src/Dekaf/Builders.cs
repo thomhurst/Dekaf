@@ -755,6 +755,7 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     internal ProducerBuilder<TKey, TValue> WithDnsResolver(ClientDnsEndpointResolver resolver)
     {
+        ThrowIfClientOwnedConnectionSettings();
         _dnsResolver = resolver;
         return this;
     }
