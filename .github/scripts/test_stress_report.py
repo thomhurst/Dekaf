@@ -151,16 +151,20 @@ class StressReportTests(unittest.TestCase):
         self.assertEqual(3.0, evaluation["upper"])
         self.assertTrue(evaluation["thresholdBreach"])
 
-    def test_paired_latency_thresholds_ignore_multi_connection_dekaf_results(self):
+    def test_paired_latency_thresholds_enforce_target_without_pairing_multi_connection_results(self):
         confluent = stress_result("Confluent", effective_rate=1000)
         confluent["latency"] = {"p50Us": 10_000, "p99Us": 50_000}
         multi_connection = stress_result("Dekaf (3conn)", effective_rate=2000)
-        multi_connection["latency"] = {"p50Us": 50_000, "p99Us": 500_000}
+        multi_connection.update({
+            "latency": {"p50Us": 50_000, "p95Us": 31_000, "p99Us": 500_000},
+            "deliveryLatencyTargetMs": 10,
+        })
 
-        self.assertEqual(
-            [],
-            paired_latency_thresholds([confluent, multi_connection]),
-        )
+        evaluations = paired_latency_thresholds([confluent, multi_connection])
+
+        self.assertEqual(1, len(evaluations))
+        self.assertEqual("latencyP95TargetRatio", evaluations[0]["metric"])
+        self.assertTrue(evaluations[0]["thresholdBreach"])
 
     def test_paired_latency_thresholds_require_matching_roundtrip_bound(self):
         confluent = stress_result("Confluent", effective_rate=1000)

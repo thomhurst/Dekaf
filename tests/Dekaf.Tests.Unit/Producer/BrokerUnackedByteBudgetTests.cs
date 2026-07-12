@@ -117,6 +117,40 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task MinimumRtt_ExpiredWindowProbeUsesCurrentRttDuration()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0 + Seconds(0.051));
+
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(10.1));
+        budget.OnAcked(ackedBytes: 5_000, rttTicks: Seconds(0.050), nowTicks: T0 + Seconds(10.16));
+
+        // The 100ms sample that starts the refresh keeps the target-only drain active.
+        // Sizing from the stale 5ms minimum would have ended after the 50ms floor and
+        // accepted the still-loaded 50ms sample as base RTT, inflating this to 7,500.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+    }
+
+    [Test]
+    public async Task SetCap_ExpiredMinRttProbeRestoresSafetyFloorWithoutAck()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(0.101));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(15_000);
+
+        budget.OnAcked(ackedBytes: 20_000, rttTicks: Seconds(0.200), nowTicks: T0 + Seconds(10.2));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+
+        budget.SetCap(1_000_000, T0 + Seconds(10.401));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(15_000);
+    }
+
+    [Test]
     public async Task WindowedMaximum_LongGap_DoesNotDeflateRate()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
@@ -232,16 +266,16 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 3_200);
 
         // Cold start follows the cap in both directions.
-        budget.SetCap(6_400);
+        budget.SetCap(6_400, T0);
         await Assert.That(budget.BudgetBytes).IsEqualTo(6_400);
 
         // With a rate established, a cap below the computed budget clamps it...
         EstablishRate(budget, bytesPerSecond: 3_000, rttSeconds: 0.001); // budget 1,500
-        budget.SetCap(1_000);
+        budget.SetCap(1_000, T0);
         await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
 
         // ...and raising the cap re-releases the computed value.
-        budget.SetCap(6_400);
+        budget.SetCap(6_400, T0);
         await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
     }
 

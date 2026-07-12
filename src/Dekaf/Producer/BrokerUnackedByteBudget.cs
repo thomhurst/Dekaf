@@ -128,9 +128,12 @@ internal sealed class BrokerUnackedByteBudget
     /// Updates the ceiling (routing-width-dependent) and republishes the budget.
     /// Called by the owning send loop at construction and on connection scale events.
     /// </summary>
-    public void SetCap(long capBytes)
+    public void SetCap(long capBytes, long nowTicks)
     {
         _capBytes = Math.Max(_floorBytes, capBytes);
+        CompleteExpiredMinRttProbe(nowTicks);
+        if (_probeUntilTimestamp != 0 && nowTicks >= _probeUntilTimestamp)
+            _probeUntilTimestamp = 0;
         RecomputeBudget();
     }
 
@@ -184,11 +187,7 @@ internal sealed class BrokerUnackedByteBudget
         {
             _minRttProbeMinimumSeconds = Math.Min(_minRttProbeMinimumSeconds, rttSeconds);
             if (nowTicks >= _minRttProbeUntilTimestamp)
-            {
-                _minRttSeconds = _minRttProbeMinimumSeconds;
-                _minRttTimestamp = nowTicks;
-                _minRttProbeUntilTimestamp = 0;
-            }
+                CompleteMinRttProbe(nowTicks);
 
             return;
         }
@@ -201,7 +200,24 @@ internal sealed class BrokerUnackedByteBudget
         }
 
         if (nowTicks - _minRttTimestamp >= MinRttWindowTicks)
-            StartMinRttProbe(nowTicks, _minRttSeconds);
+            StartMinRttProbe(nowTicks, rttSeconds);
+    }
+
+    private void CompleteExpiredMinRttProbe(long nowTicks)
+    {
+        if (_minRttProbeUntilTimestamp != 0 && nowTicks >= _minRttProbeUntilTimestamp)
+            CompleteMinRttProbe(nowTicks);
+    }
+
+    private void CompleteMinRttProbe(long nowTicks)
+    {
+        if (_minRttProbeMinimumSeconds != double.MaxValue)
+            _minRttSeconds = _minRttProbeMinimumSeconds;
+
+        // If the probe expired without an ack, retain the prior minimum and re-arm its
+        // freshness window. An idle gap is not a base-RTT measurement.
+        _minRttTimestamp = nowTicks;
+        _minRttProbeUntilTimestamp = 0;
     }
 
     private void StartMinRttProbe(long nowTicks, double observedRttSeconds)

@@ -190,7 +190,7 @@ def paired_latency_thresholds(results):
     evaluations = []
     for result in results:
         client = str(result.get('client', ''))
-        if client.casefold() != 'dekaf':
+        if not client.casefold().startswith('dekaf'):
             continue
         latency = result.get('latency')
         if not isinstance(latency, dict):
@@ -217,6 +217,11 @@ def paired_latency_thresholds(results):
                 'thresholdDirection': 'maximum',
                 'latencyThreshold': True,
             })
+
+        # Multi-connection Dekaf variants use their own throughput profile and have no
+        # like-for-like Confluent pair, but the absolute configured target still applies.
+        if client.casefold() != 'dekaf':
+            continue
 
         baseline = baselines.get(_latency_identity(result))
         if baseline is None:
