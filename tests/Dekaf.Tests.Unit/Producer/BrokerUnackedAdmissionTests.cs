@@ -80,6 +80,15 @@ public sealed class BrokerUnackedAdmissionTests
         accumulator.ReturnReadyBatch(batch);
     }
 
+    private static async ValueTask SealAllAsync(RecordAccumulator accumulator)
+    {
+        var method = typeof(RecordAccumulator).GetMethod(
+            "SealBatchesAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var seal = (ValueTask)method!.Invoke(accumulator, [true, CancellationToken.None])!;
+        await seal;
+    }
+
     [Test]
     public async Task Seal_ChargesLeaderBudget_AndBatchExitReleases()
     {
@@ -397,6 +406,36 @@ public sealed class BrokerUnackedAdmissionTests
             var broker2 = accumulator.GetBrokerUnackedBudget(2)!;
             await Assert.That(broker2.UnackedBytes).IsGreaterThan(0);
             await Assert.That(broker1.UnackedBytes).IsEqualTo(broker1BytesAfterFirstSeals);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task LeaderChange_BeforeFlush_ChargesNewBrokerBudget()
+    {
+        var options = CreateOptions(capOverride: null, batchSize: 16_384);
+        var currentLeader = 1;
+        var accumulator = new RecordAccumulator(options, resolveLeaderId: (_, _) => currentLeader);
+
+        try
+        {
+            var appended = await accumulator.AppendAsync(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, PooledMemory.Null, null, 0, null, null, CancellationToken.None);
+            await Assert.That(appended).IsTrue();
+
+            var broker1 = accumulator.GetBrokerUnackedBudget(1)!;
+            await Assert.That(broker1.UnackedBytes).IsEqualTo(0);
+
+            currentLeader = 2;
+            await SealAllAsync(accumulator);
+
+            var broker2 = accumulator.GetBrokerUnackedBudget(2)!;
+            await Assert.That(broker1.UnackedBytes).IsEqualTo(0);
+            await Assert.That(broker2.UnackedBytes).IsGreaterThan(0);
         }
         finally
         {

@@ -2624,6 +2624,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             batchToComplete,
                             out sealedBatchBytesToRelease,
                             releaseMemoryOnFailure: false);
+                        if (sealedBatchToEnqueue is not null)
+                        {
+                            sealedBatchToEnqueue.UnackedBudget = ResolveUnackedBudget(
+                                topic,
+                                partition);
+                        }
                     }
                     catch
                     {
@@ -3088,6 +3094,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             batchToComplete,
                             out sealedBatchBytesToRelease,
                             releaseMemoryOnFailure: false);
+                        if (sealedBatchToEnqueue is not null)
+                        {
+                            sealedBatchToEnqueue.UnackedBudget = ResolveUnackedBudget(
+                                topic,
+                                partition);
+                        }
                     }
                     catch
                     {
@@ -3505,6 +3517,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             throw;
         }
 
+        if (readyBatch is not null)
+        {
+            readyBatch.UnackedBudget = ResolveUnackedBudget(
+                readyBatch.TopicPartition.Topic,
+                readyBatch.TopicPartition.Partition);
+        }
+
         {
             using var guard = new SpinLockGuard(ref pd.Lock);
             if (readyBatch is not null)
@@ -3524,6 +3543,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void EnqueueCompletedBatchUnderLock(PartitionDeque pd, ReadyBatch readyBatch)
     {
+        if (_unackedBudgetEnabled)
+            pd.UnackedBudget = readyBatch.UnackedBudget;
         OnBatchEntersPipeline(pd, readyBatch);
         pd.AddLast(readyBatch);
         ProducerDebugCounters.RecordBatchQueuedToReady();
@@ -4307,10 +4328,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Charges a freshly sealed batch against its cached leader broker's unacked-byte budget.
+    /// Charges a freshly sealed batch against its current leader broker's unacked-byte budget.
     /// Called under pd.Lock (same ordering domain as InFlightBatchListAdd) so a fast ack
-    /// can never release before the charge lands. Admission resolves and creates the budget
-    /// outside this partition lock; rerouting transfers the charge if the leader changes later.
+    /// can never release before the charge lands. The budget is resolved outside this partition
+    /// lock after completion, closing the append-to-seal leader-change window without adding
+    /// metadata or dictionary work inside the lock. Rerouting transfers later leader changes.
     /// </summary>
     private static void ChargeUnackedBudget(PartitionDeque pd, ReadyBatch batch)
     {
@@ -4430,6 +4452,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (recordBlockEvent)
             currentBudget.RecordAdmissionBlock();
         return true;
+    }
+
+    private BrokerUnackedByteBudget? ResolveUnackedBudget(string topic, int partition)
+    {
+        if (!_unackedBudgetEnabled)
+            return null;
+
+        var leaderId = _resolveLeaderId!(topic, partition);
+        return leaderId >= 0 ? GetBrokerUnackedBudget(leaderId) : null;
     }
 
     internal void IncrementSlowPathAppendCount(string topic, int partition)
