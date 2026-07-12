@@ -29,5 +29,6 @@ grep -q 'Category=Serialization' "$CALLS_FILE"
 : > "$CALLS_FILE"
 bash scripts/run-integration-categories.sh net10.0 "Messaging,Interop,Serialization"
 grep -q 'Category=Interop' "$CALLS_FILE"
+grep -q 'Category=Serialization.*--maximum-parallel-tests 1' "$CALLS_FILE"
 
 echo "run-integration-categories tests passed"
