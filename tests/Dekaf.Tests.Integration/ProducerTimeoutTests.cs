@@ -1,4 +1,7 @@
+using System.Net;
+using System.Net.Sockets;
 using Dekaf.Consumer;
+using Dekaf.Networking;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
@@ -61,7 +64,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
     [Test]
     public async Task MaxBlock_ExceededWaitingForMetadata_ErrorPropagated()
     {
-        // Arrange & Act - Use an invalid bootstrap server so metadata lookup will fail.
+        // Arrange & Act - Resolve the invalid bootstrap server deterministically so metadata lookup will fail.
         // BuildAsync() eagerly initializes and connects, so an unreachable broker
         // should cause initialization to fail quickly rather than hanging indefinitely.
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -70,6 +73,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         {
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers("invalid-host-that-does-not-exist:9092")
+                .WithDnsResolver(new ClientDnsEndpointResolver(new FailingDnsLookup()))
                 .WithClientId("test-maxblock-exceeded")
                 .WithMaxBlock(TimeSpan.FromSeconds(2))
                 .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
@@ -79,8 +83,8 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         sw.Stop();
 
         // The error should propagate within a reasonable time frame.
-        // We use a generous upper bound (30s) to avoid flaky tests in slow CI,
-        // but the key invariant is that it does NOT hang indefinitely.
+        // The injected resolver avoids depending on the host DNS timeout.
+        // The key invariant is that the error does NOT hang indefinitely.
         await Assert.That(sw.Elapsed.TotalSeconds).IsLessThan(30);
     }
 
@@ -270,5 +274,14 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         }
 
         await Assert.That(messages).Count().IsEqualTo(10);
+    }
+
+    private sealed class FailingDnsLookup : IDnsLookup
+    {
+        public ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken)
+            => ValueTask.FromException<IPAddress[]>(new SocketException((int)SocketError.HostNotFound));
+
+        public ValueTask<IPHostEntry> GetHostEntryAsync(string host, CancellationToken cancellationToken)
+            => ValueTask.FromException<IPHostEntry>(new SocketException((int)SocketError.HostNotFound));
     }
 }

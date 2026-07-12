@@ -528,6 +528,8 @@ public sealed class ProducerOptions
     /// </summary>
     public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
 
+    internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
+
     /// <summary>
     /// Application-level retry policy for <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/>.
     /// When set, retriable exceptions that escape the internal protocol-level retries will be

@@ -93,6 +93,9 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithClientDnsLookup(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>()
+                .WithDnsResolver(new ClientDnsEndpointResolver(new SystemDnsLookup())))
+            .Throws<InvalidOperationException>();
 
         await Assert.That(() => client.CreateConsumer<string, string>().UseTls())
             .Throws<InvalidOperationException>();
