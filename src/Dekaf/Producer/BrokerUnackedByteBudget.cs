@@ -160,7 +160,9 @@ internal sealed class BrokerUnackedByteBudget
                 ? Volatile.Read(ref _probeBudgetAfterMinRttProbeBytes)
                 : Volatile.Read(ref _budgetAfterMinRttProbeBytes);
         }
-        else if (capacityProbeActive && !capacityProbeCurrent)
+        else if (minRttProbeUntilTimestamp == 0
+            && capacityProbeActive
+            && !capacityProbeCurrent)
         {
             budget = Volatile.Read(ref _budgetAfterMinRttProbeBytes);
         }

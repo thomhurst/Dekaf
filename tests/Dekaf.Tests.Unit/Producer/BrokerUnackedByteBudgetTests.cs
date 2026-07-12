@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -17,6 +18,11 @@ public sealed class BrokerUnackedByteBudgetTests
     private static readonly long T0 = Frequency;
 
     private static long Seconds(double seconds) => (long)(seconds * Frequency);
+
+    private static void SetField<T>(BrokerUnackedByteBudget budget, string fieldName, T value)
+        => typeof(BrokerUnackedByteBudget)
+            .GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(budget, value);
 
     /// <summary>
     /// Establishes a per-request drain-rate sample of <paramref name="bytesPerSecond"/>.
@@ -365,6 +371,24 @@ public sealed class BrokerUnackedByteBudgetTests
             .Because("the active probe still admits against its larger budget");
         await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(1.601))).IsTrue()
             .Because("the expired probe must fall back without requiring another ack");
+    }
+
+    [Test]
+    public async Task ExpiredCapacityProbe_DoesNotOverrideActiveMinimumRttProbe()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        budget.Charge(1_000);
+        SetField(budget, "_budgetBytes", 500L);
+        SetField(budget, "_budgetAfterMinRttProbeBytes", 5_000L);
+        SetField(budget, "_capacityProbeActive", true);
+        SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(0.010));
+        SetField(budget, "_minRttProbeUntilTimestamp", T0 + Seconds(0.050));
+
+        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(0.020))).IsTrue()
+            .Because("an active minimum-RTT probe must retain its target-only drain budget");
     }
 
     [Test]
