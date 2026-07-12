@@ -2408,6 +2408,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (partitionResponse.ErrorCode.IsRetriable()
                         || (partitionResponse.ErrorCode == ErrorCode.ConcurrentTransactions
                             && _isTransactional()
+                            && _usesTransactionV2()
                             && _getProduceApiVersion()
                                 >= ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion)
                         || partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber

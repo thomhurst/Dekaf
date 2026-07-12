@@ -258,7 +258,8 @@ public sealed class BrokerSenderSendLoopTests
         Action? onBlockedBucketRequeued = null,
         BrokerUnackedByteBudget? unackedBudget = null,
         int produceApiVersion = 9,
-        bool isTransactional = false) =>
+        bool isTransactional = false,
+        bool usesTransactionV2 = false) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -278,7 +279,8 @@ public sealed class BrokerSenderSendLoopTests
             getTimestamp: getTimestamp,
             delayForThrottle: delayForThrottle,
             onBlockedBucketRequeued: onBlockedBucketRequeued,
-            unackedBudget: unackedBudget);
+            unackedBudget: unackedBudget,
+            usesTransactionV2: () => usesTransactionV2);
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {
@@ -290,8 +292,11 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
     [Timeout(120_000)]
-    public async Task SendLoop_Tv2ConcurrentTransactions_RetriesProduce(
+    public async Task SendLoop_ConcurrentTransactions_RetriesOnlyForTv2(
+        bool usesTransactionV2,
         CancellationToken cancellationToken)
     {
         var firstResponse = new TaskCompletionSource<ProduceResponse>();
@@ -317,7 +322,8 @@ public sealed class BrokerSenderSendLoopTests
             accumulator,
             (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
             produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
-            isTransactional: true);
+            isTransactional: true,
+            usesTransactionV2: usesTransactionV2);
 
         try
         {
@@ -328,14 +334,25 @@ public sealed class BrokerSenderSendLoopTests
 
             var next = await Task.WhenAny(sends[1].Task, acknowledged.Task)
                 .WaitAsync(cancellationToken);
-            await Assert.That(next).IsSameReferenceAs(sends[1].Task);
-            retryResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
-
-            await Assert.That(await acknowledged.Task.WaitAsync(cancellationToken)).IsNull();
-            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+            if (usesTransactionV2)
+            {
+                await Assert.That(next).IsSameReferenceAs(sends[1].Task);
+                retryResponse.SetResult(
+                    CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+                await Assert.That(await acknowledged.Task.WaitAsync(cancellationToken)).IsNull();
+                await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+            }
+            else
+            {
+                await Assert.That(next).IsSameReferenceAs(acknowledged.Task);
+                await Assert.That(await acknowledged.Task.WaitAsync(cancellationToken)).IsNotNull();
+                await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+            }
         }
         finally
         {
+            retryResponse.TrySetResult(
+                CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
