@@ -360,20 +360,18 @@ public sealed class AdaptiveScaleDownTests
 
         try
         {
-            typeof(BrokerSender).GetField(
-                "_connectionCount",
-                BindingFlags.Instance | BindingFlags.NonPublic)!
-                .SetValue(sender, 2);
+            // This test drives MaybeScaleConnections directly. Stop and join the live
+            // loop first so it cannot remain a second writer after passing its scaling gate.
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
+            SetField(sender, "_connectionCount", 2);
 
             // First pass starts low-utilization tracking; zero sustained window makes
             // the second pass eligible to shrink if shared-pool protection is absent.
             InvokeMaybeScaleConnections(sender);
             InvokeMaybeScaleConnections(sender);
 
-            var connectionCount = (int)typeof(BrokerSender).GetField(
-                "_connectionCount",
-                BindingFlags.Instance | BindingFlags.NonPublic)!
-                .GetValue(sender)!;
+            var connectionCount = GetField<int>(sender, "_connectionCount");
 
             await pool.DidNotReceive().ShrinkConnectionGroupAsync(
                 Arg.Any<int>(),
