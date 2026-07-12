@@ -3131,6 +3131,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         const int maxRetries = 5;
         var retryDelayMs = 100;
+        var retryDeadline = Stopwatch.GetTimestamp() + _options.DeliveryTimeoutTicks;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
@@ -3140,10 +3141,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return;
             }
             catch (Exception exception) when (attempt < maxRetries - 1
-                && IsRetriablePartitionEnrollmentException(exception))
+                && IsRetriablePartitionEnrollmentException(exception)
+                && Stopwatch.GetTimestamp() < retryDeadline)
             {
                 LogAddPartitionsToTxnTransportRetry(attempt + 1, retryDelayMs);
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                var remainingTicks = retryDeadline - Stopwatch.GetTimestamp();
+                var remainingMs = Math.Max(1, remainingTicks * 1000d / Stopwatch.Frequency);
+                await Task.Delay((int)Math.Min(retryDelayMs, remainingMs), cancellationToken)
+                    .ConfigureAwait(false);
                 retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
             }
         }
