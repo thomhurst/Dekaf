@@ -667,8 +667,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 // Expiration can happen while this call waits for the commit lock.
                 ThrowIfMaxPollIntervalExpired();
 
+                if (_coordinatorId < 0)
+                    await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+
+                var coordinatorId = _coordinatorId;
+                if (coordinatorId < 0)
+                {
+                    throw new Errors.GroupException(
+                        ErrorCode.CoordinatorNotAvailable,
+                        "Coordinator was invalidated during offset commit discovery")
+                    {
+                        GroupId = _options.GroupId
+                    };
+                }
+
                 using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-                    _coordinatorId,
+                    coordinatorId,
                     _getCoordinationConnectionIndex(),
                     cancellationToken)
                     .ConfigureAwait(false);

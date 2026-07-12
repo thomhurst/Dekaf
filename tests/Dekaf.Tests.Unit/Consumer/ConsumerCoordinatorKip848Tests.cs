@@ -1337,6 +1337,68 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task CommitOffsetsAsync_UnknownCoordinator_RediscoversBeforeCommit()
+    {
+        var findCoordinatorCount = 0;
+        _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref findCoordinatorCount);
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = "test-group",
+                            NodeId = 0,
+                            Host = "localhost",
+                            Port = 9092,
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                });
+            });
+        SetupConsumerGroupHeartbeat();
+        _metadataManager.SetApiVersion(
+            ApiKey.OffsetCommit,
+            OffsetCommitRequest.LowestSupportedVersion,
+            OffsetCommitRequest.HighestSupportedVersion);
+
+        var commitRequestCount = 0;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref commitRequestCount);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        SetPrivateField(coordinator, "_coordinatorId", -1);
+        _connectionPool.GetConnectionByIndexAsync(
+                Arg.Is<int>(brokerId => brokerId < 0),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns<ValueTask<IKafkaConnection>>(_ =>
+                throw new InvalidOperationException("Unknown broker ID: -1"));
+
+        await coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 0, 1)],
+            CancellationToken.None);
+
+        await Assert.That(findCoordinatorCount).IsEqualTo(2);
+        await Assert.That(commitRequestCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task CommitOffsetsAsync_OverdueBeforeHeartbeatExpiry_RejectsCommit()
     {
         SetupFindCoordinator();
@@ -2035,6 +2097,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     [Test]
     public async Task CommitOffsetsAsync_RemovesEmptyPooledTopicGroups()
     {
+        SetupFindCoordinator();
         _metadataManager.SetApiVersion(ApiKey.OffsetCommit, OffsetCommitRequest.LowestSupportedVersion, OffsetCommitRequest.HighestSupportedVersion);
 
         var topicSnapshots = new List<(string Name, int PartitionCount)[]>();

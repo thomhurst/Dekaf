@@ -130,6 +130,33 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task CloseAsync_UnknownCoordinator_RediscoversAndCommitsPendingOffset()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false);
+
+        try
+        {
+            consumer.StoreOffset(CreateConsumeResult(offset: 41, leaderEpoch: 7));
+
+            await consumer.CloseAsync(CancellationToken.None);
+
+            await Assert.That(GetCommittedOffsets(requests.Single())).IsEquivalentTo(
+            [
+                new TopicPartitionOffset("topic-a", 0, 42, leaderEpoch: 7)
+            ]);
+        }
+        finally
+        {
+            await consumer.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task AutoCommit_WhenAutoOffsetStoreDisabled_DoesNotCommitConsumedPosition()
     {
         var requests = new List<OffsetCommitRequest>();
@@ -246,6 +273,25 @@ public sealed class ConsumerDirtyCommitTests
         connectionPool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.FromResult(connection));
 
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                Coordinators =
+                [
+                    new Coordinator
+                    {
+                        Key = "group-a",
+                        NodeId = 0,
+                        Host = "localhost",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
+                    }
+                ]
+            }));
+
         connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
                 Arg.Any<OffsetCommitRequest>(),
                 Arg.Any<short>(),
@@ -260,6 +306,15 @@ public sealed class ConsumerDirtyCommitTests
             });
 
         var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 }],
+            Topics = []
+        });
+        metadataManager.SetApiVersion(
+            ApiKey.FindCoordinator,
+            FindCoordinatorRequest.LowestSupportedVersion,
+            FindCoordinatorRequest.HighestSupportedVersion);
         metadataManager.SetApiVersion(
             ApiKey.OffsetCommit,
             OffsetCommitRequest.LowestSupportedVersion,
