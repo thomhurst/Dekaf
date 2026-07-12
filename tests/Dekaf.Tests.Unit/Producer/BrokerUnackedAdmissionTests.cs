@@ -444,6 +444,55 @@ public sealed class BrokerUnackedAdmissionTests
     }
 
     [Test]
+    public async Task LeaderChange_BeforeDrain_TransfersChargeToSelectedBroker()
+    {
+        var options = CreateOptions(capOverride: null, batchSize: 16_384);
+        var currentLeader = 1;
+        var accumulator = new RecordAccumulator(options, resolveLeaderId: (_, _) => currentLeader);
+        var originalMetadata = AccumulatorTestHelpers.CreateMetadataManager("test-topic", 1, nodeId: 1);
+        var newMetadata = AccumulatorTestHelpers.CreateMetadataManager("test-topic", 1, nodeId: 2);
+
+        try
+        {
+            var appended = await accumulator.AppendAsync(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, PooledMemory.Null, null, 0, null, null, CancellationToken.None);
+            await Assert.That(appended).IsTrue();
+            await SealAllAsync(accumulator);
+
+            var broker1 = accumulator.GetBrokerUnackedBudget(1)!;
+            var batchBytes = broker1.UnackedBytes;
+            await Assert.That(batchBytes).IsGreaterThan(0);
+
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(originalMetadata, readyNodes);
+            await Assert.That(readyNodes).Contains(1);
+
+            currentLeader = 2;
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            accumulator.Drain(newMetadata, readyNodes, int.MaxValue, drainResult, new Stack<List<ReadyBatch>>());
+            await Assert.That(drainResult).IsEmpty();
+
+            readyNodes.Clear();
+            accumulator.Ready(newMetadata, readyNodes);
+            accumulator.Drain(newMetadata, readyNodes, int.MaxValue, drainResult, new Stack<List<ReadyBatch>>());
+
+            var batch = drainResult[2].Single();
+            var broker2 = accumulator.GetBrokerUnackedBudget(2)!;
+            await Assert.That(broker1.UnackedBytes).IsEqualTo(0);
+            await Assert.That(broker2.UnackedBytes).IsEqualTo(batchBytes);
+
+            ExitAndReturn(accumulator, batch);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await originalMetadata.DisposeAsync();
+            await newMetadata.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task Reroute_TransfersExistingBatchCharge_ToNewBrokerBudget()
     {
         var options = CreateOptions(capOverride: null);

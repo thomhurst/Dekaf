@@ -1161,11 +1161,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         /// </summary>
         public bool AppendInProgress;
 
-        /// <summary>
-        /// Budget for the current cached leader. Admission refreshes it outside
-        /// <see cref="Lock"/>; sealing reads it inside the lock.
-        /// </summary>
-        public volatile BrokerUnackedByteBudget? UnackedBudget;
         public int SlowPathAppendCount;
 
         /// <summary>Number of batches in the deque.</summary>
@@ -1573,6 +1568,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     FailOversizedBatch(batch, batchRequestSize, maxRequestSize);
                     continue;
                 }
+
+                // Ready/Drain selected this exact broker after revalidating leadership.
+                // Transfer the seal-time charge before handing the batch to its sender.
+                ReattributeUnackedBudget(batch, nodeId);
 
                 if (_options.EnableDeliveryDiagnostics)
                     batch.AppendDiag('D');
@@ -3543,8 +3542,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void EnqueueCompletedBatchUnderLock(PartitionDeque pd, ReadyBatch readyBatch)
     {
-        if (_unackedBudgetEnabled)
-            pd.UnackedBudget = readyBatch.UnackedBudget;
         OnBatchEntersPipeline(pd, readyBatch);
         pd.AddLast(readyBatch);
         ProducerDebugCounters.RecordBatchQueuedToReady();
@@ -4255,10 +4252,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Tracks a batch entering the pipeline: increments counter and adds to reference-tracking dictionary.
     /// Called when a batch is completed and enqueued to a partition deque.
     /// </summary>
-    private void OnBatchEntersPipeline(PartitionDeque pd, ReadyBatch batch)
+    private void OnBatchEntersPipeline(PartitionDeque _, ReadyBatch batch)
     {
         if (_unackedBudgetEnabled)
-            ChargeUnackedBudget(pd, batch);
+            ChargeUnackedBudget(batch);
 
         _partitionQueueBytes.AddOrUpdate(
             batch.TopicPartition,
@@ -4329,21 +4326,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Charges a freshly sealed batch against its current leader broker's unacked-byte budget.
-    /// Called under pd.Lock (same ordering domain as InFlightBatchListAdd) so a fast ack
+    /// Called under the partition lock (same ordering domain as InFlightBatchListAdd) so a fast ack
     /// can never release before the charge lands. The budget is resolved outside this partition
     /// lock after completion, closing the append-to-seal leader-change window without adding
-    /// metadata or dictionary work inside the lock. Rerouting transfers later leader changes.
+    /// metadata or dictionary work inside the lock. Drain and rerouting transfer later leader changes.
     /// </summary>
-    private static void ChargeUnackedBudget(PartitionDeque pd, ReadyBatch batch)
+    private static void ChargeUnackedBudget(ReadyBatch batch)
     {
-        if (pd.UnackedBudget is not { } budget)
+        if (batch.UnackedBudget is not { } budget)
             return;
 
         budget.Charge(batch.DataSize);
-        batch.UnackedBudget = budget;
     }
 
-    /// <summary>Transfers a live batch's charge when retry routing selects another broker.</summary>
+    /// <summary>Transfers a live batch's charge when drain or retry routing selects another broker.</summary>
     internal void ReattributeUnackedBudget(ReadyBatch batch, int brokerId)
     {
         if (GetBrokerUnackedBudget(brokerId) is not { } newBudget)
@@ -4409,7 +4405,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var partitionDeque = GetOrCreateDeque(topic, partition);
         if (_unackedBudgetEnabled
-            && IsBrokerAdmissionBlocked(topic, partition, partitionDeque, recordBlockEvent: true))
+            && IsBrokerAdmissionBlocked(topic, partition, recordBlockEvent: true))
             return false;
 
         return Volatile.Read(ref partitionDeque.SlowPathAppendCount) == 0
@@ -4418,8 +4414,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// True when the destination broker for (topic, partition) is over its unacked-byte
-    /// budget and message admission should block. Lock-free: a cached metadata lookup, one
-    /// deque lookup, and volatile reads.
+    /// budget and message admission should block. Lock-free: a cached metadata lookup and
+    /// volatile reads.
     /// Block events feed adaptive connection scaling; the pending-append drain passes false
     /// because the operation already recorded one when it was first gated.
     /// </summary>
@@ -4429,19 +4425,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!_unackedBudgetEnabled)
             return false;
 
-        return IsBrokerAdmissionBlocked(
-            topic, partition, GetOrCreateDeque(topic, partition), recordBlockEvent);
-    }
-
-    private bool IsBrokerAdmissionBlocked(
-        string topic,
-        int partition,
-        PartitionDeque partitionDeque,
-        bool recordBlockEvent)
-    {
         var leaderId = _resolveLeaderId!(topic, partition);
         var currentBudget = leaderId >= 0 ? GetBrokerUnackedBudget(leaderId) : null;
-        partitionDeque.UnackedBudget = currentBudget;
         if (leaderId < 0
             || currentBudget is null
             || !currentBudget.IsOverBudget())
