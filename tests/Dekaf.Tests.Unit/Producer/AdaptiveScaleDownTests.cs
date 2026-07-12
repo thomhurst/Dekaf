@@ -240,7 +240,9 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
-    public async Task MetadataWithoutBrokerPartitions_ReleasesRoutedSlot()
+    [Timeout(30_000)]
+    public async Task MetadataWithoutBrokerPartitions_ReleasesRoutedSlot(
+        CancellationToken cancellationToken)
     {
         var (pool, connections) = CreateIdleConnectionPool(connectionCount: 2);
         var options = CreateOptions(idempotent: false, connectionsPerBroker: 2);
@@ -251,10 +253,8 @@ public sealed class AdaptiveScaleDownTests
         {
             try
             {
-                sender.RequestCancellation();
-                await GetField<Task>(sender, "_sendLoopTask");
                 pool.RegisterBroker(1, "localhost", 9092);
-                await pool.GetConnectionAsync(1);
+                await pool.GetConnectionAsync(1, cancellationToken);
 
                 typeof(BrokerSender).GetMethod(
                         "GetConnectionForPartition",
@@ -293,9 +293,15 @@ public sealed class AdaptiveScaleDownTests
                     ]
                 });
                 typeof(BrokerSender).GetMethod(
-                        "ReleaseRetainedConnectionsIfBrokerIdle",
+                        "UnmutePartition",
                         BindingFlags.Instance | BindingFlags.NonPublic)!
-                    .Invoke(sender, null);
+                    .Invoke(sender, [new TopicPartition(Topic, 0)]);
+
+                while (GetField<int>(sender, "_retainedConnectionIndexCount") > 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await Task.Yield();
+                }
 
                 await Assert.That(metadataManager.GetPartitionsForNode(1)).IsEmpty();
                 await Assert.That(GetField<int>(sender, "_retainedConnectionIndexCount")).IsEqualTo(0);

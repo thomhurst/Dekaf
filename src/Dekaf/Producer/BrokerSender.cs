@@ -1608,9 +1608,36 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (hasPendingSingleConnectionFireAndForgetSend && !eventReader.TryPeek(out _))
                         await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
 
-                    // Fully idle — wait for any event (new batch, response, unmute).
-                    if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                    ReleaseRetainedConnectionsIfBrokerIdle();
+
+                    // Fully idle — wait for any event (new batch, response, unmute). While an
+                    // indexed route remains retained, periodically recheck whether this broker
+                    // still leads any partitions so an unused socket can become reapable.
+                    if (_retainedConnectionIndexCount > 0 && _options.ConnectionsMaxIdleMs >= 0)
+                    {
+                        using var routingRefreshCts = CancellationTokenSource.CreateLinkedTokenSource(
+                            cancellationToken);
+                        routingRefreshCts.CancelAfter(Math.Clamp(
+                            _options.ConnectionsMaxIdleMs / 2,
+                            1000,
+                            60000));
+                        try
+                        {
+                            if (!await eventReader.WaitToReadAsync(routingRefreshCts.Token)
+                                    .ConfigureAwait(false))
+                            {
+                                break;
+                            }
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            // Re-check the immutable broker-partition snapshot on the next pass.
+                        }
+                    }
+                    else if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
                         break;
+                    }
                 }
                 else if (carryOver.Count > 0 && sentThisIteration)
                 {
@@ -1683,39 +1710,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (wakeupMs > 0)
                     {
                         await Task.Delay(Math.Min(wakeupMs, 100), cancellationToken).ConfigureAwait(false);
-                    }
-                }
-                else if (_sendFailedRetries.IsEmpty
-                    && _loopExitRedeliveries.IsEmpty
-                    && !eventReader.TryPeek(out _))
-                {
-                    // No carry-over, no pending responses, no retries, no events — wait for new batch.
-                    ReleaseRetainedConnectionsIfBrokerIdle();
-                    RefreshPartitionRouting();
-                    if (_retainedConnectionIndexCount > 0 && _options.ConnectionsMaxIdleMs >= 0)
-                    {
-                        using var routingRefreshCts = CancellationTokenSource.CreateLinkedTokenSource(
-                            cancellationToken);
-                        routingRefreshCts.CancelAfter(Math.Clamp(
-                            _options.ConnectionsMaxIdleMs / 2,
-                            1000,
-                            60000));
-                        try
-                        {
-                            if (!await eventReader.WaitToReadAsync(routingRefreshCts.Token)
-                                    .ConfigureAwait(false))
-                            {
-                                break;
-                            }
-                        }
-                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                        {
-                            // Re-check the immutable broker-partition snapshot on the next pass.
-                        }
-                    }
-                    else if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
-                    {
-                        break;
                     }
                 }
             }
