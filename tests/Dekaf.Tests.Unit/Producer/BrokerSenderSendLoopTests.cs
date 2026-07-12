@@ -586,6 +586,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    [NotInParallel]
     [Timeout(120_000)]
     public async Task SendLoop_SequentialRequests_SecondSendsAfterFirstResponseCompletes(CancellationToken cancellationToken)
     {
@@ -712,6 +713,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    [NotInParallel]
     [Timeout(120_000)]
     public async Task SendLoop_InFlightByteBudget_DoesNotBlockIdleConnection(
         CancellationToken cancellationToken)
@@ -948,6 +950,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    [NotInParallel]
     [Timeout(30_000)]
     public async Task SendLoop_SendFailure_RefreshesMetadataAndReroutes(CancellationToken cancellationToken)
     {
@@ -1111,6 +1114,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    [NotInParallel]
     [Timeout(30_000)]
     public async Task SendLoop_ParallelSendFailures_RefreshMetadataOncePerTopic(
         CancellationToken cancellationToken)
