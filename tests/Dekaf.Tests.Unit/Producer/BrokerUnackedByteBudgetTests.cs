@@ -151,6 +151,21 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task Admission_ExpiredIdleMinRttProbeUsesSafetyFloorWithoutAck()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(0.101));
+        budget.OnAcked(ackedBytes: 20_000, rttTicks: Seconds(0.200), nowTicks: T0 + Seconds(10.2));
+        budget.Charge(2_000);
+
+        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(10.3))).IsTrue();
+        await Assert.That(budget.IsOverBudget()).IsTrue();
+        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(10.401))).IsFalse();
+    }
+
+    [Test]
     public async Task MinimumRtt_LateAckAfterEmptyProbeRetainsPriorMinimum()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);

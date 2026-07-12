@@ -4431,7 +4431,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var currentBudget = leaderId >= 0 ? GetBrokerUnackedBudget(leaderId) : null;
         if (leaderId < 0
             || currentBudget is null
-            || !currentBudget.IsOverBudget())
+            || !currentBudget.IsOverBudget()
+            || !currentBudget.IsOverBudgetAt(Stopwatch.GetTimestamp()))
         {
             return false;
         }
