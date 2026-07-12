@@ -249,7 +249,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// Sets the number of TCP connections to maintain per broker.
     /// Multiple connections enable parallel request handling, improving throughput by
     /// reducing write lock contention. Idempotent producers use partition affinity
-    /// (partition % connectionCount) to preserve sequence ordering.
+    /// (dense broker-partition ordinal % connectionCount) to preserve sequence ordering.
     /// </summary>
     /// <param name="connectionsPerBroker">
     /// Number of connections per broker. Must be between 1 and 32.

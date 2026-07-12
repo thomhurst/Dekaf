@@ -217,10 +217,8 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Number of connections to maintain per broker for parallel request handling.
-    /// When set greater than 1, connections are selected based on the producer mode:
-    /// idempotent producers use partition affinity (partition % connectionCount) to preserve
-    /// per-partition sequence ordering, while non-idempotent producers use round-robin
-    /// to distribute load across TCP streams.
+    /// When set greater than 1, dense broker-partition affinity distributes partitions
+    /// across connections while preserving per-partition ordering.
     /// <para>
     /// For transactional producers (<see cref="TransactionalId"/> is set), this must be 1
     /// because transaction coordinator requests require a single connection per broker.
@@ -554,8 +552,8 @@ public sealed class ProducerOptions
     /// when sustained buffer backpressure is detected, improving drain throughput.
     /// <para>
     /// Applies to idempotent and acknowledged non-idempotent producers. Idempotent producers
-    /// use partition affinity (partition % connectionCount) to preserve per-partition
-    /// sequence ordering across multiple connections, so adaptive scaling is safe.
+    /// use dense broker-partition affinity to preserve per-partition sequence ordering
+    /// across multiple connections, so adaptive scaling is safe.
     /// </para>
     /// <para>
     /// Automatically disabled for transactional producers (<see cref="TransactionalId"/> is set),
