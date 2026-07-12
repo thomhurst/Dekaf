@@ -16,6 +16,12 @@ internal sealed class StressTestResult
     public required int DurationMinutes { get; init; }
     public required int MessageSizeBytes { get; init; }
     public int? ConsumerSeedBatchSizeBytes { get; init; }
+
+    /// <summary>
+    /// Consumer connections per broker used by this performance profile. Null for
+    /// non-consumer scenarios.
+    /// </summary>
+    public int? ConsumerConnectionsPerBroker { get; init; }
     public required DateTime StartedAtUtc { get; init; }
     public required DateTime CompletedAtUtc { get; init; }
     public required ThroughputSnapshot Throughput { get; init; }

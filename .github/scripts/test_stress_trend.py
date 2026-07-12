@@ -403,6 +403,36 @@ class StressTrendTests(unittest.TestCase):
             {item["status"] for item in large_batch_evaluations},
         )
 
+    def test_consumer_connection_count_separates_new_performance_profile(self):
+        history = {
+            "version": 1,
+            "runs": [history_run(i, scenario="consumer-batch") for i in range(1, 4)],
+        }
+
+        legacy_evaluations, _, _ = evaluate_and_update(
+            history,
+            [result(scenario="consumer-batch", consumerConnectionsPerBroker=2)],
+            "2026-07-01T02:00:00Z",
+        )
+        three_connection_evaluations, updated, _ = evaluate_and_update(
+            history,
+            [result(scenario="consumer-batch", consumerConnectionsPerBroker=3)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        self.assertNotEqual(
+            {"insufficient-history"},
+            {item["status"] for item in legacy_evaluations},
+        )
+        self.assertEqual(
+            {"insufficient-history"},
+            {item["status"] for item in three_connection_evaluations},
+        )
+        self.assertEqual(
+            3,
+            updated["runs"][-1]["results"][0]["consumerConnectionsPerBroker"],
+        )
+
     def test_different_roundtrip_bound_does_not_supply_baseline(self):
         history = {
             "version": 1,
