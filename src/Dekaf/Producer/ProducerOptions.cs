@@ -139,6 +139,28 @@ public sealed class ProducerOptions
     internal bool IsAutoTuned { get; init; }
 
     /// <summary>
+    /// Soft target, in milliseconds, for per-broker producer queueing latency (append to ack).
+    /// Bounds the bytes each broker may hold unacknowledged to
+    /// <c>target × measured ack throughput</c>, with a measured round-trip lower guard so
+    /// throughput is never window-limited. When a broker exceeds its budget, message admission
+    /// blocks the same way <see cref="BufferMemory"/> exhaustion does (subject to
+    /// <see cref="MaxBlockMs"/> and cancellation). Until the first drain measurement the bound
+    /// equals its ceiling, so short-lived producers are unaffected.
+    /// Set to 0 to disable the bound entirely. Default: 10.
+    /// </summary>
+    public int DeliveryLatencyTargetMs
+    {
+        get => _deliveryLatencyTargetMs;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            _deliveryLatencyTargetMs = value;
+        }
+    }
+
+    private readonly int _deliveryLatencyTargetMs = 10;
+
+    /// <summary>
     /// Compression type.
     /// </summary>
     public CompressionType CompressionType { get; init; } = CompressionType.None;
@@ -571,6 +593,13 @@ public sealed class ProducerOptions
     /// required before a scale-down. Null uses the production constant.
     /// </summary>
     internal long? ScaleDownSustainedMsOverride { get; init; }
+
+    /// <summary>
+    /// Test-only override for the unacked-byte budget ceiling (bytes). Null derives the
+    /// ceiling from <see cref="BatchSize"/> and the connection count. Internal so unit
+    /// tests can bind the admission gate with small payloads; not part of the public API.
+    /// </summary>
+    internal long? UnackedByteBudgetCapOverride { get; init; }
 
     /// <summary>
     /// Producer interceptors, called in order during the produce pipeline.

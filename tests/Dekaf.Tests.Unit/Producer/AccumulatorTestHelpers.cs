@@ -1,5 +1,8 @@
 using System.Reflection;
+using Dekaf.Metadata;
 using Dekaf.Producer;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -32,6 +35,42 @@ internal static class AccumulatorTestHelpers
 
         var completeMethod = partitionBatch.GetType().GetMethod("Complete");
         return (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
+    }
+
+    /// <summary>
+    /// Creates a MetadataManager with a single broker leading every partition of the topic.
+    /// </summary>
+    public static MetadataManager CreateMetadataManager(string topic, int partitionCount, int nodeId = 1)
+    {
+        var manager = new MetadataManager(connectionPool: null!, bootstrapServers: ["localhost:9092"]);
+
+        var partitions = new List<PartitionMetadata>();
+        for (var i = 0; i < partitionCount; i++)
+        {
+            partitions.Add(new PartitionMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                PartitionIndex = i,
+                LeaderId = nodeId,
+                ReplicaNodes = [nodeId],
+                IsrNodes = [nodeId]
+            });
+        }
+
+        manager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = nodeId, Host = "localhost", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = topic,
+                    Partitions = partitions
+                }
+            ]
+        });
+        return manager;
     }
 
     /// <summary>

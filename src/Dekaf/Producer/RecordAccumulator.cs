@@ -887,6 +887,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly ConcurrentDictionary<TopicPartition, PartitionDeque> _partitionDeques = new();
 
     /// <summary>
+    /// Per-broker unacked-byte budgets bounding delivery latency under sustained overload.
+    /// Populated lazily at the first batch seal for a broker; entries are never removed
+    /// (brokers are few and long-lived). Null-pattern: the registry is consulted only when
+    /// <see cref="_unackedBudgetEnabled"/> is true.
+    /// </summary>
+    private readonly ConcurrentDictionary<int, BrokerUnackedByteBudget> _brokerUnackedBudgets = new();
+    private readonly Func<string, int, int>? _resolveLeaderId;
+    private readonly bool _unackedBudgetEnabled;
+
+    /// <summary>
     /// Muted partitions — skipped by Ready() and Drain(). The value is a reference count:
     /// independent BrokerSenders and crash-recovery barriers may overlap for the same partition.
     /// Updates are serialized by <see cref="_partitionMuteLock"/>, while Ready/Drain perform
@@ -1146,6 +1156,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         /// Appenders and linger sealing wait until the reserved record metadata is committed.
         /// </summary>
         public bool AppendInProgress;
+
+        /// <summary>
+        /// Cached unacked-byte budget for this partition's current leader broker, refreshed at
+        /// each batch seal so per-message admission checks need no metadata lookup. Written
+        /// under <see cref="Lock"/>; read lock-free at admission (reference writes are atomic,
+        /// and a briefly stale budget after a leader move is benign).
+        /// </summary>
+        public BrokerUnackedByteBudget? UnackedBudget;
 
         /// <summary>Number of batches in the deque.</summary>
         public int Count => _count;
@@ -1767,6 +1785,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         continue;
                     }
 
+                    // Head-of-line semantics identical to memory exhaustion: a broker over
+                    // its unacked-byte budget stops the drain; the next release/ack retries.
+                    if (IsBrokerAdmissionBlocked(op.Topic, op.Partition, recordBlockEvent: false))
+                        break;
+
                     // Try to reserve memory for this operation
                     if (!TryReserveMemory(op.RecordSize))
                         break; // No space — stop draining, next ReleaseMemory will retry
@@ -1872,7 +1895,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         CompressionCodecRegistry? compressionCodecs = null,
         ILogger? logger = null,
         Action<string, int>? onBatchComplete = null,
-        Action<string, int, int, int>? onRecordAppended = null)
+        Action<string, int, int, int>? onRecordAppended = null,
+        Func<string, int, int>? resolveLeaderId = null)
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _options = options;
@@ -1881,6 +1905,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _compressionCodecs = compressionCodecs;
         _onBatchComplete = onBatchComplete;
         _onRecordAppended = onRecordAppended;
+        _resolveLeaderId = resolveLeaderId;
+        _unackedBudgetEnabled = options.DeliveryLatencyTargetMs > 0 && resolveLeaderId is not null;
 
         ProducerOptions.ValidateArenaCapacity(options.BatchSize, options.ArenaCapacity);
 
@@ -2306,12 +2332,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             throw;
         }
 
-        // Hot path: non-blocking CAS reservation — no async state machine allocated
-        if (TryReserveMemory(recordSize))
+        // Hot path: non-blocking gate check + CAS reservation — no async state machine
+        // allocated. An over-budget broker applies the same backpressure as a full buffer.
+        if (TryAdmitAndReserve(topic, partition, recordSize))
             return new ValueTask<bool>(AppendAfterReservation(topic, partition, timestamp, key, value,
                 headers, headerCount, completionSource, callback, recordSize, partitionCount));
 
-        // Cold path: buffer full — enqueue pooled PendingAppend (zero async state machine allocation)
+        // Cold path: buffer full or broker over budget — enqueue pooled PendingAppend
+        // (zero async state machine allocation)
         return AppendSlowPathPooled(topic, partition, timestamp, key, value,
             headers, headerCount, completionSource, callback, recordSize, cancellationToken, partitionCount);
     }
@@ -2674,9 +2702,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             throw;
         }
 
-        // Try non-blocking memory reservation. If buffer is full, return false so the
+        // Try the admission gate + non-blocking memory reservation. If the buffer is full
+        // or the destination broker is over its unacked-byte budget, return false so the
         // caller (ProduceAsync fast path) falls back to the async path.
-        if (!TryReserveMemory(recordSize))
+        if (!TryAdmitAndReserve(topic, partition, recordSize))
             return false;
 
         return AppendPooledAfterReservationCore(topic, partition, timestamp, key, value, headers, headerCount,
@@ -2711,7 +2740,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
             headers, headerCount, recordSize);
 
-        if (!TryReserveMemory(recordSize))
+        if (!TryAdmitAndReserve(topic, partition, recordSize))
             return false;
 
         return AppendFromSpansAfterReservationCore(topic, partition, timestamp, keyData, keyIsNull,
@@ -3107,8 +3136,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             throw;
         }
 
-        // Hot path: non-blocking CAS reservation — no async state machine allocated
-        if (TryReserveMemory(recordSize))
+        // Hot path: non-blocking gate check + CAS reservation — no async state machine
+        // allocated. An over-budget broker applies the same backpressure as a full buffer.
+        if (TryAdmitAndReserve(topic, partition, recordSize))
             return new ValueTask<bool>(AppendFromSpansAfterReservation(topic, partition, timestamp,
                 keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, callback, recordSize, partitionCount));
 
@@ -3451,7 +3481,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void EnqueueCompletedBatchUnderLock(PartitionDeque pd, ReadyBatch readyBatch)
     {
-        OnBatchEntersPipeline(readyBatch);
+        OnBatchEntersPipeline(pd, readyBatch);
         pd.AddLast(readyBatch);
         ProducerDebugCounters.RecordBatchQueuedToReady();
     }
@@ -4161,8 +4191,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Tracks a batch entering the pipeline: increments counter and adds to reference-tracking dictionary.
     /// Called when a batch is completed and enqueued to a partition deque.
     /// </summary>
-    private void OnBatchEntersPipeline(ReadyBatch batch)
+    private void OnBatchEntersPipeline(PartitionDeque pd, ReadyBatch batch)
     {
+        if (_unackedBudgetEnabled)
+            ChargeUnackedBudget(pd, batch);
+
         _partitionQueueBytes.AddOrUpdate(
             batch.TopicPartition,
             batch.DataSize,
@@ -4195,6 +4228,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!InFlightBatchListRemove(batch))
             return false;
 
+        if (batch.UnackedBudget is { } unackedBudget)
+        {
+            // DataSize is exactly what ChargeUnackedBudget charged; it stays valid until
+            // Reset() at pool return, which cannot precede this first-exit path.
+            unackedBudget.Release(batch.DataSize);
+            batch.UnackedBudget = null;
+
+            // Freed unacked headroom can unblock appenders gated on this broker's budget —
+            // wake them through the same machinery BufferMemory releases use.
+            DrainPendingAppends();
+            SignalBufferSpaceAvailable();
+        }
+
         _partitionQueueBytes.AddOrUpdate(
             batch.TopicPartition,
             0,
@@ -4216,6 +4262,84 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 SignalWakeup();
         }
 
+        return true;
+    }
+
+    /// <summary>
+    /// Charges a freshly sealed batch against its leader broker's unacked-byte budget.
+    /// Called under pd.Lock (same ordering domain as InFlightBatchListAdd) so a fast ack
+    /// can never release before the charge lands. The resolved budget is cached on the
+    /// partition deque so admission checks stay metadata-free.
+    /// </summary>
+    private void ChargeUnackedBudget(PartitionDeque pd, ReadyBatch batch)
+    {
+        var leaderId = _resolveLeaderId!(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+        if (leaderId < 0)
+            return; // Leader unknown (metadata gap) — skip; the gate cannot bind for this partition yet.
+
+        var budget = GetBrokerUnackedBudget(leaderId)!;
+        pd.UnackedBudget = budget;
+        budget.Charge(batch.DataSize);
+        batch.UnackedBudget = budget;
+    }
+
+    /// <summary>
+    /// Returns the unacked-byte budget for a broker, creating it on first use.
+    /// Null when the bound is disabled (<see cref="ProducerOptions.DeliveryLatencyTargetMs"/> = 0
+    /// or no leader resolver was wired).
+    /// </summary>
+    internal BrokerUnackedByteBudget? GetBrokerUnackedBudget(int brokerId)
+    {
+        if (!_unackedBudgetEnabled)
+            return null;
+
+        return _brokerUnackedBudgets.GetOrAdd(
+            brokerId,
+            static (_, accumulator) => accumulator.CreateBrokerUnackedBudget(),
+            this);
+    }
+
+    private BrokerUnackedByteBudget CreateBrokerUnackedBudget()
+    {
+        var cap = _options.UnackedByteBudgetCapOverride
+            ?? BrokerUnackedByteBudget.ComputeCap(_options.BatchSize, _options.ConnectionsPerBroker);
+        // Floor keeps the pipe full (≥ 2 batches, ≥ 1MiB BDP headroom) but must not exceed a
+        // deliberately tiny test cap, or the gate could never bind in unit tests.
+        var floor = Math.Min(Math.Max(2L * Math.Max(1, _options.BatchSize), 1L << 20), cap);
+        return new BrokerUnackedByteBudget(_options.DeliveryLatencyTargetMs / 1000.0, floor, cap);
+    }
+
+    /// <summary>
+    /// Checks the broker admission gate, then reserves buffer memory — in that order, so a
+    /// gate-blocked append never leaks a reservation. This is the single choke point for
+    /// every append entry path; call this instead of <see cref="TryReserveMemory"/> directly.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryAdmitAndReserve(string topic, int partition, int recordSize)
+        => !IsBrokerAdmissionBlocked(topic, partition, recordBlockEvent: true)
+            && TryReserveMemory(recordSize);
+
+    /// <summary>
+    /// True when the destination broker for (topic, partition) is over its unacked-byte
+    /// budget and message admission should block. Lock-free: one thread-cached deque lookup
+    /// plus two volatile reads per message; returns false before the partition's first seal.
+    /// Block events feed adaptive connection scaling; the pending-append drain passes false
+    /// because the operation already recorded one when it was first gated.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsBrokerAdmissionBlocked(string topic, int partition, bool recordBlockEvent)
+    {
+        if (!_unackedBudgetEnabled)
+            return false;
+
+        if (GetOrCreateDeque(topic, partition).UnackedBudget is not { } budget
+            || !budget.IsOverBudget())
+        {
+            return false;
+        }
+
+        if (recordBlockEvent)
+            budget.RecordAdmissionBlock();
         return true;
     }
 
@@ -6168,6 +6292,12 @@ internal sealed class ReadyBatch
     // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
     internal InflightEntry? InflightEntry { get; set; }
 
+    // Unacked-byte budget this batch's DataSize was charged against at seal time. Released
+    // once (first terminal path wins, guarded by OnBatchExitsPipeline's InFlightBatchListRemove)
+    // and cleared in Reset(). A rerouted batch stays charged to its seal-time broker until
+    // terminal — bounded and self-correcting at the next seal.
+    internal BrokerUnackedByteBudget? UnackedBudget;
+
     // Intrusive linked list pointers for RecordAccumulator._inFlightBatchList.
     // Using embedded pointers eliminates per-batch ConcurrentDictionary.Node allocations
     // that caused pathological Gen2 GC promotion (nodes survived Gen0 during network
@@ -6740,6 +6870,7 @@ internal sealed class ReadyBatch
         _callbackCount = 0;
         _arrayReuseQueue = null;
         InflightEntry = null;
+        UnackedBudget = null;
         InFlightPrev = null;
         InFlightNext = null;
         InFlightLinked = false;

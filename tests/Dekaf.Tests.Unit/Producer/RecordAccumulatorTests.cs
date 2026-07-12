@@ -2865,13 +2865,18 @@ public class RecordAccumulatorTests
     }
 
     /// <summary>
-    /// Calls the private OnBatchEntersPipeline method via reflection.
+    /// Calls the private OnBatchEntersPipeline method via reflection, supplying a fresh
+    /// PartitionDeque (the method uses it only to cache the unacked-byte budget, which is
+    /// disabled in these tests because no leader resolver is wired).
     /// </summary>
     private static void InvokeOnBatchEntersPipeline(RecordAccumulator accumulator, ReadyBatch batch)
     {
+        var pdType = typeof(RecordAccumulator).GetNestedType("PartitionDeque",
+            System.Reflection.BindingFlags.NonPublic)!;
+        var pd = Activator.CreateInstance(pdType)!;
         var method = typeof(RecordAccumulator).GetMethod("OnBatchEntersPipeline",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        method!.Invoke(accumulator, [batch]);
+        method!.Invoke(accumulator, [pd, batch]);
     }
 
     [Test]
