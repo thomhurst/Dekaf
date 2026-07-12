@@ -581,6 +581,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // _lastUnackedBlockSnapshot because newly discovered partitions can make that pressure
     // scale-useful later.
     private long _lastPartitionLimitedUnackedBlockSnapshot;
+    private long _lastPartitionLimitedBufferPressureSnapshot;
 
     // Recency tracking for the scale-down veto: the counter value last seen by the scale
     // check, and the monotonic-ms time of its last observed movement. Kept separate from
@@ -4316,6 +4317,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var utilization = _accumulator.BufferUtilization;
         var bufferPressureDelta = _accumulator.BufferPressureEvents - _lastPressureSnapshot;
+        var partitionLimitedBufferPressureDelta =
+            _accumulator.BufferPressureEvents - _lastPartitionLimitedBufferPressureSnapshot;
         var sendLoopPressureDelta = _sendLoopPressureEvents - _lastSendLoopPressureSnapshot;
         var partitionLimitedPressureDelta =
             _partitionLimitedPressureEvents - _lastPartitionLimitedPressureSnapshot;
@@ -4345,17 +4348,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             : 0;
         if (partitionLimitedScalePressure
             && (partitionLimitedPressureDelta >= ScalePressureDeltaThreshold
-                || partitionLimitedUnackedBlockDelta >= ScalePressureDeltaThreshold))
+                || partitionLimitedUnackedBlockDelta >= ScalePressureDeltaThreshold
+                || (utilization >= ScaleUtilizationThreshold
+                    && partitionLimitedBufferPressureDelta >= ScalePressureDeltaThreshold)))
         {
             _accumulator.RecordConnectionScaleEvent(
                 _brokerId,
                 _connectionCount,
                 _connectionCount,
                 utilization,
-                bufferPressureDelta + partitionLimitedUnackedBlockDelta,
+                partitionLimitedBufferPressureDelta + partitionLimitedUnackedBlockDelta,
                 partitionLimitedPressureDelta,
                 partitionLimited: true);
             _lastPartitionLimitedPressureSnapshot = _partitionLimitedPressureEvents;
+            _lastPartitionLimitedBufferPressureSnapshot = _accumulator.BufferPressureEvents;
             _lastPartitionLimitedUnackedBlockSnapshot = unackedBlockEvents;
         }
         var scalePressureDelta = ComputeScalePressureDelta(
@@ -4555,6 +4561,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // connections than requested, stale pressure keeps accumulating so the next
         // cooldown window retries with the full delta rather than starting from zero.
         _lastPressureSnapshot = _accumulator.BufferPressureEvents;
+        _lastPartitionLimitedBufferPressureSnapshot = _lastPressureSnapshot;
         _lastSendLoopPressureSnapshot = _sendLoopPressureEvents;
         _lastPartitionLimitedPressureSnapshot = _partitionLimitedPressureEvents;
         _lastUnackedBlockSnapshot = _unackedBudget?.AdmissionBlockEvents ?? 0;

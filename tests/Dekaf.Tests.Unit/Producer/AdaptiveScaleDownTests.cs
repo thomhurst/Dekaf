@@ -98,6 +98,43 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    public async Task PartitionLimitedBufferPressure_RecordsCappedEventOncePerDelta()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            enableDeliveryDiagnostics: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
+            GetField<HashSet<TopicPartition>>(sender, "_knownPartitions")
+                .Add(new TopicPartition(Topic, 0));
+            SetField(accumulator, "_bufferedBytes", (long)options.BufferMemory);
+            SetField(accumulator, "_bufferPressureEvents", 100L);
+
+            InvokeMaybeScaleConnections(sender);
+            InvokeMaybeScaleConnections(sender);
+
+            var diagnostic = accumulator.GetDeliveryDiagnosticsSnapshot()
+                .ConnectionScaleEvents.Single();
+            await Assert.That(diagnostic.Direction).IsEqualTo("capped");
+            await Assert.That(diagnostic.BufferPressureDelta).IsEqualTo(100);
+            await Assert.That(GetField<long>(sender, "_lastPartitionLimitedBufferPressureSnapshot"))
+                .IsEqualTo(100);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task PartitionLimitedAdmissionPressure_ScalesAfterAnotherPartitionAppears()
     {
         var options = CreateOptions(idempotent: false, scaleCooldownMs: 0);
