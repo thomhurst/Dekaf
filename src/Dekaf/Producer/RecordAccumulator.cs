@@ -1797,20 +1797,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             continue;
 
                         var topicPartition = new TopicPartition(candidate.Topic, candidate.Partition);
+                        if (memoryExhausted || _blockedPendingPartitions.Contains(topicPartition))
+                        {
+                            _pendingAppends.Enqueue(candidate);
+                            continue;
+                        }
+
                         var admissionBlocked = IsBrokerAdmissionBlocked(
                             candidate.Topic,
                             candidate.Partition,
                             recordBlockEvent: false,
                             out var admissionRecheckDelayMs);
-                        if (memoryExhausted
-                            || _blockedPendingPartitions.Contains(topicPartition)
-                            || admissionBlocked)
+                        if (admissionBlocked)
                         {
                             _pendingAppends.Enqueue(candidate);
-                            if (admissionBlocked)
-                                candidate.ScheduleAdmissionRecheck(admissionRecheckDelayMs);
-                            if (!memoryExhausted)
-                                _blockedPendingPartitions.Add(topicPartition);
+                            candidate.ScheduleAdmissionRecheck(admissionRecheckDelayMs);
+                            _blockedPendingPartitions.Add(topicPartition);
                             continue;
                         }
 
@@ -4445,14 +4447,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var leaderId = _resolveLeaderId!(topic, partition);
         var currentBudget = leaderId >= 0 ? GetBrokerUnackedBudget(leaderId) : null;
-        var nowTicks = Stopwatch.GetTimestamp();
         if (leaderId < 0
             || currentBudget is null
-            || !currentBudget.IsOverBudget()
-            || !currentBudget.IsOverBudgetAt(nowTicks))
+            || !currentBudget.IsOverBudget())
         {
             return false;
         }
+
+        var nowTicks = Stopwatch.GetTimestamp();
+        if (!currentBudget.IsOverBudgetAt(nowTicks))
+            return false;
 
         recheckDelayMilliseconds = currentBudget.GetAdmissionRecheckDelayMilliseconds(nowTicks);
         if (recordBlockEvent)
