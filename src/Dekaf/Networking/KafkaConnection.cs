@@ -785,6 +785,8 @@ public sealed partial class KafkaConnection :
         where TResponse : IKafkaResponse
         => PooledPipelinedResponse<TRequest, TResponse>.ApproximatePoolCount;
 
+    internal static Action? PipelinedResponseBeforePublishTestHook;
+
     private sealed class PooledPipelinedResponse<TRequest, TResponse> :
         IPipelinedResponseSource<TResponse>
         where TRequest : IKafkaRequest<TResponse>
@@ -794,6 +796,9 @@ public sealed partial class KafkaConnection :
         private const int ConsumerActive = 0;
         private const int ConsumerAbandoned = 1;
         private const int ConsumerReturned = 2;
+        private const int CompletionReady = 1;
+        private const int ConsumerReady = 2;
+        private const int ReturnReady = CompletionReady | ConsumerReady;
 
         private static readonly ConcurrentStack<PooledPipelinedResponse<TRequest, TResponse>> Pool = new();
         private static int s_poolCount;
@@ -815,6 +820,7 @@ public sealed partial class KafkaConnection :
         private bool _canceled;
         private long _telemetryStartTimestamp;
         private int _consumerState;
+        private int _returnReadiness;
 
         private PooledPipelinedResponse()
         {
@@ -870,6 +876,7 @@ public sealed partial class KafkaConnection :
             _cancellationToken = cancellationToken;
             _canceled = false;
             _consumerState = ConsumerActive;
+            _returnReadiness = 0;
             connection.LogWaitingForResponse(correlationId);
 
             if (callerOwnsTimeout && cancellationToken.CanBeCanceled)
@@ -955,6 +962,7 @@ public sealed partial class KafkaConnection :
                 ConsumerReturned,
                 ConsumerAbandoned) == ConsumerAbandoned;
             var token = _core.Version;
+            Volatile.Read(ref PipelinedResponseBeforePublishTestHook)?.Invoke();
             if (exception is null)
             {
                 _core.SetResult(response);
@@ -965,10 +973,14 @@ public sealed partial class KafkaConnection :
                 _core.SetException(exception);
             }
 
-            // An abandoned response has no consumer that can recycle this source. Ownership
-            // was claimed before publication, so no GetResult path can race this return.
-            // Active responses must not touch mutable state after SetResult/SetException:
-            // their consumer may already have returned and re-rented this instance.
+            // Abandon can win after the pre-publication check. Claim it again only after
+            // publishing the terminal result. The return handshake prevents an active
+            // consumer from pooling/re-renting this source until this completion frame has
+            // finished both checks, avoiding an ABA race on _consumerState.
+            returnAbandoned |= Interlocked.CompareExchange(
+                ref _consumerState,
+                ConsumerReturned,
+                ConsumerAbandoned) == ConsumerAbandoned;
             if (returnAbandoned)
             {
                 try
@@ -980,8 +992,10 @@ public sealed partial class KafkaConnection :
                     // Abandoned callers intentionally discard terminal errors.
                 }
 
-                ReturnToPool();
+                SignalReturnReady(ConsumerReady);
             }
+
+            SignalReturnReady(CompletionReady);
         }
 
         public void Abandon(short token)
@@ -1018,7 +1032,14 @@ public sealed partial class KafkaConnection :
                 // Abandoned callers intentionally discard terminal errors.
             }
 
-            ReturnToPool();
+            SignalReturnReady(ConsumerReady);
+        }
+
+        private void SignalReturnReady(int readiness)
+        {
+            var previous = Interlocked.Or(ref _returnReadiness, readiness);
+            if (previous != ReturnReady && (previous | readiness) == ReturnReady)
+                ReturnToPool();
         }
 
         private void ReturnToPool()
@@ -1032,6 +1053,7 @@ public sealed partial class KafkaConnection :
             _callerOwnsTimeout = false;
             _canceled = false;
             _telemetryStartTimestamp = 0;
+            _returnReadiness = 0;
             _core.Reset();
 
             if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
@@ -1057,7 +1079,7 @@ public sealed partial class KafkaConnection :
                     ConsumerReturned,
                     ConsumerActive) == ConsumerActive)
                 {
-                    ReturnToPool();
+                    SignalReturnReady(ConsumerReady);
                 }
             }
         }
