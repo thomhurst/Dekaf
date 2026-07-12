@@ -2220,7 +2220,7 @@ public sealed class BrokerSenderSendLoopTests
     public async Task ProcessCompletedResponses_FeedsAckedBytesIntoUnackedBudget(
         CancellationToken cancellationToken)
     {
-        const int batchCount = 5;
+        const int batchCount = 1;
         const int dataSize = 5_000;
 
         var responses = Enumerable.Range(0, batchCount)
@@ -2238,15 +2238,12 @@ public sealed class BrokerSenderSendLoopTests
             sendSignals[index].TrySetResult();
         });
 
-        // maxInFlight 1 + one partition serializes sends, so each response is processed alone:
-        // one OnAcked call per completed request, with the fake clock advanced 1s in between.
+        // One successful request must feed its encoded bytes and request RTT into the budget.
         var options = CreateOptions(maxInFlight: 1, unackedByteBudgetCapOverride: 1_000_000);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1);
-        var fakeTimestamp = Stopwatch.GetTimestamp();
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.000001, floorBytes: 200, initialCapBytes: 1);
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
-            getTimestamp: () => Volatile.Read(ref fakeTimestamp),
             unackedBudget: budget);
 
         try
@@ -2257,15 +2254,13 @@ public sealed class BrokerSenderSendLoopTests
             for (var i = 0; i < batchCount; i++)
             {
                 await sendSignals[i].Task.WaitAsync(cancellationToken);
-                Interlocked.Add(ref fakeTimestamp, Stopwatch.Frequency); // 1s between ack windows
                 responses[i].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: i * 10));
             }
 
-            // Steady state: 5,000 B/s measured drain (fake clock advances 1s per ack window),
-            // while the round-trip — sampled on the real Stopwatch clock — is microseconds,
-            // so the 0.5s target dominates the RTT guard: budget = 5,000 × 0.5 = 2,500.
-            await WaitUntilAsync(() => budget.BudgetBytes == 2_500, cancellationToken);
-            await Assert.That(budget.BudgetBytes).IsEqualTo(2_500);
+            // The deliberately tiny target makes the 1.5 × RTT safety horizon dominate,
+            // cancelling RTT from bytes/RTT × 1.5×RTT: budget = 5,000 × 1.5 = 7,500.
+            await WaitUntilAsync(() => budget.BudgetBytes != 1_000_000, cancellationToken);
+            await Assert.That(budget.BudgetBytes).IsBetween(7_490, 7_510);
         }
         finally
         {
@@ -2273,6 +2268,19 @@ public sealed class BrokerSenderSendLoopTests
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
         }
+    }
+
+    [Test]
+    public async Task AckedResponsePass_AggregatesBytesAndKeepsOldestRequestStart()
+    {
+        var pass = new BrokerSender.AckedResponsePass();
+
+        pass.Add(bytes: 5_000, requestStart: 200);
+        pass.Add(bytes: 7_000, requestStart: 100);
+        pass.Add(bytes: 3_000, requestStart: 300);
+
+        await Assert.That(pass.Bytes).IsEqualTo(15_000);
+        await Assert.That(pass.EarliestRequestStart).IsEqualTo(100);
     }
 
     [Test]
