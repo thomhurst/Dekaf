@@ -23,9 +23,11 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     // when no extra listener is configured. Kafka 4.2+ rejects that empty value.
     private static readonly byte[] RunWrapperScript = Encoding.UTF8.GetBytes(
         "#!/bin/bash\n" +
+        ". /etc/kafka/docker/bash-config\n" +
         "export KAFKA_ADVERTISED_LISTENERS=$(echo \"$KAFKA_ADVERTISED_LISTENERS\" | sed 's/,$//')\n" +
-        "/etc/kafka/docker/configure\n" +
-        "exec /etc/kafka/docker/launch\n");
+        ". /etc/kafka/docker/configureDefaults\n" +
+        ". /etc/kafka/docker/configure\n" +
+        ". /etc/kafka/docker/launch\n");
 
     // Retention tuned to balance two constraints:
     // 1. Original 5s retention was too aggressive — caused constant "offset out of range" resets

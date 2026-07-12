@@ -1,5 +1,6 @@
 using Confluent.Kafka;
 using Dekaf.Admin;
+using Dekaf.StressTests.Infrastructure;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using DotNet.Testcontainers.Builders;
@@ -19,7 +20,6 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
     private const ushort InternalBrokerPort = 9092;
     private const ushort ControllerPort = 9093;
     private const ushort ExternalBrokerPort = 29092;
-    private const string KafkaImage = "apache/kafka:4.1.2";
     private const string ToxiproxyImage = "ghcr.io/shopify/toxiproxy:2.12.0";
     private const string ClusterId = "MkU3OEVBNTcwNTJENDM2Qg";
 
@@ -120,7 +120,7 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
                 var proxyPort = checked((ushort)(ToxiproxyBuilder.FirstProxiedPort + nodeId - 1));
                 var mappedProxyPort = toxiproxyContainer.GetMappedPublicPort(proxyPort);
 
-                var broker = new ContainerBuilder(KafkaImage)
+                var broker = new ContainerBuilder(KafkaEnvironment.KafkaImage)
                     .WithName($"{hostname}-fault-{Guid.NewGuid():N}")
                     .WithHostname(hostname)
                     .WithNetwork(network)
