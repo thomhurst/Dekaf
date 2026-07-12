@@ -186,9 +186,10 @@ public sealed class ProducerOptions
     /// producers at 5. When idempotence is disabled and this value is not explicitly set,
     /// Dekaf uses 100 to keep the non-idempotent pipeline full.
     /// <para>
-    /// Non-idempotent producers use this capacity across partitions, while Dekaf keeps at most
-    /// one batch per partition in flight because those batches have no sequence numbers.
-    /// Per-partition order is preserved, but retries may still produce duplicates.
+    /// Non-idempotent producers can also pipeline same-partition batches on their affined
+    /// connection. This improves throughput, but an earlier request that fails after a later
+    /// request was written can be retried after that later record and reorder the partition.
+    /// Enable idempotence or set this value to 1 when retry-safe ordering is required.
     /// </para>
     /// </summary>
     public int MaxInFlightRequestsPerConnection
@@ -217,10 +218,8 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Number of connections to maintain per broker for parallel request handling.
-    /// When set greater than 1, connections are selected based on the producer mode:
-    /// idempotent producers use partition affinity (partition % connectionCount) to preserve
-    /// per-partition sequence ordering, while non-idempotent producers use round-robin
-    /// to distribute load across TCP streams.
+    /// When set greater than 1, dense broker-partition affinity distributes partitions
+    /// across connections while preserving per-partition ordering.
     /// <para>
     /// For transactional producers (<see cref="TransactionalId"/> is set), this must be 1
     /// because transaction coordinator requests require a single connection per broker.
@@ -233,7 +232,10 @@ public sealed class ProducerOptions
     public int ConnectionsPerBroker { get; init; } = 1;
 
     /// <summary>
-    /// Number of retries.
+    /// Number of retries. With idempotence disabled and
+    /// <see cref="MaxInFlightRequestsPerConnection"/> greater than 1, retries can reorder
+    /// records within a partition. Enable idempotence or use one in-flight request when
+    /// retry-safe ordering is required.
     /// </summary>
     public int Retries { get; init; } = int.MaxValue;
 
@@ -554,8 +556,8 @@ public sealed class ProducerOptions
     /// when sustained buffer backpressure is detected, improving drain throughput.
     /// <para>
     /// Applies to idempotent and acknowledged non-idempotent producers. Idempotent producers
-    /// use partition affinity (partition % connectionCount) to preserve per-partition
-    /// sequence ordering across multiple connections, so adaptive scaling is safe.
+    /// use dense broker-partition affinity to preserve per-partition sequence ordering
+    /// across multiple connections, so adaptive scaling is safe.
     /// </para>
     /// <para>
     /// Automatically disabled for transactional producers (<see cref="TransactionalId"/> is set),

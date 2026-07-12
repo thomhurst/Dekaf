@@ -25,6 +25,51 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class BrokerSenderSendLoopTests
 {
+    [Test]
+    public async Task ShouldMicroLinger_TransactionalAwaitedBatch_ReturnsFalse()
+    {
+        var batch = new ReadyBatch();
+        batch.Initialize(
+            new TopicPartition("test-topic", 0),
+            new RecordBatch(),
+            completionSourcesArray: null,
+            completionSourcesCount: 1,
+            dataSize: 1,
+            recordCount: 1);
+
+        var shouldLinger = BrokerSender.ShouldMicroLinger([batch], 1, isTransactional: true);
+
+        await Assert.That(shouldLinger).IsFalse();
+    }
+
+    [Test]
+    public async Task ShouldMicroLinger_FireAndForgetOrPlainProducer_ReturnsTrue()
+    {
+        var fireAndForget = new ReadyBatch();
+        fireAndForget.Initialize(
+            new TopicPartition("test-topic", 0),
+            new RecordBatch(),
+            completionSourcesArray: null,
+            completionSourcesCount: 0,
+            dataSize: 1,
+            recordCount: 1);
+        var awaited = new ReadyBatch();
+        awaited.Initialize(
+            new TopicPartition("test-topic", 1),
+            new RecordBatch(),
+            completionSourcesArray: null,
+            completionSourcesCount: 1,
+            dataSize: 1,
+            recordCount: 1);
+
+        await Assert.That(BrokerSender.ShouldMicroLinger([fireAndForget], 1, isTransactional: true))
+            .IsTrue();
+        await Assert.That(BrokerSender.ShouldMicroLinger([awaited], 1, isTransactional: false))
+            .IsTrue();
+        await Assert.That(BrokerSender.ShouldMicroLinger([awaited, awaited], 2, isTransactional: true))
+            .IsTrue();
+    }
+
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 100, int retryBackoffMaxMs = 1000,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
@@ -45,9 +90,9 @@ public sealed class BrokerSenderSendLoopTests
             RequestTimeoutMs = requestTimeoutMs,
             BatchSize = batchSize,
             LingerMs = 0,
-            TransactionalId = transactionalId,
             UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride,
-            ScaleCooldownMsOverride = scaleCooldownMsOverride
+            ScaleCooldownMsOverride = scaleCooldownMsOverride,
+            TransactionalId = transactionalId
         };
 
     /// <summary>
@@ -257,7 +302,9 @@ public sealed class BrokerSenderSendLoopTests
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
         BrokerUnackedByteBudget? unackedBudget = null,
-        Func<bool>? isTransactional = null,
+        int produceApiVersion = 9,
+        bool isTransactional = false,
+        bool usesTransactionV2 = false,
         Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>,
             TransactionPartitionEnrollmentResult>?
             tryEnsurePartitionsInTransaction = null) =>
@@ -267,9 +314,9 @@ public sealed class BrokerSenderSendLoopTests
             accumulator, options,
             new CompressionCodecRegistry(),
             inflightTracker: new PartitionInflightTracker(),
-            getProduceApiVersion: () => 9,
+            getProduceApiVersion: () => produceApiVersion,
             setProduceApiVersion: _ => { },
-            isTransactional: isTransactional ?? (() => false),
+            isTransactional: () => isTransactional,
             tryEnsurePartitionsInTransaction: tryEnsurePartitionsInTransaction,
             bumpEpoch: null,
             getCurrentEpoch: null,
@@ -280,7 +327,8 @@ public sealed class BrokerSenderSendLoopTests
             getTimestamp: getTimestamp,
             delayForThrottle: delayForThrottle,
             onBlockedBucketRequeued: onBlockedBucketRequeued,
-            unackedBudget: unackedBudget);
+            unackedBudget: unackedBudget,
+            usesTransactionV2: () => usesTransactionV2);
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {
@@ -288,6 +336,74 @@ public sealed class BrokerSenderSendLoopTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Yield();
+        }
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    [Timeout(120_000)]
+    public async Task SendLoop_ConcurrentTransactions_RetriesOnlyForTv2(
+        bool usesTransactionV2,
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var retryResponse = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, retryResponse]);
+        var sends = Enumerable.Range(0, 2).Select(_ => new TaskCompletionSource()).ToArray();
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            sends[Interlocked.Increment(ref sendCount) - 1].TrySetResult();
+        });
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>();
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true,
+            usesTransactionV2: usesTransactionV2);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await sends[0].Task.WaitAsync(cancellationToken);
+            firstResponse.SetResult(CreateErrorResponse(
+                "test-topic", partition: 0, ErrorCode.ConcurrentTransactions));
+
+            var next = await Task.WhenAny(sends[1].Task, acknowledged.Task)
+                .WaitAsync(cancellationToken);
+            if (usesTransactionV2)
+            {
+                await Assert.That(next).IsSameReferenceAs(sends[1].Task);
+                retryResponse.SetResult(
+                    CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+                await Assert.That(await acknowledged.Task.WaitAsync(cancellationToken)).IsNull();
+                await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+            }
+            else
+            {
+                await Assert.That(next).IsSameReferenceAs(acknowledged.Task);
+                await Assert.That(await acknowledged.Task.WaitAsync(cancellationToken)).IsNotNull();
+                await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
+            }
+        }
+        finally
+        {
+            retryResponse.TrySetResult(
+                CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
         }
     }
 
@@ -443,7 +559,7 @@ public sealed class BrokerSenderSendLoopTests
                 if (exception is null && Interlocked.Increment(ref acknowledged) == 2)
                     allAcknowledged.TrySetResult();
             },
-            isTransactional: () => true,
+            isTransactional: true,
             tryEnsurePartitionsInTransaction: TryEnsure);
 
         try
@@ -503,7 +619,7 @@ public sealed class BrokerSenderSendLoopTests
             options,
             accumulator,
             (_, _, _, _, exception) => acknowledgedError.TrySetResult(exception),
-            isTransactional: () => true,
+            isTransactional: true,
             tryEnsurePartitionsInTransaction: TryEnsure);
 
         try
@@ -548,7 +664,7 @@ public sealed class BrokerSenderSendLoopTests
             options,
             accumulator,
             (_, _, _, _, _) => { },
-            isTransactional: () => true,
+            isTransactional: true,
             tryEnsurePartitionsInTransaction: (_, _, _, _) =>
                 TransactionPartitionEnrollmentResult.Failed(enrollmentError));
 
@@ -568,6 +684,135 @@ public sealed class BrokerSenderSendLoopTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_NonIdempotent_ErrorMutesUntilSamePartitionPipelineDrains(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var firstRetryResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondRetryResponse = new TaskCompletionSource<ProduceResponse>();
+        var thirdResponse = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, secondResponse, firstRetryResponse, secondRetryResponse, thirdResponse]);
+        var sends = Enumerable.Range(0, 5).Select(_ => new TaskCompletionSource()).ToArray();
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, onSend: () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            if (index < sends.Length)
+                sends[index].TrySetResult();
+        });
+        var options = CreateOptions(
+            maxInFlight: 5,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            enableIdempotence: false);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = 0;
+        var allAcknowledged = new TaskCompletionSource();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
+        {
+            if (exception is null && Interlocked.Increment(ref acknowledged) == 3)
+                allAcknowledged.TrySetResult();
+        });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await sends[0].Task.WaitAsync(cancellationToken);
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await sends[1].Task.WaitAsync(cancellationToken);
+
+            firstResponse.SetResult(CreateErrorResponse("test-topic", 0, ErrorCode.RequestTimedOut));
+            await WaitUntilAsync(
+                () => accumulator.IsMuted(new TopicPartition("test-topic", 0)),
+                cancellationToken);
+            var thirdBatch = CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0);
+            sender.Enqueue(thirdBatch);
+
+            await WaitUntilAsync(() => thirdBatch.DiagTrace.Contains('O'), cancellationToken);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+
+            secondResponse.SetResult(CreateErrorResponse("test-topic", 0, ErrorCode.RequestTimedOut));
+            await sends[2].Task.WaitAsync(cancellationToken);
+            await Assert.That(accumulator.IsMuted(thirdBatch.TopicPartition)).IsTrue();
+
+            firstRetryResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
+            await sends[3].Task.WaitAsync(cancellationToken);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(4);
+
+            secondRetryResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 43));
+            await sends[4].Task.WaitAsync(cancellationToken);
+            thirdResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 44));
+            await allAcknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_NonIdempotent_EarlierError_RetriesAfterLaterSuccess(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var retryResponse = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, secondResponse, retryResponse]);
+        var sends = Enumerable.Range(0, 3).Select(_ => new TaskCompletionSource()).ToArray();
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            sends[Interlocked.Increment(ref sendCount) - 1].TrySetResult();
+        });
+        var options = CreateOptions(
+            maxInFlight: 5,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            enableIdempotence: false);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = 0;
+        var allAcknowledged = new TaskCompletionSource();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
+        {
+            if (exception is null && Interlocked.Increment(ref acknowledged) == 2)
+                allAcknowledged.TrySetResult();
+        });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await sends[0].Task.WaitAsync(cancellationToken);
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await sends[1].Task.WaitAsync(cancellationToken);
+
+            firstResponse.SetResult(CreateErrorResponse(
+                "test-topic", partition: 0, ErrorCode.RequestTimedOut));
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+
+            // The later request may already be appended. The retry waits for it to drain,
+            // then writes afterward: this is Kafka's non-idempotent retry-reordering trade-off.
+            await sends[2].Task.WaitAsync(cancellationToken);
+            retryResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 43));
+            await allAcknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
         }
     }
 
@@ -2452,7 +2697,8 @@ public sealed class BrokerSenderSendLoopTests
             }
 
             // The first ack establishes a rate and starts the target-only base-RTT probe.
-            // Its tiny target clamps the published estimate to the 200-byte floor.
+            // Its tiny target clamps to 200 bytes; recent occupancy is deliberately ignored
+            // until the standing queue drains and the minimum-RTT probe completes.
             await WaitUntilAsync(() => budget.BudgetBytes != 1_000_000, cancellationToken);
             await Assert.That(budget.BudgetBytes).IsEqualTo(200);
         }

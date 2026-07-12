@@ -39,7 +39,8 @@ public sealed class BrokerSenderMuteOrderingTests
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 0, int retryBackoffMaxMs = 0,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
-        int maxRequestSize = 1_048_576, bool enableIdempotence = true) => new()
+        int maxRequestSize = 1_048_576, bool enableIdempotence = true,
+        int connectionsPerBroker = 1) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
@@ -50,6 +51,7 @@ public sealed class BrokerSenderMuteOrderingTests
             RetryBackoffMaxMs = retryBackoffMaxMs,
             RequestTimeoutMs = requestTimeoutMs,
             MaxRequestSize = maxRequestSize,
+            ConnectionsPerBroker = connectionsPerBroker,
             LingerMs = 0
         };
 
@@ -222,9 +224,10 @@ public sealed class BrokerSenderMuteOrderingTests
         Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement,
         MetadataManager? metadataManager = null,
         Action<ReadyBatch, int>? rerouteBatch = null,
-        ILogger? logger = null) =>
+        ILogger? logger = null,
+        int brokerId = 1) =>
         new(
-            brokerId: 1, pool,
+            brokerId, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
             accumulator, options,
             new CompressionCodecRegistry(),
@@ -289,6 +292,334 @@ public sealed class BrokerSenderMuteOrderingTests
         coalescedCount = (int)args[3]!;
     }
 
+    [Test]
+    public async Task ConnectionRouting_UsesDenseBrokerPartitionOrdinal()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var options = CreateOptions(connectionsPerBroker: 3);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9093 },
+                new BrokerMetadata { NodeId = 2, Host = "broker-2", Port = 9094 },
+                new BrokerMetadata { NodeId = 3, Host = "broker-3", Port = 9095 }
+            ],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "test-topic",
+                    Partitions = Enumerable.Range(0, 6)
+                        .Select(partition => new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = partition,
+                            LeaderId = (partition % 3) + 1,
+                            LeaderEpoch = 1,
+                            ReplicaNodes = [(partition % 3) + 1],
+                            IsrNodes = [(partition % 3) + 1]
+                        })
+                        .ToArray()
+                }
+            ]
+        });
+
+        var getConnection = typeof(BrokerSender).GetMethod(
+            "GetConnectionForPartition",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        for (var brokerId = 1; brokerId <= 3; brokerId++)
+        {
+            var accumulator = new RecordAccumulator(options);
+            var sender = CreateSender(
+                pool,
+                options,
+                accumulator,
+                onAcknowledgement: (_, _, _, _, _) => { },
+                metadataManager,
+                brokerId: brokerId);
+
+            try
+            {
+                var firstPartition = brokerId - 1;
+                var firstRoute = (int)getConnection.Invoke(
+                    sender,
+                    [new TopicPartition("test-topic", firstPartition)])!;
+                var secondRoute = (int)getConnection.Invoke(
+                    sender,
+                    [new TopicPartition("test-topic", firstPartition + 3)])!;
+
+                await Assert.That(firstRoute).IsEqualTo(0);
+                await Assert.That(secondRoute).IsEqualTo(1)
+                    .Because("partitions led by one broker need dense ordinals instead of raw partition modulo");
+            }
+            finally
+            {
+                await sender.DisposeAsync();
+                await accumulator.DisposeAsync();
+            }
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    [Timeout(30_000)]
+    public async Task MetadataRerank_PinsPartitionUntilPendingRequestCompletes(CancellationToken ct)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var (pool, connection) = CreateMockConnection(responseQueue);
+        pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+        var options = CreateOptions(
+            maxInFlight: 2,
+            enableIdempotence: false,
+            connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        var acknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, ex) =>
+            {
+                if (ex is null)
+                    acknowledged.TrySetResult();
+            },
+            metadataManager,
+            logger: sendLogger);
+        var getConnection = typeof(BrokerSender).GetMethod(
+            "GetConnectionForPartition",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        try
+        {
+            var topicPartition = new TopicPartition("test-topic", 3);
+            sender.Enqueue(CreateTestBatch(vtPool, topicPartition.Topic, topicPartition.Partition));
+            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+
+            metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 1));
+            typeof(BrokerSender).GetMethod(
+                    "RefreshPartitionRouting",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, null);
+
+            await Assert.That((int)getConnection.Invoke(sender, [topicPartition])!).IsEqualTo(0)
+                .Because("metadata reranking must not move a partition with an in-flight request");
+
+            response.SetResult(CreateSuccessResponse(topicPartition.Topic, topicPartition.Partition, baseOffset: 100));
+            await acknowledged.Task.WaitAsync(ct);
+
+            var deadline = Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency);
+            while ((int)getConnection.Invoke(sender, [topicPartition])! != 1
+                   && Stopwatch.GetTimestamp() < deadline)
+            {
+                await Task.Delay(1, ct);
+            }
+
+            await Assert.That((int)getConnection.Invoke(sender, [topicPartition])!).IsEqualTo(1)
+                .Because("partition should adopt its dense ordinal after the old request completes");
+        }
+        finally
+        {
+            response.TrySetResult(CreateSuccessResponse("test-topic", partition: 3, baseOffset: 100));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    [Timeout(30_000)]
+    public async Task MetadataRerank_OmittedInflightPartitionStaysFencedWhenItReturns(CancellationToken ct)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>([response]));
+        pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(connection);
+        var options = CreateOptions(maxInFlight: 2, enableIdempotence: false, connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, metadataManager,
+            logger: sendLogger);
+        var getConnection = typeof(BrokerSender).GetMethod(
+            "GetConnectionForPartition", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var refreshRouting = typeof(BrokerSender).GetMethod(
+            "RefreshPartitionRouting", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var topicPartition = new TopicPartition("test-topic", 3);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(vtPool, topicPartition.Topic, topicPartition.Partition));
+            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+
+            metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2, partitionThreeLeader: 2));
+            refreshRouting.Invoke(sender, null);
+            metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 1));
+            refreshRouting.Invoke(sender, null);
+
+            await Assert.That((int)getConnection.Invoke(sender, [topicPartition])!).IsEqualTo(0)
+                .Because("a temporarily omitted in-flight partition must keep its old TCP stream");
+        }
+        finally
+        {
+            response.TrySetResult(CreateSuccessResponse(topicPartition.Topic, topicPartition.Partition, 100));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    [Timeout(30_000)]
+    public async Task MetadataRerank_RequestTimeoutClearsMigrationFence(CancellationToken ct)
+    {
+        var timedOutResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([timedOutResponse]);
+        var (pool, connection) = CreateMockConnection(responseQueue);
+        pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(connection);
+        var options = CreateOptions(maxInFlight: 2, enableIdempotence: false,
+            deliveryTimeoutMs: 1, requestTimeoutMs: 1, connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, metadataManager,
+            logger: sendLogger);
+        var getConnection = typeof(BrokerSender).GetMethod(
+            "GetConnectionForPartition", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var topicPartition = new TopicPartition("test-topic", 3);
+        var batch = CreateTestBatch(vtPool, topicPartition.Topic, topicPartition.Partition);
+
+        try
+        {
+            sender.Enqueue(batch);
+            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+            metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 1));
+            typeof(BrokerSender).GetMethod(
+                    "RefreshPartitionRouting", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, null);
+
+            await Task.Delay(20, ct);
+            typeof(BrokerSender).GetMethod(
+                    "HandleTimedOutRequests", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, [CreateCarryOver(), ct]);
+
+            await Assert.That((int)getConnection.Invoke(sender, [topicPartition])!).IsEqualTo(1)
+                .Because("timeout removal leaves no old request that can justify a migration fence");
+        }
+        finally
+        {
+            timedOutResponse.TrySetResult(CreateSuccessResponse(topicPartition.Topic, topicPartition.Partition, 100));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task MetadataRerank_FireAndForgetKeepsExistingPartitionRoute()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var options = CreateOptions(
+            acks: Acks.None,
+            enableIdempotence: false,
+            connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: (_, _, _, _, _) => { },
+            metadataManager);
+        var getConnection = typeof(BrokerSender).GetMethod(
+            "GetConnectionForPartition",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        try
+        {
+            var existingPartition = new TopicPartition("test-topic", 3);
+            await Assert.That((int)getConnection.Invoke(sender, [existingPartition])!).IsEqualTo(0);
+
+            metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 1));
+            typeof(BrokerSender).GetMethod(
+                    "RefreshPartitionRouting",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, null);
+
+            await Assert.That((int)getConnection.Invoke(sender, [existingPartition])!).IsEqualTo(0)
+                .Because("Acks.None has no acknowledgement boundary for cross-connection rerouting");
+            await Assert.That((int)getConnection.Invoke(
+                    sender,
+                    [new TopicPartition("test-topic", 0)])!)
+                .IsEqualTo(1)
+                .Because("new partitions should still distribute across the configured width");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    private static MetadataResponse CreateRoutingMetadata(
+        int partitionZeroLeader,
+        int partitionThreeLeader = 1) => new()
+    {
+        Brokers =
+        [
+            new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9093 },
+            new BrokerMetadata { NodeId = 2, Host = "broker-2", Port = 9094 }
+        ],
+        Topics =
+        [
+            new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                Name = "test-topic",
+                Partitions =
+                [
+                    new PartitionMetadata
+                    {
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 0,
+                        LeaderId = partitionZeroLeader,
+                        LeaderEpoch = partitionZeroLeader == 1 ? 2 : 1,
+                        ReplicaNodes = [partitionZeroLeader],
+                        IsrNodes = [partitionZeroLeader]
+                    },
+                    new PartitionMetadata
+                    {
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 3,
+                        LeaderId = partitionThreeLeader,
+                        LeaderEpoch = partitionThreeLeader == 1 ? 1 : 2,
+                        ReplicaNodes = [partitionThreeLeader],
+                        IsrNodes = [partitionThreeLeader]
+                    }
+                ]
+            }
+        ]
+    };
+
     private static ReadyBatch CreateMinimalBatch(string topic, int partition)
     {
         var batch = new ReadyBatch();
@@ -306,7 +637,7 @@ public sealed class BrokerSenderMuteOrderingTests
     // integration of the sender state machine so unrelated concurrency tests cannot starve its wakeups.
     [NotInParallel]
     [Timeout(30_000)]
-    public async Task NonIdempotentProducer_MultipleInFlight_SerializesSamePartitionBatches(
+    public async Task NonIdempotentProducer_MultipleInFlight_PipelinesSamePartitionBatches(
         CancellationToken ct)
     {
         var responses = Enumerable.Range(0, 2)
@@ -346,21 +677,19 @@ public sealed class BrokerSenderMuteOrderingTests
             sender.Enqueue(firstBatch);
             await sendLogger.SendSignals[0].Task.WaitAsync(ct);
 
-            await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsTrue();
+            await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsFalse();
 
             var secondBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
             sender.Enqueue(secondBatch);
 
-            await WaitForDiagAsync(secondBatch, 'O', TimeSpan.FromSeconds(5), ct);
-            await Assert.That(sendLogger.SendCount).IsEqualTo(1);
+            await sendLogger.SendSignals[1].Task.WaitAsync(ct);
+            await Assert.That(sendLogger.SendCount).IsEqualTo(2);
 
             responses[0].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 100));
-            await sendLogger.SendSignals[1].Task.WaitAsync(ct);
             responses[1].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 101));
 
             await allAcknowledged.Task.WaitAsync(ct);
-            await Assert.That(acknowledgedOffsets[0]).IsEqualTo(100);
-            await Assert.That(acknowledgedOffsets[1]).IsEqualTo(101);
+            await Assert.That(acknowledgedOffsets).IsEquivalentTo([100L, 101L]);
         }
         finally
         {

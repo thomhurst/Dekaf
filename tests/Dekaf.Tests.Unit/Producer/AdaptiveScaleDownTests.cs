@@ -36,7 +36,8 @@ public sealed class AdaptiveScaleDownTests
         int deliveryTimeoutMs = 30_000,
         int maxInFlightRequests = 1,
         long? scaleCooldownMs = null,
-        long? scaleDownSustainedMs = null) => new()
+        long? scaleDownSustainedMs = null,
+        bool enableDeliveryDiagnostics = false) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlightRequests,
@@ -50,9 +51,132 @@ public sealed class AdaptiveScaleDownTests
             ConnectionsPerBroker = 1,
             EnableAdaptiveConnections = true,
             MaxConnectionsPerBroker = 4,
+            EnableDeliveryDiagnostics = enableDeliveryDiagnostics,
             ScaleCooldownMsOverride = scaleCooldownMs,
             ScaleDownSustainedMsOverride = scaleDownSustainedMs
         };
+
+    [Test]
+    public async Task PartitionLimitedPressure_RealSendLoopWiring_RecordsOncePerDelta()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            enableDeliveryDiagnostics: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
+            GetField<HashSet<TopicPartition>>(sender, "_knownPartitions")
+                .Add(new TopicPartition(Topic, 0));
+
+            var recordPressure = typeof(BrokerSender).GetMethod(
+                "RecordSendLoopPressureIfScaleUseful",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            for (var i = 0; i < 100; i++)
+                recordPressure.Invoke(sender, null);
+
+            InvokeMaybeScaleConnections(sender);
+            InvokeMaybeScaleConnections(sender);
+
+            var diagnostic = accumulator.GetDeliveryDiagnosticsSnapshot()
+                .ConnectionScaleEvents.Single();
+            await Assert.That(diagnostic.Direction).IsEqualTo("capped");
+            await Assert.That(diagnostic.SendLoopPressureDelta).IsEqualTo(100);
+            await Assert.That(GetField<long>(sender, "_lastPartitionLimitedPressureSnapshot"))
+                .IsEqualTo(100);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task PartitionLimitedBufferPressure_RecordsCappedEventOncePerDelta()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            enableDeliveryDiagnostics: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
+            GetField<HashSet<TopicPartition>>(sender, "_knownPartitions")
+                .Add(new TopicPartition(Topic, 0));
+            SetField(accumulator, "_bufferedBytes", (long)options.BufferMemory);
+            SetField(accumulator, "_bufferPressureEvents", 100L);
+
+            InvokeMaybeScaleConnections(sender);
+            InvokeMaybeScaleConnections(sender);
+
+            var diagnostic = accumulator.GetDeliveryDiagnosticsSnapshot()
+                .ConnectionScaleEvents.Single();
+            await Assert.That(diagnostic.Direction).IsEqualTo("capped");
+            await Assert.That(diagnostic.BufferPressureDelta).IsEqualTo(100);
+            await Assert.That(GetField<long>(sender, "_lastPartitionLimitedBufferPressureSnapshot"))
+                .IsEqualTo(100);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task PartitionLimitedAdmissionPressure_ScalesAfterAnotherPartitionAppears()
+    {
+        var options = CreateOptions(idempotent: false, scaleCooldownMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        pool.ScaleConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<int>(2));
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 100,
+            initialCapBytes: 100);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: null,
+            unackedBudget: budget);
+
+        try
+        {
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
+            var knownPartitions = GetField<HashSet<TopicPartition>>(sender, "_knownPartitions");
+            knownPartitions.Add(new TopicPartition(Topic, 0));
+            for (var i = 0; i < 100; i++)
+                budget.RecordAdmissionBlock();
+
+            InvokeMaybeScaleConnections(sender);
+            await pool.DidNotReceive().ScaleConnectionGroupAsync(
+                Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+
+            knownPartitions.Add(new TopicPartition(Topic, 1));
+            InvokeMaybeScaleConnections(sender);
+
+            await pool.Received(1).ScaleConnectionGroupAsync(1, 2, Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
 
     private static ReadyBatch CreateTestBatch(
         ValueTaskSourcePool<RecordMetadata> pool, int partition, int dataSize = 100)
@@ -100,7 +224,8 @@ public sealed class AdaptiveScaleDownTests
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
         Action<ReadyBatch, int>? rerouteBatch = null,
         bool canPhysicallyShrinkConnections = true,
-        TimeSpan? disposalDrainTimeout = null) =>
+        TimeSpan? disposalDrainTimeout = null,
+        BrokerUnackedByteBudget? unackedBudget = null) =>
         new(
             brokerId: 1, pool,
             new MetadataManager(pool, options.BootstrapServers),
@@ -117,6 +242,7 @@ public sealed class AdaptiveScaleDownTests
             onAcknowledgement: onAcknowledgement,
             logger: null,
             canPhysicallyShrinkConnections: canPhysicallyShrinkConnections,
+            unackedBudget: unackedBudget,
             disposalDrainTimeout: disposalDrainTimeout);
 
     private static IKafkaConnection?[] GetPinnedConnections(BrokerSender sender)

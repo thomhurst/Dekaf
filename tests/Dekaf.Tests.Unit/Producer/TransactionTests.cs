@@ -627,6 +627,20 @@ public sealed class TransactionTests
             metadataManager,
             DekafMemoryBudget.Global,
             addPartitionsToTransaction: AddPartitions);
+        SetInstanceField(producer, "_produceApiVersion", 12);
+        producer._currentTransactionUsesTV2 = true;
+        var implicitBatch = CreateEnrollmentBatch("implicit-topic", 0);
+        var implicitResult = producer.TryEnsurePartitionsInTransaction(
+            [implicitBatch],
+            1,
+            static _ => { },
+            []);
+        await Assert.That(implicitResult.IsEnrolled).IsTrue();
+        await Assert.That(requestCount).IsEqualTo(0);
+        await Assert.That(producer._partitionsInTransaction)
+            .Contains(implicitBatch.TopicPartition);
+
+        producer._currentTransactionUsesTV2 = false;
         var batches = new[]
         {
             CreateEnrollmentBatch("topic-a", 0),
@@ -733,6 +747,29 @@ public sealed class TransactionTests
         await Assert.That(producer._partitionsInTransaction).IsEmpty();
     }
 
+    [Test]
+    [Arguments(false, (short)2)]
+    [Arguments(true, (short)1)]
+    public async Task BeginTransaction_FeatureVersionChanged_RequiresReinitialization(
+        bool initializedWithTV2,
+        short finalizedVersion)
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("test-txn-id")
+            .Build();
+        var kafkaProducer = (KafkaProducer<string, string>)producer;
+        kafkaProducer._transactionState = TransactionState.Ready;
+        kafkaProducer._currentTransactionUsesTV2 = initializedWithTV2;
+        SetFinalizedTransactionVersion(kafkaProducer, finalizedVersion);
+
+        var exception = await Assert.That(() => producer.BeginTransaction())
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(exception!.Message).Contains("InitTransactionsAsync");
+        await Assert.That(kafkaProducer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
     private static ReadyBatch CreateEnrollmentBatch(string topic, int partition)
     {
         var batch = new ReadyBatch();
@@ -760,6 +797,7 @@ public sealed class TransactionTests
         SetInstanceField(producer, "_producerId", 42L);
         SetInstanceField(producer, "_producerEpoch", (short)5);
         SetFinalizedTransactionVersion(producer, 3);
+        producer._currentTransactionUsesTV2 = true;
         producer._transactionState = TransactionState.Ready;
         return producer;
     }

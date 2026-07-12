@@ -30,7 +30,8 @@ internal readonly record struct TransactionPartitionEnrollmentResult(
 /// Per-broker sender that serializes all writes to a single broker connection.
 /// A single-threaded send loop drains events from a unified channel, coalesces batches into
 /// ProduceRequests, and sends them via pipelined writes. This guarantees wire-order
-/// for same-partition batches.
+/// for same-partition requests, but non-idempotent retries can still reorder records
+/// that were already written in later requests.
 ///
 /// All wake-up sources (new batches, response completions, partition unmutes) flow through
 /// a single <see cref="_eventChannel"/> — like Java Kafka's Sender.poll() model. Response
@@ -38,10 +39,10 @@ internal readonly record struct TransactionPartitionEnrollmentResult(
 /// the send loop then polls <c>_pendingResponsesByConnection</c> for completed tasks (like main's
 /// ProcessCompletedResponses). This avoids cross-thread reference sharing of batches arrays.
 ///
-/// Per-partition ordering during retries uses a mute set (aligned with the Java Kafka
-/// producer): when a batch enters retry, its partition is muted so no newer batches
-/// can be sent until the retry completes. Retry batches (IsRetry=true) unmute the
-/// partition when coalesced, ensuring they are sent before any waiting batches.
+/// Retry handling uses a mute set (aligned with the Java Kafka producer): when a batch
+/// enters retry, its partition is muted so no additional batches can be sent until the
+/// outstanding pipeline drains and the retry is written. This cannot undo a later
+/// non-idempotent request that the broker already appended before the error was observed.
 ///
 /// Epoch recovery for OutOfOrderSequenceNumber uses the Java Kafka Sender pattern:
 /// response handlers signal a flag, and the single-threaded send loop bumps the epoch
@@ -167,7 +168,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int[] BatchGenerations,
         int Count,
         long EncodedBytes,
-        long RequestStartTime)
+        long RequestStartTime,
+        long RttStartTime)
     {
         /// <summary>
         /// Wraps a pipelined response with the batch-generation snapshot the send captured
@@ -178,8 +180,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// </summary>
         public static PendingResponse Create(
             Task<ProduceResponse> responseTask, ReadyBatch[] batches, int[] generations,
-            int count, long encodedBytes, long requestStartTime)
-            => new(responseTask, batches, generations, count, encodedBytes, requestStartTime);
+            int count, long encodedBytes, long requestStartTime, long rttStartTime)
+            => new(responseTask, batches, generations, count, encodedBytes,
+                requestStartTime, rttStartTime);
 
         /// <summary>
         /// Returns true if the batch at index <paramref name="i"/> is the same incarnation
@@ -420,6 +423,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             queue.RemoveAt(index);
             _count--;
         }
+
+        public bool HasRetry(TopicPartition topicPartition)
+        {
+            if (!_partitions.TryGetValue(topicPartition, out var queue))
+                return false;
+
+            for (var i = 0; i < queue.Count; i++)
+            {
+                if (queue[i].IsCurrentIncarnation() && queue[i].Batch.IsRetry)
+                    return true;
+            }
+
+            return false;
+        }
     }
 
     // Per-connection pending responses. Each list tracks in-flight requests for one connection.
@@ -467,19 +484,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Transaction support
     private readonly Func<bool> _isTransactional;
+    private readonly Func<bool> _usesTransactionV2;
     private readonly Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>,
         TransactionPartitionEnrollmentResult>?
         _tryEnsurePartitionsInTransaction;
     private readonly Action<Exception?> _transactionEnrollmentCompleted;
     private readonly HashSet<TopicPartition> _transactionEnrollmentPendingPartitions = [];
 
-    // Send-time muting limits each partition to 1 in-flight batch when producer sequence
-    // numbers are unavailable, or when the configured request limit is already 1.
-    // Idempotent producers with MaxInFlight > 1 rely on sequence numbers instead.
+    // Send-time muting is needed when the configured request limit is already 1 or when
+    // Acks.None provides no broker acknowledgement boundary.
+    // With a deeper pipeline, partition affinity keeps every batch on one connection and
+    // Kafka processes requests on that connection in wire order. Errors still mute the
+    // partition through HandleRetriableBatch until its retry is ordered on the wire.
     private readonly bool _muteOnSend;
 
-    // Muted partitions: partitions with a retry in progress or limited to 1 in-flight
-    // batch by _muteOnSend. Prevents newer batches from being sent, maintaining
+    // Muted partitions: partitions with a retry in progress or configured for only one
+    // in-flight request. Prevents newer batches from being sent, maintaining
     // per-partition ordering. Aligned with Java Kafka producer's mute mechanism.
     // Uses ConcurrentDictionary as a concurrent set (byte value unused): with multi-connection
     // sends, concurrent Z handlers (catch blocks in SendCoalescedAsync) can write from
@@ -501,12 +521,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Partition-affined connections: each partition pins to _pinnedConnections[GetConnectionForPartition(topicPartition)].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
-    // All producers use partition affinity (partition % N) for CPU cache locality.
+    // All producers use dense per-broker partition ordinals for CPU cache locality and
+    // even distribution when raw Kafka partition IDs are congruent modulo the width.
     // Idempotent producers additionally require affinity for per-partition sequence ordering;
-    // during scaling, _migratingPartitions overrides the modulo to preserve ordering.
+    // during routing changes, _migratingPartitions preserves ordering.
     private readonly IKafkaConnection?[] _pinnedConnections;
     private int _connectionCount;
     private readonly bool _isIdempotent;
+
+    // Dense routing ranks derived from the immutable metadata snapshot's broker reverse index.
+    // The dictionary keeps GetConnectionForPartition O(1); the reusable list is sorted only
+    // when metadata replaces the broker's partition-list snapshot. Send-loop owned.
+    private readonly Dictionary<TopicPartition, int> _partitionOrdinals = new();
+    private readonly List<TopicPartition> _rankedPartitions = [];
+    private readonly HashSet<TopicPartition> _rankedPartitionSet = [];
+    private IReadOnlyList<TopicPartition>? _partitionRoutingSnapshot;
+    private int _nextStablePartitionOrdinal;
 
     // Adaptive connection scaling state (send-loop owned, single-threaded)
     private bool _adaptiveScalingEnabled;
@@ -517,6 +547,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private long _lastPressureSnapshot;
     private long _sendLoopPressureEvents;
     private long _lastSendLoopPressureSnapshot;
+    private long _partitionLimitedPressureEvents;
+    private long _lastPartitionLimitedPressureSnapshot;
     private long _lastScaleTimeTicks;
     private Task<int>? _pendingScaleTask; // Background connection creation, polled by send loop
     private double _pendingScaleBufferUtilization;
@@ -543,11 +575,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private volatile bool _loopExited;
     private volatile bool _redeliverAfterLoopExit;
 
-    // Per-partition migration fencing for all acknowledged producers: during a scale-UP,
-    // partitions whose connection assignment changes (partition % oldCount != partition % newCount)
-    // are fenced here if they have in-flight batches on the old connection. The partition
-    // continues routing to the old connection until its in-flight clears, then is removed
-    // from this dictionary and routes via the new partition % _connectionCount.
+    // Per-partition migration fencing for all acknowledged producers: when connection width
+    // or metadata changes an assignment, partitions with in-flight batches stay on their old
+    // connection until those batches clear, then use the latest ordinal assignment.
     // Scale-down never fences (its drain gates guarantee no in-flight) and clears any
     // stale entries at initiation. Send-loop owned (single-threaded) — no synchronization needed.
     private readonly Dictionary<TopicPartition, int> _migratingPartitions = new();
@@ -597,6 +627,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Reset only on successful scale-up (like _lastPressureSnapshot) so pressure keeps
     // accumulating across failed grow attempts.
     private long _lastUnackedBlockSnapshot;
+
+    // Separate capped-diagnostic snapshot. Partition-limited observations must not consume
+    // _lastUnackedBlockSnapshot because newly discovered partitions can make that pressure
+    // scale-useful later.
+    private long _lastPartitionLimitedUnackedBlockSnapshot;
+    private long _lastPartitionLimitedBufferPressureSnapshot;
 
     // Recency tracking for the scale-down veto: the counter value last seen by the scale
     // check, and the monotonic-ms time of its last observed movement. Kept separate from
@@ -667,7 +703,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
         BrokerUnackedByteBudget? unackedBudget = null,
-        TimeSpan? disposalDrainTimeout = null)
+        TimeSpan? disposalDrainTimeout = null,
+        Func<bool>? usesTransactionV2 = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -681,6 +718,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _setProduceApiVersion = setProduceApiVersion;
         _isTransactional = isTransactional;
         _tryEnsurePartitionsInTransaction = tryEnsurePartitionsInTransaction;
+        _usesTransactionV2 = usesTransactionV2 ?? (static () => false);
         _bumpEpoch = bumpEpoch;
         _getCurrentEpoch = getCurrentEpoch;
         _rerouteBatch = rerouteBatch;
@@ -703,11 +741,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
         _isIdempotent = options.EnableIdempotence;
 
-        // Non-idempotent batches have no sequence numbers, so concurrent requests for the
-        // same partition can be appended out of order even when no retry occurs.
-        _muteOnSend = !_isIdempotent || _maxInFlight <= 1;
+        // Kafka processes healthy requests in wire order on each connection. Partition
+        // affinity therefore permits non-idempotent same-partition pipelining, matching
+        // librdkafka. If an earlier request fails after a later request was written, a retry
+        // can reorder records; callers requiring retry-safe order must enable idempotence
+        // or configure MaxInFlightRequestsPerConnection = 1.
+        _muteOnSend = _maxInFlight <= 1 || options.Acks == Acks.None;
 
-        // All producers use partition affinity (partition % connectionCount) for CPU cache
+        // All producers use dense broker-partition affinity for CPU cache
         // locality. Idempotent producers additionally need affinity for sequence ordering.
         _connectionCount = options.ConnectionsPerBroker;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
@@ -1238,7 +1279,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && coalescedCount < maxCoalesce
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
-                    && Volatile.Read(ref _totalPendingResponseCount) < _totalMaxInFlight)
+                    && Volatile.Read(ref _totalPendingResponseCount) < _totalMaxInFlight
+                    && ShouldMicroLinger(
+                        coalescedBatches,
+                        coalescedCount,
+                        _options.TransactionalId is not null))
                 {
                     var spinWait = new SpinWait();
                     for (var spin = 0; spin < MicroLingerMaxSpins && coalescedCount < maxCoalesce; spin++)
@@ -1459,7 +1504,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         // Finalize retry batches now that we know they will actually be sent
                         // (epoch bump check passed). Clear IsRetry and unmute partitions.
-                        FinalizeCoalescedRetries(coalescedBatches, coalescedCount);
+                        FinalizeCoalescedRetries(coalescedBatches, coalescedCount, carryOver);
 
                         LogSendingCoalesced(_brokerId, coalescedCount);
                         for (var si = 0; si < coalescedCount; si++)
@@ -1549,9 +1594,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             metadataRefreshTopics.Clear();
 
                             // Distribute coalesced batches into per-connection buckets.
-                            // Partition affinity (partition % N) keeps each partition's batches
-                            // on the same connection for CPU cache locality. This also preserves
-                            // per-partition sequence ordering for idempotent producers.
+                            // Dense broker-partition affinity keeps each partition's batches on
+                            // one connection for CPU cache locality and sequence ordering.
                             // Note: when ConnectionsPerBroker exceeds the partition count, some
                             // connections will be idle. Adaptive scaling handles this naturally
                             // by scaling down unused connections.
@@ -1929,6 +1973,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var batch = batchRef.Batch;
 
+        RefreshPartitionRouting();
+
         // Track distinct partitions this broker serves for MicroLinger skip optimization.
         _knownPartitions.Add(batch.TopicPartition);
 
@@ -1956,6 +2002,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Check backoff — carry over if backoff hasn't elapsed
             if (batch.RetryNotBefore > 0 && now < batch.RetryNotBefore)
+            {
+                carryOver.Add(batchRef);
+                return;
+            }
+
+            // Non-idempotent retries have no sequence numbers to reconcile requests that
+            // were already written after the failed batch. Keep the partition muted until
+            // that same-connection pipeline drains, then order the retry before new work.
+            if (!_isIdempotent && HasPendingResponseForPartition(batch.TopicPartition))
             {
                 carryOver.Add(batchRef);
                 return;
@@ -2050,6 +2105,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ref coalescedCount,
             ref coalescedRequestBudgetUsed,
             normalBatchRequestBodySize);
+    }
+
+    /// <summary>
+    /// Serial transactional ProduceAsync traffic cannot enqueue another record until its sole
+    /// completion resolves, so spinning for a co-temporal batch can never improve coalescing.
+    /// </summary>
+    internal static bool ShouldMicroLinger(
+        ReadyBatch[] coalescedBatches,
+        int coalescedCount,
+        bool isTransactional)
+    {
+        if (!isTransactional || coalescedCount != 1)
+            return true;
+
+        var batch = coalescedBatches[0];
+        return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2185,7 +2256,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// an epoch bump check that moves batches back to carry-over would lose the retry
     /// state — causing the batch to be treated as a normal batch and sent out of order.
     /// </summary>
-    private void FinalizeCoalescedRetries(ReadyBatch[] batches, int count)
+    private void FinalizeCoalescedRetries(
+        ReadyBatch[] batches,
+        int count,
+        PartitionCarryOver carryOver)
     {
         for (var i = 0; i < count; i++)
         {
@@ -2193,10 +2267,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (batch.IsRetry)
             {
                 batch.IsRetry = false;
-                UnmutePartition(batch.TopicPartition);
+                if (!carryOver.HasRetry(batch.TopicPartition))
+                    UnmutePartition(batch.TopicPartition);
             }
         }
     }
+
+    private bool HasPendingResponseForPartition(TopicPartition topicPartition)
+        => HasInflightForPartition(GetConnectionForPartition(topicPartition), topicPartition);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void RecordSendLoopPressureIfScaleUseful()
@@ -2208,6 +2286,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _knownPartitions.Count))
         {
             _sendLoopPressureEvents++;
+        }
+        else if (IsPartitionLimitedScalePressure(
+                     _adaptiveScalingEnabled,
+                     _connectionCount,
+                     _maxConnectionsPerBroker,
+                     _knownPartitions.Count))
+        {
+            _partitionLimitedPressureEvents++;
         }
     }
 
@@ -2438,7 +2524,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 if (allPartitionsSucceeded)
-                    ackedPass.Add(pending.EncodedBytes, pending.RequestStartTime);
+                    ackedPass.Add(pending.EncodedBytes, pending.RttStartTime);
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -2581,6 +2667,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 else if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
                     if (partitionResponse.ErrorCode.IsRetriable()
+                        || (partitionResponse.ErrorCode == ErrorCode.ConcurrentTransactions
+                            && _isTransactional()
+                            && _usesTransactionV2()
+                            && _getProduceApiVersion()
+                                >= ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion)
                         || partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber
                         || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
                         || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
@@ -2625,8 +2716,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 }
 
-                // Only unmute on success when mute-on-send is active (non-idempotent or maxInFlight <= 1).
-                // Idempotent producers with maxInFlight > 1 mute partitions only on error.
+                // Only unmute on success when send-time muting is active.
+                // Deeper pipelines mute partitions only on error.
                 // Unconditionally unmuting on success would prematurely clear the mute set by a
                 // DIFFERENT failed batch for the same partition still pending retry. This allows
                 // newer carry-over batches to skip ahead of the older retry batch, violating
@@ -2767,6 +2858,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             Interlocked.Add(ref _totalPendingResponseBytes, -removedBytes);
             Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -removedBytes);
             pendingList.Clear();
+
+            if (_migratingPartitions.Count > 0)
+                CompleteMigrations(connIdx);
 
             // After clearing all entries due to timeout, trim the internal array to
             // prevent capacity from ratcheting up across repeated timeout/recovery cycles.
@@ -3151,7 +3245,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             var resourcePinCount = count;
-
             var requestStartTime = Stopwatch.GetTimestamp();
 
             try
@@ -3222,6 +3315,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     connection,
                     request,
                     (short)apiVersion).ConfigureAwait(false);
+                // Response RTT starts after the request is written. Including request
+                // construction and TCP write time biases admission-rate samples low.
+                var rttStartTime = Stopwatch.GetTimestamp();
 
                 // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
                 scratch.ClearReferences();
@@ -3258,11 +3354,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     generations,
                     count,
                     encodedBytes,
-                    requestStartTime);
+                    requestStartTime,
+                    rttStartTime);
                 _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
                 pendingResponseAdded = true; // Array ownership transferred to PendingResponse
                 Interlocked.Increment(ref _totalPendingResponseCount);
-                Interlocked.Add(ref _totalPendingResponseBytes, encodedBytes);
+                var writtenUnackedBytes = Interlocked.Add(ref _totalPendingResponseBytes, encodedBytes);
+                _unackedBudget?.ObserveWrittenUnackedBytes(writtenUnackedBytes);
                 Interlocked.Add(ref _pendingResponseBytesByConnection[connectionIndex], encodedBytes);
 
                 // Diagnostic: log instance+task+partitions at PendingResponse creation time.
@@ -3303,10 +3401,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         .UnsafeOnCompleted(_responseCompletionCallback);
                 }
 
-                // Mute partitions when producer sequence numbers cannot preserve order, or when
-                // the configured request limit already permits only 1 in-flight request.
-                // This ensures at most one batch per partition in-flight across all requests.
-                // Idempotent producers with maxInFlight > 1 use sequence numbers instead.
+                // A request limit of one keeps its partition muted until the response.
+                // Deeper pipelines preserve order through same-connection wire ordering;
+                // retry errors install their own mute in HandleRetriableBatch.
                 MutePartitionsForSend(batches, count);
 
                 LogPipelinedSend(_brokerId, count, _totalPendingResponseCount);
@@ -3642,8 +3739,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _setProduceApiVersion(version);
             version = _getProduceApiVersion();
         }
-        return version;
+        return GetProduceRequestVersion(version, _isTransactional(), _usesTransactionV2());
     }
+
+    internal static int GetProduceRequestVersion(
+        int negotiatedVersion,
+        bool isTransactional,
+        bool usesTransactionV2) =>
+        isTransactional && !usesTransactionV2
+            ? Math.Min(
+                negotiatedVersion,
+                ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion - 1)
+            : negotiatedVersion;
 
     /// <summary>
     /// Resets a per-connection timeout CTS for reuse, or recreates it if TryReset fails.
@@ -3754,10 +3861,104 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         // Common case: no migrations active — dictionary Count check is a single branch on 0.
         // During migration: one hash lookup per batch, negligible vs TCP write cost.
-        return _migratingPartitions.Count > 0
-            && _migratingPartitions.TryGetValue(topicPartition, out var oldConn)
-            ? oldConn
+        if (_migratingPartitions.Count > 0
+            && _migratingPartitions.TryGetValue(topicPartition, out var oldConn))
+        {
+            return oldConn;
+        }
+
+        if (_partitionOrdinals.TryGetValue(topicPartition, out var ordinal))
+            return ordinal % _connectionCount;
+
+        // First route can precede CoalesceBatch in focused callers/tests. Production normally
+        // refreshes once per coalesced batch, before connection selection.
+        RefreshPartitionRouting();
+        return _partitionOrdinals.TryGetValue(topicPartition, out ordinal)
+            ? ordinal % _connectionCount
             : topicPartition.Partition % _connectionCount;
+    }
+
+    /// <summary>
+    /// Rebuilds dense, deterministic broker-partition ordinals when metadata changes.
+    /// Any acknowledged partition whose route changes while a request is in flight stays
+    /// fenced to its old connection until response processing clears the migration.
+    /// </summary>
+    private void RefreshPartitionRouting()
+    {
+        var metadataPartitions = _metadataManager.GetPartitionsForNode(_brokerId);
+        if (ReferenceEquals(metadataPartitions, _partitionRoutingSnapshot))
+            return;
+
+        _rankedPartitions.Clear();
+        _rankedPartitionSet.Clear();
+        for (var i = 0; i < metadataPartitions.Count; i++)
+        {
+            var topicPartition = metadataPartitions[i];
+            _rankedPartitions.Add(topicPartition);
+            _rankedPartitionSet.Add(topicPartition);
+        }
+        _rankedPartitions.Sort(static (left, right) =>
+        {
+            var topicComparison = string.CompareOrdinal(left.Topic, right.Topic);
+            return topicComparison != 0
+                ? topicComparison
+                : left.Partition.CompareTo(right.Partition);
+        });
+
+        if (_options.Acks == Acks.None && _partitionRoutingSnapshot is not null)
+        {
+            // Without acknowledgements there is no safe point to move an existing
+            // partition to another TCP stream. Preserve every assigned ordinal for this
+            // sender's lifetime and distribute only newly discovered partitions.
+            for (var i = 0; i < _rankedPartitions.Count; i++)
+            {
+                var topicPartition = _rankedPartitions[i];
+                if (_partitionOrdinals.TryAdd(topicPartition, _nextStablePartitionOrdinal))
+                    _nextStablePartitionOrdinal++;
+            }
+
+            _partitionRoutingSnapshot = metadataPartitions;
+            return;
+        }
+
+        for (var newOrdinal = 0; newOrdinal < _rankedPartitions.Count; newOrdinal++)
+        {
+            var topicPartition = _rankedPartitions[newOrdinal];
+            if (!_partitionOrdinals.TryGetValue(topicPartition, out var oldOrdinal))
+                continue;
+
+            var oldConnection = oldOrdinal % _connectionCount;
+            var newConnection = newOrdinal % _connectionCount;
+            if (oldConnection != newConnection
+                && HasInflightForPartition(oldConnection, topicPartition))
+            {
+                _migratingPartitions.TryAdd(topicPartition, oldConnection);
+            }
+        }
+
+        // Metadata can temporarily omit a partition while an older request remains in
+        // flight (unknown leader, leader move, or a partial refresh). Remember its old
+        // connection even though it has no current dense ordinal. If it returns before
+        // the request completes, the migration fence prevents a cross-stream reorder.
+        foreach (var (topicPartition, oldOrdinal) in _partitionOrdinals)
+        {
+            if (!_rankedPartitionSet.Contains(topicPartition))
+            {
+                var oldConnection = oldOrdinal % _connectionCount;
+                if (HasInflightForPartition(oldConnection, topicPartition))
+                    _migratingPartitions.TryAdd(topicPartition, oldConnection);
+            }
+        }
+
+        _partitionOrdinals.Clear();
+        for (var ordinal = 0; ordinal < _rankedPartitions.Count; ordinal++)
+            _partitionOrdinals.Add(_rankedPartitions[ordinal], ordinal);
+        _nextStablePartitionOrdinal = _rankedPartitions.Count;
+
+        if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
+            _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+
+        _partitionRoutingSnapshot = metadataPartitions;
     }
 
     /// <summary>
@@ -3778,7 +3979,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 // Entries within Count can legally be null: batches with stale generations
                 // are nulled out before PendingResponse.Create captures the array.
-                if (pr.Batches[j] is { } batch && batch.TopicPartition == topicPartition)
+                if (pr.IsSameIncarnation(j)
+                    && pr.Batches[j].TopicPartition == topicPartition)
                     return true;
             }
         }
@@ -3821,9 +4023,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         foreach (var tp in _knownPartitions)
         {
-            var partition = tp.Partition;
-            var oldConn = partition % oldConnCount;
-            var newConn = partition % newConnCount;
+            var routeKey = _partitionOrdinals.TryGetValue(tp, out var ordinal)
+                ? ordinal
+                : tp.Partition;
+            var oldConn = routeKey % oldConnCount;
+            var newConn = routeKey % newConnCount;
 
             if (oldConn != newConn && HasInflightForPartition(oldConn, tp))
             {
@@ -4439,10 +4643,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         var now = Dekaf.MonotonicClock.GetMilliseconds();
-        var activeMutedPartitionCount = _muteOnSend
+        var trackMutedPartitionLoad = _muteOnSend || !_isIdempotent;
+        var activeMutedPartitionCount = trackMutedPartitionLoad
             ? Volatile.Read(ref _mutedPartitionCount)
             : 0;
-        var mutedPartitionHighWatermark = _muteOnSend
+        var mutedPartitionHighWatermark = trackMutedPartitionLoad
             ? Interlocked.Exchange(ref _mutedPartitionHighWatermark, activeMutedPartitionCount)
             : 0;
         if (Math.Max(activeMutedPartitionCount, mutedPartitionHighWatermark) >= _connectionCount)
@@ -4462,17 +4667,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var utilization = _accumulator.BufferUtilization;
         var bufferPressureDelta = _accumulator.BufferPressureEvents - _lastPressureSnapshot;
+        var partitionLimitedBufferPressureDelta =
+            _accumulator.BufferPressureEvents - _lastPartitionLimitedBufferPressureSnapshot;
         var sendLoopPressureDelta = _sendLoopPressureEvents - _lastSendLoopPressureSnapshot;
+        var partitionLimitedPressureDelta =
+            _partitionLimitedPressureEvents - _lastPartitionLimitedPressureSnapshot;
         // The unacked-byte admission gate holds BufferUtilization near zero while it binds,
         // which would silently starve scale-up (and the budget would self-limit at the drain
         // rate of the initial width). Blocked admissions therefore feed scale pressure directly.
         var unackedBlockEvents = _unackedBudget?.AdmissionBlockEvents ?? 0;
         var unackedBlockDelta = unackedBlockEvents - _lastUnackedBlockSnapshot;
+        var partitionLimitedUnackedBlockDelta =
+            unackedBlockEvents - _lastPartitionLimitedUnackedBlockSnapshot;
         if (unackedBlockEvents != _lastUnackedBlockObserved)
         {
             _lastUnackedBlockObserved = unackedBlockEvents;
             _lastUnackedBlockObservedMs = now;
         }
+        var partitionLimitedScalePressure = IsPartitionLimitedScalePressure(
+            _adaptiveScalingEnabled,
+            _connectionCount,
+            _maxConnectionsPerBroker,
+            _knownPartitions.Count);
         var usefulUnackedBlockDelta = IsPartitionPressureScaleUseful(
             _adaptiveScalingEnabled,
             _connectionCount,
@@ -4480,6 +4696,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _knownPartitions.Count)
             ? unackedBlockDelta
             : 0;
+        if (partitionLimitedScalePressure
+            && (partitionLimitedPressureDelta >= ScalePressureDeltaThreshold
+                || partitionLimitedUnackedBlockDelta >= ScalePressureDeltaThreshold
+                || (utilization >= ScaleUtilizationThreshold
+                    && partitionLimitedBufferPressureDelta >= ScalePressureDeltaThreshold)))
+        {
+            _accumulator.RecordConnectionScaleEvent(
+                _brokerId,
+                _connectionCount,
+                _connectionCount,
+                utilization,
+                partitionLimitedBufferPressureDelta + partitionLimitedUnackedBlockDelta,
+                partitionLimitedPressureDelta,
+                partitionLimited: true);
+            _lastPartitionLimitedPressureSnapshot = _partitionLimitedPressureEvents;
+            _lastPartitionLimitedBufferPressureSnapshot = _accumulator.BufferPressureEvents;
+            _lastPartitionLimitedUnackedBlockSnapshot = unackedBlockEvents;
+        }
         var scalePressureDelta = ComputeScalePressureDelta(
             bufferPressureDelta + usefulUnackedBlockDelta, sendLoopPressureDelta);
         var hasScalePressure = scalePressureDelta >= ScalePressureDeltaThreshold;
@@ -4497,7 +4731,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var targetCount = ComputeScaleTarget(scalePressureDelta, _connectionCount, _maxConnectionsPerBroker);
 
-            // Partition affinity (partition % N) means connections beyond the partition
+            // Dense partition affinity means connections beyond the partition
             // count can never receive traffic — they'd sit idle and immediately arm
             // scale-down churn. Cap the target at the partitions this broker serves.
             if (_knownPartitions.Count > 0 && targetCount > _knownPartitions.Count)
@@ -4567,11 +4801,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var inFlightUtilization = effectiveInFlightCapacity > 0
             ? (double)pendingResponseCount / effectiveInFlightCapacity
             : 0;
-        var hasRecentMutedPartitionLoad = _muteOnSend
-            && _lastMutedPartitionLoadTicks > 0
+        var hasRecentMutedPartitionLoad = _lastMutedPartitionLoadTicks > 0
             && now - _lastMutedPartitionLoadTicks < _scaleDownSustainedMs;
-        var hasLoadBearingMutedWidth = _muteOnSend
-            && activeMutedPartitionCount >= _connectionCount;
+        var hasLoadBearingMutedWidth = activeMutedPartitionCount >= _connectionCount;
         if (inFlightUtilization >= ScaleDownInFlightUtilizationThreshold
             || hasLoadBearingMutedWidth
             || hasRecentMutedPartitionLoad
@@ -4637,7 +4869,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private bool HasMutedPartitionLoad(PartitionCarryOver carryOver, bool hasUnreadEvent)
     {
-        if (!_muteOnSend || _mutedPartitions.IsEmpty)
+        if ((_isIdempotent && !_muteOnSend) || _mutedPartitions.IsEmpty)
             return false;
 
         // The channel is unified, so its unread tail can include wake-up signals as
@@ -4677,8 +4909,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // connections than requested, stale pressure keeps accumulating so the next
         // cooldown window retries with the full delta rather than starting from zero.
         _lastPressureSnapshot = _accumulator.BufferPressureEvents;
+        _lastPartitionLimitedBufferPressureSnapshot = _lastPressureSnapshot;
         _lastSendLoopPressureSnapshot = _sendLoopPressureEvents;
+        _lastPartitionLimitedPressureSnapshot = _partitionLimitedPressureEvents;
         _lastUnackedBlockSnapshot = _unackedBudget?.AdmissionBlockEvents ?? 0;
+        _lastPartitionLimitedUnackedBlockSnapshot = _lastUnackedBlockSnapshot;
 
         // Per-connection arrays are pre-sized at the scaling ceiling — nothing to grow.
 
@@ -4814,6 +5049,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         adaptiveScalingEnabled
         && connectionCount < maxConnectionsPerBroker
         && knownPartitionCount > connectionCount;
+
+    internal static bool IsPartitionLimitedScalePressure(
+        bool adaptiveScalingEnabled,
+        int connectionCount,
+        int maxConnectionsPerBroker,
+        int knownPartitionCount) =>
+        adaptiveScalingEnabled
+        && connectionCount < maxConnectionsPerBroker
+        && knownPartitionCount > 0
+        && connectionCount >= knownPartitionCount;
 
     #region Logging
 

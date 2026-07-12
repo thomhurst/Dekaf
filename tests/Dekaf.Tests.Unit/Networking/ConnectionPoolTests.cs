@@ -454,6 +454,35 @@ public sealed class ConnectionPoolTests
             await Assert.That(created.Count).IsEqualTo(2);
             await Assert.That(created[0].DisposeCount).IsEqualTo(1);
             await Assert.That(first).IsNotSameReferenceAs(second);
+
+            var diagnostic = pool.GetConnectionReapDiagnosticsSnapshot().Single();
+            await Assert.That(diagnostic.BrokerId).IsEqualTo(1);
+            await Assert.That(diagnostic.ConnectionIndex).IsEqualTo(0);
+            await Assert.That(diagnostic.IdleDurationMs).IsGreaterThanOrEqualTo(IdleThresholdMs);
+        }
+    }
+
+    [Test]
+    public async Task ConnectionReapDiagnostics_DropsEventsBeyond256()
+    {
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1);
+
+        await using (pool)
+        {
+            var recordDiagnostic = typeof(ConnectionPool).GetMethod(
+                "RecordConnectionReapDiagnostic",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            for (var i = 0; i < 257; i++)
+                recordDiagnostic.Invoke(pool, [i, 0, 1_000L + i]);
+
+            var diagnostics = pool.GetConnectionReapDiagnosticsSnapshot();
+
+            await Assert.That(diagnostics.Count).IsEqualTo(256);
+            await Assert.That(diagnostics[0].BrokerId).IsEqualTo(0);
+            await Assert.That(diagnostics[^1].BrokerId).IsEqualTo(255);
         }
     }
 

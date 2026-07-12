@@ -11,7 +11,7 @@ public sealed class ProduceResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.Produce;
     public static short LowestSupportedVersion => 9;
-    public static short HighestSupportedVersion => 11;
+    public static short HighestSupportedVersion => 12;
 
     private static ProduceResponsePool s_pool = new(maxPoolSize: 64);
     private static readonly Lock s_ratchetLock = new();

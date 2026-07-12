@@ -61,7 +61,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly CancellationTokenSource _senderCts;
     private readonly Task _senderTask;
     private readonly Task _lingerTask;
-    private readonly PeriodicTimer _lingerTimer;
 
     // Per-broker sender threads: each broker gets a dedicated BrokerSender with its own
     // channel and send loop. The per-broker in-flight semaphore enables pipelining across
@@ -421,11 +420,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         GcConfigurationCheck.WarnIfWorkstationGc(_logger);
 
         _senderCts = new CancellationTokenSource();
-        // Use 1ms check interval for low-latency awaited produces.
-        // ShouldFlush() is smart: it returns true immediately for batches with completion
-        // sources (awaited produces), but waits for full LingerMs for fire-and-forget batches.
-        // This provides low latency for ProduceAsync while maintaining efficient batching for Send.
-        _lingerTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(1));
         _senderTask = Task.Factory.StartNew(
             () => SenderLoopAsync(_senderCts.Token),
             CancellationToken.None,
@@ -1738,10 +1732,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 $"Cannot begin transaction in state: {_transactionState}");
         }
 
+        var finalizedTransactionUsesTV2 =
+            _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature) >= 2;
+        if (finalizedTransactionUsesTV2 != _currentTransactionUsesTV2)
+        {
+            throw new InvalidOperationException(
+                "The broker transaction.version changed after producer initialization. " +
+                "Call InitTransactionsAsync() to acquire a fresh producer epoch before beginning another transaction.");
+        }
+
         _transactionState = TransactionState.InTransaction;
         _preparedTransactionState = PreparedTransactionState.Empty;
         _lastTransactionError = ErrorCode.None;
-        _currentTransactionUsesTV2 = _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature) >= 2;
         NotifyPartitionEnrollmentResetWaiters(ResetPartitionEnrollmentState());
 
         return new Transaction<TKey, TValue>(this);
@@ -2351,7 +2353,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (response.ErrorCode == ErrorCode.None)
             {
-                // TV2 (v4+): broker returns bumped ProducerId/Epoch in EndTxn response.
+                // TV2 (v5+): broker returns bumped ProducerId/Epoch in EndTxn response.
                 // Apply them so the next transaction uses the new identity without
                 // a separate InitProducerId round-trip.
                 // Safe without _epochBumpLock: EndTxn is called only after FlushAsync
@@ -2582,7 +2584,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     ProducerDeliveryDiagnosticsSnapshot IProducerDiagnostics.GetDeliveryDiagnosticsSnapshot()
-        => _accumulator.GetDeliveryDiagnosticsSnapshot();
+    {
+        var snapshot = _accumulator.GetDeliveryDiagnosticsSnapshot();
+        if (snapshot.DiagnosticsEnabled)
+            snapshot.ConnectionReapEvents.AddRange(_connectionPool.GetConnectionReapDiagnosticsSnapshot());
+
+        return snapshot;
+    }
 
     int IProducerDiagnostics.MaxObservedBrokerThrottleTimeMs =>
         Volatile.Read(ref _maxObservedBrokerThrottleTimeMs);
@@ -2607,8 +2615,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         // PER-BROKER SENDER ARCHITECTURE: Each broker gets a dedicated BrokerSender with its own
         // channel and single-threaded send loop. This guarantees wire-order for same-partition
-        // batches. The per-broker in-flight semaphore enables pipelining across different partitions.
-        // Ordering across retries relies on broker idempotent producer support (sequence numbers + epoch).
+        // requests. Retry-safe record ordering requires idempotence (sequence numbers + epoch);
+        // non-idempotent pipelining accepts Kafka's documented retry-reordering trade-off.
         //
         // Ready → Drain → Distribute loop:
         // 1. Ready() checks which brokers have sendable data (sealed batches in partition deques)
@@ -2891,7 +2899,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _logger,
             canPhysicallyShrinkConnections: _ownsInfrastructure,
             onBrokerThrottle: _options.EnableDeliveryDiagnostics ? ObserveBrokerThrottle : null,
-            unackedBudget: _accumulator.GetBrokerUnackedBudget(brokerId));
+            unackedBudget: _accumulator.GetBrokerUnackedBudget(brokerId),
+            usesTransactionV2: () => _currentTransactionUsesTV2);
     }
 
     /// <summary>
@@ -2975,6 +2984,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         lock (_partitionsInTransactionLock)
         {
+            var usesImplicitEnrollment = _currentTransactionUsesTV2
+                && _produceApiVersion >= ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion;
+            if (usesImplicitEnrollment)
+            {
+                for (var i = 0; i < count; i++)
+                    _partitionsInTransaction.Add(batches[i].TopicPartition);
+                return TransactionPartitionEnrollmentResult.Enrolled;
+            }
+
             if (_partitionEnrollmentError is not null)
                 return TransactionPartitionEnrollmentResult.Failed(_partitionEnrollmentError);
 
@@ -3137,27 +3155,32 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     private async Task LingerLoopAsync(CancellationToken cancellationToken)
     {
-        // Use PeriodicTimer instead of Task.Delay to avoid allocations on each tick.
-        // PeriodicTimer.WaitForNextTickAsync is allocation-free after the timer is constructed.
-
         // Orphan sweep interval: check for expired in-flight batches every ~5 seconds.
         // This catches batches whose references were lost from BrokerSender data structures
         // (root cause under investigation) — without this sweep, ProduceAsync hangs indefinitely.
         var orphanSweepIntervalTicks = (long)(5.0 * Stopwatch.Frequency);
         var lastOrphanSweepTicks = Stopwatch.GetTimestamp();
 
-        using var cancellationRegistration = cancellationToken.UnsafeRegister(
-            static state => ((PeriodicTimer)state!).Dispose(),
-            _lingerTimer);
+        _accumulator.RegisterLingerWakeupShutdownToken(cancellationToken);
 
-        while (await _lingerTimer.WaitForNextTickAsync(CancellationToken.None).ConfigureAwait(false))
+        while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
+                var now = Stopwatch.GetTimestamp();
+                var ticksUntilOrphanSweep = orphanSweepIntervalTicks - (now - lastOrphanSweepTicks);
+                var orphanWaitMs = ticksUntilOrphanSweep <= 0
+                    ? 0
+                    : Math.Max(1, (int)Math.Ceiling(ticksUntilOrphanSweep * 1000.0 / Stopwatch.Frequency));
+                var waitMs = _accumulator.HasPendingLingerBatches && orphanWaitMs > 0
+                    ? 1
+                    : orphanWaitMs;
+
+                await _accumulator.WaitForLingerWakeupAsync(waitMs).ConfigureAwait(false);
                 await _accumulator.ExpireLingerAsync(cancellationToken).ConfigureAwait(false);
 
                 // Periodic orphan sweep: fail in-flight batches that exceeded delivery timeout.
-                var now = Stopwatch.GetTimestamp();
+                now = Stopwatch.GetTimestamp();
                 if (now - lastOrphanSweepTicks >= orphanSweepIntervalTicks)
                 {
                     lastOrphanSweepTicks = now;
@@ -4040,7 +4063,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _accumulator.ForceFailAllInFlightBatches();
 
         _senderCts.Dispose();
-        _lingerTimer.Dispose();
         _transactionLock.Dispose();
         _initLock.Dispose();
 
@@ -4266,21 +4288,39 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
     }
 
-    public async ValueTask<RecordMetadata> ProduceAsync(
+    public ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfProducerDisposed();
-        _producer.ThrowIfFatalTransactionError("Cannot produce");
+        try
+        {
+            ThrowIfProducerDisposed();
+            _producer.ThrowIfFatalTransactionError("Cannot produce");
 
-        if (_committed || _aborted)
-            throw new InvalidOperationException("Transaction is already completed");
+            if (_committed || _aborted)
+                throw new InvalidOperationException("Transaction is already completed");
 
-        _producer.ThrowIfInPreparedTransaction();
+            _producer.ThrowIfInPreparedTransaction();
 
-        // Partition registration with AddPartitionsToTxn is handled automatically
-        // by BrokerSender before the ProduceRequest is sent to the broker.
-        return await _producer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
+            // Partition registration with AddPartitionsToTxn is handled automatically
+            // by BrokerSender before the ProduceRequest is sent to the broker.
+            return _producer.ProduceAsync(message, cancellationToken);
+        }
+        catch (OperationCanceledException exception)
+        {
+            var canceledToken = exception.CancellationToken.IsCancellationRequested
+                ? exception.CancellationToken
+                : cancellationToken.IsCancellationRequested
+                    ? cancellationToken
+                    : new CancellationToken(canceled: true);
+            return new ValueTask<RecordMetadata>(Task.FromCanceled<RecordMetadata>(canceledToken));
+        }
+        catch (Exception exception)
+        {
+            // Preserve async-method exception timing: validation failures fault the returned
+            // ValueTask instead of escaping synchronously from ProduceAsync.
+            return new ValueTask<RecordMetadata>(Task.FromException<RecordMetadata>(exception));
+        }
     }
 
     public ValueTask CommitAsync(CancellationToken cancellationToken = default) =>
@@ -4362,7 +4402,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
             // TV1: broker doesn't return bumped epoch in EndTxn, so we must call
             // InitProducerId to get it (KIP-360).
-            // TV2: EndTxn v4 response already contained the bumped epoch — skip.
+            // TV2: EndTxn v5 response already contained the bumped epoch — skip.
             if (!_producer._currentTransactionUsesTV2)
             {
                 await _producer.ReinitializeProducerIdAsync(cancellationToken).ConfigureAwait(false);
