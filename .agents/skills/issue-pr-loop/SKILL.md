@@ -228,7 +228,26 @@ gh api repos/{owner}/{repo}/issues/{N}/comments
 gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{body author{login}}}}}}}}' -F owner=... -F repo=... -F pr=N
 ```
 
-Actionable means any of: (a) a **review** (`pulls/{N}/reviews`) whose `state` is `CHANGES_REQUESTED`, or whose top-level body raises a concern/finding/suggestion — even when `state=COMMENTED` (bots and humans post blocking findings in the review body, not inline; `COMMENTED` is **not** non-blocking); (b) an inline comment with `position != null` and no reply from you; or (c) any unresolved review thread. Check **reviews AND inline threads** — a PR can have zero unresolved threads yet a review body demanding changes. Only an empty/boilerplate review body (e.g. a Codex "will react 👍 if nothing to add" header) is non-blocking. When unsure, treat the review as blocking. This forces ADDRESS, not WAITING.
+Actionable means any of: (a) a **review** (`pulls/{N}/reviews`) whose `state` is `CHANGES_REQUESTED`, or whose top-level body raises a concern/finding/suggestion — even when `state=COMMENTED` (bots and humans post blocking findings in the review body, not inline; `COMMENTED` is **not** non-blocking); (b) an inline comment with `position != null` and no reply from you; or (c) any unresolved review thread that is not eligible for autonomous resolution below. Check **reviews AND inline threads** — a PR can have zero unresolved threads yet a review body demanding changes. Only an empty/boilerplate review body (e.g. a Codex "will react 👍 if nothing to add" header) is non-blocking. When unsure, treat the review as blocking. This forces ADDRESS, not WAITING.
+
+### Resolve Addressed Review Threads Autonomously
+
+Unresolved bot threads must not strand a green PR. Resolve a thread under the PR lock when all are true:
+
+1. The thread was opened by a bot.
+2. You replied with the fix commit or a concrete technical disposition.
+3. The current PR head contains that fix.
+4. A bot review/CI cycle completed after the reply and did not rebut the disposition; a latest `REVIEW_VERDICT: CLEAR` against the current head is strongest evidence.
+
+Do not resolve a thread with a newer rebuttal, an unaddressed finding, or a human reviewer awaiting a response. Address those first. Once every eligible thread is resolved, re-fetch review/thread/check state and continue to the normal merge gate in the same iteration.
+
+Fetch thread IDs and resolve eligible threads with GitHub GraphQL:
+
+```powershell
+$threads = gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved comments(first:100){nodes{body createdAt author{login}}}}}}}}' -F owner=... -F repo=... -F pr=N
+
+gh api graphql -f query='mutation($thread:ID!){resolveReviewThread(input:{threadId:$thread}){thread{id isResolved}}}' -F thread=<thread-id>
+```
 
 ### State to Action
 
@@ -287,7 +306,7 @@ Worktree cleanup is now part of `Merge-Pr.ps1` — it removes the merged PR's is
 
 - Address both blocking and minor suggestions when they improve the code.
 - Push back once with reasoning if you disagree; if reaffirmed, implement.
-- Do not resolve threads on the bot's behalf unless you pushed back and the bot did not rebut within a CI cycle.
+- Resolve addressed bot threads using the deterministic criteria above; never leave a PR permanently blocked only because a bot did not close its own thread.
 - Always use `git push --force-with-lease`. Never use bare `--force`.
 - Never allow git to open an interactive editor. For rebase, use `-c core.editor=true -c sequence.editor=true` or set `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` in the same shell command. For commit-message edits, use `git commit -m`, `git commit --file`, `git commit --amend --no-edit`, or `git commit --amend -m`; do not run editor-driven commit, amend, squash, or rebase flows.
 
@@ -432,7 +451,7 @@ Closes #<N>
 Stop only when:
 
 - User explicitly says "stop", "pause", or "enough", or interrupts.
-- Queue is genuinely empty: zero unassigned open issues without `in-progress` and every open PR is blocked on an external reviewer.
+- Queue is genuinely empty: zero queueable unassigned open issues without `in-progress`, and every open PR is blocked on a human decision or another external dependency after all eligible bot threads were resolved autonomously.
 
 Do not stop because of long context, lots already shipped, compute spend, uncertainty about which issue is next, an issue being large or daunting, green PRs after a fix push, pending CI, pending review, or a desire to wrap up. If another issue is queueable, work it instead. Larger scoped issues count as queueable when no smaller unclaimed work is available; if one is too big for a single PR, split it (§ Splitting An Oversized Issue) rather than stopping.
 
