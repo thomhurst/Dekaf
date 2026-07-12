@@ -130,6 +130,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly ConnectionPool? _retainedConnectionGroupPool;
     private readonly bool[] _retainedConnectionIndices;
+    private readonly System.Threading.Lock _retainedConnectionIndicesLock = new();
     private int _retainedConnectionIndexCount;
     private readonly MetadataManager _metadataManager;
     private readonly RecordAccumulator _accumulator;
@@ -757,26 +758,42 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private void RetainConnectionIndex(int connectionIndex)
     {
-        if (_retainedConnectionGroupPool is null)
+        if (_retainedConnectionGroupPool is null
+            || Volatile.Read(ref _disposed) != 0)
             return;
 
         if (_retainedConnectionIndices[connectionIndex])
             return;
 
-        _retainedConnectionGroupPool.RetainConnectionGroupIndex(_brokerId, connectionIndex);
-        _retainedConnectionIndices[connectionIndex] = true;
-        _retainedConnectionIndexCount++;
+        lock (_retainedConnectionIndicesLock)
+        {
+            if (Volatile.Read(ref _disposed) != 0
+                || _retainedConnectionIndices[connectionIndex]
+                || !_retainedConnectionGroupPool.TryRetainConnectionGroupIndex(
+                    _brokerId, connectionIndex))
+            {
+                return;
+            }
+
+            _retainedConnectionIndices[connectionIndex] = true;
+            _retainedConnectionIndexCount++;
+        }
     }
 
     private void ReleaseConnectionIndex(int connectionIndex)
     {
-        if (_retainedConnectionGroupPool is null
-            || !_retainedConnectionIndices[connectionIndex])
+        if (_retainedConnectionGroupPool is null)
             return;
 
-        _retainedConnectionIndices[connectionIndex] = false;
-        _retainedConnectionIndexCount--;
-        _retainedConnectionGroupPool.ReleaseConnectionGroupIndex(_brokerId, connectionIndex);
+        lock (_retainedConnectionIndicesLock)
+        {
+            if (!_retainedConnectionIndices[connectionIndex])
+                return;
+
+            _retainedConnectionIndices[connectionIndex] = false;
+            _retainedConnectionIndexCount--;
+            _retainedConnectionGroupPool.ReleaseConnectionGroupIndex(_brokerId, connectionIndex);
+        }
     }
 
     private void ReleaseConnectionIndices()
@@ -784,10 +801,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_retainedConnectionGroupPool is null)
             return;
 
-        for (var connectionIndex = 0; connectionIndex < _retainedConnectionIndices.Length; connectionIndex++)
+        lock (_retainedConnectionIndicesLock)
         {
-            if (_retainedConnectionIndices[connectionIndex])
-                ReleaseConnectionIndex(connectionIndex);
+            for (var connectionIndex = 0;
+                 connectionIndex < _retainedConnectionIndices.Length;
+                 connectionIndex++)
+            {
+                if (!_retainedConnectionIndices[connectionIndex])
+                    continue;
+
+                _retainedConnectionIndices[connectionIndex] = false;
+                _retainedConnectionIndexCount--;
+                _retainedConnectionGroupPool.ReleaseConnectionGroupIndex(
+                    _brokerId, connectionIndex);
+            }
         }
     }
 
@@ -1613,7 +1640,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Fully idle — wait for any event (new batch, response, unmute). While an
                     // indexed route remains retained, periodically recheck whether this broker
                     // still leads any partitions so an unused socket can become reapable.
-                    if (_retainedConnectionIndexCount > 0 && _options.ConnectionsMaxIdleMs >= 0)
+                    if (Volatile.Read(ref _retainedConnectionIndexCount) > 0
+                        && _options.ConnectionsMaxIdleMs >= 0)
                     {
                         using var routingRefreshCts = CancellationTokenSource.CreateLinkedTokenSource(
                             cancellationToken);
@@ -3810,15 +3838,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _partitionOrdinals.Add(_rankedPartitions[ordinal], ordinal);
         _nextStablePartitionOrdinal = _rankedPartitions.Count;
 
-        if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
-            _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+        lock (_migrationRemovalBuffer)
+        {
+            if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
+                _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+        }
 
         _partitionRoutingSnapshot = metadataPartitions;
     }
 
     private void ReleaseRetainedConnectionsIfBrokerIdle()
     {
-        if (_retainedConnectionIndexCount > 0
+        if (Volatile.Read(ref _retainedConnectionIndexCount) > 0
             && _metadataManager.GetPartitionsForNode(_brokerId).Count == 0)
         {
             ReleaseConnectionIndices();
@@ -3857,8 +3888,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void CompleteMigrations(int connectionIndex)
     {
-        // The send loop is the production owner. Serialize the reflection-driven timeout
-        // test path too so it cannot race this reusable scratch buffer with the loop.
+        // The send loop is the production owner. Serialize maintenance/test callers too so
+        // they cannot race migration state or this reusable scratch buffer with the loop.
         lock (_migrationRemovalBuffer)
         {
             var pendingList = _pendingResponsesByConnection[connectionIndex];
@@ -3889,22 +3920,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void FenceAffectedPartitions(int oldConnCount, int newConnCount)
     {
-        foreach (var tp in _knownPartitions)
+        lock (_migrationRemovalBuffer)
         {
-            var routeKey = _partitionOrdinals.TryGetValue(tp, out var ordinal)
-                ? ordinal
-                : tp.Partition;
-            var oldConn = routeKey % oldConnCount;
-            var newConn = routeKey % newConnCount;
-
-            if (oldConn != newConn && HasInflightForPartition(oldConn, tp))
+            foreach (var tp in _knownPartitions)
             {
-                _migratingPartitions.TryAdd(tp, oldConn);
-            }
-        }
+                var routeKey = _partitionOrdinals.TryGetValue(tp, out var ordinal)
+                    ? ordinal
+                    : tp.Partition;
+                var oldConn = routeKey % oldConnCount;
+                var newConn = routeKey % newConnCount;
 
-        if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
-            _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+                if (oldConn != newConn && HasInflightForPartition(oldConn, tp))
+                    _migratingPartitions.TryAdd(tp, oldConn);
+            }
+
+            if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
+                _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+        }
 
         if (_migratingPartitions.Count > 0)
             LogPartitionMigrationStarted(_brokerId, _migratingPartitions.Count, oldConnCount, newConnCount);
@@ -4790,6 +4822,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         actualCount = Math.Min(actualCount, _pendingResponsesByConnection.Length);
 
         var oldCount = _connectionCount;
+        // A true singleton comes from the endpoint cache, while the new indexed group owns
+        // a different slot 0. Drop the old pin so routing adopts the group's real connection.
+        if (oldCount == 1 && !_hasScaledConnectionGroup)
+            _pinnedConnections[0] = null;
+
         _hasScaledConnectionGroup = true;
         _connectionCount = actualCount;
         _totalMaxInFlight = _connectionCount * _maxInFlight;

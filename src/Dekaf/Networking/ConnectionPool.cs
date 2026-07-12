@@ -571,16 +571,17 @@ public sealed partial class ConnectionPool : IConnectionPool
     /// Prevents idle reaping from changing one routed group slot while a sender uses it.
     /// Multiple senders sharing the same broker/index are ref-counted.
     /// </summary>
-    internal void RetainConnectionGroupIndex(int brokerId, int connectionIndex)
+    internal bool TryRetainConnectionGroupIndex(int brokerId, int connectionIndex)
     {
         lock (_connectionGroupRetentionLock)
         {
             if (Volatile.Read(ref _disposed) != 0)
-                throw new ObjectDisposedException(nameof(ConnectionPool));
+                return false;
 
             var key = (brokerId, connectionIndex);
             _connectionGroupRetainers.TryGetValue(key, out var retainers);
             _connectionGroupRetainers[key] = retainers + 1;
+            return true;
         }
     }
 

@@ -1115,6 +1115,42 @@ public sealed class AdaptiveScaleDownTests
             BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(instance, value);
 
     [Test]
+    public async Task FirstScaleUp_InvalidatesEndpointPinnedSingleton()
+    {
+        var options = CreateOptions(idempotent: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var endpointConnection = Substitute.For<IKafkaConnection>();
+        endpointConnection.IsConnected.Returns(true);
+        var indexedConnection = Substitute.For<IKafkaConnection>();
+        indexedConnection.IsConnected.Returns(true);
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(endpointConnection);
+        pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(indexedConnection);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            using (var endpointLease = await GetConnectionLeaseAtIndexAsync(sender, 0))
+                await Assert.That(endpointLease.Connection).IsSameReferenceAs(endpointConnection);
+
+            typeof(BrokerSender).GetMethod(
+                    "ApplyScaleUp",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, [2]);
+
+            using var indexedLease = await GetConnectionLeaseAtIndexAsync(sender, 0);
+            await Assert.That(indexedLease.Connection).IsSameReferenceAs(indexedConnection);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Arguments(false, false, true)]
     [Arguments(true, true, true)]
     [Arguments(true, false, false)]

@@ -533,8 +533,8 @@ public sealed class ConnectionPoolTests
         await using (pool)
         {
             pool.RegisterBroker(1, "localhost", 9092);
-            pool.RetainConnectionGroupIndex(1, 0);
-            pool.RetainConnectionGroupIndex(1, 0);
+            await Assert.That(pool.TryRetainConnectionGroupIndex(1, 0)).IsTrue();
+            await Assert.That(pool.TryRetainConnectionGroupIndex(1, 0)).IsTrue();
 
             try
             {
@@ -560,6 +560,15 @@ public sealed class ConnectionPoolTests
             await Assert.That(reapedAfterRelease).IsEqualTo(1);
             await Assert.That(created[0].DisposeCount).IsEqualTo(1);
         }
+    }
+
+    [Test]
+    public async Task TryRetainConnectionGroupIndex_DisposedPool_ReturnsFalse()
+    {
+        var pool = new ConnectionPool("test-client");
+        await pool.DisposeAsync();
+
+        await Assert.That(pool.TryRetainConnectionGroupIndex(1, 0)).IsFalse();
     }
 
     [Test]
