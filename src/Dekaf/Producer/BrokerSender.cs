@@ -577,6 +577,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // accumulating across failed grow attempts.
     private long _lastUnackedBlockSnapshot;
 
+    // Separate capped-diagnostic snapshot. Partition-limited observations must not consume
+    // _lastUnackedBlockSnapshot because newly discovered partitions can make that pressure
+    // scale-useful later.
+    private long _lastPartitionLimitedUnackedBlockSnapshot;
+
     // Recency tracking for the scale-down veto: the counter value last seen by the scale
     // check, and the monotonic-ms time of its last observed movement. Kept separate from
     // the scale-up snapshot above, whose reset-on-scale-up policy would otherwise pin the
@@ -4319,6 +4324,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // rate of the initial width). Blocked admissions therefore feed scale pressure directly.
         var unackedBlockEvents = _unackedBudget?.AdmissionBlockEvents ?? 0;
         var unackedBlockDelta = unackedBlockEvents - _lastUnackedBlockSnapshot;
+        var partitionLimitedUnackedBlockDelta =
+            unackedBlockEvents - _lastPartitionLimitedUnackedBlockSnapshot;
         if (unackedBlockEvents != _lastUnackedBlockObserved)
         {
             _lastUnackedBlockObserved = unackedBlockEvents;
@@ -4338,18 +4345,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             : 0;
         if (partitionLimitedScalePressure
             && (partitionLimitedPressureDelta >= ScalePressureDeltaThreshold
-                || unackedBlockDelta >= ScalePressureDeltaThreshold))
+                || partitionLimitedUnackedBlockDelta >= ScalePressureDeltaThreshold))
         {
             _accumulator.RecordConnectionScaleEvent(
                 _brokerId,
                 _connectionCount,
                 _connectionCount,
                 utilization,
-                bufferPressureDelta + unackedBlockDelta,
+                bufferPressureDelta + partitionLimitedUnackedBlockDelta,
                 partitionLimitedPressureDelta,
                 partitionLimited: true);
             _lastPartitionLimitedPressureSnapshot = _partitionLimitedPressureEvents;
-            _lastUnackedBlockSnapshot = unackedBlockEvents;
+            _lastPartitionLimitedUnackedBlockSnapshot = unackedBlockEvents;
         }
         var scalePressureDelta = ComputeScalePressureDelta(
             bufferPressureDelta + usefulUnackedBlockDelta, sendLoopPressureDelta);
@@ -4551,6 +4558,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _lastSendLoopPressureSnapshot = _sendLoopPressureEvents;
         _lastPartitionLimitedPressureSnapshot = _partitionLimitedPressureEvents;
         _lastUnackedBlockSnapshot = _unackedBudget?.AdmissionBlockEvents ?? 0;
+        _lastPartitionLimitedUnackedBlockSnapshot = _lastUnackedBlockSnapshot;
 
         // Per-connection arrays are pre-sized at the scaling ceiling — nothing to grow.
 
