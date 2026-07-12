@@ -129,6 +129,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private readonly int _brokerId;
     private readonly IConnectionPool _connectionPool;
+    private readonly ConnectionPool? _retainedConnectionGroupPool;
+    private readonly bool[] _retainedConnectionIndices;
+    private readonly System.Threading.Lock _retainedConnectionIndicesLock = new();
+    private int _retainedConnectionIndexCount;
     private readonly MetadataManager _metadataManager;
     private readonly RecordAccumulator _accumulator;
     private readonly ProducerOptions _options;
@@ -559,6 +563,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Scale-down never fences (its drain gates guarantee no in-flight) and clears any
     // stale entries at initiation. Send-loop owned (single-threaded) — no synchronization needed.
     private readonly Dictionary<TopicPartition, int> _migratingPartitions = new();
+    private volatile bool _hasMigratingPartitions;
     // Reused removal buffer keeps CompleteMigrations O(migrating) and allocation-free.
     // Capacity grows during scale-up, outside response completion processing.
     private readonly List<TopicPartition> _migrationRemovalBuffer = [];
@@ -752,6 +757,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ? Math.Max(_connectionCount, _maxConnectionsPerBroker)
             : _connectionCount;
         _pinnedConnections = new IKafkaConnection?[connectionCapacity];
+        _retainedConnectionIndices = new bool[connectionCapacity];
         _pendingResponsesByConnection = new List<PendingResponse>[connectionCapacity];
         _pendingResponseBytesByConnection = new long[connectionCapacity];
         for (var i = 0; i < connectionCapacity; i++)
@@ -763,11 +769,82 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _anyResponseCompleted.Signal();
         };
         _cts = new CancellationTokenSource();
-        _sendLoopTask = Task.Factory.StartNew(
-            () => SendLoopAsync(_cts.Token),
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default).Unwrap();
+        _retainedConnectionGroupPool = connectionPool as ConnectionPool;
+        try
+        {
+            _sendLoopTask = Task.Factory.StartNew(
+                () => SendLoopAsync(_cts.Token),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap();
+        }
+        catch
+        {
+            ReleaseConnectionIndices();
+            throw;
+        }
+    }
+
+    private void RetainConnectionIndex(int connectionIndex)
+    {
+        if (_retainedConnectionGroupPool is null
+            || Volatile.Read(ref _disposed) != 0)
+            return;
+
+        if (_retainedConnectionIndices[connectionIndex])
+            return;
+
+        lock (_retainedConnectionIndicesLock)
+        {
+            if (Volatile.Read(ref _disposed) != 0
+                || _retainedConnectionIndices[connectionIndex]
+                || !_retainedConnectionGroupPool.TryRetainConnectionGroupIndex(
+                    _brokerId, connectionIndex))
+            {
+                return;
+            }
+
+            _retainedConnectionIndices[connectionIndex] = true;
+            _retainedConnectionIndexCount++;
+        }
+    }
+
+    private void ReleaseConnectionIndex(int connectionIndex)
+    {
+        if (_retainedConnectionGroupPool is null)
+            return;
+
+        lock (_retainedConnectionIndicesLock)
+        {
+            if (!_retainedConnectionIndices[connectionIndex])
+                return;
+
+            _retainedConnectionIndices[connectionIndex] = false;
+            _retainedConnectionIndexCount--;
+            _retainedConnectionGroupPool.ReleaseConnectionGroupIndex(_brokerId, connectionIndex);
+        }
+    }
+
+    private void ReleaseConnectionIndices()
+    {
+        if (_retainedConnectionGroupPool is null)
+            return;
+
+        lock (_retainedConnectionIndicesLock)
+        {
+            for (var connectionIndex = 0;
+                 connectionIndex < _retainedConnectionIndices.Length;
+                 connectionIndex++)
+            {
+                if (!_retainedConnectionIndices[connectionIndex])
+                    continue;
+
+                _retainedConnectionIndices[connectionIndex] = false;
+                _retainedConnectionIndexCount--;
+                _retainedConnectionGroupPool.ReleaseConnectionGroupIndex(
+                    _brokerId, connectionIndex);
+            }
+        }
     }
 
     private static ValueTask DelayForThrottleAsync(int delayMs, CancellationToken cancellationToken) =>
@@ -1587,9 +1664,37 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (hasPendingSingleConnectionFireAndForgetSend && !eventReader.TryPeek(out _))
                         await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
 
-                    // Fully idle — wait for any event (new batch, response, unmute).
-                    if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                    ReleaseRetainedConnectionsIfBrokerIdle();
+
+                    // Fully idle — wait for any event (new batch, response, unmute). While an
+                    // indexed route remains retained, periodically recheck whether this broker
+                    // still leads any partitions so an unused socket can become reapable.
+                    if (Volatile.Read(ref _retainedConnectionIndexCount) > 0
+                        && _options.ConnectionsMaxIdleMs >= 0)
+                    {
+                        using var routingRefreshCts = CancellationTokenSource.CreateLinkedTokenSource(
+                            cancellationToken);
+                        routingRefreshCts.CancelAfter(Math.Clamp(
+                            _options.ConnectionsMaxIdleMs / 2,
+                            1000,
+                            60000));
+                        try
+                        {
+                            if (!await eventReader.WaitToReadAsync(routingRefreshCts.Token)
+                                    .ConfigureAwait(false))
+                            {
+                                break;
+                            }
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            // Re-check the immutable broker-partition snapshot on the next pass.
+                        }
+                    }
+                    else if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
                         break;
+                    }
                 }
                 else if (carryOver.Count > 0 && sentThisIteration)
                 {
@@ -1663,14 +1768,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         await Task.Delay(Math.Min(wakeupMs, 100), cancellationToken).ConfigureAwait(false);
                     }
-                }
-                else if (_sendFailedRetries.IsEmpty
-                    && _loopExitRedeliveries.IsEmpty
-                    && !eventReader.TryPeek(out _))
-                {
-                    // No carry-over, no pending responses, no retries, no events — wait for new batch.
-                    if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
-                        break;
                 }
             }
         }
@@ -2409,12 +2506,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // Check if any migrating partitions can be unfenced after responses completed
-                if (_migratingPartitions.Count > 0)
+                if (_hasMigratingPartitions)
                 {
-                    var beforeCount = _migratingPartitions.Count;
+                    var beforeCount = GetMigratingPartitionCount();
                     CompleteMigrations(connIdx);
 
-                    if (_migratingPartitions.Count == 0)
+                    if (!_hasMigratingPartitions)
                         LogPartitionMigrationComplete(_brokerId, beforeCount);
                 }
             }
@@ -2695,7 +2792,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -removedBytes);
             pendingList.Clear();
 
-            if (_migratingPartitions.Count > 0)
+            if (_hasMigratingPartitions)
                 CompleteMigrations(connIdx);
 
             // After clearing all entries due to timeout, trim the internal array to
@@ -3718,21 +3815,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         // Common case: no migrations active — dictionary Count check is a single branch on 0.
         // During migration: one hash lookup per batch, negligible vs TCP write cost.
-        if (_migratingPartitions.Count > 0
-            && _migratingPartitions.TryGetValue(topicPartition, out var oldConn))
+        int connectionIndex;
+        if (TryGetMigratingConnection(topicPartition, out var oldConn))
         {
-            return oldConn;
+            connectionIndex = oldConn;
+        }
+        else
+        {
+            if (!_partitionOrdinals.TryGetValue(topicPartition, out var ordinal))
+            {
+                // First route can precede CoalesceBatch in focused callers/tests. Production
+                // normally refreshes once per coalesced batch, before connection selection.
+                RefreshPartitionRouting();
+            }
+
+            connectionIndex = _partitionOrdinals.TryGetValue(topicPartition, out ordinal)
+                ? ordinal % _connectionCount
+                : topicPartition.Partition % _connectionCount;
         }
 
-        if (_partitionOrdinals.TryGetValue(topicPartition, out var ordinal))
-            return ordinal % _connectionCount;
-
-        // First route can precede CoalesceBatch in focused callers/tests. Production normally
-        // refreshes once per coalesced batch, before connection selection.
-        RefreshPartitionRouting();
-        return _partitionOrdinals.TryGetValue(topicPartition, out ordinal)
-            ? ordinal % _connectionCount
-            : topicPartition.Partition % _connectionCount;
+        RetainConnectionIndex(connectionIndex);
+        return connectionIndex;
     }
 
     /// <summary>
@@ -3789,7 +3892,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (oldConnection != newConnection
                 && HasInflightForPartition(oldConnection, topicPartition))
             {
-                _migratingPartitions.TryAdd(topicPartition, oldConnection);
+                AddMigratingPartition(topicPartition, oldConnection);
             }
         }
 
@@ -3803,7 +3906,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var oldConnection = oldOrdinal % _connectionCount;
                 if (HasInflightForPartition(oldConnection, topicPartition))
-                    _migratingPartitions.TryAdd(topicPartition, oldConnection);
+                    AddMigratingPartition(topicPartition, oldConnection);
             }
         }
 
@@ -3812,10 +3915,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _partitionOrdinals.Add(_rankedPartitions[ordinal], ordinal);
         _nextStablePartitionOrdinal = _rankedPartitions.Count;
 
-        if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
-            _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+        lock (_migrationRemovalBuffer)
+        {
+            if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
+                _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+        }
 
         _partitionRoutingSnapshot = metadataPartitions;
+    }
+
+    private void ReleaseRetainedConnectionsIfBrokerIdle()
+    {
+        if (Volatile.Read(ref _retainedConnectionIndexCount) > 0
+            && _metadataManager.GetPartitionsForNode(_brokerId).Count == 0)
+        {
+            ReleaseConnectionIndices();
+        }
     }
 
     /// <summary>
@@ -3844,6 +3959,44 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         return false;
     }
 
+    private bool TryGetMigratingConnection(
+        TopicPartition topicPartition,
+        out int connectionIndex)
+    {
+        if (!_hasMigratingPartitions)
+        {
+            connectionIndex = default;
+            return false;
+        }
+
+        lock (_migrationRemovalBuffer)
+            return _migratingPartitions.TryGetValue(topicPartition, out connectionIndex);
+    }
+
+    private void AddMigratingPartition(TopicPartition topicPartition, int connectionIndex)
+    {
+        lock (_migrationRemovalBuffer)
+        {
+            _migratingPartitions.TryAdd(topicPartition, connectionIndex);
+            _hasMigratingPartitions = true;
+        }
+    }
+
+    private int GetMigratingPartitionCount()
+    {
+        lock (_migrationRemovalBuffer)
+            return _migratingPartitions.Count;
+    }
+
+    private void ClearMigratingPartitions()
+    {
+        lock (_migrationRemovalBuffer)
+        {
+            _migratingPartitions.Clear();
+            _hasMigratingPartitions = false;
+        }
+    }
+
     /// <summary>
     /// Checks migrating partitions whose old connection is <paramref name="connectionIndex"/>
     /// and unfences them if they no longer have in-flight batches on that connection.
@@ -3851,21 +4004,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void CompleteMigrations(int connectionIndex)
     {
-        var pendingList = _pendingResponsesByConnection[connectionIndex];
-        _migrationRemovalBuffer.Clear();
-
-        foreach (var (topicPartition, oldConnection) in _migratingPartitions)
+        // The send loop is the production owner. Serialize maintenance/test callers too so
+        // they cannot race migration state or this reusable scratch buffer with the loop.
+        lock (_migrationRemovalBuffer)
         {
-            if (oldConnection != connectionIndex)
-                continue;
+            var pendingList = _pendingResponsesByConnection[connectionIndex];
+            _migrationRemovalBuffer.Clear();
 
-            // Empty connection is the common completion case and avoids rescanning batches.
-            if (pendingList.Count == 0 || !HasInflightForPartition(connectionIndex, topicPartition))
-                _migrationRemovalBuffer.Add(topicPartition);
+            foreach (var (topicPartition, oldConnection) in _migratingPartitions)
+            {
+                if (oldConnection != connectionIndex)
+                    continue;
+
+                // Empty connection is the common completion case and avoids rescanning batches.
+                if (pendingList.Count == 0 || !HasInflightForPartition(connectionIndex, topicPartition))
+                    _migrationRemovalBuffer.Add(topicPartition);
+            }
+
+            for (var i = 0; i < _migrationRemovalBuffer.Count; i++)
+                _migratingPartitions.Remove(_migrationRemovalBuffer[i]);
+
+            _hasMigratingPartitions = _migratingPartitions.Count > 0;
         }
-
-        for (var i = 0; i < _migrationRemovalBuffer.Count; i++)
-            _migratingPartitions.Remove(_migrationRemovalBuffer[i]);
     }
 
     /// <summary>
@@ -3878,25 +4038,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void FenceAffectedPartitions(int oldConnCount, int newConnCount)
     {
-        foreach (var tp in _knownPartitions)
+        lock (_migrationRemovalBuffer)
         {
-            var routeKey = _partitionOrdinals.TryGetValue(tp, out var ordinal)
-                ? ordinal
-                : tp.Partition;
-            var oldConn = routeKey % oldConnCount;
-            var newConn = routeKey % newConnCount;
-
-            if (oldConn != newConn && HasInflightForPartition(oldConn, tp))
+            foreach (var tp in _knownPartitions)
             {
-                _migratingPartitions.TryAdd(tp, oldConn);
+                var routeKey = _partitionOrdinals.TryGetValue(tp, out var ordinal)
+                    ? ordinal
+                    : tp.Partition;
+                var oldConn = routeKey % oldConnCount;
+                var newConn = routeKey % newConnCount;
+
+                if (oldConn != newConn && HasInflightForPartition(oldConn, tp))
+                    _migratingPartitions.TryAdd(tp, oldConn);
             }
+
+            if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
+                _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+
+            _hasMigratingPartitions = _migratingPartitions.Count > 0;
         }
 
-        if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
-            _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
-
-        if (_migratingPartitions.Count > 0)
-            LogPartitionMigrationStarted(_brokerId, _migratingPartitions.Count, oldConnCount, newConnCount);
+        var migratingPartitionCount = GetMigratingPartitionCount();
+        if (migratingPartitionCount > 0)
+            LogPartitionMigrationStarted(_brokerId, migratingPartitionCount, oldConnCount, newConnCount);
     }
 
     /// <summary>
@@ -3919,7 +4083,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Shared pools may retain an expanded group owned by another client. An owning
         // sender also retains a one-slot group after scaling back down. Keep those slots
         // indexed, while preserving the singleton path before this sender first scales up.
-        var connectionLease = _connectionCount > 1 || !_canPhysicallyShrinkConnections || _hasScaledConnectionGroup
+        var usesIndexedGroup = _connectionCount > 1
+            || !_canPhysicallyShrinkConnections
+            || _hasScaledConnectionGroup;
+        if (usesIndexedGroup)
+            RetainConnectionIndex(connIdx);
+
+        var connectionLease = usesIndexedGroup
             ? await _connectionPool.LeaseConnectionByIndexAsync(_brokerId, connIdx, cancellationToken)
                 .ConfigureAwait(false)
             : await _connectionPool.LeaseConnectionAsync(_brokerId, cancellationToken)
@@ -4252,6 +4422,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        try
+        {
+            await DisposeCoreAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            ReleaseConnectionIndices();
+        }
+    }
+
+    private async ValueTask DisposeCoreAsync()
+    {
         LogDisposing(_brokerId);
 
         // Complete the channel so no new events are accepted, then cancel the CTS so
@@ -4320,7 +4502,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _retiringConnection = null;
         }
 
-        _migratingPartitions.Clear();
+        ClearMigratingPartitions();
 
         var totalPending = _totalPendingResponseCount;
         if (totalPending > 0)
@@ -4475,6 +4657,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 // Nothing was removed (pool group already at or below target) —
                 // the reduced routing width stands on its own.
+                ReleaseConnectionIndex(_connectionCount);
             }
             else if (task.Exception is not null)
             {
@@ -4696,7 +4879,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // The drain gates above guarantee no in-flight batches that require routing to the
         // removed slot, so any leftover migration fences are stale — clear them so no
         // partition keeps routing outside the reduced width.
-        _migratingPartitions.Clear();
+        ClearMigratingPartitions();
 
         _accumulator.RecordConnectionScaleEvent(
             _brokerId,
@@ -4715,6 +4898,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (!_canPhysicallyShrinkConnections)
         {
             _pinnedConnections[targetShrinkCount] = null;
+            ReleaseConnectionIndex(targetShrinkCount);
             LogAdaptiveScaleDown(_brokerId, targetShrinkCount + 1, targetShrinkCount);
             return targetShrinkCount;
         }
@@ -4759,6 +4943,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         actualCount = Math.Min(actualCount, _pendingResponsesByConnection.Length);
 
         var oldCount = _connectionCount;
+        // A true singleton comes from the endpoint cache, while the new indexed group owns
+        // a different slot 0. Drop the old pin so routing adopts the group's real connection.
+        if (oldCount == 1 && !_hasScaledConnectionGroup)
+            _pinnedConnections[0] = null;
+
         _hasScaledConnectionGroup = true;
         _connectionCount = actualCount;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
@@ -4812,6 +5001,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private int ApplyScaleDown(IKafkaConnection removedConnection)
     {
         var removedIdx = _connectionCount; // Width was reduced at initiation — removed slot is one past it.
+        ReleaseConnectionIndex(removedIdx);
 
         // Reset the sustained-low-utilization timer so the next scale-down cycle
         // must observe the full sustained window from this point forward.

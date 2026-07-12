@@ -9,6 +9,7 @@ using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using Dekaf.Tests.Unit.Networking;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -37,7 +38,8 @@ public sealed class AdaptiveScaleDownTests
         int maxInFlightRequests = 1,
         long? scaleCooldownMs = null,
         long? scaleDownSustainedMs = null,
-        bool enableDeliveryDiagnostics = false) => new()
+        bool enableDeliveryDiagnostics = false,
+        int connectionsPerBroker = 1) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlightRequests,
@@ -48,9 +50,9 @@ public sealed class AdaptiveScaleDownTests
             RetryBackoffMaxMs = 1000,
             RequestTimeoutMs = 30_000,
             LingerMs = 0,
-            ConnectionsPerBroker = 1,
+            ConnectionsPerBroker = connectionsPerBroker,
             EnableAdaptiveConnections = true,
-            MaxConnectionsPerBroker = 4,
+            MaxConnectionsPerBroker = Math.Max(4, connectionsPerBroker),
             EnableDeliveryDiagnostics = enableDeliveryDiagnostics,
             ScaleCooldownMsOverride = scaleCooldownMs,
             ScaleDownSustainedMsOverride = scaleDownSustainedMs
@@ -178,6 +180,213 @@ public sealed class AdaptiveScaleDownTests
         }
     }
 
+    private static (
+        ConnectionPool Pool,
+        ConnectionPoolTests.TestIdleConnection[] Connections) CreateIdleConnectionPool(int connectionCount)
+    {
+        var connections = new ConnectionPoolTests.TestIdleConnection[connectionCount];
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = 1 },
+            connectionsPerBroker: connectionCount,
+            connectionFactory: (brokerId, host, port, index, _) =>
+            {
+                var connection = new ConnectionPoolTests.TestIdleConnection(brokerId, host, port)
+                {
+                    LastUsedTimestampMs = 0
+                };
+                connections[index] = connection;
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+        return (pool, connections);
+    }
+
+    [Test]
+    public async Task FloorWidth_ReapsNeverRoutedSlots_ButKeepsRoutedSlot()
+    {
+        const int connectionCount = 3;
+        var (pool, connections) = CreateIdleConnectionPool(connectionCount);
+        var options = CreateOptions(idempotent: false, connectionsPerBroker: connectionCount);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        await using (pool)
+        {
+            try
+            {
+                pool.RegisterBroker(1, "localhost", 9092);
+                await pool.GetConnectionAsync(1);
+
+                var getConnection = typeof(BrokerSender).GetMethod(
+                    "GetConnectionForPartition",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                var routedIndex = (int)getConnection.Invoke(
+                    sender,
+                    [new TopicPartition(Topic, 0)])!;
+                var reaped = await pool.ReapIdleConnectionsAsync();
+
+                await Assert.That(routedIndex).IsEqualTo(0);
+                await Assert.That(reaped).IsEqualTo(2);
+                await Assert.That(connections[0].DisposeCount).IsEqualTo(0);
+                await Assert.That(connections[1].DisposeCount).IsEqualTo(1);
+                await Assert.That(connections[2].DisposeCount).IsEqualTo(1);
+            }
+            finally
+            {
+                await sender.DisposeAsync();
+                await accumulator.DisposeAsync();
+            }
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task MetadataWithoutBrokerPartitions_ReleasesRoutedSlot(
+        CancellationToken cancellationToken)
+    {
+        var (pool, connections) = CreateIdleConnectionPool(connectionCount: 2);
+        var options = CreateOptions(idempotent: false, connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        await using (pool)
+        {
+            try
+            {
+                pool.RegisterBroker(1, "localhost", 9092);
+                await pool.GetConnectionAsync(1, cancellationToken);
+                var metadataManager = GetField<MetadataManager>(sender, "_metadataManager");
+                metadataManager.Metadata.Update(CreateMetadata(leaderId: 1));
+
+                typeof(BrokerSender).GetMethod(
+                        "GetConnectionForPartition",
+                        BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(sender, [new TopicPartition(Topic, 0)]);
+                var reapedBeforeLeadershipLoss = await pool.ReapIdleConnectionsAsync();
+                await Assert.That(reapedBeforeLeadershipLoss).IsEqualTo(1)
+                    .Because("the routed slot remains retained while the broker still owns work");
+
+                metadataManager.Metadata.Update(CreateMetadata(leaderId: 2));
+                typeof(BrokerSender).GetMethod(
+                        "UnmutePartition",
+                        BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(sender, [new TopicPartition(Topic, 0)]);
+
+                while (GetField<int>(sender, "_retainedConnectionIndexCount") > 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await Task.Yield();
+                }
+
+                await Assert.That(metadataManager.GetPartitionsForNode(1)).IsEmpty();
+                await Assert.That(GetField<int>(sender, "_retainedConnectionIndexCount")).IsEqualTo(0);
+                foreach (var connection in connections)
+                    connection.LastUsedTimestampMs = 0;
+
+                var reaped = await pool.ReapIdleConnectionsAsync();
+
+                await Assert.That(reaped).IsEqualTo(1);
+                await Assert.That(connections.Sum(static connection => connection.DisposeCount))
+                    .IsEqualTo(2);
+            }
+            finally
+            {
+                await sender.DisposeAsync();
+                await accumulator.DisposeAsync();
+            }
+        }
+    }
+
+    [Test]
+    public async Task HighIndexRetention_DoesNotAliasIndexZero()
+    {
+        const int connectionCount = 33;
+        var (pool, connections) = CreateIdleConnectionPool(connectionCount);
+        var options = CreateOptions(idempotent: false, connectionsPerBroker: connectionCount);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        await using (pool)
+        {
+            try
+            {
+                pool.RegisterBroker(1, "localhost", 9092);
+                await pool.GetConnectionAsync(1);
+                GetField<MetadataManager>(sender, "_metadataManager")
+                    .Metadata.Update(CreateMetadata(leaderId: 1));
+
+                var getConnection = typeof(BrokerSender).GetMethod(
+                    "GetConnectionForPartition",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                getConnection.Invoke(sender, [new TopicPartition(Topic, 0)]);
+                getConnection.Invoke(sender, [new TopicPartition(Topic, 32)]);
+
+                var reaped = await pool.ReapIdleConnectionsAsync();
+
+                await Assert.That(reaped).IsEqualTo(31);
+                await Assert.That(connections[0].DisposeCount).IsEqualTo(0);
+                await Assert.That(connections[32].DisposeCount).IsEqualTo(0);
+            }
+            finally
+            {
+                await sender.DisposeAsync();
+                await accumulator.DisposeAsync();
+            }
+        }
+    }
+
+    [Test]
+    public async Task ScaleDown_ReleasesRemovedIndex_AndWidthOneRetainsGroupSlot()
+    {
+        const int initialConnectionCount = 2;
+        var (pool, connections) = CreateIdleConnectionPool(initialConnectionCount);
+        var options = CreateOptions(idempotent: false, connectionsPerBroker: initialConnectionCount);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        await using (pool)
+        {
+            try
+            {
+                pool.RegisterBroker(1, "localhost", 9092);
+                await pool.GetConnectionAsync(1);
+
+                var senderType = typeof(BrokerSender);
+                var getConnection = senderType.GetMethod(
+                    "GetConnectionForPartition",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                getConnection.Invoke(sender, [new TopicPartition(Topic, 1)]);
+
+                var removedConnection = await pool.ShrinkConnectionGroupAsync(1, 1);
+                senderType.GetField("_connectionCount", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(sender, 1);
+                senderType.GetField("_hasScaledConnectionGroup", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(sender, true);
+                senderType.GetMethod("ApplyScaleDown", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(sender, [removedConnection!]);
+
+                using (await GetConnectionLeaseAtIndexAsync(sender, 0)) { }
+
+                await pool.ScaleConnectionGroupAsync(1, 2);
+                senderType.GetMethod("ApplyScaleUp", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(sender, [2]);
+                connections[0].LastUsedTimestampMs = 0;
+                connections[1].LastUsedTimestampMs = 0;
+
+                var reaped = await pool.ReapIdleConnectionsAsync();
+
+                await Assert.That(reaped).IsEqualTo(1);
+                await Assert.That(connections[0].DisposeCount).IsEqualTo(0);
+                await Assert.That(connections[1].DisposeCount).IsEqualTo(1);
+            }
+            finally
+            {
+                await sender.DisposeAsync();
+                await accumulator.DisposeAsync();
+            }
+        }
+    }
+
     private static ReadyBatch CreateTestBatch(
         ValueTaskSourcePool<RecordMetadata> pool, int partition, int dataSize = 100)
     {
@@ -195,6 +404,34 @@ public sealed class AdaptiveScaleDownTests
         batch.TrySetMemoryReleased(); // Skip accumulator memory tracking in tests
         return batch;
     }
+
+    private static MetadataResponse CreateMetadata(int leaderId) => new()
+    {
+        Brokers =
+        [
+            new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 },
+            new BrokerMetadata { NodeId = 2, Host = "localhost", Port = 9093 }
+        ],
+        Topics =
+        [
+            new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                Name = Topic,
+                Partitions =
+                [
+                    new PartitionMetadata
+                    {
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 0,
+                        LeaderId = leaderId,
+                        ReplicaNodes = [leaderId],
+                        IsrNodes = [leaderId]
+                    }
+                ]
+            }
+        ]
+    };
 
     private static ProduceResponse CreateSuccessResponseForAllPartitions() =>
         new()
@@ -876,6 +1113,42 @@ public sealed class AdaptiveScaleDownTests
         instance.GetType().GetField(
             fieldName,
             BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(instance, value);
+
+    [Test]
+    public async Task FirstScaleUp_InvalidatesEndpointPinnedSingleton()
+    {
+        var options = CreateOptions(idempotent: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var endpointConnection = Substitute.For<IKafkaConnection>();
+        endpointConnection.IsConnected.Returns(true);
+        var indexedConnection = Substitute.For<IKafkaConnection>();
+        indexedConnection.IsConnected.Returns(true);
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(endpointConnection);
+        pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(indexedConnection);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            using (var endpointLease = await GetConnectionLeaseAtIndexAsync(sender, 0))
+                await Assert.That(endpointLease.Connection).IsSameReferenceAs(endpointConnection);
+
+            typeof(BrokerSender).GetMethod(
+                    "ApplyScaleUp",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, [2]);
+
+            using var indexedLease = await GetConnectionLeaseAtIndexAsync(sender, 0);
+            await Assert.That(indexedLease.Connection).IsSameReferenceAs(indexedConnection);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
 
     [Test]
     [Arguments(false, false, true)]

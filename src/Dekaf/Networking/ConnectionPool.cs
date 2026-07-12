@@ -56,6 +56,8 @@ public sealed partial class ConnectionPool : IConnectionPool
     // Multi-connection support: connection groups and round-robin index
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
     private readonly ConcurrentDictionary<(int BrokerId, int Index), SemaphoreSlim> _connectionReplacementLocks = new();
+    private readonly Lock _connectionGroupRetentionLock = new();
+    private readonly Dictionary<(int BrokerId, int Index), int> _connectionGroupRetainers = [];
 
     // Per-broker semaphores to deduplicate concurrent group creation
     private readonly ConcurrentDictionary<int, SemaphoreSlim> _groupCreationLocks = new();
@@ -565,6 +567,39 @@ public sealed partial class ConnectionPool : IConnectionPool
         }
     }
 
+    /// <summary>
+    /// Prevents idle reaping from changing one routed group slot while a sender uses it.
+    /// Multiple senders sharing the same broker/index are ref-counted.
+    /// </summary>
+    internal bool TryRetainConnectionGroupIndex(int brokerId, int connectionIndex)
+    {
+        lock (_connectionGroupRetentionLock)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return false;
+
+            var key = (brokerId, connectionIndex);
+            _connectionGroupRetainers.TryGetValue(key, out var retainers);
+            _connectionGroupRetainers[key] = retainers + 1;
+            return true;
+        }
+    }
+
+    internal void ReleaseConnectionGroupIndex(int brokerId, int connectionIndex)
+    {
+        lock (_connectionGroupRetentionLock)
+        {
+            var key = (brokerId, connectionIndex);
+            if (!_connectionGroupRetainers.TryGetValue(key, out var retainers))
+                return;
+
+            if (retainers == 1)
+                _connectionGroupRetainers.Remove(key);
+            else
+                _connectionGroupRetainers[key] = retainers - 1;
+        }
+    }
+
     private async ValueTask<IKafkaConnection> ReplaceConnectionInGroupAsync(int brokerId, BrokerInfo brokerInfo, int index, CancellationToken cancellationToken)
     {
         // Use a per-(broker,index) SemaphoreSlim instead of Lazy<ValueTask> to avoid
@@ -1052,14 +1087,15 @@ public sealed partial class ConnectionPool : IConnectionPool
                     reaped++;
             }
 
-            foreach (var (_, group) in _connectionGroupsById.ToArray())
+            foreach (var (brokerId, group) in _connectionGroupsById.ToArray())
             {
                 var connectedCount = CountConnected(group);
                 for (var i = 0; i < group.Length; i++)
                 {
                     var connection = group[i];
                     if (connection is not null
-                        && await TryReapGroupConnectionAsync(group, i, connection, connectedCount, now).ConfigureAwait(false))
+                        && await TryReapGroupConnectionAsync(
+                            brokerId, group, i, connection, connectedCount, now).ConfigureAwait(false))
                     {
                         connectedCount--;
                         reaped++;
@@ -1105,6 +1141,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     }
 
     private async ValueTask<bool> TryReapGroupConnectionAsync(
+        int brokerId,
         IKafkaConnection[] group,
         int index,
         IKafkaConnection connection,
@@ -1117,8 +1154,14 @@ public sealed partial class ConnectionPool : IConnectionPool
         if (connectedCount <= 1 && HasPendingRequests(group))
             return false;
 
-        if (Interlocked.CompareExchange(ref group[index], null!, connection) != connection)
-            return false;
+        lock (_connectionGroupRetentionLock)
+        {
+            if (_connectionGroupRetainers.ContainsKey((brokerId, index))
+                || Interlocked.CompareExchange(ref group[index], null!, connection) != connection)
+            {
+                return false;
+            }
+        }
 
         var disposed = await DisposeIdleConnectionAsync(connection, index, now).ConfigureAwait(false);
         if (!disposed && connection.IsConnected)

@@ -516,7 +516,63 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    public async Task ReapIdleConnectionsAsync_Group_ReapsOnlyConnectionsWithoutPendingRequests()
+    public async Task ReapIdleConnectionsAsync_Group_DoesNotDisposeOwnerAttachedConnections()
+    {
+        var created = new TestIdleConnection[2];
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleThresholdMs },
+            connectionsPerBroker: 2,
+            connectionFactory: (brokerId, host, port, index, _) =>
+            {
+                var connection = new TestIdleConnection(brokerId, host, port);
+                created[index] = connection;
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+            await Assert.That(pool.TryRetainConnectionGroupIndex(1, 0)).IsTrue();
+            await Assert.That(pool.TryRetainConnectionGroupIndex(1, 0)).IsTrue();
+
+            try
+            {
+                await pool.GetConnectionAsync(1);
+                created[0].LastUsedTimestampMs = StaleIdleTimestamp();
+                created[1].LastUsedTimestampMs = StaleIdleTimestamp();
+                var reaped = await pool.ReapIdleConnectionsAsync();
+
+                await Assert.That(reaped).IsEqualTo(1);
+                await Assert.That(created[0].DisposeCount).IsEqualTo(0);
+                await Assert.That(created[1].DisposeCount).IsEqualTo(1);
+
+                pool.ReleaseConnectionGroupIndex(1, 0);
+                var reapedWithOneOwner = await pool.ReapIdleConnectionsAsync();
+                await Assert.That(reapedWithOneOwner).IsEqualTo(0);
+            }
+            finally
+            {
+                pool.ReleaseConnectionGroupIndex(1, 0);
+            }
+
+            var reapedAfterRelease = await pool.ReapIdleConnectionsAsync();
+            await Assert.That(reapedAfterRelease).IsEqualTo(1);
+            await Assert.That(created[0].DisposeCount).IsEqualTo(1);
+        }
+    }
+
+    [Test]
+    public async Task TryRetainConnectionGroupIndex_DisposedPool_ReturnsFalse()
+    {
+        var pool = new ConnectionPool("test-client");
+        await pool.DisposeAsync();
+
+        await Assert.That(pool.TryRetainConnectionGroupIndex(1, 0)).IsFalse();
+    }
+
+    [Test]
+    public async Task ReapIdleConnectionsAsync_UnownedGroup_ReapsIdleConnection()
     {
         var created = new TestIdleConnection[2];
         var pool = new ConnectionPool(
@@ -797,7 +853,7 @@ public sealed class ConnectionPoolTests
         return connection;
     }
 
-    private sealed class TestIdleConnection(int brokerId, string host, int port) : IKafkaConnection, IIdleTrackedKafkaConnection
+    internal sealed class TestIdleConnection(int brokerId, string host, int port) : IKafkaConnection, IIdleTrackedKafkaConnection
     {
         private int _connected = 1;
         private long _lastUsedTimestampMs = Environment.TickCount64;
