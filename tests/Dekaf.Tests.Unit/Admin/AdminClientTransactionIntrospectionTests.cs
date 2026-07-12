@@ -76,7 +76,7 @@ public sealed class AdminClientTransactionIntrospectionTests
 
         await connections[1].Received(1).SendAsync<ListTransactionsRequest, ListTransactionsResponse>(
             Arg.Is<ListTransactionsRequest>(r =>
-                r.StateFilters!.Count == 1 &&
+                r != null && r.StateFilters!.Count == 1 &&
                 r.StateFilters[0] == "Ongoing" &&
                 r.ProducerIdFilters!.Count == 1 &&
                 r.ProducerIdFilters[0] == 101 &&
@@ -130,7 +130,7 @@ public sealed class AdminClientTransactionIntrospectionTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<FindCoordinatorRequest>();
+                var request = callInfo.Arg<FindCoordinatorRequest>()!;
                 var coordinatorId = request.Key == "tx-b" ? 2 : 1;
 
                 return ValueTask.FromResult(new FindCoordinatorResponse
@@ -153,13 +153,13 @@ public sealed class AdminClientTransactionIntrospectionTests
                 Arg.Any<DescribeTransactionsRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(callInfo => ValueTask.FromResult(CreateDescribeTransactionsResponse(callInfo.Arg<DescribeTransactionsRequest>(), 101)));
+            .Returns(callInfo => ValueTask.FromResult(CreateDescribeTransactionsResponse(callInfo.Arg<DescribeTransactionsRequest>()!, 101)));
 
         connections[2].SendAsync<DescribeTransactionsRequest, DescribeTransactionsResponse>(
                 Arg.Any<DescribeTransactionsRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(callInfo => ValueTask.FromResult(CreateDescribeTransactionsResponse(callInfo.Arg<DescribeTransactionsRequest>(), 202)));
+            .Returns(callInfo => ValueTask.FromResult(CreateDescribeTransactionsResponse(callInfo.Arg<DescribeTransactionsRequest>()!, 202)));
 
         var descriptions = await admin.DescribeTransactionsAsync(["tx-a", "tx-b"]);
 
@@ -170,7 +170,7 @@ public sealed class AdminClientTransactionIntrospectionTests
             [new TopicPartition("orders", 0), new TopicPartition("orders", 1)]);
 
         await connections[1].Received(1).SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-            Arg.Is<FindCoordinatorRequest>(r => r.Key == "tx-a" && r.KeyType == CoordinatorType.Transaction),
+            Arg.Is<FindCoordinatorRequest>(r => r != null && r.Key == "tx-a" && r.KeyType == CoordinatorType.Transaction),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -244,13 +244,13 @@ public sealed class AdminClientTransactionIntrospectionTests
                 Arg.Any<DescribeProducersRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(callInfo => ValueTask.FromResult(CreateDescribeProducersResponse(callInfo.Arg<DescribeProducersRequest>(), 101)));
+            .Returns(callInfo => ValueTask.FromResult(CreateDescribeProducersResponse(callInfo.Arg<DescribeProducersRequest>()!, 101)));
 
         connections[2].SendAsync<DescribeProducersRequest, DescribeProducersResponse>(
                 Arg.Any<DescribeProducersRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(callInfo => ValueTask.FromResult(CreateDescribeProducersResponse(callInfo.Arg<DescribeProducersRequest>(), 202)));
+            .Returns(callInfo => ValueTask.FromResult(CreateDescribeProducersResponse(callInfo.Arg<DescribeProducersRequest>()!, 202)));
 
         var result = await admin.DescribeProducersAsync(
             [new TopicPartition("orders", 0), new TopicPartition("orders", 1)]);
@@ -260,7 +260,7 @@ public sealed class AdminClientTransactionIntrospectionTests
 
         await connections[1].Received(1).SendAsync<DescribeProducersRequest, DescribeProducersResponse>(
             Arg.Is<DescribeProducersRequest>(r =>
-                r.Topics.Count == 1 &&
+                r != null && r.Topics.Count == 1 &&
                 r.Topics[0].Name == "orders" &&
                 r.Topics[0].PartitionIndexes.Count == 1 &&
                 r.Topics[0].PartitionIndexes[0] == 0),
@@ -269,7 +269,7 @@ public sealed class AdminClientTransactionIntrospectionTests
 
         await connections[2].Received(1).SendAsync<DescribeProducersRequest, DescribeProducersResponse>(
             Arg.Is<DescribeProducersRequest>(r =>
-                r.Topics.Count == 1 &&
+                r != null && r.Topics.Count == 1 &&
                 r.Topics[0].Name == "orders" &&
                 r.Topics[0].PartitionIndexes.Count == 1 &&
                 r.Topics[0].PartitionIndexes[0] == 1),
@@ -307,7 +307,7 @@ public sealed class AdminClientTransactionIntrospectionTests
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
             .Returns(callInfo => ValueTask.FromResult(CreateDescribeProducersResponse(
-                callInfo.Arg<DescribeProducersRequest>(),
+                callInfo.Arg<DescribeProducersRequest>()!,
                 producerId: 101,
                 errorCode: ErrorCode.BrokerNotAvailable)));
 
@@ -326,7 +326,7 @@ public sealed class AdminClientTransactionIntrospectionTests
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
             .Returns(callInfo => ValueTask.FromResult(CreateDescribeProducersResponse(
-                callInfo.Arg<DescribeProducersRequest>(),
+                callInfo.Arg<DescribeProducersRequest>()!,
                 producerId: 101,
                 errorCode: ErrorCode.TopicAuthorizationFailed,
                 errorMessage: "denied")));
@@ -360,7 +360,7 @@ public sealed class AdminClientTransactionIntrospectionTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<FindCoordinatorRequest>();
+                var request = callInfo.Arg<FindCoordinatorRequest>()!;
                 var coordinatorId = request.Key == "tx-b" ? 2 : 1;
 
                 return ValueTask.FromResult(new FindCoordinatorResponse
@@ -412,7 +412,7 @@ public sealed class AdminClientTransactionIntrospectionTests
 
         await connections[1].Received(1).SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
             Arg.Is<InitProducerIdRequest>(r =>
-                r.TransactionalId == "tx-a" &&
+                r != null && r.TransactionalId == "tx-a" &&
                 r.TransactionTimeoutMs == 12345 &&
                 r.ProducerId == -1 &&
                 r.ProducerEpoch == -1),
@@ -421,7 +421,7 @@ public sealed class AdminClientTransactionIntrospectionTests
 
         await connections[2].Received(1).SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
             Arg.Is<InitProducerIdRequest>(r =>
-                r.TransactionalId == "tx-b" &&
+                r != null && r.TransactionalId == "tx-b" &&
                 r.TransactionTimeoutMs == 12345 &&
                 r.ProducerId == -1 &&
                 r.ProducerEpoch == -1),
@@ -497,7 +497,7 @@ public sealed class AdminClientTransactionIntrospectionTests
                 Arg.Any<WriteTxnMarkersRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(callInfo => ValueTask.FromResult(CreateWriteTxnMarkersResponse(callInfo.Arg<WriteTxnMarkersRequest>())));
+            .Returns(callInfo => ValueTask.FromResult(CreateWriteTxnMarkersResponse(callInfo.Arg<WriteTxnMarkersRequest>()!)));
 
         var result = await admin.AbortTransactionAsync(new AbortTransactionSpec
         {
@@ -511,7 +511,7 @@ public sealed class AdminClientTransactionIntrospectionTests
 
         await connections[2].Received(1).SendAsync<WriteTxnMarkersRequest, WriteTxnMarkersResponse>(
             Arg.Is<WriteTxnMarkersRequest>(r =>
-                r.Markers.Count == 1 &&
+                r != null && r.Markers.Count == 1 &&
                 r.Markers[0].ProducerId == 202 &&
                 r.Markers[0].ProducerEpoch == 4 &&
                 !r.Markers[0].TransactionResult &&
@@ -533,7 +533,7 @@ public sealed class AdminClientTransactionIntrospectionTests
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
             .Returns(callInfo => ValueTask.FromResult(CreateWriteTxnMarkersResponse(
-                callInfo.Arg<WriteTxnMarkersRequest>(),
+                callInfo.Arg<WriteTxnMarkersRequest>()!,
                 ErrorCode.InvalidProducerEpoch)));
 
         var result = await admin.AbortTransactionAsync(new AbortTransactionSpec
@@ -716,7 +716,7 @@ public sealed class AdminClientTransactionIntrospectionTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<FindCoordinatorRequest>();
+                var request = callInfo.Arg<FindCoordinatorRequest>()!;
 
                 return ValueTask.FromResult(new FindCoordinatorResponse
                 {

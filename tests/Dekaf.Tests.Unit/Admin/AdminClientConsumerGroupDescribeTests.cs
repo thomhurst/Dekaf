@@ -20,7 +20,7 @@ public sealed class AdminClientConsumerGroupDescribeTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<FindCoordinatorRequest>();
+                var request = callInfo.Arg<FindCoordinatorRequest>()!;
                 return ValueTask.FromResult(new FindCoordinatorResponse
                 {
                     Coordinators =
@@ -43,7 +43,7 @@ public sealed class AdminClientConsumerGroupDescribeTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<ConsumerGroupDescribeRequest>();
+                var request = callInfo.Arg<ConsumerGroupDescribeRequest>()!;
                 return ValueTask.FromResult(new ConsumerGroupDescribeResponse
                 {
                     Groups = request.GroupIds.Select(groupId => groupId == "classic-group"
@@ -78,7 +78,7 @@ public sealed class AdminClientConsumerGroupDescribeTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<DescribeGroupsRequest>();
+                var request = callInfo.Arg<DescribeGroupsRequest>()!;
                 return ValueTask.FromResult(new DescribeGroupsResponse
                 {
                     Groups = request.Groups.Select(groupId => new DescribeGroupsResponseGroup
@@ -104,7 +104,7 @@ public sealed class AdminClientConsumerGroupDescribeTests
         await Assert.That(descriptions["classic-group"].ProtocolData).IsEqualTo("cooperative-sticky");
 
         await connection.Received(1).SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
-            Arg.Is<DescribeGroupsRequest>(r => r.Groups.Count == 1 && r.Groups[0] == "classic-group"),
+            Arg.Is<DescribeGroupsRequest>(r => r != null && r.Groups.Count == 1 && r.Groups[0] == "classic-group"),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }

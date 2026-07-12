@@ -98,7 +98,7 @@ public sealed class BrokerSenderSendLoopTests
         pool.ScaleConnectionGroupAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var targetCount = (int)callInfo[1];
+                var targetCount = (int)callInfo[1]!;
                 scaleRequested.TrySetResult(targetCount);
                 return new ValueTask<int>(targetCount);
             });
@@ -1905,7 +1905,7 @@ public sealed class BrokerSenderSendLoopTests
             .Returns(connection0);
         pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(callInfo => new ValueTask<IKafkaConnection>(
-                (int)callInfo[1] == 0 ? connection0 : connection1));
+                (int)callInfo[1]! == 0 ? connection0 : connection1));
 
         var options = CreateOptions(
             maxInFlight: 2,

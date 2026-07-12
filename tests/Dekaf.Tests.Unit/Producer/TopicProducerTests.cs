@@ -83,7 +83,7 @@ public class TopicProducerTests
         await Assert.That(result.Offset).IsEqualTo(42);
         await mockProducer.Received(1).ProduceAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
-                m.Topic == "my-topic" &&
+                m != null && m.Topic == "my-topic" &&
                 m.Key == "key" &&
                 m.Value == "value" &&
                 m.Headers != null),
@@ -133,7 +133,7 @@ public class TopicProducerTests
         await Assert.That(result.Partition).IsEqualTo(2);
         await mockProducer.Received(1).ProduceAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
-                m.Topic == "my-topic" &&
+                m != null && m.Topic == "my-topic" &&
                 m.Partition == 2),
             Arg.Any<CancellationToken>());
     }
@@ -188,7 +188,7 @@ public class TopicProducerTests
         await Assert.That(result.Offset).IsEqualTo(100);
         await mockProducer.Received(1).ProduceAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
-                m.Topic == "my-topic" &&
+                m != null && m.Topic == "my-topic" &&
                 m.Partition == 1 &&
                 m.Timestamp == timestamp),
             Arg.Any<CancellationToken>());
@@ -255,7 +255,7 @@ public class TopicProducerTests
         // Assert
         await mockProducer.Received(1).FireAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
-                m.Topic == "my-topic" &&
+                m != null && m.Topic == "my-topic" &&
                 m.Headers != null));
     }
 
@@ -274,7 +274,7 @@ public class TopicProducerTests
 
         // Assert
         await mockProducer.Received(1).FireAsync(
-            Arg.Is<ProducerMessage<string, string>>(m => m.Topic == "my-topic"),
+            Arg.Is<ProducerMessage<string, string>>(m => m != null && m.Topic == "my-topic"),
             Arg.Any<Action<RecordMetadata, Exception?>>());
     }
 
@@ -332,7 +332,7 @@ public class TopicProducerTests
         await Assert.That(results).Count().IsEqualTo(2);
         await mockProducer.Received(1).ProduceAllAsync(
             Arg.Is<IEnumerable<ProducerMessage<string, string>>>(msgs =>
-                msgs.All(m => m.Topic == "my-topic")),
+                msgs != null && msgs.All(m => m.Topic == "my-topic")),
             Arg.Any<CancellationToken>());
     }
 

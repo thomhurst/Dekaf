@@ -397,7 +397,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request.RebalanceTimeoutMs == 12_345),
+            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request != null && request.RebalanceTimeoutMs == 12_345),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -428,7 +428,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(GetCoordinatorLongField(coordinator, "_pollVersion"))
             .IsEqualTo(pollVersion + 1);
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request.MemberEpoch == -1),
+            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request != null && request.MemberEpoch == -1),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -473,7 +473,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
             await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
             await _connection.DidNotReceive().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-                Arg.Is<ConsumerGroupHeartbeatRequest>(request => request.MemberEpoch == -1),
+                Arg.Is<ConsumerGroupHeartbeatRequest>(request => request != null && request.MemberEpoch == -1),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>());
         }
@@ -518,7 +518,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await heartbeat.WaitAsync(TimeSpan.FromSeconds(1));
 
         await _connection.DidNotReceive().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request.MemberEpoch > 0),
+            Arg.Is<ConsumerGroupHeartbeatRequest>(request => request != null && request.MemberEpoch > 0),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -580,7 +580,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (request.MemberEpoch > 0)
                     Interlocked.Increment(ref steadyHeartbeatCount);
 
@@ -623,7 +623,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (request.MemberEpoch == -1)
                     leaveRequest.TrySetResult(request);
 
@@ -666,7 +666,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (Volatile.Read(ref rejoining) == 1)
                 {
                     rejoinRequest.TrySetResult(request);
@@ -735,7 +735,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (request.MemberEpoch == -1)
                 {
                     leaveAttempted.TrySetResult();
@@ -802,7 +802,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (request.MemberEpoch == 0)
                 {
                     return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
@@ -864,7 +864,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (request.MemberEpoch == 0)
                 {
                     var memberEpoch = Interlocked.Increment(ref joinCount) == 1 ? 1 : 3;
@@ -961,7 +961,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (request.MemberEpoch == -1)
                 {
                     return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
@@ -1161,7 +1161,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (request.MemberEpoch == -1)
                 {
                     return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
@@ -1240,7 +1240,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = callInfo.Arg<ConsumerGroupHeartbeatRequest>()!;
                 if (request.MemberEpoch == -1)
                 {
                     return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
@@ -1803,7 +1803,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                var request = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 requests.Add(request);
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
@@ -1848,7 +1848,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                var request = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 requests.Add(request);
                 var call = requests.Count;
 
@@ -1890,7 +1890,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                var request = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 requests.Add(request);
                 var call = requests.Count;
 
@@ -1939,7 +1939,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r.MemberEpoch == 0),
+            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r != null && r.MemberEpoch == 0),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -1955,7 +1955,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
             Arg.Is<ConsumerGroupHeartbeatRequest>(r =>
-                r.SubscribedTopicNames != null && r.SubscribedTopicNames.Contains("test-topic")),
+                r != null && r.SubscribedTopicNames != null && r.SubscribedTopicNames.Contains("test-topic")),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -1990,7 +1990,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         listener.OnPartitionsAssignedAsync(Arg.Any<IEnumerable<TopicPartition>>(), Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                assignedPartitions.AddRange(ci.Arg<IEnumerable<TopicPartition>>());
+                assignedPartitions.AddRange(ci.Arg<IEnumerable<TopicPartition>>()!);
                 return ValueTask.CompletedTask;
             });
 
@@ -2044,7 +2044,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                var request = ci.Arg<OffsetCommitRequest>();
+                var request = ci.Arg<OffsetCommitRequest>()!;
                 topicSnapshots.Add(request.Topics
                     .Select(static topic => (topic.Name, topic.Partitions.Count))
                     .ToArray());
@@ -2080,7 +2080,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                var request = ci.Arg<OffsetFetchRequest>();
+                var request = ci.Arg<OffsetFetchRequest>()!;
                 topicSnapshots.Add(request.Topics!
                     .Select(static topic => (topic.Name, topic.PartitionIndexes.Count))
                     .ToArray());
@@ -2118,7 +2118,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                capturedRequest = callInfo.Arg<OffsetFetchRequest>();
+                capturedRequest = callInfo.Arg<OffsetFetchRequest>()!;
                 return ValueTask.FromResult(new OffsetFetchResponse
                 {
                     Groups =
@@ -2360,7 +2360,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.LeaveGroupAsync(cancellationToken: CancellationToken.None);
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r.MemberEpoch == -1),
+            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r != null && r.MemberEpoch == -1),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -2383,7 +2383,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
             Arg.Is<ConsumerGroupHeartbeatRequest>(r =>
-                r.MemberEpoch == -2 && r.InstanceId == "static-instance-1"),
+                r != null && r.MemberEpoch == -2 && r.InstanceId == "static-instance-1"),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -2404,7 +2404,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
             Arg.Is<ConsumerGroupHeartbeatRequest>(r =>
-                r.MemberEpoch == -2 && r.InstanceId == string.Empty),
+                r != null && r.MemberEpoch == -2 && r.InstanceId == string.Empty),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -2440,7 +2440,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r.ServerAssignor == "uniform"),
+            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r != null && r.ServerAssignor == "uniform"),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -2461,7 +2461,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             .Returns(ci =>
             {
                 var count = Interlocked.Increment(ref callCount);
-                Volatile.Write(ref lastRequest, ci.Arg<ConsumerGroupHeartbeatRequest>());
+                Volatile.Write(ref lastRequest, ci.Arg<ConsumerGroupHeartbeatRequest>()!);
 
                 if (count == 1)
                 {
@@ -2547,7 +2547,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             .Returns(ci =>
             {
                 var count = Interlocked.Increment(ref callCount);
-                Volatile.Write(ref lastRequest, ci.Arg<ConsumerGroupHeartbeatRequest>());
+                Volatile.Write(ref lastRequest, ci.Arg<ConsumerGroupHeartbeatRequest>()!);
 
                 if (count == 1)
                 {
@@ -2742,7 +2742,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r.InstanceId == "static-instance-1"),
+            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r != null && r.InstanceId == "static-instance-1"),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -2757,7 +2757,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r.RackId == "rack-a"),
+            Arg.Is<ConsumerGroupHeartbeatRequest>(r => r != null && r.RackId == "rack-a"),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
     }
@@ -2780,7 +2780,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 capturedVersion = ci.ArgAt<short>(1);
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
@@ -2816,7 +2816,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                var request = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 requests.Add(request);
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
@@ -2858,7 +2858,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                var request = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                var request = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 requests.Add(request);
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
@@ -2942,7 +2942,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = ErrorCode.None,
@@ -2977,7 +2977,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = ErrorCode.None,
@@ -3011,7 +3011,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                var req = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                var req = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 requests.Add(req);
                 callCount++;
 
@@ -3083,7 +3083,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                var req = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                var req = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 requests.Add(req);
                 callCount++;
 
@@ -3151,7 +3151,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>();
+                capturedRequest = ci.Arg<ConsumerGroupHeartbeatRequest>()!;
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = ErrorCode.None,

@@ -32,7 +32,7 @@ public sealed class KafkaConsumerServiceTests
         {
             try
             {
-                consumer.Received(1).Subscribe(Arg.Is<string[]>(t => t.Length == 2 && t[0] == "topic-a" && t[1] == "topic-b"));
+                consumer.Received(1).Subscribe(Arg.Is<string[]>(t => t != null && t.Length == 2 && t[0] == "topic-a" && t[1] == "topic-b"));
                 break;
             }
             catch (NSubstitute.Exceptions.ReceivedCallsException)
@@ -69,7 +69,7 @@ public sealed class KafkaConsumerServiceTests
         await service.StopAsync(CancellationToken.None);
 
         consumer.Received(1).Subscribe(Arg.Is<string[]>(topics =>
-            topics.Contains("orders") &&
+            topics != null && topics.Contains("orders") &&
             topics.Contains("orders-retry-5s") &&
             topics.Contains("orders-retry-30s") &&
             topics.Length == 3));
@@ -167,7 +167,7 @@ public sealed class KafkaConsumerServiceTests
             offset.Partition == 3 &&
             offset.Offset == 99));
         partitions.Received(1).Pause(Arg.Is<TopicPartition[]>(items =>
-            items.Length == 1 &&
+            items != null && items.Length == 1 &&
             items[0].Topic == "orders-retry-5s" &&
             items[0].Partition == 3));
     }
@@ -228,7 +228,7 @@ public sealed class KafkaConsumerServiceTests
             offset.Partition == 3 &&
             offset.Offset == 100));
         partitions.Received(1).Pause(Arg.Is<TopicPartition[]>(items =>
-            items.Length == 1 &&
+            items != null && items.Length == 1 &&
             items[0].Topic == "orders-retry-5s" &&
             items[0].Partition == 3));
     }
@@ -280,7 +280,7 @@ public sealed class KafkaConsumerServiceTests
         await ProcessWithRetriesAsync(service, retryResult, CancellationToken.None);
 
         await producer.Received(1).FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
-            message.Topic == "orders.DLQ" &&
+            message != null && message.Topic == "orders.DLQ" &&
             message.Headers!.GetFirstAsString(DeadLetterHeaders.FailureCountKey) == "2"));
     }
 
@@ -311,10 +311,10 @@ public sealed class KafkaConsumerServiceTests
         await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), CancellationToken.None);
 
         await producer.Received(1).FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
-            message.Topic == "orders-retry-5s" &&
+            message != null && message.Topic == "orders-retry-5s" &&
             message.Headers!.GetFirstAsString(RetryTopicHeaders.FailureCountKey) == "1"));
         await producer.DidNotReceive().FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
-            message.Topic == "orders-retry-30s"));
+            message != null && message.Topic == "orders-retry-30s"));
         await Assert.That(service.Errors).Count().IsEqualTo(2);
     }
 

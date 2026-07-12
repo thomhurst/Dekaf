@@ -50,7 +50,7 @@ public sealed class AdminClientStreamsGroupTests
         await Assert.That(result.Select(g => g.GroupId)).IsEquivalentTo(["streams-a", "streams-b"]);
         await connections[1].Received(1).SendAsync<ListGroupsRequest, ListGroupsResponse>(
             Arg.Is<ListGroupsRequest>(r =>
-                r.StatesFilter!.Count == 1 &&
+                r != null && r.StatesFilter!.Count == 1 &&
                 r.StatesFilter[0] == "Stable" &&
                 r.TypesFilter!.Count == 1 &&
                 r.TypesFilter[0] == "streams"),
@@ -70,7 +70,7 @@ public sealed class AdminClientStreamsGroupTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<FindCoordinatorRequest>();
+                var request = callInfo.Arg<FindCoordinatorRequest>()!;
                 return ValueTask.FromResult(new FindCoordinatorResponse
                 {
                     Coordinators =
@@ -93,7 +93,7 @@ public sealed class AdminClientStreamsGroupTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<StreamsGroupDescribeRequest>();
+                var request = callInfo.Arg<StreamsGroupDescribeRequest>()!;
                 return ValueTask.FromResult(new StreamsGroupDescribeResponse
                 {
                     Groups = request.GroupIds.Select(static groupId => new StreamsGroupDescribeGroup
@@ -184,7 +184,7 @@ public sealed class AdminClientStreamsGroupTests
         await Assert.That(member.TargetAssignment.ActiveTasks[0].Partitions).IsEquivalentTo([1, 2, 3]);
         await connection.Received(1).SendAsync<StreamsGroupDescribeRequest, StreamsGroupDescribeResponse>(
             Arg.Is<StreamsGroupDescribeRequest>(r =>
-                r.IncludeAuthorizedOperations &&
+                r != null && r.IncludeAuthorizedOperations &&
                 r.GroupIds.Count == 1 &&
                 r.GroupIds[0] == "streams-a"),
             0,

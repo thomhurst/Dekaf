@@ -252,7 +252,7 @@ public sealed class ConsumerDirtyCommitTests
                 Arg.Any<CancellationToken>())
             .Returns(call =>
             {
-                var request = call.Arg<OffsetCommitRequest>();
+                var request = call.Arg<OffsetCommitRequest>()!;
                 requests.Add(CloneRequest(request));
 
                 var error = responseErrors.Count == 0 ? ErrorCode.None : responseErrors.Dequeue();

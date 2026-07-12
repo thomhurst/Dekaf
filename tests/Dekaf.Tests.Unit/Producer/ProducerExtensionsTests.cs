@@ -28,7 +28,7 @@ public sealed class ProducerExtensionsTests
         await Assert.That(result.Offset).IsEqualTo(42);
         await producer.Received(1).ProduceAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
-                m.Topic == "my-topic" &&
+                m != null && m.Topic == "my-topic" &&
                 m.Key == "key" &&
                 m.Value == "value" &&
                 m.Headers != null),
@@ -98,7 +98,7 @@ public sealed class ProducerExtensionsTests
         await Assert.That(result.Partition).IsEqualTo(3);
         await producer.Received(1).ProduceAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
-                m.Topic == "my-topic" &&
+                m != null && m.Topic == "my-topic" &&
                 m.Partition == 3 &&
                 m.Key == "key" &&
                 m.Value == "value"),
@@ -156,7 +156,7 @@ public sealed class ProducerExtensionsTests
 
         await producer.Received(1).FireAsync(
             Arg.Is<ProducerMessage<string, string>>(m =>
-                m.Topic == "my-topic" &&
+                m != null && m.Topic == "my-topic" &&
                 m.Key == "key" &&
                 m.Value == "value" &&
                 m.Headers != null));
