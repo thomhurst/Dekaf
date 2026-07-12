@@ -2602,8 +2602,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         // PER-BROKER SENDER ARCHITECTURE: Each broker gets a dedicated BrokerSender with its own
         // channel and single-threaded send loop. This guarantees wire-order for same-partition
-        // batches. The per-broker in-flight semaphore enables pipelining across different partitions.
-        // Ordering across retries relies on broker idempotent producer support (sequence numbers + epoch).
+        // requests. Retry-safe record ordering requires idempotence (sequence numbers + epoch);
+        // non-idempotent pipelining accepts Kafka's documented retry-reordering trade-off.
         //
         // Ready → Drain → Distribute loop:
         // 1. Ready() checks which brokers have sendable data (sealed batches in partition deques)

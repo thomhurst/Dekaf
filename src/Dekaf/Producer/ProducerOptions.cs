@@ -186,9 +186,10 @@ public sealed class ProducerOptions
     /// producers at 5. When idempotence is disabled and this value is not explicitly set,
     /// Dekaf uses 100 to keep the non-idempotent pipeline full.
     /// <para>
-    /// Non-idempotent producers use this capacity across partitions, while Dekaf keeps at most
-    /// one batch per partition in flight because those batches have no sequence numbers.
-    /// Per-partition order is preserved, but retries may still produce duplicates.
+    /// Non-idempotent producers can also pipeline same-partition batches on their affined
+    /// connection. This improves throughput, but an earlier request that fails after a later
+    /// request was written can be retried after that later record and reorder the partition.
+    /// Enable idempotence or set this value to 1 when retry-safe ordering is required.
     /// </para>
     /// </summary>
     public int MaxInFlightRequestsPerConnection
@@ -231,7 +232,10 @@ public sealed class ProducerOptions
     public int ConnectionsPerBroker { get; init; } = 1;
 
     /// <summary>
-    /// Number of retries.
+    /// Number of retries. With idempotence disabled and
+    /// <see cref="MaxInFlightRequestsPerConnection"/> greater than 1, retries can reorder
+    /// records within a partition. Enable idempotence or use one in-flight request when
+    /// retry-safe ordering is required.
     /// </summary>
     public int Retries { get; init; } = int.MaxValue;
 

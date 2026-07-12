@@ -1983,8 +1983,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _options = options;
-        _serializeBatchesPerPartition = !options.EnableIdempotence
-            || options.MaxInFlightRequestsPerConnection <= 1;
+        _serializeBatchesPerPartition = options.MaxInFlightRequestsPerConnection <= 1;
         _compressionCodecs = compressionCodecs;
         _onBatchComplete = onBatchComplete;
         _onRecordAppended = onRecordAppended;

@@ -637,7 +637,7 @@ public sealed class BrokerSenderMuteOrderingTests
     // integration of the sender state machine so unrelated concurrency tests cannot starve its wakeups.
     [NotInParallel]
     [Timeout(30_000)]
-    public async Task NonIdempotentProducer_MultipleInFlight_SerializesSamePartitionBatches(
+    public async Task NonIdempotentProducer_MultipleInFlight_PipelinesSamePartitionBatches(
         CancellationToken ct)
     {
         var responses = Enumerable.Range(0, 2)
@@ -677,21 +677,19 @@ public sealed class BrokerSenderMuteOrderingTests
             sender.Enqueue(firstBatch);
             await sendLogger.SendSignals[0].Task.WaitAsync(ct);
 
-            await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsTrue();
+            await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsFalse();
 
             var secondBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
             sender.Enqueue(secondBatch);
 
-            await WaitForDiagAsync(secondBatch, 'O', TimeSpan.FromSeconds(5), ct);
-            await Assert.That(sendLogger.SendCount).IsEqualTo(1);
+            await sendLogger.SendSignals[1].Task.WaitAsync(ct);
+            await Assert.That(sendLogger.SendCount).IsEqualTo(2);
 
             responses[0].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 100));
-            await sendLogger.SendSignals[1].Task.WaitAsync(ct);
             responses[1].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 101));
 
             await allAcknowledged.Task.WaitAsync(ct);
-            await Assert.That(acknowledgedOffsets[0]).IsEqualTo(100);
-            await Assert.That(acknowledgedOffsets[1]).IsEqualTo(101);
+            await Assert.That(acknowledgedOffsets).IsEquivalentTo([100L, 101L]);
         }
         finally
         {
