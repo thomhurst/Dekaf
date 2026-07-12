@@ -28,7 +28,7 @@ public sealed class ConsumerRackAwarenessTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                capturedRackId = callInfo.Arg<FetchRequest>().RackId;
+                capturedRackId = callInfo.Arg<FetchRequest>()!.RackId;
                 return ValueTask.FromResult(CreateFetchResponse(preferredReadReplica: -1));
             });
 

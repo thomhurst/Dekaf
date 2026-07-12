@@ -3762,7 +3762,7 @@ public class RecordAccumulatorTests
                 return spinLock.IsHeldByCurrentThread;
 
             var property = partitionLock.GetType().GetProperty("IsHeldByCurrentThread");
-            return property is not null && (bool)property.GetValue(partitionLock)!;
+            return property != null && (bool)property.GetValue(partitionLock)!;
         }
 
         public override MemoryHandle Pin(int elementIndex = 0) =>

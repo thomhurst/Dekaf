@@ -170,7 +170,7 @@ public class HealthCheckTests
         offsets.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var token = callInfo.Arg<CancellationToken>();
+                var token = callInfo.Arg<CancellationToken>()!;
                 var tcs = new TaskCompletionSource<WatermarkOffsets>();
                 token.Register(() => tcs.TrySetCanceled(token));
                 return new ValueTask<WatermarkOffsets>(tcs.Task);
@@ -333,7 +333,7 @@ public class HealthCheckTests
         producer.FlushAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var token = callInfo.Arg<CancellationToken>();
+                var token = callInfo.Arg<CancellationToken>()!;
                 return new ValueTask(Task.Delay(TimeSpan.FromSeconds(30), token));
             });
 
@@ -446,7 +446,7 @@ public class HealthCheckTests
         adminClient.DescribeClusterAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var token = callInfo.Arg<CancellationToken>();
+                var token = callInfo.Arg<CancellationToken>()!;
                 var tcs = new TaskCompletionSource<ClusterDescription>();
                 token.Register(() => tcs.TrySetCanceled(token));
                 return new ValueTask<ClusterDescription>(tcs.Task);

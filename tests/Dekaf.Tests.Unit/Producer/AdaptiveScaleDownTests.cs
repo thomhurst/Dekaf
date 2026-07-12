@@ -189,7 +189,7 @@ public sealed class AdaptiveScaleDownTests
         pool.ScaleConnectionGroupAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var targetCount = (int)callInfo[1];
+                var targetCount = (int)callInfo[1]!;
                 scaleUpApplied.TrySetResult(targetCount);
                 return new ValueTask<int>(targetCount);
             });

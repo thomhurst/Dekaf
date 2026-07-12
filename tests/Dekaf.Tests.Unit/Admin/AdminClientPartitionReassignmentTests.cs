@@ -22,7 +22,7 @@ public sealed class AdminClientPartitionReassignmentTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                capturedRequest = callInfo.Arg<AlterPartitionReassignmentsRequest>();
+                capturedRequest = callInfo.Arg<AlterPartitionReassignmentsRequest>()!;
                 return ValueTask.FromResult(CreateAlterResponse(ErrorCode.None));
             });
 
@@ -92,7 +92,7 @@ public sealed class AdminClientPartitionReassignmentTests
                     throw new KafkaException(ErrorCode.RequestTimedOut, "simulated timeout");
                 }
 
-                retryRequest = callInfo.Arg<AlterPartitionReassignmentsRequest>();
+                retryRequest = callInfo.Arg<AlterPartitionReassignmentsRequest>()!;
                 return ValueTask.FromResult(CreateAlterResponse(ErrorCode.ReassignmentInProgress));
             });
 
@@ -144,7 +144,7 @@ public sealed class AdminClientPartitionReassignmentTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                capturedRequest = callInfo.Arg<ListPartitionReassignmentsRequest>();
+                capturedRequest = callInfo.Arg<ListPartitionReassignmentsRequest>()!;
                 return ValueTask.FromResult(new ListPartitionReassignmentsResponse
                 {
                     ErrorCode = ErrorCode.None,

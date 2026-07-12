@@ -129,7 +129,7 @@ public class ProtobufSchemaRegistrySerializerTests
         schemaRegistry.GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                capturedSubject = callInfo.Arg<string>();
+                capturedSubject = callInfo.Arg<string>()!;
                 return Task.FromResult(1);
             });
 
@@ -155,7 +155,7 @@ public class ProtobufSchemaRegistrySerializerTests
         schemaRegistry.GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                capturedSubject = callInfo.Arg<string>();
+                capturedSubject = callInfo.Arg<string>()!;
                 return Task.FromResult(1);
             });
 
@@ -181,7 +181,7 @@ public class ProtobufSchemaRegistrySerializerTests
         schemaRegistry.GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                capturedSubject = callInfo.Arg<string>();
+                capturedSubject = callInfo.Arg<string>()!;
                 return Task.FromResult(1);
             });
 
@@ -206,7 +206,7 @@ public class ProtobufSchemaRegistrySerializerTests
         schemaRegistry.GetOrRegisterSchemaAsync(Arg.Any<string>(), Arg.Any<Schema>(), Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                capturedSchema = callInfo.Arg<Schema>();
+                capturedSchema = callInfo.Arg<Schema>()!;
                 return Task.FromResult(1);
             });
 

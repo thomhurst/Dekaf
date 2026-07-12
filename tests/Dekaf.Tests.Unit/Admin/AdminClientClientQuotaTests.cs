@@ -53,7 +53,7 @@ public sealed class AdminClientClientQuotaTests
 
         await connection.Received(1).SendAsync<DescribeClientQuotasRequest, DescribeClientQuotasResponse>(
             Arg.Is<DescribeClientQuotasRequest>(r =>
-                r.Strict &&
+                r != null && r.Strict &&
                 r.Components.Count == 1 &&
                 r.Components[0].EntityType == "user" &&
                 r.Components[0].MatchType == 0 &&
@@ -203,7 +203,7 @@ public sealed class AdminClientClientQuotaTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                capturedRequest = callInfo.Arg<AlterClientQuotasRequest>();
+                capturedRequest = callInfo.Arg<AlterClientQuotasRequest>()!;
                 return ValueTask.FromResult(CreateAlterSuccessResponse(capturedRequest.Entries[0].Entity));
             });
 
@@ -312,7 +312,7 @@ public sealed class AdminClientClientQuotaTests
                     throw new KafkaException(ErrorCode.RequestTimedOut, "simulated timeout");
                 }
 
-                var request = callInfo.Arg<AlterClientQuotasRequest>();
+                var request = callInfo.Arg<AlterClientQuotasRequest>()!;
                 return ValueTask.FromResult(CreateAlterSuccessResponse(request.Entries[0].Entity));
             });
 
@@ -341,7 +341,7 @@ public sealed class AdminClientClientQuotaTests
                 Arg.Any<CancellationToken>())
             .Returns(callInfo =>
             {
-                var request = callInfo.Arg<AlterClientQuotasRequest>();
+                var request = callInfo.Arg<AlterClientQuotasRequest>()!;
                 return ValueTask.FromResult(new AlterClientQuotasResponse
                 {
                     Entries =
