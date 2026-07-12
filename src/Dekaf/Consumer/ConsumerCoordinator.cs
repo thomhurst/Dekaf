@@ -776,10 +776,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return new Dictionary<TopicPartition, TopicPartitionOffset>();
 
-        // If coordinator hasn't been discovered yet, return empty (no committed offsets known)
-        if (_coordinatorId < 0)
-            return new Dictionary<TopicPartition, TopicPartitionOffset>();
-
         // Lock is intentionally held across retries to protect the shared _fetchTopicGroups dictionary,
         // which is reused across calls to avoid allocations. With up to 3 retries x ~600ms each,
         // the lock can be held for up to ~1.8 seconds. Concurrent callers will block for the full retry duration.
@@ -788,8 +784,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             return await RetryHelper.WithRetryAsync(async () =>
             {
+                if (_coordinatorId < 0)
+                    await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+
+                var coordinatorId = _coordinatorId;
+                if (coordinatorId < 0)
+                {
+                    throw new Errors.GroupException(
+                        ErrorCode.CoordinatorNotAvailable,
+                        "Coordinator was invalidated during offset fetch discovery")
+                    {
+                        GroupId = _options.GroupId
+                    };
+                }
+
                 using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-                    _coordinatorId,
+                    coordinatorId,
                     _getCoordinationConnectionIndex(),
                     cancellationToken)
                     .ConfigureAwait(false);

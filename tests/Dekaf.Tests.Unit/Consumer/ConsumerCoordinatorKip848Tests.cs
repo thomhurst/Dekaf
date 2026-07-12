@@ -2169,6 +2169,72 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task FetchOffsetsAsync_UnknownCoordinator_RediscoversBeforeFetch()
+    {
+        var findCoordinatorCount = 0;
+        _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref findCoordinatorCount);
+                return ValueTask.FromResult(new FindCoordinatorResponse
+                {
+                    Coordinators =
+                    [
+                        new Coordinator
+                        {
+                            Key = "test-group",
+                            NodeId = 0,
+                            Host = "localhost",
+                            Port = 9092,
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                });
+            });
+        SetupConsumerGroupHeartbeat();
+        _metadataManager.SetApiVersion(
+            ApiKey.OffsetFetch,
+            OffsetFetchRequest.LowestSupportedVersion,
+            OffsetFetchRequest.HighestSupportedVersion);
+
+        var fetchRequestCount = 0;
+        _connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref fetchRequestCount);
+                return ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Topics = [],
+                    ErrorCode = ErrorCode.None
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        SetPrivateField(coordinator, "_coordinatorId", -1);
+        _connectionPool.GetConnectionByIndexAsync(
+                Arg.Is<int>(brokerId => brokerId < 0),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns<ValueTask<IKafkaConnection>>(_ =>
+                throw new InvalidOperationException("Unknown broker ID: -1"));
+
+        await coordinator.FetchOffsetsAsync(
+            [new TopicPartition("test-topic", 0)],
+            CancellationToken.None);
+
+        await Assert.That(findCoordinatorCount).IsEqualTo(2);
+        await Assert.That(fetchRequestCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task FetchOffsetsAsync_Kip848Member_SendsMemberIdentity()
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
