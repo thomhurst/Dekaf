@@ -6,13 +6,15 @@ namespace Dekaf.Tests.Unit.StressTests;
 public sealed class TransactionalReportingTests
 {
     [Test]
-    public async Task CreateAllScenarios_IncludesTransactionalProducer()
+    public async Task CreateAllScenarios_IncludesPairedTransactionalProducers()
     {
-        var scenario = Dekaf.StressTests.Program.CreateAllScenarios()
-            .SingleOrDefault(item => item.Name == "producer-transactional");
+        var scenarios = Dekaf.StressTests.Program.CreateAllScenarios()
+            .Where(item => item.Name == "producer-transactional")
+            .ToList();
 
-        await Assert.That(scenario).IsNotNull();
-        await Assert.That(scenario!.Client).IsEqualTo("Dekaf");
+        await Assert.That(scenarios).Count().IsEqualTo(2);
+        await Assert.That(scenarios.Select(item => item.Client))
+            .IsEquivalentTo(["Dekaf", "Confluent"]);
     }
 
     [Test]
@@ -39,6 +41,28 @@ public sealed class TransactionalReportingTests
     }
 
     [Test]
+    public async Task Generate_PairedTransactionalResults_UsesConfluentBaseline()
+    {
+        var verification = CreateVerification();
+        var dekaf = CreateResult(verification, client: "Dekaf", elapsedSeconds: 100);
+        var confluent = CreateResult(verification, client: "Confluent", elapsedSeconds: 200);
+        var results = new StressTestResults
+        {
+            RunStartedAtUtc = dekaf.StartedAtUtc,
+            RunCompletedAtUtc = dekaf.CompletedAtUtc,
+            MachineName = "test",
+            ProcessorCount = 4,
+            Results = [dekaf, confluent]
+        };
+
+        var markdown = MarkdownReporter.Generate(results);
+
+        await Assert.That(markdown).Contains("| Confluent");
+        await Assert.That(markdown).Contains("1.00x");
+        await Assert.That(markdown).Contains("2.00x");
+    }
+
+    [Test]
     public async Task CheckForFailures_DuplicateTransactionalRecord_FailsRun()
     {
         var verification = CreateVerification(duplicateMessages: 1);
@@ -58,13 +82,16 @@ public sealed class TransactionalReportingTests
         await Assert.That(failed).IsFalse();
     }
 
-    private static StressTestResult CreateResult(TransactionVerificationSnapshot verification)
+    private static StressTestResult CreateResult(
+        TransactionVerificationSnapshot verification,
+        string client = "Dekaf",
+        double elapsedSeconds = 900)
     {
         var now = DateTime.UtcNow;
         return new StressTestResult
         {
             Scenario = "producer-transactional",
-            Client = "Dekaf",
+            Client = client,
             DurationMinutes = 15,
             MessageSizeBytes = 1000,
             StartedAtUtc = now,
@@ -74,8 +101,8 @@ public sealed class TransactionalReportingTests
                 TotalMessages = verification.AcceptedMessages,
                 TotalBytes = verification.AcceptedMessages * 1000,
                 TotalErrors = 0,
-                ElapsedSeconds = 900,
-                AverageMessagesPerSecond = verification.AcceptedMessages / 900.0,
+                ElapsedSeconds = elapsedSeconds,
+                AverageMessagesPerSecond = verification.AcceptedMessages / elapsedSeconds,
                 AverageMegabytesPerSecond = 0.001,
                 MessagesPerSecondSamples = [],
                 ErrorSamples = []

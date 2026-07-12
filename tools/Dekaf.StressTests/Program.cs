@@ -139,10 +139,11 @@ public static class Program
         using var progressWatchdog = new ProgressWatchdog(options.OutputPath);
 
         await using var kafka = await KafkaEnvironment.CreateAsync(options.Brokers).ConfigureAwait(false);
+        var scenarios = GetScenarios(options);
 
         var producerTopic = $"stress-producer-{Guid.NewGuid():N}";
         var consumerTopic = $"stress-consumer-{Guid.NewGuid():N}";
-        string? transactionalTopic = null;
+        var transactionalTopics = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var roundTripTopic = $"stress-roundtrip-{Guid.NewGuid():N}";
 
         var replicationFactor = Math.Min(options.Brokers, 3);
@@ -152,14 +153,21 @@ public static class Program
             ["retention.bytes"] = "-1"
         };
         await kafka.CreateTopicAsync(producerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
-        if (options.Scenario is "all" or "producer-transactional")
+        foreach (var client in scenarios
+                     .Where(scenario => scenario.Name.Equals(
+                         "producer-transactional",
+                         StringComparison.OrdinalIgnoreCase))
+                     .Select(scenario => scenario.Client)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            transactionalTopic = $"stress-transactional-{Guid.NewGuid():N}";
+            var transactionalTopic =
+                $"stress-transactional-{client.ToLowerInvariant()}-{Guid.NewGuid():N}";
             await kafka.CreateTopicAsync(
                 transactionalTopic,
                 options.Partitions,
                 replicationFactor,
                 replayTopicConfigs).ConfigureAwait(false);
+            transactionalTopics.Add(client, transactionalTopic);
         }
         // Transaction verification reads from earliest after the workload, while consumer
         // scenarios replay their seeded data. Broker retention must not delete either data set.
@@ -185,33 +193,37 @@ public static class Program
             await SeedConsumerTopicAsync(kafka.BootstrapServers, consumerTopic, options).ConfigureAwait(false);
         }
 
-        var scenarios = GetScenarios(options);
         var results = new List<StressTestResult>();
         var runStartedAt = DateTime.UtcNow;
 
-        string ResolveScenarioTopic(string scenarioName)
+        string ResolveScenarioTopic(IStressTestScenario scenario)
         {
-            if (scenarioName.Equals("producer-transactional", StringComparison.OrdinalIgnoreCase))
-                return transactionalTopic ?? throw new InvalidOperationException("Transactional topic was not created.");
+            if (scenario.Name.Equals("producer-transactional", StringComparison.OrdinalIgnoreCase))
+            {
+                return transactionalTopics.TryGetValue(scenario.Client, out var transactionalTopic)
+                    ? transactionalTopic
+                    : throw new InvalidOperationException(
+                        $"Transactional topic was not created for {scenario.Client}.");
+            }
 
-            if (scenarioName.Equals("producer-roundtrip", StringComparison.OrdinalIgnoreCase))
+            if (scenario.Name.Equals("producer-roundtrip", StringComparison.OrdinalIgnoreCase))
                 return roundTripTopic;
 
-            return UsesProducerTopic(scenarioName)
+            return UsesProducerTopic(scenario.Name)
                 ? producerTopic
                 : consumerTopic;
         }
 
-        StressTestOptions BuildTestOptions(string scenarioName, int connectionsPerBroker) => new()
+        StressTestOptions BuildTestOptions(IStressTestScenario scenario, int connectionsPerBroker) => new()
         {
             BootstrapServers = kafka.BootstrapServers,
-            Topic = ResolveScenarioTopic(scenarioName),
+            Topic = ResolveScenarioTopic(scenario),
             DurationMinutes = options.DurationMinutes,
             MessageSizeBytes = options.MessageSizeBytes,
             Partitions = options.Partitions,
             LingerMs = options.LingerMs,
             BatchSize = options.BatchSize,
-            ConsumerSeedBatchSizeBytes = UsesProducerTopic(scenarioName) ? null : ConsumerSeedBatchSizeBytes,
+            ConsumerSeedBatchSizeBytes = UsesProducerTopic(scenario.Name) ? null : ConsumerSeedBatchSizeBytes,
             Compression = options.Compression,
             BrokerCount = options.Brokers,
             ConnectionsPerBroker = connectionsPerBroker,
@@ -239,7 +251,9 @@ public static class Program
                 Console.WriteLine();
                 Console.WriteLine($"=== Running: {scenario.Client} {scenario.Name} ===");
 
-                var result = await scenario.RunAsync(BuildTestOptions(scenario.Name, connectionsPerBroker: 1), CancellationToken.None).ConfigureAwait(false);
+                var result = await scenario.RunAsync(
+                    BuildTestOptions(scenario, connectionsPerBroker: 1),
+                    CancellationToken.None).ConfigureAwait(false);
                 results.Add(result);
 
                 GC.Collect();
@@ -264,7 +278,7 @@ public static class Program
                 Console.WriteLine($"=== Running: {scenario.Client} {scenario.Name}{connectionLabel} ===");
 
                 var result = await scenario.RunAsync(
-                    BuildTestOptions(scenario.Name, connectionsPerBroker),
+                    BuildTestOptions(scenario, connectionsPerBroker),
                     CancellationToken.None).ConfigureAwait(false);
                 if (connectionsPerBroker > 1)
                     result.Client = $"Dekaf ({connectionsPerBroker}conn)";
@@ -719,6 +733,7 @@ public static class Program
             new ProducerAsyncIdempotentStressTest(),
             new ConfluentProducerAsyncIdempotentStressTest(),
             new TransactionalProducerStressTest(),
+            new ConfluentTransactionalProducerStressTest(),
             new ProducerRoundTripStressTest(),
             new ConfluentProducerRoundTripStressTest(),
             new ConsumerStressTest(),
