@@ -3,6 +3,7 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Internal;
 
+[NotInParallel]
 public class PoolSizingTests
 {
     // --- ForProducer tests ---
