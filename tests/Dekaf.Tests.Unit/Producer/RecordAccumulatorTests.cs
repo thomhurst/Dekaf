@@ -3498,7 +3498,7 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task AppendFromSpansAsync_SealRefund_DrainsPendingAppendAfterPartitionLockReleased()
+    public async Task AppendFromSpansAsync_ReopenedMemory_PreservesPendingAppendFifo()
     {
         var options = new ProducerOptions
         {
@@ -3542,8 +3542,8 @@ public class RecordAccumulatorTests
 
             await Assert.That(pendingAppendTask.IsCompleted).IsFalse();
 
-            // Free memory without draining. Hot append no longer refunds per-record
-            // overestimates; the pending append should wait for the seal-time refund.
+            // Free memory without draining. The next append must join behind the queued
+            // operation; its immediate drain serves the older append before completing.
             SetBufferedBytesForTest(accumulator, 3000);
 
             var hotResult = await accumulator.AppendFromSpansAsync(
@@ -3554,7 +3554,8 @@ public class RecordAccumulatorTests
                 null, 0, null, CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(hotResult).IsTrue();
-            await Assert.That(pendingAppendTask.IsCompleted).IsFalse();
+            await Assert.That(await pendingAppendTask).IsTrue();
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
 
             var drainTask = Task.Run(async () =>
             {
@@ -3575,13 +3576,11 @@ public class RecordAccumulatorTests
             await accumulator.FlushAsync(cts.Token);
             await drainTask;
 
-            var pendingResult = await pendingAppendTask.WaitAsync(TimeSpan.FromSeconds(5));
-            await Assert.That(pendingResult).IsTrue();
         }
         finally
         {
-            var currentBatch = GetCurrentPartitionBatch(accumulator, topicPartition);
-            SetBufferedBytesForTest(accumulator, currentBatch.ReservedSize);
+            var currentBatch = GetCurrentPartitionBatchOrDefault(accumulator, topicPartition);
+            SetBufferedBytesForTest(accumulator, currentBatch?.ReservedSize ?? 0);
             await accumulator.DisposeAsync();
         }
     }
@@ -3613,10 +3612,16 @@ public class RecordAccumulatorTests
         => new(ProduceErrorKind.Purged, "purged");
 
     private static PartitionBatch GetCurrentPartitionBatch(RecordAccumulator accumulator, TopicPartition topicPartition)
+        => GetCurrentPartitionBatchOrDefault(accumulator, topicPartition)
+           ?? throw new InvalidOperationException("Partition deque has no current batch.");
+
+    private static PartitionBatch? GetCurrentPartitionBatchOrDefault(
+        RecordAccumulator accumulator,
+        TopicPartition topicPartition)
     {
         var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
         var currentBatchField = partitionDeque.GetType().GetField("CurrentBatch");
-        return (PartitionBatch)currentBatchField!.GetValue(partitionDeque)!;
+        return (PartitionBatch?)currentBatchField!.GetValue(partitionDeque);
     }
 
     private static object GetPartitionDeque(RecordAccumulator accumulator, TopicPartition topicPartition)
