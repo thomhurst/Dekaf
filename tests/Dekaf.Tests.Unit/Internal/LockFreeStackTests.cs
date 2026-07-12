@@ -103,27 +103,35 @@ public class LockFreeStackTests
     [Test]
     public async Task TryPush_TryPop_DoNotAllocateInSteadyState()
     {
-        var allocated = await Task.Factory.StartNew(static () =>
+        Task<long> allocationProbe;
+        // LongRunning creates a dedicated thread but still captures TUnit's ambient
+        // ExecutionContext. Keep framework AsyncLocals off the measured thread so only
+        // LockFreeStack's steady-state operations contribute to its allocation counter.
+        using (ExecutionContext.SuppressFlow())
         {
-            var stack = new LockFreeStack<Item>(1);
-            var item = new Item { Value = 42 };
-
-            for (var i = 0; i < 100; i++)
+            allocationProbe = Task.Factory.StartNew(static () =>
             {
-                stack.TryPush(item);
-                stack.TryPop(out _);
-            }
+                var stack = new LockFreeStack<Item>(1);
+                var item = new Item { Value = 42 };
 
-            var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
-            for (var i = 0; i < 10_000; i++)
-            {
-                stack.TryPush(item);
-                stack.TryPop(out _);
-            }
+                for (var i = 0; i < 100; i++)
+                {
+                    stack.TryPush(item);
+                    stack.TryPop(out _);
+                }
 
-            return GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
-        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                for (var i = 0; i < 10_000; i++)
+                {
+                    stack.TryPush(item);
+                    stack.TryPop(out _);
+                }
 
+                return GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
+
+        var allocated = await allocationProbe;
         await Assert.That(allocated).IsEqualTo(0);
     }
 
