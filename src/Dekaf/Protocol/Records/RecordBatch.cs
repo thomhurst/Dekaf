@@ -752,9 +752,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     }
 
     /// <summary>
-    /// Disposes any pooled memory associated with this batch's records
-    /// and returns the batch instance to the pool for reuse.
-    /// Call this after consuming all records from this batch.
+    /// Disposes any pooled memory associated with this batch's records.
+    /// Consumer-read batches are not object-pooled because callers own their disposable
+    /// lifetime. Producer-owned batches use <see cref="ReturnToPool"/> explicitly.
     /// </summary>
     public void Dispose()
     {
@@ -764,8 +764,6 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         ReturnPreCompressedBuffer();
 
         DisposeRecordList();
-
-        ReturnToPool();
     }
 
     // ── Pool for producer-path RecordBatch reuse ──
@@ -1295,7 +1293,11 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             pooledRecordData = pooledArray;
         }
 
-        var batch = RentFromPool();
+        // A RecordBatch returned by Read is directly disposable by its caller. Pooling that
+        // instance cannot make a stale second Dispose distinguish its old lease from a later
+        // renter, so consumer-read batches remain unpooled while producer-owned batches use
+        // RentFromPool explicitly.
+        var batch = new RecordBatch();
         batch.BaseOffset = baseOffset;
         batch.BatchLength = batchLength;
         batch.PartitionLeaderEpoch = partitionLeaderEpoch;
