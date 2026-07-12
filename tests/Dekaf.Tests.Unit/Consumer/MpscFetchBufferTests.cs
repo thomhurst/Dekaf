@@ -574,11 +574,20 @@ public class MpscFetchBufferTests
         var second = CreateDummy("topic", 2);
 
         var firstWrite = Task.Run(() => buffer.TryWrite(first));
+        Task<bool>? waitForReadable = null;
         try
         {
             await Assert.That(firstReserved.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            waitForReadable = buffer.WaitToReadAsync(30_000, CancellationToken.None).AsTask();
+            await TestWait.UntilAsync(
+                () => GetConsumerWaiting(buffer) == 1 && GetDataAvailableWaiter(buffer) is not null,
+                TimeSpan.FromSeconds(5));
+
             var secondWrite = Task.Run(() => buffer.TryWrite(second));
             await Assert.That(await secondWrite.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(buffer.Count).IsEqualTo(2);
+            await Assert.That(GetDataAvailableWaiter(buffer)!.Task.IsCompleted).IsFalse();
+            await Assert.That(waitForReadable.IsCompleted).IsFalse();
         }
         finally
         {
@@ -586,6 +595,7 @@ public class MpscFetchBufferTests
         }
 
         await Assert.That(await firstWrite).IsTrue();
+        await Assert.That(await waitForReadable!).IsTrue();
         await Assert.That(buffer.TryRead(out var firstRead)).IsTrue();
         await Assert.That(firstRead!.PartitionIndex).IsEqualTo(1);
         firstRead.Dispose();

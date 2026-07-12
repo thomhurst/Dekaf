@@ -21,7 +21,6 @@ internal sealed class MpscFetchBuffer
 
     private PaddedIndex _headReserved;
     private PaddedIndex _tail;
-    private int _count;
 
     private readonly ManualResetEventSlim _dataAvailable = new(false);
     private readonly SemaphoreSlim _spaceAvailable = new(0, int.MaxValue);
@@ -70,7 +69,15 @@ internal sealed class MpscFetchBuffer
 
     internal int Capacity => _buffer.Length;
 
-    internal int Count => Volatile.Read(ref _count);
+    internal int Count
+    {
+        get
+        {
+            var head = Volatile.Read(ref _headReserved.Value);
+            var tail = Volatile.Read(ref _tail.Value);
+            return (int)Math.Clamp(head - tail, 0, _buffer.Length);
+        }
+    }
 
     internal int ProducerWaiterCount => Volatile.Read(ref _producerWaiterCount);
 
@@ -99,9 +106,15 @@ internal sealed class MpscFetchBuffer
             var index = (int)(head & _mask);
             _buffer[index] = item;
             Volatile.Write(ref _committedSequences[index], head + 1);
-            Interlocked.Increment(ref _count);
 
-            if (Volatile.Read(ref _consumerWaiting) != 0)
+            // StoreLoad fence: the item publication must precede observing the waiter flag,
+            // otherwise a producer and consumer can both miss each other's publication.
+            Interlocked.MemoryBarrier();
+
+            // A later reservation may commit first, but the consumer can only read its current
+            // tail. Let that tail producer own the wake so waits cannot complete spuriously.
+            if (head == Volatile.Read(ref _tail.Value)
+                && Volatile.Read(ref _consumerWaiting) != 0)
                 SignalConsumerWaitingForData();
 
             return true;
@@ -163,7 +176,10 @@ internal sealed class MpscFetchBuffer
         item = _buffer[index]!;
         _buffer[index] = null;
         Volatile.Write(ref _tail.Value, tail + 1);
-        Interlocked.Decrement(ref _count);
+
+        // StoreLoad fence pairs slot release with the producer-waiter check, preventing a
+        // producer from publishing its waiter count while this consumer misses it.
+        Interlocked.MemoryBarrier();
 
         if (Volatile.Read(ref _producerWaiterCount) > 0)
             _spaceAvailable.Release();
