@@ -7,6 +7,7 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks.Sources;
@@ -2044,7 +2045,7 @@ public sealed partial class KafkaConnection :
                         "Client key path is required when using PEM certificate format");
                 }
 
-                cert = ReimportPemClientCertificate(
+                cert = PreparePemClientCertificate(
                     CreateCertificateFromPemFile(certPath, tlsConfig.ClientKeyPath));
 #else
                 // PEM format - need separate key file
@@ -2057,7 +2058,7 @@ public sealed partial class KafkaConnection :
                 var pemCertificate = string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
                     ? X509Certificate2.CreateFromPemFile(certPath, tlsConfig.ClientKeyPath)
                     : X509Certificate2.CreateFromEncryptedPemFile(certPath, tlsConfig.ClientKeyPassword, tlsConfig.ClientKeyPath);
-                cert = ReimportPemClientCertificate(pemCertificate);
+                cert = PreparePemClientCertificate(pemCertificate);
 #endif
             }
 
@@ -2073,8 +2074,11 @@ public sealed partial class KafkaConnection :
     /// a persisted key-provider handle. The ephemeral key returned by CreateFromPemFile can
     /// otherwise fail client-credential acquisition with SEC_E_UNKNOWN_CREDENTIALS.
     /// </summary>
-    private static X509Certificate2 ReimportPemClientCertificate(X509Certificate2 certificate)
+    private static X509Certificate2 PreparePemClientCertificate(X509Certificate2 certificate)
     {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return certificate;
+
         byte[]? pkcs12 = null;
         try
         {
