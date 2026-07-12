@@ -254,7 +254,8 @@ public sealed class BrokerSenderSendLoopTests
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
-        BrokerUnackedByteBudget? unackedBudget = null) =>
+        BrokerUnackedByteBudget? unackedBudget = null,
+        Action? beforeProcessCompletedResponses = null) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -274,7 +275,8 @@ public sealed class BrokerSenderSendLoopTests
             getTimestamp: getTimestamp,
             delayForThrottle: delayForThrottle,
             onBlockedBucketRequeued: onBlockedBucketRequeued,
-            unackedBudget: unackedBudget);
+            unackedBudget: unackedBudget,
+            beforeProcessCompletedResponses: beforeProcessCompletedResponses);
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {
@@ -2298,12 +2300,19 @@ public sealed class BrokerSenderSendLoopTests
             targetSeconds: 0.000001,
             floorBytes: 200,
             initialCapBytes: 1);
+        using var releaseResponsePass = new ManualResetEventSlim();
+        var holdResponsePass = 0;
         var sender = CreateSender(
             pool,
             options,
             accumulator,
             (_, _, _, _, _) => { },
-            unackedBudget: budget);
+            unackedBudget: budget,
+            beforeProcessCompletedResponses: () =>
+            {
+                if (Volatile.Read(ref holdResponsePass) != 0)
+                    releaseResponsePass.Wait(cancellationToken);
+            });
 
         try
         {
@@ -2312,10 +2321,10 @@ public sealed class BrokerSenderSendLoopTests
             sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1, dataSize: dataSize));
             await sendSignals[1].Task.WaitAsync(cancellationToken);
 
-            // RunContinuationsAsynchronously keeps both completions available to the next
-            // response pass, exercising broker-wide aggregation across concurrent requests.
+            Volatile.Write(ref holdResponsePass, 1);
             responses[0].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
             responses[1].SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 20));
+            releaseResponsePass.Set();
 
             await WaitUntilAsync(() => budget.BudgetBytes != 1_000_000, cancellationToken);
 

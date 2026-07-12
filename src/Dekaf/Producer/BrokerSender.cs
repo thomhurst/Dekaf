@@ -602,6 +602,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// no ambient context (e.g. <c>AsyncLocal</c>, <c>SecurityContext</c>) needs to flow.
     /// </remarks>
     private readonly Action _responseCompletionCallback;
+    // Test-only synchronization seam for making several task completions visible to one
+    // response pass. Null in production.
+    private readonly Action? _beforeProcessCompletedResponses;
 
     private int _disposed;
 
@@ -627,7 +630,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
-        BrokerUnackedByteBudget? unackedBudget = null)
+        BrokerUnackedByteBudget? unackedBudget = null,
+        Action? beforeProcessCompletedResponses = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -650,6 +654,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _getTimestamp = getTimestamp ?? Stopwatch.GetTimestamp;
         _delayForThrottle = delayForThrottle ?? DelayForThrottleAsync;
         _onBlockedBucketRequeued = onBlockedBucketRequeued;
+        _beforeProcessCompletedResponses = beforeProcessCompletedResponses;
 
         _eventChannel = Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
         {
@@ -2164,6 +2169,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         CancellationToken cancellationToken,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? reusableResponseLookup = null)
     {
+        _beforeProcessCompletedResponses?.Invoke();
+
         // Aggregate every successful request completed in this pass. Multiple connection
         // lanes drain concurrently, so per-request samples understate broker-wide capacity.
         long ackedBytes = 0;
