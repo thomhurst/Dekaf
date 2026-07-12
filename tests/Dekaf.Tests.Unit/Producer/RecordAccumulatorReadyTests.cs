@@ -23,7 +23,8 @@ public class RecordAccumulatorReadyTests
         int batchSize = 1000,
         int lingerMs = 10,
         CompressionType compressionType = CompressionType.None,
-        bool enableIdempotence = true)
+        bool enableIdempotence = true,
+        int maxInFlight = 5)
     {
         return new ProducerOptions
         {
@@ -33,7 +34,8 @@ public class RecordAccumulatorReadyTests
             BatchSize = batchSize,
             LingerMs = lingerMs,
             CompressionType = compressionType,
-            EnableIdempotence = enableIdempotence
+            EnableIdempotence = enableIdempotence,
+            MaxInFlightRequestsPerConnection = maxInFlight
         };
     }
 
@@ -943,7 +945,8 @@ public class RecordAccumulatorReadyTests
         var options = CreateTestOptions(
             batchSize: 100_000,
             lingerMs: 0,
-            enableIdempotence: false);
+            enableIdempotence: false,
+            maxInFlight: 1);
         await using var accumulator = new RecordAccumulator(options);
 
         var firstAppended = await accumulator.AppendFromSpansAsync(
@@ -983,6 +986,38 @@ public class RecordAccumulatorReadyTests
 
         await accumulator.ExpireLingerAsync(CancellationToken.None);
         await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue();
+    }
+
+    [Test]
+    public async Task ZeroLinger_NonIdempotentPipeline_SealsWhilePreviousBatchQueued()
+    {
+        var options = CreateTestOptions(
+            batchSize: 100_000,
+            lingerMs: 0,
+            enableIdempotence: false,
+            maxInFlight: 2);
+        await using var accumulator = new RecordAccumulator(options);
+
+        foreach (var value in new[] { "first"u8.ToArray(), "second"u8.ToArray() })
+        {
+            var appended = await accumulator.AppendFromSpansAsync(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                callback: null,
+                CancellationToken.None,
+                partitionCount: 1);
+
+            await Assert.That(appended).IsTrue();
+            await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsFalse()
+                .Because("max-in-flight greater than one must expose another sealed batch to the sender");
+        }
     }
 
     [Test]
