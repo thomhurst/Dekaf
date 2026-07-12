@@ -67,6 +67,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
+    private ClientDnsEndpointResolver _dnsResolver = ClientDnsEndpointResolver.Default;
     private bool _enableIdempotence = true;
     private int _connectionsPerBroker = 1;
     private int _socketSendBufferBytes;
@@ -752,6 +753,12 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    internal ProducerBuilder<TKey, TValue> WithDnsResolver(ClientDnsEndpointResolver resolver)
+    {
+        _dnsResolver = resolver;
+        return this;
+    }
+
     /// <summary>
     /// Sets the maximum age of metadata before it is refreshed.
     /// This controls how frequently the client refreshes its view of the cluster topology.
@@ -1225,6 +1232,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
+            DnsResolver = _dnsResolver,
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             ValueTaskSourcePoolSize = _valueTaskSourcePoolSize,
