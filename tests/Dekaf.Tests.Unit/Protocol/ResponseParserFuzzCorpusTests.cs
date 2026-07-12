@@ -82,7 +82,7 @@ public class ResponseParserFuzzCorpusTests
             "ListOffsetsResponse.v8",
             "MetadataResponse.v13",
             "OffsetFetchResponse.v9",
-            "ProduceResponse.v11"
+            "ProduceResponse.v12"
         ];
 
         foreach (var name in populatedFamilies)

@@ -20,7 +20,7 @@ internal static class DeterministicResponseFixtureFactory
             ["ListOffsetsResponse.v8"] = Encode(WriteListOffsetsResponse),
             ["MetadataResponse.v13"] = Encode(WriteMetadataResponse),
             ["OffsetFetchResponse.v9"] = Encode(WriteOffsetFetchResponse),
-            ["ProduceResponse.v11"] = Encode(WriteProduceResponse)
+            ["ProduceResponse.v12"] = Encode(WriteProduceResponse)
         };
 
     private static byte[] Encode(WriteFixture writeFixture)

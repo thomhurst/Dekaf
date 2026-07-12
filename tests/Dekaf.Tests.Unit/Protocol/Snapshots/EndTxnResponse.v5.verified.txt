@@ -1,0 +1,16 @@
+﻿Response: Dekaf.Protocol.Messages.EndTxnResponse
+API key: EndTxn (26)
+Version: 5
+Header version: 1
+Body length: 17 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00 00 00 00 2A 00 07 |.............*..|
+0010: 00                                               |.|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "ProducerEpoch": 7,
+  "ProducerId": 42,
+  "ThrottleTimeMs": 0
+}

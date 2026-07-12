@@ -13,7 +13,8 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
 {
     public static ApiKey ApiKey => ApiKey.Produce;
     public static short LowestSupportedVersion => 9;
-    public static short HighestSupportedVersion => 11;
+    public static short HighestSupportedVersion => 12;
+    internal const short ImplicitTransactionPartitionEnrollmentVersion = 12;
 
     /// <summary>
     /// Transactional ID for exactly-once semantics (v3+).

@@ -1,0 +1,113 @@
+﻿Response: Dekaf.Protocol.Messages.ProduceResponse
+API key: Produce (0)
+Version: 12
+Header version: 1
+Body length: 320 bytes
+
+0000: 03 0B 77 69 72 65 2D 74  6F 70 69 63 03 00 00 00 |..wire-topic....|
+0010: 00 00 00 00 00 00 00 00  00 00 2A 00 00 01 8B CF |..........*.....|
+0020: E5 68 00 00 00 00 00 00  00 00 05 01 00 00 00 00 |.h..............|
+0030: 00 01 00 06 00 00 00 00  00 00 00 2B 00 00 01 8B |...........+....|
+0040: CF E5 68 01 00 00 00 00  00 00 00 05 02 00 00 00 |..h.............|
+0050: 03 10 72 65 63 6F 72 64  20 72 65 6A 65 63 74 65 |..record rejecte|
+0060: 64 00 0D 6C 65 61 64 65  72 20 6D 6F 76 65 64 01 |d..leader moved.|
+0070: 00 08 00 00 00 02 00 00  00 07 00 0D 77 69 72 65 |............wire|
+0080: 2D 74 6F 70 69 63 2D 62  03 00 00 00 02 00 00 00 |-topic-b........|
+0090: 00 00 00 00 00 00 2C 00  00 01 8B CF E5 68 02 00 |......,......h..|
+00A0: 00 00 00 00 00 00 05 01  00 00 00 00 00 03 00 06 |................|
+00B0: 00 00 00 00 00 00 00 2D  00 00 01 8B CF E5 68 03 |.......-......h.|
+00C0: 00 00 00 00 00 00 00 05  02 00 00 00 03 10 72 65 |..............re|
+00D0: 63 6F 72 64 20 72 65 6A  65 63 74 65 64 00 0D 6C |cord rejected..l|
+00E0: 65 61 64 65 72 20 6D 6F  76 65 64 01 00 08 00 00 |eader moved.....|
+00F0: 00 02 00 00 00 07 00 00  00 00 1D 02 00 3D 03 00 |.............=..|
+0100: 00 00 01 11 62 72 6F 6B  65 72 2D 61 2E 65 78 61 |....broker-a.exa|
+0110: 6D 70 6C 65 00 00 23 84  07 72 61 63 6B 2D 61 00 |mple..#..rack-a.|
+0120: 00 00 00 02 11 62 72 6F  6B 65 72 2D 62 2E 65 78 |.....broker-b.ex|
+0130: 61 6D 70 6C 65 00 00 23  85 00 00 09 03 AA BB CC |ample..#........|
+
+Decoded:
+{
+  "NodeEndpoints": [
+    {
+      "Host": "broker-a.example",
+      "NodeId": 1,
+      "Port": 9092,
+      "Rack": "rack-a"
+    },
+    {
+      "Host": "broker-b.example",
+      "NodeId": 2,
+      "Port": 9093,
+      "Rack": null
+    }
+  ],
+  "Responses": [
+    {
+      "Name": "wire-topic",
+      "PartitionResponses": [
+        {
+          "BaseOffset": 42,
+          "CurrentLeader": null,
+          "ErrorCode": "None",
+          "ErrorMessage": null,
+          "Index": 0,
+          "LogAppendTimeMs": 1700000000000,
+          "LogStartOffset": 5,
+          "RecordErrors": []
+        },
+        {
+          "BaseOffset": 43,
+          "CurrentLeader": {
+            "LeaderEpoch": 7,
+            "LeaderId": 2
+          },
+          "ErrorCode": "NotLeaderOrFollower",
+          "ErrorMessage": "leader moved",
+          "Index": 1,
+          "LogAppendTimeMs": 1700000000001,
+          "LogStartOffset": 5,
+          "RecordErrors": [
+            {
+              "BatchIndex": 3,
+              "BatchIndexErrorMessage": "record rejected"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Name": "wire-topic-b",
+      "PartitionResponses": [
+        {
+          "BaseOffset": 44,
+          "CurrentLeader": null,
+          "ErrorCode": "None",
+          "ErrorMessage": null,
+          "Index": 2,
+          "LogAppendTimeMs": 1700000000002,
+          "LogStartOffset": 5,
+          "RecordErrors": []
+        },
+        {
+          "BaseOffset": 45,
+          "CurrentLeader": {
+            "LeaderEpoch": 7,
+            "LeaderId": 2
+          },
+          "ErrorCode": "NotLeaderOrFollower",
+          "ErrorMessage": "leader moved",
+          "Index": 3,
+          "LogAppendTimeMs": 1700000000003,
+          "LogStartOffset": 5,
+          "RecordErrors": [
+            {
+              "BatchIndex": 3,
+              "BatchIndexErrorMessage": "record rejected"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "ThrottleTimeMs": 29
+}
