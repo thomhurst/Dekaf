@@ -1727,10 +1727,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 $"Cannot begin transaction in state: {_transactionState}");
         }
 
+        var finalizedTransactionUsesTV2 =
+            _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature) >= 2;
+        if (finalizedTransactionUsesTV2 != _currentTransactionUsesTV2)
+        {
+            throw new InvalidOperationException(
+                "The broker transaction.version changed after producer initialization. " +
+                "Call InitTransactionsAsync() to acquire a fresh producer epoch before beginning another transaction.");
+        }
+
         _transactionState = TransactionState.InTransaction;
         _preparedTransactionState = PreparedTransactionState.Empty;
         _lastTransactionError = ErrorCode.None;
-        _currentTransactionUsesTV2 = _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature) >= 2;
         lock (_partitionsInTransactionLock)
         {
             _partitionsInTransaction.Clear();

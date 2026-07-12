@@ -628,6 +628,29 @@ public sealed class TransactionTests
         }
     }
 
+    [Test]
+    [Arguments(false, (short)2)]
+    [Arguments(true, (short)1)]
+    public async Task BeginTransaction_FeatureVersionChanged_RequiresReinitialization(
+        bool initializedWithTV2,
+        short finalizedVersion)
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("test-txn-id")
+            .Build();
+        var kafkaProducer = (KafkaProducer<string, string>)producer;
+        kafkaProducer._transactionState = TransactionState.Ready;
+        kafkaProducer._currentTransactionUsesTV2 = initializedWithTV2;
+        SetFinalizedTransactionVersion(kafkaProducer, finalizedVersion);
+
+        var exception = await Assert.That(() => producer.BeginTransaction())
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(exception!.Message).Contains("InitTransactionsAsync");
+        await Assert.That(kafkaProducer._transactionState).IsEqualTo(TransactionState.Ready);
+    }
+
     private static async ValueTask InvokeEnsurePartitionInTransactionAsync(
         KafkaProducer<string, string> producer,
         TopicPartition topicPartition)
@@ -725,6 +748,7 @@ public sealed class TransactionTests
         SetInstanceField(producer, "_producerId", 42L);
         SetInstanceField(producer, "_producerEpoch", (short)5);
         SetFinalizedTransactionVersion(producer, 3);
+        producer._currentTransactionUsesTV2 = true;
         producer._transactionState = TransactionState.Ready;
         return producer;
     }
