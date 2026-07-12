@@ -72,9 +72,11 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         }
     }
 
-    private static void SetPrivateField<T>(object instance, string fieldName, T value)
+    private static void SetPrivateField<T>(BrokerUnackedByteBudget instance, string fieldName, T value)
     {
-        var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+        var field = typeof(BrokerUnackedByteBudget).GetField(
+            fieldName,
+            BindingFlags.NonPublic | BindingFlags.Instance);
         field!.SetValue(instance, value);
     }
 
