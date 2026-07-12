@@ -388,11 +388,12 @@ public sealed class BrokerSenderSendLoopTests
     {
         var firstResponse = new TaskCompletionSource<ProduceResponse>();
         var secondResponse = new TaskCompletionSource<ProduceResponse>();
-        var retryResponse = new TaskCompletionSource<ProduceResponse>();
+        var firstRetryResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondRetryResponse = new TaskCompletionSource<ProduceResponse>();
         var thirdResponse = new TaskCompletionSource<ProduceResponse>();
         var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
-            [firstResponse, secondResponse, retryResponse, thirdResponse]);
-        var sends = Enumerable.Range(0, 4).Select(_ => new TaskCompletionSource()).ToArray();
+            [firstResponse, secondResponse, firstRetryResponse, secondRetryResponse, thirdResponse]);
+        var sends = Enumerable.Range(0, 5).Select(_ => new TaskCompletionSource()).ToArray();
         var sendCount = 0;
         var (pool, _) = CreateMockConnection(responses, onSend: () =>
         {
@@ -432,11 +433,16 @@ public sealed class BrokerSenderSendLoopTests
             await WaitUntilAsync(() => thirdBatch.DiagTrace.Contains('O'), cancellationToken);
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
 
-            secondResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
+            secondResponse.SetResult(CreateErrorResponse("test-topic", 0, ErrorCode.RequestTimedOut));
             await sends[2].Task.WaitAsync(cancellationToken);
-            await sends[3].Task.WaitAsync(cancellationToken);
+            await Assert.That(accumulator.IsMuted(thirdBatch.TopicPartition)).IsTrue();
 
-            retryResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 43));
+            firstRetryResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
+            await sends[3].Task.WaitAsync(cancellationToken);
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(4);
+
+            secondRetryResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 43));
+            await sends[4].Task.WaitAsync(cancellationToken);
             thirdResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 44));
             await allAcknowledged.Task.WaitAsync(cancellationToken);
         }

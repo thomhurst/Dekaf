@@ -158,7 +158,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int[] BatchGenerations,
         int Count,
         long EncodedBytes,
-        long RequestStartTime)
+        long RequestStartTime,
+        long RttStartTime)
     {
         /// <summary>
         /// Wraps a pipelined response with the batch-generation snapshot the send captured
@@ -169,8 +170,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// </summary>
         public static PendingResponse Create(
             Task<ProduceResponse> responseTask, ReadyBatch[] batches, int[] generations,
-            int count, long encodedBytes, long requestStartTime)
-            => new(responseTask, batches, generations, count, encodedBytes, requestStartTime);
+            int count, long encodedBytes, long requestStartTime, long rttStartTime)
+            => new(responseTask, batches, generations, count, encodedBytes,
+                requestStartTime, rttStartTime);
 
         /// <summary>
         /// Returns true if the batch at index <paramref name="i"/> is the same incarnation
@@ -400,6 +402,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             queue.RemoveAt(index);
             _count--;
+        }
+
+        public bool HasRetry(TopicPartition topicPartition)
+        {
+            if (!_partitions.TryGetValue(topicPartition, out var queue))
+                return false;
+
+            for (var i = 0; i < queue.Count; i++)
+            {
+                if (queue[i].IsCurrentIncarnation() && queue[i].Batch.IsRetry)
+                    return true;
+            }
+
+            return false;
         }
     }
 
@@ -1365,7 +1381,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         // Finalize retry batches now that we know they will actually be sent
                         // (epoch bump check passed). Clear IsRetry and unmute partitions.
-                        FinalizeCoalescedRetries(coalescedBatches, coalescedCount);
+                        FinalizeCoalescedRetries(coalescedBatches, coalescedCount, carryOver);
 
                         LogSendingCoalesced(_brokerId, coalescedCount);
                         for (var si = 0; si < coalescedCount; si++)
@@ -2089,7 +2105,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// an epoch bump check that moves batches back to carry-over would lose the retry
     /// state — causing the batch to be treated as a normal batch and sent out of order.
     /// </summary>
-    private void FinalizeCoalescedRetries(ReadyBatch[] batches, int count)
+    private void FinalizeCoalescedRetries(
+        ReadyBatch[] batches,
+        int count,
+        PartitionCarryOver carryOver)
     {
         for (var i = 0; i < count; i++)
         {
@@ -2097,28 +2116,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (batch.IsRetry)
             {
                 batch.IsRetry = false;
-                UnmutePartition(batch.TopicPartition);
+                if (!carryOver.HasRetry(batch.TopicPartition))
+                    UnmutePartition(batch.TopicPartition);
             }
         }
     }
 
     private bool HasPendingResponseForPartition(TopicPartition topicPartition)
-    {
-        foreach (var pendingResponses in _pendingResponsesByConnection)
-        {
-            foreach (var pending in pendingResponses)
-            {
-                for (var i = 0; i < pending.Count; i++)
-                {
-                    if (pending.IsSameIncarnation(i)
-                        && pending.Batches[i].TopicPartition == topicPartition)
-                        return true;
-                }
-            }
-        }
-
-        return false;
-    }
+        => HasInflightForPartition(GetConnectionForPartition(topicPartition), topicPartition);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void RecordSendLoopPressureIfScaleUseful()
@@ -2290,7 +2295,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 if (allPartitionsSucceeded)
-                    ackedPass.Add(pending.EncodedBytes, pending.RequestStartTime);
+                    ackedPass.Add(pending.EncodedBytes, pending.RttStartTime);
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -2477,8 +2482,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 }
 
-                // Only unmute on success when mute-on-send is active (non-idempotent or maxInFlight <= 1).
-                // Idempotent producers with maxInFlight > 1 mute partitions only on error.
+                // Only unmute on success when send-time muting is active.
+                // Deeper pipelines mute partitions only on error.
                 // Unconditionally unmuting on success would prematurely clear the mute set by a
                 // DIFFERENT failed batch for the same partition still pending retry. This allows
                 // newer carry-over batches to skip ahead of the older retry batch, violating
@@ -3020,6 +3025,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             var resourcePinCount = count;
+            var requestStartTime = Stopwatch.GetTimestamp();
 
             try
             {
@@ -3091,7 +3097,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     (short)apiVersion).ConfigureAwait(false);
                 // Response RTT starts after the request is written. Including request
                 // construction and TCP write time biases admission-rate samples low.
-                var requestStartTime = Stopwatch.GetTimestamp();
+                var rttStartTime = Stopwatch.GetTimestamp();
 
                 // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
                 scratch.ClearReferences();
@@ -3128,7 +3134,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     generations,
                     count,
                     encodedBytes,
-                    requestStartTime);
+                    requestStartTime,
+                    rttStartTime);
                 _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
                 pendingResponseAdded = true; // Array ownership transferred to PendingResponse
                 Interlocked.Increment(ref _totalPendingResponseCount);
@@ -3647,7 +3654,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 // Entries within Count can legally be null: batches with stale generations
                 // are nulled out before PendingResponse.Create captures the array.
-                if (pr.Batches[j] is { } batch && batch.TopicPartition == topicPartition)
+                if (pr.IsSameIncarnation(j)
+                    && pr.Batches[j].TopicPartition == topicPartition)
                     return true;
             }
         }
@@ -4308,9 +4316,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         var now = Dekaf.MonotonicClock.GetMilliseconds();
-        var activeMutedPartitionCount = Volatile.Read(ref _mutedPartitionCount);
-        var mutedPartitionHighWatermark =
-            Interlocked.Exchange(ref _mutedPartitionHighWatermark, activeMutedPartitionCount);
+        var trackMutedPartitionLoad = _muteOnSend || !_isIdempotent;
+        var activeMutedPartitionCount = trackMutedPartitionLoad
+            ? Volatile.Read(ref _mutedPartitionCount)
+            : 0;
+        var mutedPartitionHighWatermark = trackMutedPartitionLoad
+            ? Interlocked.Exchange(ref _mutedPartitionHighWatermark, activeMutedPartitionCount)
+            : 0;
         if (Math.Max(activeMutedPartitionCount, mutedPartitionHighWatermark) >= _connectionCount)
         {
             _lastMutedPartitionLoadTicks = now;
@@ -4501,7 +4513,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private bool HasMutedPartitionLoad(PartitionCarryOver carryOver, bool hasUnreadEvent)
     {
-        if (_mutedPartitions.IsEmpty)
+        if ((_isIdempotent && !_muteOnSend) || _mutedPartitions.IsEmpty)
             return false;
 
         // The channel is unified, so its unread tail can include wake-up signals as
