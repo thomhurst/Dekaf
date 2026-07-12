@@ -172,6 +172,29 @@ public class AdaptiveScalingTests
         await Assert.That(isUseful).IsEqualTo(expected);
     }
 
+    [Test]
+    [Arguments(true, 2, 5, 2, true)]
+    [Arguments(true, 2, 5, 1, true)]
+    [Arguments(true, 2, 5, 3, false)]
+    [Arguments(false, 2, 5, 2, false)]
+    [Arguments(true, 5, 5, 2, false)]
+    [Arguments(true, 2, 5, 0, false)]
+    public async Task IsPartitionLimitedScalePressure_IdentifiesDiscardedPressure(
+        bool enabled,
+        int connectionCount,
+        int maxConnections,
+        int partitionCount,
+        bool expected)
+    {
+        var partitionLimited = BrokerSender.IsPartitionLimitedScalePressure(
+            enabled,
+            connectionCount,
+            maxConnections,
+            partitionCount);
+
+        await Assert.That(partitionLimited).IsEqualTo(expected);
+    }
+
     #endregion
 
     #region Scale-Down Computation Tests

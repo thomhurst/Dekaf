@@ -1,3 +1,4 @@
+using Dekaf.Networking;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 
@@ -254,7 +255,21 @@ internal sealed class ProducerDeliveryDiagnosticsSnapshot
     public DateTimeOffset CapturedAtUtc { get; init; }
     public long InFlightBatchCount { get; init; }
     public List<ProducerBatchDeliveryDiagnostic> Batches { get; init; } = [];
+    public List<ProducerBrokerBudgetDiagnostic> BrokerBudgets { get; init; } = [];
+    public List<ProducerBrokerBudgetDiagnostic> BrokerBudgetSamples { get; init; } = [];
+    public List<ConnectionReapDiagnostic> ConnectionReapEvents { get; init; } = [];
     public List<ProducerConnectionScaleDiagnostic> ConnectionScaleEvents { get; init; } = [];
+}
+
+internal sealed class ProducerBrokerBudgetDiagnostic
+{
+    public required DateTimeOffset CapturedAtUtc { get; init; }
+    public required int BrokerId { get; init; }
+    public required long BudgetBytes { get; init; }
+    public required long UnackedBytes { get; init; }
+    public required long MinRttMicros { get; init; }
+    public required long MaxRateBytesPerSec { get; init; }
+    public required long AdmissionBlockCount { get; init; }
 }
 
 internal sealed class ProducerConnectionScaleDiagnostic
@@ -263,7 +278,17 @@ internal sealed class ProducerConnectionScaleDiagnostic
     public required int BrokerId { get; init; }
     public required int OldConnectionCount { get; init; }
     public required int NewConnectionCount { get; init; }
-    public string Direction => NewConnectionCount > OldConnectionCount ? "up" : "down";
+    public string Direction
+    {
+        get
+        {
+            if (PartitionLimited)
+                return "capped";
+
+            return NewConnectionCount > OldConnectionCount ? "up" : "down";
+        }
+    }
+    public bool PartitionLimited { get; init; }
     public required double BufferUtilization { get; init; }
     public required long BufferPressureDelta { get; init; }
     public required long SendLoopPressureDelta { get; init; }

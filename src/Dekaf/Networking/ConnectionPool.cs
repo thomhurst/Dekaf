@@ -14,6 +14,7 @@ namespace Dekaf.Networking;
 /// </summary>
 public sealed partial class ConnectionPool : IConnectionPool
 {
+    private const int MaxConnectionReapDiagnosticEvents = 256;
     private readonly string? _clientId;
     private readonly ConnectionOptions _connectionOptions;
     private readonly ILoggerFactory? _loggerFactory;
@@ -24,6 +25,8 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly OAuthBearerTokenProvider? _sharedOAuthBearerTokenProvider;
     private CancellationTokenSource? _idleReaperCts;
     private Task? _idleReaperTask;
+    private readonly object _connectionReapDiagnosticsLock = new();
+    private readonly List<ConnectionReapDiagnostic> _connectionReapEvents = [];
 
     /// <summary>
     /// Process-shared memory pool for all clients with this size configuration. Bounds total
@@ -1083,7 +1086,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         var removedByBrokerId = connection.BrokerId >= 0
             && TryRemoveExact(_connectionsById, connection.BrokerId, connection);
 
-        var disposed = await DisposeIdleConnectionAsync(connection, now).ConfigureAwait(false);
+        var disposed = await DisposeIdleConnectionAsync(connection, connectionIndex: 0, now).ConfigureAwait(false);
         if (!disposed)
         {
             if (connection.IsConnected)
@@ -1117,7 +1120,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         if (Interlocked.CompareExchange(ref group[index], null!, connection) != connection)
             return false;
 
-        var disposed = await DisposeIdleConnectionAsync(connection, now).ConfigureAwait(false);
+        var disposed = await DisposeIdleConnectionAsync(connection, index, now).ConfigureAwait(false);
         if (!disposed && connection.IsConnected)
             Interlocked.CompareExchange(ref group[index], connection, null!);
 
@@ -1135,7 +1138,10 @@ public sealed partial class ConnectionPool : IConnectionPool
         return now - idleState.LastUsedTimestampMs >= _connectionOptions.ConnectionsMaxIdleMs;
     }
 
-    private async ValueTask<bool> DisposeIdleConnectionAsync(IKafkaConnection connection, long now)
+    private async ValueTask<bool> DisposeIdleConnectionAsync(
+        IKafkaConnection connection,
+        int connectionIndex,
+        long now)
     {
         if (!IsIdleReapable(connection, now))
             return false;
@@ -1145,11 +1151,13 @@ public sealed partial class ConnectionPool : IConnectionPool
             await connection.DisposeAsync().ConfigureAwait(false);
             if (connection is IIdleTrackedKafkaConnection idleState)
             {
+                var idleDurationMs = now - idleState.LastUsedTimestampMs;
                 LogReapedIdleConnection(
                     connection.BrokerId,
                     connection.Host,
                     connection.Port,
-                    now - idleState.LastUsedTimestampMs);
+                    idleDurationMs);
+                RecordConnectionReapDiagnostic(connection.BrokerId, connectionIndex, idleDurationMs);
             }
             return true;
         }
@@ -1157,6 +1165,29 @@ public sealed partial class ConnectionPool : IConnectionPool
         {
             LogIdleConnectionDisposalFailed(ex, connection.BrokerId, connection.Host, connection.Port);
             return false;
+        }
+    }
+
+    internal List<ConnectionReapDiagnostic> GetConnectionReapDiagnosticsSnapshot()
+    {
+        lock (_connectionReapDiagnosticsLock)
+            return [.. _connectionReapEvents];
+    }
+
+    private void RecordConnectionReapDiagnostic(int brokerId, int connectionIndex, long idleDurationMs)
+    {
+        lock (_connectionReapDiagnosticsLock)
+        {
+            if (_connectionReapEvents.Count >= MaxConnectionReapDiagnosticEvents)
+                return;
+
+            _connectionReapEvents.Add(new ConnectionReapDiagnostic
+            {
+                OccurredAtUtc = DateTimeOffset.UtcNow,
+                BrokerId = brokerId,
+                ConnectionIndex = connectionIndex,
+                IdleDurationMs = idleDurationMs
+            });
         }
     }
 

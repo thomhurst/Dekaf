@@ -504,6 +504,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private long _lastPressureSnapshot;
     private long _sendLoopPressureEvents;
     private long _lastSendLoopPressureSnapshot;
+    private long _partitionLimitedPressureEvents;
+    private long _lastPartitionLimitedPressureSnapshot;
     private long _lastScaleTimeTicks;
     private Task<int>? _pendingScaleTask; // Background connection creation, polled by send loop
     private double _pendingScaleBufferUtilization;
@@ -582,6 +584,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Reset only on successful scale-up (like _lastPressureSnapshot) so pressure keeps
     // accumulating across failed grow attempts.
     private long _lastUnackedBlockSnapshot;
+
+    // Separate capped-diagnostic snapshot. Partition-limited observations must not consume
+    // _lastUnackedBlockSnapshot because newly discovered partitions can make that pressure
+    // scale-useful later.
+    private long _lastPartitionLimitedUnackedBlockSnapshot;
+    private long _lastPartitionLimitedBufferPressureSnapshot;
 
     // Recency tracking for the scale-down veto: the counter value last seen by the scale
     // check, and the monotonic-ms time of its last observed movement. Kept separate from
@@ -2129,6 +2137,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _knownPartitions.Count))
         {
             _sendLoopPressureEvents++;
+        }
+        else if (IsPartitionLimitedScalePressure(
+                     _adaptiveScalingEnabled,
+                     _connectionCount,
+                     _maxConnectionsPerBroker,
+                     _knownPartitions.Count))
+        {
+            _partitionLimitedPressureEvents++;
         }
     }
 
@@ -4429,17 +4445,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var utilization = _accumulator.BufferUtilization;
         var bufferPressureDelta = _accumulator.BufferPressureEvents - _lastPressureSnapshot;
+        var partitionLimitedBufferPressureDelta =
+            _accumulator.BufferPressureEvents - _lastPartitionLimitedBufferPressureSnapshot;
         var sendLoopPressureDelta = _sendLoopPressureEvents - _lastSendLoopPressureSnapshot;
+        var partitionLimitedPressureDelta =
+            _partitionLimitedPressureEvents - _lastPartitionLimitedPressureSnapshot;
         // The unacked-byte admission gate holds BufferUtilization near zero while it binds,
         // which would silently starve scale-up (and the budget would self-limit at the drain
         // rate of the initial width). Blocked admissions therefore feed scale pressure directly.
         var unackedBlockEvents = _unackedBudget?.AdmissionBlockEvents ?? 0;
         var unackedBlockDelta = unackedBlockEvents - _lastUnackedBlockSnapshot;
+        var partitionLimitedUnackedBlockDelta =
+            unackedBlockEvents - _lastPartitionLimitedUnackedBlockSnapshot;
         if (unackedBlockEvents != _lastUnackedBlockObserved)
         {
             _lastUnackedBlockObserved = unackedBlockEvents;
             _lastUnackedBlockObservedMs = now;
         }
+        var partitionLimitedScalePressure = IsPartitionLimitedScalePressure(
+            _adaptiveScalingEnabled,
+            _connectionCount,
+            _maxConnectionsPerBroker,
+            _knownPartitions.Count);
         var usefulUnackedBlockDelta = IsPartitionPressureScaleUseful(
             _adaptiveScalingEnabled,
             _connectionCount,
@@ -4447,6 +4474,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _knownPartitions.Count)
             ? unackedBlockDelta
             : 0;
+        if (partitionLimitedScalePressure
+            && (partitionLimitedPressureDelta >= ScalePressureDeltaThreshold
+                || partitionLimitedUnackedBlockDelta >= ScalePressureDeltaThreshold
+                || (utilization >= ScaleUtilizationThreshold
+                    && partitionLimitedBufferPressureDelta >= ScalePressureDeltaThreshold)))
+        {
+            _accumulator.RecordConnectionScaleEvent(
+                _brokerId,
+                _connectionCount,
+                _connectionCount,
+                utilization,
+                partitionLimitedBufferPressureDelta + partitionLimitedUnackedBlockDelta,
+                partitionLimitedPressureDelta,
+                partitionLimited: true);
+            _lastPartitionLimitedPressureSnapshot = _partitionLimitedPressureEvents;
+            _lastPartitionLimitedBufferPressureSnapshot = _accumulator.BufferPressureEvents;
+            _lastPartitionLimitedUnackedBlockSnapshot = unackedBlockEvents;
+        }
         var scalePressureDelta = ComputeScalePressureDelta(
             bufferPressureDelta + usefulUnackedBlockDelta, sendLoopPressureDelta);
         var hasScalePressure = scalePressureDelta >= ScalePressureDeltaThreshold;
@@ -4644,8 +4689,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // connections than requested, stale pressure keeps accumulating so the next
         // cooldown window retries with the full delta rather than starting from zero.
         _lastPressureSnapshot = _accumulator.BufferPressureEvents;
+        _lastPartitionLimitedBufferPressureSnapshot = _lastPressureSnapshot;
         _lastSendLoopPressureSnapshot = _sendLoopPressureEvents;
+        _lastPartitionLimitedPressureSnapshot = _partitionLimitedPressureEvents;
         _lastUnackedBlockSnapshot = _unackedBudget?.AdmissionBlockEvents ?? 0;
+        _lastPartitionLimitedUnackedBlockSnapshot = _lastUnackedBlockSnapshot;
 
         // Per-connection arrays are pre-sized at the scaling ceiling — nothing to grow.
 
@@ -4781,6 +4829,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         adaptiveScalingEnabled
         && connectionCount < maxConnectionsPerBroker
         && knownPartitionCount > connectionCount;
+
+    internal static bool IsPartitionLimitedScalePressure(
+        bool adaptiveScalingEnabled,
+        int connectionCount,
+        int maxConnectionsPerBroker,
+        int knownPartitionCount) =>
+        adaptiveScalingEnabled
+        && connectionCount < maxConnectionsPerBroker
+        && knownPartitionCount > 0
+        && connectionCount >= knownPartitionCount;
 
     #region Logging
 
