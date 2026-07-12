@@ -125,9 +125,9 @@ internal sealed class BrokerUnackedByteBudget
     }
 
     /// <summary>
-    /// Feeds one successfully acknowledged request into the drain estimate, then
-    /// republishes the budget. Called only from the owning send loop after a response
-    /// pass completes successfully-acked requests. O(1), allocation-free.
+    /// Feeds successfully acknowledged requests from one response pass into the drain
+    /// estimate, then republishes the budget. Called only from the owning send loop after
+    /// a response pass completes successfully-acked requests. O(1), allocation-free.
     /// </summary>
     public void OnAcked(long ackedBytes, long rttTicks, long nowTicks)
     {

@@ -2164,6 +2164,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         CancellationToken cancellationToken,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? reusableResponseLookup = null)
     {
+        // Aggregate every successful request completed in this pass. Multiple connection
+        // lanes drain concurrently, so per-request samples understate broker-wide capacity.
+        long ackedBytes = 0;
+        var earliestAckedRequestStart = long.MaxValue;
+
         // CRITICAL: Process responses in FORWARD order (oldest request first).
         // With multi-inflight, R1 and R2 may both complete with errors for the same partition.
         // Forward iteration ensures R1's retry batches are added to carry-over before R2's,
@@ -2241,13 +2246,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 if (allPartitionsSucceeded)
                 {
-                    // Per-request bytes / RTT measures pipeline-busy delivery time. It does
-                    // not fold admission-blocked gaps between response passes into the rate.
-                    var ackTimestamp = Stopwatch.GetTimestamp();
-                    _unackedBudget?.OnAcked(
-                        pending.EncodedBytes,
-                        ackTimestamp - pending.RequestStartTime,
-                        ackTimestamp);
+                    ackedBytes += pending.EncodedBytes;
+                    earliestAckedRequestStart = Math.Min(
+                        earliestAckedRequestStart,
+                        pending.RequestStartTime);
                 }
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis
@@ -2307,6 +2309,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogPartitionMigrationComplete(_brokerId, beforeCount);
                 }
             }
+        }
+
+        if (ackedBytes > 0 && _unackedBudget is { } unackedBudget)
+        {
+            // Oldest start spans the whole concurrent completion window. Dividing total
+            // bytes by that busy time captures aggregate broker drain without counting
+            // admission-blocked gaps between response passes.
+            var ackTimestamp = Stopwatch.GetTimestamp();
+            unackedBudget.OnAcked(
+                ackedBytes,
+                ackTimestamp - earliestAckedRequestStart,
+                ackTimestamp);
         }
     }
 

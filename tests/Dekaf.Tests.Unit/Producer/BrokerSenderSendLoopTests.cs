@@ -2272,6 +2272,68 @@ public sealed class BrokerSenderSendLoopTests
 
     [Test]
     [Timeout(120_000)]
+    public async Task ProcessCompletedResponses_AggregatesConcurrentAckedBytes(
+        CancellationToken cancellationToken)
+    {
+        const int dataSize = 5_000;
+        var responses = Enumerable.Range(0, 2)
+            .Select(_ => new TaskCompletionSource<ProduceResponse>(
+                TaskCreationOptions.RunContinuationsAsynchronously))
+            .ToArray();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(responses);
+        var sendSignals = Enumerable.Range(0, 2)
+            .Select(_ => new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously))
+            .ToArray();
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responseQueue, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(maxInFlight: 2, unackedByteBudgetCapOverride: 1_000_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.000001,
+            floorBytes: 200,
+            initialCapBytes: 1);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            unackedBudget: budget);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: dataSize));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1, dataSize: dataSize));
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+
+            // RunContinuationsAsynchronously keeps both completions available to the next
+            // response pass, exercising broker-wide aggregation across concurrent requests.
+            responses[0].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
+            responses[1].SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 20));
+
+            await WaitUntilAsync(() => budget.BudgetBytes != 1_000_000, cancellationToken);
+
+            // 10,000 bytes / oldest request RTT × 1.5 × the same RTT = 15,000.
+            await Assert.That(budget.BudgetBytes).IsBetween(14_980, 15_020);
+        }
+        finally
+        {
+            responses[0].TrySetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
+            responses[1].TrySetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 20));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
     public async Task FaultedResponses_DoNotFeedUnackedBudgetDrainRate(
         CancellationToken cancellationToken)
     {
