@@ -7,6 +7,8 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
@@ -2043,7 +2045,8 @@ public sealed partial class KafkaConnection :
                         "Client key path is required when using PEM certificate format");
                 }
 
-                cert = CreateCertificateFromPemFile(certPath, tlsConfig.ClientKeyPath);
+                cert = PreparePemClientCertificate(
+                    CreateCertificateFromPemFile(certPath, tlsConfig.ClientKeyPath));
 #else
                 // PEM format - need separate key file
                 if (tlsConfig.ClientKeyPath is null)
@@ -2052,9 +2055,10 @@ public sealed partial class KafkaConnection :
                         "Client key path is required when using PEM certificate format");
                 }
 
-                cert = string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
+                var pemCertificate = string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
                     ? X509Certificate2.CreateFromPemFile(certPath, tlsConfig.ClientKeyPath)
                     : X509Certificate2.CreateFromEncryptedPemFile(certPath, tlsConfig.ClientKeyPassword, tlsConfig.ClientKeyPath);
+                cert = PreparePemClientCertificate(pemCertificate);
 #endif
             }
 
@@ -2063,6 +2067,42 @@ public sealed partial class KafkaConnection :
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Re-imports a PEM certificate/key pair through PKCS#12 so Windows Schannel receives
+    /// a persisted key-provider handle. The ephemeral key returned by CreateFromPemFile can
+    /// otherwise fail client-credential acquisition with SEC_E_UNKNOWN_CREDENTIALS.
+    /// </summary>
+    private static X509Certificate2 PreparePemClientCertificate(X509Certificate2 certificate)
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return certificate;
+
+        byte[]? pkcs12 = null;
+        try
+        {
+            pkcs12 = certificate.Export(X509ContentType.Pfx);
+#if NETSTANDARD2_0
+#pragma warning disable SYSLIB0057
+            return new X509Certificate2(
+                pkcs12,
+                password: (string?)null,
+                X509KeyStorageFlags.DefaultKeySet);
+#pragma warning restore SYSLIB0057
+#else
+            return X509CertificateLoader.LoadPkcs12(
+                pkcs12,
+                password: null,
+                X509KeyStorageFlags.DefaultKeySet);
+#endif
+        }
+        finally
+        {
+            if (pkcs12 is not null)
+                CryptographicOperations.ZeroMemory(pkcs12);
+            certificate.Dispose();
+        }
     }
 
 #if NETSTANDARD2_0

@@ -693,6 +693,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         CancellationToken callerCancellationToken)
     {
         var endpoint = new EndpointKey(host, port);
+        KafkaConnection? connection = null;
 
         try
         {
@@ -703,7 +704,7 @@ public sealed partial class ConnectionPool : IConnectionPool
                 return factoryConnection;
             }
 
-            var connection = new KafkaConnection(
+            connection = new KafkaConnection(
                 brokerId, host, port,
                 _clientId, _connectionOptions,
                 _loggerFactory?.CreateLogger<KafkaConnection>(),
@@ -717,9 +718,16 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             return connection;
         }
-        catch (Exception) when (!callerCancellationToken.IsCancellationRequested)
+        catch (Exception)
         {
-            RecordReconnectFailure(endpoint, brokerId, host, port);
+            if (connection is not null)
+            {
+                try { await connection.DisposeAsync().ConfigureAwait(false); }
+                catch { /* best-effort cleanup of a failed connection attempt */ }
+            }
+
+            if (!callerCancellationToken.IsCancellationRequested)
+                RecordReconnectFailure(endpoint, brokerId, host, port);
             throw;
         }
     }
@@ -850,6 +858,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         CancellationToken callerCancellationToken)
     {
         var endpoint = new EndpointKey(host, port);
+        KafkaConnection? connection = null;
 
         // Note: Stale connection cleanup is handled by the caller (GetOrCreateConnectionAsync)
         // within the creation semaphore, so no duplicate cleanup is needed here.
@@ -869,7 +878,7 @@ public sealed partial class ConnectionPool : IConnectionPool
                 return factoryConnection;
             }
 
-            var connection = new KafkaConnection(
+            connection = new KafkaConnection(
                 brokerId, host, port,
                 _clientId, _connectionOptions,
                 _loggerFactory?.CreateLogger<KafkaConnection>(),
@@ -889,9 +898,16 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             return connection;
         }
-        catch (Exception) when (!callerCancellationToken.IsCancellationRequested)
+        catch (Exception)
         {
-            RecordReconnectFailure(endpoint, brokerId, host, port);
+            if (connection is not null)
+            {
+                try { await connection.DisposeAsync().ConfigureAwait(false); }
+                catch { /* best-effort cleanup of a failed connection attempt */ }
+            }
+
+            if (!callerCancellationToken.IsCancellationRequested)
+                RecordReconnectFailure(endpoint, brokerId, host, port);
             throw;
         }
     }
