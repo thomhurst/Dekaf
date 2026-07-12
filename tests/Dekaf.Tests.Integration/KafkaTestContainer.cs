@@ -97,7 +97,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
                 await _container.StartAsync().ConfigureAwait(false);
             },
             ResetContainerAsync,
-            ContainerStartupRetry.IsKafkaStartupScriptBusy).ConfigureAwait(false);
+            ContainerStartupRetry.IsKnownTransient).ConfigureAwait(false);
 
         var rawAddress = _container!.GetBootstrapAddress();
         // GetBootstrapAddress() may return "plaintext://host:port/" - extract just host:port
