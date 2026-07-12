@@ -129,7 +129,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly int _brokerId;
     private readonly IConnectionPool _connectionPool;
     private readonly ConnectionPool? _retainedConnectionGroupPool;
-    private uint _retainedConnectionIndexMask;
+    private readonly bool[] _retainedConnectionIndices;
     private readonly MetadataManager _metadataManager;
     private readonly RecordAccumulator _accumulator;
     private readonly ProducerOptions _options;
@@ -726,6 +726,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ? Math.Max(_connectionCount, _maxConnectionsPerBroker)
             : _connectionCount;
         _pinnedConnections = new IKafkaConnection?[connectionCapacity];
+        _retainedConnectionIndices = new bool[connectionCapacity];
         _pendingResponsesByConnection = new List<PendingResponse>[connectionCapacity];
         _pendingResponseBytesByConnection = new long[connectionCapacity];
         for (var i = 0; i < connectionCapacity; i++)
@@ -758,12 +759,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_retainedConnectionGroupPool is null)
             return;
 
-        var bit = 1u << connectionIndex;
-        if ((_retainedConnectionIndexMask & bit) != 0)
+        if (_retainedConnectionIndices[connectionIndex])
             return;
 
         _retainedConnectionGroupPool.RetainConnectionGroupIndex(_brokerId, connectionIndex);
-        _retainedConnectionIndexMask |= bit;
+        _retainedConnectionIndices[connectionIndex] = true;
+    }
+
+    private void ReleaseConnectionIndex(int connectionIndex)
+    {
+        if (_retainedConnectionGroupPool is null
+            || !_retainedConnectionIndices[connectionIndex])
+            return;
+
+        _retainedConnectionIndices[connectionIndex] = false;
+        _retainedConnectionGroupPool.ReleaseConnectionGroupIndex(_brokerId, connectionIndex);
     }
 
     private void ReleaseConnectionIndices()
@@ -771,12 +781,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_retainedConnectionGroupPool is null)
             return;
 
-        var retainedMask = _retainedConnectionIndexMask;
-        _retainedConnectionIndexMask = 0;
-        for (var connectionIndex = 0; retainedMask != 0; connectionIndex++, retainedMask >>= 1)
+        for (var connectionIndex = 0; connectionIndex < _retainedConnectionIndices.Length; connectionIndex++)
         {
-            if ((retainedMask & 1) != 0)
-                _retainedConnectionGroupPool.ReleaseConnectionGroupIndex(_brokerId, connectionIndex);
+            if (_retainedConnectionIndices[connectionIndex])
+                ReleaseConnectionIndex(connectionIndex);
         }
     }
 
@@ -3886,7 +3894,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Shared pools may retain an expanded group owned by another client. An owning
         // sender also retains a one-slot group after scaling back down. Keep those slots
         // indexed, while preserving the singleton path before this sender first scales up.
-        var connectionLease = _connectionCount > 1 || !_canPhysicallyShrinkConnections || _hasScaledConnectionGroup
+        var usesIndexedGroup = _connectionCount > 1
+            || !_canPhysicallyShrinkConnections
+            || _hasScaledConnectionGroup;
+        if (usesIndexedGroup)
+            RetainConnectionIndex(connIdx);
+
+        var connectionLease = usesIndexedGroup
             ? await _connectionPool.LeaseConnectionByIndexAsync(_brokerId, connIdx, cancellationToken)
                 .ConfigureAwait(false)
             : await _connectionPool.LeaseConnectionAsync(_brokerId, cancellationToken)
@@ -4453,6 +4467,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 // Nothing was removed (pool group already at or below target) —
                 // the reduced routing width stands on its own.
+                ReleaseConnectionIndex(_connectionCount);
             }
             else if (task.Exception is not null)
             {
@@ -4694,6 +4709,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (!_canPhysicallyShrinkConnections)
         {
             _pinnedConnections[targetShrinkCount] = null;
+            ReleaseConnectionIndex(targetShrinkCount);
             LogAdaptiveScaleDown(_brokerId, targetShrinkCount + 1, targetShrinkCount);
             return targetShrinkCount;
         }
@@ -4791,6 +4807,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private int ApplyScaleDown(IKafkaConnection removedConnection)
     {
         var removedIdx = _connectionCount; // Width was reduced at initiation — removed slot is one past it.
+        ReleaseConnectionIndex(removedIdx);
 
         // Reset the sustained-low-utilization timer so the next scale-down cycle
         // must observe the full sustained window from this point forward.

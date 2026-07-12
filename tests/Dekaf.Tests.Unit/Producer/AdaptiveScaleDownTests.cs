@@ -180,10 +180,10 @@ public sealed class AdaptiveScaleDownTests
         }
     }
 
-    [Test]
-    public async Task FloorWidth_ReapsNeverRoutedSlots_ButKeepsRoutedSlot()
+    private static (
+        ConnectionPool Pool,
+        ConnectionPoolTests.TestIdleConnection[] Connections) CreateIdleConnectionPool(int connectionCount)
     {
-        const int connectionCount = 3;
         var connections = new ConnectionPoolTests.TestIdleConnection[connectionCount];
         var pool = new ConnectionPool(
             clientId: "test-client",
@@ -198,6 +198,14 @@ public sealed class AdaptiveScaleDownTests
                 connections[index] = connection;
                 return new ValueTask<IKafkaConnection>(connection);
             });
+        return (pool, connections);
+    }
+
+    [Test]
+    public async Task FloorWidth_ReapsNeverRoutedSlots_ButKeepsRoutedSlot()
+    {
+        const int connectionCount = 3;
+        var (pool, connections) = CreateIdleConnectionPool(connectionCount);
         var options = CreateOptions(idempotent: false, connectionsPerBroker: connectionCount);
         var accumulator = new RecordAccumulator(options);
         var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
@@ -222,6 +230,94 @@ public sealed class AdaptiveScaleDownTests
                 await Assert.That(connections[0].DisposeCount).IsEqualTo(0);
                 await Assert.That(connections[1].DisposeCount).IsEqualTo(1);
                 await Assert.That(connections[2].DisposeCount).IsEqualTo(1);
+            }
+            finally
+            {
+                await sender.DisposeAsync();
+                await accumulator.DisposeAsync();
+            }
+        }
+    }
+
+    [Test]
+    public async Task HighIndexRetention_DoesNotAliasIndexZero()
+    {
+        const int connectionCount = 33;
+        var (pool, connections) = CreateIdleConnectionPool(connectionCount);
+        var options = CreateOptions(idempotent: false, connectionsPerBroker: connectionCount);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        await using (pool)
+        {
+            try
+            {
+                pool.RegisterBroker(1, "localhost", 9092);
+                await pool.GetConnectionAsync(1);
+
+                var getConnection = typeof(BrokerSender).GetMethod(
+                    "GetConnectionForPartition",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                getConnection.Invoke(sender, [new TopicPartition(Topic, 0)]);
+                getConnection.Invoke(sender, [new TopicPartition(Topic, 32)]);
+
+                var reaped = await pool.ReapIdleConnectionsAsync();
+
+                await Assert.That(reaped).IsEqualTo(31);
+                await Assert.That(connections[0].DisposeCount).IsEqualTo(0);
+                await Assert.That(connections[32].DisposeCount).IsEqualTo(0);
+            }
+            finally
+            {
+                await sender.DisposeAsync();
+                await accumulator.DisposeAsync();
+            }
+        }
+    }
+
+    [Test]
+    public async Task ScaleDown_ReleasesRemovedIndex_AndWidthOneRetainsGroupSlot()
+    {
+        const int initialConnectionCount = 2;
+        var (pool, connections) = CreateIdleConnectionPool(initialConnectionCount);
+        var options = CreateOptions(idempotent: false, connectionsPerBroker: initialConnectionCount);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        await using (pool)
+        {
+            try
+            {
+                pool.RegisterBroker(1, "localhost", 9092);
+                await pool.GetConnectionAsync(1);
+
+                var senderType = typeof(BrokerSender);
+                var getConnection = senderType.GetMethod(
+                    "GetConnectionForPartition",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                getConnection.Invoke(sender, [new TopicPartition(Topic, 1)]);
+
+                var removedConnection = await pool.ShrinkConnectionGroupAsync(1, 1);
+                senderType.GetField("_connectionCount", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(sender, 1);
+                senderType.GetField("_hasScaledConnectionGroup", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .SetValue(sender, true);
+                senderType.GetMethod("ApplyScaleDown", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(sender, [removedConnection!]);
+
+                using (await GetConnectionLeaseAtIndexAsync(sender, 0)) { }
+
+                await pool.ScaleConnectionGroupAsync(1, 2);
+                senderType.GetMethod("ApplyScaleUp", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(sender, [2]);
+                connections[0].LastUsedTimestampMs = 0;
+                connections[1].LastUsedTimestampMs = 0;
+
+                var reaped = await pool.ReapIdleConnectionsAsync();
+
+                await Assert.That(reaped).IsEqualTo(1);
+                await Assert.That(connections[0].DisposeCount).IsEqualTo(0);
+                await Assert.That(connections[1].DisposeCount).IsEqualTo(1);
             }
             finally
             {
