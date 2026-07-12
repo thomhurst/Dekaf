@@ -57,7 +57,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
     private readonly ConcurrentDictionary<(int BrokerId, int Index), SemaphoreSlim> _connectionReplacementLocks = new();
     private readonly Lock _connectionGroupRetentionLock = new();
-    private readonly Dictionary<int, int> _connectionGroupRetainers = [];
+    private readonly Dictionary<(int BrokerId, int Index), int> _connectionGroupRetainers = [];
 
     // Per-broker semaphores to deduplicate concurrent group creation
     private readonly ConcurrentDictionary<int, SemaphoreSlim> _groupCreationLocks = new();
@@ -568,32 +568,34 @@ public sealed partial class ConnectionPool : IConnectionPool
     }
 
     /// <summary>
-    /// Prevents idle reaping from changing a broker group's indexed slots while a sender
-    /// retains that routing width. Multiple senders sharing infrastructure are ref-counted.
+    /// Prevents idle reaping from changing one routed group slot while a sender uses it.
+    /// Multiple senders sharing the same broker/index are ref-counted.
     /// </summary>
-    internal void RetainConnectionGroup(int brokerId)
+    internal void RetainConnectionGroupIndex(int brokerId, int connectionIndex)
     {
         lock (_connectionGroupRetentionLock)
         {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(ConnectionPool));
 
-            _connectionGroupRetainers.TryGetValue(brokerId, out var retainers);
-            _connectionGroupRetainers[brokerId] = retainers + 1;
+            var key = (brokerId, connectionIndex);
+            _connectionGroupRetainers.TryGetValue(key, out var retainers);
+            _connectionGroupRetainers[key] = retainers + 1;
         }
     }
 
-    internal void ReleaseConnectionGroup(int brokerId)
+    internal void ReleaseConnectionGroupIndex(int brokerId, int connectionIndex)
     {
         lock (_connectionGroupRetentionLock)
         {
-            if (!_connectionGroupRetainers.TryGetValue(brokerId, out var retainers))
+            var key = (brokerId, connectionIndex);
+            if (!_connectionGroupRetainers.TryGetValue(key, out var retainers))
                 return;
 
             if (retainers == 1)
-                _connectionGroupRetainers.Remove(brokerId);
+                _connectionGroupRetainers.Remove(key);
             else
-                _connectionGroupRetainers[brokerId] = retainers - 1;
+                _connectionGroupRetainers[key] = retainers - 1;
         }
     }
 
@@ -1153,7 +1155,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
         lock (_connectionGroupRetentionLock)
         {
-            if (_connectionGroupRetainers.ContainsKey(brokerId)
+            if (_connectionGroupRetainers.ContainsKey((brokerId, index))
                 || Interlocked.CompareExchange(ref group[index], null!, connection) != connection)
             {
                 return false;

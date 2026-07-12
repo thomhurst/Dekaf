@@ -129,7 +129,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly int _brokerId;
     private readonly IConnectionPool _connectionPool;
     private readonly ConnectionPool? _retainedConnectionGroupPool;
-    private int _connectionGroupRetained;
+    private uint _retainedConnectionIndexMask;
     private readonly MetadataManager _metadataManager;
     private readonly RecordAccumulator _accumulator;
     private readonly ProducerOptions _options;
@@ -738,8 +738,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         };
         _cts = new CancellationTokenSource();
         _retainedConnectionGroupPool = connectionPool as ConnectionPool;
-        if (_connectionCount > 1 || !_canPhysicallyShrinkConnections)
-            RetainConnectionGroup();
         try
         {
             _sendLoopTask = Task.Factory.StartNew(
@@ -750,34 +748,36 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         catch
         {
-            ReleaseConnectionGroup();
+            ReleaseConnectionIndices();
             throw;
         }
     }
 
-    private void RetainConnectionGroup()
+    private void RetainConnectionIndex(int connectionIndex)
     {
-        if (_retainedConnectionGroupPool is null
-            || Interlocked.CompareExchange(ref _connectionGroupRetained, 1, 0) != 0)
-        {
+        if (_retainedConnectionGroupPool is null)
             return;
-        }
 
-        try
-        {
-            _retainedConnectionGroupPool.RetainConnectionGroup(_brokerId);
-        }
-        catch
-        {
-            Volatile.Write(ref _connectionGroupRetained, 0);
-            throw;
-        }
+        var bit = 1u << connectionIndex;
+        if ((_retainedConnectionIndexMask & bit) != 0)
+            return;
+
+        _retainedConnectionGroupPool.RetainConnectionGroupIndex(_brokerId, connectionIndex);
+        _retainedConnectionIndexMask |= bit;
     }
 
-    private void ReleaseConnectionGroup()
+    private void ReleaseConnectionIndices()
     {
-        if (Interlocked.Exchange(ref _connectionGroupRetained, 0) != 0)
-            _retainedConnectionGroupPool!.ReleaseConnectionGroup(_brokerId);
+        if (_retainedConnectionGroupPool is null)
+            return;
+
+        var retainedMask = _retainedConnectionIndexMask;
+        _retainedConnectionIndexMask = 0;
+        for (var connectionIndex = 0; retainedMask != 0; connectionIndex++, retainedMask >>= 1)
+        {
+            if ((retainedMask & 1) != 0)
+                _retainedConnectionGroupPool.ReleaseConnectionGroupIndex(_brokerId, connectionIndex);
+        }
     }
 
     private static ValueTask DelayForThrottleAsync(int delayMs, CancellationToken cancellationToken) =>
@@ -3679,21 +3679,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         // Common case: no migrations active — dictionary Count check is a single branch on 0.
         // During migration: one hash lookup per batch, negligible vs TCP write cost.
+        int connectionIndex;
         if (_migratingPartitions.Count > 0
             && _migratingPartitions.TryGetValue(topicPartition, out var oldConn))
         {
-            return oldConn;
+            connectionIndex = oldConn;
+        }
+        else
+        {
+            if (!_partitionOrdinals.TryGetValue(topicPartition, out var ordinal))
+            {
+                // First route can precede CoalesceBatch in focused callers/tests. Production
+                // normally refreshes once per coalesced batch, before connection selection.
+                RefreshPartitionRouting();
+            }
+
+            connectionIndex = _partitionOrdinals.TryGetValue(topicPartition, out ordinal)
+                ? ordinal % _connectionCount
+                : topicPartition.Partition % _connectionCount;
         }
 
-        if (_partitionOrdinals.TryGetValue(topicPartition, out var ordinal))
-            return ordinal % _connectionCount;
-
-        // First route can precede CoalesceBatch in focused callers/tests. Production normally
-        // refreshes once per coalesced batch, before connection selection.
-        RefreshPartitionRouting();
-        return _partitionOrdinals.TryGetValue(topicPartition, out ordinal)
-            ? ordinal % _connectionCount
-            : topicPartition.Partition % _connectionCount;
+        RetainConnectionIndex(connectionIndex);
+        return connectionIndex;
     }
 
     /// <summary>
@@ -4218,7 +4225,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         finally
         {
-            ReleaseConnectionGroup();
+            ReleaseConnectionIndices();
         }
     }
 
@@ -4569,7 +4576,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return 0; // Cap left nothing to add
 
             // Launch connection creation in the background — send loop continues immediately
-            RetainConnectionGroup();
             _lastScaleTimeTicks = now;
             _pendingScaleBufferUtilization = utilization;
             _pendingScaleBufferPressureDelta = bufferPressureDelta;

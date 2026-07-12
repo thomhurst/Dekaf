@@ -9,6 +9,7 @@ using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using Dekaf.Tests.Unit.Networking;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -37,7 +38,8 @@ public sealed class AdaptiveScaleDownTests
         int maxInFlightRequests = 1,
         long? scaleCooldownMs = null,
         long? scaleDownSustainedMs = null,
-        bool enableDeliveryDiagnostics = false) => new()
+        bool enableDeliveryDiagnostics = false,
+        int connectionsPerBroker = 1) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlightRequests,
@@ -48,9 +50,9 @@ public sealed class AdaptiveScaleDownTests
             RetryBackoffMaxMs = 1000,
             RequestTimeoutMs = 30_000,
             LingerMs = 0,
-            ConnectionsPerBroker = 1,
+            ConnectionsPerBroker = connectionsPerBroker,
             EnableAdaptiveConnections = true,
-            MaxConnectionsPerBroker = 4,
+            MaxConnectionsPerBroker = Math.Max(4, connectionsPerBroker),
             EnableDeliveryDiagnostics = enableDeliveryDiagnostics,
             ScaleCooldownMsOverride = scaleCooldownMs,
             ScaleDownSustainedMsOverride = scaleDownSustainedMs
@@ -175,6 +177,57 @@ public sealed class AdaptiveScaleDownTests
         {
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FloorWidth_ReapsNeverRoutedSlots_ButKeepsRoutedSlot()
+    {
+        const int connectionCount = 3;
+        var connections = new ConnectionPoolTests.TestIdleConnection[connectionCount];
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = 1 },
+            connectionsPerBroker: connectionCount,
+            connectionFactory: (brokerId, host, port, index, _) =>
+            {
+                var connection = new ConnectionPoolTests.TestIdleConnection(brokerId, host, port)
+                {
+                    LastUsedTimestampMs = 0
+                };
+                connections[index] = connection;
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+        var options = CreateOptions(idempotent: false, connectionsPerBroker: connectionCount);
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        await using (pool)
+        {
+            try
+            {
+                pool.RegisterBroker(1, "localhost", 9092);
+                await pool.GetConnectionAsync(1);
+
+                var getConnection = typeof(BrokerSender).GetMethod(
+                    "GetConnectionForPartition",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!;
+                var routedIndex = (int)getConnection.Invoke(
+                    sender,
+                    [new TopicPartition(Topic, 0)])!;
+                var reaped = await pool.ReapIdleConnectionsAsync();
+
+                await Assert.That(routedIndex).IsEqualTo(0);
+                await Assert.That(reaped).IsEqualTo(2);
+                await Assert.That(connections[0].DisposeCount).IsEqualTo(0);
+                await Assert.That(connections[1].DisposeCount).IsEqualTo(1);
+                await Assert.That(connections[2].DisposeCount).IsEqualTo(1);
+            }
+            finally
+            {
+                await sender.DisposeAsync();
+                await accumulator.DisposeAsync();
+            }
         }
     }
 
