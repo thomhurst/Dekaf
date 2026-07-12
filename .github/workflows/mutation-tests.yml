@@ -25,9 +25,7 @@ env:
 jobs:
   mutation-test:
     name: Mutation test (${{ matrix.campaign }})
-    # 8-core runner: MTP cannot select covering tests per mutant, so surviving
-    # mutants each run the full suite — wall time scales with cores.
-    runs-on: ubicloud-standard-8
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -88,11 +86,9 @@ jobs:
 
       - name: Run focused mutation tests
         working-directory: src/Dekaf
-        # --concurrency matches the 8-core runner; configs keep 4 for local runs.
         run: >-
           dotnet stryker
           --config-file "${{ matrix.config }}"
-          --concurrency 8
           ${{ matrix.extra_args }}
           --output "${{ github.workspace }}/artifacts/mutation/${{ matrix.campaign }}"
 
