@@ -1119,6 +1119,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // When TryReserveMemory fails, PendingAppend instances are enqueued here and drained by ReleaseMemory.
     private readonly PendingAppendPool _pendingAppendPool;
     private readonly ConcurrentQueue<PendingAppend> _pendingAppends = new();
+    private readonly HashSet<TopicPartition> _blockedPendingPartitions = [];
     private int _draining; // CAS guard for DrainPendingAppends
 
     /// <summary>
@@ -1158,12 +1159,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public bool AppendInProgress;
 
         /// <summary>
-        /// Cached unacked-byte budget for this partition's current leader broker, refreshed at
-        /// each batch seal so per-message admission checks need no metadata lookup. Written
-        /// under <see cref="Lock"/> and read lock-free at admission; volatile publication keeps
-        /// appenders from indefinitely observing the pre-seal null on weak-memory architectures.
+        /// Cached unacked-byte budget and broker identity from the latest batch seal. Admission
+        /// compares the identity with the current leader before applying the budget. Written
+        /// under <see cref="Lock"/> and read lock-free; volatile publication keeps appenders
+        /// from indefinitely observing the pre-seal null on weak-memory architectures.
         /// </summary>
         public volatile BrokerUnackedByteBudget? UnackedBudget;
+        public volatile int UnackedBudgetBrokerId = -1;
 
         /// <summary>Number of batches in the deque.</summary>
         public int Count => _count;
@@ -1748,8 +1750,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Drains the <see cref="_pendingAppends"/> queue, serving queued operations FIFO
-    /// when buffer memory becomes available. Called from <see cref="ReleaseMemory"/>.
+    /// Drains the <see cref="_pendingAppends"/> queue, preserving per-partition FIFO while
+    /// rotating budget-blocked partitions so healthy brokers can progress.
     /// </summary>
     /// <remarks>
     /// CAS on <c>_draining</c> ensures only one thread drains at a time. After releasing
@@ -1774,8 +1776,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     return;
 
                 var madeProgress = false;
+                var remainingToInspect = _pendingAppends.Count;
+                _blockedPendingPartitions.Clear();
 
-                while (_pendingAppends.TryPeek(out var op))
+                while (remainingToInspect-- > 0 && _pendingAppends.TryPeek(out var op))
                 {
                     // Skip already-completed operations (timeout/cancel/dispose won the race).
                     // Don't set madeProgress — clearing expired ops doesn't free memory.
@@ -1785,10 +1789,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         continue;
                     }
 
-                    // Head-of-line semantics identical to memory exhaustion: a broker over
-                    // its unacked-byte budget stops the drain; the next release/ack retries.
-                    if (IsBrokerAdmissionBlocked(op.Topic, op.Partition, recordBlockEvent: false))
-                        break;
+                    var topicPartition = new TopicPartition(op.Topic, op.Partition);
+                    if (_blockedPendingPartitions.Contains(topicPartition)
+                        || IsBrokerAdmissionBlocked(op.Topic, op.Partition, recordBlockEvent: false))
+                    {
+                        // Preserve FIFO within this partition, but rotate it behind other
+                        // brokers so one saturated broker cannot convoy the global queue.
+                        _pendingAppends.TryDequeue(out _);
+                        _pendingAppends.Enqueue(op);
+                        _blockedPendingPartitions.Add(topicPartition);
+                        continue;
+                    }
 
                     // Try to reserve memory for this operation
                     if (!TryReserveMemory(op.RecordSize))
@@ -1846,6 +1857,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
+            _blockedPendingPartitions.Clear();
             // Ensure drain lock is released even on exception (inner loop already releases
             // on normal exit, but exception path needs the finally).
             Volatile.Write(ref _draining, 0);
@@ -4268,17 +4280,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Charges a freshly sealed batch against its leader broker's unacked-byte budget.
     /// Called under pd.Lock (same ordering domain as InFlightBatchListAdd) so a fast ack
-    /// can never release before the charge lands. The resolved budget is cached on the
-    /// partition deque so admission checks stay metadata-free.
+    /// can never release before the charge lands. The resolved budget and broker identity are
+    /// cached on the partition deque and validated against the current leader at admission.
     /// </summary>
     private void ChargeUnackedBudget(PartitionDeque pd, ReadyBatch batch)
     {
         var leaderId = _resolveLeaderId!(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
         if (leaderId < 0)
-            return; // Leader unknown (metadata gap) — skip; the gate cannot bind for this partition yet.
+        {
+            pd.UnackedBudgetBrokerId = -1;
+            pd.UnackedBudget = null;
+            return;
+        }
 
         var budget = GetBrokerUnackedBudget(leaderId)!;
         pd.UnackedBudget = budget;
+        pd.UnackedBudgetBrokerId = leaderId;
         budget.Charge(batch.DataSize);
         batch.UnackedBudget = budget;
     }
@@ -4324,8 +4341,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// True when the destination broker for (topic, partition) is over its unacked-byte
-    /// budget and message admission should block. Lock-free: one thread-cached deque lookup
-    /// plus two volatile reads per message; returns false before the partition's first seal.
+    /// budget and message admission should block. Lock-free: a cached leader lookup, one
+    /// thread-cached deque lookup, and volatile reads; returns false before the first seal.
     /// Block events feed adaptive connection scaling; the pending-append drain passes false
     /// because the operation already recorded one when it was first gated.
     /// </summary>
@@ -4335,7 +4352,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!_unackedBudgetEnabled)
             return false;
 
-        if (GetOrCreateDeque(topic, partition).UnackedBudget is not { } budget
+        var leaderId = _resolveLeaderId!(topic, partition);
+        var partitionDeque = GetOrCreateDeque(topic, partition);
+        if (leaderId < 0
+            || partitionDeque.UnackedBudgetBrokerId != leaderId
+            || partitionDeque.UnackedBudget is not { } budget
             || !budget.IsOverBudget())
         {
             return false;

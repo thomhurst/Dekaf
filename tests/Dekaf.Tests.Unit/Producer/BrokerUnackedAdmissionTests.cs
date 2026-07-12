@@ -223,6 +223,42 @@ public sealed class BrokerUnackedAdmissionTests
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task BlockedBroker_DoesNotStallHealthyBroker(CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(capOverride: 1);
+        var accumulator = new RecordAccumulator(options,
+            resolveLeaderId: (_, partition) => partition == 0 ? 1 : 2);
+        var metadataManager = AccumulatorTestHelpers.CreateMetadataManager("test-topic", 1, LeaderNodeId);
+
+        try
+        {
+            var blockedBudget = accumulator.GetBrokerUnackedBudget(1)!;
+            await AppendUntilSealedAsync(accumulator, "test-topic", stopOnceCharged: blockedBudget);
+
+            var blockedAppend = accumulator.AppendAsync(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, PooledMemory.Null, null, 0, null, null, cancellationToken);
+            await Assert.That(blockedAppend.IsCompleted).IsFalse();
+
+            var healthyAppend = accumulator.AppendAsync(
+                "test-topic", 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, PooledMemory.Null, null, 0, null, null, cancellationToken);
+            await Assert.That(await healthyAppend).IsTrue();
+            await Assert.That(blockedAppend.IsCompleted).IsFalse();
+
+            foreach (var batch in DrainSealedBatches(accumulator, metadataManager))
+                ExitAndReturn(accumulator, batch);
+            await Assert.That(await blockedAppend).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task AsyncAppend_TimesOutWithMaxBlock_WhenGateStaysClosed()
     {
         // Generous MaxBlockMs for CI thread-pool starvation, same rationale as MaxBlockMsTests.
@@ -354,6 +390,35 @@ public sealed class BrokerUnackedAdmissionTests
         finally
         {
             await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task LeaderChange_DoesNotBlockOnPreviousLeaderBudget()
+    {
+        var currentLeader = 1;
+        var options = CreateOptions(capOverride: 1);
+        var accumulator = new RecordAccumulator(options, resolveLeaderId: (_, _) => currentLeader);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            var oldBudget = accumulator.GetBrokerUnackedBudget(1)!;
+            await AppendUntilSealedAsync(accumulator, "test-topic", stopOnceCharged: oldBudget);
+            await Assert.That(oldBudget.IsOverBudget()).IsTrue();
+
+            currentLeader = 2;
+            var completion = pool.Rent();
+            var accepted = accumulator.TryAppendWithCompletion(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, PooledMemory.Null, null, 0, completion);
+
+            await Assert.That(accepted).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
         }
     }
 }
