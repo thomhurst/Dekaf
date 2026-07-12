@@ -141,6 +141,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly ILogger _logger;
     private readonly Action<int>? _onBrokerThrottle;
     private readonly Action? _onBlockedBucketRequeued;
+    private readonly Action? _onPipelinedResponseAcquired;
     private readonly Func<long> _getTimestamp;
     private readonly Func<int, CancellationToken, ValueTask> _delayForThrottle;
     private readonly TimeSpan _disposalDrainTimeout;
@@ -679,7 +680,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action? onBlockedBucketRequeued = null,
         BrokerUnackedByteBudget? unackedBudget = null,
         TimeSpan? disposalDrainTimeout = null,
-        Func<bool>? usesTransactionV2 = null)
+        Func<bool>? usesTransactionV2 = null,
+        Action? onPipelinedResponseAcquired = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -703,6 +705,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _getTimestamp = getTimestamp ?? Stopwatch.GetTimestamp;
         _delayForThrottle = delayForThrottle ?? DelayForThrottleAsync;
         _onBlockedBucketRequeued = onBlockedBucketRequeued;
+        _onPipelinedResponseAcquired = onPipelinedResponseAcquired;
         _disposalDrainTimeout = disposalDrainTimeout ?? DisposalDrainTimeout;
 
         _eventChannel = Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
@@ -2978,6 +2981,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // array — catch blocks must NOT return them to ArrayPool, or they will be recycled
         // while PendingResponse still references them (causing cross-request batch contamination).
         var pendingResponseAdded = false;
+        var responseTask = default(PipelinedResponse<ProduceResponse>);
         try
         {
             // Assign sequences at send time (Java Kafka Sender pattern).
@@ -3161,10 +3165,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Use the connection-owned timeout path for pipelined sends. The send loop can
                 // have multiple responses in flight on this connection; a reusable caller-owned
                 // CTS would let a later send reset or cancel an earlier response timeout.
-                var responseTask = await SendPipelinedAfterWriteAsync(
+                responseTask = await SendPipelinedAfterWriteAsync(
                     connection,
                     request,
                     (short)apiVersion).ConfigureAwait(false);
+                _onPipelinedResponseAcquired?.Invoke();
                 // Response RTT starts after the request is written. Including request
                 // construction and TCP write time biases admission-rate samples low.
                 var rttStartTime = Stopwatch.GetTimestamp();
@@ -3361,7 +3366,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // The generations snapshot transfers to PendingResponse along with the batches
             // array; ReturnBatchesArray returns both. On every other path it is owned here.
             if (!pendingResponseAdded)
+            {
+                responseTask.Abandon();
                 ArrayPool<int>.Shared.Return(generations);
+            }
         }
     }
 
