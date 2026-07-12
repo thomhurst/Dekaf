@@ -93,14 +93,23 @@ jobs:
 
       - name: Pre-pull Kafka image
         run: |
-          for attempt in 1 2 3 4 5; do
-            docker pull "apache/kafka:${{ inputs.kafka-tag }}" && exit 0
-            if [ "$attempt" -eq 5 ]; then
-              exit 1
-            fi
-            delay=$((attempt * 15))
-            echo "Kafka image pull failed (attempt $attempt); retrying in ${delay}s"
-            sleep "$delay"
+          case "${{ matrix.group }}" in
+            tls|security) kafka_tags="4.0.2" ;;
+            faults|messaging) kafka_tags="${{ inputs.kafka-tag }} 4.0.2" ;;
+            consume) kafka_tags="${{ inputs.kafka-tag }} 4.2.1" ;;
+            *) kafka_tags="${{ inputs.kafka-tag }}" ;;
+          esac
+
+          for tag in $(printf '%s\n' $kafka_tags | sort -u); do
+            for attempt in 1 2 3 4 5; do
+              docker pull "apache/kafka:$tag" && break
+              if [ "$attempt" -eq 5 ]; then
+                exit 1
+              fi
+              delay=$((attempt * 15))
+              echo "Kafka image pull failed for $tag (attempt $attempt); retrying in ${delay}s"
+              sleep "$delay"
+            done
           done
 
       - name: Run integration tests
