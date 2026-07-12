@@ -184,6 +184,7 @@ def evaluate_and_update(history, current_results, run_started_at):
         observation["consumerSeedBatchSizeBytes"] = _consumer_seed_batch_size(result)
         observation["brokerCount"] = result.get("brokerCount", 1)
         observation["roundTripMessages"] = _roundtrip_messages(result)
+        throughput_regression = False
 
         for metric, definition in _METRICS.items():
             value = definition["extract"](result)
@@ -237,9 +238,14 @@ def evaluate_and_update(history, current_results, run_started_at):
             observation[metric] = value
             observation[f"{metric}Trend"] = evaluation["status"]
             evaluations.append(evaluation)
+            if metric == "messagesPerSecond":
+                throughput_regression = evaluation["status"] == "regression"
 
         intra_run = intra_run_throughput(result)
         if intra_run is not None:
+            slope_breached = intra_run["slopeThresholdBreached"]
+            client = str(result.get("client", "")).casefold()
+            is_confluent = client.startswith("confluent")
             threshold_metrics = (
                 (
                     "steadyStatePeakRatio",
@@ -257,6 +263,18 @@ def evaluate_and_update(history, current_results, run_started_at):
                 ),
             )
             for metric, label, value, threshold, breached in threshold_metrics:
+                trend_field = f"{metric}Trend"
+                previous_trend = prior[-1].get(trend_field) if prior else None
+                status = "regression" if breached else "stable"
+                repeated = status == "regression" and previous_trend == "regression"
+                corroborated = (
+                    breached
+                    if metric == "slopePercentPerMinute"
+                    else slope_breached or throughput_regression
+                )
+                failure_eligible = (
+                    breached and repeated and corroborated and not is_confluent
+                )
                 evaluations.append({
                     "scenario": _scenario_label(result),
                     "metric": metric,
@@ -267,12 +285,15 @@ def evaluate_and_update(history, current_results, run_started_at):
                     "mad": None,
                     "lower": threshold,
                     "upper": None,
-                    "status": "regression" if breached else "stable",
-                    "repeatedRegression": False,
+                    "status": status,
+                    "repeatedRegression": repeated,
                     "thresholdBreach": breached,
+                    "corroborated": corroborated,
+                    "failureEligible": failure_eligible,
                 })
                 observation[metric] = value
-                should_fail = should_fail or breached
+                observation[trend_field] = status
+                should_fail = should_fail or failure_eligible
 
         observations.append(observation)
 
@@ -303,6 +324,11 @@ def format_markdown(evaluations):
             f"{RELATIVE_NOISE_FLOOR:.0%} of median); "
             "a second consecutive adverse excursion fails the job."
         ),
+        (
+            "Intra-run breaches warn first; repeated Dekaf breaches fail only when "
+            "corroborated by negative slope or baseline throughput regression. "
+            "Confluent intra-run breaches remain warnings."
+        ),
         "",
         "| Scenario | Metric | Current | Baseline median | Band | Status |",
         "|----------|--------|--------:|----------------:|------|--------|",
@@ -331,7 +357,12 @@ def format_markdown(evaluations):
 
         status = labels[item["status"]]
         if item.get("thresholdBreach"):
-            status = "Threshold breach (fail)"
+            if item.get("failureEligible", True):
+                status = "Repeated threshold breach (fail)"
+            elif item.get("corroborated") is False:
+                status = "Threshold breach (uncorroborated warning)"
+            else:
+                status = "Threshold breach (warning)"
         elif item["repeatedRegression"]:
             status = "Repeated regression (fail)"
         elif item["status"] == "regression":
@@ -356,7 +387,7 @@ def emit_annotations(evaluations):
             continue
 
         if item.get("thresholdBreach"):
-            level = "error"
+            level = "error" if item.get("failureEligible", True) else "warning"
             prefix = (
                 "Latency threshold breach"
                 if item.get("latencyThreshold")

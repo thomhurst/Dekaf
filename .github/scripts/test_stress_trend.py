@@ -5,7 +5,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from stress_trend import HISTORY_LIMIT, evaluate_and_update, main
+from stress_trend import HISTORY_LIMIT, evaluate_and_update, format_markdown, main
 
 
 def result(messages_per_second=1000.0, cpu_micros_per_message=2.0, **overrides):
@@ -40,6 +40,26 @@ def history_run(index, messages_per_second=1000.0, cpu_micros_per_message=2.0, *
     }
 
 
+def intra_run_result(client="Dekaf", steady_ratio=0.6, slope=-8.0, **overrides):
+    value = result(
+        client=client,
+        steadyStatePeakRatio=steady_ratio,
+        intraRunDriftPercent=-35.9,
+        throughputSlopePercentPerMinute=slope,
+        steadyStatePeakRatioThreshold=0.85,
+        throughputSlopePercentPerMinuteThreshold=-1.0,
+        steadyStatePeakThresholdBreached=steady_ratio < 0.85,
+        throughputSlopeThresholdBreached=slope < -1.0,
+        intraRunThroughputThresholdBreached=steady_ratio < 0.85 or slope < -1.0,
+        throughput={
+            "elapsedSeconds": 360,
+            "messagesPerSecondSamples": [1400, 1400, 1400],
+        },
+    )
+    value.update(overrides)
+    return value
+
+
 class StressTrendTests(unittest.TestCase):
     def test_paired_latency_threshold_breach_fails_without_history(self):
         confluent = result(
@@ -64,34 +84,127 @@ class StressTrendTests(unittest.TestCase):
         self.assertFalse(by_metric["latencyP50Ratio"]["thresholdBreach"])
         self.assertTrue(by_metric["latencyP99Ratio"]["thresholdBreach"])
 
-    def test_intra_run_threshold_breach_fails_without_history(self):
-        collapsing = result(
-            steadyStatePeakRatio=0.6,
-            intraRunDriftPercent=-35.9,
-            throughputSlopePercentPerMinute=-8.0,
-            steadyStatePeakRatioThreshold=0.85,
-            throughputSlopePercentPerMinuteThreshold=-1.0,
-            steadyStatePeakThresholdBreached=True,
-            throughputSlopeThresholdBreached=True,
-            intraRunThroughputThresholdBreached=True,
-            throughput={
-                "elapsedSeconds": 360,
-                "messagesPerSecondSamples": [1400, 1400, 1400],
-            },
-        )
-
-        evaluations, _, should_fail = evaluate_and_update(
+    def test_first_intra_run_threshold_breach_warns_without_failing(self):
+        evaluations, updated, should_fail = evaluate_and_update(
             {"version": 1, "runs": []},
-            [collapsing],
+            [intra_run_result()],
             "2026-07-01T02:00:00Z",
         )
 
         intra_run = [item for item in evaluations if item.get("thresholdBreach")]
-        self.assertTrue(should_fail)
+        self.assertFalse(should_fail)
         self.assertEqual(
             {"steadyStatePeakRatio", "slopePercentPerMinute"},
             {item["metric"] for item in intra_run},
         )
+        self.assertTrue(all(not item["repeatedRegression"] for item in intra_run))
+        self.assertIn("Threshold breach (warning)", format_markdown(intra_run))
+        current = updated["runs"][-1]["results"][0]
+        self.assertEqual("regression", current["steadyStatePeakRatioTrend"])
+        self.assertEqual("regression", current["slopePercentPerMinuteTrend"])
+
+    def test_flat_in_band_steady_state_breach_is_not_failure(self):
+        runs = [history_run(i) for i in range(1, 4)]
+        runs.append(history_run(
+            4,
+            steadyStatePeakRatio=0.7,
+            steadyStatePeakRatioTrend="regression",
+            slopePercentPerMinute=0.1,
+            slopePercentPerMinuteTrend="stable",
+        ))
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [intra_run_result(steady_ratio=0.7, slope=0.1)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        steady = next(
+            item for item in evaluations if item["metric"] == "steadyStatePeakRatio"
+        )
+        self.assertTrue(steady["repeatedRegression"])
+        self.assertFalse(steady["corroborated"])
+        self.assertFalse(steady["failureEligible"])
+        self.assertFalse(should_fail)
+
+    def test_second_consecutive_slope_breach_fails_for_dekaf(self):
+        runs = [history_run(i) for i in range(1, 4)]
+        runs.append(history_run(
+            4,
+            steadyStatePeakRatio=0.7,
+            steadyStatePeakRatioTrend="regression",
+            slopePercentPerMinute=-2.0,
+            slopePercentPerMinuteTrend="regression",
+        ))
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [intra_run_result(steady_ratio=0.7, slope=-2.5)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        slope = next(
+            item for item in evaluations if item["metric"] == "slopePercentPerMinute"
+        )
+        self.assertTrue(slope["repeatedRegression"])
+        self.assertTrue(slope["failureEligible"])
+        self.assertIn("Repeated threshold breach (fail)", format_markdown([slope]))
+        self.assertTrue(should_fail)
+
+    def test_second_corroborated_steady_state_breach_fails_for_dekaf(self):
+        runs = [history_run(i) for i in range(1, 4)]
+        runs.append(history_run(
+            4,
+            messages_per_second=700.0,
+            messagesPerSecondTrend="regression",
+            steadyStatePeakRatio=0.7,
+            steadyStatePeakRatioTrend="regression",
+            slopePercentPerMinute=0.1,
+            slopePercentPerMinuteTrend="stable",
+        ))
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [intra_run_result(
+                steady_ratio=0.7,
+                slope=0.1,
+                effectiveMessagesPerSecond=650.0,
+            )],
+            "2026-07-01T02:00:00Z",
+        )
+
+        steady = next(
+            item for item in evaluations if item["metric"] == "steadyStatePeakRatio"
+        )
+        self.assertTrue(steady["repeatedRegression"])
+        self.assertTrue(steady["corroborated"])
+        self.assertTrue(steady["failureEligible"])
+        self.assertTrue(should_fail)
+
+    def test_confluent_intra_run_breaches_warn_but_never_fail(self):
+        runs = [
+            history_run(
+                i,
+                client="Confluent",
+                steadyStatePeakRatio=0.7,
+                steadyStatePeakRatioTrend="regression",
+                slopePercentPerMinute=-2.0,
+                slopePercentPerMinuteTrend="regression",
+            )
+            for i in range(1, 5)
+        ]
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [intra_run_result(client="Confluent", steady_ratio=0.7, slope=-2.5)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        intra_run = [item for item in evaluations if item.get("thresholdBreach")]
+        self.assertTrue(all(item["repeatedRegression"] for item in intra_run))
+        self.assertTrue(all(not item["failureEligible"] for item in intra_run))
+        self.assertNotIn("(fail)", format_markdown(intra_run))
+        self.assertFalse(should_fail)
 
     def test_empty_history_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unsupported stress history version"):
