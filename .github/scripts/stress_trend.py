@@ -264,7 +264,17 @@ def evaluate_and_update(history, current_results, run_started_at):
             )
             for metric, label, value, threshold, breached in threshold_metrics:
                 trend_field = f"{metric}Trend"
-                previous_trend = prior[-1].get(trend_field) if prior else None
+                previous = prior[-1] if prior else {}
+                previous_trend = previous.get(trend_field)
+                previous_value = previous.get(metric)
+                if (
+                    previous_trend is None
+                    and isinstance(previous_value, (int, float))
+                    and isfinite(previous_value)
+                ):
+                    previous_trend = (
+                        "regression" if previous_value < threshold else "stable"
+                    )
                 status = "regression" if breached else "stable"
                 repeated = status == "regression" and previous_trend == "regression"
                 corroborated = (
@@ -357,7 +367,9 @@ def format_markdown(evaluations):
 
         status = labels[item["status"]]
         if item.get("thresholdBreach"):
-            if item.get("failureEligible", True):
+            if item.get("latencyThreshold"):
+                status = "Threshold breach (fail)"
+            elif item.get("failureEligible"):
                 status = "Repeated threshold breach (fail)"
             elif item.get("corroborated") is False:
                 status = "Threshold breach (uncorroborated warning)"

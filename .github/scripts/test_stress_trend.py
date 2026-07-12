@@ -83,6 +83,9 @@ class StressTrendTests(unittest.TestCase):
         by_metric = {item["metric"]: item for item in latency}
         self.assertFalse(by_metric["latencyP50Ratio"]["thresholdBreach"])
         self.assertTrue(by_metric["latencyP99Ratio"]["thresholdBreach"])
+        markdown = format_markdown(latency)
+        self.assertIn("Threshold breach (fail)", markdown)
+        self.assertNotIn("Repeated threshold breach", markdown)
 
     def test_first_intra_run_threshold_breach_warns_without_failing(self):
         evaluations, updated, should_fail = evaluate_and_update(
@@ -149,6 +152,28 @@ class StressTrendTests(unittest.TestCase):
         self.assertTrue(slope["repeatedRegression"])
         self.assertTrue(slope["failureEligible"])
         self.assertIn("Repeated threshold breach (fail)", format_markdown([slope]))
+        self.assertTrue(should_fail)
+
+    def test_legacy_intra_run_value_preserves_breach_streak(self):
+        runs = [history_run(i) for i in range(1, 4)]
+        runs.append(history_run(
+            4,
+            steadyStatePeakRatio=0.7,
+            slopePercentPerMinute=-2.0,
+        ))
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [intra_run_result(steady_ratio=0.7, slope=-2.5)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        intra_run = [
+            item for item in evaluations
+            if item["metric"] in {"steadyStatePeakRatio", "slopePercentPerMinute"}
+        ]
+        self.assertTrue(all(item["repeatedRegression"] for item in intra_run))
+        self.assertTrue(all(item["failureEligible"] for item in intra_run))
         self.assertTrue(should_fail)
 
     def test_second_corroborated_steady_state_breach_fails_for_dekaf(self):
