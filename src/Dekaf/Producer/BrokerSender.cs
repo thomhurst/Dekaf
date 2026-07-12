@@ -21,7 +21,8 @@ namespace Dekaf.Producer;
 /// Per-broker sender that serializes all writes to a single broker connection.
 /// A single-threaded send loop drains events from a unified channel, coalesces batches into
 /// ProduceRequests, and sends them via pipelined writes. This guarantees wire-order
-/// for same-partition batches.
+/// for same-partition requests, but non-idempotent retries can still reorder records
+/// that were already written in later requests.
 ///
 /// All wake-up sources (new batches, response completions, partition unmutes) flow through
 /// a single <see cref="_eventChannel"/> — like Java Kafka's Sender.poll() model. Response
@@ -29,10 +30,10 @@ namespace Dekaf.Producer;
 /// the send loop then polls <c>_pendingResponsesByConnection</c> for completed tasks (like main's
 /// ProcessCompletedResponses). This avoids cross-thread reference sharing of batches arrays.
 ///
-/// Per-partition ordering during retries uses a mute set (aligned with the Java Kafka
-/// producer): when a batch enters retry, its partition is muted so no newer batches
-/// can be sent until the retry completes. Retry batches (IsRetry=true) unmute the
-/// partition when coalesced, ensuring they are sent before any waiting batches.
+/// Retry handling uses a mute set (aligned with the Java Kafka producer): when a batch
+/// enters retry, its partition is muted so no additional batches can be sent until the
+/// outstanding pipeline drains and the retry is written. This cannot undo a later
+/// non-idempotent request that the broker already appended before the error was observed.
 ///
 /// Epoch recovery for OutOfOrderSequenceNumber uses the Java Kafka Sender pattern:
 /// response handlers signal a flag, and the single-threaded send loop bumps the epoch
@@ -694,9 +695,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
         _isIdempotent = options.EnableIdempotence;
 
-        // Kafka processes requests in wire order on each connection. Partition affinity
-        // therefore permits non-idempotent same-partition pipelining without sequence
-        // numbers; retry errors still install a partition mute before new work is drained.
+        // Kafka processes healthy requests in wire order on each connection. Partition
+        // affinity therefore permits non-idempotent same-partition pipelining, matching
+        // librdkafka. If an earlier request fails after a later request was written, a retry
+        // can reorder records; callers requiring retry-safe order must enable idempotence
+        // or configure MaxInFlightRequestsPerConnection = 1.
         _muteOnSend = _maxInFlight <= 1 || options.Acks == Acks.None;
 
         // All producers use partition affinity (partition % connectionCount) for CPU cache

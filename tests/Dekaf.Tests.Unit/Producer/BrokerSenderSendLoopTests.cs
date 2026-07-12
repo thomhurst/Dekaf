@@ -456,6 +456,62 @@ public sealed class BrokerSenderSendLoopTests
 
     [Test]
     [Timeout(120_000)]
+    public async Task SendLoop_NonIdempotent_EarlierError_RetriesAfterLaterSuccess(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var retryResponse = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, secondResponse, retryResponse]);
+        var sends = Enumerable.Range(0, 3).Select(_ => new TaskCompletionSource()).ToArray();
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            sends[Interlocked.Increment(ref sendCount) - 1].TrySetResult();
+        });
+        var options = CreateOptions(
+            maxInFlight: 5,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            enableIdempotence: false);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = 0;
+        var allAcknowledged = new TaskCompletionSource();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
+        {
+            if (exception is null && Interlocked.Increment(ref acknowledged) == 2)
+                allAcknowledged.TrySetResult();
+        });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await sends[0].Task.WaitAsync(cancellationToken);
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await sends[1].Task.WaitAsync(cancellationToken);
+
+            firstResponse.SetResult(CreateErrorResponse(
+                "test-topic", partition: 0, ErrorCode.RequestTimedOut));
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+
+            // The later request may already be appended. The retry waits for it to drain,
+            // then writes afterward: this is Kafka's non-idempotent retry-reordering trade-off.
+            await sends[2].Task.WaitAsync(cancellationToken);
+            retryResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 43));
+            await allAcknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
     public async Task SendLoop_PipelinedProduce_ReleasesBufferMemoryOnlyAfterWriteCompletes(CancellationToken cancellationToken)
     {
         var responseTcs = new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
