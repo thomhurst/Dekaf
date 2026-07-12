@@ -119,8 +119,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // The historical multi-broker workload drains about 1 GB/s with roughly 30 ms broker
     // acknowledgement latency, making 32 MB a practical default BDP per connection. This
     // also prevents the 100-request non-idempotent count limit from turning BufferMemory
-    // into an acknowledgement queue.
-    private const int InFlightByteBudgetBatchMultiplier = 32;
+    // into an acknowledgement queue. Shared with the per-broker unacked-byte admission
+    // budget so the pipeline ceiling and the admission ceiling stay consistent.
+    private const int InFlightByteBudgetBatchMultiplier = BrokerUnackedByteBudget.CapBatchMultiplier;
 
     private static int s_instanceCounter;
     private readonly int _instanceId = Interlocked.Increment(ref s_instanceCounter);
@@ -545,6 +546,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly long _maxInFlightBytesPerConnection;
     private readonly long[] _pendingResponseBytesByConnection;
 
+    // Per-broker unacked-byte admission budget (owned by the accumulator, shared with the
+    // producer's admission gate). This send loop is the single writer of its EWMA drain
+    // estimate (OnAcked) and cap (SetCap); null when the bound is disabled.
+    private readonly BrokerUnackedByteBudget? _unackedBudget;
+
+    // Snapshot of the budget's admission-block counter for scale-pressure deltas. The gate
+    // keeps BufferUtilization near zero, so blocked admissions must feed scale-up directly.
+    // Reset only on successful scale-up (like _lastPressureSnapshot) so pressure keeps
+    // accumulating across failed grow attempts.
+    private long _lastUnackedBlockSnapshot;
+
+    // Recency tracking for the scale-down veto: the counter value last seen by the scale
+    // check, and the monotonic-ms time of its last observed movement. Kept separate from
+    // the scale-up snapshot above, whose reset-on-scale-up policy would otherwise pin the
+    // veto forever on workloads that can never grow (at the ceiling or partition-capped).
+    private long _lastUnackedBlockObserved;
+    private long _lastUnackedBlockObservedMs;
+
     // Broker quota throttling is scoped per broker, not per connection. A positive
     // ProduceResponse.ThrottleTimeMs pauses every connection owned by this BrokerSender.
     // Zero is the common fast path and leaves this sentinel at zero.
@@ -604,8 +623,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action<int>? onBrokerThrottle = null,
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
-        Action? onBlockedBucketRequeued = null)
+        Action? onBlockedBucketRequeued = null,
+        BrokerUnackedByteBudget? unackedBudget = null)
     {
+        _unackedBudget = unackedBudget;
         _brokerId = brokerId;
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
@@ -645,7 +666,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _connectionCount = options.ConnectionsPerBroker;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
         _maxInFlightBytesPerConnection = GetInFlightByteBudget(connectionCount: 1);
-        _totalMaxInFlightBytes = GetInFlightByteBudget(_connectionCount);
+        UpdateInFlightByteBudget(_connectionCount);
 
         // Transactions are excluded because coordinator requests require a single connection.
         // Acks.None is excluded because no broker acknowledgement establishes a safe boundary
@@ -2053,7 +2074,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void RecordSendLoopPressureIfScaleUseful()
     {
-        if (IsSendLoopPressureScaleUseful(
+        if (IsPartitionPressureScaleUseful(
             _adaptiveScalingEnabled,
             _connectionCount,
             _maxConnectionsPerBroker,
@@ -2140,6 +2161,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         CancellationToken cancellationToken,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? reusableResponseLookup = null)
     {
+        // Drain-rate estimate feed: bytes and the latest round-trip from successfully acked
+        // requests this pass. Faulted/cancelled responses are not drain and are excluded.
+        long ackedBytes = 0;
+        long lastAckedRequestStart = 0;
+
         // CRITICAL: Process responses in FORWARD order (oldest request first).
         // With multi-inflight, R1 and R2 may both complete with errors for the same partition.
         // Forward iteration ensures R1's retry batches are added to carry-over before R2's,
@@ -2199,6 +2225,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 var response = task.Result;
                 ObserveBrokerThrottle(response.ThrottleTimeMs);
+                var allPartitionsSucceeded = true;
                 // Reuse caller-provided dictionary to avoid per-response allocation.
                 // The dictionary is cleared after use in ProcessResponseBatches.
                 var responseLookup = reusableResponseLookup;
@@ -2207,9 +2234,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     ref var topicResp = ref response.Responses[t];
                     for (var p = 0; p < topicResp.PartitionCount; p++)
                     {
+                        if (topicResp.PartitionResponses[p].ErrorCode != ErrorCode.None)
+                            allPartitionsSucceeded = false;
                         responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
                         responseLookup[(topicResp.Name, topicResp.PartitionResponses[p].Index)] = topicResp.PartitionResponses[p];
                     }
+                }
+
+                if (allPartitionsSucceeded)
+                {
+                    ackedBytes += pending.EncodedBytes;
+                    lastAckedRequestStart = pending.RequestStartTime;
                 }
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis
@@ -2269,6 +2304,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogPartitionMigrationComplete(_brokerId, beforeCount);
                 }
             }
+        }
+
+        if (ackedBytes > 0 && _unackedBudget is { } unackedBudget)
+        {
+            // One timestamp per pass; RequestStartTime is on the raw Stopwatch clock (it
+            // feeds the request-timeout sweep), so the round-trip uses the same clock.
+            var ackRttTicks = Stopwatch.GetTimestamp() - lastAckedRequestStart;
+            unackedBudget.OnAcked(ackedBytes, ackRttTicks, _getTimestamp());
         }
     }
 
@@ -2762,9 +2805,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         => Math.Min(ResponsePollIntervalMs, Math.Min(throttleDelayMs, batchDeadlineMs));
 
     private long GetInFlightByteBudget(int connectionCount)
-        => (long)connectionCount
-            * Math.Max(1, _options.BatchSize)
-            * InFlightByteBudgetBatchMultiplier;
+        => BrokerUnackedByteBudget.ComputeCap(_options.BatchSize, connectionCount);
+
+    /// <summary>
+    /// Recomputes the written-unacked pipeline ceiling for the given routing width and
+    /// republishes the admission budget's cap in lockstep. Every path that changes
+    /// <c>_connectionCount</c> must go through this so the two ceilings never desync.
+    /// </summary>
+    private void UpdateInFlightByteBudget(int connectionCount)
+    {
+        _totalMaxInFlightBytes = GetInFlightByteBudget(connectionCount);
+        _unackedBudget?.SetCap(_options.UnackedByteBudgetCapOverride ?? _totalMaxInFlightBytes);
+    }
 
     private static long SumEncodedBytes(List<PendingResponse> pendingResponses)
     {
@@ -4216,7 +4268,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var reducedConnectionCount = _connectionCount;
                 _connectionCount++;
                 _totalMaxInFlight = _connectionCount * _maxInFlight;
-                _totalMaxInFlightBytes = GetInFlightByteBudget(_connectionCount);
+                UpdateInFlightByteBudget(_connectionCount);
                 _accumulator.RecordConnectionScaleEvent(
                     _brokerId,
                     reducedConnectionCount,
@@ -4254,11 +4306,30 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var utilization = _accumulator.BufferUtilization;
         var bufferPressureDelta = _accumulator.BufferPressureEvents - _lastPressureSnapshot;
         var sendLoopPressureDelta = _sendLoopPressureEvents - _lastSendLoopPressureSnapshot;
-        var scalePressureDelta = ComputeScalePressureDelta(bufferPressureDelta, sendLoopPressureDelta);
+        // The unacked-byte admission gate holds BufferUtilization near zero while it binds,
+        // which would silently starve scale-up (and the budget would self-limit at the drain
+        // rate of the initial width). Blocked admissions therefore feed scale pressure directly.
+        var unackedBlockEvents = _unackedBudget?.AdmissionBlockEvents ?? 0;
+        var unackedBlockDelta = unackedBlockEvents - _lastUnackedBlockSnapshot;
+        if (unackedBlockEvents != _lastUnackedBlockObserved)
+        {
+            _lastUnackedBlockObserved = unackedBlockEvents;
+            _lastUnackedBlockObservedMs = now;
+        }
+        var usefulUnackedBlockDelta = IsPartitionPressureScaleUseful(
+            _adaptiveScalingEnabled,
+            _connectionCount,
+            _maxConnectionsPerBroker,
+            _knownPartitions.Count)
+            ? unackedBlockDelta
+            : 0;
+        var scalePressureDelta = ComputeScalePressureDelta(
+            bufferPressureDelta + usefulUnackedBlockDelta, sendLoopPressureDelta);
         var hasScalePressure = scalePressureDelta >= ScalePressureDeltaThreshold;
 
         // Phase 2: Check if we should start a new scale-up
         if (sendLoopPressureDelta >= ScalePressureDeltaThreshold
+            || usefulUnackedBlockDelta >= ScalePressureDeltaThreshold
             || (utilization >= ScaleUtilizationThreshold && hasScalePressure))
         {
             // High utilization — reset low-utilization tracking
@@ -4293,6 +4364,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_connectionCount <= _minConnectionCount)
         {
             _lowUtilizationStartTicks = 0; // At minimum — nothing to scale down
+            return 0;
+        }
+
+        // Recent admission-gate blocks mean the workload is throttled by the unacked-byte
+        // budget, not idle — buffer utilization is a false-idle signal here (same inversion
+        // as the mute-on-send guards below). Never shrink while the gate was recently
+        // binding, using the same sustained window as the muted-partition-load guard.
+        if (_lastUnackedBlockObservedMs > 0
+            && now - _lastUnackedBlockObservedMs < _scaleDownSustainedMs)
+        {
+            _lowUtilizationStartTicks = 0;
             return 0;
         }
 
@@ -4372,7 +4454,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // its pending list stays in place because per-connection arrays are never resized.
         _connectionCount = targetShrinkCount;
         _totalMaxInFlight = targetShrinkCount * _maxInFlight;
-        _totalMaxInFlightBytes = GetInFlightByteBudget(targetShrinkCount);
+        UpdateInFlightByteBudget(targetShrinkCount);
 
         // The drain gates above guarantee no in-flight batches that require routing to the
         // removed slot, so any leftover migration fences are stale — clear them so no
@@ -4443,12 +4525,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _hasScaledConnectionGroup = true;
         _connectionCount = actualCount;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
-        _totalMaxInFlightBytes = GetInFlightByteBudget(_connectionCount);
+        UpdateInFlightByteBudget(_connectionCount);
         // Only reset on successful growth — intentional. If the pool returned fewer
         // connections than requested, stale pressure keeps accumulating so the next
         // cooldown window retries with the full delta rather than starting from zero.
         _lastPressureSnapshot = _accumulator.BufferPressureEvents;
         _lastSendLoopPressureSnapshot = _sendLoopPressureEvents;
+        _lastUnackedBlockSnapshot = _unackedBudget?.AdmissionBlockEvents ?? 0;
 
         // Per-connection arrays are pre-sized at the scaling ceiling — nothing to grow.
 
@@ -4576,7 +4659,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     internal static long ComputeScalePressureDelta(long bufferPressureDelta, long sendLoopPressureDelta) =>
         Math.Max(bufferPressureDelta, sendLoopPressureDelta);
 
-    internal static bool IsSendLoopPressureScaleUseful(
+    internal static bool IsPartitionPressureScaleUseful(
         bool adaptiveScalingEnabled,
         int connectionCount,
         int maxConnectionsPerBroker,

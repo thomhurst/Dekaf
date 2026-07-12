@@ -76,6 +76,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithBatchSize(...)` | `BatchSize` | Bytes |
 | `WithBufferMemory(...)` | `BufferMemory` | Bytes; omit to keep auto-tuning |
 | `WithMaxBlock(...)` | `MaxBlockMs` | Milliseconds |
+| `WithDeliveryLatencyTarget(...)` | `DeliveryLatencyTargetMs` | TimeSpan; `TimeSpan.Zero` disables |
 | `WithDeliveryTimeout(...)` | `DeliveryTimeoutMs` | Milliseconds |
 | `WithRequestTimeout(...)` | `RequestTimeoutMs` | Milliseconds |
 | `WithIdempotence(...)` | `EnableIdempotence` | Boolean |
@@ -355,6 +356,17 @@ Maximum memory the producer uses for buffering unsent messages:
 
 Default: 2GB. When the buffer is full, `ProduceAsync` and `Send` block until space is freed (controlled by `WithMaxBlockMs`). Increase if profiling shows significant time in backpressure waits; decrease in memory-constrained environments.
 
+### WithDeliveryLatencyTarget
+
+Soft target for per-broker queueing latency (append to broker acknowledgement):
+
+```csharp
+.WithDeliveryLatencyTarget(TimeSpan.FromMilliseconds(10)) // default
+.WithDeliveryLatencyTarget(TimeSpan.Zero)                 // disable the bound
+```
+
+Default: 10ms. The producer bounds each broker's unacknowledged bytes to `target × measured ack throughput`, so under sustained overload delivery latency stays near the target instead of growing with the full buffer (bufferbloat). A measured round-trip guard keeps the bound above the bandwidth-delay product, so throughput is never window-limited — on high-latency links the effective latency floor is ~1.5× the broker round-trip. When a broker exceeds its budget, produce calls block exactly like `BufferMemory` exhaustion (subject to `WithMaxBlock` and cancellation). Until the first drain measurement the bound sits at its ceiling, so short-lived producers are unaffected. Raise the target if you prefer deeper buffering over latency; set `TimeSpan.Zero` to restore pre-bound behavior.
+
 ### WithSocketSendBufferBytes / WithSocketReceiveBufferBytes
 
 TCP socket buffer sizes:
@@ -400,6 +412,7 @@ Enable logging:
 | `WithAdaptiveConnections` | enabled (max 10) | Auto-scale connections under load |
 | `WithoutAdaptiveConnections` | - | Disable adaptive scaling |
 | `WithBufferMemory` | auto-tuned | Max buffer for unsent messages |
+| `WithDeliveryLatencyTarget` | 10ms | Per-broker queueing latency target; `TimeSpan.Zero` disables |
 | `WithMaxBlock` | 60000ms | Max time produce calls wait for metadata or buffer space |
 | `WithDeliveryTimeout` | 120000ms | Max time for delivery success or failure |
 | `WithRequestTimeout` | 30000ms | Per-request timeout |

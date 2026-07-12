@@ -389,7 +389,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _compressionCodecs,
             loggerFactory?.CreateLogger<RecordAccumulator>(),
             batchCompletionCallback,
-            recordAppendedCallback);
+            recordAppendedCallback,
+            ResolveLeaderIdForUnackedBudget);
         _uniformStickyPartitioner?.SetPartitionQueueByteProvider(_accumulator.GetPartitionQueueBytes);
 
         // Inflight tracker enables coordinated retry with multiple in-flight batches per partition.
@@ -2883,8 +2884,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
             _logger,
             canPhysicallyShrinkConnections: _ownsInfrastructure,
-            onBrokerThrottle: _options.EnableDeliveryDiagnostics ? ObserveBrokerThrottle : null);
+            onBrokerThrottle: _options.EnableDeliveryDiagnostics ? ObserveBrokerThrottle : null,
+            unackedBudget: _accumulator.GetBrokerUnackedBudget(brokerId));
     }
+
+    /// <summary>
+    /// Resolves the current leader broker id for the unacked-byte admission budget.
+    /// Returns -1 when the leader is not cached yet (the budget then skips the batch).
+    /// </summary>
+    private int ResolveLeaderIdForUnackedBudget(string topic, int partition)
+        => _metadataManager.TryGetCachedPartitionLeader(topic, partition)?.NodeId ?? -1;
 
     /// <summary>
     /// Routes a batch to the current leader's BrokerSender.
@@ -2936,6 +2945,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             LogReroutedBatch(topicPartition.Topic, topicPartition.Partition, leader.NodeId);
+            _accumulator.ReattributeUnackedBudget(batch, leader.NodeId);
             GetOrCreateBrokerSender(leader.NodeId).Enqueue(batch, expectedGeneration);
         }
         catch (Exception ex)

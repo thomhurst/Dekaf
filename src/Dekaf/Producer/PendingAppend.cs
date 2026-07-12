@@ -56,6 +56,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private long _startTicks;
     private long _deadlineTickCount;
     private RecordAccumulator _accumulator = null!;
+    private int _pendingCounted;
 
     // Pool return
     private PendingAppendPool _pool = null!;
@@ -132,6 +133,8 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _cancellationToken = cancellationToken;
         _accumulator = accumulator;
         _pool = pool;
+        accumulator.IncrementSlowPathAppendCount(topic, partition);
+        Volatile.Write(ref _pendingCounted, 1);
         Volatile.Write(ref _completed, 0);
 
         // Arm timeout timer. Compute remaining ms from deadline.
@@ -174,6 +177,12 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     }
 
     /// <summary>
+    /// Releases per-partition FIFO ownership after a claimed append has entered its batch.
+    /// Must run before completing the value task, which can return this object to its pool.
+    /// </summary>
+    internal void ReleasePendingCountAfterClaim() => ReleasePendingCount();
+
+    /// <summary>
     /// Sets the successful result after <see cref="TryClaim"/> + AppendAfterReservation.
     /// Must only be called after <see cref="TryClaim"/> returned true.
     /// Resources are consumed by AppendAfterReservation — no cleanup needed.
@@ -199,6 +208,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
             return false;
 
+        ReleasePendingCount();
         DisarmTimerAndCancellation();
 
         // Clean up owned resources since drain will not process this operation
@@ -272,8 +282,16 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _cancellationToken = default;
         _deadlineTickCount = 0;
         _accumulator = null!;
+        _pendingCounted = 0;
         _core.Reset();
         _pool.Return(this);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ReleasePendingCount()
+    {
+        if (Interlocked.Exchange(ref _pendingCounted, 0) != 0)
+            _accumulator.DecrementSlowPathAppendCount(_topic, _partition);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

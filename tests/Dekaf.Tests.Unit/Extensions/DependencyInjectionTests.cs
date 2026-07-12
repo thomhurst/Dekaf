@@ -165,6 +165,7 @@ public class DependencyInjectionTests
             BootstrapServers = ["broker1:9092"],
             ClientId = "typed-producer",
             LingerMs = 7,
+            DeliveryLatencyTargetMs = 23,
             EnableAdaptiveConnections = false,
             UseTls = true,
             SaslMechanism = SaslMechanism.ScramSha512,
@@ -185,6 +186,7 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.BootstrapServers[0]).IsEqualTo("broker1:9092");
         await Assert.That(boundOptions.ClientId).IsEqualTo("override-producer");
         await Assert.That(boundOptions.LingerMs).IsEqualTo(7);
+        await Assert.That(boundOptions.DeliveryLatencyTargetMs).IsEqualTo(23);
         await Assert.That(boundOptions.EnableAdaptiveConnections).IsFalse();
         await Assert.That(boundOptions.UseTls).IsTrue();
         await Assert.That(boundOptions.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
@@ -562,6 +564,7 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:RetryBackoffMs"] = "25",
             ["Kafka:Producers:Orders:RetryBackoffMaxMs"] = "250",
             ["Kafka:Producers:Orders:MaxBlockMs"] = "1000",
+            ["Kafka:Producers:Orders:DeliveryLatencyTargetMs"] = "17",
             ["Kafka:Producers:Orders:DeliveryTimeoutMs"] = "2000",
             ["Kafka:Producers:Orders:RequestTimeoutMs"] = "3000",
             ["Kafka:Producers:Orders:ReconnectBackoffMs"] = "75",
@@ -610,6 +613,7 @@ public class DependencyInjectionTests
         await Assert.That(options.RetryBackoffMs).IsEqualTo(25);
         await Assert.That(options.RetryBackoffMaxMs).IsEqualTo(250);
         await Assert.That(options.MaxBlockMs).IsEqualTo(1000);
+        await Assert.That(options.DeliveryLatencyTargetMs).IsEqualTo(17);
         await Assert.That(options.DeliveryTimeoutMs).IsEqualTo(2000);
         await Assert.That(options.RequestTimeoutMs).IsEqualTo(3000);
         await Assert.That(options.ReconnectBackoffMs).IsEqualTo(75);

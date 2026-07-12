@@ -29,7 +29,8 @@ public sealed class BrokerSenderSendLoopTests
         int retryBackoffMs = 100, int retryBackoffMaxMs = 1000,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
         int connectionsPerBroker = 1, bool enableAdaptiveConnections = true,
-        bool enableIdempotence = true, int batchSize = 1_048_576) => new()
+        bool enableIdempotence = true, int batchSize = 1_048_576,
+        long? unackedByteBudgetCapOverride = null, long? scaleCooldownMsOverride = null) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
@@ -42,7 +43,9 @@ public sealed class BrokerSenderSendLoopTests
             RetryBackoffMaxMs = retryBackoffMaxMs,
             RequestTimeoutMs = requestTimeoutMs,
             BatchSize = batchSize,
-            LingerMs = 0
+            LingerMs = 0,
+            UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride,
+            ScaleCooldownMsOverride = scaleCooldownMsOverride
         };
 
     /// <summary>
@@ -77,6 +80,30 @@ public sealed class BrokerSenderSendLoopTests
             .Returns(connection);
 
         return (pool, connection);
+    }
+
+    /// <summary>
+    /// Creates a mock pool whose ScaleConnectionGroupAsync resolves the requested width and
+    /// signals the returned TCS — shared by the scale-up trigger tests.
+    /// </summary>
+    private static (IConnectionPool pool, TaskCompletionSource<int> scaleRequested) CreateScaleTrackingPool(
+        TestKafkaConnection connection)
+    {
+        var scaleRequested = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+        pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+        pool.ScaleConnectionGroupAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var targetCount = (int)callInfo[1];
+                scaleRequested.TrySetResult(targetCount);
+                return new ValueTask<int>(targetCount);
+            });
+
+        return (pool, scaleRequested);
     }
 
     /// <summary>
@@ -131,6 +158,29 @@ public sealed class BrokerSenderSendLoopTests
                             Index = partition,
                             ErrorCode = ErrorCode.None,
                             BaseOffset = baseOffset
+                        }
+                    ]
+                }
+            ]
+        };
+
+    private static ProduceResponse CreateErrorResponse(string topic, int partition, ErrorCode errorCode) =>
+        new()
+        {
+            TopicCount = 1,
+            Responses =
+            [
+                new ProduceResponseTopicData
+                {
+                    Name = topic,
+                    PartitionCount = 1,
+                    PartitionResponses =
+                    [
+                        new ProduceResponsePartitionData
+                        {
+                            Index = partition,
+                            ErrorCode = errorCode,
+                            BaseOffset = -1
                         }
                     ]
                 }
@@ -203,7 +253,8 @@ public sealed class BrokerSenderSendLoopTests
         Action<int>? onBrokerThrottle = null,
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
-        Action? onBlockedBucketRequeued = null) =>
+        Action? onBlockedBucketRequeued = null,
+        BrokerUnackedByteBudget? unackedBudget = null) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -222,7 +273,8 @@ public sealed class BrokerSenderSendLoopTests
             onBrokerThrottle: onBrokerThrottle,
             getTimestamp: getTimestamp,
             delayForThrottle: delayForThrottle,
-            onBlockedBucketRequeued: onBlockedBucketRequeued);
+            onBlockedBucketRequeued: onBlockedBucketRequeued,
+            unackedBudget: unackedBudget);
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {
@@ -252,19 +304,7 @@ public sealed class BrokerSenderSendLoopTests
                 Task.FromResult(CreateSuccessResponseForPartitions("test-topic", partitionCount)));
         };
 
-        var scaleRequested = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pool = Substitute.For<IConnectionPool>();
-        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(connection);
-        pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(connection);
-        pool.ScaleConnectionGroupAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(callInfo =>
-            {
-                var targetCount = (int)callInfo[1];
-                scaleRequested.TrySetResult(targetCount);
-                return new ValueTask<int>(targetCount);
-            });
+        var (pool, scaleRequested) = CreateScaleTrackingPool(connection);
 
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
 
@@ -2144,6 +2184,231 @@ public sealed class BrokerSenderSendLoopTests
             await Assert.That(progress).IsSameReferenceAs(deliveryFailure.Task);
             await Assert.That(await deliveryFailure.Task).IsTypeOf<KafkaTimeoutException>();
             await Assert.That(sendSignals[1].Task.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Constructor_AppliesUnackedBudgetCap()
+    {
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        var (pool, _) = CreateMockConnection(responseQueue);
+        var options = CreateOptions(unackedByteBudgetCapOverride: 4_096);
+        var accumulator = new RecordAccumulator(options);
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 100, initialCapBytes: 1);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, unackedBudget: budget);
+
+        try
+        {
+            // Cold start: budget follows the cap the sender applied at construction.
+            await Assert.That(budget.BudgetBytes).IsEqualTo(4_096);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task ProcessCompletedResponses_FeedsAckedBytesIntoUnackedBudget(
+        CancellationToken cancellationToken)
+    {
+        const int batchCount = 5;
+        const int dataSize = 5_000;
+
+        var responses = Enumerable.Range(0, batchCount)
+            .Select(_ => new TaskCompletionSource<ProduceResponse>())
+            .ToArray();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(responses);
+        var sendSignals = Enumerable.Range(0, batchCount)
+            .Select(_ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
+            .ToArray();
+        var sendCount = 0;
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+
+        // maxInFlight 1 + one partition serializes sends, so each response is processed alone:
+        // one OnAcked call per completed request, with the fake clock advanced 1s in between.
+        var options = CreateOptions(maxInFlight: 1, unackedByteBudgetCapOverride: 1_000_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1);
+        var fakeTimestamp = Stopwatch.GetTimestamp();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+            getTimestamp: () => Volatile.Read(ref fakeTimestamp),
+            unackedBudget: budget);
+
+        try
+        {
+            for (var i = 0; i < batchCount; i++)
+                sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: dataSize));
+
+            for (var i = 0; i < batchCount; i++)
+            {
+                await sendSignals[i].Task.WaitAsync(cancellationToken);
+                Interlocked.Add(ref fakeTimestamp, Stopwatch.Frequency); // 1s between ack windows
+                responses[i].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: i * 10));
+            }
+
+            // Steady state: 5,000 B/s measured drain (fake clock advances 1s per ack window),
+            // while the round-trip — sampled on the real Stopwatch clock — is microseconds,
+            // so the 0.5s target dominates the RTT guard: budget = 5,000 × 0.5 = 2,500.
+            await WaitUntilAsync(() => budget.BudgetBytes == 2_500, cancellationToken);
+            await Assert.That(budget.BudgetBytes).IsEqualTo(2_500);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task FaultedResponses_DoNotFeedUnackedBudgetDrainRate(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var retryResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, retryResponse]);
+        var sendSignals = new[]
+        {
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var sendCount = 0;
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(maxInFlight: 1, unackedByteBudgetCapOverride: 1_000_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+            unackedBudget: budget);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 5_000));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            firstResponse.SetException(new IOException("connection reset"));
+
+            // The retry send proves the faulted response was fully processed — and a faulted
+            // response must not count as drain, so the budget still has no rate sample.
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            await Assert.That(budget.BudgetBytes).IsEqualTo(1_000_000);
+
+            retryResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task PartitionErrors_DoNotFeedUnackedBudgetDrainRate(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var retryResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, retryResponse]);
+        var sendSignals = new[]
+        {
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(maxInFlight: 1, retryBackoffMs: 0,
+            unackedByteBudgetCapOverride: 1_000_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+            unackedBudget: budget);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 5_000));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            firstResponse.SetResult(CreateErrorResponse("test-topic", 0, ErrorCode.RequestTimedOut));
+
+            // Retry proves the partition error was processed. It must not establish a
+            // successful drain-rate sample from the failed request's encoded bytes.
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            await Assert.That(budget.BudgetBytes).IsEqualTo(1_000_000);
+
+            retryResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task AdmissionBlockPressure_TriggersScaleUp_WithoutBufferUtilization(
+        CancellationToken cancellationToken)
+    {
+        const int partitionCount = 4;
+
+        var options = CreateOptions(maxInFlight: 1,
+            unackedByteBudgetCapOverride: 1_000_000, scaleCooldownMsOverride: 0);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var connection = new TestKafkaConnection();
+        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(
+            Task.FromResult(CreateSuccessResponseForPartitions("test-topic", partitionCount)));
+
+        var (pool, scaleRequested) = CreateScaleTrackingPool(connection);
+
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+            unackedBudget: budget);
+
+        try
+        {
+            // Simulate a workload throttled by the admission gate: buffer utilization stays
+            // near zero, but blocked admissions accumulate. This alone must trigger scale-up.
+            for (var i = 0; i < 200; i++)
+                budget.RecordAdmissionBlock();
+
+            // Keep the send loop iterating so it reaches the scale check.
+            for (var i = 0; i < 32; i++)
+                sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", i % partitionCount));
+
+            var targetCount = await scaleRequested.Task.WaitAsync(cancellationToken);
+            await Assert.That(targetCount).IsGreaterThan(1);
         }
         finally
         {

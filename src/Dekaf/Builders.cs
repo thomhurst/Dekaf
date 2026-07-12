@@ -63,6 +63,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private ulong? _bufferMemory;
     private int? _maxBlockMs;
+    private int? _deliveryLatencyTargetMs;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
@@ -178,6 +179,28 @@ public sealed class ProducerBuilder<TKey, TValue>
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maxBlock.TotalMilliseconds, int.MaxValue, nameof(maxBlock));
 
         _maxBlockMs = (int)maxBlock.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the soft target for per-broker producer queueing latency (append to ack).
+    /// The producer bounds each broker's unacknowledged bytes to
+    /// <c>target × measured ack throughput</c>, so delivery latency stays near the target
+    /// instead of growing with the full buffer under sustained overload. A measured
+    /// round-trip guard keeps the bound above the bandwidth-delay product, so throughput
+    /// is never window-limited.
+    /// </summary>
+    /// <param name="target">The latency target. <see cref="TimeSpan.Zero"/> disables the bound.</param>
+    /// <remarks>
+    /// Default is 10 milliseconds.
+    /// </remarks>
+    public ProducerBuilder<TKey, TValue> WithDeliveryLatencyTarget(TimeSpan target)
+    {
+        if (target < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(target), "DeliveryLatencyTarget cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(target.TotalMilliseconds, int.MaxValue, nameof(target));
+
+        _deliveryLatencyTargetMs = (int)target.TotalMilliseconds;
         return this;
     }
 
@@ -1163,6 +1186,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             RetryBackoffMs = _retryBackoffMs,
             RetryBackoffMaxMs = _retryBackoffMaxMs,
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
+            DeliveryLatencyTargetMs = _deliveryLatencyTargetMs ?? 10,
             DeliveryTimeoutMs = _deliveryTimeoutMs ?? 120000,
             RequestTimeoutMs = _requestTimeoutMs ?? 30000,
             ReconnectBackoffMs = _reconnectBackoffMs,

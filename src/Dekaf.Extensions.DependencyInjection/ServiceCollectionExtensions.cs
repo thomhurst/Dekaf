@@ -781,6 +781,7 @@ internal static class DekafOptionsBinding
         builder.WithRetryBackoff(TimeSpan.FromMilliseconds(options.RetryBackoffMs));
         builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(options.RetryBackoffMaxMs));
         builder.WithMaxBlock(TimeSpan.FromMilliseconds(options.MaxBlockMs));
+        builder.WithDeliveryLatencyTarget(TimeSpan.FromMilliseconds(options.DeliveryLatencyTargetMs));
         builder.WithDeliveryTimeout(TimeSpan.FromMilliseconds(options.DeliveryTimeoutMs));
         builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
         builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
@@ -1139,6 +1140,8 @@ internal static class DekafConfigurationBinding
             builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(retryBackoffMaxMs));
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.MaxBlockMs), out var maxBlockMs))
             builder.WithMaxBlock(TimeSpan.FromMilliseconds(maxBlockMs));
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.DeliveryLatencyTargetMs), out var deliveryLatencyTargetMs))
+            builder.WithDeliveryLatencyTarget(TimeSpan.FromMilliseconds(deliveryLatencyTargetMs));
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.DeliveryTimeoutMs), out var deliveryTimeoutMs))
             builder.WithDeliveryTimeout(TimeSpan.FromMilliseconds(deliveryTimeoutMs));
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.RequestTimeoutMs), out var requestTimeoutMs))
