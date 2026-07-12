@@ -439,6 +439,101 @@ public sealed class BrokerSenderMuteOrderingTests
     }
 
     [Test]
+    [NotInParallel]
+    [Timeout(30_000)]
+    public async Task MetadataRerank_OmittedInflightPartitionStaysFencedWhenItReturns(CancellationToken ct)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>([response]));
+        pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(connection);
+        var options = CreateOptions(maxInFlight: 2, enableIdempotence: false, connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, metadataManager,
+            logger: sendLogger);
+        var getConnection = typeof(BrokerSender).GetMethod(
+            "GetConnectionForPartition", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var refreshRouting = typeof(BrokerSender).GetMethod(
+            "RefreshPartitionRouting", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var topicPartition = new TopicPartition("test-topic", 3);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(vtPool, topicPartition.Topic, topicPartition.Partition));
+            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+
+            metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2, partitionThreeLeader: 2));
+            refreshRouting.Invoke(sender, null);
+            metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 1));
+            refreshRouting.Invoke(sender, null);
+
+            await Assert.That((int)getConnection.Invoke(sender, [topicPartition])!).IsEqualTo(0)
+                .Because("a temporarily omitted in-flight partition must keep its old TCP stream");
+        }
+        finally
+        {
+            response.TrySetResult(CreateSuccessResponse(topicPartition.Topic, topicPartition.Partition, 100));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    [Timeout(30_000)]
+    public async Task MetadataRerank_RequestTimeoutClearsMigrationFence(CancellationToken ct)
+    {
+        var timedOutResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([timedOutResponse]);
+        var (pool, connection) = CreateMockConnection(responseQueue);
+        pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(connection);
+        var options = CreateOptions(maxInFlight: 2, enableIdempotence: false,
+            deliveryTimeoutMs: 1, requestTimeoutMs: 1, connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+        var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, metadataManager,
+            logger: sendLogger);
+        var getConnection = typeof(BrokerSender).GetMethod(
+            "GetConnectionForPartition", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var topicPartition = new TopicPartition("test-topic", 3);
+        var batch = CreateTestBatch(vtPool, topicPartition.Topic, topicPartition.Partition);
+
+        try
+        {
+            sender.Enqueue(batch);
+            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+            metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 1));
+            typeof(BrokerSender).GetMethod(
+                    "RefreshPartitionRouting", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, null);
+
+            await Task.Delay(20, ct);
+            typeof(BrokerSender).GetMethod(
+                    "HandleTimedOutRequests", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, [CreateCarryOver(), ct]);
+
+            await Assert.That((int)getConnection.Invoke(sender, [topicPartition])!).IsEqualTo(1)
+                .Because("timeout removal leaves no old request that can justify a migration fence");
+        }
+        finally
+        {
+            timedOutResponse.TrySetResult(CreateSuccessResponse(topicPartition.Topic, topicPartition.Partition, 100));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task MetadataRerank_FireAndForgetKeepsExistingPartitionRoute()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -485,7 +580,9 @@ public sealed class BrokerSenderMuteOrderingTests
         }
     }
 
-    private static MetadataResponse CreateRoutingMetadata(int partitionZeroLeader) => new()
+    private static MetadataResponse CreateRoutingMetadata(
+        int partitionZeroLeader,
+        int partitionThreeLeader = 1) => new()
     {
         Brokers =
         [
@@ -513,10 +610,10 @@ public sealed class BrokerSenderMuteOrderingTests
                     {
                         ErrorCode = ErrorCode.None,
                         PartitionIndex = 3,
-                        LeaderId = 1,
-                        LeaderEpoch = 1,
-                        ReplicaNodes = [1],
-                        IsrNodes = [1]
+                        LeaderId = partitionThreeLeader,
+                        LeaderEpoch = partitionThreeLeader == 1 ? 1 : 2,
+                        ReplicaNodes = [partitionThreeLeader],
+                        IsrNodes = [partitionThreeLeader]
                     }
                 ]
             }

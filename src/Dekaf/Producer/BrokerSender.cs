@@ -491,6 +491,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // when metadata replaces the broker's partition-list snapshot. Send-loop owned.
     private readonly Dictionary<TopicPartition, int> _partitionOrdinals = new();
     private readonly List<TopicPartition> _rankedPartitions = [];
+    private readonly HashSet<TopicPartition> _rankedPartitionSet = [];
     private IReadOnlyList<TopicPartition>? _partitionRoutingSnapshot;
     private int _nextStablePartitionOrdinal;
 
@@ -2598,6 +2599,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -removedBytes);
             pendingList.Clear();
 
+            if (_migratingPartitions.Count > 0)
+                CompleteMigrations(connIdx);
+
             // After clearing all entries due to timeout, trim the internal array to
             // prevent capacity from ratcheting up across repeated timeout/recovery cycles.
             // The > 16 guard avoids trimming tiny lists: with MaxInFlightRequestsPerConnection
@@ -3630,8 +3634,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
 
         _rankedPartitions.Clear();
+        _rankedPartitionSet.Clear();
         for (var i = 0; i < metadataPartitions.Count; i++)
-            _rankedPartitions.Add(metadataPartitions[i]);
+        {
+            var topicPartition = metadataPartitions[i];
+            _rankedPartitions.Add(topicPartition);
+            _rankedPartitionSet.Add(topicPartition);
+        }
         _rankedPartitions.Sort(static (left, right) =>
         {
             var topicComparison = string.CompareOrdinal(left.Topic, right.Topic);
@@ -3668,6 +3677,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 && HasInflightForPartition(oldConnection, topicPartition))
             {
                 _migratingPartitions.TryAdd(topicPartition, oldConnection);
+            }
+        }
+
+        // Metadata can temporarily omit a partition while an older request remains in
+        // flight (unknown leader, leader move, or a partial refresh). Remember its old
+        // connection even though it has no current dense ordinal. If it returns before
+        // the request completes, the migration fence prevents a cross-stream reorder.
+        foreach (var (topicPartition, oldOrdinal) in _partitionOrdinals)
+        {
+            if (!_rankedPartitionSet.Contains(topicPartition))
+            {
+                var oldConnection = oldOrdinal % _connectionCount;
+                if (HasInflightForPartition(oldConnection, topicPartition))
+                    _migratingPartitions.TryAdd(topicPartition, oldConnection);
             }
         }
 
