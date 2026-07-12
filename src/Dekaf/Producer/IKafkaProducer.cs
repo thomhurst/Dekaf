@@ -254,6 +254,19 @@ internal sealed class ProducerDeliveryDiagnosticsSnapshot
     public DateTimeOffset CapturedAtUtc { get; init; }
     public long InFlightBatchCount { get; init; }
     public List<ProducerBatchDeliveryDiagnostic> Batches { get; init; } = [];
+    public List<ProducerConnectionScaleDiagnostic> ConnectionScaleEvents { get; init; } = [];
+}
+
+internal sealed class ProducerConnectionScaleDiagnostic
+{
+    public required DateTimeOffset OccurredAtUtc { get; init; }
+    public required int BrokerId { get; init; }
+    public required int OldConnectionCount { get; init; }
+    public required int NewConnectionCount { get; init; }
+    public string Direction => NewConnectionCount > OldConnectionCount ? "up" : "down";
+    public required double BufferUtilization { get; init; }
+    public required long BufferPressureDelta { get; init; }
+    public required long SendLoopPressureDelta { get; init; }
 }
 
 /// <summary>

@@ -865,6 +865,7 @@ internal readonly struct ArenaSlice
 /// </summary>
 public sealed partial class RecordAccumulator : IAsyncDisposable
 {
+    private const int MaxConnectionScaleDiagnosticEvents = 256;
     // ReadyBatch lifecycle (seal→send→response→cleanup) is longer than PartitionBatch
     // (create→fill→seal), so its pool needs proportionally more capacity.
     private const int ReadyBatchPoolSizeRatio = 2;
@@ -946,6 +947,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private SpinLock _inFlightBatchLock = new(enableThreadOwnerTracking: false);
     private ReadyBatch? _inFlightBatchHead;
     private ReadyBatch? _inFlightBatchTail;
+    private readonly object _connectionScaleDiagnosticsLock = new();
+    private readonly List<ProducerConnectionScaleDiagnostic> _connectionScaleEvents = [];
 
     // Optimization: Track the oldest batch creation time to skip unnecessary enumeration.
     // With LingerMs=5ms and 1ms timer, we'd enumerate 5x per batch without this optimization.
@@ -4354,10 +4357,42 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             InFlightBatchCount = Volatile.Read(ref _inFlightBatchCount)
         };
 
+        lock (_connectionScaleDiagnosticsLock)
+            snapshot.ConnectionScaleEvents.AddRange(_connectionScaleEvents);
+
         foreach (var batch in batches)
             snapshot.Batches.Add(batch.Batch.CreateDeliveryDiagnostic(batch.Generation, batch.TopicPartition));
 
         return snapshot;
+    }
+
+    internal void RecordConnectionScaleEvent(
+        int brokerId,
+        int oldConnectionCount,
+        int newConnectionCount,
+        double bufferUtilization,
+        long bufferPressureDelta,
+        long sendLoopPressureDelta)
+    {
+        if (!_options.EnableDeliveryDiagnostics)
+            return;
+
+        lock (_connectionScaleDiagnosticsLock)
+        {
+            if (_connectionScaleEvents.Count >= MaxConnectionScaleDiagnosticEvents)
+                return;
+
+            _connectionScaleEvents.Add(new ProducerConnectionScaleDiagnostic
+            {
+                OccurredAtUtc = DateTimeOffset.UtcNow,
+                BrokerId = brokerId,
+                OldConnectionCount = oldConnectionCount,
+                NewConnectionCount = newConnectionCount,
+                BufferUtilization = bufferUtilization,
+                BufferPressureDelta = bufferPressureDelta,
+                SendLoopPressureDelta = sendLoopPressureDelta
+            });
+        }
     }
 
     /// <summary>

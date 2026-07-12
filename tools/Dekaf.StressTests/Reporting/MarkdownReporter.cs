@@ -26,6 +26,7 @@ internal static class MarkdownReporter
             var label = FormatGroupTitle(FormatScenarioLabel(group.Key.Scenario), group.Key.BrokerCount);
 
             GenerateThroughputTable(sb, title, groupResults);
+            GenerateConnectionScaleTimeline(sb, groupResults, label);
 
             var transactionalResults = groupResults
                 .Where(r => r.TransactionVerification is not null)
@@ -160,6 +161,39 @@ internal static class MarkdownReporter
         results
             .OrderByDescending(ComparisonMessagesPerSecond)
             .ThenBy(r => r.CpuMicrosPerMessage ?? double.MaxValue);
+
+    private static void GenerateConnectionScaleTimeline(
+        StringBuilder sb,
+        List<StressTestResult> results,
+        string label)
+    {
+        var rows = results
+            .SelectMany(result => (result.ProducerDeliveryDiagnostics?.ConnectionScaleEvents ?? [])
+                .Select(scaleEvent => (Result: result, Event: scaleEvent)))
+            .OrderBy(row => row.Event.OccurredAtUtc)
+            .ToList();
+        if (rows.Count == 0)
+            return;
+
+        sb.AppendLine($"## Connection Scale Timeline - {label}");
+        sb.AppendLine();
+        sb.AppendLine("| Client | Event UTC | Broker | Connections | Buffer | Pressure (buffer/send) | Nearest throughput sample |");
+        sb.AppendLine("|--------|-----------|-------:|-------------|-------:|------------------------|---------------------------|");
+        foreach (var row in rows)
+        {
+            var nearest = row.Result.Throughput.IntervalSamples
+                .MinBy(sample => Math.Abs((sample.CapturedAtUtc - row.Event.OccurredAtUtc).TotalMilliseconds));
+            var throughput = nearest is null
+                ? "-"
+                : $"{nearest.ElapsedSeconds:F1}s / {nearest.MessagesPerSecond:N0} msg/s";
+            sb.AppendLine(
+                $"| {row.Result.Client} | {row.Event.OccurredAtUtc:HH:mm:ss.fff} | " +
+                $"{row.Event.BrokerId} | {row.Event.OldConnectionCount}→{row.Event.NewConnectionCount} | " +
+                $"{row.Event.BufferUtilization:P0} | " +
+                $"{row.Event.BufferPressureDelta:N0}/{row.Event.SendLoopPressureDelta:N0} | {throughput} |");
+        }
+        sb.AppendLine();
+    }
 
     private static double ComparisonMessagesPerSecond(StressTestResult result) =>
         result.MedianIntervalMessagesPerSecond ?? result.EffectiveMessagesPerSecond;

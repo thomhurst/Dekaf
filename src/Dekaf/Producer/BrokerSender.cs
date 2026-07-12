@@ -480,6 +480,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private long _lastSendLoopPressureSnapshot;
     private long _lastScaleTimeTicks;
     private Task<int>? _pendingScaleTask; // Background connection creation, polled by send loop
+    private double _pendingScaleBufferUtilization;
+    private long _pendingScaleBufferPressureDelta;
+    private long _pendingScaleSendLoopPressureDelta;
 
     // Scale-down state (send-loop owned, single-threaded)
     private long _lowUtilizationStartTicks; // When low utilization was first detected (0 = not tracking)
@@ -4210,9 +4213,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // width so the extra connection isn't orphaned. _connectionCount cannot
                 // have changed since initiation: this Phase 1b poll runs before any
                 // other scale event can start.
+                var reducedConnectionCount = _connectionCount;
                 _connectionCount++;
                 _totalMaxInFlight = _connectionCount * _maxInFlight;
                 _totalMaxInFlightBytes = GetInFlightByteBudget(_connectionCount);
+                _accumulator.RecordConnectionScaleEvent(
+                    _brokerId,
+                    reducedConnectionCount,
+                    _connectionCount,
+                    _accumulator.BufferUtilization,
+                    _accumulator.BufferPressureEvents - _lastPressureSnapshot,
+                    _sendLoopPressureEvents - _lastSendLoopPressureSnapshot);
             }
 
             return 0;
@@ -4269,6 +4280,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Launch connection creation in the background — send loop continues immediately
             _lastScaleTimeTicks = now;
+            _pendingScaleBufferUtilization = utilization;
+            _pendingScaleBufferPressureDelta = bufferPressureDelta;
+            _pendingScaleSendLoopPressureDelta = sendLoopPressureDelta;
             _pendingScaleTask = _connectionPool.ScaleConnectionGroupAsync(
                 _brokerId, targetCount, _cts.Token).AsTask();
 
@@ -4365,6 +4379,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // partition keeps routing outside the reduced width.
         _migratingPartitions.Clear();
 
+        _accumulator.RecordConnectionScaleEvent(
+            _brokerId,
+            targetShrinkCount + 1,
+            targetShrinkCount,
+            utilization,
+            bufferPressureDelta,
+            sendLoopPressureDelta);
+
         _lastScaleTimeTicks = now;
         _lowUtilizationStartTicks = 0; // Reset for the next scale-down cycle
 
@@ -4439,6 +4461,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             actualCount * PoolSizing.SerializationArraysPerConnection);
 
         FenceAffectedPartitions(oldCount, actualCount);
+
+        _accumulator.RecordConnectionScaleEvent(
+            _brokerId,
+            oldCount,
+            actualCount,
+            _pendingScaleBufferUtilization,
+            _pendingScaleBufferPressureDelta,
+            _pendingScaleSendLoopPressureDelta);
 
         LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
         return actualCount;
