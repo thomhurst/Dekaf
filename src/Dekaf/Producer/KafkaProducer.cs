@@ -2886,7 +2886,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _logger,
             canPhysicallyShrinkConnections: _ownsInfrastructure,
             onBrokerThrottle: _options.EnableDeliveryDiagnostics ? ObserveBrokerThrottle : null,
-            unackedBudget: _accumulator.GetBrokerUnackedBudget(brokerId));
+            unackedBudget: _accumulator.GetBrokerUnackedBudget(brokerId),
+            usesTransactionV2: () => _currentTransactionUsesTV2);
     }
 
     /// <summary>

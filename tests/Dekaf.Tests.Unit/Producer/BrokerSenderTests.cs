@@ -2,6 +2,7 @@ using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol.Messages;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -14,6 +15,29 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class BrokerSenderTests
 {
+    [Test]
+    public async Task GetProduceRequestVersion_CapsOnlyTv1Transactions()
+    {
+        var implicitVersion = ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion;
+
+        await Assert.That(BrokerSender.GetProduceRequestVersion(
+            implicitVersion,
+            isTransactional: true,
+            usesTransactionV2: false)).IsEqualTo(implicitVersion - 1);
+        await Assert.That(BrokerSender.GetProduceRequestVersion(
+            implicitVersion,
+            isTransactional: true,
+            usesTransactionV2: true)).IsEqualTo(implicitVersion);
+        await Assert.That(BrokerSender.GetProduceRequestVersion(
+            implicitVersion,
+            isTransactional: false,
+            usesTransactionV2: false)).IsEqualTo(implicitVersion);
+        await Assert.That(BrokerSender.GetProduceRequestVersion(
+            implicitVersion - 2,
+            isTransactional: true,
+            usesTransactionV2: false)).IsEqualTo(implicitVersion - 2);
+    }
+
     private static ProducerOptions CreateDefaultOptions() => new()
     {
         BootstrapServers = ["localhost:9092"],

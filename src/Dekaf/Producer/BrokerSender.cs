@@ -448,6 +448,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Transaction support
     private readonly Func<bool> _isTransactional;
+    private readonly Func<bool> _usesTransactionV2;
     private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
 
     // Send-time muting limits each partition to 1 in-flight batch when producer sequence
@@ -642,7 +643,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
         BrokerUnackedByteBudget? unackedBudget = null,
-        TimeSpan? disposalDrainTimeout = null)
+        TimeSpan? disposalDrainTimeout = null,
+        Func<bool>? usesTransactionV2 = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -655,6 +657,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _getProduceApiVersion = getProduceApiVersion;
         _setProduceApiVersion = setProduceApiVersion;
         _isTransactional = isTransactional;
+        _usesTransactionV2 = usesTransactionV2 ?? (static () => false);
         _ensurePartitionInTransaction = ensurePartitionInTransaction;
         _bumpEpoch = bumpEpoch;
         _getCurrentEpoch = getCurrentEpoch;
@@ -3485,8 +3488,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _setProduceApiVersion(version);
             version = _getProduceApiVersion();
         }
-        return version;
+        return GetProduceRequestVersion(version, _isTransactional(), _usesTransactionV2());
     }
+
+    internal static int GetProduceRequestVersion(
+        int negotiatedVersion,
+        bool isTransactional,
+        bool usesTransactionV2) =>
+        isTransactional && !usesTransactionV2
+            ? Math.Min(
+                negotiatedVersion,
+                ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion - 1)
+            : negotiatedVersion;
 
     /// <summary>
     /// Resets a per-connection timeout CTS for reuse, or recreates it if TryReset fails.
