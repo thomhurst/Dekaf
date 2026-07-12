@@ -2978,7 +2978,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ReadyBatch[] batches,
         int count,
         Action<Exception?> enrollmentCompleted,
-        HashSet<TopicPartition> enrollmentPendingPartitions)
+        HashSet<TopicPartition> enrollmentPendingPartitions,
+        HashSet<TopicPartition> enrollmentFailedPartitions)
     {
         var startEnrollment = false;
         long enrollmentGeneration = 0;
@@ -3001,7 +3002,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 if (!_partitionEnrollmentErrors.TryGetValue(topicPartition, out var partitionError))
                     continue;
 
-                enrollmentPendingPartitions.Add(topicPartition);
+                enrollmentFailedPartitions.Add(topicPartition);
                 enrollmentError ??= partitionError;
             }
 

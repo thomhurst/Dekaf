@@ -637,6 +637,7 @@ public sealed class TransactionTests
             [implicitBatch],
             1,
             static _ => { },
+            [],
             []);
         await Assert.That(implicitResult.IsEnrolled).IsTrue();
         await Assert.That(requestCount).IsEqualTo(0);
@@ -658,7 +659,8 @@ public sealed class TransactionTests
             batches,
             batches.Length,
             enrollmentCompleted.SetResult,
-            pendingPartitions);
+            pendingPartitions,
+            []);
 
         await Assert.That(enrolled.IsEnrolled).IsFalse();
         await Assert.That(enrolled.Error).IsNull();
@@ -678,6 +680,7 @@ public sealed class TransactionTests
             batches,
             batches.Length,
             static _ => { },
+            [],
             []).IsEnrolled).IsTrue();
 
         var mixedBatches = new[] { batches[0], CreateEnrollmentBatch("topic-c", 2) };
@@ -688,7 +691,8 @@ public sealed class TransactionTests
             mixedBatches,
             mixedBatches.Length,
             mixedEnrollmentCompleted.SetResult,
-            mixedPendingPartitions);
+            mixedPendingPartitions,
+            []);
 
         await Assert.That(mixedResult.IsEnrolled).IsFalse();
         await Assert.That(mixedPendingPartitions).IsEquivalentTo(
@@ -704,7 +708,8 @@ public sealed class TransactionTests
             [failedBatch],
             1,
             failedEnrollmentCompleted.SetResult,
-            failedPendingPartitions);
+            failedPendingPartitions,
+            []);
         await Assert.That(pendingFailure.IsEnrolled).IsFalse();
         await Assert.That(await failedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
 
@@ -713,6 +718,7 @@ public sealed class TransactionTests
             [failedBatch],
             1,
             static _ => { },
+            [],
             failedPendingPartitions);
         await Assert.That(failedResult.Error).IsTypeOf<TransactionException>();
         await Assert.That(failedPendingPartitions).IsEquivalentTo([failedBatch.TopicPartition]);
@@ -724,6 +730,7 @@ public sealed class TransactionTests
             [unrelatedBatch],
             1,
             unrelatedEnrollmentCompleted.SetResult,
+            [],
             []);
         await Assert.That(unrelatedResult.Error).IsNull();
         await Assert.That(await unrelatedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
@@ -731,6 +738,7 @@ public sealed class TransactionTests
             [unrelatedBatch],
             1,
             static _ => { },
+            [],
             []).IsEnrolled).IsTrue();
     }
 
@@ -779,6 +787,7 @@ public sealed class TransactionTests
             [batch],
             1,
             enrollmentReset.SetResult,
+            [],
             []);
         await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
@@ -833,6 +842,7 @@ public sealed class TransactionTests
             [batch],
             1,
             enrollmentCompleted.SetResult,
+            [],
             []);
 
         await Assert.That(result.IsEnrolled).IsFalse();
@@ -842,6 +852,7 @@ public sealed class TransactionTests
             [batch],
             1,
             static _ => { },
+            [],
             []).Error).IsTypeOf<AuthenticationException>();
     }
 

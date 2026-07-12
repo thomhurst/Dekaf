@@ -305,7 +305,7 @@ public sealed class BrokerSenderSendLoopTests
         int produceApiVersion = 9,
         bool isTransactional = false,
         bool usesTransactionV2 = false,
-        Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>,
+        Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
             TransactionPartitionEnrollmentResult>?
             tryEnsurePartitionsInTransaction = null) =>
         new(
@@ -532,7 +532,8 @@ public sealed class BrokerSenderSendLoopTests
             ReadyBatch[] batches,
             int count,
             Action<Exception?> completed,
-            HashSet<TopicPartition> pendingPartitions)
+            HashSet<TopicPartition> pendingPartitions,
+            HashSet<TopicPartition> failedPartitions)
         {
             for (var i = 0; i < count; i++)
             {
@@ -606,7 +607,8 @@ public sealed class BrokerSenderSendLoopTests
             ReadyBatch[] batches,
             int count,
             Action<Exception?> completed,
-            HashSet<TopicPartition> pendingPartitions)
+            HashSet<TopicPartition> pendingPartitions,
+            HashSet<TopicPartition> failedPartitions)
         {
             pendingPartitions.Add(batches[0].TopicPartition);
             completeEnrollment = completed;
@@ -665,7 +667,7 @@ public sealed class BrokerSenderSendLoopTests
             accumulator,
             (_, _, _, _, _) => { },
             isTransactional: true,
-            tryEnsurePartitionsInTransaction: (batches, _, _, failedPartitions) =>
+            tryEnsurePartitionsInTransaction: (batches, _, _, _, failedPartitions) =>
             {
                 failedPartitions.Add(batches[0].TopicPartition);
                 return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
@@ -684,6 +686,94 @@ public sealed class BrokerSenderSendLoopTests
         }
         finally
         {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionEnrollmentFailure_DoesNotFailLaterPendingPartition(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (connectionPool, _) = CreateMockConnection(responses, sendStarted.SetResult);
+        var options = CreateOptions(transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
+        var enrollmentCalls = 0;
+        var firstPartitionPending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var twoPartitionsPending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Action<Exception?>? enrollmentCompleted = null;
+        var failedAcknowledgement = new TaskCompletionSource<Exception?>();
+        var successfulAcknowledgement = new TaskCompletionSource<Exception?>();
+        var enrollmentError = new TransactionException("Partition enrollment failed.");
+
+        TransactionPartitionEnrollmentResult TryEnsure(
+            ReadyBatch[] batches,
+            int count,
+            Action<Exception?> completed,
+            HashSet<TopicPartition> pendingPartitions,
+            HashSet<TopicPartition> failedPartitions)
+        {
+            var call = Interlocked.Increment(ref enrollmentCalls);
+            if (call <= 2)
+            {
+                pendingPartitions.Add(batches[0].TopicPartition);
+                enrollmentCompleted = completed;
+                if (call == 1)
+                    firstPartitionPending.TrySetResult();
+                else
+                    twoPartitionsPending.TrySetResult();
+                return TransactionPartitionEnrollmentResult.Pending;
+            }
+
+            if (call == 3)
+            {
+                var failedPartition = new TopicPartition("test-topic", 0);
+                var laterPartition = new TopicPartition("test-topic", 1);
+                failedPartitions.Add(failedPartition);
+                pendingPartitions.Add(laterPartition); // Simulates the long-lived pending accumulator.
+                return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
+            }
+
+            return TransactionPartitionEnrollmentResult.Enrolled;
+        }
+
+        var sender = CreateSender(
+            connectionPool,
+            options,
+            accumulator,
+            (topicPartition, _, _, _, exception) =>
+            {
+                var completion = topicPartition.Partition == 0
+                    ? failedAcknowledgement
+                    : successfulAcknowledgement;
+                completion.TrySetResult(exception);
+            },
+            isTransactional: true,
+            tryEnsurePartitionsInTransaction: TryEnsure);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 0));
+            await firstPartitionPending.Task.WaitAsync(cancellationToken);
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 1));
+            await twoPartitionsPending.Task.WaitAsync(cancellationToken);
+            enrollmentCompleted!(null);
+
+            await Assert.That(await failedAcknowledgement.Task.WaitAsync(cancellationToken))
+                .IsSameReferenceAs(enrollmentError);
+            await sendStarted.Task.WaitAsync(cancellationToken);
+            response.SetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 42));
+            await Assert.That(await successfulAcknowledgement.Task.WaitAsync(cancellationToken)).IsNull();
+        }
+        finally
+        {
+            response.TrySetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 42));
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskPool.DisposeAsync();
@@ -722,6 +812,7 @@ public sealed class BrokerSenderSendLoopTests
             ReadyBatch[] batches,
             int count,
             Action<Exception?> completed,
+            HashSet<TopicPartition> pendingPartitions,
             HashSet<TopicPartition> failedPartitions)
         {
             if (Interlocked.Increment(ref enrollmentAttempts) != 2)

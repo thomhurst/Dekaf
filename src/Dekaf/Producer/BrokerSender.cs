@@ -485,11 +485,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Transaction support
     private readonly Func<bool> _isTransactional;
     private readonly Func<bool> _usesTransactionV2;
-    private readonly Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>,
+    private readonly Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
         TransactionPartitionEnrollmentResult>?
         _tryEnsurePartitionsInTransaction;
     private readonly Action<Exception?> _transactionEnrollmentCompleted;
     private readonly HashSet<TopicPartition> _transactionEnrollmentPendingPartitions = [];
+    private readonly HashSet<TopicPartition> _transactionEnrollmentFailedPartitions = [];
 
     // Send-time muting is needed when the configured request limit is already 1 or when
     // Acks.None provides no broker acknowledgement boundary.
@@ -689,7 +690,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<int> getProduceApiVersion,
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
-        Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>,
+        Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
             TransactionPartitionEnrollmentResult>?
             tryEnsurePartitionsInTransaction,
         Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? bumpEpoch,
@@ -1461,18 +1462,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         if (_isTransactional() && _tryEnsurePartitionsInTransaction is not null)
                         {
+                            _transactionEnrollmentFailedPartitions.Clear();
                             var enrollment = _tryEnsurePartitionsInTransaction(
                                 coalescedBatches,
                                 coalescedCount,
                                 _transactionEnrollmentCompleted,
-                                _transactionEnrollmentPendingPartitions);
+                                _transactionEnrollmentPendingPartitions,
+                                _transactionEnrollmentFailedPartitions);
                             if (enrollment.Error is not null)
                             {
                                 FailCoalescedTransactionEnrollmentBatches(
                                     coalescedBatches,
                                     coalescedGenerations,
                                     ref coalescedCount,
-                                    _transactionEnrollmentPendingPartitions,
+                                    _transactionEnrollmentFailedPartitions,
                                     enrollment.Error);
                                 _transactionEnrollmentPendingPartitions.Clear();
                                 MoveCoalescedToCarryOver(
