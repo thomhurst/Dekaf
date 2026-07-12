@@ -142,6 +142,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Action? _onBlockedBucketRequeued;
     private readonly Func<long> _getTimestamp;
     private readonly Func<int, CancellationToken, ValueTask> _delayForThrottle;
+    private readonly TimeSpan _disposalDrainTimeout;
 
     private readonly Channel<SendLoopEvent> _eventChannel;
     private readonly Task _sendLoopTask;
@@ -624,7 +625,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
-        BrokerUnackedByteBudget? unackedBudget = null)
+        BrokerUnackedByteBudget? unackedBudget = null,
+        TimeSpan? disposalDrainTimeout = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -647,6 +649,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _getTimestamp = getTimestamp ?? Stopwatch.GetTimestamp;
         _delayForThrottle = delayForThrottle ?? DelayForThrottleAsync;
         _onBlockedBucketRequeued = onBlockedBucketRequeued;
+        _disposalDrainTimeout = disposalDrainTimeout ?? DisposalDrainTimeout;
 
         _eventChannel = Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
         {
@@ -4147,7 +4150,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (_canPhysicallyShrinkConnections)
                 await drainTask.ConfigureAwait(false);
             else
-                await drainTask.WaitAsync(DisposalDrainTimeout).ConfigureAwait(false);
+                await drainTask.WaitAsync(_disposalDrainTimeout).ConfigureAwait(false);
         }
         catch (TimeoutException ex)
         {
