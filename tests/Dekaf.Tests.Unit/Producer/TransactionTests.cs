@@ -116,6 +116,29 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task ProduceAsync_ValidationFailure_ReturnsFaultedValueTask()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("test-txn-id")
+            .Build();
+        var kafkaProducer = (KafkaProducer<string, string>)producer;
+        kafkaProducer._transactionState = TransactionState.FatalError;
+        kafkaProducer._lastTransactionError = ErrorCode.ProducerFenced;
+        await using var transaction = new Transaction<string, string>(kafkaProducer);
+
+        var operation = transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "test-topic",
+            Key = "key",
+            Value = "value"
+        });
+
+        await Assert.That(operation.IsCompleted).IsTrue();
+        await Assert.That(() => operation.AsTask()).Throws<FatalTransactionException>();
+    }
+
+    [Test]
     public async Task DisposeAsync_WhenAbortIsFenced_PreservesFatalError()
     {
         var preparedState = new PreparedTransactionState(42, 5);
