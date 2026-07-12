@@ -457,13 +457,14 @@ public class RoundTripMessageCodecTests
         await Assert.That(snapshot).IsNotNull();
         await Assert.That(snapshot!.DiagnosticsEnabled).IsTrue();
 
+        using var gcStats = new GcStats();
         var result = RoundTripScenarioHelpers.CreateResult(
             "producer-roundtrip",
             "Dekaf",
             options,
             DateTime.UtcNow,
             new ThroughputTracker(),
-            new GcStats(),
+            gcStats,
             delivered: 0,
             new RoundTripValidationSnapshot
             {

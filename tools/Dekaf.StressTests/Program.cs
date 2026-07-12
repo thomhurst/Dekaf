@@ -411,6 +411,11 @@ public static class Program
             var transactionVerification = result.TransactionVerification;
             var lost = 0L;
 
+            if (result.GcStats.AllocatedBytes is null)
+            {
+                reasons.Add("managed allocation measurement unavailable");
+            }
+
             if (errors > 0)
             {
                 reasons.Add($"{errors:N0} errors");

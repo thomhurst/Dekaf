@@ -82,10 +82,21 @@ public sealed class TransactionalReportingTests
         await Assert.That(failed).IsFalse();
     }
 
+    [Test]
+    public async Task CheckForFailures_MissingAllocationMeasurement_FailsRun()
+    {
+        var failed = Dekaf.StressTests.Program.CheckForFailures([
+            CreateResult(CreateVerification(), allocatedBytes: null)
+        ]);
+
+        await Assert.That(failed).IsTrue();
+    }
+
     private static StressTestResult CreateResult(
         TransactionVerificationSnapshot verification,
         string client = "Dekaf",
-        double elapsedSeconds = 900)
+        double elapsedSeconds = 900,
+        long? allocatedBytes = 0)
     {
         var now = DateTime.UtcNow;
         return new StressTestResult
@@ -113,7 +124,7 @@ public sealed class TransactionalReportingTests
                 Gen0Collections = 0,
                 Gen1Collections = 0,
                 Gen2Collections = 0,
-                AllocatedBytes = 0
+                AllocatedBytes = allocatedBytes
             },
             TransactionVerification = verification
         };

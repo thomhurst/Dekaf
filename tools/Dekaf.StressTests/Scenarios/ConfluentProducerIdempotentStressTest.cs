@@ -48,7 +48,7 @@ internal sealed class ConfluentProducerIdempotentStressTest : IStressTestScenari
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
-        var gcStats = new GcStats();
+        using var gcStats = new GcStats();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 

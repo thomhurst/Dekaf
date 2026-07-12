@@ -94,7 +94,7 @@ internal sealed class SoakStressTest : IStressTestScenario
             GC.WaitForPendingFinalizers();
             GC.Collect();
 
-            var gcStats = new GcStats();
+        using var gcStats = new GcStats();
             using var measurementCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             measurementCts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
             var monitor = new ResourceTrendMonitor(

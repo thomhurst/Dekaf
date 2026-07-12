@@ -63,7 +63,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
-        var gcStats = new GcStats();
+        using var gcStats = new GcStats();
         using var deliveryErrorListener = CreateDeliveryErrorListener(throughput);
         throughput.Start();
         await using var sampler = StressTestHelpers.StartSampler(throughput, cancellationToken);
@@ -291,7 +291,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
-        var gcStats = new GcStats();
+        using var gcStats = new GcStats();
         throughput.Start();
         await using var sampler = StressTestHelpers.StartSampler(throughput, cancellationToken);
 

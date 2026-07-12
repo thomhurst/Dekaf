@@ -1,52 +1,105 @@
 namespace Dekaf.StressTests.Metrics;
 
 /// <summary>
-/// Tracks GC collection counts across all generations.
+/// Tracks process-wide managed allocations and GC collection counts for one test pass.
 /// Create before the operation, then call Capture() after to calculate deltas.
 /// </summary>
-internal struct GcStats
+internal sealed class GcStats : IDisposable
 {
     private readonly int _gen0Before;
     private readonly int _gen1Before;
     private readonly int _gen2Before;
-    private readonly long _allocatedBefore;
+    private readonly Func<long> _readAllocatedBytes;
+    private readonly object _gate = new();
+    private readonly Timer? _allocationSampler;
+    private long _lastAllocatedBytes;
+    private long _allocatedBytes;
+    private long _largestCounterRebase;
+    private bool _captured;
 
     public int Gen0 { get; private set; }
     public int Gen1 { get; private set; }
     public int Gen2 { get; private set; }
     public long? AllocatedBytes { get; private set; }
 
-    public GcStats()
+    public GcStats() : this(
+        // A single lifetime-counter delta can go negative when allocation contexts from
+        // threads used by a previous client are retired. Frequent cheap snapshots bound
+        // that correction to one interval and let the next segment continue normally.
+        () => GC.GetTotalAllocatedBytes(precise: false),
+        TimeSpan.FromSeconds(1))
     {
+    }
+
+    internal GcStats(Func<long> readAllocatedBytes, TimeSpan? sampleInterval)
+    {
+        _readAllocatedBytes = readAllocatedBytes;
         _gen0Before = GC.CollectionCount(0);
         _gen1Before = GC.CollectionCount(1);
         _gen2Before = GC.CollectionCount(2);
-        _allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+        _lastAllocatedBytes = readAllocatedBytes();
         Gen0 = Gen1 = Gen2 = 0;
         AllocatedBytes = null;
+
+        if (sampleInterval is { } interval)
+        {
+            _allocationSampler = new Timer(
+                static state => ((GcStats)state!).SampleAllocation(),
+                this,
+                interval,
+                interval);
+        }
     }
 
     public void Capture()
     {
-        Gen0 = GC.CollectionCount(0) - _gen0Before;
-        Gen1 = GC.CollectionCount(1) - _gen1Before;
-        Gen2 = GC.CollectionCount(2) - _gen2Before;
+        _allocationSampler?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 
-        // precise: true forces cross-heap synchronization, giving an accurate
-        // cumulative total regardless of which thread takes the snapshot.
-        // On Server GC, compaction can rarely produce a negative delta — report null
-        // rather than a misleading negative number.
-        var delta = GC.GetTotalAllocatedBytes(precise: true) - _allocatedBefore;
-
-        if (delta < 0)
+        lock (_gate)
         {
-            Console.WriteLine($"[GcStats] Warning: precise allocation delta was negative ({delta:N0} B). Reporting as N/A.");
-            AllocatedBytes = null;
-            return;
+            if (_captured)
+                return;
+
+            SampleAllocationCore();
+            Gen0 = GC.CollectionCount(0) - _gen0Before;
+            Gen1 = GC.CollectionCount(1) - _gen1Before;
+            Gen2 = GC.CollectionCount(2) - _gen2Before;
+            AllocatedBytes = _allocatedBytes;
+            _captured = true;
         }
 
-        AllocatedBytes = delta;
+        _allocationSampler?.Dispose();
+
+        if (_largestCounterRebase > 0)
+        {
+            Console.WriteLine(
+                $"[GcStats] Warning: allocation counter rebased by up to {_largestCounterRebase:N0} B; " +
+                "continued measuring from the new baseline.");
+        }
     }
+
+    internal void SampleAllocation()
+    {
+        lock (_gate)
+        {
+            if (!_captured)
+                SampleAllocationCore();
+        }
+    }
+
+    private void SampleAllocationCore()
+    {
+        var current = _readAllocatedBytes();
+        var delta = current - _lastAllocatedBytes;
+        if (delta >= 0)
+            _allocatedBytes += delta;
+        else
+            _largestCounterRebase = Math.Max(_largestCounterRebase, -delta);
+
+        _lastAllocatedBytes = current;
+    }
+
+    public void Dispose() => _allocationSampler?.Dispose();
 
     public GcSnapshot ToSnapshot() => new()
     {

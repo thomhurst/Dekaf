@@ -51,7 +51,7 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
-        var gcStats = new GcStats();
+        using var gcStats = new GcStats();
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         runCts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
