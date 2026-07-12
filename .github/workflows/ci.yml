@@ -268,7 +268,7 @@ jobs:
     needs: [changes, build]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         framework: [net8.0, net10.0]
         kafka: ['4.0.2', '4.1.2', '4.2.1', '4.3.1']
@@ -276,19 +276,21 @@ jobs:
     with:
       framework: ${{ matrix.framework }}
       kafka-tag: ${{ matrix.kafka }}
+      fail-fast: false
 
   release-matrix-aot:
     name: Release Matrix AOT
     needs: [changes, aot-integration-publish]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         kafka: ['4.0.2', '4.3.1']
     uses: ./.github/workflows/integration-groups.yml
     with:
       framework: aot
       kafka-tag: ${{ matrix.kafka }}
+      fail-fast: false
 
   # Both NativeAOT smoke exes publish and run sequentially in one job — the
   # compute is the same as two matrix jobs but saves one runner slot + setup.
