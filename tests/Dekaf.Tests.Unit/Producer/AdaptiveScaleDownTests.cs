@@ -360,9 +360,10 @@ public sealed class AdaptiveScaleDownTests
 
         try
         {
-            // This test drives MaybeScaleConnections directly. Keep the live send loop
-            // from becoming a second writer between the two deterministic passes.
-            SetField(sender, "_adaptiveScalingEnabled", false);
+            // This test drives MaybeScaleConnections directly. Stop and join the live
+            // loop first so it cannot remain a second writer after passing its scaling gate.
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
             SetField(sender, "_connectionCount", 2);
 
             // First pass starts low-utilization tracking; zero sustained window makes
