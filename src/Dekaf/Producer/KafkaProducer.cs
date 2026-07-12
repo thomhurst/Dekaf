@@ -2202,26 +2202,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            AddPartitionsToTxnResponse response;
-            try
-            {
-                response = await SendWithConnectionLeaseAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
-                        _transactionCoordinatorId,
-                        request,
-                        apiVersion,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (KafkaException exception) when (
-                exception is not TransactionException
-                && (exception.IsRetriable || exception.ErrorCode is null)
-                && attempt < maxRetries - 1)
-            {
-                LogAddPartitionsToTxnRetriableError(attempt + 1, maxRetries, retryDelayMs);
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                continue;
-            }
+            var response = await SendWithConnectionLeaseAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
+                    _transactionCoordinatorId,
+                    request,
+                    apiVersion,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             // Check for retriable errors in the response
             var hasRetriableError = false;
@@ -3047,7 +3033,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             try
             {
-                await _addPartitionsToTransaction(partitions, _senderCts.Token)
+                await EnrollTransactionPartitionsWithRetryAsync(partitions, _senderCts.Token)
                     .ConfigureAwait(false);
             }
             catch (Exception exception)
@@ -3094,6 +3080,31 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         foreach (var waiter in waiters)
             waiter();
+    }
+
+    private async ValueTask EnrollTransactionPartitionsWithRetryAsync(
+        IReadOnlyList<TopicPartition> partitions,
+        CancellationToken cancellationToken)
+    {
+        const int maxRetries = 5;
+        var retryDelayMs = 100;
+
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await _addPartitionsToTransaction(partitions, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception exception) when (
+                exception is not TransactionException and not OperationCanceledException
+                && attempt < maxRetries - 1)
+            {
+                LogAddPartitionsToTxnRetriableError(attempt + 1, maxRetries, retryDelayMs);
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+            }
+        }
     }
 
     private Action[] ResetPartitionEnrollmentState()

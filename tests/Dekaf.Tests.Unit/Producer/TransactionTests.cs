@@ -593,11 +593,15 @@ public sealed class TransactionTests
         var requestStarted = new TaskCompletionSource<IReadOnlyList<TopicPartition>>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var completeRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestCount = 0;
 
         async ValueTask AddPartitions(
             IReadOnlyList<TopicPartition> partitions,
             CancellationToken cancellationToken)
         {
+            if (Interlocked.Increment(ref requestCount) == 1)
+                throw new IOException("Transient connection failure");
+
             requestStarted.TrySetResult([.. partitions]);
             await completeRequest.Task.WaitAsync(cancellationToken);
         }
@@ -642,6 +646,7 @@ public sealed class TransactionTests
         await Assert.That(enrolled.Error).IsNull();
         await Assert.That(pendingPartitions).IsEquivalentTo(batches.Select(batch => batch.TopicPartition));
         var requestedPartitions = await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(requestCount).IsEqualTo(2);
         await Assert.That(requestedPartitions).IsEquivalentTo(new[]
         {
             new TopicPartition("topic-a", 0),
