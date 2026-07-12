@@ -16,17 +16,19 @@ namespace Dekaf.Consumer;
 internal sealed class MpscFetchBuffer
 {
     private readonly PendingFetchData?[] _buffer;
+    private readonly long[] _committedSequences;
     private readonly int _mask;
 
     private PaddedIndex _headReserved;
-    private PaddedIndex _headCommitted;
     private PaddedIndex _tail;
+    private int _count;
 
     private readonly ManualResetEventSlim _dataAvailable = new(false);
     private readonly SemaphoreSlim _spaceAvailable = new(0, int.MaxValue);
     private readonly object _dataAvailableWaiterLock = new();
     private readonly Action? _afterProducerWaiterCountIncrementedForTesting;
     private readonly Action? _beforeConsumerWaitSpinForTesting;
+    private readonly Action<long>? _afterProducerSlotReservedForTesting;
     private TaskCompletionSource<bool>? _dataAvailableWaiter;
     private int _producerWaiterCount;
     private int _consumerWaiting;
@@ -37,14 +39,16 @@ internal sealed class MpscFetchBuffer
         : this(
             capacity,
             afterProducerWaiterCountIncrementedForTesting: null,
-            beforeConsumerWaitSpinForTesting: null)
+            beforeConsumerWaitSpinForTesting: null,
+            afterProducerSlotReservedForTesting: null)
     {
     }
 
     internal MpscFetchBuffer(
         int capacity,
         Action? afterProducerWaiterCountIncrementedForTesting,
-        Action? beforeConsumerWaitSpinForTesting = null)
+        Action? beforeConsumerWaitSpinForTesting = null,
+        Action<long>? afterProducerSlotReservedForTesting = null)
     {
         if (capacity < 1)
             throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be positive.");
@@ -57,24 +61,24 @@ internal sealed class MpscFetchBuffer
         var size = 1;
         while (size < capacity) size <<= 1;
         _buffer = new PendingFetchData?[size];
+        _committedSequences = new long[size];
         _mask = size - 1;
         _afterProducerWaiterCountIncrementedForTesting = afterProducerWaiterCountIncrementedForTesting;
         _beforeConsumerWaitSpinForTesting = beforeConsumerWaitSpinForTesting;
+        _afterProducerSlotReservedForTesting = afterProducerSlotReservedForTesting;
     }
 
     internal int Capacity => _buffer.Length;
 
-    internal int Count => (int)Math.Clamp(
-        Volatile.Read(ref _headCommitted.Value) - Volatile.Read(ref _tail.Value),
-        0,
-        _buffer.Length);
+    internal int Count => Volatile.Read(ref _count);
 
     internal int ProducerWaiterCount => Volatile.Read(ref _producerWaiterCount);
 
     /// <summary>
     /// Attempts to write an item. Safe for concurrent callers (multiple prefetch tasks).
-    /// Uses CAS on the head reservation index, then stores the item and advances the
-    /// committed index so the reader sees the item only after it is fully written.
+    /// Uses CAS on the head reservation index, then publishes a per-slot sequence so the
+    /// reader sees the item only after it is fully written. Later producers never wait for
+    /// an earlier reserved slot to commit.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryWrite(PendingFetchData item)
@@ -90,15 +94,12 @@ internal sealed class MpscFetchBuffer
             if (Interlocked.CompareExchange(ref _headReserved.Value, head + 1, head) != head)
                 continue;
 
-            _buffer[head & _mask] = item;
+            _afterProducerSlotReservedForTesting?.Invoke(head);
 
-            // Wait for prior slots to commit so the reader sees items in order
-            var spin = new SpinWait();
-            while (Volatile.Read(ref _headCommitted.Value) != head)
-                spin.SpinOnce();
-
-            Volatile.Write(ref _headCommitted.Value, head + 1);
-            Interlocked.MemoryBarrier();
+            var index = (int)(head & _mask);
+            _buffer[index] = item;
+            Volatile.Write(ref _committedSequences[index], head + 1);
+            Interlocked.Increment(ref _count);
 
             if (Volatile.Read(ref _consumerWaiting) != 0)
                 SignalConsumerWaitingForData();
@@ -144,24 +145,25 @@ internal sealed class MpscFetchBuffer
 
     /// <summary>
     /// Attempts to read an item. Called only from the single consumer thread.
-    /// Only reads up to <c>_headCommitted</c> to ensure items are fully written.
+    /// Reads only a slot whose sequence matches the next tail position, ensuring items are
+    /// returned in reservation order after they are fully written.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryRead([NotNullWhen(true)] out PendingFetchData? item)
     {
         var tail = Volatile.Read(ref _tail.Value);
-        var head = Volatile.Read(ref _headCommitted.Value);
+        var index = (int)(tail & _mask);
 
-        if (tail >= head)
+        if (Volatile.Read(ref _committedSequences[index]) != tail + 1)
         {
             item = null;
             return false; // Empty
         }
 
-        item = _buffer[tail & _mask]!;
-        _buffer[tail & _mask] = null;
+        item = _buffer[index]!;
+        _buffer[index] = null;
         Volatile.Write(ref _tail.Value, tail + 1);
-        Interlocked.MemoryBarrier();
+        Interlocked.Decrement(ref _count);
 
         if (Volatile.Read(ref _producerWaiterCount) > 0)
             _spaceAvailable.Release();
@@ -345,8 +347,11 @@ internal sealed class MpscFetchBuffer
     public bool IsCompleted => _completed;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool HasDataAvailable() =>
-        Volatile.Read(ref _headCommitted.Value) > Volatile.Read(ref _tail.Value);
+    internal bool HasDataAvailable()
+    {
+        var tail = Volatile.Read(ref _tail.Value);
+        return Volatile.Read(ref _committedSequences[tail & _mask]) == tail + 1;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool HasSpaceAvailable() =>

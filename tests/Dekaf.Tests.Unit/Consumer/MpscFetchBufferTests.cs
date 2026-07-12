@@ -554,6 +554,46 @@ public class MpscFetchBufferTests
         await Assert.That(sorted.Distinct().Count()).IsEqualTo(totalItems);
     }
 
+    [Test]
+    public async Task LaterProducer_DoesNotWaitForEarlierReservedSlotToCommit()
+    {
+        using var firstReserved = new ManualResetEventSlim();
+        using var allowFirstCommit = new ManualResetEventSlim();
+        var buffer = new MpscFetchBuffer(
+            capacity: 2,
+            afterProducerWaiterCountIncrementedForTesting: null,
+            afterProducerSlotReservedForTesting: sequence =>
+            {
+                if (sequence == 0)
+                {
+                    firstReserved.Set();
+                    allowFirstCommit.Wait();
+                }
+            });
+        var first = CreateDummy("topic", 1);
+        var second = CreateDummy("topic", 2);
+
+        var firstWrite = Task.Run(() => buffer.TryWrite(first));
+        try
+        {
+            await Assert.That(firstReserved.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            var secondWrite = Task.Run(() => buffer.TryWrite(second));
+            await Assert.That(await secondWrite.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+        }
+        finally
+        {
+            allowFirstCommit.Set();
+        }
+
+        await Assert.That(await firstWrite).IsTrue();
+        await Assert.That(buffer.TryRead(out var firstRead)).IsTrue();
+        await Assert.That(firstRead!.PartitionIndex).IsEqualTo(1);
+        firstRead.Dispose();
+        await Assert.That(buffer.TryRead(out var secondRead)).IsTrue();
+        await Assert.That(secondRead!.PartitionIndex).IsEqualTo(2);
+        secondRead.Dispose();
+    }
+
     #endregion
 
     #region Capacity rounding
