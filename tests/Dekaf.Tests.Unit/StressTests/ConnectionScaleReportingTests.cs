@@ -53,6 +53,14 @@ public sealed class ConnectionScaleReportingTests
                         MessagesPerSecond = 2_400,
                         Gen2Collections = 2,
                         GcPauseDurationMs = 25
+                    },
+                    new ThroughputIntervalSample
+                    {
+                        CapturedAtUtc = startedAt.AddSeconds(14),
+                        ElapsedSeconds = 14,
+                        MessagesPerSecond = 2_300,
+                        Gen2Collections = 3,
+                        GcPauseDurationMs = 37.5
                     }
                 ]
             },
@@ -65,6 +73,7 @@ public sealed class ConnectionScaleReportingTests
                 P95Us = 2_000_000,
                 P99Us = 2_000_000,
                 OverflowCount = 0,
+                DroppedOutlierSamples = 3,
                 OutlierSamples =
                 [
                     new LatencyOutlierSample
@@ -80,6 +89,13 @@ public sealed class ConnectionScaleReportingTests
                         StartedAtUtc = startedAt.AddSeconds(8),
                         CompletedAtUtc = startedAt.AddSeconds(10),
                         LatencyUs = 2_000_000
+                    },
+                    new LatencyOutlierSample
+                    {
+                        MessageIndex = 44,
+                        StartedAtUtc = startedAt.AddSeconds(7),
+                        CompletedAtUtc = startedAt.AddSeconds(14),
+                        LatencyUs = 7_000_000
                     }
                 ]
             },
@@ -131,5 +147,8 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(markdown).Contains("Gen2 +1 / pause +12.5ms");
         await Assert.That(markdown).Contains("43");
         await Assert.That(markdown).Contains("GC pause");
+        await Assert.That(markdown).Contains("44");
+        await Assert.That(markdown).Contains("Gen2 +2 / pause +25.0ms");
+        await Assert.That(markdown).Contains("3 additional latency outlier sample(s) exceeded the bounded diagnostic capacity");
     }
 }

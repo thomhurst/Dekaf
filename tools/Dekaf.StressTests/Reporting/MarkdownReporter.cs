@@ -227,14 +227,13 @@ internal static class MarkdownReporter
             var samples = row.Result.Throughput.IntervalSamples;
             var throughputSample = samples.FirstOrDefault(sample => sample.CapturedAtUtc >= row.Sample.CompletedAtUtc)
                 ?? samples.MinBy(sample => Math.Abs((sample.CapturedAtUtc - row.Sample.CompletedAtUtc).TotalMilliseconds));
-            var sampleIndex = throughputSample is null ? -1 : samples.IndexOf(throughputSample);
-            var previousSample = sampleIndex > 0 ? samples[sampleIndex - 1] : null;
+            var baselineSample = samples.LastOrDefault(sample => sample.CapturedAtUtc <= row.Sample.StartedAtUtc);
             var gen2Delta = throughputSample is null
                 ? 0
-                : throughputSample.Gen2Collections - (previousSample?.Gen2Collections ?? 0);
+                : throughputSample.Gen2Collections - (baselineSample?.Gen2Collections ?? 0);
             var pauseDeltaMs = throughputSample is null
                 ? 0
-                : Math.Max(0, throughputSample.GcPauseDurationMs - (previousSample?.GcPauseDurationMs ?? 0));
+                : Math.Max(0, throughputSample.GcPauseDurationMs - (baselineSample?.GcPauseDurationMs ?? 0));
             var owner = ClassifyLatencyOutlier(
                 scaleEvents.Count,
                 gen2Delta,
