@@ -17,6 +17,15 @@ using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Producer;
 
+internal readonly record struct TransactionPartitionEnrollmentResult(
+    bool IsEnrolled,
+    Exception? Error)
+{
+    public static TransactionPartitionEnrollmentResult Enrolled => new(true, null);
+    public static TransactionPartitionEnrollmentResult Pending => new(false, null);
+    public static TransactionPartitionEnrollmentResult Failed(Exception error) => new(false, error);
+}
+
 /// <summary>
 /// Per-broker sender that serializes all writes to a single broker connection.
 /// A single-threaded send loop drains events from a unified channel, coalesces batches into
@@ -452,7 +461,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Transaction support
     private readonly Func<bool> _isTransactional;
-    private readonly Func<ReadyBatch[], int, Action, bool>? _tryEnsurePartitionsInTransaction;
+    private readonly Func<ReadyBatch[], int, Action, TransactionPartitionEnrollmentResult>?
+        _tryEnsurePartitionsInTransaction;
     private readonly Action _transactionEnrollmentCompleted;
     private readonly HashSet<TopicPartition> _transactionEnrollmentPendingPartitions = [];
 
@@ -636,7 +646,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<int> getProduceApiVersion,
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
-        Func<ReadyBatch[], int, Action, bool>? tryEnsurePartitionsInTransaction,
+        Func<ReadyBatch[], int, Action, TransactionPartitionEnrollmentResult>?
+            tryEnsurePartitionsInTransaction,
         Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? bumpEpoch,
         Func<short>? getCurrentEpoch,
         Action<ReadyBatch, int>? rerouteBatch,
@@ -1381,22 +1392,47 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         if (coalescedCount == 0)
                             continue;
 
-                        if (_isTransactional()
-                            && _tryEnsurePartitionsInTransaction is not null
-                            && !_tryEnsurePartitionsInTransaction(
+                        if (_isTransactional() && _tryEnsurePartitionsInTransaction is not null)
+                        {
+                            var enrollment = _tryEnsurePartitionsInTransaction(
                                 coalescedBatches,
                                 coalescedCount,
-                                _transactionEnrollmentCompleted))
-                        {
-                            for (var i = 0; i < coalescedCount; i++)
-                                _transactionEnrollmentPendingPartitions.Add(coalescedBatches[i].TopicPartition);
+                                _transactionEnrollmentCompleted);
+                            if (enrollment.Error is not null)
+                            {
+                                for (var i = 0; i < coalescedCount; i++)
+                                {
+                                    try
+                                    {
+                                        FailAndCleanupBatch(
+                                            coalescedBatches[i],
+                                            coalescedGenerations[i],
+                                            enrollment.Error);
+                                    }
+                                    catch (Exception cleanupError)
+                                    {
+                                        LogBatchCleanupStepFailed(cleanupError, _brokerId);
+                                    }
+                                }
 
-                            MoveCoalescedToCarryOver(
-                                coalescedBatches,
-                                coalescedGenerations,
-                                ref coalescedCount,
-                                carryOver);
-                            continue;
+                                Array.Clear(coalescedBatches, 0, coalescedCount);
+                                Array.Clear(coalescedGenerations, 0, coalescedCount);
+                                coalescedCount = 0;
+                                continue;
+                            }
+
+                            if (!enrollment.IsEnrolled)
+                            {
+                                for (var i = 0; i < coalescedCount; i++)
+                                    _transactionEnrollmentPendingPartitions.Add(coalescedBatches[i].TopicPartition);
+
+                                MoveCoalescedToCarryOver(
+                                    coalescedBatches,
+                                    coalescedGenerations,
+                                    ref coalescedCount,
+                                    carryOver);
+                                continue;
+                            }
                         }
 
                         // Finalize retry batches now that we know they will actually be sent

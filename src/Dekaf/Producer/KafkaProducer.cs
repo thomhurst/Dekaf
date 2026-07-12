@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Runtime.ExceptionServices;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Internal;
@@ -2980,7 +2979,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// Queues every new partition in a coalesced broker pass for one background TV1
     /// AddPartitionsToTxn request. Returns false while any requested partition is pending.
     /// </summary>
-    internal bool TryEnsurePartitionsInTransaction(
+    internal TransactionPartitionEnrollmentResult TryEnsurePartitionsInTransaction(
         ReadyBatch[] batches,
         int count,
         Action enrollmentCompleted)
@@ -2990,7 +2989,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         lock (_partitionsInTransactionLock)
         {
             if (_partitionEnrollmentError is not null)
-                ExceptionDispatchInfo.Capture(_partitionEnrollmentError).Throw();
+                return TransactionPartitionEnrollmentResult.Failed(_partitionEnrollmentError);
 
             var allEnrolled = true;
             for (var i = 0; i < count; i++)
@@ -3005,7 +3004,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             if (allEnrolled)
-                return true;
+                return TransactionPartitionEnrollmentResult.Enrolled;
 
             _partitionEnrollmentWaiters.Add(enrollmentCompleted);
             if (!_partitionEnrollmentActive)
@@ -3018,7 +3017,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         if (startEnrollment)
             _ = EnrollPendingTransactionPartitionsAsync();
 
-        return false;
+        return TransactionPartitionEnrollmentResult.Pending;
     }
 
     private async Task EnrollPendingTransactionPartitionsAsync()

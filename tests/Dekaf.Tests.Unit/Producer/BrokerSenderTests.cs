@@ -159,7 +159,11 @@ public sealed class BrokerSenderTests
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => true,
-            tryEnsurePartitionsInTransaction: (_, _, _) => { transactionCalled = true; return true; },
+            tryEnsurePartitionsInTransaction: (_, _, _) =>
+            {
+                transactionCalled = true;
+                return TransactionPartitionEnrollmentResult.Enrolled;
+            },
             bumpEpoch: null,
             getCurrentEpoch: null,
             rerouteBatch: null,

@@ -636,7 +636,8 @@ public sealed class TransactionTests
             batches.Length,
             enrollmentCompleted.SetResult);
 
-        await Assert.That(enrolled).IsFalse();
+        await Assert.That(enrolled.IsEnrolled).IsFalse();
+        await Assert.That(enrolled.Error).IsNull();
         var requestedPartitions = await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
         await Assert.That(requestedPartitions).IsEquivalentTo(new[]
         {
@@ -650,7 +651,7 @@ public sealed class TransactionTests
         await Assert.That(producer.TryEnsurePartitionsInTransaction(
             batches,
             batches.Length,
-            static () => { })).IsTrue();
+            static () => { }).IsEnrolled).IsTrue();
     }
 
     private static ReadyBatch CreateEnrollmentBatch(string topic, int partition)
