@@ -27,6 +27,7 @@ _IDENTITY_FIELDS = (
     "durationMinutes",
     "messageSizeBytes",
     "consumerSeedBatchSizeBytes",
+    "consumerConnectionsPerBroker",
     "roundTripMessages",
 )
 
@@ -63,6 +64,21 @@ def _consumer_seed_batch_size(result):
     return 16_384 if scenario.startswith("consumer") else None
 
 
+def _consumer_connections_per_broker(result):
+    value = result.get("consumerConnectionsPerBroker")
+    if value is not None:
+        return value
+
+    scenario = str(result.get("scenario", "")).casefold()
+    client = str(result.get("client", "")).casefold()
+    if not scenario.startswith("consumer"):
+        return None
+
+    # Results written before the connection count became part of the performance
+    # identity used the old two-connection Dekaf preset or Confluent's one connection.
+    return 1 if client.startswith("confluent") else 2
+
+
 def _identity(result):
     return (
         str(result.get("scenario", "unknown")).casefold(),
@@ -71,6 +87,7 @@ def _identity(result):
         result.get("durationMinutes"),
         result.get("messageSizeBytes"),
         _consumer_seed_batch_size(result),
+        _consumer_connections_per_broker(result),
         _roundtrip_messages(result),
     )
 
@@ -182,6 +199,7 @@ def evaluate_and_update(history, current_results, run_started_at):
         prior = _matching_observations(baseline_runs, result)
         observation = {field: result.get(field) for field in _IDENTITY_FIELDS}
         observation["consumerSeedBatchSizeBytes"] = _consumer_seed_batch_size(result)
+        observation["consumerConnectionsPerBroker"] = _consumer_connections_per_broker(result)
         observation["brokerCount"] = result.get("brokerCount", 1)
         observation["roundTripMessages"] = _roundtrip_messages(result)
         throughput_regression = False

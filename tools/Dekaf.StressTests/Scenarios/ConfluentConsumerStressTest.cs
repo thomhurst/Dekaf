@@ -127,6 +127,7 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
             BrokerCount = options.BrokerCount,
             MessageSizeBytes = options.MessageSizeBytes,
             ConsumerSeedBatchSizeBytes = options.ConsumerSeedBatchSizeBytes,
+            ConsumerConnectionsPerBroker = 1,
             StartedAtUtc = startedAt,
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),

@@ -104,6 +104,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
             BrokerCount = options.BrokerCount,
             MessageSizeBytes = options.MessageSizeBytes,
             ConsumerSeedBatchSizeBytes = options.ConsumerSeedBatchSizeBytes,
+            ConsumerConnectionsPerBroker = StressTestOptions.HighThroughputConsumerConnectionsPerBroker,
             StartedAtUtc = startedAt,
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),

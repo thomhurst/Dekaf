@@ -13,6 +13,8 @@ internal interface IStressTestScenario
 
 internal sealed class StressTestOptions
 {
+    public const int HighThroughputConsumerConnectionsPerBroker = 3;
+
     public required string BootstrapServers { get; init; }
     public required string Topic { get; init; }
     public required int DurationMinutes { get; init; }
