@@ -1160,10 +1160,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         /// <summary>
         /// Cached unacked-byte budget for this partition's current leader broker, refreshed at
         /// each batch seal so per-message admission checks need no metadata lookup. Written
-        /// under <see cref="Lock"/>; read lock-free at admission (reference writes are atomic,
-        /// and a briefly stale budget after a leader move is benign).
+        /// under <see cref="Lock"/> and read lock-free at admission; volatile publication keeps
+        /// appenders from indefinitely observing the pre-seal null on weak-memory architectures.
         /// </summary>
-        public BrokerUnackedByteBudget? UnackedBudget;
+        public volatile BrokerUnackedByteBudget? UnackedBudget;
 
         /// <summary>Number of batches in the deque.</summary>
         public int Count => _count;
