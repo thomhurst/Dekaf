@@ -151,6 +151,22 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task MinimumRtt_LateAckAfterEmptyProbeRetainsPriorMinimum()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0 + Seconds(0.051));
+
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(10.1));
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(10.25));
+
+        // No ack landed inside the 100ms target-only drain. The late loaded sample must
+        // not replace the retained 5ms base RTT and inflate the horizon to 150ms.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+    }
+
+    [Test]
     public async Task WindowedMaximum_LongGap_DoesNotDeflateRate()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);

@@ -185,11 +185,15 @@ internal sealed class BrokerUnackedByteBudget
 
         if (_minRttProbeUntilTimestamp != 0)
         {
-            _minRttProbeMinimumSeconds = Math.Min(_minRttProbeMinimumSeconds, rttSeconds);
             if (nowTicks >= _minRttProbeUntilTimestamp)
+            {
                 CompleteMinRttProbe(nowTicks);
-
-            return;
+            }
+            else
+            {
+                _minRttProbeMinimumSeconds = Math.Min(_minRttProbeMinimumSeconds, rttSeconds);
+                return;
+            }
         }
 
         if (rttSeconds < _minRttSeconds)
