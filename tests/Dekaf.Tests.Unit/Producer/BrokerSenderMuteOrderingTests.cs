@@ -404,6 +404,12 @@ public sealed class BrokerSenderMuteOrderingTests
             sender.Enqueue(CreateTestBatch(vtPool, "test-topic", partition: 1));
             await sendLogger.SendSignals[0].Task.WaitAsync(ct);
 
+            var otherTopicPartition = new TopicPartition("other-topic", 1);
+            var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
+                "_knownPartitions",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+            knownPartitions.Add(otherTopicPartition);
+
             typeof(BrokerSender).GetMethod(
                 "ApplyScaleUp",
                 BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -414,9 +420,12 @@ public sealed class BrokerSenderMuteOrderingTests
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
             var topicPartition = new TopicPartition("test-topic", 1);
             var routeWhilePending = (int)getConnection.Invoke(sender, [topicPartition])!;
+            var otherTopicRoute = (int)getConnection.Invoke(sender, [otherTopicPartition])!;
 
             await Assert.That(routeWhilePending).IsEqualTo(0)
                 .Because("scale-up must not move a non-idempotent partition before its old request is acknowledged");
+            await Assert.That(otherTopicRoute).IsEqualTo(1)
+                .Because("same-numbered partitions on other topics must not inherit the migration fence");
 
             response.SetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 100));
             await acknowledged.Task.WaitAsync(ct);

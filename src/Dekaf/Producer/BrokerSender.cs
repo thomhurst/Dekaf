@@ -513,6 +513,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Scale-down never fences (its drain gates guarantee no in-flight) and clears any
     // stale entries at initiation. Send-loop owned (single-threaded) — no synchronization needed.
     private readonly Dictionary<TopicPartition, int> _migratingPartitions = new();
+    // Reused removal buffer keeps CompleteMigrations O(migrating) and allocation-free.
+    // Capacity grows during scale-up, outside response completion processing.
+    private readonly List<TopicPartition> _migrationRemovalBuffer = [];
 
     // Scaling thresholds
     // Also the per-connection unit of pressure for step estimation (step = delta / threshold),
@@ -3611,19 +3614,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void CompleteMigrations(int connectionIndex)
     {
         var pendingList = _pendingResponsesByConnection[connectionIndex];
+        _migrationRemovalBuffer.Clear();
 
-        foreach (var topicPartition in _knownPartitions)
+        foreach (var (topicPartition, oldConnection) in _migratingPartitions)
         {
-            if (!_migratingPartitions.TryGetValue(topicPartition, out var oldConnection)
-                || oldConnection != connectionIndex)
+            if (oldConnection != connectionIndex)
                 continue;
 
             // Empty connection is the common completion case and avoids rescanning batches.
             if (pendingList.Count == 0 || !HasInflightForPartition(connectionIndex, topicPartition))
-            {
-                _migratingPartitions.Remove(topicPartition);
-            }
+                _migrationRemovalBuffer.Add(topicPartition);
         }
+
+        for (var i = 0; i < _migrationRemovalBuffer.Count; i++)
+            _migratingPartitions.Remove(_migrationRemovalBuffer[i]);
     }
 
     /// <summary>
@@ -3647,6 +3651,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 _migratingPartitions.TryAdd(tp, oldConn);
             }
         }
+
+        if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
+            _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
 
         if (_migratingPartitions.Count > 0)
             LogPartitionMigrationStarted(_brokerId, _migratingPartitions.Count, oldConnCount, newConnCount);
