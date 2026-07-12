@@ -63,6 +63,7 @@ public sealed class BrokerSenderTests
     }
 
     [Test]
+    [NotInParallel]
     public async Task Disposal_AfterChannelComplete_NoDeadlock()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
