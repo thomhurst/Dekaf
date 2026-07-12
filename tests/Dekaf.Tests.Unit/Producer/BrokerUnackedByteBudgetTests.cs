@@ -94,11 +94,31 @@ public sealed class BrokerUnackedByteBudgetTests
         EstablishRate(budget, bytesPerSecond: 3_000, rttSeconds: 0.001);
         await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
 
-        // A sample spanning 10s (≥ τ = 1s) gets alpha 1.0 — the EWMA snaps to the new rate
-        // instead of blending stale history.
+        // Remaining unacked work means this is an active 10s sample rather than producer
+        // idle time. Alpha is 1.0, so the EWMA snaps to the new rate.
+        budget.Charge(1);
         budget.OnAcked(ackedBytes: 60_000, rttTicks: Seconds(0.001), nowTicks: T0 + Seconds(11.0));
+        budget.Release(1);
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(3_000); // 6,000 B/s × 0.5s
+    }
+
+    [Test]
+    public async Task Ewma_IdleGap_ReanchorsWithoutCollapsingBudget()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        EstablishRate(budget, bytesPerSecond: 100_000, rttSeconds: 0.001);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(50_000);
+
+        // With no remaining unacked work, the ten-second gap is producer idle time. The
+        // first resumed ack anchors a fresh window instead of appearing to drain at 100 B/s.
+        budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.001), nowTicks: T0 + Seconds(11.0));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(50_000);
+
+        // The next active interval includes the anchor ack and publishes the resumed rate.
+        budget.OnAcked(ackedBytes: 99_000, rttTicks: Seconds(0.001), nowTicks: T0 + Seconds(12.0));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(50_000);
     }
 
     [Test]

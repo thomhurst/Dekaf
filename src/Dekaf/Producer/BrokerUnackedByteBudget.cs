@@ -28,9 +28,9 @@ internal sealed class BrokerUnackedByteBudget
     /// </summary>
     internal const int CapBatchMultiplier = 32;
 
-    /// <summary>EWMA time constant for the acked-bytes rate. A sample spanning dt seconds
-    /// gets weight min(1, dt/τ), so history older than ~τ decays away and a long idle gap
-    /// snaps the rate to the newly observed value.</summary>
+    /// <summary>EWMA time constant for the acked-bytes rate. An active sample spanning dt
+    /// seconds gets weight min(1, dt/τ), so history older than ~τ decays away. A gap longer
+    /// than τ with no remaining unacked bytes is treated as idle and re-anchors the window.</summary>
     private const double RateEwmaTauSeconds = 1.0;
 
     /// <summary>Fixed smoothing factor for the per-request ack round-trip EWMA.</summary>
@@ -147,6 +147,17 @@ internal sealed class BrokerUnackedByteBudget
         }
 
         var elapsedSeconds = (double)(nowTicks - _lastRateSampleTimestamp) / Stopwatch.Frequency;
+        if (elapsedSeconds > RateEwmaTauSeconds && UnackedBytes == 0)
+        {
+            // No backlog survived the gap, so elapsed time is producer idle time rather than
+            // broker drain time. Preserve the established rate and start a fresh window with
+            // this first resumed ack; folding the idle gap into the sample would collapse the
+            // budget to the floor and unnecessarily throttle the resumed burst.
+            _pendingAckedBytes = ackedBytes;
+            _lastRateSampleTimestamp = nowTicks;
+            return;
+        }
+
         if (elapsedSeconds < MinRateSampleSeconds)
             return;
 
