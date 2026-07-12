@@ -1768,6 +1768,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
             return;
 
+        var ownsDrainGuard = true;
         try
         {
             while (true)
@@ -1853,6 +1854,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                 // Release the drain lock before re-checking so a concurrent ReleaseMemory
                 // can enter if we decide not to loop again.
+                ownsDrainGuard = false;
                 Volatile.Write(ref _draining, 0);
 
                 // Re-check: a ReleaseMemory may have arrived while we held the drain lock,
@@ -1868,16 +1870,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // Re-acquire the drain lock for another pass
                 if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
                     return; // Another thread took over
+
+                ownsDrainGuard = true;
             }
         }
         finally
         {
-            _blockedPendingPartitions.Clear();
-            _pendingAppendScan.Clear();
-            _drainablePendingAppends.Clear();
-            // Ensure drain lock is released even on exception (inner loop already releases
-            // on normal exit, but exception path needs the finally).
-            Volatile.Write(ref _draining, 0);
+            if (ownsDrainGuard)
+            {
+                _blockedPendingPartitions.Clear();
+                _pendingAppendScan.Clear();
+                _drainablePendingAppends.Clear();
+                // Ensure drain lock is released on exception. Once ownership passes to
+                // another drainer, its invocation owns both the guard and shared scratch.
+                Volatile.Write(ref _draining, 0);
+            }
         }
     }
 
@@ -4847,9 +4854,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private int FailPendingAppendsForPurge(Exception exception)
     {
-        if (_pendingAppends.IsEmpty)
-            return 0;
-
         var spinWait = new SpinWait();
         while (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
             spinWait.SpinOnce();
