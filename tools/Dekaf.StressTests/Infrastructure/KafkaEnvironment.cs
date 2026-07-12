@@ -14,6 +14,17 @@ namespace Dekaf.StressTests.Infrastructure;
 /// </summary>
 internal sealed class KafkaEnvironment : IAsyncDisposable
 {
+    internal const string SingleBrokerImage = "confluentinc/cp-kafka:7.8.0";
+    internal static ConsensusProtocol SingleBrokerConsensusProtocol { get; } = ConsensusProtocol.KRaft;
+
+    internal static IReadOnlyDictionary<string, string> SingleBrokerEnvironment { get; } =
+        new Dictionary<string, string>
+        {
+            // Kafka 3.8 ships KIP-848 disabled by default. Dekaf defaults to the
+            // consumer protocol, so local consumer stress runs must enable it.
+            ["KAFKA_GROUP_COORDINATOR_REBALANCE_PROTOCOLS"] = "classic,consumer",
+        };
+
     // Retention tuned to balance two constraints:
     // 1. Original 5s retention was too aggressive — caused constant "offset out of range" resets
     // 2. Long time-based retention (e.g. 30 min) would retain ~360 GB at high throughput,
@@ -144,11 +155,24 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         Console.WriteLine("Starting Kafka container via Testcontainers...");
         // 7.8.x = Kafka 3.8, the first release with log.initial.task.delay.ms — see
         // RetentionConfig; older images silently ignore it and die on tmpfs fill.
-        var builder = new KafkaBuilder("confluentinc/cp-kafka:7.8.0")
+        var builder = new KafkaBuilder(SingleBrokerImage);
+        builder = SingleBrokerConsensusProtocol switch
+        {
+            ConsensusProtocol.KRaft => builder.WithKRaft(),
+            ConsensusProtocol.ZooKeeper => builder,
+            _ => throw new ArgumentOutOfRangeException(nameof(SingleBrokerConsensusProtocol)),
+        };
+
+        builder = builder
             .WithPortBinding(9092, true)
             // Explicit log dir so the optional tmpfs mount target always matches
             .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir)
             .WithEnvironment("KAFKA_HEAP_OPTS", BrokerHeapOpts);
+
+        foreach (var (key, value) in SingleBrokerEnvironment)
+        {
+            builder = builder.WithEnvironment(key, value);
+        }
 
         foreach (var (key, value) in RetentionConfig)
         {
