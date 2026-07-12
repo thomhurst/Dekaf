@@ -139,6 +139,33 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task ProduceAsync_PreCanceledToken_ReturnsCanceledValueTask()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("test-txn-id")
+            .Build();
+        var kafkaProducer = (KafkaProducer<string, string>)producer;
+        SetInstanceField(kafkaProducer, "_initialized", true);
+        kafkaProducer._transactionState = TransactionState.Ready;
+        await using var transaction = new Transaction<string, string>(kafkaProducer);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var operation = transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = "test-topic",
+            Key = "key",
+            Value = "value"
+        }, cancellation.Token);
+        var task = operation.AsTask();
+
+        await Assert.That(() => task).Throws<OperationCanceledException>();
+        await Assert.That(task.IsCanceled).IsTrue();
+        await Assert.That(task.IsFaulted).IsFalse();
+    }
+
+    [Test]
     public async Task DisposeAsync_WhenAbortIsFenced_PreservesFatalError()
     {
         var preparedState = new PreparedTransactionState(42, 5);

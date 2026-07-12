@@ -4124,6 +4124,15 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             // by BrokerSender before the ProduceRequest is sent to the broker.
             return _producer.ProduceAsync(message, cancellationToken);
         }
+        catch (OperationCanceledException exception)
+        {
+            var canceledToken = exception.CancellationToken.IsCancellationRequested
+                ? exception.CancellationToken
+                : cancellationToken.IsCancellationRequested
+                    ? cancellationToken
+                    : new CancellationToken(canceled: true);
+            return new ValueTask<RecordMetadata>(Task.FromCanceled<RecordMetadata>(canceledToken));
+        }
         catch (Exception exception)
         {
             // Preserve async-method exception timing: validation failures fault the returned
