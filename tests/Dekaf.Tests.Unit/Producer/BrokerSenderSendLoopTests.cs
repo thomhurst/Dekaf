@@ -30,7 +30,8 @@ public sealed class BrokerSenderSendLoopTests
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
         int connectionsPerBroker = 1, bool enableAdaptiveConnections = true,
         bool enableIdempotence = true, int batchSize = 1_048_576,
-        long? unackedByteBudgetCapOverride = null, long? scaleCooldownMsOverride = null) => new()
+        long? unackedByteBudgetCapOverride = null, long? scaleCooldownMsOverride = null,
+        string? transactionalId = null) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
@@ -45,7 +46,8 @@ public sealed class BrokerSenderSendLoopTests
             BatchSize = batchSize,
             LingerMs = 0,
             UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride,
-            ScaleCooldownMsOverride = scaleCooldownMsOverride
+            ScaleCooldownMsOverride = scaleCooldownMsOverride,
+            TransactionalId = transactionalId
         };
 
     /// <summary>
@@ -254,16 +256,18 @@ public sealed class BrokerSenderSendLoopTests
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
-        BrokerUnackedByteBudget? unackedBudget = null) =>
+        BrokerUnackedByteBudget? unackedBudget = null,
+        int produceApiVersion = 9,
+        bool isTransactional = false) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
             accumulator, options,
             new CompressionCodecRegistry(),
             inflightTracker: new PartitionInflightTracker(),
-            getProduceApiVersion: () => 9,
+            getProduceApiVersion: () => produceApiVersion,
             setProduceApiVersion: _ => { },
-            isTransactional: () => false,
+            isTransactional: () => isTransactional,
             ensurePartitionInTransaction: null,
             bumpEpoch: null,
             getCurrentEpoch: null,
@@ -282,6 +286,59 @@ public sealed class BrokerSenderSendLoopTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Yield();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_Tv2ConcurrentTransactions_RetriesProduce(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var retryResponse = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, retryResponse]);
+        var sends = Enumerable.Range(0, 2).Select(_ => new TaskCompletionSource()).ToArray();
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            sends[Interlocked.Increment(ref sendCount) - 1].TrySetResult();
+        });
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>();
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion,
+            isTransactional: true);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await sends[0].Task.WaitAsync(cancellationToken);
+            firstResponse.SetResult(CreateErrorResponse(
+                "test-topic", partition: 0, ErrorCode.ConcurrentTransactions));
+
+            var next = await Task.WhenAny(sends[1].Task, acknowledged.Task)
+                .WaitAsync(cancellationToken);
+            await Assert.That(next).IsSameReferenceAs(sends[1].Task);
+            retryResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+
+            await Assert.That(await acknowledged.Task.WaitAsync(cancellationToken)).IsNull();
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
         }
     }
 

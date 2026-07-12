@@ -2403,6 +2403,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 else if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
                     if (partitionResponse.ErrorCode.IsRetriable()
+                        || (partitionResponse.ErrorCode == ErrorCode.ConcurrentTransactions
+                            && _isTransactional()
+                            && _getProduceApiVersion()
+                                >= ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion)
                         || partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber
                         || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
                         || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
