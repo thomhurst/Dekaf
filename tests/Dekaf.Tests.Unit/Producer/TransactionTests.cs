@@ -792,6 +792,60 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task TransactionPartitionEnrollment_AuthenticationFailure_DoesNotRetry()
+    {
+        var requestCount = 0;
+
+        ValueTask AddPartitions(
+            IReadOnlyList<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref requestCount);
+            throw new AuthenticationException("Invalid credentials.");
+        }
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            TransactionalId = "test-txn-id",
+            CloseTimeoutMs = 100
+        };
+        await using var connectionPool = new ConnectionPool(
+            options.ClientId,
+            connectionOptions: null,
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) =>
+                throw new InvalidOperationException("Enrollment test must use the injected request callback."));
+        await using var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager,
+            DekafMemoryBudget.Global,
+            addPartitionsToTransaction: AddPartitions);
+        var batch = CreateEnrollmentBatch("auth-failure-topic", 0);
+        var enrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var result = producer.TryEnsurePartitionsInTransaction(
+            [batch],
+            1,
+            enrollmentCompleted.SetResult,
+            []);
+
+        await Assert.That(result.IsEnrolled).IsFalse();
+        await Assert.That(await enrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(requestCount).IsEqualTo(1);
+        await Assert.That(producer.TryEnsurePartitionsInTransaction(
+            [batch],
+            1,
+            static _ => { },
+            []).Error).IsTypeOf<AuthenticationException>();
+    }
+
+    [Test]
     [Arguments(false, (short)2)]
     [Arguments(true, (short)1)]
     public async Task BeginTransaction_FeatureVersionChanged_RequiresReinitialization(

@@ -3129,17 +3129,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         IReadOnlyList<TopicPartition> partitions,
         CancellationToken cancellationToken)
     {
+        const int maxRetries = 5;
         var retryDelayMs = 100;
 
-        for (var attempt = 0; ; attempt++)
+        for (var attempt = 0; attempt < maxRetries; attempt++)
         {
             try
             {
                 await _addPartitionsToTransaction(partitions, cancellationToken).ConfigureAwait(false);
                 return;
             }
-            catch (Exception exception) when (
-                exception is not TransactionException and not OperationCanceledException)
+            catch (Exception exception) when (attempt < maxRetries - 1
+                && IsRetriablePartitionEnrollmentException(exception))
             {
                 LogAddPartitionsToTxnTransportRetry(attempt + 1, retryDelayMs);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
@@ -3147,6 +3148,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
         }
     }
+
+    private static bool IsRetriablePartitionEnrollmentException(Exception exception) =>
+        exception is IOException or System.Net.Sockets.SocketException or TimeoutException
+        || exception is KafkaException { IsRetriable: true };
 
     private Action<Exception?>[] ResetPartitionEnrollmentState()
     {
