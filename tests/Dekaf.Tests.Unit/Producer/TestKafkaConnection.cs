@@ -135,7 +135,7 @@ internal sealed class TestKafkaConnection :
         Volatile.Write(ref _retirementState, 2);
     }
 
-    public async ValueTask<Task<TResponse>> SendPipelinedAfterWriteAsync<TRequest, TResponse>(
+    public async ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
@@ -148,10 +148,10 @@ internal sealed class TestKafkaConnection :
             throw new NotSupportedException();
 
         var responseTask = await SendProducePipelinedAfterWrite().ConfigureAwait(false);
-        return CastResponseTask<TResponse>(responseTask);
+        return new PipelinedResponse<TResponse>(CastResponseTask<TResponse>(responseTask));
     }
 
-    public async ValueTask<Task<TResponse>> SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
+    public async ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)

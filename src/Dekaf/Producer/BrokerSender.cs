@@ -154,7 +154,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // HandleTimedOutRequests (Java pattern) checks request timeout centrally and fails all
     // pending responses on timeout, invalidating the connection.
     private readonly record struct PendingResponse(
-        Task<ProduceResponse> ResponseTask,
+        PipelinedResponse<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
         int[] BatchGenerations,
         int Count,
@@ -170,7 +170,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// it is returned by <see cref="ReturnBatchesArray"/>.
         /// </summary>
         public static PendingResponse Create(
-            Task<ProduceResponse> responseTask, ReadyBatch[] batches, int[] generations,
+            PipelinedResponse<ProduceResponse> responseTask, ReadyBatch[] batches, int[] generations,
             int count, long encodedBytes, long requestStartTime, long rttStartTime)
             => new(responseTask, batches, generations, count, encodedBytes,
                 requestStartTime, rttStartTime);
@@ -2123,7 +2123,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             batches[i]?.ReleaseResourcePin();
     }
 
-    private ValueTask<Task<ProduceResponse>> SendPipelinedAfterWriteAsync(
+    private ValueTask<PipelinedResponse<ProduceResponse>> SendPipelinedAfterWriteAsync(
         IKafkaConnection connection,
         ProduceRequest request,
         short apiVersion)
@@ -2300,7 +2300,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 if (task.IsFaulted || task.IsCanceled)
                 {
-                    var ex = task.Exception?.InnerException ?? new OperationCanceledException();
+                    Exception ex;
+                    try
+                    {
+                        _ = task.GetResult();
+                        ex = new OperationCanceledException();
+                    }
+                    catch (Exception responseException)
+                    {
+                        ex = responseException;
+                    }
                     LogResponseFailed(ex, _brokerId);
                     _pinnedConnections[connIdx] = null; // Invalidate only the affected connection
 
@@ -2327,7 +2336,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 }
 
-                var response = task.Result;
+                var response = task.GetResult();
                 ObserveBrokerThrottle(response.ThrottleTimeMs);
                 var allPartitionsSucceeded = true;
                 // Reuse caller-provided dictionary to avoid per-response allocation.
@@ -2670,6 +2679,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
+                pending.ResponseTask.Abandon();
                 pending.ReturnBatchesArray();
             }
 
@@ -3236,8 +3246,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Unlike ContinueWith(ExecuteSynchronously), UnsafeOnCompleted schedules the
                     // callback on the ThreadPool rather than running inline on the completing thread.
                     // This is intentional — it keeps the I/O completion thread free.
-                    responseTask.ConfigureAwait(false).GetAwaiter()
-                        .UnsafeOnCompleted(_responseCompletionCallback);
+                    responseTask.UnsafeOnCompleted(_responseCompletionCallback);
                 }
 
                 // A request limit of one keeps its partition muted until the response.

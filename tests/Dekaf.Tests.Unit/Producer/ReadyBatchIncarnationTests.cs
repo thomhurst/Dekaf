@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Compression;
 using Dekaf.Metadata;
+using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
@@ -163,7 +164,8 @@ public sealed class ReadyBatchIncarnationTests
         var capturedGeneration = batch.Generation;
         var batches = new[] { batch };
         var generations = new[] { capturedGeneration };
-        var responseTask = Task.FromResult(new ProduceResponse());
+        var responseTask = new PipelinedResponse<ProduceResponse>(
+            Task.FromResult(new ProduceResponse()));
         var create = PendingResponseType.GetMethod("Create", BindingFlags.Public | BindingFlags.Static)!;
         var timestamp = Stopwatch.GetTimestamp();
         var pending = create.Invoke(

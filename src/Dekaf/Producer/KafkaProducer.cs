@@ -2342,7 +2342,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     var requestWrittenCallback = afterRequestWrittenAsync;
                     afterRequestWrittenAsync = null;
                     await requestWrittenCallback().ConfigureAwait(false);
-                    response = await responseTask.ConfigureAwait(false);
+                    response = await responseTask.AsValueTask().ConfigureAwait(false);
                 }
             }
 
