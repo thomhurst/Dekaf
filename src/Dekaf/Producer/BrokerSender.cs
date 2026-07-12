@@ -3190,7 +3190,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
                 pendingResponseAdded = true; // Array ownership transferred to PendingResponse
                 Interlocked.Increment(ref _totalPendingResponseCount);
-                Interlocked.Add(ref _totalPendingResponseBytes, encodedBytes);
+                var writtenUnackedBytes = Interlocked.Add(ref _totalPendingResponseBytes, encodedBytes);
+                _unackedBudget?.ObserveWrittenUnackedBytes(writtenUnackedBytes);
                 Interlocked.Add(ref _pendingResponseBytesByConnection[connectionIndex], encodedBytes);
 
                 // Diagnostic: log instance+task+partitions at PendingResponse creation time.

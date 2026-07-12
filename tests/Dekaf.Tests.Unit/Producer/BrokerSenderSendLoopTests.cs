@@ -2436,7 +2436,8 @@ public sealed class BrokerSenderSendLoopTests
             }
 
             // The first ack establishes a rate and starts the target-only base-RTT probe.
-            // Its tiny target clamps the published estimate to the 200-byte floor.
+            // Its tiny target clamps to 200 bytes; recent occupancy is deliberately ignored
+            // until the standing queue drains and the minimum-RTT probe completes.
             await WaitUntilAsync(() => budget.BudgetBytes != 1_000_000, cancellationToken);
             await Assert.That(budget.BudgetBytes).IsEqualTo(200);
         }
