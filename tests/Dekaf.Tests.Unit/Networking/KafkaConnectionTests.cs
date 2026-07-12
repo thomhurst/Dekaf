@@ -540,10 +540,20 @@ public sealed class KafkaConnectionTests
     public async Task WriteTimeout_AbandonedWriteStuckPastGracePeriod_AbortsConnectionAndReleasesWriteLock(
         CancellationToken cancellationToken)
     {
+        var graceWaitStarted = new TaskCompletionSource();
+        var expireGracePeriod = new TaskCompletionSource();
         await using var connection = new KafkaConnection(
             "localhost",
             9092,
-            options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(50) });
+            clientId: null,
+            options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) },
+            logger: null,
+            responseBufferPool: ResponseBufferPool.Default,
+            waitForAbandonedWriteAsync: (_, _) =>
+            {
+                graceWaitStarted.TrySetResult();
+                return expireGracePeriod.Task;
+            });
         var stream = new PendingWriteStream();
         SetPrivateField(connection, "_stream", stream);
 
@@ -558,6 +568,8 @@ public sealed class KafkaConnectionTests
             .Throws<KafkaException>()
             .WithMessageContaining("Flush timeout");
 
+        await graceWaitStarted.Task.WaitAsync(cancellationToken);
+        expireGracePeriod.SetException(new TimeoutException("controlled grace-period expiry"));
         await stream.Disposed.WaitAsync(cancellationToken);
         await Assert.That(async () => await writeTask)
             .Throws<IOException>()
