@@ -420,6 +420,41 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    public async Task ScaleDown_NonIdempotentPendingRequestOnRetainedConnection_DoesNotRemap()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            maxInFlightRequests: 100,
+            scaleCooldownMs: 0,
+            scaleDownSustainedMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            SetField(sender, "_connectionCount", 2);
+            SetField(sender, "_totalMaxInFlight", 200);
+            SetField(sender, "_totalPendingResponseCount", 1);
+
+            InvokeMaybeScaleConnections(sender);
+            InvokeMaybeScaleConnections(sender);
+
+            await pool.DidNotReceive().ShrinkConnectionGroupAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>());
+            await Assert.That(GetField<int>(sender, "_connectionCount")).IsEqualTo(2)
+                .Because("retained connection slots also remap partitions when routing width shrinks");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task ScaleDown_MutedPartitionWithQueuedBatch_DoesNotShrink()
     {
         var options = CreateOptions(
