@@ -383,6 +383,50 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task ForHighThroughput_StartsWithTwoFetchConnections()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .ForHighThroughput()
+            .Build();
+
+        var options = ((KafkaConsumer<string, string>)consumer).Options;
+
+        await Assert.That(options.ConnectionsPerBroker).IsEqualTo(3);
+        await Assert.That(options.EnableAdaptiveConnections).IsTrue();
+        await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task ForHighThroughput_PreservesConnectionInvariantAfterLowerAdaptiveMaximum()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithAdaptiveConnections(2)
+            .ForHighThroughput()
+            .Build();
+
+        var options = ((KafkaConsumer<string, string>)consumer).Options;
+
+        await Assert.That(options.ConnectionsPerBroker).IsEqualTo(3);
+        await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task ForHighThroughput_ThenConnectionOverride_UsesOverride()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .ForHighThroughput()
+            .WithConnectionsPerBroker(2)
+            .Build();
+
+        var options = ((KafkaConsumer<string, string>)consumer).Options;
+
+        await Assert.That(options.ConnectionsPerBroker).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task ForHighThroughput_AdaptiveFloorsMatchPresetFetchSizes()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()

@@ -2248,6 +2248,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <item><description>FetchMaxBytes: 100MB (allow larger total fetch responses; note that the response buffer pool
     /// may retain up to 8 arrays of this size per consumer instance)</description></item>
     /// <item><description>PrefetchPipelineDepth: 5 (aggressive prefetching to hide network latency)</description></item>
+    /// <item><description>ConnectionsPerBroker: 3 for standalone consumers (two fetch connections plus one coordination connection)</description></item>
     /// <item><description>AdaptiveFetchSizing: enabled (auto-grows fetch sizes when consumer keeps up, shrinks under prefetch memory pressure)</description></item>
     /// <item><description>CheckCrcs: disabled (skips client-side CRC32C re-validation of fetched batches; TCP checksums and
     /// broker-side validation already cover corruption in transit — matches librdkafka's default. Re-enable with
@@ -2268,6 +2269,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _fetchMaxBytes = 100 * 1024 * 1024;
         _prefetchPipelineDepth = 5;
         _checkCrcs = false;
+        if (_clientInfrastructure is null)
+        {
+            // Start with two usable fetch connections. Waiting for adaptive scale-up left
+            // high-throughput consumers under-provisioned after routing transitions were
+            // made partition-affine; the third connection remains isolated for coordination.
+            _connectionsPerBroker = 3;
+            _maxConnectionsPerBroker = Math.Max(_maxConnectionsPerBroker, 3);
+        }
         _enableAdaptiveFetchSizing = true; // Intentional: ForHighThroughput always enables adaptive sizing
         if (_adaptiveFetchSizingOptions is null || _usesHighThroughputAdaptiveDefaults)
         {
