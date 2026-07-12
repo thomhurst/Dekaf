@@ -27,7 +27,7 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         await ContainerStartupRetry.RunAsync(
             StartClusterAttemptAsync,
             DisposeClusterAttemptAsync,
-            ContainerStartupRetry.IsPortBindingCollision).ConfigureAwait(false);
+            ContainerStartupRetry.IsKnownTransient).ConfigureAwait(false);
     }
 
     private async Task StartClusterAttemptAsync()

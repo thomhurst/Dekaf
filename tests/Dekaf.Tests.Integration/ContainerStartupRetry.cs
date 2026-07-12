@@ -10,8 +10,11 @@ internal static class ContainerStartupRetry
     internal static async Task RunAsync(
         Func<Task> startAttemptAsync,
         Func<ValueTask> cleanupAttemptAsync,
-        Func<Exception, bool> isTransient)
+        Func<Exception, bool> isTransient,
+        Func<TimeSpan, Task>? delayAsync = null)
     {
+        delayAsync ??= static delay => Task.Delay(delay);
+
         for (var attempt = 1; attempt <= MaxAttempts; attempt++)
         {
             try
@@ -28,9 +31,16 @@ internal static class ContainerStartupRetry
 
                 Console.WriteLine(
                     $"[ContainerStartupRetry] Transient container startup failure on attempt {attempt}; retrying with fresh resources: {exception.Message}");
+
+                await delayAsync(GetRetryDelay(attempt)).ConfigureAwait(false);
             }
         }
     }
+
+    internal static bool IsKnownTransient(Exception exception) =>
+        IsPortBindingCollision(exception) ||
+        IsKafkaStartupScriptBusy(exception) ||
+        IsRegistryUnavailable(exception);
 
     internal static bool IsPortBindingCollision(Exception exception) =>
         Contains(exception, static candidate =>
@@ -43,6 +53,26 @@ internal static class ContainerStartupRetry
             candidate.Message.Contains(
                 "/testcontainers.sh: Text file busy",
                 StringComparison.Ordinal));
+
+    internal static bool IsRegistryUnavailable(Exception exception) =>
+        Contains(exception, static candidate =>
+        {
+            if (candidate is not DockerApiException dockerException)
+                return false;
+
+            var statusCode = (int)dockerException.StatusCode;
+            return statusCode is >= 500 and <= 599 &&
+                   candidate.Message.Contains("/manifests/", StringComparison.OrdinalIgnoreCase) &&
+                   candidate.Message.Contains(
+                       "received unexpected HTTP status",
+                       StringComparison.OrdinalIgnoreCase);
+        });
+
+    private static TimeSpan GetRetryDelay(int failedAttempt) => failedAttempt switch
+    {
+        1 => TimeSpan.FromSeconds(5),
+        _ => TimeSpan.FromSeconds(15)
+    };
 
     private static bool Contains(Exception exception, Func<Exception, bool> predicate)
     {

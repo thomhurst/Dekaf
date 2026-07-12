@@ -91,6 +91,18 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
             core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
 
+      - name: Pre-pull Kafka image
+        run: |
+          for attempt in 1 2 3 4 5; do
+            docker pull "apache/kafka:${{ inputs.kafka-tag }}" && exit 0
+            if [ "$attempt" -eq 5 ]; then
+              exit 1
+            fi
+            delay=$((attempt * 15))
+            echo "Kafka image pull failed (attempt $attempt); retrying in ${delay}s"
+            sleep "$delay"
+          done
+
       - name: Run integration tests
         env:
           KAFKA_TEST_IMAGE_TAG: ${{ inputs.kafka-tag }}

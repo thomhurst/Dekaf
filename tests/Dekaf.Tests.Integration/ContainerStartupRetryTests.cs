@@ -24,7 +24,8 @@ public sealed class ContainerStartupRetryTests
                 cleanups++;
                 return ValueTask.CompletedTask;
             },
-            ContainerStartupRetry.IsPortBindingCollision);
+            ContainerStartupRetry.IsPortBindingCollision,
+            NoDelayAsync);
 
         await Assert.That(attempts).IsEqualTo(2);
         await Assert.That(cleanups).IsEqualTo(1);
@@ -50,10 +51,53 @@ public sealed class ContainerStartupRetryTests
                 cleanups++;
                 return ValueTask.CompletedTask;
             },
-            ContainerStartupRetry.IsKafkaStartupScriptBusy);
+            ContainerStartupRetry.IsKafkaStartupScriptBusy,
+            NoDelayAsync);
 
         await Assert.That(attempts).IsEqualTo(2);
         await Assert.That(cleanups).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task RunAsync_RegistryUnavailable_RetriesWithBackoff()
+    {
+        var attempts = 0;
+        var delays = new List<TimeSpan>();
+
+        await ContainerStartupRetry.RunAsync(
+            () => ++attempts < 3
+                ? Task.FromException(new DockerApiException(
+                    HttpStatusCode.BadGateway,
+                    "Head \"https://registry-1.docker.io/v2/apache/kafka/manifests/4.3.1\": received unexpected HTTP status: 502 Bad Gateway"))
+                : Task.CompletedTask,
+            () => ValueTask.CompletedTask,
+            ContainerStartupRetry.IsRegistryUnavailable,
+            delay =>
+            {
+                delays.Add(delay);
+                return Task.CompletedTask;
+            });
+
+        await Assert.That(attempts).IsEqualTo(3);
+        await Assert.That(delays).IsEquivalentTo([
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(15)
+        ]);
+    }
+
+    [Test]
+    [Arguments(HttpStatusCode.NotFound)]
+    [Arguments(HttpStatusCode.InternalServerError)]
+    public async Task IsRegistryUnavailable_NonTransientFailure_ReturnsFalse(
+        HttpStatusCode statusCode)
+    {
+        var message = statusCode == HttpStatusCode.NotFound
+            ? "Head \"https://registry-1.docker.io/v2/apache/kafka/manifests/missing\": received unexpected HTTP status: 404 Not Found"
+            : "Docker daemon returned an unrelated 500 error";
+
+        var exception = new DockerApiException(statusCode, message);
+
+        await Assert.That(ContainerStartupRetry.IsRegistryUnavailable(exception)).IsFalse();
     }
 
     [Test]
@@ -75,7 +119,8 @@ public sealed class ContainerStartupRetryTests
                 cleanups++;
                 return ValueTask.CompletedTask;
             },
-            ContainerStartupRetry.IsPortBindingCollision);
+            ContainerStartupRetry.IsPortBindingCollision,
+            NoDelayAsync);
 
         await Assert.That(action).Throws<DockerApiException>();
         await Assert.That(attempts).IsEqualTo(1);
@@ -101,7 +146,8 @@ public sealed class ContainerStartupRetryTests
                 cleanups++;
                 return ValueTask.CompletedTask;
             },
-            ContainerStartupRetry.IsPortBindingCollision);
+            ContainerStartupRetry.IsPortBindingCollision,
+            NoDelayAsync);
 
         await Assert.That(action).Throws<DockerApiException>();
         await Assert.That(attempts).IsEqualTo(3);
@@ -119,4 +165,6 @@ public sealed class ContainerStartupRetryTests
         await Assert.That(KafkaTestContainer.StartupCommand).Contains("wc -c");
         await Assert.That(KafkaTestContainer.StartupCommand).Contains("exec /bin/sh /testcontainers.sh");
     }
+
+    private static Task NoDelayAsync(TimeSpan _) => Task.CompletedTask;
 }
