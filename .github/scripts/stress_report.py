@@ -192,9 +192,34 @@ def paired_latency_thresholds(results):
         client = str(result.get('client', ''))
         if client.casefold() != 'dekaf':
             continue
-        baseline = baselines.get(_latency_identity(result))
         latency = result.get('latency')
-        if baseline is None or not isinstance(latency, dict):
+        if not isinstance(latency, dict):
+            continue
+
+        target_ms = result.get('deliveryLatencyTargetMs')
+        p95_us = latency.get('p95Us')
+        if _positive_finite_number(target_ms) and _positive_finite_number(p95_us):
+            ratio = p95_us / (target_ms * 1_000)
+            breached = ratio > 3.0
+            evaluations.append({
+                'scenario': _latency_scenario_label(result),
+                'metric': 'latencyP95TargetRatio',
+                'metricLabel': 'Delivery latency p95 / target',
+                'current': ratio,
+                'baselineCount': 0,
+                'median': None,
+                'mad': None,
+                'lower': None,
+                'upper': 3.0,
+                'status': 'regression' if breached else 'stable',
+                'repeatedRegression': False,
+                'thresholdBreach': breached,
+                'thresholdDirection': 'maximum',
+                'latencyThreshold': True,
+            })
+
+        baseline = baselines.get(_latency_identity(result))
+        if baseline is None:
             continue
 
         for field, metric, label in (

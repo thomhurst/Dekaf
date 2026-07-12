@@ -9,7 +9,8 @@ namespace Dekaf.Producer;
 /// instead of growing to the full <see cref="ProducerOptions.BufferMemory"/> reservoir.
 /// Under open-loop saturation, append-to-ack latency equals standing unacked bytes divided
 /// by the broker's drain rate; capping the standing bytes to
-/// <c>target × measured drain rate</c> caps the latency.
+/// <c>target × measured drain rate</c> caps the latency. The RTT safety floor uses a
+/// periodically refreshed minimum RTT so standing queue delay cannot inflate its horizon.
 /// <para>
 /// Ownership contract: <see cref="Charge"/>/<see cref="Release"/>/<see cref="IsOverBudget"/>/
 /// <see cref="RecordAdmissionBlock"/> are cross-thread (producer appenders and terminal batch
@@ -31,8 +32,14 @@ internal sealed class BrokerUnackedByteBudget
     /// <summary>Number of per-request delivery-rate samples retained by the maximum filter.</summary>
     private const int RateWindowSamples = 10;
 
-    /// <summary>Fixed smoothing factor for the per-request ack round-trip EWMA.</summary>
-    private const double RttEwmaAlpha = 0.25;
+    /// <summary>How long an observed base RTT remains valid before it is refreshed.</summary>
+    private static readonly long MinRttWindowTicks = 10 * Stopwatch.Frequency;
+
+    /// <summary>
+    /// Minimum target-only drain interval used to refresh base RTT without standing
+    /// queue delay. Long-base-RTT links probe for at least one observed round-trip.
+    /// </summary>
+    private static readonly long MinRttProbeDurationTicks = Stopwatch.Frequency / 20;
 
     /// <summary>Budget never drops below this multiple of the measured bandwidth-delay
     /// product (rate × RTT). Without this guard a target below the broker RTT would shrink
@@ -60,8 +67,11 @@ internal sealed class BrokerUnackedByteBudget
     private int _rateMaxTail;
     private int _rateMaxCount;
     private long _rateSampleSequence;
-    private double _ewmaRttSeconds;
-    private bool _hasRttSample;
+    private double _minRttSeconds;
+    private double _minRttProbeMinimumSeconds;
+    private bool _hasMinRttSample;
+    private long _minRttTimestamp;
+    private long _minRttProbeUntilTimestamp;
     private long _nextProbeTimestamp;
     private long _probeUntilTimestamp;
 
@@ -135,10 +145,7 @@ internal sealed class BrokerUnackedByteBudget
             return;
 
         var rttSeconds = (double)rttTicks / Stopwatch.Frequency;
-        _ewmaRttSeconds = _hasRttSample
-            ? _ewmaRttSeconds + (RttEwmaAlpha * (rttSeconds - _ewmaRttSeconds))
-            : rttSeconds;
-        _hasRttSample = true;
+        UpdateMinRtt(rttSeconds, nowTicks);
 
         AddRateSample(ackedBytes / rttSeconds);
 
@@ -160,6 +167,48 @@ internal sealed class BrokerUnackedByteBudget
         }
 
         RecomputeBudget();
+    }
+
+    private void UpdateMinRtt(double rttSeconds, long nowTicks)
+    {
+        if (!_hasMinRttSample)
+        {
+            _minRttSeconds = rttSeconds;
+            _minRttTimestamp = nowTicks;
+            _hasMinRttSample = true;
+            StartMinRttProbe(nowTicks, rttSeconds);
+            return;
+        }
+
+        if (_minRttProbeUntilTimestamp != 0)
+        {
+            _minRttProbeMinimumSeconds = Math.Min(_minRttProbeMinimumSeconds, rttSeconds);
+            if (nowTicks >= _minRttProbeUntilTimestamp)
+            {
+                _minRttSeconds = _minRttProbeMinimumSeconds;
+                _minRttTimestamp = nowTicks;
+                _minRttProbeUntilTimestamp = 0;
+            }
+
+            return;
+        }
+
+        if (rttSeconds < _minRttSeconds)
+        {
+            _minRttSeconds = rttSeconds;
+            _minRttTimestamp = nowTicks;
+            return;
+        }
+
+        if (nowTicks - _minRttTimestamp >= MinRttWindowTicks)
+            StartMinRttProbe(nowTicks, _minRttSeconds);
+    }
+
+    private void StartMinRttProbe(long nowTicks, double observedRttSeconds)
+    {
+        _minRttProbeMinimumSeconds = double.MaxValue;
+        var observedRttTicks = (long)(observedRttSeconds * Stopwatch.Frequency);
+        _minRttProbeUntilTimestamp = nowTicks + Math.Max(MinRttProbeDurationTicks, observedRttTicks);
     }
 
     private void AddRateSample(double bytesPerSecond)
@@ -200,11 +249,11 @@ internal sealed class BrokerUnackedByteBudget
         }
         else
         {
-            var horizonSeconds = _hasRttSample
-                ? Math.Max(_targetSeconds, RttSafetyMultiplier * _ewmaRttSeconds)
+            var horizonSeconds = _hasMinRttSample && _minRttProbeUntilTimestamp == 0
+                ? Math.Max(_targetSeconds, RttSafetyMultiplier * _minRttSeconds)
                 : _targetSeconds;
             var estimatedBytes = _rateMaxValues[_rateMaxHead] * horizonSeconds;
-            if (_probeUntilTimestamp != 0)
+            if (_probeUntilTimestamp != 0 && _minRttProbeUntilTimestamp == 0)
                 estimatedBytes *= ProbeBudgetMultiplier;
 
             budget = (long)estimatedBytes;

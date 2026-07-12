@@ -5,7 +5,8 @@ namespace Dekaf.Tests.Unit.Producer;
 
 /// <summary>
 /// State-machine tests for <see cref="BrokerUnackedByteBudget"/>: budget publication from
-/// the request-rate maximum filter, floor/cap clamping, probing, and counter accounting.
+/// the request-rate maximum filter, minimum-RTT refresh, floor/cap clamping, probing,
+/// and counter accounting.
 /// All timestamps are explicit Stopwatch-tick values, so nothing here is timing-dependent.
 /// </summary>
 public sealed class BrokerUnackedByteBudgetTests
@@ -74,10 +75,45 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
 
         EstablishRate(budget, bytesPerSecond: 100_000, rttSeconds: 0.100);
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(0.101));
 
         // 100,000 B/s × max(0.010, 1.5 × 0.100) = 15,000 bytes (±tick-quantization of the RTT).
         await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(14_990);
         await Assert.That(budget.BudgetBytes).IsLessThanOrEqualTo(15_010);
+    }
+
+    [Test]
+    public async Task MinimumRtt_LoadedSamplesDoNotInflateBudget()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0 + Seconds(0.051));
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(1.0));
+
+        // Both samples measure 100,000 B/s. The 5ms base RTT leaves the 10ms target
+        // in control; the later queue-loaded 100ms sample must not grow the horizon.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+    }
+
+    [Test]
+    public async Task MinimumRtt_ExpiredWindowDrainsQueueBeforeRefreshing()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0 + Seconds(0.051));
+
+        // Expiring the minimum with a loaded sample starts a brief target-only drain,
+        // rather than immediately accepting the 100ms queueing delay as base RTT.
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(10.1));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+
+        budget.OnAcked(ackedBytes: 5_000, rttTicks: Seconds(0.050), nowTicks: T0 + Seconds(10.2));
+        budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0 + Seconds(10.31));
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(10.4));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
     }
 
     [Test]

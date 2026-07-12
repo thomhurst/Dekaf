@@ -32,7 +32,8 @@ internal sealed class ProducerStressTest : IStressTestScenario
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
             .WithBufferMemory(StressTestHelpers.ProducerBufferMemoryBytes)
-            .WithConnectionsPerBroker(options.ConnectionsPerBroker);
+            .WithConnectionsPerBroker(options.ConnectionsPerBroker)
+            .WithDeliveryLatencyTarget(TimeSpan.FromMilliseconds(options.DeliveryLatencyTargetMs));
 
         _ = options.Compression switch
         {
@@ -144,6 +145,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
             DurationMinutes = options.DurationMinutes,
             BrokerCount = options.BrokerCount,
             MessageSizeBytes = options.MessageSizeBytes,
+            DeliveryLatencyTargetMs = options.DeliveryLatencyTargetMs,
             StartedAtUtc = startedAt,
             CompletedAtUtc = completedAt,
             Throughput = throughput.GetSnapshot(),
