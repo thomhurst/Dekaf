@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -25,6 +26,61 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class BrokerSenderSendLoopTests
 {
+    private sealed class TrackingPipelinedResponseSource : IPipelinedResponseSource<ProduceResponse>
+    {
+        public int AbandonCalls;
+
+        public void Abandon(short token) => Interlocked.Increment(ref AbandonCalls);
+
+        public ProduceResponse GetResult(short token) => throw new InvalidOperationException();
+
+        public ValueTaskSourceStatus GetStatus(short token) => ValueTaskSourceStatus.Pending;
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags)
+        {
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendFailure_AfterPipelinedResponseAcquired_IsAbandoned(
+        CancellationToken cancellationToken)
+    {
+        var responseSource = new TrackingPipelinedResponseSource();
+        var connection = new TestKafkaConnection { PipelinedResponseSource = responseSource };
+        var (pool, _) = CreateScaleTrackingPool(connection);
+        var options = CreateOptions(retryBackoffMs: 60_000, retryBackoffMaxMs: 60_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            onPipelinedResponseAcquired: () => throw new InvalidOperationException("test"));
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+
+            await WaitUntilAsync(
+                () => Volatile.Read(ref responseSource.AbandonCalls) == 1,
+                cancellationToken);
+
+            await Assert.That(Volatile.Read(ref responseSource.AbandonCalls)).IsEqualTo(1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
     [Test]
     public async Task ShouldMicroLinger_TransactionalAwaitedBatch_ReturnsFalse()
     {
@@ -301,6 +357,7 @@ public sealed class BrokerSenderSendLoopTests
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
+        Action? onPipelinedResponseAcquired = null,
         BrokerUnackedByteBudget? unackedBudget = null,
         int produceApiVersion = 9,
         bool isTransactional = false,
@@ -325,7 +382,8 @@ public sealed class BrokerSenderSendLoopTests
             delayForThrottle: delayForThrottle,
             onBlockedBucketRequeued: onBlockedBucketRequeued,
             unackedBudget: unackedBudget,
-            usesTransactionV2: () => usesTransactionV2);
+            usesTransactionV2: () => usesTransactionV2,
+            onPipelinedResponseAcquired: onPipelinedResponseAcquired);
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {
@@ -398,6 +456,38 @@ public sealed class BrokerSenderSendLoopTests
         {
             retryResponse.TrySetResult(
                 CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task DisposeAsync_PendingPipelinedResponse_IsAbandoned(
+        CancellationToken cancellationToken)
+    {
+        var responseSource = new TrackingPipelinedResponseSource();
+        var connection = new TestKafkaConnection { PipelinedResponseSource = responseSource };
+        var (pool, _) = CreateScaleTrackingPool(connection);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await WaitUntilAsync(
+                () => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 1,
+                cancellationToken);
+
+            await sender.DisposeAsync();
+
+            await Assert.That(Volatile.Read(ref responseSource.AbandonCalls)).IsEqualTo(1);
+        }
+        finally
+        {
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();

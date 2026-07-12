@@ -659,7 +659,7 @@ public sealed partial class KafkaConnection :
             callerOwnsTimeout: true,
             cancellationToken);
 
-    ValueTask<Task<TResponse>> IKafkaPipelinedWriteCompletionConnection.SendPipelinedAfterWriteAsync<TRequest, TResponse>(
+    ValueTask<PipelinedResponse<TResponse>> IKafkaPipelinedWriteCompletionConnection.SendPipelinedAfterWriteAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken)
@@ -669,7 +669,7 @@ public sealed partial class KafkaConnection :
             callerOwnsTimeout: false,
             cancellationToken);
 
-    ValueTask<Task<TResponse>>
+    ValueTask<PipelinedResponse<TResponse>>
         IKafkaPipelinedWriteCompletionConnection.SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
             TRequest request,
             short apiVersion,
@@ -694,10 +694,10 @@ public sealed partial class KafkaConnection :
             callerOwnsTimeout,
             cancellationToken).ConfigureAwait(false);
 
-        return await responseTask.ConfigureAwait(false);
+        return await responseTask.AsValueTask().ConfigureAwait(false);
     }
 
-    private async ValueTask<Task<TResponse>> SendPipelinedAfterWriteCoreAsync<TRequest, TResponse>(
+    private async ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteCoreAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         bool callerOwnsTimeout,
@@ -745,7 +745,8 @@ public sealed partial class KafkaConnection :
             await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
                 .ConfigureAwait(false);
 
-            return AwaitPipelinedResponseAsync<TRequest, TResponse>(
+            return PooledPipelinedResponse<TRequest, TResponse>.Rent(
+                this,
                 pending,
                 correlationId,
                 apiVersion,
@@ -765,25 +766,338 @@ public sealed partial class KafkaConnection :
         }
     }
 
-    private async Task<TResponse> AwaitPipelinedResponseAsync<TRequest, TResponse>(
+    private void CompletePipelinedResponse(
         PooledPendingRequest pending,
         int correlationId,
-        short apiVersion,
-        bool callerOwnsTimeout,
-        long telemetryStartTimestamp,
-        CancellationToken cancellationToken)
+        bool responseReceived)
+    {
+        if (!TryRemovePendingRequest(correlationId, out var removed))
+            return;
+
+        Debug.Assert(ReferenceEquals(removed.Request, pending));
+        _pendingRequestPool.Return(removed.Request);
+        if (!responseReceived)
+            _cancelledCorrelationIds.TryAdd(correlationId);
+    }
+
+    internal static int GetPipelinedResponsePoolCount<TRequest, TResponse>()
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => PooledPipelinedResponse<TRequest, TResponse>.ApproximatePoolCount;
+
+    internal static Action? PipelinedResponseBeforePublishTestHook;
+
+    private sealed class PooledPipelinedResponse<TRequest, TResponse> :
+        IPipelinedResponseSource<TResponse>
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        var response = await AwaitAndParseResponseAsync<TRequest, TResponse>(
-            pending,
-            correlationId,
-            apiVersion,
-            callerOwnsTimeout,
-            cancellationToken).ConfigureAwait(false);
-        Touch();
-        _telemetryMetricCollector?.RecordRequestLatency(BrokerId, telemetryStartTimestamp);
-        return response;
+        private const int MaxPoolSize = 256;
+        private const int ConsumerActive = 0;
+        private const int ConsumerAbandoned = 1;
+        private const int ConsumerReturned = 2;
+        private const int CompletionReady = 1;
+        private const int ConsumerReady = 2;
+        private const int ReturnReady = CompletionReady | ConsumerReady;
+
+        private static readonly ConcurrentStack<PooledPipelinedResponse<TRequest, TResponse>> Pool = new();
+        private static int s_poolCount;
+
+        private ManualResetValueTaskSourceCore<TResponse> _core = new()
+        {
+            RunContinuationsAsynchronously = true
+        };
+        private readonly Action _pendingContinuation;
+        private KafkaConnection? _connection;
+        private PooledPendingRequest? _pending;
+        private ValueTask<PooledResponseBuffer> _pendingTask;
+        private CancellationToken _cancellationToken;
+        private CancellationTokenRegistration _callerRegistration;
+        private CancellationTokenSourcePool.PooledCancellationTokenSource? _timeoutCts;
+        private int _correlationId;
+        private short _apiVersion;
+        private bool _callerOwnsTimeout;
+        private bool _canceled;
+        private long _telemetryStartTimestamp;
+        private int _consumerState;
+        private int _returnReadiness;
+
+        private PooledPipelinedResponse()
+        {
+            _pendingContinuation = CompletePendingResponse;
+        }
+
+        internal static int ApproximatePoolCount => Volatile.Read(ref s_poolCount);
+
+        public static PipelinedResponse<TResponse> Rent(
+            KafkaConnection connection,
+            PooledPendingRequest pending,
+            int correlationId,
+            short apiVersion,
+            bool callerOwnsTimeout,
+            long telemetryStartTimestamp,
+            CancellationToken cancellationToken)
+        {
+            if (!Pool.TryPop(out var operation))
+            {
+                operation = new PooledPipelinedResponse<TRequest, TResponse>();
+            }
+            else
+            {
+                Interlocked.Decrement(ref s_poolCount);
+            }
+
+            operation.Initialize(
+                connection,
+                pending,
+                correlationId,
+                apiVersion,
+                callerOwnsTimeout,
+                telemetryStartTimestamp,
+                cancellationToken);
+            return new PipelinedResponse<TResponse>(operation, operation._core.Version);
+        }
+
+        private void Initialize(
+            KafkaConnection connection,
+            PooledPendingRequest pending,
+            int correlationId,
+            short apiVersion,
+            bool callerOwnsTimeout,
+            long telemetryStartTimestamp,
+            CancellationToken cancellationToken)
+        {
+            _connection = connection;
+            _pending = pending;
+            _correlationId = correlationId;
+            _apiVersion = apiVersion;
+            _callerOwnsTimeout = callerOwnsTimeout;
+            _telemetryStartTimestamp = telemetryStartTimestamp;
+            _cancellationToken = cancellationToken;
+            _canceled = false;
+            _consumerState = ConsumerActive;
+            _returnReadiness = 0;
+            connection.LogWaitingForResponse(correlationId);
+
+            if (callerOwnsTimeout && cancellationToken.CanBeCanceled)
+            {
+                pending.RegisterCancellation(cancellationToken);
+            }
+            else
+            {
+                _timeoutCts = connection._timeoutCtsPool.Rent();
+                _timeoutCts.CancelAfter(connection._options.RequestTimeout);
+                if (cancellationToken.CanBeCanceled)
+                {
+                    _callerRegistration = cancellationToken.Register(
+                        static state => ((CancellationTokenSource)state!).Cancel(),
+                        _timeoutCts);
+                }
+
+                pending.RegisterCancellation(_timeoutCts.Token);
+            }
+
+            _pendingTask = pending.AsValueTask();
+            var awaiter = _pendingTask.GetAwaiter();
+            if (awaiter.IsCompleted)
+                CompletePendingResponse();
+            else
+                awaiter.UnsafeOnCompleted(_pendingContinuation);
+        }
+
+        private void CompletePendingResponse()
+        {
+            var connection = _connection!;
+            var pending = _pending!;
+            var responseReceived = false;
+            TResponse response = default!;
+            Exception? exception = null;
+
+            try
+            {
+                var pooledBuffer = _pendingTask.GetAwaiter().GetResult();
+                responseReceived = true;
+                connection.LogResponseReceived(_correlationId);
+
+                response = ParsePipelinedResponse<TRequest, TResponse>(
+                    pooledBuffer,
+                    _apiVersion,
+                    pending.CheckCrcs);
+
+                connection.Touch();
+                connection._telemetryMetricCollector?.RecordRequestLatency(
+                    connection.BrokerId,
+                    _telemetryStartTimestamp);
+            }
+            catch (OperationCanceledException) when (_cancellationToken.IsCancellationRequested)
+            {
+                exception = _callerOwnsTimeout
+                    ? connection.CreateResponseTimeoutException(
+                        KafkaMessageMetadata<TRequest, TResponse>.ApiKey,
+                        _correlationId)
+                    : new OperationCanceledException(_cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                exception = connection.CreateResponseTimeoutException(
+                    KafkaMessageMetadata<TRequest, TResponse>.ApiKey,
+                    _correlationId);
+            }
+            catch (Exception responseException)
+            {
+                exception = responseException;
+            }
+            finally
+            {
+                pending.DisposeRegistration();
+                _callerRegistration.Dispose();
+                _callerRegistration = default;
+                _timeoutCts?.Dispose();
+                _timeoutCts = null;
+                connection.CompletePipelinedResponse(pending, _correlationId, responseReceived);
+            }
+
+            var returnAbandoned = Interlocked.CompareExchange(
+                ref _consumerState,
+                ConsumerReturned,
+                ConsumerAbandoned) == ConsumerAbandoned;
+            var token = _core.Version;
+            Volatile.Read(ref PipelinedResponseBeforePublishTestHook)?.Invoke();
+            if (exception is null)
+            {
+                _core.SetResult(response);
+            }
+            else
+            {
+                _canceled = exception is OperationCanceledException;
+                _core.SetException(exception);
+            }
+
+            // Abandon can win after the pre-publication check. Claim it again only after
+            // publishing the terminal result. The return handshake prevents an active
+            // consumer from pooling/re-renting this source until this completion frame has
+            // finished both checks, avoiding an ABA race on _consumerState.
+            returnAbandoned |= Interlocked.CompareExchange(
+                ref _consumerState,
+                ConsumerReturned,
+                ConsumerAbandoned) == ConsumerAbandoned;
+            if (returnAbandoned)
+            {
+                try
+                {
+                    _ = _core.GetResult(token);
+                }
+                catch
+                {
+                    // Abandoned callers intentionally discard terminal errors.
+                }
+
+                SignalReturnReady(ConsumerReady);
+            }
+
+            SignalReturnReady(CompletionReady);
+        }
+
+        public void Abandon(short token)
+        {
+            if (token != _core.Version
+                || Interlocked.CompareExchange(
+                    ref _consumerState,
+                    ConsumerAbandoned,
+                    ConsumerActive) != ConsumerActive)
+            {
+                return;
+            }
+
+            ReturnIfAbandoned();
+        }
+
+        private void ReturnIfAbandoned()
+        {
+            if (_core.GetStatus(_core.Version) == ValueTaskSourceStatus.Pending
+                || Interlocked.CompareExchange(
+                    ref _consumerState,
+                    ConsumerReturned,
+                    ConsumerAbandoned) != ConsumerAbandoned)
+            {
+                return;
+            }
+
+            try
+            {
+                _ = _core.GetResult(_core.Version);
+            }
+            catch
+            {
+                // Abandoned callers intentionally discard terminal errors.
+            }
+
+            SignalReturnReady(ConsumerReady);
+        }
+
+        private void SignalReturnReady(int readiness)
+        {
+            var previous = Interlocked.Or(ref _returnReadiness, readiness);
+            if (previous != ReturnReady && (previous | readiness) == ReturnReady)
+                ReturnToPool();
+        }
+
+        private void ReturnToPool()
+        {
+            _connection = null;
+            _pending = null;
+            _pendingTask = default;
+            _cancellationToken = default;
+            _correlationId = 0;
+            _apiVersion = 0;
+            _callerOwnsTimeout = false;
+            _canceled = false;
+            _telemetryStartTimestamp = 0;
+            _returnReadiness = 0;
+            _core.Reset();
+
+            if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
+            {
+                Pool.Push(this);
+            }
+            else
+            {
+                Interlocked.Decrement(ref s_poolCount);
+            }
+        }
+
+        TResponse IValueTaskSource<TResponse>.GetResult(short token)
+        {
+            try
+            {
+                return _core.GetResult(token);
+            }
+            finally
+            {
+                if (Interlocked.CompareExchange(
+                    ref _consumerState,
+                    ConsumerReturned,
+                    ConsumerActive) == ConsumerActive)
+                {
+                    SignalReturnReady(ConsumerReady);
+                }
+            }
+        }
+
+        ValueTaskSourceStatus IValueTaskSource<TResponse>.GetStatus(short token)
+        {
+            var status = _core.GetStatus(token);
+            return _canceled && status == ValueTaskSourceStatus.Faulted
+                ? ValueTaskSourceStatus.Canceled
+                : status;
+        }
+
+        void IValueTaskSource<TResponse>.OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags)
+            => _core.OnCompleted(continuation, state, token, flags);
     }
 
     /// <summary>
@@ -852,43 +1166,35 @@ public sealed partial class KafkaConnection :
 
             LogResponseReceived(correlationId);
 
-            var isFetchResponse = KafkaMessageMetadata<TRequest, TResponse>.ApiKey == ApiKey.Fetch;
-
-            if (isFetchResponse)
-            {
-                return ParseFetchResponse<TRequest, TResponse>(
-                    pooledBuffer,
-                    apiVersion,
-                    pending.CheckCrcs);
-            }
-            else
-            {
-                try
-                {
-                    var reader = new KafkaProtocolReader(pooledBuffer.Data);
-                    return KafkaMessageMetadata<TRequest, TResponse>.ReadResponse(ref reader, apiVersion);
-                }
-                finally
-                {
-                    pooledBuffer.Dispose();
-                }
-            }
+            return ParsePipelinedResponse<TRequest, TResponse>(
+                pooledBuffer,
+                apiVersion,
+                pending.CheckCrcs);
         }
         finally
         {
-            if (TryRemovePendingRequest(correlationId, out var removed))
-            {
-                _pendingRequestPool.Return(removed.Request);
+            CompletePipelinedResponse(pending, correlationId, responseReceived);
+        }
+    }
 
-                // Broker may still send a response for a timed-out/cancelled request.
-                // Record it so the receive loop discards silently instead of warning.
-                // If the receive loop already called TryComplete (and lost the CAS),
-                // this entry becomes a harmless no-op cleaned up by DisposeAsync.
-                if (!responseReceived)
-                {
-                    _cancelledCorrelationIds.TryAdd(correlationId);
-                }
-            }
+    private static TResponse ParsePipelinedResponse<TRequest, TResponse>(
+        PooledResponseBuffer pooledBuffer,
+        short apiVersion,
+        bool checkCrcs)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        if (KafkaMessageMetadata<TRequest, TResponse>.ApiKey == ApiKey.Fetch)
+            return ParseFetchResponse<TRequest, TResponse>(pooledBuffer, apiVersion, checkCrcs);
+
+        try
+        {
+            var reader = new KafkaProtocolReader(pooledBuffer.Data);
+            return KafkaMessageMetadata<TRequest, TResponse>.ReadResponse(ref reader, apiVersion);
+        }
+        finally
+        {
+            pooledBuffer.Dispose();
         }
     }
 

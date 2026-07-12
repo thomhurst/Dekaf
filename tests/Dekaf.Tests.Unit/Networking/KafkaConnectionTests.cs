@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Security;
@@ -215,6 +216,175 @@ public sealed class KafkaConnectionTests
 
             var act = async () => await sendTask;
             await Assert.That(act).Throws<TimeoutException>();
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    [NotInParallel]
+    [Timeout(10_000)]
+    public async Task PipelinedResponse_AbandonRace_ReturnsOperationToPool(
+        bool abandonBeforeCompletion,
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var baseline = KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>();
+            var expectedAfterReturn = Math.Max(1, baseline);
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) });
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            using var callerTimeout = new CancellationTokenSource();
+
+            var response = await ((IKafkaPipelinedWriteCompletionConnection)connection)
+                .SendPipelinedWithCallerTimeoutAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                    new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                    apiVersion: 3,
+                    callerTimeout.Token);
+            await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+
+            if (abandonBeforeCompletion)
+                response.Abandon();
+
+            await callerTimeout.CancelAsync();
+            if (!abandonBeforeCompletion)
+            {
+                while (!response.IsCompleted)
+                    await Task.Yield();
+                response.Abandon();
+            }
+
+            while (KafkaConnection.GetPipelinedResponsePoolCount<
+                       ApiVersionsRequest,
+                       ApiVersionsResponse>() < expectedAfterReturn)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Yield();
+            }
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    [Timeout(10_000)]
+    public async Task PipelinedResponse_AbandonDuringPublication_ReturnsOperationToPool(
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var beforePublish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePublish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        KafkaConnection.PipelinedResponseBeforePublishTestHook = () =>
+        {
+            beforePublish.TrySetResult();
+            releasePublish.Task.GetAwaiter().GetResult();
+        };
+
+        try
+        {
+            var baseline = KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>();
+            var expectedAfterReturn = Math.Max(1, baseline);
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                options: new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) });
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            using var callerTimeout = new CancellationTokenSource();
+
+            var response = await ((IKafkaPipelinedWriteCompletionConnection)connection)
+                .SendPipelinedWithCallerTimeoutAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                    new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                    apiVersion: 3,
+                    callerTimeout.Token);
+            await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+
+            var cancelTask = callerTimeout.CancelAsync();
+            await beforePublish.Task.WaitAsync(cancellationToken);
+            response.Abandon();
+            releasePublish.TrySetResult();
+            await cancelTask.WaitAsync(cancellationToken);
+
+            while (KafkaConnection.GetPipelinedResponsePoolCount<
+                       ApiVersionsRequest,
+                       ApiVersionsResponse>() < expectedAfterReturn)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Yield();
+            }
+        }
+        finally
+        {
+            releasePublish.TrySetResult();
+            KafkaConnection.PipelinedResponseBeforePublishTestHook = null;
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    [Timeout(10_000)]
+    public async Task PipelinedResponse_ParsesAndReturnsOperationToPool(
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var baseline = KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>();
+            var expectedAfterReturn = Math.Max(1, baseline);
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+
+            var response = await ((IKafkaPipelinedWriteCompletionConnection)connection)
+                .SendPipelinedAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                    new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                    apiVersion: 3,
+                    cancellationToken);
+            var requestFrame = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));
+            await serverClient.GetStream().WriteAsync(
+                BuildApiVersionsV3ResponseFrame(correlationId),
+                cancellationToken);
+
+            while (!response.IsCompleted)
+                await Task.Yield();
+            var parsed = response.GetResult();
+
+            await Assert.That(parsed.ErrorCode).IsEqualTo(ErrorCode.None);
+            await Assert.That(parsed.ApiKeys).HasSingleItem();
+            await Assert.That(KafkaConnection.GetPipelinedResponsePoolCount<
+                ApiVersionsRequest,
+                ApiVersionsResponse>()).IsEqualTo(expectedAfterReturn);
         }
         finally
         {
@@ -654,6 +824,26 @@ public sealed class KafkaConnectionTests
             validateServerCertificateHostName: false);
 
         await Assert.That(result).IsEqualTo(SslPolicyErrors.None);
+    }
+
+    private static byte[] BuildApiVersionsV3ResponseFrame(int correlationId)
+    {
+        var bodyBuffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(bodyBuffer);
+        writer.WriteInt16(0);
+        writer.WriteUnsignedVarInt(2);
+        writer.WriteInt16((short)ApiKey.ApiVersions);
+        writer.WriteInt16(0);
+        writer.WriteInt16(3);
+        writer.WriteEmptyTaggedFields();
+        writer.WriteInt32(0);
+        writer.WriteEmptyTaggedFields();
+
+        var frame = new byte[8 + bodyBuffer.WrittenCount];
+        BinaryPrimitives.WriteInt32BigEndian(frame, frame.Length - 4);
+        BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(4), correlationId);
+        bodyBuffer.WrittenSpan.CopyTo(frame.AsSpan(8));
+        return frame;
     }
 
     private static async Task<byte[]> ReadRequestFrameAsync(NetworkStream stream, CancellationToken cancellationToken)

@@ -2339,10 +2339,22 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         .SendPipelinedAfterWriteAsync<EndTxnRequest, EndTxnResponse>(
                             request, apiVersion, cancellationToken)
                         .ConfigureAwait(false);
-                    var requestWrittenCallback = afterRequestWrittenAsync;
-                    afterRequestWrittenAsync = null;
-                    await requestWrittenCallback().ConfigureAwait(false);
-                    response = await responseTask.ConfigureAwait(false);
+                    var responseConsumptionStarted = false;
+                    try
+                    {
+                        var requestWrittenCallback = afterRequestWrittenAsync;
+                        afterRequestWrittenAsync = null;
+                        await requestWrittenCallback().ConfigureAwait(false);
+
+                        var responseValueTask = responseTask.AsValueTask();
+                        responseConsumptionStarted = true;
+                        response = await responseValueTask.ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        if (!responseConsumptionStarted)
+                            responseTask.Abandon();
+                    }
                 }
             }
 

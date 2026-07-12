@@ -1,3 +1,4 @@
+using System.Threading.Tasks.Sources;
 using Dekaf.Protocol;
 
 namespace Dekaf.Networking;
@@ -104,17 +105,75 @@ public interface IKafkaConnection : IAsyncDisposable
 
 internal interface IKafkaPipelinedWriteCompletionConnection
 {
-    ValueTask<Task<TResponse>> SendPipelinedAfterWriteAsync<TRequest, TResponse>(
+    ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse;
 
-    ValueTask<Task<TResponse>> SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
+    ValueTask<PipelinedResponse<TResponse>> SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse;
+}
+
+internal interface IPipelinedResponseSource<TResponse> : IValueTaskSource<TResponse>
+{
+    void Abandon(short token);
+}
+
+internal readonly struct PipelinedResponse<TResponse>
+{
+    private readonly Task<TResponse>? _task;
+    private readonly IPipelinedResponseSource<TResponse>? _source;
+    private readonly short _token;
+
+    public PipelinedResponse(Task<TResponse> task) => _task = task;
+
+    public PipelinedResponse(IPipelinedResponseSource<TResponse> source, short token)
+    {
+        _source = source;
+        _token = token;
+    }
+
+    public bool IsCompleted => _task?.IsCompleted
+        ?? _source!.GetStatus(_token) != ValueTaskSourceStatus.Pending;
+
+    public bool IsFaulted => _task?.IsFaulted
+        ?? _source!.GetStatus(_token) == ValueTaskSourceStatus.Faulted;
+
+    public bool IsCanceled => _task?.IsCanceled
+        ?? _source!.GetStatus(_token) == ValueTaskSourceStatus.Canceled;
+
+    public int Id => _task?.Id ?? 0;
+
+    public TResponse GetResult() => _task is not null
+        ? _task.GetAwaiter().GetResult()
+        : _source!.GetResult(_token);
+
+    public ValueTask<TResponse> AsValueTask() => _task is not null
+        ? new ValueTask<TResponse>(_task)
+        : new ValueTask<TResponse>(_source!, _token);
+
+    public Task<TResponse> AsTask() => _task ?? AsValueTask().AsTask();
+
+    public void UnsafeOnCompleted(Action continuation)
+    {
+        if (_task is not null)
+        {
+            _task.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(continuation);
+            return;
+        }
+
+        _source!.OnCompleted(
+            static state => ((Action)state!).Invoke(),
+            continuation,
+            _token,
+            ValueTaskSourceOnCompletedFlags.None);
+    }
+
+    public void Abandon() => _source?.Abandon(_token);
 }

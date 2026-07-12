@@ -141,6 +141,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly ILogger _logger;
     private readonly Action<int>? _onBrokerThrottle;
     private readonly Action? _onBlockedBucketRequeued;
+    private readonly Action? _onPipelinedResponseAcquired;
     private readonly Func<long> _getTimestamp;
     private readonly Func<int, CancellationToken, ValueTask> _delayForThrottle;
     private readonly TimeSpan _disposalDrainTimeout;
@@ -154,7 +155,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // HandleTimedOutRequests (Java pattern) checks request timeout centrally and fails all
     // pending responses on timeout, invalidating the connection.
     private readonly record struct PendingResponse(
-        Task<ProduceResponse> ResponseTask,
+        PipelinedResponse<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
         int[] BatchGenerations,
         int Count,
@@ -170,7 +171,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// it is returned by <see cref="ReturnBatchesArray"/>.
         /// </summary>
         public static PendingResponse Create(
-            Task<ProduceResponse> responseTask, ReadyBatch[] batches, int[] generations,
+            PipelinedResponse<ProduceResponse> responseTask, ReadyBatch[] batches, int[] generations,
             int count, long encodedBytes, long requestStartTime, long rttStartTime)
             => new(responseTask, batches, generations, count, encodedBytes,
                 requestStartTime, rttStartTime);
@@ -679,7 +680,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action? onBlockedBucketRequeued = null,
         BrokerUnackedByteBudget? unackedBudget = null,
         TimeSpan? disposalDrainTimeout = null,
-        Func<bool>? usesTransactionV2 = null)
+        Func<bool>? usesTransactionV2 = null,
+        Action? onPipelinedResponseAcquired = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -703,6 +705,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _getTimestamp = getTimestamp ?? Stopwatch.GetTimestamp;
         _delayForThrottle = delayForThrottle ?? DelayForThrottleAsync;
         _onBlockedBucketRequeued = onBlockedBucketRequeued;
+        _onPipelinedResponseAcquired = onPipelinedResponseAcquired;
         _disposalDrainTimeout = disposalDrainTimeout ?? DisposalDrainTimeout;
 
         _eventChannel = Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
@@ -1750,6 +1753,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     redeliver, disposedException,
                                     recoveredBatches, recoveredBatchSet);
                         }
+                        pr.ResponseTask.Abandon();
                         pr.ReturnBatchesArray();
                     }
                     Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
@@ -2123,7 +2127,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             batches[i]?.ReleaseResourcePin();
     }
 
-    private ValueTask<Task<ProduceResponse>> SendPipelinedAfterWriteAsync(
+    private ValueTask<PipelinedResponse<ProduceResponse>> SendPipelinedAfterWriteAsync(
         IKafkaConnection connection,
         ProduceRequest request,
         short apiVersion)
@@ -2300,7 +2304,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 if (task.IsFaulted || task.IsCanceled)
                 {
-                    var ex = task.Exception?.InnerException ?? new OperationCanceledException();
+                    Exception ex;
+                    try
+                    {
+                        _ = task.GetResult();
+                        ex = new OperationCanceledException();
+                    }
+                    catch (Exception responseException)
+                    {
+                        ex = responseException;
+                    }
                     LogResponseFailed(ex, _brokerId);
                     _pinnedConnections[connIdx] = null; // Invalidate only the affected connection
 
@@ -2327,7 +2340,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 }
 
-                var response = task.Result;
+                var response = task.GetResult();
                 ObserveBrokerThrottle(response.ThrottleTimeMs);
                 var allPartitionsSucceeded = true;
                 // Reuse caller-provided dictionary to avoid per-response allocation.
@@ -2670,6 +2683,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
+                pending.ResponseTask.Abandon();
                 pending.ReturnBatchesArray();
             }
 
@@ -2967,6 +2981,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // array — catch blocks must NOT return them to ArrayPool, or they will be recycled
         // while PendingResponse still references them (causing cross-request batch contamination).
         var pendingResponseAdded = false;
+        var responseTask = default(PipelinedResponse<ProduceResponse>);
         try
         {
             // Assign sequences at send time (Java Kafka Sender pattern).
@@ -3150,10 +3165,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Use the connection-owned timeout path for pipelined sends. The send loop can
                 // have multiple responses in flight on this connection; a reusable caller-owned
                 // CTS would let a later send reset or cancel an earlier response timeout.
-                var responseTask = await SendPipelinedAfterWriteAsync(
+                responseTask = await SendPipelinedAfterWriteAsync(
                     connection,
                     request,
                     (short)apiVersion).ConfigureAwait(false);
+                _onPipelinedResponseAcquired?.Invoke();
                 // Response RTT starts after the request is written. Including request
                 // construction and TCP write time biases admission-rate samples low.
                 var rttStartTime = Stopwatch.GetTimestamp();
@@ -3236,8 +3252,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Unlike ContinueWith(ExecuteSynchronously), UnsafeOnCompleted schedules the
                     // callback on the ThreadPool rather than running inline on the completing thread.
                     // This is intentional — it keeps the I/O completion thread free.
-                    responseTask.ConfigureAwait(false).GetAwaiter()
-                        .UnsafeOnCompleted(_responseCompletionCallback);
+                    responseTask.UnsafeOnCompleted(_responseCompletionCallback);
                 }
 
                 // A request limit of one keeps its partition muted until the response.
@@ -3351,7 +3366,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // The generations snapshot transfers to PendingResponse along with the batches
             // array; ReturnBatchesArray returns both. On every other path it is owned here.
             if (!pendingResponseAdded)
+            {
+                responseTask.Abandon();
                 ArrayPool<int>.Shared.Return(generations);
+            }
         }
     }
 
@@ -4324,6 +4342,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                     }
 
+                    pr.ResponseTask.Abandon();
                     pr.ReturnBatchesArray();
                 }
 
