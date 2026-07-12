@@ -38,6 +38,11 @@ chmod +x "$exe"
 export DOTNET_GCConserveMemory=9
 
 for category in "${categories[@]}"; do
+  if [ "$tfm" = "aot" ] && [ "$category" = "Interop" ]; then
+    echo "Skipping Interop for NativeAOT because Confluent.Kafka requires runtime reflection"
+    continue
+  fi
+
   echo "::group::Category $category"
   args=(
     --hangdump
