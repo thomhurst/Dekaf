@@ -260,11 +260,18 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
             if (recheckAt != 0 && now >= recheckAt
                 && Interlocked.CompareExchange(ref _admissionRecheckTickCount, 0, recheckAt) == recheckAt)
             {
-                _accumulator?.DrainPendingAppends();
+                var drainStarted = _accumulator?.DrainPendingAppends() ?? true;
                 if (Volatile.Read(ref _completed) != 0)
                     return;
 
                 now = Dekaf.MonotonicClock.GetMilliseconds();
+                if (!drainStarted)
+                {
+                    // A concurrent drainer may have taken its queue snapshot before this
+                    // append was re-enqueued. Preserve a near-term retry instead of silently
+                    // falling back to the max.block.ms deadline.
+                    Interlocked.CompareExchange(ref _admissionRecheckTickCount, now + 1, 0);
+                }
             }
 
             ArmNextTimer(now);

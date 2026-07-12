@@ -166,6 +166,24 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task Admission_ExpiredProbeUsesMinimumObservedDuringProbe()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(0.101));
+
+        // Refresh the old 100ms minimum, then observe 5ms while the drain probe is open.
+        budget.OnAcked(ackedBytes: 20_000, rttTicks: Seconds(0.200), nowTicks: T0 + Seconds(10.2));
+        budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0 + Seconds(10.25));
+        budget.Charge(2_000);
+
+        // Once the probe expires without another ack, admission must use the refreshed
+        // 5ms minimum (1,000-byte budget), not the stale 100ms minimum (15,000 bytes).
+        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(10.401))).IsTrue();
+    }
+
+    [Test]
     public async Task MinimumRtt_LateAckAfterEmptyProbeRetainsPriorMinimum()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);

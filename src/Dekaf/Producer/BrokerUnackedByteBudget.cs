@@ -300,13 +300,25 @@ internal sealed class BrokerUnackedByteBudget
     private void RecomputeBudget()
     {
         var minRttProbeActive = _minRttProbeUntilTimestamp != 0;
-        var budget = ComputeBudget(minRttProbeActive, _probeUntilTimestamp != 0);
+        var budget = ComputeBudget(
+            minRttProbeActive,
+            _probeUntilTimestamp != 0,
+            _minRttSeconds);
         if (minRttProbeActive)
         {
+            var postProbeMinRttSeconds = _minRttProbeMinimumSeconds != double.MaxValue
+                ? _minRttProbeMinimumSeconds
+                : _minRttSeconds;
             Volatile.Write(ref _budgetAfterMinRttProbeBytes,
-                ComputeBudget(minRttProbeActive: false, capacityProbeActive: false));
+                ComputeBudget(
+                    minRttProbeActive: false,
+                    capacityProbeActive: false,
+                    minRttSeconds: postProbeMinRttSeconds));
             Volatile.Write(ref _probeBudgetAfterMinRttProbeBytes,
-                ComputeBudget(minRttProbeActive: false, capacityProbeActive: true));
+                ComputeBudget(
+                    minRttProbeActive: false,
+                    capacityProbeActive: true,
+                    minRttSeconds: postProbeMinRttSeconds));
         }
         else
         {
@@ -317,7 +329,10 @@ internal sealed class BrokerUnackedByteBudget
         Volatile.Write(ref _budgetBytes, budget);
     }
 
-    private long ComputeBudget(bool minRttProbeActive, bool capacityProbeActive)
+    private long ComputeBudget(
+        bool minRttProbeActive,
+        bool capacityProbeActive,
+        double minRttSeconds)
     {
         long budget;
         if (_rateMaxCount == 0)
@@ -329,7 +344,7 @@ internal sealed class BrokerUnackedByteBudget
         else
         {
             var horizonSeconds = _hasMinRttSample && !minRttProbeActive
-                ? Math.Max(_targetSeconds, RttSafetyMultiplier * _minRttSeconds)
+                ? Math.Max(_targetSeconds, RttSafetyMultiplier * minRttSeconds)
                 : _targetSeconds;
             var estimatedBytes = _rateMaxValues[_rateMaxHead] * horizonSeconds;
             if (capacityProbeActive && !minRttProbeActive)

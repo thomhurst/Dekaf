@@ -1760,14 +1760,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// the drain lock, we re-check for pending items with available memory to prevent
     /// missed signals (a release could arrive while we hold the lock).
     /// </remarks>
-    internal void DrainPendingAppends()
+    /// <returns>
+    /// <see langword="false"/> only when another thread already owns the drain guard;
+    /// otherwise <see langword="true"/>.
+    /// </returns>
+    internal bool DrainPendingAppends()
     {
         if (_pendingAppends.IsEmpty)
-            return;
+            return true;
 
         // Only one thread drains at a time — others return immediately.
         if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
-            return;
+            return false;
 
         var ownsDrainGuard = true;
         try
@@ -1776,7 +1780,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 // Bail if accumulator is being disposed — DisposeAsync will drain the queue.
                 if (Volatile.Read(ref _disposed) != 0)
-                    return;
+                    return true;
 
                 var madeProgress = false;
                 lock (_pendingAppendQueueLock)
@@ -1885,12 +1889,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     || _pendingAppends.IsEmpty
                     || (ulong)Volatile.Read(ref _bufferedBytes) >= (ulong)Volatile.Read(ref _maxBufferMemory))
                 {
-                    return;
+                    return true;
                 }
 
                 // Re-acquire the drain lock for another pass
                 if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
-                    return; // Another thread took over
+                    return true; // Another thread took over
 
                 ownsDrainGuard = true;
             }
