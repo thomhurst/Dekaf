@@ -152,17 +152,18 @@ public class AdaptiveScalingTests
 
     [Test]
     [Arguments(true, 1, 10, 2, true)]
+    [Arguments(true, 1, 10, 0, false)]
     [Arguments(true, 1, 10, 1, false)]
     [Arguments(true, 10, 10, 20, false)]
     [Arguments(false, 1, 10, 20, false)]
-    public async Task IsSendLoopPressureScaleUseful_GatesOnAdaptiveCeilingAndPartitionFanout(
+    public async Task IsPartitionPressureScaleUseful_GatesOnAdaptiveCeilingAndPartitionFanout(
         bool adaptiveScalingEnabled,
         int connectionCount,
         int maxConnectionsPerBroker,
         int knownPartitionCount,
         bool expected)
     {
-        var isUseful = BrokerSender.IsSendLoopPressureScaleUseful(
+        var isUseful = BrokerSender.IsPartitionPressureScaleUseful(
             adaptiveScalingEnabled,
             connectionCount,
             maxConnectionsPerBroker,

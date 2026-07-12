@@ -2074,7 +2074,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void RecordSendLoopPressureIfScaleUseful()
     {
-        if (IsSendLoopPressureScaleUseful(
+        if (IsPartitionPressureScaleUseful(
             _adaptiveScalingEnabled,
             _connectionCount,
             _maxConnectionsPerBroker,
@@ -4309,13 +4309,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _lastUnackedBlockObserved = unackedBlockEvents;
             _lastUnackedBlockObservedMs = now;
         }
+        var usefulUnackedBlockDelta = IsPartitionPressureScaleUseful(
+            _adaptiveScalingEnabled,
+            _connectionCount,
+            _maxConnectionsPerBroker,
+            _knownPartitions.Count)
+            ? unackedBlockDelta
+            : 0;
         var scalePressureDelta = ComputeScalePressureDelta(
-            bufferPressureDelta + unackedBlockDelta, sendLoopPressureDelta);
+            bufferPressureDelta + usefulUnackedBlockDelta, sendLoopPressureDelta);
         var hasScalePressure = scalePressureDelta >= ScalePressureDeltaThreshold;
 
         // Phase 2: Check if we should start a new scale-up
         if (sendLoopPressureDelta >= ScalePressureDeltaThreshold
-            || unackedBlockDelta >= ScalePressureDeltaThreshold
+            || usefulUnackedBlockDelta >= ScalePressureDeltaThreshold
             || (utilization >= ScaleUtilizationThreshold && hasScalePressure))
         {
             // High utilization — reset low-utilization tracking
@@ -4645,7 +4652,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     internal static long ComputeScalePressureDelta(long bufferPressureDelta, long sendLoopPressureDelta) =>
         Math.Max(bufferPressureDelta, sendLoopPressureDelta);
 
-    internal static bool IsSendLoopPressureScaleUseful(
+    internal static bool IsPartitionPressureScaleUseful(
         bool adaptiveScalingEnabled,
         int connectionCount,
         int maxConnectionsPerBroker,

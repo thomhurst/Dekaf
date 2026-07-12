@@ -4310,13 +4310,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Checks the broker admission gate, then reserves buffer memory — in that order, so a
-    /// gate-blocked append never leaks a reservation. This is the single choke point for
+    /// Uses the hot path only when no queued or actively draining append owns FIFO priority,
+    /// then checks the broker admission gate and reserves buffer memory — in that order, so
+    /// a gate-blocked append never leaks a reservation. This is the single choke point for
     /// every append entry path; call this instead of <see cref="TryReserveMemory"/> directly.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryAdmitAndReserve(string topic, int partition, int recordSize)
-        => !IsBrokerAdmissionBlocked(topic, partition, recordBlockEvent: true)
+        => Volatile.Read(ref _draining) == 0
+            && _pendingAppends.IsEmpty
+            && !IsBrokerAdmissionBlocked(topic, partition, recordBlockEvent: true)
             && TryReserveMemory(recordSize);
 
     /// <summary>

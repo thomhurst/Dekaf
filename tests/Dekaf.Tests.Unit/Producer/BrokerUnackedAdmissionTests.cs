@@ -177,6 +177,52 @@ public sealed class BrokerUnackedAdmissionTests
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task QueuedAppend_PreventsLaterFastPathBypass(CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(capOverride: 1);
+        var accumulator = new RecordAccumulator(options, resolveLeaderId: (_, _) => LeaderNodeId);
+        var metadataManager = AccumulatorTestHelpers.CreateMetadataManager("test-topic", 1, LeaderNodeId);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
+            await AppendUntilSealedAsync(accumulator, "test-topic", stopOnceCharged: budget);
+
+            var first = accumulator.AppendAsync(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, PooledMemory.Null, null, 0, null, null, cancellationToken);
+            await Assert.That(first.IsCompleted).IsFalse();
+
+            // Model the race where an ack reopens the gate before its drain call wins.
+            // A later hot-path append must not leapfrog the already queued record.
+            var chargedBytes = budget.UnackedBytes;
+            budget.Release(chargedBytes);
+            var completion = pool.Rent();
+            var bypassed = accumulator.TryAppendWithCompletion(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, PooledMemory.Null, null, 0, completion);
+            await Assert.That(bypassed).IsFalse();
+            pool.Return(completion);
+
+            // Restore the real batch charge, then exit it through production cleanup. Its
+            // release drains the original append without double-releasing the budget.
+            budget.Charge(chargedBytes);
+            foreach (var batch in DrainSealedBatches(accumulator, metadataManager))
+                ExitAndReturn(accumulator, batch);
+
+            await Assert.That(await first).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task AsyncAppend_TimesOutWithMaxBlock_WhenGateStaysClosed()
     {
         // Generous MaxBlockMs for CI thread-pool starvation, same rationale as MaxBlockMsTests.
