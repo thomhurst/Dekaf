@@ -719,6 +719,7 @@ public static class Program
             new ProducerAsyncIdempotentStressTest(),
             new ConfluentProducerAsyncIdempotentStressTest(),
             new TransactionalProducerStressTest(),
+            new ConfluentTransactionalProducerStressTest(),
             new ProducerRoundTripStressTest(),
             new ConfluentProducerRoundTripStressTest(),
             new ConsumerStressTest(),

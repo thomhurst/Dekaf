@@ -1,50 +1,44 @@
-using Dekaf.Compression.Lz4;
-using Dekaf.Compression.Snappy;
-using Dekaf.Compression.Zstd;
-using Dekaf.Consumer;
-using Dekaf.Producer;
-using Dekaf.Protocol.Messages;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
+using ConfluentKafka = Confluent.Kafka;
 
 namespace Dekaf.StressTests.Scenarios;
 
-internal sealed class TransactionalProducerStressTest : IStressTestScenario
+internal sealed class ConfluentTransactionalProducerStressTest : IStressTestScenario
 {
-    internal const int RecordsPerTransaction = 100;
-    internal const int AbortEveryTransactions = 4;
-
     public string Name => "producer-transactional";
-    public string Client => "Dekaf";
+    public string Client => "Confluent";
 
-    public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
+    public async Task<StressTestResult> RunAsync(
+        StressTestOptions options,
+        CancellationToken cancellationToken)
     {
         var messageValue = new string('x', options.MessageSizeBytes);
         var runId = $"tx-{Guid.NewGuid():N}";
         var throughput = new ThroughputTracker();
         var startedAt = DateTime.UtcNow;
-
-        var builder = Kafka.CreateProducer<string, string>()
-            .WithLoggerFactory(StressClientLogging.LoggerFactory)
-            .WithBootstrapServers(options.BootstrapServers)
-            .WithClientId("stress-producer-transactional-dekaf")
-            .WithTransactionalId($"stress-{runId}")
-            .WithAcks(Acks.All)
-            .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
-            .WithBatchSize(options.BatchSize)
-            .WithBufferMemory(StressTestHelpers.ProducerBufferMemoryBytes);
-
-        _ = options.Compression switch
+        var config = new ConfluentKafka.ProducerConfig
         {
-            "lz4" => builder.UseLz4Compression(),
-            "snappy" => builder.UseSnappyCompression(),
-            "zstd" => builder.UseZstdCompression(),
-            _ => builder
+            BootstrapServers = options.BootstrapServers,
+            ClientId = "stress-producer-transactional-confluent",
+            TransactionalId = $"stress-{runId}",
+            EnableIdempotence = true,
+            Acks = ConfluentKafka.Acks.All,
+            LingerMs = options.LingerMs,
+            BatchSize = options.BatchSize,
+            QueueBufferingMaxKbytes = ConfluentStressTestHelpers.QueueBufferingMaxKbytes,
+            QueueBufferingMaxMessages = ConfluentStressTestHelpers.QueueBufferingMaxMessages,
+            CompressionType = options.Compression switch
+            {
+                "lz4" => ConfluentKafka.CompressionType.Lz4,
+                "snappy" => ConfluentKafka.CompressionType.Snappy,
+                "zstd" => ConfluentKafka.CompressionType.Zstd,
+                _ => ConfluentKafka.CompressionType.None
+            }
         };
 
-        StressTestHelpers.ConfigureProducerDeliveryDiagnostics(builder, options);
-        var producer = await builder.BuildAsync(cancellationToken).ConfigureAwait(false);
-        await producer.InitTransactionsAsync(cancellationToken).ConfigureAwait(false);
+        using var producer = new ConfluentKafka.ProducerBuilder<string, string>(config).Build();
+        producer.InitTransactions(StressTestHelpers.OperationTimeout);
         await WarmUpAsync(producer, options.Topic, cancellationToken).ConfigureAwait(false);
 
         GC.Collect();
@@ -55,9 +49,11 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         runCts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
-        Console.WriteLine($"  Running Dekaf transactional EOS stress test for {options.DurationMinutes} minutes...");
-        Console.WriteLine($"  Pattern: {AbortEveryTransactions - 1} committed transaction(s), then 1 aborted; " +
-            $"{RecordsPerTransaction:N0} records each");
+        Console.WriteLine(
+            $"  Running Confluent transactional EOS stress test for {options.DurationMinutes} minutes...");
+        Console.WriteLine(
+            $"  Pattern: {TransactionalProducerStressTest.AbortEveryTransactions - 1} committed transaction(s), " +
+            $"then 1 aborted; {TransactionalProducerStressTest.RecordsPerTransaction:N0} records each");
         Console.WriteLine($"  Run id: {runId}");
         StressTestHelpers.LogResourceUsage("Initial");
 
@@ -73,13 +69,16 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         while (!runCts.IsCancellationRequested)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var shouldCommit = transactionIndex % AbortEveryTransactions != AbortEveryTransactions - 1;
+            var shouldCommit = transactionIndex % TransactionalProducerStressTest.AbortEveryTransactions !=
+                               TransactionalProducerStressTest.AbortEveryTransactions - 1;
             var transactionAccepted = 0L;
-            await using var transaction = producer.BeginTransaction();
+            producer.BeginTransaction();
 
             try
             {
-                for (var recordIndex = 0; recordIndex < RecordsPerTransaction; recordIndex++)
+                for (var recordIndex = 0;
+                     recordIndex < TransactionalProducerStressTest.RecordsPerTransaction;
+                     recordIndex++)
                 {
                     var ordinal = shouldCommit
                         ? committedMessages + transactionAccepted
@@ -88,9 +87,8 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
                         ? TransactionalSequenceOracle.CommittedKey(runId, ordinal)
                         : TransactionalSequenceOracle.AbortedKey(runId, ordinal);
 
-                    await transaction.ProduceAsync(new ProducerMessage<string, string>
+                    await producer.ProduceAsync(options.Topic, new ConfluentKafka.Message<string, string>
                     {
-                        Topic = options.Topic,
                         Key = key,
                         Value = messageValue
                     }, cancellationToken).ConfigureAwait(false);
@@ -101,24 +99,25 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
 
                 if (shouldCommit)
                 {
-                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    producer.CommitTransaction(StressTestHelpers.OperationTimeout);
                     committedMessages += transactionAccepted;
                 }
                 else
                 {
-                    await transaction.AbortAsync(cancellationToken).ConfigureAwait(false);
+                    producer.AbortTransaction(StressTestHelpers.OperationTimeout);
                     abortedMessages += transactionAccepted;
                 }
 
                 transactionIndex++;
                 progress.RecordMessage();
             }
-            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            catch (Exception exception)
+                when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
-                throughput.RecordError(exception, "Transactional produce loop", throughput.MessageCount);
+                throughput.RecordError(exception, "Confluent transactional produce loop", throughput.MessageCount);
                 try
                 {
-                    await transaction.AbortAsync(CancellationToken.None).ConfigureAwait(false);
+                    producer.AbortTransaction(StressTestHelpers.OperationTimeout);
                     if (shouldCommit)
                         failedCommitMessages += transactionAccepted;
                     else
@@ -126,7 +125,10 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
                 }
                 catch (Exception abortException)
                 {
-                    throughput.RecordError(abortException, "Abort failed transaction", throughput.MessageCount);
+                    throughput.RecordError(
+                        abortException,
+                        "Abort failed Confluent transaction",
+                        throughput.MessageCount);
                 }
 
                 break;
@@ -151,10 +153,7 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
             runId,
             throughput,
             cancellationToken).ConfigureAwait(false);
-        var producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
-        await DisposeProducerAsync(producer, throughput).ConfigureAwait(false);
-
-        var verification = await VerifyReadCommittedAsync(
+        var verification = VerifyReadCommitted(
             options,
             runId,
             throughput.MessageCount,
@@ -162,7 +161,7 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
             abortedMessages,
             failedCommitMessages,
             sentinelsCommitted,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken);
 
         Console.WriteLine(
             $"  Transaction verification: accepted={verification.AcceptedMessages:N0}, " +
@@ -186,29 +185,27 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
             DeliveredMessages = verification.DeliveredMessages,
             GcStats = gcStats.ToSnapshot(),
             CpuTimeSeconds = throughput.CpuTimeSeconds,
-            ProducerDeliveryDiagnostics = producerDiagnostics,
             TransactionVerification = verification
         };
     }
 
     private static async Task WarmUpAsync(
-        IKafkaProducer<string, string> producer,
+        ConfluentKafka.IProducer<string, string> producer,
         string topic,
         CancellationToken cancellationToken)
     {
-        Console.WriteLine("  Warming up Dekaf transactional producer...");
-        await using var transaction = producer.BeginTransaction();
-        await transaction.ProduceAsync(new ProducerMessage<string, string>
+        Console.WriteLine("  Warming up Confluent transactional producer...");
+        producer.BeginTransaction();
+        await producer.ProduceAsync(topic, new ConfluentKafka.Message<string, string>
         {
-            Topic = topic,
             Key = "transactional-warmup",
             Value = "warmup"
         }, cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        producer.CommitTransaction(StressTestHelpers.OperationTimeout);
     }
 
     private static async Task<bool> CommitPartitionSentinelsAsync(
-        IKafkaProducer<string, string> producer,
+        ConfluentKafka.IProducer<string, string> producer,
         StressTestOptions options,
         string runId,
         ThroughputTracker throughput,
@@ -216,45 +213,31 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
     {
         try
         {
-            await using var transaction = producer.BeginTransaction();
+            producer.BeginTransaction();
             for (var partition = 0; partition < options.Partitions; partition++)
             {
-                await transaction.ProduceAsync(new ProducerMessage<string, string>
-                {
-                    Topic = options.Topic,
-                    Key = TransactionalSequenceOracle.SentinelKey(runId, partition),
-                    Value = "sentinel",
-                    Partition = partition
-                }, cancellationToken).ConfigureAwait(false);
+                await producer.ProduceAsync(
+                    new ConfluentKafka.TopicPartition(options.Topic, partition),
+                    new ConfluentKafka.Message<string, string>
+                    {
+                        Key = TransactionalSequenceOracle.SentinelKey(runId, partition),
+                        Value = "sentinel"
+                    },
+                    cancellationToken).ConfigureAwait(false);
             }
 
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            producer.CommitTransaction(StressTestHelpers.OperationTimeout);
             return true;
         }
-        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (Exception exception)
+            when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            throughput.RecordError(exception, "Commit partition sentinels", throughput.MessageCount);
+            throughput.RecordError(exception, "Commit Confluent partition sentinels", throughput.MessageCount);
             return false;
         }
     }
 
-    private static async Task DisposeProducerAsync(
-        IKafkaProducer<string, string> producer,
-        ThroughputTracker throughput)
-    {
-        try
-        {
-            await producer.DisposeAsync().AsTask()
-                .WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None)
-                .ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            throughput.RecordError(exception, "Dispose transactional producer", throughput.MessageCount);
-        }
-    }
-
-    private static async Task<TransactionVerificationSnapshot> VerifyReadCommittedAsync(
+    private static TransactionVerificationSnapshot VerifyReadCommitted(
         StressTestOptions options,
         string runId,
         long acceptedMessages,
@@ -277,21 +260,23 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         verificationProgress.Start();
         using var verificationWatchdog = options.ProgressWatchdog.Track(
             verificationProgress,
-            client: "Dekaf",
+            client: "Confluent",
             scenario: "producer-transactional-read-committed-verification");
-
-        await using var consumer = await Kafka.CreateConsumer<string, string>()
-            .WithLoggerFactory(StressClientLogging.LoggerFactory)
-            .WithBootstrapServers(options.BootstrapServers)
-            .WithClientId("stress-transaction-verifier")
-            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync(cancellationToken).ConfigureAwait(false);
-
-        var partitions = Enumerable.Range(0, options.Partitions)
-            .Select(partition => new TopicPartition(options.Topic, partition))
-            .ToArray();
-        consumer.Assign(partitions);
+        var config = new ConfluentKafka.ConsumerConfig
+        {
+            BootstrapServers = options.BootstrapServers,
+            ClientId = "stress-transaction-verifier-confluent",
+            GroupId = $"stress-transaction-verifier-{Guid.NewGuid():N}",
+            AutoOffsetReset = ConfluentKafka.AutoOffsetReset.Earliest,
+            EnableAutoCommit = false,
+            IsolationLevel = ConfluentKafka.IsolationLevel.ReadCommitted
+        };
+        using var consumer = new ConfluentKafka.ConsumerBuilder<string, string>(config).Build();
+        consumer.Assign(Enumerable.Range(0, options.Partitions).Select(partition =>
+            new ConfluentKafka.TopicPartitionOffset(
+                options.Topic,
+                partition,
+                ConfluentKafka.Offset.Beginning)));
 
         var verificationMinutes = Math.Clamp(options.DurationMinutes, 2, 30);
         using var verificationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -299,18 +284,18 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
 
         try
         {
-            await foreach (var record in consumer.ConsumeAsync(verificationCts.Token).ConfigureAwait(false))
+            while (!oracle.AllSentinelsSeen)
             {
+                var record = consumer.Consume(verificationCts.Token);
                 verificationProgress.RecordMessage(0);
-                oracle.Observe(record.Key);
-                if (oracle.AllSentinelsSeen)
-                    break;
+                oracle.Observe(record.Message.Key);
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             Console.WriteLine(
-                $"  Warning: read_committed verification timed out after {verificationMinutes:N0} minute(s).");
+                $"  Warning: Confluent read_committed verification timed out after " +
+                $"{verificationMinutes:N0} minute(s).");
         }
         finally
         {
