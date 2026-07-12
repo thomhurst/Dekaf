@@ -3857,21 +3857,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void CompleteMigrations(int connectionIndex)
     {
-        var pendingList = _pendingResponsesByConnection[connectionIndex];
-        _migrationRemovalBuffer.Clear();
-
-        foreach (var (topicPartition, oldConnection) in _migratingPartitions)
+        // The send loop is the production owner. Serialize the reflection-driven timeout
+        // test path too so it cannot race this reusable scratch buffer with the loop.
+        lock (_migrationRemovalBuffer)
         {
-            if (oldConnection != connectionIndex)
-                continue;
+            var pendingList = _pendingResponsesByConnection[connectionIndex];
+            _migrationRemovalBuffer.Clear();
 
-            // Empty connection is the common completion case and avoids rescanning batches.
-            if (pendingList.Count == 0 || !HasInflightForPartition(connectionIndex, topicPartition))
-                _migrationRemovalBuffer.Add(topicPartition);
+            foreach (var (topicPartition, oldConnection) in _migratingPartitions)
+            {
+                if (oldConnection != connectionIndex)
+                    continue;
+
+                // Empty connection is the common completion case and avoids rescanning batches.
+                if (pendingList.Count == 0 || !HasInflightForPartition(connectionIndex, topicPartition))
+                    _migrationRemovalBuffer.Add(topicPartition);
+            }
+
+            for (var i = 0; i < _migrationRemovalBuffer.Count; i++)
+                _migratingPartitions.Remove(_migrationRemovalBuffer[i]);
         }
-
-        for (var i = 0; i < _migrationRemovalBuffer.Count; i++)
-            _migratingPartitions.Remove(_migrationRemovalBuffer[i]);
     }
 
     /// <summary>

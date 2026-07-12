@@ -255,6 +255,8 @@ public sealed class AdaptiveScaleDownTests
             {
                 pool.RegisterBroker(1, "localhost", 9092);
                 await pool.GetConnectionAsync(1, cancellationToken);
+                var metadataManager = GetField<MetadataManager>(sender, "_metadataManager");
+                metadataManager.Metadata.Update(CreateMetadata(leaderId: 1));
 
                 typeof(BrokerSender).GetMethod(
                         "GetConnectionForPartition",
@@ -264,34 +266,7 @@ public sealed class AdaptiveScaleDownTests
                 await Assert.That(reapedBeforeLeadershipLoss).IsEqualTo(1)
                     .Because("the routed slot remains retained while the broker still owns work");
 
-                var metadataManager = GetField<MetadataManager>(sender, "_metadataManager");
-                metadataManager.Metadata.Update(new MetadataResponse
-                {
-                    Brokers =
-                    [
-                        new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 },
-                        new BrokerMetadata { NodeId = 2, Host = "localhost", Port = 9093 }
-                    ],
-                    Topics =
-                    [
-                        new TopicMetadata
-                        {
-                            ErrorCode = ErrorCode.None,
-                            Name = Topic,
-                            Partitions =
-                            [
-                                new PartitionMetadata
-                                {
-                                    ErrorCode = ErrorCode.None,
-                                    PartitionIndex = 0,
-                                    LeaderId = 2,
-                                    ReplicaNodes = [2],
-                                    IsrNodes = [2]
-                                }
-                            ]
-                        }
-                    ]
-                });
+                metadataManager.Metadata.Update(CreateMetadata(leaderId: 2));
                 typeof(BrokerSender).GetMethod(
                         "UnmutePartition",
                         BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -337,6 +312,8 @@ public sealed class AdaptiveScaleDownTests
             {
                 pool.RegisterBroker(1, "localhost", 9092);
                 await pool.GetConnectionAsync(1);
+                GetField<MetadataManager>(sender, "_metadataManager")
+                    .Metadata.Update(CreateMetadata(leaderId: 1));
 
                 var getConnection = typeof(BrokerSender).GetMethod(
                     "GetConnectionForPartition",
@@ -427,6 +404,34 @@ public sealed class AdaptiveScaleDownTests
         batch.TrySetMemoryReleased(); // Skip accumulator memory tracking in tests
         return batch;
     }
+
+    private static MetadataResponse CreateMetadata(int leaderId) => new()
+    {
+        Brokers =
+        [
+            new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 },
+            new BrokerMetadata { NodeId = 2, Host = "localhost", Port = 9093 }
+        ],
+        Topics =
+        [
+            new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                Name = Topic,
+                Partitions =
+                [
+                    new PartitionMetadata
+                    {
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 0,
+                        LeaderId = leaderId,
+                        ReplicaNodes = [leaderId],
+                        IsrNodes = [leaderId]
+                    }
+                ]
+            }
+        ]
+    };
 
     private static ProduceResponse CreateSuccessResponseForAllPartitions() =>
         new()
