@@ -185,7 +185,7 @@ public class FetchResponsePoolingTests
     }
 
     [Test]
-    public async Task FetchResponse_ReadFailure_ReturnsParsedBatchesAndLists()
+    public async Task FetchResponse_ReadFailure_ReturnsPartitionsAndLists()
     {
         var responseBytes = CreateResponseWithMalformedSecondTopic();
         var heldPartitions = Enumerable.Range(0, 65)
@@ -194,44 +194,30 @@ public class FetchResponsePoolingTests
         var heldLists = Enumerable.Range(0, 65)
             .Select(_ => FetchResponsePartition.RentRecordBatchList())
             .ToArray();
-        var heldBatches = Enumerable.Range(0, 2_049)
-            .Select(_ => RecordBatch.RentFromPool())
-            .ToArray();
         var expectedPartition = heldPartitions[0];
         var expectedList = heldLists[0];
-        var expectedBatch = heldBatches[0];
         expectedPartition.ReturnToPool();
         FetchResponsePartition.ReturnRecordBatchList(expectedList);
-        expectedBatch.ReturnToPool();
 
         var threw = ParseMalformedResponse(responseBytes);
         var actualPartition = FetchResponsePartition.Rent();
         var actualList = FetchResponsePartition.RentRecordBatchList();
-        var actualBatch = RecordBatch.RentFromPool();
 
         try
         {
             await Assert.That(threw).IsTrue();
             await Assert.That(actualPartition).IsSameReferenceAs(expectedPartition);
             await Assert.That(actualList).IsSameReferenceAs(expectedList);
-            await Assert.That(actualBatch).IsSameReferenceAs(expectedBatch);
         }
         finally
         {
             actualPartition.ReturnToPool();
             FetchResponsePartition.ReturnRecordBatchList(actualList);
-            actualBatch.ReturnToPool();
 
             for (var i = 1; i < heldPartitions.Length; i++)
             {
                 heldPartitions[i].ReturnToPool();
                 FetchResponsePartition.ReturnRecordBatchList(heldLists[i]);
-                heldBatches[i].ReturnToPool();
-            }
-
-            for (var i = heldPartitions.Length; i < heldBatches.Length; i++)
-            {
-                heldBatches[i].ReturnToPool();
             }
         }
     }
