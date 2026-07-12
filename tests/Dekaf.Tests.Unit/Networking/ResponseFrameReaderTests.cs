@@ -310,11 +310,17 @@ internal static class ResponseFrameTestHelpers
 /// semantics. After the chunks are exhausted it either reports EOF or blocks
 /// until disposed (to simulate an idle connection).
 /// </summary>
-internal sealed class ScriptedReadStream(byte[][] chunks, bool blockAfterChunks = false) : Stream
+internal sealed class ScriptedReadStream(
+    byte[][] chunks,
+    bool blockAfterChunks = false,
+    bool runContinuationsAsynchronously = true) : Stream
 {
     private readonly Queue<byte[]> _chunks = new(chunks);
     private readonly TaskCompletionSource _readStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _disposed = new(
+        runContinuationsAsynchronously
+            ? TaskCreationOptions.RunContinuationsAsynchronously
+            : TaskCreationOptions.None);
     private byte[]? _current;
     private int _currentOffset;
 

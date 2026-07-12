@@ -202,7 +202,10 @@ public sealed class KafkaConnectionPipelinedTests
             "localhost",
             9092,
             options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(50) });
-        using var stream = new ScriptedReadStream([], blockAfterChunks: true);
+        using var stream = new ScriptedReadStream(
+            [],
+            blockAfterChunks: true,
+            runContinuationsAsynchronously: false);
         using var frameReader = CreateFrameReader(stream);
         using var receiveCts = new CancellationTokenSource();
         SetPrivateField(connection, "_frameReader", frameReader);
