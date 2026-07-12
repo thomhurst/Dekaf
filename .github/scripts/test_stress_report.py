@@ -2,6 +2,7 @@ import unittest
 
 from stress_report import (
     format_roundtrip_validation_table,
+    format_connection_scale_timeline,
     format_throughput_table,
     generate_scenario_tables,
     intra_run_throughput,
@@ -34,6 +35,38 @@ def stress_result(client, effective_rate, median_rate=None, is_message_bounded=F
 
 
 class StressReportTests(unittest.TestCase):
+    def test_connection_scale_timeline_correlates_nearest_throughput_sample(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["throughput"]["intervalSamples"] = [
+            {
+                "capturedAtUtc": "2026-07-12T02:20:40+00:00",
+                "elapsedSeconds": 10.0,
+                "messagesPerSecond": 1000.0,
+            },
+            {
+                "capturedAtUtc": "2026-07-12T02:20:50+00:00",
+                "elapsedSeconds": 20.0,
+                "messagesPerSecond": 2000.0,
+            },
+        ]
+        value["producerDeliveryDiagnostics"] = {
+            "connectionScaleEvents": [{
+                "occurredAtUtc": "2026-07-12T02:20:47+00:00",
+                "brokerId": 1,
+                "oldConnectionCount": 1,
+                "newConnectionCount": 2,
+                "bufferUtilization": 0.75,
+                "bufferPressureDelta": 120,
+                "sendLoopPressureDelta": 150,
+            }]
+        }
+
+        report = "\n".join(format_connection_scale_timeline([value], "Producer"))
+
+        self.assertIn("1→2", report)
+        self.assertIn("20.0s / 2,000 msg/s", report)
+        self.assertIn("120/150", report)
+
     def test_paired_latency_thresholds_flag_high_p99(self):
         confluent = stress_result("Confluent", effective_rate=1000)
         confluent.update({

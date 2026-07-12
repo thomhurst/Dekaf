@@ -1,6 +1,7 @@
 """Shared utilities for stress test result reporting."""
 
 from collections import defaultdict
+from datetime import datetime
 from math import isfinite
 from statistics import median
 
@@ -388,6 +389,67 @@ def format_throughput_table(results, title, include_ratio=False):
     return lines
 
 
+def format_connection_scale_timeline(results, title):
+    """Correlate producer connection changes with the nearest throughput interval."""
+    rows = []
+    for result in results:
+        diagnostics = result.get('producerDeliveryDiagnostics') or {}
+        for event in diagnostics.get('connectionScaleEvents') or []:
+            rows.append((result, event))
+    if not rows:
+        return []
+
+    rows.sort(key=lambda row: row[1].get('occurredAtUtc', ''))
+    lines = [
+        f"## Connection Scale Timeline - {title}",
+        "",
+        "| Client | Event UTC | Broker | Connections | Buffer | Pressure (buffer/send) | Nearest throughput sample |",
+        "|--------|-----------|-------:|-------------|-------:|------------------------|---------------------------|",
+    ]
+    for result, event in rows:
+        event_time = _parse_timestamp(event.get('occurredAtUtc'))
+        samples = result.get('throughput', {}).get('intervalSamples') or []
+        timestamped_samples = [
+            (sample, _parse_timestamp(sample.get('capturedAtUtc')))
+            for sample in samples
+        ]
+        timestamped_samples = [
+            (sample, captured_at)
+            for sample, captured_at in timestamped_samples
+            if captured_at is not None
+        ]
+        nearest = min(
+            timestamped_samples,
+            key=lambda item: abs((item[1] - event_time).total_seconds()),
+            default=(None, None),
+        )[0] if event_time is not None else None
+        sample_text = '-'
+        if nearest is not None:
+            sample_text = (
+                f"{nearest.get('elapsedSeconds', 0):.1f}s / "
+                f"{nearest.get('messagesPerSecond', 0):,.0f} msg/s"
+            )
+        lines.append(
+            f"| {result.get('client', 'Unknown')} | "
+            f"{event.get('occurredAtUtc', '-')} | {event.get('brokerId', '-')} | "
+            f"{event.get('oldConnectionCount', '-')}→{event.get('newConnectionCount', '-')} | "
+            f"{event.get('bufferUtilization', 0):.0%} | "
+            f"{event.get('bufferPressureDelta', 0):,}/{event.get('sendLoopPressureDelta', 0):,} | "
+            f"{sample_text} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _parse_timestamp(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
 def format_comparison_callout(results, title):
     """Generate Docusaurus admonition comparing Dekaf vs Confluent throughput."""
     dekaf = next((r for r in results if r.get('client', '').lower() == 'dekaf'), None)
@@ -564,6 +626,7 @@ def generate_scenario_tables(results, include_ratio=False, include_callout=False
             title = scenario_title(scenario_key, fallback_prefix)
             scenario_results = scenarios[scenario_key]
             output.extend(format_throughput_table(scenario_results, f"{title} Throughput", include_ratio=include_ratio))
+            output.extend(format_connection_scale_timeline(scenario_results, title))
             output.extend(format_transaction_verification(scenario_results))
             output.extend(format_roundtrip_validation_table(scenario_results))
             if include_callout:

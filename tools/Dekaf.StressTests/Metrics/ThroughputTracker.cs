@@ -16,6 +16,7 @@ internal sealed class ThroughputTracker
     private long _deliveryErrorCount;
     private readonly Stopwatch _stopwatch = new();
     private readonly List<double> _messagesPerSecondSamples = [];
+    private readonly List<ThroughputIntervalSample> _intervalSamples = [];
     private readonly object _samplesLock = new();
     private readonly List<ThroughputErrorSample> _errorSamples = [];
     private readonly object _errorsLock = new();
@@ -196,6 +197,12 @@ internal sealed class ThroughputTracker
             lock (_samplesLock)
             {
                 _messagesPerSecondSamples.Add(rate);
+                _intervalSamples.Add(new ThroughputIntervalSample
+                {
+                    CapturedAtUtc = DateTimeOffset.UtcNow,
+                    ElapsedSeconds = _stopwatch.Elapsed.TotalSeconds,
+                    MessagesPerSecond = rate
+                });
                 _sampledElapsedSeconds += elapsedSeconds;
             }
         }
@@ -232,10 +239,12 @@ internal sealed class ThroughputTracker
     public ThroughputSnapshot GetSnapshot()
     {
         List<double> samplesCopy;
+        List<ThroughputIntervalSample> intervalSamplesCopy;
         double sampledElapsedSeconds;
         lock (_samplesLock)
         {
             samplesCopy = [.. _messagesPerSecondSamples];
+            intervalSamplesCopy = [.. _intervalSamples];
             sampledElapsedSeconds = _sampledElapsedSeconds;
         }
 
@@ -255,6 +264,7 @@ internal sealed class ThroughputTracker
             AverageMessagesPerSecond = GetAverageMessagesPerSecond(),
             AverageMegabytesPerSecond = GetAverageMegabytesPerSecond(),
             MessagesPerSecondSamples = samplesCopy,
+            IntervalSamples = intervalSamplesCopy,
             SampledElapsedSeconds = sampledElapsedSeconds,
             ErrorSamples = errorSamplesCopy
         };
@@ -277,6 +287,7 @@ internal sealed class ThroughputSnapshot
     public required double AverageMessagesPerSecond { get; init; }
     public required double AverageMegabytesPerSecond { get; init; }
     public required List<double> MessagesPerSecondSamples { get; init; }
+    public List<ThroughputIntervalSample> IntervalSamples { get; init; } = [];
 
     /// <summary>
     /// Sum of intervals represented by <see cref="MessagesPerSecondSamples"/>. Excludes
@@ -285,6 +296,13 @@ internal sealed class ThroughputSnapshot
     public double SampledElapsedSeconds { get; init; }
 
     public List<ThroughputErrorSample> ErrorSamples { get; init; } = [];
+}
+
+internal sealed class ThroughputIntervalSample
+{
+    public required DateTimeOffset CapturedAtUtc { get; init; }
+    public required double ElapsedSeconds { get; init; }
+    public required double MessagesPerSecond { get; init; }
 }
 
 internal sealed class ThroughputErrorSample

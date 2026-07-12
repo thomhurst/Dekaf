@@ -31,6 +31,46 @@ public sealed class ProducerDeliveryDiagnosticsTests
     }
 
     [Test]
+    public async Task ConnectionScaleDiagnostics_Disabled_DoesNotRecordEvents()
+    {
+        await using var accumulator = new RecordAccumulator(CreateOptions());
+
+        accumulator.RecordConnectionScaleEvent(
+            brokerId: 1,
+            oldConnectionCount: 1,
+            newConnectionCount: 2,
+            bufferUtilization: 0.75,
+            bufferPressureDelta: 120,
+            sendLoopPressureDelta: 150);
+
+        var snapshot = accumulator.GetDeliveryDiagnosticsSnapshot();
+
+        await Assert.That(snapshot.ConnectionScaleEvents).IsEmpty();
+    }
+
+    [Test]
+    public async Task ConnectionScaleDiagnostics_Enabled_CapturesOrderedEvents()
+    {
+        await using var accumulator = new RecordAccumulator(
+            CreateOptions(enableDeliveryDiagnostics: true));
+
+        accumulator.RecordConnectionScaleEvent(1, 1, 2, 0.75, 120, 150);
+        accumulator.RecordConnectionScaleEvent(1, 2, 5, 0.82, 0, 340);
+
+        var events = accumulator.GetDeliveryDiagnosticsSnapshot().ConnectionScaleEvents;
+
+        await Assert.That(events.Count).IsEqualTo(2);
+        await Assert.That(events[0].BrokerId).IsEqualTo(1);
+        await Assert.That(events[0].OldConnectionCount).IsEqualTo(1);
+        await Assert.That(events[0].NewConnectionCount).IsEqualTo(2);
+        await Assert.That(events[0].Direction).IsEqualTo("up");
+        await Assert.That(events[0].BufferUtilization).IsEqualTo(0.75);
+        await Assert.That(events[0].BufferPressureDelta).IsEqualTo(120);
+        await Assert.That(events[0].SendLoopPressureDelta).IsEqualTo(150);
+        await Assert.That(events[1].OccurredAtUtc).IsGreaterThanOrEqualTo(events[0].OccurredAtUtc);
+    }
+
+    [Test]
     public async Task DeliveryDiagnostics_Disabled_DoesNotTrackTrace()
     {
         await using var accumulator = new RecordAccumulator(CreateOptions());
