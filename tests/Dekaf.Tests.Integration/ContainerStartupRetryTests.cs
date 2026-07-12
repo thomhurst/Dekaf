@@ -8,7 +8,9 @@ namespace Dekaf.Tests.Integration;
 public sealed class ContainerStartupRetryTests
 {
     [Test]
-    public async Task RunAsync_PortBindingCollision_UsesFreshAttempt()
+    [Arguments("Bind for 0.0.0.0:32769 failed: port is already allocated")]
+    [Arguments("failed to bind host port 0.0.0.0:58162/tcp: address already in use")]
+    public async Task RunAsync_PortBindingCollision_UsesFreshAttempt(string message)
     {
         var attempts = 0;
         var cleanups = 0;
@@ -17,7 +19,7 @@ public sealed class ContainerStartupRetryTests
             () => ++attempts == 1
                 ? Task.FromException(new DockerApiException(
                     HttpStatusCode.InternalServerError,
-                    "Bind for 0.0.0.0:32769 failed: port is already allocated"))
+                    message))
                 : Task.CompletedTask,
             () =>
             {

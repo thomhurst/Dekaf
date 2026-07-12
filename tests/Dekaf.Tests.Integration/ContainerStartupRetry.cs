@@ -45,7 +45,8 @@ internal static class ContainerStartupRetry
     internal static bool IsPortBindingCollision(Exception exception) =>
         Contains(exception, static candidate =>
             candidate is DockerApiException &&
-            candidate.Message.Contains("port is already allocated", StringComparison.OrdinalIgnoreCase));
+            (candidate.Message.Contains("port is already allocated", StringComparison.OrdinalIgnoreCase) ||
+             candidate.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase)));
 
     internal static bool IsKafkaStartupScriptBusy(Exception exception) =>
         Contains(exception, static candidate =>
