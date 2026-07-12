@@ -665,8 +665,11 @@ public sealed class BrokerSenderSendLoopTests
             accumulator,
             (_, _, _, _, _) => { },
             isTransactional: true,
-            tryEnsurePartitionsInTransaction: (_, _, _, _) =>
-                TransactionPartitionEnrollmentResult.Failed(enrollmentError));
+            tryEnsurePartitionsInTransaction: (batches, _, _, failedPartitions) =>
+            {
+                failedPartitions.Add(batches[0].TopicPartition);
+                return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
+            });
 
         try
         {
@@ -681,6 +684,83 @@ public sealed class BrokerSenderSendLoopTests
         }
         finally
         {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionEnrollmentFailure_UnmutesRetryPartition(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var secondResponse = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, secondResponse]);
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendCount = 0;
+        var (connectionPool, _) = CreateMockConnection(responses, () =>
+            sendSignals[Interlocked.Increment(ref sendCount) - 1].TrySetResult());
+        var options = CreateOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledgements = new[]
+        {
+            new TaskCompletionSource<Exception?>(),
+            new TaskCompletionSource<Exception?>()
+        };
+        var acknowledgementCount = 0;
+        var enrollmentAttempts = 0;
+        var enrollmentError = new TransactionException("Partition enrollment failed.");
+
+        TransactionPartitionEnrollmentResult TryEnsure(
+            ReadyBatch[] batches,
+            int count,
+            Action<Exception?> completed,
+            HashSet<TopicPartition> failedPartitions)
+        {
+            if (Interlocked.Increment(ref enrollmentAttempts) != 2)
+                return TransactionPartitionEnrollmentResult.Enrolled;
+
+            failedPartitions.Add(batches[0].TopicPartition);
+            return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
+        }
+
+        var sender = CreateSender(
+            connectionPool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) =>
+            {
+                var index = Interlocked.Increment(ref acknowledgementCount) - 1;
+                acknowledgements[index].TrySetResult(exception);
+            },
+            isTransactional: true,
+            tryEnsurePartitionsInTransaction: TryEnsure);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 0));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+            firstResponse.SetResult(CreateErrorResponse(
+                "test-topic", partition: 0, ErrorCode.NotLeaderOrFollower));
+            await Assert.That(await acknowledgements[0].Task.WaitAsync(cancellationToken))
+                .IsSameReferenceAs(enrollmentError);
+
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 0));
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+            await Assert.That(await acknowledgements[1].Task.WaitAsync(cancellationToken)).IsNull();
+        }
+        finally
+        {
+            firstResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 41));
+            secondResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskPool.DisposeAsync();

@@ -594,6 +594,7 @@ public sealed class TransactionTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var completeRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var requestCount = 0;
+        var failNextEnrollment = 0;
 
         async ValueTask AddPartitions(
             IReadOnlyList<TopicPartition> partitions,
@@ -601,6 +602,8 @@ public sealed class TransactionTests
         {
             if (Interlocked.Increment(ref requestCount) == 1)
                 throw new IOException("Transient connection failure");
+            if (Interlocked.Exchange(ref failNextEnrollment, 0) == 1)
+                throw new TransactionException("Partition enrollment failed.");
 
             requestStarted.TrySetResult([.. partitions]);
             await completeRequest.Task.WaitAsync(cancellationToken);
@@ -679,15 +682,56 @@ public sealed class TransactionTests
 
         var mixedBatches = new[] { batches[0], CreateEnrollmentBatch("topic-c", 2) };
         var mixedPendingPartitions = new HashSet<TopicPartition>();
+        var mixedEnrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var mixedResult = producer.TryEnsurePartitionsInTransaction(
             mixedBatches,
             mixedBatches.Length,
-            static _ => { },
+            mixedEnrollmentCompleted.SetResult,
             mixedPendingPartitions);
 
         await Assert.That(mixedResult.IsEnrolled).IsFalse();
         await Assert.That(mixedPendingPartitions).IsEquivalentTo(
             [new TopicPartition("topic-c", 2)]);
+        await Assert.That(await mixedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+
+        Interlocked.Exchange(ref failNextEnrollment, 1);
+        var failedBatch = CreateEnrollmentBatch("failed-topic", 0);
+        var failedEnrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var failedPendingPartitions = new HashSet<TopicPartition>();
+        var pendingFailure = producer.TryEnsurePartitionsInTransaction(
+            [failedBatch],
+            1,
+            failedEnrollmentCompleted.SetResult,
+            failedPendingPartitions);
+        await Assert.That(pendingFailure.IsEnrolled).IsFalse();
+        await Assert.That(await failedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+
+        failedPendingPartitions.Clear();
+        var failedResult = producer.TryEnsurePartitionsInTransaction(
+            [failedBatch],
+            1,
+            static _ => { },
+            failedPendingPartitions);
+        await Assert.That(failedResult.Error).IsTypeOf<TransactionException>();
+        await Assert.That(failedPendingPartitions).IsEquivalentTo([failedBatch.TopicPartition]);
+
+        var unrelatedBatch = CreateEnrollmentBatch("unrelated-topic", 0);
+        var unrelatedEnrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var unrelatedResult = producer.TryEnsurePartitionsInTransaction(
+            [unrelatedBatch],
+            1,
+            unrelatedEnrollmentCompleted.SetResult,
+            []);
+        await Assert.That(unrelatedResult.Error).IsNull();
+        await Assert.That(await unrelatedEnrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
+        await Assert.That(producer.TryEnsurePartitionsInTransaction(
+            [unrelatedBatch],
+            1,
+            static _ => { },
+            []).IsEnrolled).IsTrue();
     }
 
     [Test]

@@ -61,6 +61,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly CancellationTokenSource _senderCts;
     private readonly Task _senderTask;
     private readonly Task _lingerTask;
+    private readonly ConcurrentDictionary<Task, byte> _partitionEnrollmentTasks = new();
 
     // Per-broker sender threads: each broker gets a dedicated BrokerSender with its own
     // channel and send loop. The per-broker in-flight semaphore enables pipelining across
@@ -100,7 +101,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly HashSet<TopicPartition> _pendingTransactionPartitions = [];
     private readonly HashSet<TopicPartition> _transactionPartitionsBeingEnrolled = [];
     private readonly HashSet<Action<Exception?>> _partitionEnrollmentWaiters = [];
-    private Exception? _partitionEnrollmentError;
+    private readonly Dictionary<TopicPartition, Exception> _partitionEnrollmentErrors = [];
     private bool _partitionEnrollmentActive;
     private long _partitionEnrollmentGeneration;
     private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask> _addPartitionsToTransaction;
@@ -2993,8 +2994,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return TransactionPartitionEnrollmentResult.Enrolled;
             }
 
-            if (_partitionEnrollmentError is not null)
-                return TransactionPartitionEnrollmentResult.Failed(_partitionEnrollmentError);
+            Exception? enrollmentError = null;
+            for (var i = 0; i < count; i++)
+            {
+                var topicPartition = batches[i].TopicPartition;
+                if (!_partitionEnrollmentErrors.TryGetValue(topicPartition, out var partitionError))
+                    continue;
+
+                enrollmentPendingPartitions.Add(topicPartition);
+                enrollmentError ??= partitionError;
+            }
+
+            if (enrollmentError is not null)
+                return TransactionPartitionEnrollmentResult.Failed(enrollmentError);
 
             var allEnrolled = true;
             for (var i = 0; i < count; i++)
@@ -3022,7 +3034,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         if (startEnrollment)
-            _ = EnrollPendingTransactionPartitionsAsync(enrollmentGeneration);
+            TrackPartitionEnrollmentTask(EnrollPendingTransactionPartitionsAsync(enrollmentGeneration));
 
         return TransactionPartitionEnrollmentResult.Pending;
     }
@@ -3062,16 +3074,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     if (enrollmentGeneration != _partitionEnrollmentGeneration)
                         return;
 
-                    _partitionEnrollmentError = exception;
-                    _partitionEnrollmentActive = false;
-                    _pendingTransactionPartitions.Clear();
-                    _transactionPartitionsBeingEnrolled.Clear();
+                    foreach (var partition in partitions)
+                    {
+                        _transactionPartitionsBeingEnrolled.Remove(partition);
+                        _partitionEnrollmentErrors[partition] = exception;
+                    }
                     waiters = [.. _partitionEnrollmentWaiters];
                     _partitionEnrollmentWaiters.Clear();
                 }
 
-                NotifyPartitionEnrollmentWaiters(waiters, exception);
-                return;
+                NotifyPartitionEnrollmentWaiters(waiters, null);
+                continue;
             }
 
             Action<Exception?>[] completedWaiters;
@@ -3116,7 +3129,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         IReadOnlyList<TopicPartition> partitions,
         CancellationToken cancellationToken)
     {
-        const int maxRetries = 5;
         var retryDelayMs = 100;
 
         for (var attempt = 0; ; attempt++)
@@ -3127,10 +3139,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return;
             }
             catch (Exception exception) when (
-                exception is not TransactionException and not OperationCanceledException
-                && attempt < maxRetries - 1)
+                exception is not TransactionException and not OperationCanceledException)
             {
-                LogAddPartitionsToTxnRetriableError(attempt + 1, maxRetries, retryDelayMs);
+                LogAddPartitionsToTxnTransportRetry(attempt + 1, retryDelayMs);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                 retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
             }
@@ -3147,10 +3158,29 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _transactionPartitionsBeingEnrolled.Clear();
             Action<Exception?>[] waiters = [.. _partitionEnrollmentWaiters];
             _partitionEnrollmentWaiters.Clear();
-            _partitionEnrollmentError = null;
+            _partitionEnrollmentErrors.Clear();
             _partitionEnrollmentActive = false;
             return waiters;
         }
+    }
+
+    private void TrackPartitionEnrollmentTask(Task task)
+    {
+        _partitionEnrollmentTasks.TryAdd(task, 0);
+        if (task.IsCompleted)
+        {
+            _partitionEnrollmentTasks.TryRemove(task, out _);
+            return;
+        }
+
+        _ = task.ContinueWith(static (completedTask, state) =>
+        {
+            var tasks = (ConcurrentDictionary<Task, byte>)state!;
+            tasks.TryRemove(completedTask, out _);
+        }, _partitionEnrollmentTasks,
+        CancellationToken.None,
+        TaskContinuationOptions.ExecuteSynchronously,
+        TaskScheduler.Default);
     }
 
     private async Task LingerLoopAsync(CancellationToken cancellationToken)
@@ -4062,6 +4092,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // that entered the pipeline between the first sweep and BrokerSender disposal.
         _accumulator.ForceFailAllInFlightBatches();
 
+        var partitionEnrollmentTasks = _partitionEnrollmentTasks.Keys.ToArray();
+        if (partitionEnrollmentTasks.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(partitionEnrollmentTasks).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Enrollment failures are surfaced to their parked batches.
+            }
+        }
+
         _senderCts.Dispose();
         _transactionLock.Dispose();
         _initLock.Dispose();
@@ -4184,6 +4227,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "AddPartitionsToTxn retriable error (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
     private partial void LogAddPartitionsToTxnRetriableError(int attempt, int maxRetries, int delay);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "AddPartitionsToTxn transport failure (attempt {Attempt}), retrying in {Delay}ms")]
+    private partial void LogAddPartitionsToTxnTransportRetry(int attempt, int delay);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "EndTxn retriable error ({ErrorCode}, attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
     private partial void LogEndTxnRetriableError(ErrorCode errorCode, int attempt, int maxRetries, int delay);

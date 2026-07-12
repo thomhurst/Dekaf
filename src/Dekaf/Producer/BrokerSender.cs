@@ -1468,24 +1468,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 _transactionEnrollmentPendingPartitions);
                             if (enrollment.Error is not null)
                             {
-                                for (var i = 0; i < coalescedCount; i++)
-                                {
-                                    try
-                                    {
-                                        FailAndCleanupBatch(
-                                            coalescedBatches[i],
-                                            coalescedGenerations[i],
-                                            enrollment.Error);
-                                    }
-                                    catch (Exception cleanupError)
-                                    {
-                                        LogBatchCleanupStepFailed(cleanupError, _brokerId);
-                                    }
-                                }
-
-                                Array.Clear(coalescedBatches, 0, coalescedCount);
-                                Array.Clear(coalescedGenerations, 0, coalescedCount);
-                                coalescedCount = 0;
+                                FailCoalescedTransactionEnrollmentBatches(
+                                    coalescedBatches,
+                                    coalescedGenerations,
+                                    ref coalescedCount,
+                                    _transactionEnrollmentPendingPartitions,
+                                    enrollment.Error);
+                                _transactionEnrollmentPendingPartitions.Clear();
+                                MoveCoalescedToCarryOver(
+                                    coalescedBatches,
+                                    coalescedGenerations,
+                                    ref coalescedCount,
+                                    carryOver);
                                 continue;
                             }
 
@@ -1747,13 +1741,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 else if (carryOver.Count > 0)
                 {
-                    if (_transactionEnrollmentPendingPartitions.Count > 0)
-                    {
-                        if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
-                            break;
-                        continue;
-                    }
-
                     if (hasPendingSingleConnectionFireAndForgetSend)
                     {
                         await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
@@ -2387,6 +2374,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 }
 
+                FinalizeFailedTransactionEnrollmentRetry(batchReference.Batch);
                 try
                 {
                     FailAndCleanupBatch(batchReference.Batch, batchReference.Generation, error);
@@ -2397,6 +2385,57 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
         }
+    }
+
+    private void FailCoalescedTransactionEnrollmentBatches(
+        ReadyBatch[] batches,
+        int[] generations,
+        ref int count,
+        HashSet<TopicPartition> failedPartitions,
+        Exception error)
+    {
+        var writeIdx = 0;
+        for (var readIdx = 0; readIdx < count; readIdx++)
+        {
+            var batch = batches[readIdx];
+            var generation = generations[readIdx];
+            if (!batch.IsCurrentIncarnation(generation))
+            {
+                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                continue;
+            }
+
+            if (!failedPartitions.Contains(batch.TopicPartition))
+            {
+                batches[writeIdx] = batch;
+                generations[writeIdx] = generation;
+                writeIdx++;
+                continue;
+            }
+
+            FinalizeFailedTransactionEnrollmentRetry(batch);
+            try
+            {
+                FailAndCleanupBatch(batch, generation, error);
+            }
+            catch (Exception cleanupError)
+            {
+                LogBatchCleanupStepFailed(cleanupError, _brokerId);
+            }
+        }
+
+        Array.Clear(batches, writeIdx, count - writeIdx);
+        Array.Clear(generations, writeIdx, count - writeIdx);
+        count = writeIdx;
+    }
+
+    private void FinalizeFailedTransactionEnrollmentRetry(ReadyBatch batch)
+    {
+        if (!batch.IsRetry)
+            return;
+
+        batch.IsRetry = false;
+        UnmutePartition(batch.TopicPartition);
     }
 
     private void ObserveBrokerThrottle(int throttleTimeMs)
