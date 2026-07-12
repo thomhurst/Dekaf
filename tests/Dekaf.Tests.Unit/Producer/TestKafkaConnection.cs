@@ -33,6 +33,7 @@ internal sealed class TestKafkaConnection :
         TaskCreationOptions.RunContinuationsAsynchronously);
 
     public Func<ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWrite { get; set; }
+    public IPipelinedResponseSource<ProduceResponse>? PipelinedResponseSource { get; set; }
     public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout { get; set; }
     public Func<Type, object>? SendResponse { get; set; }
 
@@ -143,6 +144,12 @@ internal sealed class TestKafkaConnection :
         where TResponse : IKafkaResponse
     {
         Interlocked.Increment(ref SendPipelinedAfterWriteCalls);
+
+        if (PipelinedResponseSource is not null)
+        {
+            var source = (IPipelinedResponseSource<TResponse>)(object)PipelinedResponseSource;
+            return new PipelinedResponse<TResponse>(source, token: 0);
+        }
 
         if (SendProducePipelinedAfterWrite is null)
             throw new NotSupportedException();

@@ -1750,6 +1750,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     redeliver, disposedException,
                                     recoveredBatches, recoveredBatchSet);
                         }
+                        pr.ResponseTask.Abandon();
                         pr.ReturnBatchesArray();
                     }
                     Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
@@ -4333,6 +4334,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                     }
 
+                    pr.ResponseTask.Abandon();
                     pr.ReturnBatchesArray();
                 }
 
