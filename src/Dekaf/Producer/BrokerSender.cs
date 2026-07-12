@@ -1426,12 +1426,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                             if (!enrollment.IsEnrolled)
                             {
-                                MoveCoalescedToCarryOver(
+                                MoveEnrollmentPendingToCarryOver(
                                     coalescedBatches,
                                     coalescedGenerations,
                                     ref coalescedCount,
-                                    carryOver);
-                                continue;
+                                    carryOver,
+                                    _transactionEnrollmentPendingPartitions);
+                                if (coalescedCount == 0)
+                                    continue;
                             }
                         }
 
@@ -2219,6 +2221,44 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Array.Clear(batches, 0, count);
         Array.Clear(generations, 0, count);
         count = 0;
+    }
+
+    private void MoveEnrollmentPendingToCarryOver(
+        ReadyBatch[] batches,
+        int[] generations,
+        ref int count,
+        PartitionCarryOver carryOver,
+        HashSet<TopicPartition> pendingPartitions)
+    {
+        var writeIdx = 0;
+        for (var readIdx = 0; readIdx < count; readIdx++)
+        {
+            var batch = batches[readIdx];
+            var generation = generations[readIdx];
+            if (!batch.IsCurrentIncarnation(generation))
+            {
+                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                continue;
+            }
+
+            if (pendingPartitions.Contains(batch.TopicPartition))
+            {
+                var batchReference = new BatchReference(batch, generation);
+                if (batch.IsRetry)
+                    carryOver.AddFirst(batchReference);
+                else
+                    carryOver.AddAfterRetries(batchReference);
+                continue;
+            }
+
+            batches[writeIdx] = batch;
+            generations[writeIdx] = generation;
+            writeIdx++;
+        }
+
+        Array.Clear(batches, writeIdx, count - writeIdx);
+        Array.Clear(generations, writeIdx, count - writeIdx);
+        count = writeIdx;
     }
 
     private void ObserveBrokerThrottle(int throttleTimeMs)

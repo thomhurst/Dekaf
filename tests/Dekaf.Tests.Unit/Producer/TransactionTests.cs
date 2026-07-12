@@ -670,6 +670,61 @@ public sealed class TransactionTests
             [new TopicPartition("topic-c", 2)]);
     }
 
+    [Test]
+    public async Task TransactionPartitionEnrollment_ResetWakesWaitersAndIgnoresStaleCompletion()
+    {
+        var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async ValueTask AddPartitions(
+            IReadOnlyList<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            requestStarted.TrySetResult();
+            await completeRequest.Task.WaitAsync(cancellationToken);
+            requestReturned.TrySetResult();
+        }
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            TransactionalId = "test-txn-id",
+            CloseTimeoutMs = 100
+        };
+        await using var connectionPool = new ConnectionPool(
+            options.ClientId,
+            connectionOptions: null,
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) =>
+                throw new InvalidOperationException("Enrollment test must use the injected request callback."));
+        await using var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager,
+            DekafMemoryBudget.Global,
+            addPartitionsToTransaction: AddPartitions);
+        var batch = CreateEnrollmentBatch("topic-a", 0);
+        var enrollmentReset = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        producer.TryEnsurePartitionsInTransaction(
+            [batch],
+            1,
+            enrollmentReset.SetResult,
+            []);
+        await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        producer.FinalizeCompletedTransactionState();
+        await enrollmentReset.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        completeRequest.SetResult();
+        await requestReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(producer._partitionsInTransaction).IsEmpty();
+    }
+
     private static ReadyBatch CreateEnrollmentBatch(string topic, int partition)
     {
         var batch = new ReadyBatch();
