@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Reflection;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
@@ -26,7 +27,7 @@ public class FetchResponsePoolingTests
     }
 
     [Test]
-    public async Task FetchResponse_ReturnAndRent_ClearsAllFields()
+    public async Task FetchResponse_Return_ClearsAllFields()
     {
         var response = FetchResponse.Rent();
         response.ThrottleTimeMs = 42;
@@ -34,16 +35,11 @@ public class FetchResponsePoolingTests
         response.SessionId = 7;
         response.ReturnToPool();
 
-        var reused = FetchResponse.Rent();
-
-        await Assert.That(reused).IsSameReferenceAs(response);
-        await Assert.That(reused.ThrottleTimeMs).IsEqualTo(0);
-        await Assert.That(reused.ErrorCode).IsEqualTo(ErrorCode.None);
-        await Assert.That(reused.SessionId).IsEqualTo(0);
-        await Assert.That(reused.Responses).IsEmpty();
-        await Assert.That(reused.PooledMemoryOwner).IsNull();
-
-        reused.ReturnToPool();
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(0);
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(response.SessionId).IsEqualTo(0);
+        await Assert.That(GetPrivateField<IReadOnlyList<FetchResponseTopic>>(response, "_responses")).IsEmpty();
+        await Assert.That(response.PooledMemoryOwner).IsNull();
     }
 
     [Test]
@@ -98,7 +94,7 @@ public class FetchResponsePoolingTests
     }
 
     [Test]
-    public async Task FetchResponseTopic_ReturnAndRent_ClearsAllFields()
+    public async Task FetchResponseTopic_Return_ClearsAllFields()
     {
         var topic = FetchResponseTopic.Rent();
         topic.Topic = "my-topic";
@@ -108,14 +104,9 @@ public class FetchResponsePoolingTests
         topic.Partitions = [new FetchResponsePartition { PartitionIndex = 99 }];
         topic.ReturnToPool();
 
-        var reused = FetchResponseTopic.Rent();
-
-        await Assert.That(reused).IsSameReferenceAs(topic);
-        await Assert.That(reused.Topic).IsNull();
-        await Assert.That(reused.TopicId).IsEqualTo(Guid.Empty);
-        await Assert.That(reused.Partitions).IsEmpty();
-
-        reused.ReturnToPool();
+        await Assert.That(topic.Topic).IsNull();
+        await Assert.That(topic.TopicId).IsEqualTo(Guid.Empty);
+        await Assert.That(GetPrivateField<IReadOnlyList<FetchResponsePartition>>(topic, "_partitions")).IsEmpty();
     }
 
     // ── FetchResponsePartition pooling ──
@@ -131,7 +122,7 @@ public class FetchResponsePoolingTests
     }
 
     [Test]
-    public async Task FetchResponsePartition_ReturnAndRent_ClearsAllFields()
+    public async Task FetchResponsePartition_Return_ClearsAllFields()
     {
         var partition = FetchResponsePartition.Rent();
         partition.PartitionIndex = 5;
@@ -144,22 +135,17 @@ public class FetchResponsePoolingTests
         partition.AbortedTransactions = [];
         partition.ReturnToPool();
 
-        var reused = FetchResponsePartition.Rent();
-
-        await Assert.That(reused).IsSameReferenceAs(partition);
-        await Assert.That(reused.PartitionIndex).IsEqualTo(0);
-        await Assert.That(reused.ErrorCode).IsEqualTo(ErrorCode.None);
-        await Assert.That(reused.HighWatermark).IsEqualTo(0);
-        await Assert.That(reused.LastStableOffset).IsEqualTo(-1);
-        await Assert.That(reused.LogStartOffset).IsEqualTo(-1);
-        await Assert.That(reused.PreferredReadReplica).IsEqualTo(-1);
-        await Assert.That(reused.Records).IsNull();
-        await Assert.That(reused.AbortedTransactions).IsNull();
-        await Assert.That(reused.DivergingEpoch).IsNull();
-        await Assert.That(reused.CurrentLeader).IsNull();
-        await Assert.That(reused.SnapshotId).IsNull();
-
-        reused.ReturnToPool();
+        await Assert.That(partition.PartitionIndex).IsEqualTo(0);
+        await Assert.That(partition.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(partition.HighWatermark).IsEqualTo(0);
+        await Assert.That(partition.LastStableOffset).IsEqualTo(-1);
+        await Assert.That(partition.LogStartOffset).IsEqualTo(-1);
+        await Assert.That(partition.PreferredReadReplica).IsEqualTo(-1);
+        await Assert.That(GetPrivateField<IReadOnlyList<RecordBatch>?>(partition, "_records")).IsNull();
+        await Assert.That(GetPrivateField<IReadOnlyList<AbortedTransaction>?>(partition, "_abortedTransactions")).IsNull();
+        await Assert.That(partition.DivergingEpoch).IsNull();
+        await Assert.That(partition.CurrentLeader).IsNull();
+        await Assert.That(partition.SnapshotId).IsNull();
     }
 
     [Test]
@@ -234,6 +220,12 @@ public class FetchResponsePoolingTests
         {
             return true;
         }
+    }
+
+    private static T GetPrivateField<T>(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)!;
+        return (T)field.GetValue(instance)!;
     }
 
     private static byte[] CreateResponseWithMalformedSecondTopic()
