@@ -451,6 +451,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    [NotInParallel]
     public async Task RecordPollAsync_ActiveForegroundPollActivity_DoesNotExpireMember()
     {
         SetupSuccessfulConsumerProtocolJoin();
@@ -649,6 +650,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    [NotInParallel]
     [Timeout(5_000)]
     public async Task ConsumerProtocol_StaticMaxPollExpiry_RejoinsWithNegativeTwoAndSameMemberId(
         CancellationToken cancellationToken)
