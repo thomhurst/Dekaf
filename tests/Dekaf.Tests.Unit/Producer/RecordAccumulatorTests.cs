@@ -263,8 +263,8 @@ public class RecordAccumulatorTests
         var headerValue = new BlockingReadOnlyMemoryManager(new byte[] { 1, 2, 3, 4 });
         var headers = ProducerContainerPools.Headers.Rent(1);
         headers[0] = new Header("blocked", headerValue.ReadOnlyMemory);
-        var appendTask = Task.Run(async () =>
-            await accumulator.AppendFromSpansAsync(
+        var appendTask = RunOnDedicatedThread(() =>
+            accumulator.AppendFromSpansAsync(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 timestamp,
@@ -275,16 +275,19 @@ public class RecordAccumulatorTests
                 headers,
                 headerCount: 1,
                 callback: null,
-                CancellationToken.None));
+                CancellationToken.None).AsTask().GetAwaiter().GetResult());
 
         try
         {
             await headerValue.WaitUntilEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5));
 
-            var purgeTask = Task.Run(() => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()));
-            await WaitUntilAsync(
-                () => purgeTask.Status == TaskStatus.Running || purgeTask.IsCompleted,
-                TimeSpan.FromSeconds(5));
+            using var purgeStarted = new ManualResetEventSlim();
+            var purgeTask = RunOnDedicatedThread(() =>
+            {
+                purgeStarted.Set();
+                return accumulator.Purge(PurgeOptions.Queue, CreatePurgedException());
+            });
+            await Assert.That(purgeStarted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
             await Assert.That(purgeTask.IsCompleted).IsFalse();
 
             headerValue.Release();
@@ -413,8 +416,8 @@ public class RecordAccumulatorTests
         var headers = ProducerContainerPools.Headers.Rent(1);
         headers[0] = new Header("blocked", headerValue.ReadOnlyMemory);
         var disposed = false;
-        var appendTask = Task.Run(async () =>
-            await accumulator.AppendFromSpansAsync(
+        var appendTask = RunOnDedicatedThread(() =>
+            accumulator.AppendFromSpansAsync(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 timestamp,
@@ -425,7 +428,7 @@ public class RecordAccumulatorTests
                 headers,
                 headerCount: 1,
                 callback: null,
-                CancellationToken.None));
+                CancellationToken.None).AsTask().GetAwaiter().GetResult());
 
         try
         {
@@ -434,7 +437,11 @@ public class RecordAccumulatorTests
                 () => IsAppendInProgress(accumulator, topicPartition),
                 TimeSpan.FromSeconds(5));
 
-            var disposeTask = Task.Run(async () => await accumulator.DisposeAsync());
+            var disposeTask = RunOnDedicatedThread(() =>
+            {
+                accumulator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                return true;
+            });
             await WaitUntilAsync(
                 () => GetPrivateField<int>(accumulator, "_disposed") != 0 || disposeTask.IsCompleted,
                 TimeSpan.FromSeconds(5));
@@ -1639,7 +1646,6 @@ public class RecordAccumulatorTests
         var accumulator = new RecordAccumulator(options);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         ReadyBatch? drainedBatch = null;
 
         try
@@ -1677,24 +1683,13 @@ public class RecordAccumulatorTests
             await Assert.That(secondResult).IsTrue();
             await Assert.That(GetPrivateField<int>(accumulator, "_pendingAwaitedProduceCount")).IsEqualTo(1);
 
-            var drainTask = Task.Run(async () =>
-            {
-                while (!cts.Token.IsCancellationRequested)
-                {
-                    if (accumulator.TryDrainBatch(out var batch))
-                    {
-                        drainedBatch = batch;
-                        batch.CompleteSend(baseOffset: 20, DateTimeOffset.UtcNow);
-                        accumulator.OnBatchExitsPipeline(batch);
-                        return;
-                    }
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
 
-                    await accumulator.WaitForWakeupAsync(100).ConfigureAwait(false);
-                }
-            }, cts.Token);
+            await Assert.That(accumulator.TryDrainBatch(out drainedBatch)).IsTrue();
+            drainedBatch!.CompleteSend(baseOffset: 20, DateTimeOffset.UtcNow);
+            accumulator.OnBatchExitsPipeline(drainedBatch);
 
-            await accumulator.FlushAsync(cts.Token);
-            await drainTask;
+            await flushTask.WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(GetPrivateField<int>(accumulator, "_pendingAwaitedProduceCount")).IsEqualTo(0);
             await Assert.That(drainedBatch).IsNotNull();
@@ -3734,6 +3729,30 @@ public class RecordAccumulatorTests
 
             await Task.Yield();
         }
+    }
+
+    private static Task<T> RunOnDedicatedThread<T>(Func<T> action)
+    {
+        // These tests intentionally block one operation behind another. A dedicated
+        // thread keeps that coordination independent of full-suite ThreadPool pressure.
+        var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                completion.SetResult(action());
+            }
+            catch (Exception exception)
+            {
+                completion.SetException(exception);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "record-accumulator-test-worker"
+        };
+        thread.Start();
+        return completion.Task;
     }
 
     private sealed class LockAssertingReadOnlyMemoryManager(
