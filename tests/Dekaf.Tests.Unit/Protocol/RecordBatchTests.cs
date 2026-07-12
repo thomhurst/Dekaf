@@ -1165,12 +1165,11 @@ public class RecordBatchTests
         }
     }
 
-    #region Pool Reuse on Consumer Read Path Tests
+    #region Consumer Read Ownership and Producer Pool Tests
 
     [Test]
-    public async Task RecordBatch_Read_ReturnsBatchFromPool()
+    public async Task RecordBatch_Read_CreatesIndependentDisposableBatches()
     {
-        // Create a batch, write it, then read it back — the read path should use RentFromPool()
         var buffer = new ArrayBufferWriter<byte>();
 
         var originalBatch = new RecordBatch
@@ -1195,55 +1194,34 @@ public class RecordBatchTests
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
         var parsedBatch = RecordBatch.Read(ref reader);
 
-        // Verify the parsed batch has correct data
         await Assert.That(parsedBatch.BaseOffset).IsEqualTo(10L);
         await Assert.That(parsedBatch.BaseTimestamp).IsEqualTo(5000L);
         await Assert.That(parsedBatch.Records.Count).IsEqualTo(1);
         await Assert.That(parsedBatch.Records[0].Key.ToArray()).IsEquivalentTo("k"u8.ToArray());
 
-        // Dispose returns to pool
         parsedBatch.Dispose();
 
-        // Read again — should reuse the pooled batch instance
         var reader2 = new KafkaProtocolReader(buffer.WrittenMemory);
-        var reusedBatch = RecordBatch.Read(ref reader2);
+        using var secondBatch = RecordBatch.Read(ref reader2);
 
-        // The reused batch should have fresh data, not stale state
-        await Assert.That(reusedBatch.BaseOffset).IsEqualTo(10L);
-        await Assert.That(reusedBatch.Records.Count).IsEqualTo(1);
+        await Assert.That(ReferenceEquals(parsedBatch, secondBatch)).IsFalse();
 
-        reusedBatch.Dispose();
+        // A stale second dispose must not affect the next read batch.
+        parsedBatch.Dispose();
+        await Assert.That(secondBatch.BaseOffset).IsEqualTo(10L);
+        await Assert.That(secondBatch.Records.Count).IsEqualTo(1);
     }
 
     [Test]
-    public async Task RecordBatch_Dispose_ReturnsBatchToPoolForReuse()
+    public async Task RecordBatch_ProducerPool_ReturnsResetBatch()
     {
-        var buffer = new ArrayBufferWriter<byte>();
+        var returnedBatch = RecordBatch.RentFromPool();
+        returnedBatch.BaseOffset = 99;
+        returnedBatch.ProducerId = 42;
+        returnedBatch.ReturnToPool();
 
-        var originalBatch = new RecordBatch
-        {
-            BaseOffset = 0,
-            BaseTimestamp = 0,
-            MaxTimestamp = 0,
-            Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, IsKeyNull = true, Value = "v"u8.ToArray() }]
-        };
-
-        originalBatch.Write(buffer);
-
-        // Read a batch (this rents from pool)
-        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        var parsedBatch = RecordBatch.Read(ref reader);
-
-        // Access records to ensure they work
-        await Assert.That(parsedBatch.Records[0].Value.ToArray()).IsEquivalentTo("v"u8.ToArray());
-
-        // Dispose returns to pool
-        parsedBatch.Dispose();
-
-        // Rent from pool — should get back the same instance (or another pooled one)
         var rentedBatch = RecordBatch.RentFromPool();
 
-        // The rented batch should have reset state (defaults)
         await Assert.That(rentedBatch.BaseOffset).IsEqualTo(0L);
         await Assert.That(rentedBatch.BatchLength).IsEqualTo(0);
         await Assert.That(rentedBatch.PartitionLeaderEpoch).IsEqualTo(-1);
@@ -1252,36 +1230,7 @@ public class RecordBatchTests
         await Assert.That(rentedBatch.ProducerEpoch).IsEqualTo((short)-1);
         await Assert.That(rentedBatch.BaseSequence).IsEqualTo(-1);
 
-        // Clean up
         rentedBatch.ReturnToPool();
-    }
-
-    [Test]
-    public async Task RecordBatch_Dispose_CalledTwice_DoesNotDoubleReturnToPool()
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-
-        var originalBatch = new RecordBatch
-        {
-            BaseOffset = 0,
-            BaseTimestamp = 0,
-            MaxTimestamp = 0,
-            Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, IsKeyNull = true, Value = "v"u8.ToArray() }]
-        };
-
-        originalBatch.Write(buffer);
-
-        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        var parsedBatch = RecordBatch.Read(ref reader);
-
-        // Double dispose should not throw or corrupt the pool
-        parsedBatch.Dispose();
-        parsedBatch.Dispose();
-
-        // Pool should still be functional — rent and return without issues
-        var batch = RecordBatch.RentFromPool();
-        await Assert.That(batch).IsNotNull();
-        batch.ReturnToPool();
     }
 
     [Test]
@@ -1298,42 +1247,20 @@ public class RecordBatchTests
     [Test]
     public async Task RecordBatch_PooledBatch_ClearsStaleRecordsOnReturn()
     {
-        var buffer = new ArrayBufferWriter<byte>();
+        var parsedBatch = RecordBatch.RentFromPool();
+        parsedBatch.BaseOffset = 99;
+        parsedBatch.BaseTimestamp = 9999;
+        parsedBatch.MaxTimestamp = 9999;
+        parsedBatch.ProducerId = 42;
+        parsedBatch.ProducerEpoch = 7;
+        parsedBatch.BaseSequence = 100;
+        parsedBatch.Attributes = RecordBatchAttributes.IsTransactional;
 
-        var originalBatch = new RecordBatch
-        {
-            BaseOffset = 99,
-            BaseTimestamp = 9999,
-            MaxTimestamp = 9999,
-            ProducerId = 42,
-            ProducerEpoch = 7,
-            BaseSequence = 100,
-            Attributes = RecordBatchAttributes.IsTransactional,
-            Records =
-            [
-                new Record
-                {
-                    OffsetDelta = 0,
-                    TimestampDelta = 0,
-                    Key = "stale-key"u8.ToArray(),
-                    Value = "stale-value"u8.ToArray()
-                }
-            ]
-        };
-
-        originalBatch.Write(buffer);
-
-        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        var parsedBatch = RecordBatch.Read(ref reader);
-
-        // Verify stale data is present
         await Assert.That(parsedBatch.BaseOffset).IsEqualTo(99L);
         await Assert.That(parsedBatch.ProducerId).IsEqualTo(42L);
 
-        // Dispose returns to pool, clearing all state
-        parsedBatch.Dispose();
+        parsedBatch.ReturnToPool();
 
-        // Rent from pool — all fields should be reset to defaults
         var freshBatch = RecordBatch.RentFromPool();
         await Assert.That(freshBatch.BaseOffset).IsEqualTo(0L);
         await Assert.That(freshBatch.BatchLength).IsEqualTo(0);
@@ -1348,7 +1275,7 @@ public class RecordBatchTests
     }
 
     [Test]
-    public async Task RecordBatch_MultipleReadDisposeCycles_ReusePooledBatches()
+    public async Task RecordBatch_MultipleReadDisposeCycles_RemainValid()
     {
         var buffer = new ArrayBufferWriter<byte>();
 
@@ -1362,7 +1289,6 @@ public class RecordBatchTests
 
         originalBatch.Write(buffer);
 
-        // Perform multiple read-dispose cycles to exercise pool reuse
         for (var i = 0; i < 10; i++)
         {
             var reader = new KafkaProtocolReader(buffer.WrittenMemory);
