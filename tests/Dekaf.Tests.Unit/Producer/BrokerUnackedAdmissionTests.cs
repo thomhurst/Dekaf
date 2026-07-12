@@ -212,6 +212,41 @@ public sealed class BrokerUnackedAdmissionTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task AsyncAppend_SiblingUnblocks_WhenFirstProbeWaiterIsCancelled(
+        CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(capOverride: 2_000_000);
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: (_, _) => LeaderNodeId);
+        using var firstCancellation = new CancellationTokenSource();
+        var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
+        var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        budget.OnAcked(
+            ackedBytes: 1_000_000,
+            rttTicks: System.Diagnostics.Stopwatch.Frequency,
+            nowTicks);
+        budget.Charge(1_200_000);
+
+        var firstAppend = accumulator.AppendAsync(
+            "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null, PooledMemory.Null, null, 0, null, null, firstCancellation.Token);
+        var siblingAppend = accumulator.AppendAsync(
+            "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null, PooledMemory.Null, null, 0, null, null, cancellationToken);
+
+        await Assert.That(firstAppend.IsCompleted).IsFalse();
+        await Assert.That(siblingAppend.IsCompleted).IsFalse();
+        firstCancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await firstAppend);
+        await Assert.That(await siblingAppend).IsTrue();
+        await Assert.That(budget.UnackedBytes).IsEqualTo(1_200_000);
+    }
+
+    [Test]
     [Timeout(30_000)]
     public async Task QueuedAppend_PreventsLaterFastPathBypass(CancellationToken cancellationToken)
     {
