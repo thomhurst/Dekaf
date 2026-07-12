@@ -243,12 +243,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public readonly SendLoopEventType Type;
         public readonly ReadyBatch? Batch;
         public readonly int BatchGeneration;
+        public readonly Exception? EnrollmentError;
 
-        private SendLoopEvent(SendLoopEventType type, ReadyBatch? batch = null, int batchGeneration = 0)
+        private SendLoopEvent(
+            SendLoopEventType type,
+            ReadyBatch? batch = null,
+            int batchGeneration = 0,
+            Exception? enrollmentError = null)
         {
             Type = type;
             Batch = batch;
             BatchGeneration = batchGeneration;
+            EnrollmentError = enrollmentError;
         }
 
         public static SendLoopEvent NewBatch(ReadyBatch batch) => NewBatch(batch, batch.Generation);
@@ -262,8 +268,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         public static SendLoopEvent Unmute() => new(SendLoopEventType.Unmute);
 
-        public static SendLoopEvent TransactionEnrollmentReady() =>
-            new(SendLoopEventType.TransactionEnrollmentReady);
+        public static SendLoopEvent TransactionEnrollmentReady(Exception? error) =>
+            new(SendLoopEventType.TransactionEnrollmentReady, enrollmentError: error);
     }
 
     /// <summary>
@@ -461,10 +467,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Transaction support
     private readonly Func<bool> _isTransactional;
-    private readonly Func<ReadyBatch[], int, Action, HashSet<TopicPartition>,
+    private readonly Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>,
         TransactionPartitionEnrollmentResult>?
         _tryEnsurePartitionsInTransaction;
-    private readonly Action _transactionEnrollmentCompleted;
+    private readonly Action<Exception?> _transactionEnrollmentCompleted;
     private readonly HashSet<TopicPartition> _transactionEnrollmentPendingPartitions = [];
 
     // Send-time muting limits each partition to 1 in-flight batch when producer sequence
@@ -647,7 +653,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<int> getProduceApiVersion,
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
-        Func<ReadyBatch[], int, Action, HashSet<TopicPartition>,
+        Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>,
             TransactionPartitionEnrollmentResult>?
             tryEnsurePartitionsInTransaction,
         Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? bumpEpoch,
@@ -691,8 +697,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             SingleReader = true,
             SingleWriter = false
         });
-        _transactionEnrollmentCompleted = () =>
-            _eventChannel.Writer.TryWrite(SendLoopEvent.TransactionEnrollmentReady());
+        _transactionEnrollmentCompleted = error =>
+            _eventChannel.Writer.TryWrite(SendLoopEvent.TransactionEnrollmentReady(error));
 
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
         _isIdempotent = options.EnableIdempotence;
@@ -1195,6 +1201,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                         else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
                         {
+                            if (evt.EnrollmentError is not null)
+                            {
+                                FailPendingTransactionEnrollmentBatches(
+                                    carryOver,
+                                    _transactionEnrollmentPendingPartitions,
+                                    evt.EnrollmentError);
+                            }
                             _transactionEnrollmentPendingPartitions.Clear();
                             transactionEnrollmentReady = true;
                             break;
@@ -1245,6 +1258,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                         else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
                         {
+                            if (evt.EnrollmentError is not null)
+                            {
+                                FailPendingTransactionEnrollmentBatches(
+                                    carryOver,
+                                    _transactionEnrollmentPendingPartitions,
+                                    evt.EnrollmentError);
+                            }
                             _transactionEnrollmentPendingPartitions.Clear();
                             transactionEnrollmentReady = true;
                             break;
@@ -2259,6 +2279,38 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Array.Clear(batches, writeIdx, count - writeIdx);
         Array.Clear(generations, writeIdx, count - writeIdx);
         count = writeIdx;
+    }
+
+    private void FailPendingTransactionEnrollmentBatches(
+        PartitionCarryOver carryOver,
+        HashSet<TopicPartition> pendingPartitions,
+        Exception error)
+    {
+        foreach (var topicPartition in pendingPartitions)
+        {
+            if (!carryOver.Partitions.TryGetValue(topicPartition, out var queue))
+                continue;
+
+            while (queue.Count > 0)
+            {
+                var batchReference = queue[0];
+                carryOver.RemoveAt(queue, 0);
+                if (!batchReference.IsCurrentIncarnation())
+                {
+                    LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                    continue;
+                }
+
+                try
+                {
+                    FailAndCleanupBatch(batchReference.Batch, batchReference.Generation, error);
+                }
+                catch (Exception cleanupError)
+                {
+                    LogBatchCleanupStepFailed(cleanupError, _brokerId);
+                }
+            }
+        }
     }
 
     private void ObserveBrokerThrottle(int throttleTimeMs)

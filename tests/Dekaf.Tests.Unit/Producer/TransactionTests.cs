@@ -633,7 +633,8 @@ public sealed class TransactionTests
             CreateEnrollmentBatch("topic-a", 1),
             CreateEnrollmentBatch("topic-b", 0)
         };
-        var enrollmentCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enrollmentCompleted = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var pendingPartitions = new HashSet<TopicPartition>();
 
         var enrolled = producer.TryEnsurePartitionsInTransaction(
@@ -655,11 +656,11 @@ public sealed class TransactionTests
         });
 
         completeRequest.SetResult();
-        await enrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(await enrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1))).IsNull();
         await Assert.That(producer.TryEnsurePartitionsInTransaction(
             batches,
             batches.Length,
-            static () => { },
+            static _ => { },
             []).IsEnrolled).IsTrue();
 
         var mixedBatches = new[] { batches[0], CreateEnrollmentBatch("topic-c", 2) };
@@ -667,7 +668,7 @@ public sealed class TransactionTests
         var mixedResult = producer.TryEnsurePartitionsInTransaction(
             mixedBatches,
             mixedBatches.Length,
-            static () => { },
+            static _ => { },
             mixedPendingPartitions);
 
         await Assert.That(mixedResult.IsEnrolled).IsFalse();
@@ -713,7 +714,8 @@ public sealed class TransactionTests
             DekafMemoryBudget.Global,
             addPartitionsToTransaction: AddPartitions);
         var batch = CreateEnrollmentBatch("topic-a", 0);
-        var enrollmentReset = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enrollmentReset = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         producer.TryEnsurePartitionsInTransaction(
             [batch],
@@ -723,7 +725,8 @@ public sealed class TransactionTests
         await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         producer.FinalizeCompletedTransactionState();
-        await enrollmentReset.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(await enrollmentReset.Task.WaitAsync(TimeSpan.FromSeconds(1)))
+            .IsTypeOf<TransactionException>();
         completeRequest.SetResult();
         await requestReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
 

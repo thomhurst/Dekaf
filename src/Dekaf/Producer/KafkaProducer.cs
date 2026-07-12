@@ -100,7 +100,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
     private readonly HashSet<TopicPartition> _pendingTransactionPartitions = [];
     private readonly HashSet<TopicPartition> _transactionPartitionsBeingEnrolled = [];
-    private readonly HashSet<Action> _partitionEnrollmentWaiters = [];
+    private readonly HashSet<Action<Exception?>> _partitionEnrollmentWaiters = [];
     private Exception? _partitionEnrollmentError;
     private bool _partitionEnrollmentActive;
     private long _partitionEnrollmentGeneration;
@@ -1742,7 +1742,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _preparedTransactionState = PreparedTransactionState.Empty;
         _lastTransactionError = ErrorCode.None;
         _currentTransactionUsesTV2 = _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature) >= 2;
-        NotifyPartitionEnrollmentWaiters(ResetPartitionEnrollmentState());
+        NotifyPartitionEnrollmentResetWaiters(ResetPartitionEnrollmentState());
 
         return new Transaction<TKey, TValue>(this);
     }
@@ -1914,7 +1914,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     internal void FinalizeCompletedTransactionState(bool preserveAbortableError = true)
     {
-        NotifyPartitionEnrollmentWaiters(ResetPartitionEnrollmentState());
+        NotifyPartitionEnrollmentResetWaiters(ResetPartitionEnrollmentState());
 
         _preparedTransactionState = PreparedTransactionState.Empty;
 
@@ -2967,7 +2967,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     internal TransactionPartitionEnrollmentResult TryEnsurePartitionsInTransaction(
         ReadyBatch[] batches,
         int count,
-        Action enrollmentCompleted,
+        Action<Exception?> enrollmentCompleted,
         HashSet<TopicPartition> enrollmentPendingPartitions)
     {
         var startEnrollment = false;
@@ -3038,7 +3038,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
             catch (Exception exception)
             {
-                Action[] waiters;
+                Action<Exception?>[] waiters;
                 lock (_partitionsInTransactionLock)
                 {
                     if (enrollmentGeneration != _partitionEnrollmentGeneration)
@@ -3052,11 +3052,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     _partitionEnrollmentWaiters.Clear();
                 }
 
-                NotifyPartitionEnrollmentWaiters(waiters);
+                NotifyPartitionEnrollmentWaiters(waiters, exception);
                 return;
             }
 
-            Action[] completedWaiters;
+            Action<Exception?>[] completedWaiters;
             lock (_partitionsInTransactionLock)
             {
                 if (enrollmentGeneration != _partitionEnrollmentGeneration)
@@ -3072,14 +3072,26 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 _partitionEnrollmentWaiters.Clear();
             }
 
-            NotifyPartitionEnrollmentWaiters(completedWaiters);
+            NotifyPartitionEnrollmentWaiters(completedWaiters, null);
         }
     }
 
-    private static void NotifyPartitionEnrollmentWaiters(Action[] waiters)
+    private static void NotifyPartitionEnrollmentWaiters(
+        Action<Exception?>[] waiters,
+        Exception? error)
     {
         foreach (var waiter in waiters)
-            waiter();
+            waiter(error);
+    }
+
+    private static void NotifyPartitionEnrollmentResetWaiters(Action<Exception?>[] waiters)
+    {
+        if (waiters.Length == 0)
+            return;
+
+        NotifyPartitionEnrollmentWaiters(
+            waiters,
+            new TransactionException("Transaction partition enrollment was reset before completion."));
     }
 
     private async ValueTask EnrollTransactionPartitionsWithRetryAsync(
@@ -3107,7 +3119,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
     }
 
-    private Action[] ResetPartitionEnrollmentState()
+    private Action<Exception?>[] ResetPartitionEnrollmentState()
     {
         lock (_partitionsInTransactionLock)
         {
@@ -3115,7 +3127,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _partitionsInTransaction.Clear();
             _pendingTransactionPartitions.Clear();
             _transactionPartitionsBeingEnrolled.Clear();
-            Action[] waiters = [.. _partitionEnrollmentWaiters];
+            Action<Exception?>[] waiters = [.. _partitionEnrollmentWaiters];
             _partitionEnrollmentWaiters.Clear();
             _partitionEnrollmentError = null;
             _partitionEnrollmentActive = false;

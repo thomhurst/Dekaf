@@ -258,7 +258,7 @@ public sealed class BrokerSenderSendLoopTests
         Action? onBlockedBucketRequeued = null,
         BrokerUnackedByteBudget? unackedBudget = null,
         Func<bool>? isTransactional = null,
-        Func<ReadyBatch[], int, Action, HashSet<TopicPartition>,
+        Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>,
             TransactionPartitionEnrollmentResult>?
             tryEnsurePartitionsInTransaction = null) =>
         new(
@@ -409,13 +409,13 @@ public sealed class BrokerSenderSendLoopTests
         var accumulator = new RecordAccumulator(options);
         var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
         var enrollmentStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Action? completeEnrollment = null;
+        Action<Exception?>? completeEnrollment = null;
         var partitionZeroEnrolled = false;
 
         TransactionPartitionEnrollmentResult TryEnsure(
             ReadyBatch[] batches,
             int count,
-            Action completed,
+            Action<Exception?> completed,
             HashSet<TopicPartition> pendingPartitions)
         {
             for (var i = 0; i < count; i++)
@@ -456,7 +456,7 @@ public sealed class BrokerSenderSendLoopTests
 
             firstResponse.SetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 10));
             partitionZeroEnrolled = true;
-            completeEnrollment!();
+            completeEnrollment!(null);
 
             await sendSignals[1].Task.WaitAsync(cancellationToken);
             secondResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 11));
@@ -466,6 +466,65 @@ public sealed class BrokerSenderSendLoopTests
         {
             firstResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 10));
             secondResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 11));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionEnrollmentReset_FailsParkedBatch(
+        CancellationToken cancellationToken)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var options = CreateOptions(transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
+        var enrollmentStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgedError = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Action<Exception?>? completeEnrollment = null;
+
+        TransactionPartitionEnrollmentResult TryEnsure(
+            ReadyBatch[] batches,
+            int count,
+            Action<Exception?> completed,
+            HashSet<TopicPartition> pendingPartitions)
+        {
+            pendingPartitions.Add(batches[0].TopicPartition);
+            completeEnrollment = completed;
+            enrollmentStarted.TrySetResult();
+            return TransactionPartitionEnrollmentResult.Pending;
+        }
+
+        var sender = CreateSender(
+            connectionPool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledgedError.TrySetResult(exception),
+            isTransactional: () => true,
+            tryEnsurePartitionsInTransaction: TryEnsure);
+
+        try
+        {
+            var batch = CreateTestBatch(valueTaskPool, "test-topic", partition: 0);
+            var completion = batch.DoneTask;
+            sender.Enqueue(batch);
+            await enrollmentStarted.Task.WaitAsync(cancellationToken);
+
+            var enrollmentError = new TransactionException(
+                "Transaction partition enrollment was reset before completion.");
+            completeEnrollment!(enrollmentError);
+
+            await Assert.That(await completion.AsTask().WaitAsync(cancellationToken)).IsFalse();
+            await Assert.That(await acknowledgedError.Task.WaitAsync(cancellationToken))
+                .IsSameReferenceAs(enrollmentError);
+            await connectionPool.DidNotReceiveWithAnyArgs()
+                .GetConnectionAsync(default, default);
+        }
+        finally
+        {
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskPool.DisposeAsync();
