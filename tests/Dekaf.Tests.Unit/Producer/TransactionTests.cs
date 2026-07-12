@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
 using Dekaf.Internal;
 using Dekaf.Metadata;
@@ -544,6 +545,26 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task CommitAfterRequestWrittenAsync_CallbackFailure_AbandonsResponse()
+    {
+        var preparedState = new PreparedTransactionState(1001, 4);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: 2002,
+            currentProducerEpoch: 9);
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+        var callbackFailure = new InvalidOperationException("callback failed");
+
+        var exception = await Assert.That(() => transaction.CommitAfterRequestWrittenAsync(
+                () => ValueTask.FromException(callbackFailure)).AsTask())
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(exception).IsSameReferenceAs(callbackFailure);
+        await Assert.That(harness.PipelinedResponseAbandonCalls).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ReinitializeProducerIdAsync_HoldsConnectionLeaseDuringRequest()
     {
         var preparedState = new PreparedTransactionState(1001, 4);
@@ -893,6 +914,7 @@ public sealed class TransactionTests
             ?? throw new InvalidOperationException("EndTxn request was not captured.");
         public int LeaseCountDuringRequest => connection.LeaseCountDuringRequest;
         public int LeaseCount => connection.LeaseCount;
+        public int PipelinedResponseAbandonCalls => connection.PipelinedResponseAbandonCalls;
 
         public async ValueTask DisposeAsync()
         {
@@ -905,8 +927,10 @@ public sealed class TransactionTests
         PreparedTransactionState preparedState,
         long producerId,
         short producerEpoch,
-        ErrorCode endTxnError) : IKafkaConnection, IRetirableKafkaConnection
+        ErrorCode endTxnError) : IKafkaConnection, IRetirableKafkaConnection,
+        IKafkaPipelinedWriteCompletionConnection
     {
+        private readonly TrackingResponseSource<EndTxnResponse> _pipelinedResponseSource = new();
         private int _leaseCount;
         private int _leaseCountDuringRequest = -1;
 
@@ -918,6 +942,7 @@ public sealed class TransactionTests
         public int LeaseCount => Volatile.Read(ref _leaseCount);
         public int LeaseCountDuringRequest => Volatile.Read(ref _leaseCountDuringRequest);
         public int ActiveOperationCount => 0;
+        public int PipelinedResponseAbandonCalls => _pipelinedResponseSource.AbandonCalls;
 
         public bool TryAcquireLease()
         {
@@ -996,5 +1021,52 @@ public sealed class TransactionTests
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse
             => throw new NotSupportedException();
+
+        public ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            if (request is not EndTxnRequest endTxnRequest)
+                throw new NotSupportedException();
+
+            Volatile.Write(ref _leaseCountDuringRequest, LeaseCount);
+            _pipelinedResponseSource.SetResult(CreateEndTxnResponse(endTxnRequest));
+            return ValueTask.FromResult(new PipelinedResponse<TResponse>(
+                (IPipelinedResponseSource<TResponse>)(object)_pipelinedResponseSource,
+                token: 0));
+        }
+
+        public ValueTask<PipelinedResponse<TResponse>>
+            SendPipelinedWithCallerTimeoutAfterWriteAsync<TRequest, TResponse>(
+                TRequest request,
+                short apiVersion,
+                CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => throw new NotSupportedException();
+    }
+
+    private sealed class TrackingResponseSource<TResponse> : IPipelinedResponseSource<TResponse>
+    {
+        private TResponse? _response;
+
+        public int AbandonCalls { get; private set; }
+
+        public void SetResult(TResponse response) => _response = response;
+
+        public TResponse GetResult(short token) => _response!;
+
+        public ValueTaskSourceStatus GetStatus(short token) => ValueTaskSourceStatus.Succeeded;
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags) => continuation(state);
+
+        public void Abandon(short token) => AbandonCalls++;
     }
 }
