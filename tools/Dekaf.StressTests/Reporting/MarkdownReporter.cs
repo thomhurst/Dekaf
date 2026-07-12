@@ -189,7 +189,7 @@ internal static class MarkdownReporter
             sb.AppendLine(
                 $"| {row.Result.Client} | {row.Event.OccurredAtUtc:HH:mm:ss.fff} | " +
                 $"{row.Event.BrokerId} | {row.Event.OldConnectionCount}→{row.Event.NewConnectionCount} | " +
-                $"{row.Event.BufferUtilization:P0} | " +
+                $"{row.Event.BufferUtilization * 100:F0}% | " +
                 $"{row.Event.BufferPressureDelta:N0}/{row.Event.SendLoopPressureDelta:N0} | {throughput} |");
         }
         sb.AppendLine();
