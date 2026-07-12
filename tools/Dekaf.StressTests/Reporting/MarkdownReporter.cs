@@ -239,7 +239,7 @@ internal static class MarkdownReporter
                 gen2Delta,
                 pauseDeltaMs,
                 throughputSample,
-                row.Result.EffectiveMessagesPerSecond);
+                row.Result.MedianIntervalMessagesPerSecond ?? row.Result.Throughput.AverageMessagesPerSecond);
             var scaleSummary = scaleEvents.Count == 0
                 ? "-"
                 : string.Join(", ", scaleEvents.Select(scaleEvent =>
@@ -272,14 +272,14 @@ internal static class MarkdownReporter
         int gen2Delta,
         double pauseDeltaMs,
         ThroughputIntervalSample? throughputSample,
-        double averageMessagesPerSecond)
+        double clientMessagesPerSecond)
     {
         if (scaleEventCount > 0)
             return "connection transition";
         if (gen2Delta > 0 || pauseDeltaMs >= 10)
             return "GC pause";
         if (throughputSample is not null &&
-            throughputSample.MessagesPerSecond < averageMessagesPerSecond * 0.5)
+            throughputSample.MessagesPerSecond < clientMessagesPerSecond * 0.5)
         {
             return "throughput collapse";
         }

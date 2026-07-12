@@ -61,6 +61,14 @@ public sealed class ConnectionScaleReportingTests
                         MessagesPerSecond = 2_300,
                         Gen2Collections = 3,
                         GcPauseDurationMs = 37.5
+                    },
+                    new ThroughputIntervalSample
+                    {
+                        CapturedAtUtc = startedAt.AddSeconds(18),
+                        ElapsedSeconds = 18,
+                        MessagesPerSecond = 400,
+                        Gen2Collections = 3,
+                        GcPauseDurationMs = 37.5
                     }
                 ]
             },
@@ -96,6 +104,13 @@ public sealed class ConnectionScaleReportingTests
                         StartedAtUtc = startedAt.AddSeconds(7),
                         CompletedAtUtc = startedAt.AddSeconds(14),
                         LatencyUs = 7_000_000
+                    },
+                    new LatencyOutlierSample
+                    {
+                        MessageIndex = 45,
+                        StartedAtUtc = startedAt.AddSeconds(15),
+                        CompletedAtUtc = startedAt.AddSeconds(18),
+                        LatencyUs = 3_000_000
                     }
                 ]
             },
@@ -149,6 +164,7 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(markdown).Contains("GC pause");
         await Assert.That(markdown).Contains("44");
         await Assert.That(markdown).Contains("Gen2 +2 / pause +25.0ms");
+        await Assert.That(markdown).Contains("| Dekaf | 45 | 02:00:15.000 | 3.0s | throughput collapse |");
         await Assert.That(markdown).Contains("3 additional latency outlier sample(s) exceeded the bounded diagnostic capacity");
     }
 }

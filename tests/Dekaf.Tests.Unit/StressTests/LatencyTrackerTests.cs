@@ -47,4 +47,24 @@ public sealed class LatencyTrackerTests
         await Assert.That(snapshot.OutlierSamples).Count().IsEqualTo(256);
         await Assert.That(snapshot.DroppedOutlierSamples).IsEqualTo(1);
     }
+
+    [Test]
+    public async Task GetSnapshot_ConcurrentWithOutliers_NeverPublishesDefaultSample()
+    {
+        var tracker = new LatencyTracker();
+        var recording = Task.Run(() => Parallel.For(0, 10_000, index =>
+            tracker.RecordTicks(Stopwatch.Frequency, messageIndex: index)));
+
+        while (!recording.IsCompleted)
+        {
+            var snapshot = tracker.GetSnapshot();
+            await Assert.That(snapshot.OutlierSamples.All(
+                sample => sample.StartedAtUtc != default && sample.LatencyUs > 0)).IsTrue();
+        }
+
+        await recording;
+        var completed = tracker.GetSnapshot();
+        await Assert.That(completed.OutlierSamples.All(
+            sample => sample.StartedAtUtc != default && sample.LatencyUs > 0)).IsTrue();
+    }
 }
