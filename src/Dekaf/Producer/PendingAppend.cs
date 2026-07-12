@@ -55,6 +55,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private CancellationToken _cancellationToken;
     private long _startTicks;
     private long _deadlineTickCount;
+    private long _admissionRecheckTickCount;
     private RecordAccumulator _accumulator = null!;
     private int _pendingCounted;
 
@@ -86,6 +87,8 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
 
     public PendingAppend()
     {
+        _core.RunContinuationsAsynchronously = true;
+
         // Allocate timer once; it starts dormant (Timeout.Infinite).
         // Reused across pool rentals via Change().
         _timer = new Timer(static state =>
@@ -130,6 +133,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _recordSize = recordSize;
         _startTicks = startTicks;
         _deadlineTickCount = deadlineTickCount;
+        _admissionRecheckTickCount = 0;
         _cancellationToken = cancellationToken;
         _accumulator = accumulator;
         _pool = pool;
@@ -174,6 +178,21 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
 
         DisarmTimerAndCancellation();
         return true;
+    }
+
+    /// <summary>
+    /// Arms the reusable timeout timer to re-evaluate admission when a temporary broker
+    /// budget probe expires. The max.block.ms deadline remains the final deadline.
+    /// </summary>
+    internal void ScheduleAdmissionRecheck(int delayMilliseconds)
+    {
+        if (delayMilliseconds == Timeout.Infinite || Volatile.Read(ref _completed) != 0)
+            return;
+
+        var now = Dekaf.MonotonicClock.GetMilliseconds();
+        var recheckAt = now + Math.Max(1, delayMilliseconds);
+        Volatile.Write(ref _admissionRecheckTickCount, recheckAt);
+        ArmNextTimer(now);
     }
 
     /// <summary>
@@ -237,7 +256,18 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         var deadlineTickCount = Volatile.Read(ref _deadlineTickCount);
         if (now < deadlineTickCount)
         {
-            _timer.Change(deadlineTickCount - now, Timeout.Infinite);
+            var recheckAt = Volatile.Read(ref _admissionRecheckTickCount);
+            if (recheckAt != 0 && now >= recheckAt
+                && Interlocked.CompareExchange(ref _admissionRecheckTickCount, 0, recheckAt) == recheckAt)
+            {
+                _accumulator?.DrainPendingAppends();
+                if (Volatile.Read(ref _completed) != 0)
+                    return;
+
+                now = Dekaf.MonotonicClock.GetMilliseconds();
+            }
+
+            ArmNextTimer(now);
             return;
         }
 
@@ -281,6 +311,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _callback = null;
         _cancellationToken = default;
         _deadlineTickCount = 0;
+        _admissionRecheckTickCount = 0;
         _accumulator = null!;
         _pendingCounted = 0;
         _core.Reset();
@@ -298,11 +329,20 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private void DisarmTimerAndCancellation()
     {
         // Disarm timer (dormant until next rental)
+        Volatile.Write(ref _admissionRecheckTickCount, 0);
         _timer.Change(Timeout.Infinite, Timeout.Infinite);
 
         // Dispose cancellation registration
         _cancellationRegistration.Dispose();
         _cancellationRegistration = default;
+    }
+
+    private void ArmNextTimer(long now)
+    {
+        var deadline = Volatile.Read(ref _deadlineTickCount);
+        var recheckAt = Volatile.Read(ref _admissionRecheckTickCount);
+        var next = recheckAt == 0 ? deadline : Math.Min(deadline, recheckAt);
+        _timer.Change(Math.Max(0, next - now), Timeout.Infinite);
     }
 
     bool IValueTaskSource<bool>.GetResult(short token)

@@ -132,6 +132,22 @@ internal sealed class BrokerUnackedByteBudget
         return Volatile.Read(ref _unackedBytes) >= budget;
     }
 
+    /// <summary>
+    /// Returns the delay until an active minimum-RTT probe changes the admission budget,
+    /// or <see cref="Timeout.Infinite"/> when no time-based recheck is needed.
+    /// </summary>
+    internal int GetAdmissionRecheckDelayMilliseconds(long nowTicks)
+    {
+        var probeUntilTimestamp = Volatile.Read(ref _minRttProbeUntilTimestamp);
+        if (probeUntilTimestamp == 0 || nowTicks >= probeUntilTimestamp)
+            return Timeout.Infinite;
+
+        var remainingTicks = probeUntilTimestamp - nowTicks;
+        return Math.Max(1, (int)Math.Min(
+            int.MaxValue,
+            Math.Ceiling((double)remainingTicks * 1000 / Stopwatch.Frequency)));
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Charge(long bytes)
         => Interlocked.Add(ref _unackedBytes, bytes);

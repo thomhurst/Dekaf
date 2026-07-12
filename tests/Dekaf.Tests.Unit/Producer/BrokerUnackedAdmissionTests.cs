@@ -186,6 +186,32 @@ public sealed class BrokerUnackedAdmissionTests
     }
 
     [Test]
+    [Timeout(10_000)]
+    public async Task AsyncAppend_Unblocks_WhenMinRttProbeExpiresWithoutAck(CancellationToken cancellationToken)
+    {
+        var options = CreateOptions(capOverride: 2_000_000);
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: (_, _) => LeaderNodeId);
+        var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
+        var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        budget.OnAcked(
+            ackedBytes: 1_000_000,
+            rttTicks: System.Diagnostics.Stopwatch.Frequency / 100,
+            nowTicks);
+        budget.Charge(1_200_000);
+
+        var gatedAppend = accumulator.AppendAsync(
+            "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null, PooledMemory.Null, null, 0, null, null, cancellationToken);
+
+        await Assert.That(gatedAppend.IsCompleted).IsFalse();
+        await Assert.That(await gatedAppend).IsTrue();
+        await Assert.That(budget.UnackedBytes).IsEqualTo(1_200_000);
+    }
+
+    [Test]
     [Timeout(30_000)]
     public async Task QueuedAppend_PreventsLaterFastPathBypass(CancellationToken cancellationToken)
     {

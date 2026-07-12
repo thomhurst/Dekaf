@@ -1797,11 +1797,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             continue;
 
                         var topicPartition = new TopicPartition(candidate.Topic, candidate.Partition);
+                        var admissionBlocked = IsBrokerAdmissionBlocked(
+                            candidate.Topic,
+                            candidate.Partition,
+                            recordBlockEvent: false,
+                            out var admissionRecheckDelayMs);
                         if (memoryExhausted
                             || _blockedPendingPartitions.Contains(topicPartition)
-                            || IsBrokerAdmissionBlocked(candidate.Topic, candidate.Partition, recordBlockEvent: false))
+                            || admissionBlocked)
                         {
                             _pendingAppends.Enqueue(candidate);
+                            if (admissionBlocked)
+                                candidate.ScheduleAdmissionRecheck(admissionRecheckDelayMs);
                             if (!memoryExhausted)
                                 _blockedPendingPartitions.Add(topicPartition);
                             continue;
@@ -4423,20 +4430,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsBrokerAdmissionBlocked(string topic, int partition, bool recordBlockEvent)
+        => IsBrokerAdmissionBlocked(topic, partition, recordBlockEvent, out _);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsBrokerAdmissionBlocked(
+        string topic,
+        int partition,
+        bool recordBlockEvent,
+        out int recheckDelayMilliseconds)
     {
+        recheckDelayMilliseconds = Timeout.Infinite;
         if (!_unackedBudgetEnabled)
             return false;
 
         var leaderId = _resolveLeaderId!(topic, partition);
         var currentBudget = leaderId >= 0 ? GetBrokerUnackedBudget(leaderId) : null;
+        var nowTicks = Stopwatch.GetTimestamp();
         if (leaderId < 0
             || currentBudget is null
             || !currentBudget.IsOverBudget()
-            || !currentBudget.IsOverBudgetAt(Stopwatch.GetTimestamp()))
+            || !currentBudget.IsOverBudgetAt(nowTicks))
         {
             return false;
         }
 
+        recheckDelayMilliseconds = currentBudget.GetAdmissionRecheckDelayMilliseconds(nowTicks);
         if (recordBlockEvent)
             currentBudget.RecordAdmissionBlock();
         return true;
