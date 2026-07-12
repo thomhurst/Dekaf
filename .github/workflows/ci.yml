@@ -475,6 +475,9 @@ jobs:
           PYTHONPATH: .github/scripts
         run: python3 -m unittest discover -s .github/scripts -p 'test_stress_*.py'
 
+      - name: Test Integration Category Runner
+        run: bash scripts/tests/run-integration-categories-tests.sh
+
   # Pushes NuGet packages and creates the GitHub release — only reachable when
   # the entire release matrix (plus the regular lanes) is green. Re-runs the
   # pipeline on the same commit, so GitVersion yields the same version the
