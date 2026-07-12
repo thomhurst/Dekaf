@@ -122,6 +122,21 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task Ewma_IdleReanchor_PreservesSubMillisecondCarry()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.001), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.001), nowTicks: T0 + Seconds(0.0001));
+
+        // Idle reanchor retains bytes accumulated before the minimum sample interval.
+        budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.001), nowTicks: T0 + Seconds(11.0));
+        budget.OnAcked(ackedBytes: 97_000, rttTicks: Seconds(0.001), nowTicks: T0 + Seconds(12.0));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(50_000);
+    }
+
+    [Test]
     public async Task Budget_RecoversWhenRateRises()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);

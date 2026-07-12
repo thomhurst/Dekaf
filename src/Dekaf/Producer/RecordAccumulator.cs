@@ -1119,7 +1119,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // When TryReserveMemory fails, PendingAppend instances are enqueued here and drained by ReleaseMemory.
     private readonly PendingAppendPool _pendingAppendPool;
     private readonly ConcurrentQueue<PendingAppend> _pendingAppends = new();
+    private readonly object _pendingAppendQueueLock = new();
     private readonly HashSet<TopicPartition> _blockedPendingPartitions = [];
+    private readonly List<PendingAppend> _pendingAppendScan = [];
+    private readonly List<PendingAppend> _drainablePendingAppends = [];
     private int _draining; // CAS guard for DrainPendingAppends
 
     /// <summary>
@@ -1159,13 +1162,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public bool AppendInProgress;
 
         /// <summary>
-        /// Cached unacked-byte budget and broker identity from the latest batch seal. Admission
-        /// compares the identity with the current leader before applying the budget. Written
-        /// under <see cref="Lock"/> and read lock-free; volatile publication keeps appenders
-        /// from indefinitely observing the pre-seal null on weak-memory architectures.
+        /// Budget for the current cached leader. Admission refreshes it outside
+        /// <see cref="Lock"/>; sealing reads it inside the lock.
         /// </summary>
         public volatile BrokerUnackedByteBudget? UnackedBudget;
-        public volatile int UnackedBudgetBrokerId = -1;
+        public int SlowPathAppendCount;
 
         /// <summary>Number of batches in the deque.</summary>
         public int Count => _count;
@@ -1776,39 +1777,50 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     return;
 
                 var madeProgress = false;
-                var remainingToInspect = _pendingAppends.Count;
-                _blockedPendingPartitions.Clear();
-
-                while (remainingToInspect-- > 0 && _pendingAppends.TryPeek(out var op))
+                lock (_pendingAppendQueueLock)
                 {
-                    // Skip already-completed operations (timeout/cancel/dispose won the race).
-                    // Don't set madeProgress — clearing expired ops doesn't free memory.
-                    if (op.IsCompleted)
+                    _pendingAppendScan.Clear();
+                    _drainablePendingAppends.Clear();
+                    _blockedPendingPartitions.Clear();
+
+                    var remainingToInspect = _pendingAppends.Count;
+                    while (remainingToInspect-- > 0 && _pendingAppends.TryDequeue(out var candidate))
+                        _pendingAppendScan.Add(candidate);
+
+                    var memoryExhausted = false;
+                    foreach (var candidate in _pendingAppendScan)
                     {
-                        _pendingAppends.TryDequeue(out _);
-                        continue;
+                        // Timeout/cancel/dispose already released this operation's FIFO count.
+                        if (candidate.IsCompleted)
+                            continue;
+
+                        var topicPartition = new TopicPartition(candidate.Topic, candidate.Partition);
+                        if (memoryExhausted
+                            || _blockedPendingPartitions.Contains(topicPartition)
+                            || IsBrokerAdmissionBlocked(candidate.Topic, candidate.Partition, recordBlockEvent: false))
+                        {
+                            _pendingAppends.Enqueue(candidate);
+                            if (!memoryExhausted)
+                                _blockedPendingPartitions.Add(topicPartition);
+                            continue;
+                        }
+
+                        if (!TryReserveMemory(candidate.RecordSize))
+                        {
+                            memoryExhausted = true;
+                            _pendingAppends.Enqueue(candidate);
+                            continue;
+                        }
+
+                        _drainablePendingAppends.Add(candidate);
                     }
 
-                    var topicPartition = new TopicPartition(op.Topic, op.Partition);
-                    if (_blockedPendingPartitions.Contains(topicPartition)
-                        || IsBrokerAdmissionBlocked(op.Topic, op.Partition, recordBlockEvent: false))
-                    {
-                        // Preserve FIFO within this partition, but rotate it behind other
-                        // brokers so one saturated broker cannot convoy the global queue.
-                        _pendingAppends.TryDequeue(out _);
-                        _pendingAppends.Enqueue(op);
-                        _blockedPendingPartitions.Add(topicPartition);
-                        continue;
-                    }
+                    _pendingAppendScan.Clear();
+                    madeProgress = _drainablePendingAppends.Count > 0;
+                }
 
-                    // Try to reserve memory for this operation
-                    if (!TryReserveMemory(op.RecordSize))
-                        break; // No space — stop draining, next ReleaseMemory will retry
-
-                    // Dequeue — we own the reservation now
-                    _pendingAppends.TryDequeue(out _);
-                    madeProgress = true;
-
+                foreach (var op in _drainablePendingAppends)
+                {
                     // Claim the operation with CAS BEFORE touching resources.
                     // This prevents timeout/cancel from cleaning up key/value/headers
                     // while AppendAfterReservation is using them.
@@ -1827,14 +1839,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             op.Key, op.Value, op.Headers, op.HeaderCount,
                             op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount);
 
+                        op.ReleasePendingCountAfterClaim();
                         op.CompleteResult(result);
                     }
                     catch (Exception ex)
                     {
                         // AppendAfterReservation handles its own resource cleanup on throw
+                        op.ReleasePendingCountAfterClaim();
                         op.CompleteException(ex);
                     }
                 }
+                _drainablePendingAppends.Clear();
 
                 // Release the drain lock before re-checking so a concurrent ReleaseMemory
                 // can enter if we decide not to loop again.
@@ -1858,6 +1873,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         finally
         {
             _blockedPendingPartitions.Clear();
+            _pendingAppendScan.Clear();
+            _drainablePendingAppends.Clear();
             // Ensure drain lock is released even on exception (inner loop already releases
             // on normal exit, but exception path needs the finally).
             Volatile.Write(ref _draining, 0);
@@ -2158,6 +2175,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 workItem.Completion.TrySetException(ex);
             }
+            finally
+            {
+                DecrementSlowPathAppendCount(workItem.Topic, workItem.Partition);
+            }
         }
     }
 
@@ -2202,8 +2223,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var workItem = new AppendWorkItem(topic, partition, partitionCount, timestamp, key, value,
             headers, headerCount, completion, cancellationToken);
 
+        IncrementSlowPathAppendCount(topic, partition);
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
         {
+            DecrementSlowPathAppendCount(topic, partition);
             CleanupWorkItemResources(in workItem);
             completion.TrySetException(new ObjectDisposedException(nameof(RecordAccumulator)));
         }
@@ -2655,7 +2678,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
 
-        _pendingAppends.Enqueue(op);
+        lock (_pendingAppendQueueLock)
+            _pendingAppends.Enqueue(op);
 
         // Close TOCTOU window: if DisposeAsync ran between the _disposed check above and the
         // Enqueue, this op would sit in the queue until its timer fires. Fail it promptly.
@@ -4240,13 +4264,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!InFlightBatchListRemove(batch))
             return false;
 
-        if (batch.UnackedBudget is { } unackedBudget)
+        if (Interlocked.Exchange(ref batch.UnackedBudget, null) is { } unackedBudget)
         {
             // DataSize is exactly what ChargeUnackedBudget charged; it stays valid until
             // Reset() at pool return, which cannot precede this first-exit path.
             unackedBudget.Release(batch.DataSize);
-            batch.UnackedBudget = null;
-
             // Freed unacked headroom can unblock appenders gated on this broker's budget —
             // wake them through the same machinery BufferMemory releases use.
             DrainPendingAppends();
@@ -4278,26 +4300,48 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Charges a freshly sealed batch against its leader broker's unacked-byte budget.
+    /// Charges a freshly sealed batch against its cached leader broker's unacked-byte budget.
     /// Called under pd.Lock (same ordering domain as InFlightBatchListAdd) so a fast ack
-    /// can never release before the charge lands. The resolved budget and broker identity are
-    /// cached on the partition deque and validated against the current leader at admission.
+    /// can never release before the charge lands. Admission resolves and creates the budget
+    /// outside this partition lock; rerouting transfers the charge if the leader changes later.
     /// </summary>
-    private void ChargeUnackedBudget(PartitionDeque pd, ReadyBatch batch)
+    private static void ChargeUnackedBudget(PartitionDeque pd, ReadyBatch batch)
     {
-        var leaderId = _resolveLeaderId!(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-        if (leaderId < 0)
-        {
-            pd.UnackedBudgetBrokerId = -1;
-            pd.UnackedBudget = null;
+        if (pd.UnackedBudget is not { } budget)
             return;
-        }
 
-        var budget = GetBrokerUnackedBudget(leaderId)!;
-        pd.UnackedBudget = budget;
-        pd.UnackedBudgetBrokerId = leaderId;
         budget.Charge(batch.DataSize);
         batch.UnackedBudget = budget;
+    }
+
+    /// <summary>Transfers a live batch's charge when retry routing selects another broker.</summary>
+    internal void ReattributeUnackedBudget(ReadyBatch batch, int brokerId)
+    {
+        if (GetBrokerUnackedBudget(brokerId) is not { } newBudget)
+            return;
+
+        var lockTaken = false;
+        try
+        {
+            _inFlightBatchLock.Enter(ref lockTaken);
+
+            // Terminal cleanup removes the batch under this lock before releasing its
+            // charge. Checking linkage prevents installing a new charge after that exit.
+            if (!batch.InFlightLinked || ReferenceEquals(batch.UnackedBudget, newBudget))
+                return;
+
+            newBudget.Charge(batch.DataSize);
+            var oldBudget = batch.UnackedBudget;
+            batch.UnackedBudget = newBudget;
+            oldBudget?.Release(batch.DataSize);
+        }
+        finally
+        {
+            if (lockTaken) _inFlightBatchLock.Exit();
+        }
+
+        DrainPendingAppends();
+        SignalBufferSpaceAvailable();
     }
 
     /// <summary>
@@ -4327,22 +4371,26 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Uses the hot path only when no queued or actively draining append owns FIFO priority,
-    /// then checks the broker admission gate and reserves buffer memory — in that order, so
-    /// a gate-blocked append never leaks a reservation. This is the single choke point for
-    /// every append entry path; call this instead of <see cref="TryReserveMemory"/> directly.
+    /// Checks the broker gate before per-partition FIFO priority and buffer reservation, so
+    /// every blocked attempt records pressure and never leaks a reservation. This is the
+    /// single choke point for every append entry path.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryAdmitAndReserve(string topic, int partition, int recordSize)
-        => Volatile.Read(ref _draining) == 0
-            && _pendingAppends.IsEmpty
-            && !IsBrokerAdmissionBlocked(topic, partition, recordBlockEvent: true)
+    {
+        var partitionDeque = GetOrCreateDeque(topic, partition);
+        if (_unackedBudgetEnabled
+            && IsBrokerAdmissionBlocked(topic, partition, partitionDeque, recordBlockEvent: true))
+            return false;
+
+        return Volatile.Read(ref partitionDeque.SlowPathAppendCount) == 0
             && TryReserveMemory(recordSize);
+    }
 
     /// <summary>
     /// True when the destination broker for (topic, partition) is over its unacked-byte
-    /// budget and message admission should block. Lock-free: a cached leader lookup, one
-    /// thread-cached deque lookup, and volatile reads; returns false before the first seal.
+    /// budget and message admission should block. Lock-free: a cached metadata lookup, one
+    /// deque lookup, and volatile reads.
     /// Block events feed adaptive connection scaling; the pending-append drain passes false
     /// because the operation already recorded one when it was first gated.
     /// </summary>
@@ -4352,19 +4400,39 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!_unackedBudgetEnabled)
             return false;
 
+        return IsBrokerAdmissionBlocked(
+            topic, partition, GetOrCreateDeque(topic, partition), recordBlockEvent);
+    }
+
+    private bool IsBrokerAdmissionBlocked(
+        string topic,
+        int partition,
+        PartitionDeque partitionDeque,
+        bool recordBlockEvent)
+    {
         var leaderId = _resolveLeaderId!(topic, partition);
-        var partitionDeque = GetOrCreateDeque(topic, partition);
+        var currentBudget = leaderId >= 0 ? GetBrokerUnackedBudget(leaderId) : null;
+        partitionDeque.UnackedBudget = currentBudget;
         if (leaderId < 0
-            || partitionDeque.UnackedBudgetBrokerId != leaderId
-            || partitionDeque.UnackedBudget is not { } budget
-            || !budget.IsOverBudget())
+            || currentBudget is null
+            || !currentBudget.IsOverBudget())
         {
             return false;
         }
 
         if (recordBlockEvent)
-            budget.RecordAdmissionBlock();
+            currentBudget.RecordAdmissionBlock();
         return true;
+    }
+
+    internal void IncrementSlowPathAppendCount(string topic, int partition)
+        => Interlocked.Increment(ref GetOrCreateDeque(topic, partition).SlowPathAppendCount);
+
+    internal void DecrementSlowPathAppendCount(string topic, int partition)
+    {
+        var remaining = Interlocked.Decrement(
+            ref GetOrCreateDeque(topic, partition).SlowPathAppendCount);
+        Debug.Assert(remaining >= 0, "Slow-path append count went negative.");
     }
 
     /// <summary>
@@ -6316,10 +6384,9 @@ internal sealed class ReadyBatch
     // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
     internal InflightEntry? InflightEntry { get; set; }
 
-    // Unacked-byte budget this batch's DataSize was charged against at seal time. Released
+    // Unacked-byte budget this batch's DataSize is currently charged against. Released
     // once (first terminal path wins, guarded by OnBatchExitsPipeline's InFlightBatchListRemove)
-    // and cleared in Reset(). A rerouted batch stays charged to its seal-time broker until
-    // terminal — bounded and self-correcting at the next seal.
+    // and cleared in Reset(). Rerouting transfers this charge to the selected leader.
     internal BrokerUnackedByteBudget? UnackedBudget;
 
     // Intrusive linked list pointers for RecordAccumulator._inFlightBatchList.

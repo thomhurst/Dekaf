@@ -164,6 +164,29 @@ public sealed class BrokerSenderSendLoopTests
             ]
         };
 
+    private static ProduceResponse CreateErrorResponse(string topic, int partition, ErrorCode errorCode) =>
+        new()
+        {
+            TopicCount = 1,
+            Responses =
+            [
+                new ProduceResponseTopicData
+                {
+                    Name = topic,
+                    PartitionCount = 1,
+                    PartitionResponses =
+                    [
+                        new ProduceResponsePartitionData
+                        {
+                            Index = partition,
+                            ErrorCode = errorCode,
+                            BaseOffset = -1
+                        }
+                    ]
+                }
+            ]
+        };
+
     private static ProduceResponse CreateSuccessResponseForPartitions(string topic, int partitionCount) =>
         new()
         {
@@ -2289,6 +2312,56 @@ public sealed class BrokerSenderSendLoopTests
 
             // The retry send proves the faulted response was fully processed — and a faulted
             // response must not count as drain, so the budget still has no rate sample.
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            await Assert.That(budget.BudgetBytes).IsEqualTo(1_000_000);
+
+            retryResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task PartitionErrors_DoNotFeedUnackedBudgetDrainRate(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var retryResponse = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, retryResponse]);
+        var sendSignals = new[]
+        {
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(maxInFlight: 1, retryBackoffMs: 0,
+            unackedByteBudgetCapOverride: 1_000_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+            unackedBudget: budget);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 5_000));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            firstResponse.SetResult(CreateErrorResponse("test-topic", 0, ErrorCode.RequestTimedOut));
+
+            // Retry proves the partition error was processed. It must not establish a
+            // successful drain-rate sample from the failed request's encoded bytes.
             await sendSignals[1].Task.WaitAsync(cancellationToken);
             await Assert.That(budget.BudgetBytes).IsEqualTo(1_000_000);
 

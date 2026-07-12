@@ -195,6 +195,17 @@ public sealed class BrokerUnackedAdmissionTests
                 PooledMemory.Null, PooledMemory.Null, null, 0, null, null, cancellationToken);
             await Assert.That(first.IsCompleted).IsFalse();
 
+            // Existing partition backlog must not hide continued gate pressure from
+            // adaptive scale-down. Every blocked admission records another event.
+            var blockEvents = budget.AdmissionBlockEvents;
+            var blockedCompletion = pool.Rent();
+            var admittedWhileBlocked = accumulator.TryAppendWithCompletion(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                PooledMemory.Null, PooledMemory.Null, null, 0, blockedCompletion);
+            await Assert.That(admittedWhileBlocked).IsFalse();
+            await Assert.That(budget.AdmissionBlockEvents).IsGreaterThan(blockEvents);
+            pool.Return(blockedCompletion);
+
             // Model the race where an ack reopens the gate before its drain call wins.
             // A later hot-path append must not leapfrog the already queued record.
             var chargedBytes = budget.UnackedBytes;
@@ -390,6 +401,41 @@ public sealed class BrokerUnackedAdmissionTests
         finally
         {
             await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Reroute_TransfersExistingBatchCharge_ToNewBrokerBudget()
+    {
+        var options = CreateOptions(capOverride: null);
+        var accumulator = new RecordAccumulator(options, resolveLeaderId: (_, _) => LeaderNodeId);
+        var metadataManager = AccumulatorTestHelpers.CreateMetadataManager("test-topic", 1, LeaderNodeId);
+
+        try
+        {
+            await AppendUntilSealedAsync(accumulator, "test-topic");
+            var batches = DrainSealedBatches(accumulator, metadataManager);
+            var batch = batches[0];
+            var originalBudget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
+            var newBudget = accumulator.GetBrokerUnackedBudget(2)!;
+            var batchBytes = batch.DataSize;
+            var originalBytes = originalBudget.UnackedBytes;
+
+            accumulator.ReattributeUnackedBudget(batch, brokerId: 2);
+
+            await Assert.That(originalBudget.UnackedBytes).IsEqualTo(originalBytes - batchBytes);
+            await Assert.That(newBudget.UnackedBytes).IsEqualTo(batchBytes);
+
+            foreach (var drainedBatch in batches)
+                ExitAndReturn(accumulator, drainedBatch);
+
+            await Assert.That(originalBudget.UnackedBytes).IsEqualTo(0);
+            await Assert.That(newBudget.UnackedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
         }
     }
 

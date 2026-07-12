@@ -153,7 +153,6 @@ internal sealed class BrokerUnackedByteBudget
             // broker drain time. Preserve the established rate and start a fresh window with
             // this first resumed ack; folding the idle gap into the sample would collapse the
             // budget to the floor and unnecessarily throttle the resumed burst.
-            _pendingAckedBytes = ackedBytes;
             _lastRateSampleTimestamp = nowTicks;
             return;
         }

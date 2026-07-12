@@ -2224,9 +2224,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 var response = task.Result;
-                ackedBytes += pending.EncodedBytes;
-                lastAckedRequestStart = pending.RequestStartTime;
                 ObserveBrokerThrottle(response.ThrottleTimeMs);
+                var allPartitionsSucceeded = true;
                 // Reuse caller-provided dictionary to avoid per-response allocation.
                 // The dictionary is cleared after use in ProcessResponseBatches.
                 var responseLookup = reusableResponseLookup;
@@ -2235,9 +2234,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     ref var topicResp = ref response.Responses[t];
                     for (var p = 0; p < topicResp.PartitionCount; p++)
                     {
+                        if (topicResp.PartitionResponses[p].ErrorCode != ErrorCode.None)
+                            allPartitionsSucceeded = false;
                         responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
                         responseLookup[(topicResp.Name, topicResp.PartitionResponses[p].Index)] = topicResp.PartitionResponses[p];
                     }
+                }
+
+                if (allPartitionsSucceeded)
+                {
+                    ackedBytes += pending.EncodedBytes;
+                    lastAckedRequestStart = pending.RequestStartTime;
                 }
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis

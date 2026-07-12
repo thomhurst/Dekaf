@@ -2945,6 +2945,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             LogReroutedBatch(topicPartition.Topic, topicPartition.Partition, leader.NodeId);
+            _accumulator.ReattributeUnackedBudget(batch, leader.NodeId);
             GetOrCreateBrokerSender(leader.NodeId).Enqueue(batch, expectedGeneration);
         }
         catch (Exception ex)
