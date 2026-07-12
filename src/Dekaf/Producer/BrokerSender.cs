@@ -542,6 +542,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Scale-down never fences (its drain gates guarantee no in-flight) and clears any
     // stale entries at initiation. Send-loop owned (single-threaded) — no synchronization needed.
     private readonly Dictionary<TopicPartition, int> _migratingPartitions = new();
+    private volatile bool _hasMigratingPartitions;
     // Reused removal buffer keeps CompleteMigrations O(migrating) and allocation-free.
     // Capacity grows during scale-up, outside response completion processing.
     private readonly List<TopicPartition> _migrationRemovalBuffer = [];
@@ -2451,12 +2452,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // Check if any migrating partitions can be unfenced after responses completed
-                if (_migratingPartitions.Count > 0)
+                if (_hasMigratingPartitions)
                 {
-                    var beforeCount = _migratingPartitions.Count;
+                    var beforeCount = GetMigratingPartitionCount();
                     CompleteMigrations(connIdx);
 
-                    if (_migratingPartitions.Count == 0)
+                    if (!_hasMigratingPartitions)
                         LogPartitionMigrationComplete(_brokerId, beforeCount);
                 }
             }
@@ -2731,7 +2732,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -removedBytes);
             pendingList.Clear();
 
-            if (_migratingPartitions.Count > 0)
+            if (_hasMigratingPartitions)
                 CompleteMigrations(connIdx);
 
             // After clearing all entries due to timeout, trim the internal array to
@@ -3738,8 +3739,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Common case: no migrations active — dictionary Count check is a single branch on 0.
         // During migration: one hash lookup per batch, negligible vs TCP write cost.
         int connectionIndex;
-        if (_migratingPartitions.Count > 0
-            && _migratingPartitions.TryGetValue(topicPartition, out var oldConn))
+        if (TryGetMigratingConnection(topicPartition, out var oldConn))
         {
             connectionIndex = oldConn;
         }
@@ -3815,7 +3815,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (oldConnection != newConnection
                 && HasInflightForPartition(oldConnection, topicPartition))
             {
-                _migratingPartitions.TryAdd(topicPartition, oldConnection);
+                AddMigratingPartition(topicPartition, oldConnection);
             }
         }
 
@@ -3829,7 +3829,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var oldConnection = oldOrdinal % _connectionCount;
                 if (HasInflightForPartition(oldConnection, topicPartition))
-                    _migratingPartitions.TryAdd(topicPartition, oldConnection);
+                    AddMigratingPartition(topicPartition, oldConnection);
             }
         }
 
@@ -3881,6 +3881,44 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         return false;
     }
 
+    private bool TryGetMigratingConnection(
+        TopicPartition topicPartition,
+        out int connectionIndex)
+    {
+        if (!_hasMigratingPartitions)
+        {
+            connectionIndex = default;
+            return false;
+        }
+
+        lock (_migrationRemovalBuffer)
+            return _migratingPartitions.TryGetValue(topicPartition, out connectionIndex);
+    }
+
+    private void AddMigratingPartition(TopicPartition topicPartition, int connectionIndex)
+    {
+        lock (_migrationRemovalBuffer)
+        {
+            _migratingPartitions.TryAdd(topicPartition, connectionIndex);
+            _hasMigratingPartitions = true;
+        }
+    }
+
+    private int GetMigratingPartitionCount()
+    {
+        lock (_migrationRemovalBuffer)
+            return _migratingPartitions.Count;
+    }
+
+    private void ClearMigratingPartitions()
+    {
+        lock (_migrationRemovalBuffer)
+        {
+            _migratingPartitions.Clear();
+            _hasMigratingPartitions = false;
+        }
+    }
+
     /// <summary>
     /// Checks migrating partitions whose old connection is <paramref name="connectionIndex"/>
     /// and unfences them if they no longer have in-flight batches on that connection.
@@ -3907,6 +3945,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             for (var i = 0; i < _migrationRemovalBuffer.Count; i++)
                 _migratingPartitions.Remove(_migrationRemovalBuffer[i]);
+
+            _hasMigratingPartitions = _migratingPartitions.Count > 0;
         }
     }
 
@@ -3936,10 +3976,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
                 _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+
+            _hasMigratingPartitions = _migratingPartitions.Count > 0;
         }
 
-        if (_migratingPartitions.Count > 0)
-            LogPartitionMigrationStarted(_brokerId, _migratingPartitions.Count, oldConnCount, newConnCount);
+        var migratingPartitionCount = GetMigratingPartitionCount();
+        if (migratingPartitionCount > 0)
+            LogPartitionMigrationStarted(_brokerId, migratingPartitionCount, oldConnCount, newConnCount);
     }
 
     /// <summary>
@@ -4381,7 +4424,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _retiringConnection = null;
         }
 
-        _migratingPartitions.Clear();
+        ClearMigratingPartitions();
 
         var totalPending = _totalPendingResponseCount;
         if (totalPending > 0)
@@ -4758,7 +4801,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // The drain gates above guarantee no in-flight batches that require routing to the
         // removed slot, so any leftover migration fences are stale — clear them so no
         // partition keeps routing outside the reduced width.
-        _migratingPartitions.Clear();
+        ClearMigratingPartitions();
 
         _accumulator.RecordConnectionScaleEvent(
             _brokerId,
