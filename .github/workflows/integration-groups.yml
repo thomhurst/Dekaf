@@ -95,8 +95,10 @@ jobs:
         run: |
           case "${{ matrix.group }}" in
             tls|security) kafka_tags="4.0.2" ;;
-            faults|messaging) kafka_tags="${{ inputs.kafka-tag }} 4.0.2" ;;
+            faults) kafka_tags="${{ inputs.kafka-tag }} 4.0.2 4.2.1" ;;
+            messaging) kafka_tags="${{ inputs.kafka-tag }} 4.0.2" ;;
             consume) kafka_tags="${{ inputs.kafka-tag }} 4.2.1" ;;
+            produce) kafka_tags="${{ inputs.kafka-tag }} 4.2.1" ;;
             *) kafka_tags="${{ inputs.kafka-tag }}" ;;
           esac
 
