@@ -2577,7 +2577,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     ProducerDeliveryDiagnosticsSnapshot IProducerDiagnostics.GetDeliveryDiagnosticsSnapshot()
-        => _accumulator.GetDeliveryDiagnosticsSnapshot();
+    {
+        var snapshot = _accumulator.GetDeliveryDiagnosticsSnapshot();
+        if (snapshot.DiagnosticsEnabled)
+            snapshot.ConnectionReapEvents.AddRange(_connectionPool.GetConnectionReapDiagnosticsSnapshot());
+
+        return snapshot;
+    }
 
     int IProducerDiagnostics.MaxObservedBrokerThrottleTimeMs =>
         Volatile.Read(ref _maxObservedBrokerThrottleTimeMs);

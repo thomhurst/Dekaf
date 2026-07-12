@@ -1,17 +1,21 @@
+using System.Diagnostics;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
 
 public sealed class ProducerDeliveryDiagnosticsTests
 {
-    private static ProducerOptions CreateOptions(bool enableDeliveryDiagnostics = false) => new()
+    private static ProducerOptions CreateOptions(
+        bool enableDeliveryDiagnostics = false,
+        int deliveryLatencyTargetMs = 0) => new()
     {
         BootstrapServers = ["localhost:9092"],
         ClientId = "diagnostics-test",
         BufferMemory = ulong.MaxValue,
         BatchSize = 60,
         LingerMs = 10_000,
-        EnableDeliveryDiagnostics = enableDeliveryDiagnostics
+        EnableDeliveryDiagnostics = enableDeliveryDiagnostics,
+        DeliveryLatencyTargetMs = deliveryLatencyTargetMs
     };
 
     [Test]
@@ -68,6 +72,50 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(events[0].BufferPressureDelta).IsEqualTo(120);
         await Assert.That(events[0].SendLoopPressureDelta).IsEqualTo(150);
         await Assert.That(events[1].OccurredAtUtc).IsGreaterThanOrEqualTo(events[0].OccurredAtUtc);
+    }
+
+    [Test]
+    public async Task ConnectionScaleDiagnostics_PartitionLimit_RecordsCappedDirection()
+    {
+        await using var accumulator = new RecordAccumulator(
+            CreateOptions(enableDeliveryDiagnostics: true));
+
+        accumulator.RecordConnectionScaleEvent(1, 2, 2, 0.5, 0, 200, partitionLimited: true);
+
+        var diagnostic = accumulator.GetDeliveryDiagnosticsSnapshot().ConnectionScaleEvents.Single();
+
+        await Assert.That(diagnostic.Direction).IsEqualTo("capped");
+        await Assert.That(diagnostic.PartitionLimited).IsTrue();
+        await Assert.That(diagnostic.SendLoopPressureDelta).IsEqualTo(200);
+    }
+
+    [Test]
+    public async Task BrokerBudgetDiagnostics_CapturesCurrentStateAndPeriodicSample()
+    {
+        var options = CreateOptions(
+            enableDeliveryDiagnostics: true,
+            deliveryLatencyTargetMs: 10);
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: static (_, _) => 7);
+        var budget = accumulator.GetBrokerUnackedBudget(7)!;
+        budget.Charge(600);
+        budget.RecordAdmissionBlock();
+        budget.OnAcked(1_000, Stopwatch.Frequency / 1_000, Stopwatch.GetTimestamp());
+
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+        var snapshot = accumulator.GetDeliveryDiagnosticsSnapshot();
+        var current = snapshot.BrokerBudgets.Single();
+        var sample = snapshot.BrokerBudgetSamples.Single();
+
+        await Assert.That(current.BrokerId).IsEqualTo(7);
+        await Assert.That(current.BudgetBytes).IsGreaterThan(0);
+        await Assert.That(current.UnackedBytes).IsEqualTo(600);
+        await Assert.That(current.MinRttMicros).IsGreaterThan(0);
+        await Assert.That(current.MaxRateBytesPerSec).IsGreaterThan(0);
+        await Assert.That(current.AdmissionBlockCount).IsEqualTo(1);
+        await Assert.That(sample.BrokerId).IsEqualTo(7);
+        await Assert.That(sample.CapturedAtUtc).IsLessThanOrEqualTo(snapshot.CapturedAtUtc);
     }
 
     [Test]

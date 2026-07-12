@@ -63,6 +63,8 @@ internal sealed class BrokerUnackedByteBudget
     private long _budgetAfterMinRttProbeBytes;
     private long _probeBudgetAfterMinRttProbeBytes;
     private long _admissionBlockEvents;
+    private long _minimumRttMicros;
+    private long _maxRateBytesPerSecond;
 
     // Single-writer state (owning send loop only; constructor runs before the loop starts).
     private readonly long _floorBytes;
@@ -114,6 +116,10 @@ internal sealed class BrokerUnackedByteBudget
     /// connection scaling, which cannot see buffer pressure while the gate holds the
     /// accumulator near-empty.</summary>
     internal long AdmissionBlockEvents => Volatile.Read(ref _admissionBlockEvents);
+
+    internal long MinimumRttMicros => Volatile.Read(ref _minimumRttMicros);
+
+    internal long MaxRateBytesPerSecond => Volatile.Read(ref _maxRateBytesPerSecond);
 
     // Volatile.Read (a plain acquire load) rather than Interlocked.Read: this runs per
     // message from every appender thread, and a locked read would take the cache line
@@ -194,8 +200,10 @@ internal sealed class BrokerUnackedByteBudget
 
         var rttSeconds = (double)rttTicks / Stopwatch.Frequency;
         UpdateMinRtt(rttSeconds, nowTicks);
+        Volatile.Write(ref _minimumRttMicros, (long)(_minRttSeconds * 1_000_000));
 
         AddRateSample(ackedBytes / rttSeconds);
+        Volatile.Write(ref _maxRateBytesPerSecond, (long)_rateMaxValues[_rateMaxHead]);
 
         if (_probeUntilTimestamp != 0 && nowTicks >= _probeUntilTimestamp)
             _probeUntilTimestamp = 0;

@@ -454,6 +454,11 @@ public sealed class ConnectionPoolTests
             await Assert.That(created.Count).IsEqualTo(2);
             await Assert.That(created[0].DisposeCount).IsEqualTo(1);
             await Assert.That(first).IsNotSameReferenceAs(second);
+
+            var diagnostic = pool.GetConnectionReapDiagnosticsSnapshot().Single();
+            await Assert.That(diagnostic.BrokerId).IsEqualTo(1);
+            await Assert.That(diagnostic.ConnectionIndex).IsEqualTo(0);
+            await Assert.That(diagnostic.IdleDurationMs).IsGreaterThanOrEqualTo(IdleThresholdMs);
         }
     }
 

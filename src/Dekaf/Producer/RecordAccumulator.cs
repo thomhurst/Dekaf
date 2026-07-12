@@ -866,6 +866,8 @@ internal readonly struct ArenaSlice
 public sealed partial class RecordAccumulator : IAsyncDisposable
 {
     private const int MaxConnectionScaleDiagnosticEvents = 256;
+    private const int MaxBrokerBudgetDiagnosticSamples = 4096;
+    private const int BrokerBudgetDiagnosticIntervalMs = 1_000;
     // ReadyBatch lifecycle (seal→send→response→cleanup) is longer than PartitionBatch
     // (create→fill→seal), so its pool needs proportionally more capacity.
     private const int ReadyBatchPoolSizeRatio = 2;
@@ -957,8 +959,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private SpinLock _inFlightBatchLock = new(enableThreadOwnerTracking: false);
     private ReadyBatch? _inFlightBatchHead;
     private ReadyBatch? _inFlightBatchTail;
-    private readonly object _connectionScaleDiagnosticsLock = new();
+    private readonly object _deliveryDiagnosticsLock = new();
     private readonly List<ProducerConnectionScaleDiagnostic> _connectionScaleEvents = [];
+    private readonly List<ProducerBrokerBudgetDiagnostic> _brokerBudgetSamples = [];
+    private long _nextBrokerBudgetDiagnosticTimestampMs;
 
     // Optimization: Track the oldest batch creation time to skip unnecessary enumeration.
     // With LingerMs=5ms and 1ms timer, we'd enumerate 5x per batch without this optimization.
@@ -4058,6 +4062,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </remarks>
     public ValueTask ExpireLingerAsync(CancellationToken cancellationToken)
     {
+        MaybeRecordBrokerBudgetDiagnosticSample();
+
         // Fast path 1: no unsealed batches to check - avoid queue draining and async overhead entirely
         if (!HasUnsealedBatches())
         {
@@ -4640,8 +4646,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             InFlightBatchCount = Volatile.Read(ref _inFlightBatchCount)
         };
 
-        lock (_connectionScaleDiagnosticsLock)
+        var capturedAtUtc = snapshot.CapturedAtUtc;
+        foreach (var (brokerId, budget) in _brokerUnackedBudgets)
+            snapshot.BrokerBudgets.Add(CreateBrokerBudgetDiagnostic(brokerId, budget, capturedAtUtc));
+
+        lock (_deliveryDiagnosticsLock)
+        {
             snapshot.ConnectionScaleEvents.AddRange(_connectionScaleEvents);
+            snapshot.BrokerBudgetSamples.AddRange(_brokerBudgetSamples);
+        }
 
         foreach (var batch in batches)
             snapshot.Batches.Add(batch.Batch.CreateDeliveryDiagnostic(batch.Generation, batch.TopicPartition));
@@ -4655,12 +4668,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int newConnectionCount,
         double bufferUtilization,
         long bufferPressureDelta,
-        long sendLoopPressureDelta)
+        long sendLoopPressureDelta,
+        bool partitionLimited = false)
     {
         if (!_options.EnableDeliveryDiagnostics)
             return;
 
-        lock (_connectionScaleDiagnosticsLock)
+        lock (_deliveryDiagnosticsLock)
         {
             if (_connectionScaleEvents.Count >= MaxConnectionScaleDiagnosticEvents)
                 return;
@@ -4673,10 +4687,60 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 NewConnectionCount = newConnectionCount,
                 BufferUtilization = bufferUtilization,
                 BufferPressureDelta = bufferPressureDelta,
-                SendLoopPressureDelta = sendLoopPressureDelta
+                SendLoopPressureDelta = sendLoopPressureDelta,
+                PartitionLimited = partitionLimited
             });
         }
     }
+
+    private void MaybeRecordBrokerBudgetDiagnosticSample()
+    {
+        if (!_options.EnableDeliveryDiagnostics || !_unackedBudgetEnabled)
+            return;
+
+        var now = Dekaf.MonotonicClock.GetMilliseconds();
+        var next = Volatile.Read(ref _nextBrokerBudgetDiagnosticTimestampMs);
+        if (now < next
+            || Interlocked.CompareExchange(
+                ref _nextBrokerBudgetDiagnosticTimestampMs,
+                now + BrokerBudgetDiagnosticIntervalMs,
+                next) != next)
+            return;
+
+        RecordBrokerBudgetDiagnosticSample();
+    }
+
+    internal void RecordBrokerBudgetDiagnosticSample()
+    {
+        if (!_options.EnableDeliveryDiagnostics || !_unackedBudgetEnabled)
+            return;
+
+        var capturedAtUtc = DateTimeOffset.UtcNow;
+        lock (_deliveryDiagnosticsLock)
+        {
+            foreach (var (brokerId, budget) in _brokerUnackedBudgets)
+            {
+                if (_brokerBudgetSamples.Count >= MaxBrokerBudgetDiagnosticSamples)
+                    _brokerBudgetSamples.RemoveAt(0);
+
+                _brokerBudgetSamples.Add(CreateBrokerBudgetDiagnostic(brokerId, budget, capturedAtUtc));
+            }
+        }
+    }
+
+    private static ProducerBrokerBudgetDiagnostic CreateBrokerBudgetDiagnostic(
+        int brokerId,
+        BrokerUnackedByteBudget budget,
+        DateTimeOffset capturedAtUtc) => new()
+    {
+        CapturedAtUtc = capturedAtUtc,
+        BrokerId = brokerId,
+        BudgetBytes = budget.BudgetBytes,
+        UnackedBytes = budget.UnackedBytes,
+        MinRttMicros = budget.MinimumRttMicros,
+        MaxRateBytesPerSec = budget.MaxRateBytesPerSecond,
+        AdmissionBlockCount = budget.AdmissionBlockEvents
+    };
 
     /// <summary>
     /// Sweeps the in-flight batch list for batches whose delivery timeout has expired
