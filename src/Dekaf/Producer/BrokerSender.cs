@@ -128,6 +128,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private readonly int _brokerId;
     private readonly IConnectionPool _connectionPool;
+    private readonly ConnectionPool? _retainedConnectionGroupPool;
+    private int _connectionGroupRetained;
     private readonly MetadataManager _metadataManager;
     private readonly RecordAccumulator _accumulator;
     private readonly ProducerOptions _options;
@@ -735,11 +737,47 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _anyResponseCompleted.Signal();
         };
         _cts = new CancellationTokenSource();
-        _sendLoopTask = Task.Factory.StartNew(
-            () => SendLoopAsync(_cts.Token),
-            CancellationToken.None,
-            TaskCreationOptions.LongRunning,
-            TaskScheduler.Default).Unwrap();
+        _retainedConnectionGroupPool = connectionPool as ConnectionPool;
+        if (_connectionCount > 1 || !_canPhysicallyShrinkConnections)
+            RetainConnectionGroup();
+        try
+        {
+            _sendLoopTask = Task.Factory.StartNew(
+                () => SendLoopAsync(_cts.Token),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap();
+        }
+        catch
+        {
+            ReleaseConnectionGroup();
+            throw;
+        }
+    }
+
+    private void RetainConnectionGroup()
+    {
+        if (_retainedConnectionGroupPool is null
+            || Interlocked.CompareExchange(ref _connectionGroupRetained, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            _retainedConnectionGroupPool.RetainConnectionGroup(_brokerId);
+        }
+        catch
+        {
+            Volatile.Write(ref _connectionGroupRetained, 0);
+            throw;
+        }
+    }
+
+    private void ReleaseConnectionGroup()
+    {
+        if (Interlocked.Exchange(ref _connectionGroupRetained, 0) != 0)
+            _retainedConnectionGroupPool!.ReleaseConnectionGroup(_brokerId);
     }
 
     private static ValueTask DelayForThrottleAsync(int delayMs, CancellationToken cancellationToken) =>
@@ -4174,6 +4212,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        try
+        {
+            await DisposeCoreAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            ReleaseConnectionGroup();
+        }
+    }
+
+    private async ValueTask DisposeCoreAsync()
+    {
         LogDisposing(_brokerId);
 
         // Complete the channel so no new events are accepted, then cancel the CTS so
@@ -4519,6 +4569,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return 0; // Cap left nothing to add
 
             // Launch connection creation in the background — send loop continues immediately
+            RetainConnectionGroup();
             _lastScaleTimeTicks = now;
             _pendingScaleBufferUtilization = utilization;
             _pendingScaleBufferPressureDelta = bufferPressureDelta;

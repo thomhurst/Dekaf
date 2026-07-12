@@ -536,16 +536,66 @@ public sealed class ConnectionPoolTests
         await using (pool)
         {
             pool.RegisterBroker(1, "localhost", 9092);
+            pool.RetainConnectionGroup(1);
+            pool.RetainConnectionGroup(1);
+
+            try
+            {
+                await pool.GetConnectionAsync(1);
+                created[0].LastUsedTimestampMs = StaleIdleTimestamp();
+                created[1].LastUsedTimestampMs = StaleIdleTimestamp();
+                var reaped = await pool.ReapIdleConnectionsAsync();
+
+                await Assert.That(reaped).IsEqualTo(0);
+                await Assert.That(created[0].DisposeCount).IsEqualTo(0);
+                await Assert.That(created[1].DisposeCount).IsEqualTo(0);
+                await Assert.That(created[1].IsConnected).IsTrue();
+
+                pool.ReleaseConnectionGroup(1);
+                var reapedWithOneOwner = await pool.ReapIdleConnectionsAsync();
+                await Assert.That(reapedWithOneOwner).IsEqualTo(0);
+            }
+            finally
+            {
+                pool.ReleaseConnectionGroup(1);
+            }
+
+            var reapedAfterRelease = await pool.ReapIdleConnectionsAsync();
+            await Assert.That(reapedAfterRelease).IsEqualTo(1);
+            await Assert.That(created[1].DisposeCount).IsEqualTo(1);
+        }
+    }
+
+    [Test]
+    public async Task ReapIdleConnectionsAsync_UnownedGroup_ReapsIdleConnection()
+    {
+        var created = new TestIdleConnection[2];
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleThresholdMs },
+            connectionsPerBroker: 2,
+            connectionFactory: (brokerId, host, port, index, _) =>
+            {
+                var connection = new TestIdleConnection(brokerId, host, port)
+                {
+                    PendingRequestCount = index == 0 ? 1 : 0
+                };
+                created[index] = connection;
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
 
             await pool.GetConnectionAsync(1);
             created[0].LastUsedTimestampMs = StaleIdleTimestamp();
             created[1].LastUsedTimestampMs = StaleIdleTimestamp();
             var reaped = await pool.ReapIdleConnectionsAsync();
 
-            await Assert.That(reaped).IsEqualTo(0);
+            await Assert.That(reaped).IsEqualTo(1);
             await Assert.That(created[0].DisposeCount).IsEqualTo(0);
-            await Assert.That(created[1].DisposeCount).IsEqualTo(0);
-            await Assert.That(created[1].IsConnected).IsTrue();
+            await Assert.That(created[1].DisposeCount).IsEqualTo(1);
         }
     }
 

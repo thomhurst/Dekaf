@@ -56,6 +56,8 @@ public sealed partial class ConnectionPool : IConnectionPool
     // Multi-connection support: connection groups and round-robin index
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
     private readonly ConcurrentDictionary<(int BrokerId, int Index), SemaphoreSlim> _connectionReplacementLocks = new();
+    private readonly Lock _connectionGroupRetentionLock = new();
+    private readonly Dictionary<int, int> _connectionGroupRetainers = [];
 
     // Per-broker semaphores to deduplicate concurrent group creation
     private readonly ConcurrentDictionary<int, SemaphoreSlim> _groupCreationLocks = new();
@@ -565,6 +567,36 @@ public sealed partial class ConnectionPool : IConnectionPool
         }
     }
 
+    /// <summary>
+    /// Prevents idle reaping from changing a broker group's indexed slots while a sender
+    /// retains that routing width. Multiple senders sharing infrastructure are ref-counted.
+    /// </summary>
+    internal void RetainConnectionGroup(int brokerId)
+    {
+        lock (_connectionGroupRetentionLock)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(ConnectionPool));
+
+            _connectionGroupRetainers.TryGetValue(brokerId, out var retainers);
+            _connectionGroupRetainers[brokerId] = retainers + 1;
+        }
+    }
+
+    internal void ReleaseConnectionGroup(int brokerId)
+    {
+        lock (_connectionGroupRetentionLock)
+        {
+            if (!_connectionGroupRetainers.TryGetValue(brokerId, out var retainers))
+                return;
+
+            if (retainers == 1)
+                _connectionGroupRetainers.Remove(brokerId);
+            else
+                _connectionGroupRetainers[brokerId] = retainers - 1;
+        }
+    }
+
     private async ValueTask<IKafkaConnection> ReplaceConnectionInGroupAsync(int brokerId, BrokerInfo brokerInfo, int index, CancellationToken cancellationToken)
     {
         // Use a per-(broker,index) SemaphoreSlim instead of Lazy<ValueTask> to avoid
@@ -1052,8 +1084,22 @@ public sealed partial class ConnectionPool : IConnectionPool
                     reaped++;
             }
 
-            // Group slots are owned by senders that retain their width and index routing.
-            // Their lifecycle is coordinated through ShrinkConnectionGroupAsync instead.
+            foreach (var (brokerId, group) in _connectionGroupsById.ToArray())
+            {
+                var connectedCount = CountConnected(group);
+                for (var i = 0; i < group.Length; i++)
+                {
+                    var connection = group[i];
+                    if (connection is not null
+                        && await TryReapGroupConnectionAsync(
+                            brokerId, group, i, connection, connectedCount, now).ConfigureAwait(false))
+                    {
+                        connectedCount--;
+                        reaped++;
+                    }
+                }
+            }
+
             return reaped;
         }
         finally
@@ -1089,6 +1135,36 @@ public sealed partial class ConnectionPool : IConnectionPool
         }
 
         return true;
+    }
+
+    private async ValueTask<bool> TryReapGroupConnectionAsync(
+        int brokerId,
+        IKafkaConnection[] group,
+        int index,
+        IKafkaConnection connection,
+        int connectedCount,
+        long now)
+    {
+        if (!IsIdleReapable(connection, now))
+            return false;
+
+        if (connectedCount <= 1 && HasPendingRequests(group))
+            return false;
+
+        lock (_connectionGroupRetentionLock)
+        {
+            if (_connectionGroupRetainers.ContainsKey(brokerId)
+                || Interlocked.CompareExchange(ref group[index], null!, connection) != connection)
+            {
+                return false;
+            }
+        }
+
+        var disposed = await DisposeIdleConnectionAsync(connection, index, now).ConfigureAwait(false);
+        if (!disposed && connection.IsConnected)
+            Interlocked.CompareExchange(ref group[index], connection, null!);
+
+        return disposed;
     }
 
     private bool IsIdleReapable(IKafkaConnection connection, long now)
@@ -1153,6 +1229,29 @@ public sealed partial class ConnectionPool : IConnectionPool
                 IdleDurationMs = idleDurationMs
             });
         }
+    }
+
+    private static int CountConnected(IKafkaConnection[] group)
+    {
+        var count = 0;
+        foreach (var connection in group)
+        {
+            if (connection is not null && connection.IsConnected)
+                count++;
+        }
+
+        return count;
+    }
+
+    private static bool HasPendingRequests(IKafkaConnection[] group)
+    {
+        foreach (var connection in group)
+        {
+            if (connection is IIdleTrackedKafkaConnection { PendingRequestCount: > 0 })
+                return true;
+        }
+
+        return false;
     }
 
     private static bool TryRemoveExact<TKey, TValue>(
