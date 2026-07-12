@@ -360,20 +360,18 @@ public sealed class AdaptiveScaleDownTests
 
         try
         {
-            typeof(BrokerSender).GetField(
-                "_connectionCount",
-                BindingFlags.Instance | BindingFlags.NonPublic)!
-                .SetValue(sender, 2);
+            // This test drives MaybeScaleConnections directly. Stop and join the live
+            // loop first so it cannot remain a second writer after passing its scaling gate.
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
+            SetField(sender, "_connectionCount", 2);
 
             // First pass starts low-utilization tracking; zero sustained window makes
             // the second pass eligible to shrink if shared-pool protection is absent.
             InvokeMaybeScaleConnections(sender);
             InvokeMaybeScaleConnections(sender);
 
-            var connectionCount = (int)typeof(BrokerSender).GetField(
-                "_connectionCount",
-                BindingFlags.Instance | BindingFlags.NonPublic)!
-                .GetValue(sender)!;
+            var connectionCount = GetField<int>(sender, "_connectionCount");
 
             await pool.DidNotReceive().ShrinkConnectionGroupAsync(
                 Arg.Any<int>(),
@@ -609,13 +607,14 @@ public sealed class AdaptiveScaleDownTests
             var mutePartition = typeof(BrokerSender).GetMethod(
                 "MutePartition",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
-            var unmutePartition = typeof(BrokerSender).GetMethod(
-                "UnmutePartition",
-                BindingFlags.Instance | BindingFlags.NonPublic)!;
             for (var partition = 0; partition < 3; partition++)
                 mutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
-            for (var partition = 0; partition < 3; partition++)
-                unmutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
+
+            // Simulate all partitions clearing between scale checks without calling
+            // UnmutePartition, whose wake event lets the live sender loop race this
+            // test's direct MaybeScaleConnections invocation.
+            GetField<ConcurrentDictionary<TopicPartition, byte>>(sender, "_mutedPartitions").Clear();
+            SetField(sender, "_mutedPartitionCount", 0);
             SetField(sender, "_totalPendingResponseCount", 0);
             SetField(sender, "_lowUtilizationStartTicks", 1L);
             InvokeMaybeScaleConnections(sender);

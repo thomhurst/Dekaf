@@ -103,22 +103,26 @@ public class LockFreeStackTests
     [Test]
     public async Task TryPush_TryPop_DoNotAllocateInSteadyState()
     {
-        var stack = new LockFreeStack<Item>(1);
-        var item = new Item { Value = 42 };
-
-        for (var i = 0; i < 100; i++)
+        var allocated = await Task.Factory.StartNew(static () =>
         {
-            stack.TryPush(item);
-            stack.TryPop(out _);
-        }
+            var stack = new LockFreeStack<Item>(1);
+            var item = new Item { Value = 42 };
 
-        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 10_000; i++)
-        {
-            stack.TryPush(item);
-            stack.TryPop(out _);
-        }
-        var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+            for (var i = 0; i < 100; i++)
+            {
+                stack.TryPush(item);
+                stack.TryPop(out _);
+            }
+
+            var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 10_000; i++)
+            {
+                stack.TryPush(item);
+                stack.TryPop(out _);
+            }
+
+            return GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
         await Assert.That(allocated).IsEqualTo(0);
     }

@@ -320,6 +320,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    [NotInParallel]
     public async Task ConsumerProtocol_SuccessfulSlowJoin_RefreshesPollDeadline()
     {
         SetupFindCoordinator();
