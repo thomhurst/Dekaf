@@ -441,6 +441,107 @@ def format_connection_scale_timeline(results, title):
     return lines
 
 
+def format_latency_outlier_timeline(results, title):
+    """Correlate sampled delivery stalls with scaling, throughput, and GC."""
+    rows = [
+        (result, sample)
+        for result in results
+        for sample in (result.get('latency') or {}).get('outlierSamples') or []
+    ]
+    if not rows:
+        return []
+
+    rows.sort(key=lambda row: row[1].get('startedAtUtc', ''))
+    lines = [
+        f"## Delivery Latency Outliers - {title}",
+        "",
+        "| Client | Message | Started UTC | Latency | Correlated owner | Scale events in stall | Throughput interval | GC interval delta |",
+        "|--------|--------:|-------------|--------:|------------------|-----------------------|---------------------|-------------------|",
+    ]
+    for result, outlier in rows:
+        started_at = _parse_timestamp(outlier.get('startedAtUtc'))
+        completed_at = _parse_timestamp(outlier.get('completedAtUtc'))
+        scale_events = []
+        for event in (result.get('producerDeliveryDiagnostics') or {}).get('connectionScaleEvents') or []:
+            occurred_at = _parse_timestamp(event.get('occurredAtUtc'))
+            if started_at is not None and completed_at is not None and occurred_at is not None:
+                if started_at <= occurred_at <= completed_at:
+                    scale_events.append(event)
+
+        timestamped_samples = sorted(
+            (
+                (sample, captured_at)
+                for sample in (result.get('throughput') or {}).get('intervalSamples') or []
+                if (captured_at := _parse_timestamp(sample.get('capturedAtUtc'))) is not None
+            ),
+            key=lambda item: item[1],
+        )
+        completion_sample = None
+        if completed_at is not None:
+            completion_sample = next(
+                (item for item in timestamped_samples if item[1] >= completed_at),
+                min(
+                    timestamped_samples,
+                    key=lambda item: abs((item[1] - completed_at).total_seconds()),
+                    default=None,
+                ),
+            )
+        baseline_sample = None
+        if started_at is not None:
+            baseline_sample = next(
+                (item for item in reversed(timestamped_samples) if item[1] <= started_at),
+                None,
+            )
+
+        completion = completion_sample[0] if completion_sample else None
+        baseline = baseline_sample[0] if baseline_sample else {}
+        gen2_delta = max(0, (completion or {}).get('gen2Collections', 0) - baseline.get('gen2Collections', 0))
+        pause_delta_ms = max(0, (completion or {}).get('gcPauseDurationMs', 0) - baseline.get('gcPauseDurationMs', 0))
+        client_rate = result.get('medianIntervalMessagesPerSecond')
+        if not isinstance(client_rate, (int, float)):
+            client_rate = (result.get('throughput') or {}).get('averageMessagesPerSecond', 0)
+
+        if scale_events:
+            owner = 'connection transition'
+        elif gen2_delta > 0 or pause_delta_ms >= 10:
+            owner = 'GC pause'
+        elif completion is not None and completion.get('messagesPerSecond', 0) < client_rate * 0.5:
+            owner = 'throughput collapse'
+        else:
+            owner = 'broker/backlog (no scale or GC event)'
+
+        scale_summary = '-'
+        if scale_events:
+            scale_summary = ', '.join(
+                f"{event.get('brokerId', '-')}:{event.get('oldConnectionCount', '-')}→{event.get('newConnectionCount', '-')}"
+                for event in scale_events
+            )
+        throughput_summary = '-'
+        gc_summary = '-'
+        if completion is not None:
+            throughput_summary = (
+                f"{completion.get('elapsedSeconds', 0):.1f}s / "
+                f"{completion.get('messagesPerSecond', 0):,.0f} msg/s"
+            )
+            gc_summary = f"Gen2 +{gen2_delta:,} / pause +{pause_delta_ms:.1f}ms"
+        latency_us = outlier.get('latencyUs', 0)
+        latency_text = f"{latency_us / 1_000_000:.1f}s" if latency_us >= 1_000_000 else f"{latency_us / 1000:.1f}ms"
+        message_index = outlier.get('messageIndex')
+        message_text = '-' if message_index is None else f"{message_index:,}"
+        lines.append(
+            f"| {result.get('client', 'Unknown')} | {message_text} | "
+            f"{outlier.get('startedAtUtc', '-')} | {latency_text} | {owner} | "
+            f"{scale_summary} | {throughput_summary} | {gc_summary} |"
+        )
+
+    lines.append("")
+    dropped = sum((result.get('latency') or {}).get('droppedOutlierSamples', 0) for result in results)
+    if dropped > 0:
+        lines.append(f"*{dropped:,} additional latency outlier sample(s) exceeded the bounded diagnostic capacity.*")
+        lines.append("")
+    return lines
+
+
 def _parse_timestamp(value):
     if not isinstance(value, str):
         return None
@@ -627,6 +728,7 @@ def generate_scenario_tables(results, include_ratio=False, include_callout=False
             scenario_results = scenarios[scenario_key]
             output.extend(format_throughput_table(scenario_results, f"{title} Throughput", include_ratio=include_ratio))
             output.extend(format_connection_scale_timeline(scenario_results, title))
+            output.extend(format_latency_outlier_timeline(scenario_results, title))
             output.extend(format_transaction_verification(scenario_results))
             output.extend(format_roundtrip_validation_table(scenario_results))
             if include_callout:

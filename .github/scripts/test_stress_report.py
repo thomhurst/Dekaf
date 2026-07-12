@@ -67,6 +67,43 @@ class StressReportTests(unittest.TestCase):
         self.assertIn("20.0s / 2,000 msg/s", report)
         self.assertIn("120/150", report)
 
+    def test_scenario_tables_surface_latency_outlier_diagnostics(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["scenario"] = "producer"
+        value["throughput"]["intervalSamples"] = [
+            {
+                "capturedAtUtc": "2026-07-12T02:20:42+00:00",
+                "elapsedSeconds": 2.0,
+                "messagesPerSecond": 1400.0,
+                "gen2Collections": 0,
+                "gcPauseDurationMs": 0,
+            },
+            {
+                "capturedAtUtc": "2026-07-12T02:20:46+00:00",
+                "elapsedSeconds": 6.0,
+                "messagesPerSecond": 1300.0,
+                "gen2Collections": 1,
+                "gcPauseDurationMs": 12.5,
+            },
+        ]
+        value["latency"] = {
+            "droppedOutlierSamples": 2,
+            "outlierSamples": [{
+                "messageIndex": 42,
+                "startedAtUtc": "2026-07-12T02:20:44+00:00",
+                "completedAtUtc": "2026-07-12T02:20:46+00:00",
+                "latencyUs": 2_000_000,
+            }],
+        }
+
+        report = "\n".join(generate_scenario_tables([value]))
+
+        self.assertIn("Delivery Latency Outliers", report)
+        self.assertIn("| Dekaf | 42 |", report)
+        self.assertIn("GC pause", report)
+        self.assertIn("Gen2 +1 / pause +12.5ms", report)
+        self.assertIn("2 additional latency outlier sample(s)", report)
+
     def test_paired_latency_thresholds_flag_high_p99(self):
         confluent = stress_result("Confluent", effective_rate=1000)
         confluent.update({

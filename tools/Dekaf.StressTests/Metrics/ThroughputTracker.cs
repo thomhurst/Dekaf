@@ -28,6 +28,10 @@ internal sealed class ThroughputTracker
     private double _sampledElapsedSeconds;
     private TimeSpan _cpuTimeStart;
     private double _cpuTimeSeconds;
+    private int _startGen0Collections;
+    private int _startGen1Collections;
+    private int _startGen2Collections;
+    private double _startGcPauseDurationMs;
 
     public long MessageCount => Interlocked.Read(ref _messageCount);
     public long ByteCount => Interlocked.Read(ref _byteCount);
@@ -49,6 +53,10 @@ internal sealed class ThroughputTracker
         _lastSampleTimestamp = Stopwatch.GetTimestamp();
         _lastSampleMessageCount = 0;
         _sampledElapsedSeconds = 0;
+        _startGen0Collections = GC.CollectionCount(0);
+        _startGen1Collections = GC.CollectionCount(1);
+        _startGen2Collections = GC.CollectionCount(2);
+        _startGcPauseDurationMs = GC.GetTotalPauseDuration().TotalMilliseconds;
     }
 
     public void Stop()
@@ -201,7 +209,13 @@ internal sealed class ThroughputTracker
                 {
                     CapturedAtUtc = DateTimeOffset.UtcNow,
                     ElapsedSeconds = _stopwatch.Elapsed.TotalSeconds,
-                    MessagesPerSecond = rate
+                    MessagesPerSecond = rate,
+                    Gen0Collections = GC.CollectionCount(0) - _startGen0Collections,
+                    Gen1Collections = GC.CollectionCount(1) - _startGen1Collections,
+                    Gen2Collections = GC.CollectionCount(2) - _startGen2Collections,
+                    GcPauseDurationMs = Math.Max(
+                        0,
+                        GC.GetTotalPauseDuration().TotalMilliseconds - _startGcPauseDurationMs)
                 });
                 _sampledElapsedSeconds += elapsedSeconds;
             }
@@ -303,6 +317,10 @@ internal sealed class ThroughputIntervalSample
     public required DateTimeOffset CapturedAtUtc { get; init; }
     public required double ElapsedSeconds { get; init; }
     public required double MessagesPerSecond { get; init; }
+    public int Gen0Collections { get; init; }
+    public int Gen1Collections { get; init; }
+    public int Gen2Collections { get; init; }
+    public double GcPauseDurationMs { get; init; }
 }
 
 internal sealed class ThroughputErrorSample
