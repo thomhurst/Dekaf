@@ -10,6 +10,41 @@ namespace Dekaf.Tests.Unit.Producer;
 public class ProducerCancellationTests
 {
     [Test]
+    public async Task LingerWakeup_WaitsWhileIdle_AndSignalsOnFirstBatch()
+    {
+        var accumulator = new RecordAccumulator(new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            LingerMs = 10_000
+        });
+
+        try
+        {
+            var wakeup = accumulator.WaitForLingerWakeupAsync(5_000).AsTask();
+            await Assert.That(wakeup.IsCompleted).IsFalse();
+
+            await accumulator.AppendAsync(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                new PooledMemory(null, 0, isNull: true),
+                new PooledMemory(null, 0, isNull: true),
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                CancellationToken.None);
+
+            await Assert.That(await wakeup.WaitAsync(TimeSpan.FromSeconds(1))).IsTrue();
+            await Assert.That(accumulator.HasPendingLingerBatches).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task DisposeAsync_StopsPendingLingerTimerPromptly()
     {
         var producer = Kafka.CreateProducer<string, string>()

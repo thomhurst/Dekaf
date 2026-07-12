@@ -25,6 +25,51 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class BrokerSenderSendLoopTests
 {
+    [Test]
+    public async Task ShouldMicroLinger_TransactionalAwaitedBatch_ReturnsFalse()
+    {
+        var batch = new ReadyBatch();
+        batch.Initialize(
+            new TopicPartition("test-topic", 0),
+            new RecordBatch(),
+            completionSourcesArray: null,
+            completionSourcesCount: 1,
+            dataSize: 1,
+            recordCount: 1);
+
+        var shouldLinger = BrokerSender.ShouldMicroLinger([batch], 1, isTransactional: true);
+
+        await Assert.That(shouldLinger).IsFalse();
+    }
+
+    [Test]
+    public async Task ShouldMicroLinger_FireAndForgetOrPlainProducer_ReturnsTrue()
+    {
+        var fireAndForget = new ReadyBatch();
+        fireAndForget.Initialize(
+            new TopicPartition("test-topic", 0),
+            new RecordBatch(),
+            completionSourcesArray: null,
+            completionSourcesCount: 0,
+            dataSize: 1,
+            recordCount: 1);
+        var awaited = new ReadyBatch();
+        awaited.Initialize(
+            new TopicPartition("test-topic", 1),
+            new RecordBatch(),
+            completionSourcesArray: null,
+            completionSourcesCount: 1,
+            dataSize: 1,
+            recordCount: 1);
+
+        await Assert.That(BrokerSender.ShouldMicroLinger([fireAndForget], 1, isTransactional: true))
+            .IsTrue();
+        await Assert.That(BrokerSender.ShouldMicroLinger([awaited], 1, isTransactional: false))
+            .IsTrue();
+        await Assert.That(BrokerSender.ShouldMicroLinger([awaited, awaited], 2, isTransactional: true))
+            .IsTrue();
+    }
+
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 100, int retryBackoffMaxMs = 1000,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,

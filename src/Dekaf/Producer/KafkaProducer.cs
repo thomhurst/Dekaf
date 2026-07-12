@@ -61,7 +61,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly CancellationTokenSource _senderCts;
     private readonly Task _senderTask;
     private readonly Task _lingerTask;
-    private readonly PeriodicTimer _lingerTimer;
 
     // Per-broker sender threads: each broker gets a dedicated BrokerSender with its own
     // channel and send loop. The per-broker in-flight semaphore enables pipelining across
@@ -410,11 +409,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         GcConfigurationCheck.WarnIfWorkstationGc(_logger);
 
         _senderCts = new CancellationTokenSource();
-        // Use 1ms check interval for low-latency awaited produces.
-        // ShouldFlush() is smart: it returns true immediately for batches with completion
-        // sources (awaited produces), but waits for full LingerMs for fire-and-forget batches.
-        // This provides low latency for ProduceAsync while maintaining efficient batching for Send.
-        _lingerTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(1));
         _senderTask = Task.Factory.StartNew(
             () => SenderLoopAsync(_senderCts.Token),
             CancellationToken.None,
@@ -2977,27 +2971,32 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     private async Task LingerLoopAsync(CancellationToken cancellationToken)
     {
-        // Use PeriodicTimer instead of Task.Delay to avoid allocations on each tick.
-        // PeriodicTimer.WaitForNextTickAsync is allocation-free after the timer is constructed.
-
         // Orphan sweep interval: check for expired in-flight batches every ~5 seconds.
         // This catches batches whose references were lost from BrokerSender data structures
         // (root cause under investigation) — without this sweep, ProduceAsync hangs indefinitely.
         var orphanSweepIntervalTicks = (long)(5.0 * Stopwatch.Frequency);
         var lastOrphanSweepTicks = Stopwatch.GetTimestamp();
 
-        using var cancellationRegistration = cancellationToken.UnsafeRegister(
-            static state => ((PeriodicTimer)state!).Dispose(),
-            _lingerTimer);
+        _accumulator.RegisterLingerWakeupShutdownToken(cancellationToken);
 
-        while (await _lingerTimer.WaitForNextTickAsync(CancellationToken.None).ConfigureAwait(false))
+        while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
+                var now = Stopwatch.GetTimestamp();
+                var ticksUntilOrphanSweep = orphanSweepIntervalTicks - (now - lastOrphanSweepTicks);
+                var orphanWaitMs = ticksUntilOrphanSweep <= 0
+                    ? 0
+                    : Math.Max(1, (int)Math.Ceiling(ticksUntilOrphanSweep * 1000.0 / Stopwatch.Frequency));
+                var waitMs = _accumulator.HasPendingLingerBatches && orphanWaitMs > 0
+                    ? 1
+                    : orphanWaitMs;
+
+                await _accumulator.WaitForLingerWakeupAsync(waitMs).ConfigureAwait(false);
                 await _accumulator.ExpireLingerAsync(cancellationToken).ConfigureAwait(false);
 
                 // Periodic orphan sweep: fail in-flight batches that exceeded delivery timeout.
-                var now = Stopwatch.GetTimestamp();
+                now = Stopwatch.GetTimestamp();
                 if (now - lastOrphanSweepTicks >= orphanSweepIntervalTicks)
                 {
                     lastOrphanSweepTicks = now;
@@ -3880,7 +3879,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _accumulator.ForceFailAllInFlightBatches();
 
         _senderCts.Dispose();
-        _lingerTimer.Dispose();
         _transactionLock.Dispose();
         _initLock.Dispose();
 
