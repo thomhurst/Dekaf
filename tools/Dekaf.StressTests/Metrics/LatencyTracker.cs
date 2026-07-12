@@ -11,13 +11,18 @@ namespace Dekaf.StressTests.Metrics;
 /// </summary>
 internal sealed class LatencyTracker
 {
+    private const int MaxOutlierSamples = 256;
+    private static readonly long OutlierThresholdTicks = Stopwatch.Frequency;
+
     private readonly long[] _buckets;
+    private readonly LatencyOutlierSample[] _outlierSamples = new LatencyOutlierSample[MaxOutlierSamples];
     private readonly double _bucketWidthUs;
     private readonly double _maxValueUs;
     private long _count;
     private long _overflowCount;
     private long _minTicks = long.MaxValue;
     private long _maxTicks;
+    private long _outlierCount;
 
     /// <param name="maxValueMs">Upper bound of the histogram in milliseconds. Values above this are counted as overflow.</param>
     /// <param name="bucketWidthUs">Width of each bucket in microseconds. Smaller = higher resolution but more memory.</param>
@@ -29,10 +34,15 @@ internal sealed class LatencyTracker
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void RecordTicks(long ticks)
+    public void RecordTicks(long ticks, long? messageIndex = null)
     {
         Interlocked.Increment(ref _count);
         UpdateMinMax(ticks);
+
+        if (ticks >= OutlierThresholdTicks)
+        {
+            RecordOutlier(ticks, messageIndex);
+        }
 
         var microseconds = ticks * 1_000_000.0 / Stopwatch.Frequency;
 
@@ -49,6 +59,25 @@ internal sealed class LatencyTracker
         }
 
         Interlocked.Increment(ref _buckets[bucketIndex]);
+    }
+
+    private void RecordOutlier(long ticks, long? messageIndex)
+    {
+        var slot = Interlocked.Increment(ref _outlierCount) - 1;
+        if ((ulong)slot >= MaxOutlierSamples)
+        {
+            return;
+        }
+
+        var completedAt = DateTimeOffset.UtcNow;
+        var latency = Stopwatch.GetElapsedTime(0, ticks);
+        _outlierSamples[slot] = new LatencyOutlierSample
+        {
+            MessageIndex = messageIndex,
+            StartedAtUtc = completedAt - latency,
+            CompletedAtUtc = completedAt,
+            LatencyUs = latency.TotalMicroseconds
+        };
     }
 
     public void Record(double milliseconds)
@@ -134,6 +163,14 @@ internal sealed class LatencyTracker
         var maxTicks = Interlocked.Read(ref _maxTicks);
         var (p50, p95, p99) = GetPercentilesUs();
 
+        var outlierCount = Interlocked.Read(ref _outlierCount);
+        var capturedOutlierCount = (int)Math.Min(outlierCount, MaxOutlierSamples);
+        var outlierSamples = new List<LatencyOutlierSample>(capturedOutlierCount);
+        for (var index = 0; index < capturedOutlierCount; index++)
+        {
+            outlierSamples.Add(_outlierSamples[index]);
+        }
+
         return new LatencySnapshot
         {
             Count = Interlocked.Read(ref _count),
@@ -142,7 +179,9 @@ internal sealed class LatencyTracker
             P50Us = p50,
             P95Us = p95,
             P99Us = p99,
-            OverflowCount = Interlocked.Read(ref _overflowCount)
+            OverflowCount = Interlocked.Read(ref _overflowCount),
+            OutlierSamples = outlierSamples,
+            DroppedOutlierSamples = Math.Max(0, outlierCount - MaxOutlierSamples)
         };
     }
 
@@ -159,6 +198,8 @@ internal sealed class LatencySnapshot
     public required double P95Us { get; init; }
     public required double P99Us { get; init; }
     public required long OverflowCount { get; init; }
+    public List<LatencyOutlierSample> OutlierSamples { get; init; } = [];
+    public long DroppedOutlierSamples { get; init; }
 
     // Convenience properties for backward compatibility (excluded from JSON output)
     [JsonIgnore] public double MinMs => MinUs / 1000.0;
@@ -166,4 +207,12 @@ internal sealed class LatencySnapshot
     [JsonIgnore] public double P50Ms => P50Us / 1000.0;
     [JsonIgnore] public double P95Ms => P95Us / 1000.0;
     [JsonIgnore] public double P99Ms => P99Us / 1000.0;
+}
+
+internal readonly record struct LatencyOutlierSample
+{
+    public long? MessageIndex { get; init; }
+    public required DateTimeOffset StartedAtUtc { get; init; }
+    public required DateTimeOffset CompletedAtUtc { get; init; }
+    public required double LatencyUs { get; init; }
 }

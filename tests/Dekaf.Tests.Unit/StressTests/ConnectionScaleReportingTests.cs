@@ -34,13 +34,52 @@ public sealed class ConnectionScaleReportingTests
                     {
                         CapturedAtUtc = startedAt.AddSeconds(2),
                         ElapsedSeconds = 2,
-                        MessagesPerSecond = 1_000
+                        MessagesPerSecond = 1_000,
+                        Gen2Collections = 0,
+                        GcPauseDurationMs = 0
                     },
                     new ThroughputIntervalSample
                     {
                         CapturedAtUtc = startedAt.AddSeconds(6),
                         ElapsedSeconds = 6,
-                        MessagesPerSecond = 2_500
+                        MessagesPerSecond = 2_500,
+                        Gen2Collections = 1,
+                        GcPauseDurationMs = 12.5
+                    },
+                    new ThroughputIntervalSample
+                    {
+                        CapturedAtUtc = startedAt.AddSeconds(10),
+                        ElapsedSeconds = 10,
+                        MessagesPerSecond = 2_400,
+                        Gen2Collections = 2,
+                        GcPauseDurationMs = 25
+                    }
+                ]
+            },
+            Latency = new LatencySnapshot
+            {
+                Count = 1,
+                MinUs = 2_000_000,
+                MaxUs = 2_000_000,
+                P50Us = 2_000_000,
+                P95Us = 2_000_000,
+                P99Us = 2_000_000,
+                OverflowCount = 0,
+                OutlierSamples =
+                [
+                    new LatencyOutlierSample
+                    {
+                        MessageIndex = 42,
+                        StartedAtUtc = startedAt.AddSeconds(4),
+                        CompletedAtUtc = startedAt.AddSeconds(6),
+                        LatencyUs = 2_000_000
+                    },
+                    new LatencyOutlierSample
+                    {
+                        MessageIndex = 43,
+                        StartedAtUtc = startedAt.AddSeconds(8),
+                        CompletedAtUtc = startedAt.AddSeconds(10),
+                        LatencyUs = 2_000_000
                     }
                 ]
             },
@@ -86,5 +125,11 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(markdown).Contains("75%");
         await Assert.That(markdown).Contains("120/340");
         await Assert.That(markdown).Contains("6.0s / 2,500 msg/s");
+        await Assert.That(markdown).Contains("Delivery Latency Outliers - Fire-and-Forget");
+        await Assert.That(markdown).Contains("42");
+        await Assert.That(markdown).Contains("connection transition");
+        await Assert.That(markdown).Contains("Gen2 +1 / pause +12.5ms");
+        await Assert.That(markdown).Contains("43");
+        await Assert.That(markdown).Contains("GC pause");
     }
 }

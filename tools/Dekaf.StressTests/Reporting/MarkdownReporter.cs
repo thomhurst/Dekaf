@@ -1,4 +1,5 @@
 using System.Text;
+using Dekaf.StressTests.Metrics;
 
 namespace Dekaf.StressTests.Reporting;
 
@@ -27,6 +28,7 @@ internal static class MarkdownReporter
 
             GenerateThroughputTable(sb, title, groupResults);
             GenerateConnectionScaleTimeline(sb, groupResults, label);
+            GenerateLatencyOutlierTimeline(sb, groupResults, label);
 
             var transactionalResults = groupResults
                 .Where(r => r.TransactionVerification is not null)
@@ -197,6 +199,94 @@ internal static class MarkdownReporter
 
     private static double ComparisonMessagesPerSecond(StressTestResult result) =>
         result.MedianIntervalMessagesPerSecond ?? result.EffectiveMessagesPerSecond;
+
+    private static void GenerateLatencyOutlierTimeline(
+        StringBuilder sb,
+        List<StressTestResult> results,
+        string label)
+    {
+        var rows = results
+            .SelectMany(result => (result.Latency?.OutlierSamples ?? [])
+                .Select(sample => (Result: result, Sample: sample)))
+            .OrderBy(row => row.Sample.StartedAtUtc)
+            .ToList();
+        if (rows.Count == 0)
+            return;
+
+        sb.AppendLine($"## Delivery Latency Outliers - {label}");
+        sb.AppendLine();
+        sb.AppendLine("| Client | Message | Started UTC | Latency | Correlated owner | Scale events in stall | Throughput interval | GC interval delta |");
+        sb.AppendLine("|--------|--------:|-------------|--------:|------------------|-----------------------|---------------------|-------------------|");
+        foreach (var row in rows)
+        {
+            var scaleEvents = (row.Result.ProducerDeliveryDiagnostics?.ConnectionScaleEvents ?? [])
+                .Where(scaleEvent =>
+                    scaleEvent.OccurredAtUtc >= row.Sample.StartedAtUtc &&
+                    scaleEvent.OccurredAtUtc <= row.Sample.CompletedAtUtc)
+                .ToList();
+            var samples = row.Result.Throughput.IntervalSamples;
+            var throughputSample = samples.FirstOrDefault(sample => sample.CapturedAtUtc >= row.Sample.CompletedAtUtc)
+                ?? samples.MinBy(sample => Math.Abs((sample.CapturedAtUtc - row.Sample.CompletedAtUtc).TotalMilliseconds));
+            var sampleIndex = throughputSample is null ? -1 : samples.IndexOf(throughputSample);
+            var previousSample = sampleIndex > 0 ? samples[sampleIndex - 1] : null;
+            var gen2Delta = throughputSample is null
+                ? 0
+                : throughputSample.Gen2Collections - (previousSample?.Gen2Collections ?? 0);
+            var pauseDeltaMs = throughputSample is null
+                ? 0
+                : Math.Max(0, throughputSample.GcPauseDurationMs - (previousSample?.GcPauseDurationMs ?? 0));
+            var owner = ClassifyLatencyOutlier(
+                scaleEvents.Count,
+                gen2Delta,
+                pauseDeltaMs,
+                throughputSample,
+                row.Result.EffectiveMessagesPerSecond);
+            var scaleSummary = scaleEvents.Count == 0
+                ? "-"
+                : string.Join(", ", scaleEvents.Select(scaleEvent =>
+                    $"{scaleEvent.BrokerId}:{scaleEvent.OldConnectionCount}→{scaleEvent.NewConnectionCount}"));
+            var throughputSummary = throughputSample is null
+                ? "-"
+                : $"{throughputSample.ElapsedSeconds:F1}s / {throughputSample.MessagesPerSecond:N0} msg/s";
+            var gcSummary = throughputSample is null
+                ? "-"
+                : $"Gen2 +{gen2Delta:N0} / pause +{pauseDeltaMs:F1}ms";
+            var messageIndex = row.Sample.MessageIndex?.ToString("N0") ?? "-";
+
+            sb.AppendLine(
+                $"| {row.Result.Client} | {messageIndex} | {row.Sample.StartedAtUtc:HH:mm:ss.fff} | " +
+                $"{FormatLatencyUs(row.Sample.LatencyUs).Trim()} | {owner} | {scaleSummary} | " +
+                $"{throughputSummary} | {gcSummary} |");
+        }
+
+        sb.AppendLine();
+        var dropped = results.Sum(result => result.Latency?.DroppedOutlierSamples ?? 0);
+        if (dropped > 0)
+        {
+            sb.AppendLine($"*{dropped:N0} additional latency outlier sample(s) exceeded the bounded diagnostic capacity.*");
+            sb.AppendLine();
+        }
+    }
+
+    private static string ClassifyLatencyOutlier(
+        int scaleEventCount,
+        int gen2Delta,
+        double pauseDeltaMs,
+        ThroughputIntervalSample? throughputSample,
+        double averageMessagesPerSecond)
+    {
+        if (scaleEventCount > 0)
+            return "connection transition";
+        if (gen2Delta > 0 || pauseDeltaMs >= 10)
+            return "GC pause";
+        if (throughputSample is not null &&
+            throughputSample.MessagesPerSecond < averageMessagesPerSecond * 0.5)
+        {
+            return "throughput collapse";
+        }
+
+        return "broker/backlog (no scale or GC event)";
+    }
 
     private static void GenerateLatencyTable(StringBuilder sb, List<StressTestResult> results, string title = "Latency Percentiles")
     {

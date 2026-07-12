@@ -155,7 +155,7 @@ internal static class ConfluentStressTestHelpers
             }
             else
             {
-                latency.RecordTicks(Stopwatch.GetTimestamp() - start);
+                latency.RecordTicks(Stopwatch.GetTimestamp() - start, messageIndex);
             }
         }, cancellationToken);
     }

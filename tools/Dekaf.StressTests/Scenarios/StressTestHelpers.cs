@@ -380,7 +380,7 @@ internal static class StressTestHelpers
             try
             {
                 await producer.ProduceAsync(topic, key, value).ConfigureAwait(false);
-                latency.RecordTicks(Stopwatch.GetTimestamp() - start);
+                latency.RecordTicks(Stopwatch.GetTimestamp() - start, messageIndex);
             }
             catch (Exception ex)
             {
