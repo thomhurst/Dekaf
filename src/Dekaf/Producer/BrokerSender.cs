@@ -1205,7 +1205,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && coalescedCount < maxCoalesce
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
-                    && Volatile.Read(ref _totalPendingResponseCount) < _totalMaxInFlight)
+                    && Volatile.Read(ref _totalPendingResponseCount) < _totalMaxInFlight
+                    && ShouldMicroLinger(
+                        coalescedBatches,
+                        coalescedCount,
+                        _options.TransactionalId is not null))
                 {
                     var spinWait = new SpinWait();
                     for (var spin = 0; spin < MicroLingerMaxSpins && coalescedCount < maxCoalesce; spin++)
@@ -1951,6 +1955,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ref coalescedCount,
             ref coalescedRequestBudgetUsed,
             normalBatchRequestBodySize);
+    }
+
+    /// <summary>
+    /// Serial transactional ProduceAsync traffic cannot enqueue another record until its sole
+    /// completion resolves, so spinning for a co-temporal batch can never improve coalescing.
+    /// </summary>
+    internal static bool ShouldMicroLinger(
+        ReadyBatch[] coalescedBatches,
+        int coalescedCount,
+        bool isTransactional)
+    {
+        if (!isTransactional || coalescedCount != 1)
+            return true;
+
+        var batch = coalescedBatches[0];
+        return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

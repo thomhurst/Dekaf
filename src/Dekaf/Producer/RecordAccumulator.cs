@@ -918,6 +918,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private readonly AsyncAutoResetSignal _wakeupSignal = new();
 
+    /// <summary>
+    /// Signals the linger loop when an unsealed batch is created or gains its first awaiter.
+    /// This keeps the 1 ms linger cadence armed only while batches need it.
+    /// </summary>
+    private readonly AsyncAutoResetSignal _lingerWakeupSignal = new();
+
     // Per-partition-affine append workers: each worker owns a channel and processes
     // appends for a subset of partitions (partition % workerCount). This reduces
     // contention on ConcurrentDictionary lookups when many threads fall through
@@ -1939,6 +1945,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return _wakeupSignal.WaitAsync(timeoutMs);
     }
 
+    internal ValueTask<bool> WaitForLingerWakeupAsync(int timeoutMs) =>
+        _lingerWakeupSignal.WaitAsync(timeoutMs);
+
+    internal bool HasPendingLingerBatches => HasUnsealedBatches();
+
     /// <summary>
     /// Registers a shutdown token with the wakeup signal so cancellation wakes the sender loop
     /// without per-wait allocation. Must be called once before the sender loop starts waiting.
@@ -1947,6 +1958,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         _wakeupSignal.RegisterShutdownToken(cancellationToken);
     }
+
+    internal void RegisterLingerWakeupShutdownToken(CancellationToken cancellationToken) =>
+        _lingerWakeupSignal.RegisterShutdownToken(cancellationToken);
 
     internal long GetPartitionQueueBytes(string topic, int partition)
     {
@@ -2353,10 +2367,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void QueueLingerPartition(PartitionDeque pd, TopicPartition topicPartition)
+    private void QueueLingerPartition(
+        PartitionDeque pd,
+        TopicPartition topicPartition,
+        bool signalLingerLoop = true)
     {
         if (Interlocked.Exchange(ref pd.LingerQueued, 1) == 0)
             _lingerPartitions.Enqueue(topicPartition);
+
+        if (signalLingerLoop)
+            _lingerWakeupSignal.Signal();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4248,7 +4268,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         newOldestTicks = batchCreatedTicks;
 
                     if (!sealAll)
-                        QueueLingerPartition(pd, topicPartition);
+                        QueueLingerPartition(pd, topicPartition, signalLingerLoop: false);
                     break;
                 }
             }
@@ -4258,7 +4278,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             if (!sealAll)
             {
-                QueueLingerPartition(pd, topicPartition);
+                QueueLingerPartition(pd, topicPartition, signalLingerLoop: false);
                 break;
             }
 
@@ -5326,6 +5346,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Signal wakeup so the sender loop can exit if still waiting
         SignalWakeup();
+        _lingerWakeupSignal.Signal();
 
         // Sweep for orphaned batches whose references were lost from BrokerSender data structures.
         // This is the last line of defense: if a batch was tracked via OnBatchEntersPipeline but
@@ -5337,6 +5358,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Dispose resources to prevent leaks
         _wakeupSignal?.Dispose();
+        _lingerWakeupSignal.Dispose();
         _disposalCts?.Dispose();
         // _bufferSpaceSignal is a TaskCompletionSource — no Dispose needed.
         // Signal any remaining waiters so they can observe disposal.
@@ -6402,6 +6424,11 @@ internal sealed class ReadyBatch
     /// Number of completion sources (messages) in this batch.
     /// </summary>
     public int CompletionSourcesCount => _completionSourcesCount;
+
+    /// <summary>
+    /// Total number of records sealed into this batch.
+    /// </summary>
+    public int RecordCount => _recordCount;
 
     /// <summary>
     /// Uncompressed encoded record bytes reserved against BufferMemory.
