@@ -1,6 +1,8 @@
-using Docker.DotNet.Models;
+using System.Text;
 using Dekaf.Admin;
+using Docker.DotNet.Models;
 using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Configurations;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using Testcontainers.Kafka;
@@ -14,16 +16,16 @@ namespace Dekaf.StressTests.Infrastructure;
 /// </summary>
 internal sealed class KafkaEnvironment : IAsyncDisposable
 {
-    internal const string SingleBrokerImage = "confluentinc/cp-kafka:7.8.0";
+    internal const string KafkaImage = "apache/kafka:4.3.1";
     internal static ConsensusProtocol SingleBrokerConsensusProtocol { get; } = ConsensusProtocol.KRaft;
 
-    internal static IReadOnlyDictionary<string, string> SingleBrokerEnvironment { get; } =
-        new Dictionary<string, string>
-        {
-            // Kafka 3.8 ships KIP-848 disabled by default. Dekaf defaults to the
-            // consumer protocol, so local consumer stress runs must enable it.
-            ["KAFKA_GROUP_COORDINATOR_REBALANCE_PROTOCOLS"] = "classic,consumer",
-        };
+    // Testcontainers.Kafka emits a trailing comma in KAFKA_ADVERTISED_LISTENERS
+    // when no extra listener is configured. Kafka 4.2+ rejects that empty value.
+    private static readonly byte[] RunWrapperScript = Encoding.UTF8.GetBytes(
+        "#!/bin/bash\n" +
+        "export KAFKA_ADVERTISED_LISTENERS=$(echo \"$KAFKA_ADVERTISED_LISTENERS\" | sed 's/,$//')\n" +
+        "/etc/kafka/docker/configure\n" +
+        "exec /etc/kafka/docker/launch\n");
 
     // Retention tuned to balance two constraints:
     // 1. Original 5s retention was too aggressive — caused constant "offset out of range" resets
@@ -153,9 +155,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     private static async Task<KafkaEnvironment> CreateSingleBrokerAsync()
     {
         Console.WriteLine("Starting Kafka container via Testcontainers...");
-        // 7.8.x = Kafka 3.8, the first release with log.initial.task.delay.ms — see
-        // RetentionConfig; older images silently ignore it and die on tmpfs fill.
-        var builder = new KafkaBuilder(SingleBrokerImage);
+        var builder = new KafkaBuilder(KafkaImage);
         builder = SingleBrokerConsensusProtocol switch
         {
             ConsensusProtocol.KRaft => builder.WithKRaft(),
@@ -165,14 +165,13 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
 
         builder = builder
             .WithPortBinding(9092, true)
+            .WithResourceMapping(RunWrapperScript, "/etc/kafka/docker/run", 0, 0,
+                UnixFileModes.UserRead | UnixFileModes.UserWrite | UnixFileModes.UserExecute |
+                UnixFileModes.GroupRead | UnixFileModes.GroupExecute |
+                UnixFileModes.OtherRead | UnixFileModes.OtherExecute)
             // Explicit log dir so the optional tmpfs mount target always matches
             .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir)
             .WithEnvironment("KAFKA_HEAP_OPTS", BrokerHeapOpts);
-
-        foreach (var (key, value) in SingleBrokerEnvironment)
-        {
-            builder = builder.WithEnvironment(key, value);
-        }
 
         foreach (var (key, value) in RetentionConfig)
         {
@@ -224,7 +223,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             var hostname = $"kafka-{nodeId}";
             var externalPort = 29091 + nodeId; // 29092, 29093, 29094
 
-            var containerBuilder = new ContainerBuilder("apache/kafka:4.1.2")
+            var containerBuilder = new ContainerBuilder(KafkaImage)
                 .WithName($"{hostname}-{Guid.NewGuid():N}")
                 .WithHostname(hostname)
                 .WithNetwork(network)
