@@ -2164,11 +2164,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         CancellationToken cancellationToken,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? reusableResponseLookup = null)
     {
-        // Drain-rate estimate feed: bytes and the latest round-trip from successfully acked
-        // requests this pass. Faulted/cancelled responses are not drain and are excluded.
-        long ackedBytes = 0;
-        long lastAckedRequestStart = 0;
-
         // CRITICAL: Process responses in FORWARD order (oldest request first).
         // With multi-inflight, R1 and R2 may both complete with errors for the same partition.
         // Forward iteration ensures R1's retry batches are added to carry-over before R2's,
@@ -2246,8 +2241,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 if (allPartitionsSucceeded)
                 {
-                    ackedBytes += pending.EncodedBytes;
-                    lastAckedRequestStart = pending.RequestStartTime;
+                    // Per-request bytes / RTT measures pipeline-busy delivery time. It does
+                    // not fold admission-blocked gaps between response passes into the rate.
+                    var ackTimestamp = Stopwatch.GetTimestamp();
+                    _unackedBudget?.OnAcked(
+                        pending.EncodedBytes,
+                        ackTimestamp - pending.RequestStartTime,
+                        ackTimestamp);
                 }
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis
@@ -2307,14 +2307,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogPartitionMigrationComplete(_brokerId, beforeCount);
                 }
             }
-        }
-
-        if (ackedBytes > 0 && _unackedBudget is { } unackedBudget)
-        {
-            // One timestamp per pass; RequestStartTime is on the raw Stopwatch clock (it
-            // feeds the request-timeout sweep), so the round-trip uses the same clock.
-            var ackRttTicks = Stopwatch.GetTimestamp() - lastAckedRequestStart;
-            unackedBudget.OnAcked(ackedBytes, ackRttTicks, _getTimestamp());
         }
     }
 
