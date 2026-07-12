@@ -438,6 +438,53 @@ public sealed class BrokerSenderMuteOrderingTests
         }
     }
 
+    [Test]
+    public async Task MetadataRerank_FireAndForgetKeepsExistingPartitionRoute()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var options = CreateOptions(
+            acks: Acks.None,
+            enableIdempotence: false,
+            connectionsPerBroker: 2);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: (_, _, _, _, _) => { },
+            metadataManager);
+        var getConnection = typeof(BrokerSender).GetMethod(
+            "GetConnectionForPartition",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        try
+        {
+            var existingPartition = new TopicPartition("test-topic", 3);
+            await Assert.That((int)getConnection.Invoke(sender, [existingPartition])!).IsEqualTo(0);
+
+            metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 1));
+            typeof(BrokerSender).GetMethod(
+                    "RefreshPartitionRouting",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, null);
+
+            await Assert.That((int)getConnection.Invoke(sender, [existingPartition])!).IsEqualTo(0)
+                .Because("Acks.None has no acknowledgement boundary for cross-connection rerouting");
+            await Assert.That((int)getConnection.Invoke(
+                    sender,
+                    [new TopicPartition("test-topic", 0)])!)
+                .IsEqualTo(1)
+                .Because("new partitions should still distribute across the configured width");
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
     private static MetadataResponse CreateRoutingMetadata(int partitionZeroLeader) => new()
     {
         Brokers =

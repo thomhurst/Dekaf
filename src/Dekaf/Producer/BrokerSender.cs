@@ -492,6 +492,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Dictionary<TopicPartition, int> _partitionOrdinals = new();
     private readonly List<TopicPartition> _rankedPartitions = [];
     private IReadOnlyList<TopicPartition>? _partitionRoutingSnapshot;
+    private int _nextStablePartitionOrdinal;
 
     // Adaptive connection scaling state (send-loop owned, single-threaded)
     private bool _adaptiveScalingEnabled;
@@ -3639,6 +3640,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 : left.Partition.CompareTo(right.Partition);
         });
 
+        if (_options.Acks == Acks.None && _partitionRoutingSnapshot is not null)
+        {
+            // Without acknowledgements there is no safe point to move an existing
+            // partition to another TCP stream. Preserve every assigned ordinal for this
+            // sender's lifetime and distribute only newly discovered partitions.
+            for (var i = 0; i < _rankedPartitions.Count; i++)
+            {
+                var topicPartition = _rankedPartitions[i];
+                if (_partitionOrdinals.TryAdd(topicPartition, _nextStablePartitionOrdinal))
+                    _nextStablePartitionOrdinal++;
+            }
+
+            _partitionRoutingSnapshot = metadataPartitions;
+            return;
+        }
+
         for (var newOrdinal = 0; newOrdinal < _rankedPartitions.Count; newOrdinal++)
         {
             var topicPartition = _rankedPartitions[newOrdinal];
@@ -3657,6 +3674,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _partitionOrdinals.Clear();
         for (var ordinal = 0; ordinal < _rankedPartitions.Count; ordinal++)
             _partitionOrdinals.Add(_rankedPartitions[ordinal], ordinal);
+        _nextStablePartitionOrdinal = _rankedPartitions.Count;
 
         if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
             _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
