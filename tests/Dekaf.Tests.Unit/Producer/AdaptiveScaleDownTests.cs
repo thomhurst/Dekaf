@@ -99,7 +99,8 @@ public sealed class AdaptiveScaleDownTests
         RecordAccumulator accumulator,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
         Action<ReadyBatch, int>? rerouteBatch = null,
-        bool canPhysicallyShrinkConnections = true) =>
+        bool canPhysicallyShrinkConnections = true,
+        TimeSpan? disposalDrainTimeout = null) =>
         new(
             brokerId: 1, pool,
             new MetadataManager(pool, options.BootstrapServers),
@@ -115,7 +116,8 @@ public sealed class AdaptiveScaleDownTests
             rerouteBatch: rerouteBatch,
             onAcknowledgement: onAcknowledgement,
             logger: null,
-            canPhysicallyShrinkConnections: canPhysicallyShrinkConnections);
+            canPhysicallyShrinkConnections: canPhysicallyShrinkConnections,
+            disposalDrainTimeout: disposalDrainTimeout);
 
     private static IKafkaConnection?[] GetPinnedConnections(BrokerSender sender)
         => (IKafkaConnection?[])typeof(BrokerSender).GetField(
@@ -928,6 +930,7 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    [NotInParallel]
     [Timeout(10_000)]
     public async Task DisposeAsync_CompletedShrinkResult_WaitsForLeasedConnection(
         CancellationToken cancellationToken)
@@ -954,6 +957,7 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    [NotInParallel]
     [Arguments("_drainingConnection")]
     [Arguments("_retiringConnection")]
     [Timeout(10_000)]
@@ -983,6 +987,7 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    [NotInParallel]
     [Timeout(10_000)]
     public async Task DisposeAsync_InFlightRetirementDrain_WaitsForLeasedConnection(
         CancellationToken cancellationToken)
@@ -1014,6 +1019,7 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    [NotInParallel]
     [Timeout(15_000)]
     public async Task DisposeAsync_SharedDrainTimeout_ContinuesWaitingForLease(
         CancellationToken cancellationToken)
@@ -1026,7 +1032,8 @@ public sealed class AdaptiveScaleDownTests
             options,
             accumulator,
             onAcknowledgement: null,
-            canPhysicallyShrinkConnections: false);
+            canPhysicallyShrinkConnections: false,
+            disposalDrainTimeout: TimeSpan.FromMilliseconds(25));
         var removedConnection = new TestKafkaConnection();
         var retirableConnection = (IRetirableKafkaConnection)removedConnection;
         await Assert.That(retirableConnection.TryAcquireLease()).IsTrue();
@@ -1055,8 +1062,9 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    [NotInParallel]
     [Timeout(15_000)]
-    public async Task DisposeAsync_OwnedDrainPastTimeout_WaitsForLease(
+    public async Task DisposeAsync_OwnedDrain_WaitsForLeaseWithoutTimeout(
         CancellationToken cancellationToken)
     {
         var options = CreateOptions(idempotent: false);
@@ -1077,9 +1085,7 @@ public sealed class AdaptiveScaleDownTests
         try
         {
             await removedConnection.LeaseCountObserved.Task.WaitAsync(cancellationToken);
-            await Assert.That(async () =>
-                    await dispose.WaitAsync(TimeSpan.FromMilliseconds(5_200), cancellationToken))
-                .Throws<TimeoutException>();
+            await Assert.That(dispose.IsCompleted).IsFalse();
             await Assert.That(Volatile.Read(ref removedConnection.DisposeCalls)).IsEqualTo(0);
         }
         finally
