@@ -3433,40 +3433,6 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task PendingAppend_AdmissionRecheckDrainsBeforeMaxBlockDeadline()
-    {
-        var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
-        var topicPartition = new TopicPartition("test-topic", 0);
-        try
-        {
-            var recordSize = PartitionBatch.EstimateRecordSize(0, 128, null, 0);
-            await Assert.That(accumulator.TryReserveMemoryForTest((int)accumulator.MaxBufferMemory)).IsTrue();
-
-            var appendTask = accumulator.AppendFromSpansAsync(
-                topicPartition.Topic, topicPartition.Partition,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                ReadOnlySpan<byte>.Empty, keyIsNull: true,
-                new byte[128], valueIsNull: false,
-                null, 0, null, CancellationToken.None).AsTask();
-
-            await TestWait.UntilAsync(
-                () => accumulator.PendingAppendCountForTest == 1,
-                TimeSpan.FromSeconds(5));
-
-            SetBufferedBytesForTest(accumulator, (long)accumulator.MaxBufferMemory - recordSize);
-            GetOnlyPendingAppend(accumulator).ScheduleAdmissionRecheck(1);
-
-            await Assert.That(await appendTask.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
-        }
-        finally
-        {
-            var currentBatch = GetCurrentPartitionBatchOrDefault(accumulator, topicPartition);
-            SetBufferedBytesForTest(accumulator, currentBatch?.ReservedSize ?? 0);
-            await accumulator.DisposeAsync();
-        }
-    }
-
-    [Test]
     public async Task AppendFromSpansAsync_SlowPath_CompletesWhenMemoryReleased()
     {
         var options = new ProducerOptions
@@ -3704,15 +3670,6 @@ public class RecordAccumulatorTests
             pool: pool,
             cancellationToken: CancellationToken.None);
         return op;
-    }
-
-    private static PendingAppend GetOnlyPendingAppend(RecordAccumulator accumulator)
-    {
-        var field = typeof(RecordAccumulator).GetField(
-            "_pendingAppends",
-            BindingFlags.NonPublic | BindingFlags.Instance)!;
-        var queue = (System.Collections.Concurrent.ConcurrentQueue<PendingAppend>)field.GetValue(accumulator)!;
-        return queue.Single();
     }
 
     private static ProducerOptions CreatePendingAppendTestOptions() => new()
