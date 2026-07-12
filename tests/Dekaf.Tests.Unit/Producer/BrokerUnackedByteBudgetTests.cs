@@ -5,7 +5,7 @@ namespace Dekaf.Tests.Unit.Producer;
 
 /// <summary>
 /// State-machine tests for <see cref="BrokerUnackedByteBudget"/>: budget publication from
-/// the request-rate maximum filter, minimum-RTT refresh, floor/cap clamping, probing,
+/// the time-windowed delivery-rate filter, minimum-RTT refresh, floor/cap clamping, probing,
 /// and counter accounting.
 /// All timestamps are explicit Stopwatch-tick values, so nothing here is timing-dependent.
 /// </summary>
@@ -113,7 +113,9 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.OnAcked(ackedBytes: 500, rttTicks: Seconds(0.005), nowTicks: T0 + Seconds(10.31));
         budget.OnAcked(ackedBytes: 10_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(10.4));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+        // Final 10,000-byte pass lands 90ms after the preceding ack, measuring
+        // 111,111 B/s from inter-ack delivery time rather than 100ms request sojourn.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_111);
     }
 
     [Test]
@@ -214,7 +216,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task WindowedMaximum_LongGap_DoesNotDeflateRate()
+    public async Task WindowedMaximum_LongGap_ExpiresStaleRate()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
 
@@ -223,7 +225,7 @@ public sealed class BrokerUnackedByteBudgetTests
 
         budget.OnAcked(ackedBytes: 1, rttTicks: Seconds(0.001), nowTicks: T0 + Seconds(11.0));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(500);
     }
 
     [Test]
@@ -275,6 +277,19 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task RateSample_UsesInterAckDeliveryTime_ForPipelinedRequests()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.005), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.005), nowTicks: T0 + Seconds(0.001));
+
+        // Both requests overlapped on the wire. The second 1,000-byte delivery took 1ms
+        // since the preceding acknowledgement, independent of its 5ms request sojourn.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(10_000);
+    }
+
+    [Test]
     public async Task WindowedMaximum_LowerSamples_DoNotRatchetBudgetDown()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
@@ -286,15 +301,33 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task WindowedMaximum_PeakExpires_AfterTenNewerSamples()
+    public async Task WindowedMaximum_PeakExpires_AfterTwoSeconds()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
 
         budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.100), nowTicks: T0);
-        for (var i = 1; i <= 10; i++)
+        for (var i = 1; i <= 20; i++)
             budget.OnAcked(ackedBytes: 100, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(i * 0.100));
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(500);
+    }
+
+    [Test]
+    public async Task WindowedMaximum_UsesElapsedTime_NotResponsePassCount()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.100), nowTicks: T0);
+        for (var i = 1; i <= 20; i++)
+            budget.OnAcked(ackedBytes: 10, rttTicks: Seconds(0.025), nowTicks: T0 + Seconds(i * 0.025));
+
+        // Twenty fast response passes cover only 500ms, so the 2-second maximum window
+        // must retain the original 10,000 B/s observation.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
+
+        budget.OnAcked(ackedBytes: 10, rttTicks: Seconds(0.025), nowTicks: T0 + Seconds(2.1));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
     }
 
     [Test]
@@ -310,6 +343,69 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(0.900));
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
+    }
+
+    [Test]
+    public async Task PeriodicProbe_WaitsForSampleWhollyAdmittedUnderProbe()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        for (var i = 0; i <= 8; i++)
+            budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(i * 0.100));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+
+        // This request began before the probe opened at 800ms, so it cannot confirm
+        // capacity under the larger admission budget even though it completes later.
+        budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.200), nowTicks: T0 + Seconds(0.900));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+
+        // First request wholly admitted under the probe confirms no rate gain and ends it.
+        budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(1.000));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
+    }
+
+    [Test]
+    public async Task PeriodicProbe_RatchetsWhileWhollyProbedRateRises()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        for (var i = 0; i <= 8; i++)
+            budget.OnAcked(ackedBytes: 1_000, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(i * 0.100));
+
+        budget.OnAcked(ackedBytes: 1_250, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(0.900));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(7_812);
+
+        budget.OnAcked(ackedBytes: 1_562, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(1.000));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(9_762);
+
+        // A second wholly-probed sample at the same rate confirms capacity and publishes
+        // the newly discovered base budget without the temporary 1.25x multiplier.
+        budget.OnAcked(ackedBytes: 1_562, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(1.100));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(7_810);
+    }
+
+    [Test]
+    public async Task OccupancyFloor_RetainsHeadroomAboveDemonstratedWireDemand()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.ObserveWrittenUnackedBytes(20_000);
+        budget.OnAcked(ackedBytes: 100, rttTicks: Seconds(0.100), nowTicks: T0);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(30_000);
+    }
+
+    [Test]
+    public async Task OccupancyFloor_ExpiresAfterTwoSeconds()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        budget.ObserveWrittenUnackedBytes(20_000);
+        budget.OnAcked(ackedBytes: 100, rttTicks: Seconds(0.100), nowTicks: T0);
+        budget.OnAcked(ackedBytes: 100, rttTicks: Seconds(0.100), nowTicks: T0 + Seconds(2.1));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
     }
 
     [Test]
