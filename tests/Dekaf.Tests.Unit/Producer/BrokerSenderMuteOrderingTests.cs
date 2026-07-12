@@ -302,6 +302,9 @@ public sealed class BrokerSenderMuteOrderingTests
     }
 
     [Test]
+    // Mock response continuations intentionally run on the ThreadPool. Isolate this timing-sensitive
+    // integration of the sender state machine so unrelated concurrency tests cannot starve its wakeups.
+    [NotInParallel]
     [Timeout(30_000)]
     public async Task NonIdempotentProducer_MultipleInFlight_SerializesSamePartitionBatches(
         CancellationToken ct)
