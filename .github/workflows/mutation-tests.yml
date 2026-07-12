@@ -26,15 +26,24 @@ jobs:
   mutation-test:
     name: Mutation test (${{ matrix.campaign }})
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include:
           - campaign: protocol
             config: stryker-config.json
-          - campaign: producer
+          # Producer campaign split per mutated file so the legs run on
+          # parallel runners; --mutate overrides the config's combined list.
+          - campaign: producer-accumulator
             config: stryker-producer-config.json
+            extra_args: --mutate "Producer/RecordAccumulator.cs"
+          - campaign: producer-sender
+            config: stryker-producer-config.json
+            extra_args: --mutate "Producer/BrokerSender.cs"
+          - campaign: producer-client
+            config: stryker-producer-config.json
+            extra_args: --mutate "Producer/KafkaProducer.cs"
 
     steps:
       - name: Checkout
@@ -80,6 +89,7 @@ jobs:
         run: >-
           dotnet stryker
           --config-file "${{ matrix.config }}"
+          ${{ matrix.extra_args }}
           --output "${{ github.workspace }}/artifacts/mutation/${{ matrix.campaign }}"
 
       - name: Report trend and enforce large-drop gate
