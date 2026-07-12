@@ -2346,7 +2346,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (response.ErrorCode == ErrorCode.None)
             {
-                // TV2 (v4+): broker returns bumped ProducerId/Epoch in EndTxn response.
+                // TV2 (v5+): broker returns bumped ProducerId/Epoch in EndTxn response.
                 // Apply them so the next transaction uses the new identity without
                 // a separate InitProducerId round-trip.
                 // Safe without _epochBumpLock: EndTxn is called only after FlushAsync
@@ -2968,9 +2968,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             needsRegistration = _partitionsInTransaction.Add(topicPartition);
         }
 
-        if (!needsRegistration)
+        var usesImplicitEnrollment = _currentTransactionUsesTV2
+            && _produceApiVersion >= ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion;
+        if (!needsRegistration || usesImplicitEnrollment)
             return;
 
+        // KIP-890 requires both transaction.version 2 and Produce v12. Older Produce
+        // versions must explicitly enroll even when the broker feature is enabled.
         await AddPartitionsToTransactionAsync([topicPartition], cancellationToken)
             .ConfigureAwait(false);
     }
@@ -4202,7 +4206,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
             // TV1: broker doesn't return bumped epoch in EndTxn, so we must call
             // InitProducerId to get it (KIP-360).
-            // TV2: EndTxn v4 response already contained the bumped epoch — skip.
+            // TV2: EndTxn v5 response already contained the bumped epoch — skip.
             if (!_producer._currentTransactionUsesTV2)
             {
                 await _producer.ReinitializeProducerIdAsync(cancellationToken).ConfigureAwait(false);

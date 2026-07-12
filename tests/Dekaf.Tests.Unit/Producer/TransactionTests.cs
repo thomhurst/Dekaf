@@ -586,6 +586,131 @@ public sealed class TransactionTests
         await Assert.That(tpo1).IsNotEqualTo(tpo3);
     }
 
+    [Test]
+    [Arguments(true, (short)12, false)]
+    [Arguments(true, (short)11, true)]
+    [Arguments(false, (short)12, true)]
+    public async Task EnsurePartitionInTransaction_UsesCompatibleEnrollment(
+        bool usesTV2,
+        short produceApiVersion,
+        bool expectsExplicitEnrollment)
+    {
+        var (producer, connectionPool, connection) = CreatePartitionEnrollmentProducer(
+            usesTV2,
+            produceApiVersion);
+        try
+        {
+            var topicPartition = new TopicPartition("test-topic", 3);
+
+            await InvokeEnsurePartitionInTransactionAsync(producer, topicPartition);
+
+            if (expectsExplicitEnrollment)
+            {
+                _ = connection.Received(1).SendAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
+                    Arg.Is<AddPartitionsToTxnRequest>(request => HasSinglePartition(request, topicPartition)),
+                    Arg.Any<short>(),
+                    Arg.Any<CancellationToken>());
+            }
+            else
+            {
+                _ = connection.DidNotReceive().SendAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
+                    Arg.Any<AddPartitionsToTxnRequest>(),
+                    Arg.Any<short>(),
+                    Arg.Any<CancellationToken>());
+            }
+
+            await Assert.That(producer._partitionsInTransaction.Contains(topicPartition)).IsTrue();
+        }
+        finally
+        {
+            await producer.DisposeAsync();
+            await connectionPool.DisposeAsync();
+        }
+    }
+
+    private static async ValueTask InvokeEnsurePartitionInTransactionAsync(
+        KafkaProducer<string, string> producer,
+        TopicPartition topicPartition)
+    {
+        var method = typeof(KafkaProducer<string, string>).GetMethod(
+            "EnsurePartitionInTransactionAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var invocation = (ValueTask)method.Invoke(
+            producer,
+            [topicPartition, CancellationToken.None])!;
+        await invocation;
+    }
+
+    private static bool HasSinglePartition(
+        AddPartitionsToTxnRequest? request,
+        TopicPartition topicPartition)
+        => request?.Topics is [{ } topic]
+           && topic.Name == topicPartition.Topic
+           && topic.Partitions.Count == 1
+           && topic.Partitions[0] == topicPartition.Partition;
+
+    private static (KafkaProducer<string, string> Producer, ConnectionPool ConnectionPool,
+        IKafkaConnection Connection)
+        CreatePartitionEnrollmentProducer(bool usesTV2, short produceApiVersion)
+    {
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.SendAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
+                Arg.Any<AddPartitionsToTxnRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AddPartitionsToTxnResponse
+            {
+                Results =
+                [
+                    new AddPartitionsToTxnTopicResult
+                    {
+                        Name = "test-topic",
+                        Partitions =
+                        [
+                            new AddPartitionsToTxnPartitionResult
+                            {
+                                PartitionIndex = 3,
+                                ErrorCode = ErrorCode.None
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var connectionPool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: null,
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult(connection));
+        connectionPool.RegisterBroker(1, "localhost", 9092);
+        var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
+        metadataManager.SetApiVersion(
+            ApiKey.AddPartitionsToTxn,
+            AddPartitionsToTxnRequest.LowestSupportedVersion,
+            AddPartitionsToTxnRequest.HighestSupportedVersion);
+        var producer = new KafkaProducer<string, string>(
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                TransactionalId = "test-txn-id",
+                CloseTimeoutMs = 100
+            },
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager,
+            DekafMemoryBudget.Global);
+        SetInstanceField(producer, "_initialized", true);
+        SetInstanceField(producer, "_producerId", 42L);
+        SetInstanceField(producer, "_producerEpoch", (short)5);
+        SetInstanceField(producer, "_transactionCoordinatorId", 1);
+        SetInstanceField(producer, "_currentTransactionUsesTV2", usesTV2);
+        SetInstanceField(producer, "_produceApiVersion", (int)produceApiVersion);
+        producer._transactionState = TransactionState.InTransaction;
+        return (producer, connectionPool, connection);
+    }
+
     private static KafkaProducer<string, string> BuildInitializedTransactionalProducer(bool enableTwoPhaseCommit)
     {
         var builder = Kafka.CreateProducer<string, string>()

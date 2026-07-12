@@ -7,7 +7,7 @@ public sealed class EndTxnResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.EndTxn;
     public static short LowestSupportedVersion => 3;
-    public static short HighestSupportedVersion => 4;
+    public static short HighestSupportedVersion => 5;
 
     /// <summary>
     /// Throttle time in milliseconds.
@@ -20,12 +20,12 @@ public sealed class EndTxnResponse : IKafkaResponse
     public required ErrorCode ErrorCode { get; init; }
 
     /// <summary>
-    /// The bumped producer ID (v4+, KIP-890). -1 if not present.
+    /// The bumped producer ID (v5+, KIP-890). -1 if not present.
     /// </summary>
     public long ProducerId { get; init; } = -1;
 
     /// <summary>
-    /// The bumped producer epoch (v4+, KIP-890). -1 if not present.
+    /// The bumped producer epoch (v5+, KIP-890). -1 if not present.
     /// </summary>
     public short ProducerEpoch { get; init; } = -1;
 
@@ -34,27 +34,9 @@ public sealed class EndTxnResponse : IKafkaResponse
         var throttleTimeMs = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        var producerId = -1L;
-        var producerEpoch = (short)-1;
-
-        var numTaggedFields = reader.ReadUnsignedVarInt();
-        for (var i = 0; i < numTaggedFields; i++)
-        {
-            var tag = reader.ReadUnsignedVarInt();
-            var size = reader.ReadUnsignedVarInt();
-            switch (tag)
-            {
-                case 0:
-                    producerId = reader.ReadInt64();
-                    break;
-                case 1:
-                    producerEpoch = reader.ReadInt16();
-                    break;
-                default:
-                    reader.Skip(size);
-                    break;
-            }
-        }
+        var producerId = version >= 5 ? reader.ReadInt64() : -1L;
+        var producerEpoch = version >= 5 ? reader.ReadInt16() : (short)-1;
+        reader.SkipTaggedFields();
 
         return new EndTxnResponse
         {

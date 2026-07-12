@@ -8,7 +8,7 @@ public sealed class EndTxnRequest : IKafkaRequest<EndTxnResponse>
 {
     public static ApiKey ApiKey => ApiKey.EndTxn;
     public static short LowestSupportedVersion => 3;
-    public static short HighestSupportedVersion => 4;
+    public static short HighestSupportedVersion => 5;
 
     /// <summary>
     /// The transactional ID.

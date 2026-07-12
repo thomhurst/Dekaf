@@ -294,7 +294,7 @@ public sealed class TransactionProtocolTests
     }
 
     [Test]
-    public async Task EndTxnResponse_V4_WithEpochBump_ReadsCorrectly()
+    public async Task EndTxnResponse_V5_WithEpochBump_ReadsCorrectly()
     {
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
@@ -303,19 +303,12 @@ public sealed class TransactionProtocolTests
         writer.WriteInt32(10);
         // ErrorCode = None
         writer.WriteInt16(0);
-        // Tagged fields: 2 fields
-        writer.WriteUnsignedVarInt(2);
-        // Tag 0: ProducerId (INT64 = 8 bytes)
-        writer.WriteUnsignedVarInt(0); // tag
-        writer.WriteUnsignedVarInt(8); // size
         writer.WriteInt64(42L);
-        // Tag 1: ProducerEpoch (INT16 = 2 bytes)
-        writer.WriteUnsignedVarInt(1); // tag
-        writer.WriteUnsignedVarInt(2); // size
         writer.WriteInt16(7);
+        writer.WriteEmptyTaggedFields();
 
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
-        var response = (EndTxnResponse)EndTxnResponse.Read(ref reader, version: 4);
+        var response = (EndTxnResponse)EndTxnResponse.Read(ref reader, version: 5);
 
         await Assert.That(response.ThrottleTimeMs).IsEqualTo(10);
         await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
@@ -586,7 +579,7 @@ public sealed class TransactionProtocolTests
     {
         await Assert.That(EndTxnRequest.ApiKey).IsEqualTo(ApiKey.EndTxn);
         await Assert.That(EndTxnRequest.LowestSupportedVersion).IsEqualTo((short)3);
-        await Assert.That(EndTxnRequest.HighestSupportedVersion).IsEqualTo((short)4);
+        await Assert.That(EndTxnRequest.HighestSupportedVersion).IsEqualTo((short)5);
     }
 
     [Test]
