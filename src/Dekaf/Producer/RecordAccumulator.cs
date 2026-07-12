@@ -1016,6 +1016,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private int _disposed;
     private int _closed;
 
+    internal Action? PurgeAppendWaitObservedForTest;
+
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
     /// when to exit after draining remaining batches.
@@ -4786,6 +4788,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var purgedCount = FailPendingAppendsForPurge(exception);
         List<PartitionBatch>? currentBatches = null;
         List<ReadyBatch>? readyBatches = null;
+        var appendWaitObserved = false;
 
         foreach (var kvp in _partitionDeques)
         {
@@ -4800,6 +4803,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (pd.AppendInProgress)
                     {
                         waitForAppend = true;
+                        if (!appendWaitObserved)
+                        {
+                            appendWaitObserved = true;
+                            PurgeAppendWaitObservedForTest?.Invoke();
+                        }
                     }
                     else
                     {
