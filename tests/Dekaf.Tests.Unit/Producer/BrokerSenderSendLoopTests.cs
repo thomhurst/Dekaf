@@ -254,8 +254,7 @@ public sealed class BrokerSenderSendLoopTests
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
-        BrokerUnackedByteBudget? unackedBudget = null,
-        Action? beforeProcessCompletedResponses = null) =>
+        BrokerUnackedByteBudget? unackedBudget = null) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -275,8 +274,7 @@ public sealed class BrokerSenderSendLoopTests
             getTimestamp: getTimestamp,
             delayForThrottle: delayForThrottle,
             onBlockedBucketRequeued: onBlockedBucketRequeued,
-            unackedBudget: unackedBudget,
-            beforeProcessCompletedResponses: beforeProcessCompletedResponses);
+            unackedBudget: unackedBudget);
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {
@@ -2273,72 +2271,16 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    [Timeout(120_000)]
-    public async Task ProcessCompletedResponses_AggregatesConcurrentAckedBytes(
-        CancellationToken cancellationToken)
+    public async Task AckedResponsePass_AggregatesBytesAndKeepsOldestRequestStart()
     {
-        const int dataSize = 5_000;
-        var responses = Enumerable.Range(0, 2)
-            .Select(_ => new TaskCompletionSource<ProduceResponse>(
-                TaskCreationOptions.RunContinuationsAsynchronously))
-            .ToArray();
-        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(responses);
-        var sendSignals = Enumerable.Range(0, 2)
-            .Select(_ => new TaskCompletionSource(
-                TaskCreationOptions.RunContinuationsAsynchronously))
-            .ToArray();
-        var sendCount = 0;
-        var (pool, _) = CreateMockConnection(responseQueue, () =>
-        {
-            var index = Interlocked.Increment(ref sendCount) - 1;
-            sendSignals[index].TrySetResult();
-        });
-        var options = CreateOptions(maxInFlight: 2, unackedByteBudgetCapOverride: 1_000_000);
-        var accumulator = new RecordAccumulator(options);
-        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
-        var budget = new BrokerUnackedByteBudget(
-            targetSeconds: 0.000001,
-            floorBytes: 200,
-            initialCapBytes: 1);
-        using var releaseResponsePass = new ManualResetEventSlim();
-        var holdResponsePass = 0;
-        var sender = CreateSender(
-            pool,
-            options,
-            accumulator,
-            (_, _, _, _, _) => { },
-            unackedBudget: budget,
-            beforeProcessCompletedResponses: () =>
-            {
-                if (Volatile.Read(ref holdResponsePass) != 0)
-                    releaseResponsePass.Wait(cancellationToken);
-            });
+        var pass = new BrokerSender.AckedResponsePass();
 
-        try
-        {
-            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: dataSize));
-            await sendSignals[0].Task.WaitAsync(cancellationToken);
-            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1, dataSize: dataSize));
-            await sendSignals[1].Task.WaitAsync(cancellationToken);
+        pass.Add(bytes: 5_000, requestStart: 200);
+        pass.Add(bytes: 7_000, requestStart: 100);
+        pass.Add(bytes: 3_000, requestStart: 300);
 
-            Volatile.Write(ref holdResponsePass, 1);
-            responses[0].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
-            responses[1].SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 20));
-            releaseResponsePass.Set();
-
-            await WaitUntilAsync(() => budget.BudgetBytes != 1_000_000, cancellationToken);
-
-            // 10,000 bytes / oldest request RTT × 1.5 × the same RTT = 15,000.
-            await Assert.That(budget.BudgetBytes).IsBetween(14_980, 15_020);
-        }
-        finally
-        {
-            responses[0].TrySetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
-            responses[1].TrySetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 20));
-            await sender.DisposeAsync();
-            await accumulator.DisposeAsync();
-            await valueTaskSourcePool.DisposeAsync();
-        }
+        await Assert.That(pass.Bytes).IsEqualTo(15_000);
+        await Assert.That(pass.EarliestRequestStart).IsEqualTo(100);
     }
 
     [Test]

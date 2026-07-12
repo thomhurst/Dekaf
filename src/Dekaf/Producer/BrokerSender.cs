@@ -190,6 +190,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
     }
 
+    internal struct AckedResponsePass
+    {
+        public long Bytes { get; private set; }
+        public long EarliestRequestStart { get; private set; }
+
+        public void Add(long bytes, long requestStart)
+        {
+            EarliestRequestStart = Bytes == 0
+                ? requestStart
+                : Math.Min(EarliestRequestStart, requestStart);
+            Bytes += bytes;
+        }
+    }
+
     private enum SendLoopEventType : byte
     {
         NewBatch,
@@ -602,10 +616,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// no ambient context (e.g. <c>AsyncLocal</c>, <c>SecurityContext</c>) needs to flow.
     /// </remarks>
     private readonly Action _responseCompletionCallback;
-    // Test-only synchronization seam for making several task completions visible to one
-    // response pass. Null in production.
-    private readonly Action? _beforeProcessCompletedResponses;
-
     private int _disposed;
 
     public BrokerSender(
@@ -630,8 +640,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
-        BrokerUnackedByteBudget? unackedBudget = null,
-        Action? beforeProcessCompletedResponses = null)
+        BrokerUnackedByteBudget? unackedBudget = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -654,7 +663,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _getTimestamp = getTimestamp ?? Stopwatch.GetTimestamp;
         _delayForThrottle = delayForThrottle ?? DelayForThrottleAsync;
         _onBlockedBucketRequeued = onBlockedBucketRequeued;
-        _beforeProcessCompletedResponses = beforeProcessCompletedResponses;
 
         _eventChannel = Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
         {
@@ -2169,12 +2177,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         CancellationToken cancellationToken,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? reusableResponseLookup = null)
     {
-        _beforeProcessCompletedResponses?.Invoke();
-
         // Aggregate every successful request completed in this pass. Multiple connection
         // lanes drain concurrently, so per-request samples understate broker-wide capacity.
-        long ackedBytes = 0;
-        var earliestAckedRequestStart = long.MaxValue;
+        var ackedPass = new AckedResponsePass();
 
         // CRITICAL: Process responses in FORWARD order (oldest request first).
         // With multi-inflight, R1 and R2 may both complete with errors for the same partition.
@@ -2252,12 +2257,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 if (allPartitionsSucceeded)
-                {
-                    ackedBytes += pending.EncodedBytes;
-                    earliestAckedRequestStart = Math.Min(
-                        earliestAckedRequestStart,
-                        pending.RequestStartTime);
-                }
+                    ackedPass.Add(pending.EncodedBytes, pending.RequestStartTime);
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -2318,15 +2318,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
         }
 
-        if (ackedBytes > 0 && _unackedBudget is { } unackedBudget)
+        if (ackedPass.Bytes > 0 && _unackedBudget is { } unackedBudget)
         {
             // Oldest start spans the whole concurrent completion window. Dividing total
             // bytes by that busy time captures aggregate broker drain without counting
             // admission-blocked gaps between response passes.
             var ackTimestamp = Stopwatch.GetTimestamp();
             unackedBudget.OnAcked(
-                ackedBytes,
-                ackTimestamp - earliestAckedRequestStart,
+                ackedPass.Bytes,
+                ackTimestamp - ackedPass.EarliestRequestStart,
                 ackTimestamp);
         }
     }
