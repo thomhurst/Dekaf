@@ -119,6 +119,30 @@ public sealed class ProducerDeliveryDiagnosticsTests
     }
 
     [Test]
+    public async Task BrokerBudgetDiagnostics_RollingWindowKeepsNewest4096Samples()
+    {
+        var options = CreateOptions(
+            enableDeliveryDiagnostics: true,
+            deliveryLatencyTargetMs: 10);
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: static (_, _) => 7);
+        var budget = accumulator.GetBrokerUnackedBudget(7)!;
+
+        for (var i = 0; i < 4_097; i++)
+        {
+            budget.RecordAdmissionBlock();
+            accumulator.RecordBrokerBudgetDiagnosticSample();
+        }
+
+        var samples = accumulator.GetDeliveryDiagnosticsSnapshot().BrokerBudgetSamples;
+
+        await Assert.That(samples.Count).IsEqualTo(4_096);
+        await Assert.That(samples[0].AdmissionBlockCount).IsEqualTo(2);
+        await Assert.That(samples[^1].AdmissionBlockCount).IsEqualTo(4_097);
+    }
+
+    [Test]
     public async Task DeliveryDiagnostics_Disabled_DoesNotTrackTrace()
     {
         await using var accumulator = new RecordAccumulator(CreateOptions());

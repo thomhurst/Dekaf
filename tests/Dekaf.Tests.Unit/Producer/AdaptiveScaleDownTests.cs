@@ -36,7 +36,8 @@ public sealed class AdaptiveScaleDownTests
         int deliveryTimeoutMs = 30_000,
         int maxInFlightRequests = 1,
         long? scaleCooldownMs = null,
-        long? scaleDownSustainedMs = null) => new()
+        long? scaleDownSustainedMs = null,
+        bool enableDeliveryDiagnostics = false) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlightRequests,
@@ -50,9 +51,51 @@ public sealed class AdaptiveScaleDownTests
             ConnectionsPerBroker = 1,
             EnableAdaptiveConnections = true,
             MaxConnectionsPerBroker = 4,
+            EnableDeliveryDiagnostics = enableDeliveryDiagnostics,
             ScaleCooldownMsOverride = scaleCooldownMs,
             ScaleDownSustainedMsOverride = scaleDownSustainedMs
         };
+
+    [Test]
+    public async Task PartitionLimitedPressure_RealSendLoopWiring_RecordsOncePerDelta()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            enableDeliveryDiagnostics: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
+            GetField<HashSet<TopicPartition>>(sender, "_knownPartitions")
+                .Add(new TopicPartition(Topic, 0));
+
+            var recordPressure = typeof(BrokerSender).GetMethod(
+                "RecordSendLoopPressureIfScaleUseful",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            for (var i = 0; i < 100; i++)
+                recordPressure.Invoke(sender, null);
+
+            InvokeMaybeScaleConnections(sender);
+            InvokeMaybeScaleConnections(sender);
+
+            var diagnostic = accumulator.GetDeliveryDiagnosticsSnapshot()
+                .ConnectionScaleEvents.Single();
+            await Assert.That(diagnostic.Direction).IsEqualTo("capped");
+            await Assert.That(diagnostic.SendLoopPressureDelta).IsEqualTo(100);
+            await Assert.That(GetField<long>(sender, "_lastPartitionLimitedPressureSnapshot"))
+                .IsEqualTo(100);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
 
     private static ReadyBatch CreateTestBatch(
         ValueTaskSourcePool<RecordMetadata> pool, int partition, int dataSize = 100)
