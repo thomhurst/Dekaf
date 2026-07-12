@@ -461,7 +461,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Single-threaded send loop — no locks needed.
     private readonly HashSet<TopicPartition> _partitionsNeedingSequenceReset = new();
 
-    // Partition-affined connections: each partition pins to _pinnedConnections[GetConnectionForPartition(partition)].
+    // Partition-affined connections: each partition pins to _pinnedConnections[GetConnectionForPartition(topicPartition)].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
     // All producers use partition affinity (partition % N) for CPU cache locality.
     // Idempotent producers additionally require affinity for per-partition sequence ordering;
@@ -505,14 +505,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private volatile bool _loopExited;
     private volatile bool _redeliverAfterLoopExit;
 
-    // Per-partition migration fencing for idempotent producers: during a scale-UP,
+    // Per-partition migration fencing for all acknowledged producers: during a scale-UP,
     // partitions whose connection assignment changes (partition % oldCount != partition % newCount)
     // are fenced here if they have in-flight batches on the old connection. The partition
     // continues routing to the old connection until its in-flight clears, then is removed
     // from this dictionary and routes via the new partition % _connectionCount.
     // Scale-down never fences (its drain gates guarantee no in-flight) and clears any
     // stale entries at initiation. Send-loop owned (single-threaded) — no synchronization needed.
-    private readonly Dictionary<int, int> _migratingPartitions = new();
+    private readonly Dictionary<TopicPartition, int> _migratingPartitions = new();
 
     // Scaling thresholds
     // Also the per-connection unit of pressure for step estimation (step = delta / threshold),
@@ -1441,7 +1441,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // by scaling down unused connections.
                             for (var i = 0; i < coalescedCount; i++)
                             {
-                                var connIdx = GetConnectionForPartition(coalescedBatches[i].TopicPartition.Partition);
+                                var connIdx = GetConnectionForPartition(coalescedBatches[i].TopicPartition);
                                 ref var bucket = ref connectionBuckets[connIdx];
                                 bucket.Batches[bucket.Count] = coalescedBatches[i];
                                 bucket.Generations[bucket.Count] = coalescedGenerations[i];
@@ -3565,17 +3565,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Returns the connection index for a partition, respecting any active migration fence.
     /// During migration, fenced partitions continue routing to their old connection
-    /// until in-flight batches complete, preserving per-partition sequence ordering.
+    /// until in-flight batches complete, preserving per-partition broker append order.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int GetConnectionForPartition(int partitionIndex)
+    private int GetConnectionForPartition(TopicPartition topicPartition)
     {
         // Common case: no migrations active — dictionary Count check is a single branch on 0.
         // During migration: one hash lookup per batch, negligible vs TCP write cost.
         return _migratingPartitions.Count > 0
-            && _migratingPartitions.TryGetValue(partitionIndex, out var oldConn)
+            && _migratingPartitions.TryGetValue(topicPartition, out var oldConn)
             ? oldConn
-            : partitionIndex % _connectionCount;
+            : topicPartition.Partition % _connectionCount;
     }
 
     /// <summary>
@@ -3583,7 +3583,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Scans pending responses (at most _maxInFlight entries, typically 5) for the connection.
     /// Only called during migration transitions — not on the hot path.
     /// </summary>
-    private bool HasInflightForPartition(int connectionIndex, int partitionIndex)
+    private bool HasInflightForPartition(int connectionIndex, TopicPartition topicPartition)
     {
         if ((uint)connectionIndex >= (uint)_pendingResponsesByConnection.Length)
             return false;
@@ -3596,7 +3596,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 // Entries within Count can legally be null: batches with stale generations
                 // are nulled out before PendingResponse.Create captures the array.
-                if (pr.Batches[j] is { } batch && batch.TopicPartition.Partition == partitionIndex)
+                if (pr.Batches[j] is { } batch && batch.TopicPartition == topicPartition)
                     return true;
             }
         }
@@ -3612,68 +3612,39 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         var pendingList = _pendingResponsesByConnection[connectionIndex];
 
-        // Fast path: if this connection has no remaining pending responses,
-        // all partitions fenced on this connection can migrate immediately.
-        if (pendingList.Count == 0)
+        foreach (var topicPartition in _knownPartitions)
         {
-            var keysToRemove = _migratingPartitions.Count <= 64
-                ? (Span<int>)stackalloc int[_migratingPartitions.Count]
-                : new int[_migratingPartitions.Count];
-            var removeCount = 0;
+            if (!_migratingPartitions.TryGetValue(topicPartition, out var oldConnection)
+                || oldConnection != connectionIndex)
+                continue;
 
-            foreach (var kvp in _migratingPartitions)
+            // Empty connection is the common completion case and avoids rescanning batches.
+            if (pendingList.Count == 0 || !HasInflightForPartition(connectionIndex, topicPartition))
             {
-                if (kvp.Value == connectionIndex)
-                    keysToRemove[removeCount++] = kvp.Key;
+                _migratingPartitions.Remove(topicPartition);
             }
-
-            for (var i = 0; i < removeCount; i++)
-                _migratingPartitions.Remove(keysToRemove[i]);
-
-            return;
-        }
-
-        // Connection still has pending responses — check partition by partition
-        var keysToCheck = _migratingPartitions.Count <= 64
-            ? (Span<int>)stackalloc int[_migratingPartitions.Count]
-            : new int[_migratingPartitions.Count];
-        var checkCount = 0;
-
-        foreach (var kvp in _migratingPartitions)
-        {
-            if (kvp.Value == connectionIndex)
-                keysToCheck[checkCount++] = kvp.Key;
-        }
-
-        for (var i = 0; i < checkCount; i++)
-        {
-            if (!HasInflightForPartition(connectionIndex, keysToCheck[i]))
-                _migratingPartitions.Remove(keysToCheck[i]);
         }
     }
 
     /// <summary>
     /// Fences partitions whose connection assignment changes during a scale-up.
-    /// For idempotent producers, partitions with in-flight batches on their old connection
-    /// are added to <see cref="_migratingPartitions"/> so they continue routing to the old
-    /// connection until in-flight clears, preventing OutOfOrderSequenceNumber errors.
-    /// Scale-down does not fence: its drain gates guarantee no in-flight batches whose
-    /// routing would change (all connections drained for idempotent producers).
+    /// Partitions with in-flight batches on their old connection are added to
+    /// <see cref="_migratingPartitions"/> so they continue routing to the old connection
+    /// until in-flight clears. This preserves broker append order for non-idempotent
+    /// producers and sequence order for idempotent producers. Scale-down does not fence:
+    /// its drain gate guarantees no in-flight batches before any routing assignment changes.
     /// </summary>
     private void FenceAffectedPartitions(int oldConnCount, int newConnCount)
     {
-        if (!_isIdempotent)
-            return;
-
         foreach (var tp in _knownPartitions)
         {
             var partition = tp.Partition;
             var oldConn = partition % oldConnCount;
             var newConn = partition % newConnCount;
 
-            if (oldConn != newConn && HasInflightForPartition(oldConn, partition))
+            if (oldConn != newConn && HasInflightForPartition(oldConn, tp))
             {
-                _migratingPartitions.TryAdd(partition, oldConn);
+                _migratingPartitions.TryAdd(tp, oldConn);
             }
         }
 
@@ -4424,22 +4395,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0;
         }
 
-        // Idempotent producers require ALL connections to be drained before shrinking
-        // because partitions remap (P % N -> P % (N-1)) and in-flight batches on any
-        // connection could conflict with new batches post-remap, causing sequence errors.
-        // Non-idempotent producers only need the last connection idle — no sequence numbers
-        // means partition remapping mid-flight cannot cause ordering violations.
-        if (_isIdempotent)
-        {
-            if (_totalPendingResponseCount > 0)
-                return 0; // Still has in-flight requests across connections — wait for drain
-        }
-        else
-        {
-            var lastConnIdx = _connectionCount - 1;
-            if (_pendingResponsesByConnection[lastConnIdx].Count > 0)
-                return 0; // Still has in-flight requests on last connection — wait
-        }
+        // Every acknowledged producer requires ALL connections to drain before shrinking.
+        // Modulo routing changes for partitions on retained slots too (P % N -> P % (N-1));
+        // moving a non-idempotent partition while its old request remains unacknowledged can
+        // reorder broker appends just as surely as it can violate idempotent sequence order.
+        if (_totalPendingResponseCount > 0)
+            return 0;
 
         // Sustained low utilization with no in-flight on the connection being removed —
         // initiate scale-down.
