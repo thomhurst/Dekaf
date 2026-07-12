@@ -1122,7 +1122,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly PendingAppendPool _pendingAppendPool;
     private readonly ConcurrentQueue<PendingAppend> _pendingAppends = new();
     private readonly object _pendingAppendQueueLock = new();
-    private readonly HashSet<TopicPartition> _blockedPendingPartitions = [];
+    private readonly Dictionary<TopicPartition, long> _blockedPendingPartitionRecheckTimes = [];
     private readonly List<PendingAppend> _pendingAppendScan = [];
     private readonly List<PendingAppend> _drainablePendingAppends = [];
     private int _draining; // CAS guard for DrainPendingAppends
@@ -1760,14 +1760,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// the drain lock, we re-check for pending items with available memory to prevent
     /// missed signals (a release could arrive while we hold the lock).
     /// </remarks>
-    internal void DrainPendingAppends()
+    /// <returns>
+    /// <see langword="false"/> only when another thread already owns the drain guard;
+    /// otherwise <see langword="true"/>.
+    /// </returns>
+    internal bool DrainPendingAppends()
     {
         if (_pendingAppends.IsEmpty)
-            return;
+            return true;
 
         // Only one thread drains at a time — others return immediately.
         if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
-            return;
+            return false;
 
         var ownsDrainGuard = true;
         try
@@ -1776,14 +1780,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 // Bail if accumulator is being disposed — DisposeAsync will drain the queue.
                 if (Volatile.Read(ref _disposed) != 0)
-                    return;
+                    return true;
 
                 var madeProgress = false;
                 lock (_pendingAppendQueueLock)
                 {
                     _pendingAppendScan.Clear();
                     _drainablePendingAppends.Clear();
-                    _blockedPendingPartitions.Clear();
+                    _blockedPendingPartitionRecheckTimes.Clear();
 
                     var remainingToInspect = _pendingAppends.Count;
                     while (remainingToInspect-- > 0 && _pendingAppends.TryDequeue(out var candidate))
@@ -1797,13 +1801,37 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             continue;
 
                         var topicPartition = new TopicPartition(candidate.Topic, candidate.Partition);
-                        if (memoryExhausted
-                            || _blockedPendingPartitions.Contains(topicPartition)
-                            || IsBrokerAdmissionBlocked(candidate.Topic, candidate.Partition, recordBlockEvent: false))
+                        if (memoryExhausted)
                         {
                             _pendingAppends.Enqueue(candidate);
-                            if (!memoryExhausted)
-                                _blockedPendingPartitions.Add(topicPartition);
+                            continue;
+                        }
+
+                        if (_blockedPendingPartitionRecheckTimes.TryGetValue(
+                                topicPartition,
+                                out var existingRecheckAt))
+                        {
+                            _pendingAppends.Enqueue(candidate);
+                            candidate.ScheduleAdmissionRecheck(existingRecheckAt);
+                            continue;
+                        }
+
+                        var admissionBlocked = IsBrokerAdmissionBlocked(
+                            candidate.Topic,
+                            candidate.Partition,
+                            recordBlockEvent: false,
+                            out var admissionRecheckDelayMs);
+                        if (admissionBlocked)
+                        {
+                            var recheckAt = admissionRecheckDelayMs == Timeout.Infinite
+                                ? 0
+                                : Dekaf.MonotonicClock.GetMilliseconds()
+                                  + Math.Max(1, admissionRecheckDelayMs);
+                            _pendingAppends.Enqueue(candidate);
+                            candidate.ScheduleAdmissionRecheck(recheckAt);
+                            _blockedPendingPartitionRecheckTimes.Add(
+                                topicPartition,
+                                recheckAt);
                             continue;
                         }
 
@@ -1865,12 +1893,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     || _pendingAppends.IsEmpty
                     || (ulong)Volatile.Read(ref _bufferedBytes) >= (ulong)Volatile.Read(ref _maxBufferMemory))
                 {
-                    return;
+                    return true;
                 }
 
                 // Re-acquire the drain lock for another pass
                 if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
-                    return; // Another thread took over
+                    return true; // Another thread took over
 
                 ownsDrainGuard = true;
             }
@@ -1879,7 +1907,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             if (ownsDrainGuard)
             {
-                _blockedPendingPartitions.Clear();
+                _blockedPendingPartitionRecheckTimes.Clear();
                 _pendingAppendScan.Clear();
                 _drainablePendingAppends.Clear();
                 // Ensure drain lock is released on exception. Once ownership passes to
@@ -4423,7 +4451,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsBrokerAdmissionBlocked(string topic, int partition, bool recordBlockEvent)
+        => IsBrokerAdmissionBlocked(topic, partition, recordBlockEvent, out _);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsBrokerAdmissionBlocked(
+        string topic,
+        int partition,
+        bool recordBlockEvent,
+        out int recheckDelayMilliseconds)
     {
+        recheckDelayMilliseconds = Timeout.Infinite;
         if (!_unackedBudgetEnabled)
             return false;
 
@@ -4436,6 +4473,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return false;
         }
 
+        var nowTicks = Stopwatch.GetTimestamp();
+        if (!currentBudget.IsOverBudgetAt(nowTicks))
+            return false;
+
+        recheckDelayMilliseconds = currentBudget.GetAdmissionRecheckDelayMilliseconds(nowTicks);
         if (recordBlockEvent)
             currentBudget.RecordAdmissionBlock();
         return true;

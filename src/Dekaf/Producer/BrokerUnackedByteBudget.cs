@@ -9,11 +9,13 @@ namespace Dekaf.Producer;
 /// instead of growing to the full <see cref="ProducerOptions.BufferMemory"/> reservoir.
 /// Under open-loop saturation, append-to-ack latency equals standing unacked bytes divided
 /// by the broker's drain rate; capping the standing bytes to
-/// <c>target × measured drain rate</c> caps the latency.
+/// <c>target × measured drain rate</c> caps the latency. The RTT safety floor uses a
+/// periodically refreshed minimum RTT so standing queue delay cannot inflate its horizon.
 /// <para>
 /// Ownership contract: <see cref="Charge"/>/<see cref="Release"/>/<see cref="IsOverBudget"/>/
-/// <see cref="RecordAdmissionBlock"/> are cross-thread (producer appenders and terminal batch
-/// paths). <see cref="OnAcked"/> and <see cref="SetCap"/> are single-writer — only the owning
+/// <see cref="IsOverBudgetAt"/>/<see cref="RecordAdmissionBlock"/> are cross-thread (producer
+/// appenders and terminal batch paths). <see cref="OnAcked"/> and <see cref="SetCap"/> are
+/// single-writer — only the owning
 /// broker's send loop calls them — so the estimator state needs no synchronization; the computed
 /// budget is published with a volatile write.
 /// </para>
@@ -31,8 +33,20 @@ internal sealed class BrokerUnackedByteBudget
     /// <summary>Number of per-request delivery-rate samples retained by the maximum filter.</summary>
     private const int RateWindowSamples = 10;
 
-    /// <summary>Fixed smoothing factor for the per-request ack round-trip EWMA.</summary>
-    private const double RttEwmaAlpha = 0.25;
+    /// <summary>How long an observed base RTT remains valid before it is refreshed.</summary>
+    private static readonly long MinRttWindowTicks = 10 * Stopwatch.Frequency;
+
+    /// <summary>
+    /// Minimum target-only drain interval used to refresh base RTT without standing
+    /// queue delay. Long-base-RTT links probe for at least one observed round-trip.
+    /// </summary>
+    private static readonly long MinRttProbeDurationTicks = Stopwatch.Frequency / 20;
+
+    /// <summary>
+    /// Maximum target-only drain interval. An RTT outlier must not disable the retained
+    /// RTT safety floor for its full (potentially multi-second) duration.
+    /// </summary>
+    private static readonly long MaxMinRttProbeDurationTicks = Stopwatch.Frequency / 4;
 
     /// <summary>Budget never drops below this multiple of the measured bandwidth-delay
     /// product (rate × RTT). Without this guard a target below the broker RTT would shrink
@@ -46,6 +60,8 @@ internal sealed class BrokerUnackedByteBudget
     // Cross-thread state.
     private long _unackedBytes;
     private long _budgetBytes;
+    private long _budgetAfterMinRttProbeBytes;
+    private long _probeBudgetAfterMinRttProbeBytes;
     private long _admissionBlockEvents;
 
     // Single-writer state (owning send loop only; constructor runs before the loop starts).
@@ -60,8 +76,13 @@ internal sealed class BrokerUnackedByteBudget
     private int _rateMaxTail;
     private int _rateMaxCount;
     private long _rateSampleSequence;
-    private double _ewmaRttSeconds;
-    private bool _hasRttSample;
+    private double _minRttSeconds;
+    private double _minRttProbeMinimumSeconds;
+    private bool _hasMinRttSample;
+    private long _minRttTimestamp;
+    // Written only by the send loop; acquire-read by appenders after _budgetBytes publishes
+    // the matching precomputed post-probe budgets.
+    private long _minRttProbeUntilTimestamp;
     private long _nextProbeTimestamp;
     private long _probeUntilTimestamp;
 
@@ -71,6 +92,8 @@ internal sealed class BrokerUnackedByteBudget
         _floorBytes = Math.Max(1, floorBytes);
         _capBytes = Math.Max(_floorBytes, initialCapBytes);
         Volatile.Write(ref _budgetBytes, _capBytes);
+        Volatile.Write(ref _budgetAfterMinRttProbeBytes, _capBytes);
+        Volatile.Write(ref _probeBudgetAfterMinRttProbeBytes, _capBytes);
     }
 
     /// <summary>
@@ -100,6 +123,38 @@ internal sealed class BrokerUnackedByteBudget
         => Volatile.Read(ref _unackedBytes) >= Volatile.Read(ref _budgetBytes);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsOverBudgetAt(long nowTicks)
+    {
+        var budget = Volatile.Read(ref _budgetBytes);
+        var minRttProbeUntilTimestamp = Volatile.Read(ref _minRttProbeUntilTimestamp);
+        if (minRttProbeUntilTimestamp != 0 && nowTicks >= minRttProbeUntilTimestamp)
+        {
+            var capacityProbeUntilTimestamp = Volatile.Read(ref _probeUntilTimestamp);
+            budget = capacityProbeUntilTimestamp != 0 && nowTicks < capacityProbeUntilTimestamp
+                ? Volatile.Read(ref _probeBudgetAfterMinRttProbeBytes)
+                : Volatile.Read(ref _budgetAfterMinRttProbeBytes);
+        }
+
+        return Volatile.Read(ref _unackedBytes) >= budget;
+    }
+
+    /// <summary>
+    /// Returns the delay until an active minimum-RTT probe changes the admission budget,
+    /// or <see cref="Timeout.Infinite"/> when no time-based recheck is needed.
+    /// </summary>
+    internal int GetAdmissionRecheckDelayMilliseconds(long nowTicks)
+    {
+        var probeUntilTimestamp = Volatile.Read(ref _minRttProbeUntilTimestamp);
+        if (probeUntilTimestamp == 0 || nowTicks >= probeUntilTimestamp)
+            return Timeout.Infinite;
+
+        var remainingTicks = probeUntilTimestamp - nowTicks;
+        return Math.Max(1, (int)Math.Min(
+            int.MaxValue,
+            Math.Ceiling((double)remainingTicks * 1000 / Stopwatch.Frequency)));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Charge(long bytes)
         => Interlocked.Add(ref _unackedBytes, bytes);
 
@@ -118,9 +173,12 @@ internal sealed class BrokerUnackedByteBudget
     /// Updates the ceiling (routing-width-dependent) and republishes the budget.
     /// Called by the owning send loop at construction and on connection scale events.
     /// </summary>
-    public void SetCap(long capBytes)
+    public void SetCap(long capBytes, long nowTicks)
     {
         _capBytes = Math.Max(_floorBytes, capBytes);
+        CompleteExpiredMinRttProbe(nowTicks);
+        if (_probeUntilTimestamp != 0 && nowTicks >= _probeUntilTimestamp)
+            _probeUntilTimestamp = 0;
         RecomputeBudget();
     }
 
@@ -135,10 +193,7 @@ internal sealed class BrokerUnackedByteBudget
             return;
 
         var rttSeconds = (double)rttTicks / Stopwatch.Frequency;
-        _ewmaRttSeconds = _hasRttSample
-            ? _ewmaRttSeconds + (RttEwmaAlpha * (rttSeconds - _ewmaRttSeconds))
-            : rttSeconds;
-        _hasRttSample = true;
+        UpdateMinRtt(rttSeconds, nowTicks);
 
         AddRateSample(ackedBytes / rttSeconds);
 
@@ -160,6 +215,69 @@ internal sealed class BrokerUnackedByteBudget
         }
 
         RecomputeBudget();
+    }
+
+    private void UpdateMinRtt(double rttSeconds, long nowTicks)
+    {
+        if (!_hasMinRttSample)
+        {
+            _minRttSeconds = rttSeconds;
+            _minRttTimestamp = nowTicks;
+            _hasMinRttSample = true;
+            StartMinRttProbe(nowTicks, rttSeconds);
+            return;
+        }
+
+        if (_minRttProbeUntilTimestamp != 0)
+        {
+            if (nowTicks >= _minRttProbeUntilTimestamp)
+            {
+                CompleteMinRttProbe(nowTicks);
+            }
+            else
+            {
+                _minRttProbeMinimumSeconds = Math.Min(_minRttProbeMinimumSeconds, rttSeconds);
+                return;
+            }
+        }
+
+        if (rttSeconds < _minRttSeconds)
+        {
+            _minRttSeconds = rttSeconds;
+            _minRttTimestamp = nowTicks;
+            return;
+        }
+
+        if (nowTicks - _minRttTimestamp >= MinRttWindowTicks)
+            StartMinRttProbe(nowTicks, rttSeconds);
+    }
+
+    private void CompleteExpiredMinRttProbe(long nowTicks)
+    {
+        if (_minRttProbeUntilTimestamp != 0 && nowTicks >= _minRttProbeUntilTimestamp)
+            CompleteMinRttProbe(nowTicks);
+    }
+
+    private void CompleteMinRttProbe(long nowTicks)
+    {
+        if (_minRttProbeMinimumSeconds != double.MaxValue)
+            _minRttSeconds = _minRttProbeMinimumSeconds;
+
+        // If the probe expired without an ack, retain the prior minimum and re-arm its
+        // freshness window. An idle gap is not a base-RTT measurement.
+        _minRttTimestamp = nowTicks;
+        _minRttProbeUntilTimestamp = 0;
+    }
+
+    private void StartMinRttProbe(long nowTicks, double observedRttSeconds)
+    {
+        _minRttProbeMinimumSeconds = double.MaxValue;
+        var observedRttTicks = (long)(observedRttSeconds * Stopwatch.Frequency);
+        var probeDurationTicks = Math.Clamp(
+            observedRttTicks,
+            MinRttProbeDurationTicks,
+            MaxMinRttProbeDurationTicks);
+        _minRttProbeUntilTimestamp = nowTicks + probeDurationTicks;
     }
 
     private void AddRateSample(double bytesPerSecond)
@@ -191,6 +309,41 @@ internal sealed class BrokerUnackedByteBudget
 
     private void RecomputeBudget()
     {
+        var minRttProbeActive = _minRttProbeUntilTimestamp != 0;
+        var budget = ComputeBudget(
+            minRttProbeActive,
+            _probeUntilTimestamp != 0,
+            _minRttSeconds);
+        if (minRttProbeActive)
+        {
+            var postProbeMinRttSeconds = _minRttProbeMinimumSeconds != double.MaxValue
+                ? _minRttProbeMinimumSeconds
+                : _minRttSeconds;
+            Volatile.Write(ref _budgetAfterMinRttProbeBytes,
+                ComputeBudget(
+                    minRttProbeActive: false,
+                    capacityProbeActive: false,
+                    minRttSeconds: postProbeMinRttSeconds));
+            Volatile.Write(ref _probeBudgetAfterMinRttProbeBytes,
+                ComputeBudget(
+                    minRttProbeActive: false,
+                    capacityProbeActive: true,
+                    minRttSeconds: postProbeMinRttSeconds));
+        }
+        else
+        {
+            Volatile.Write(ref _budgetAfterMinRttProbeBytes, budget);
+            Volatile.Write(ref _probeBudgetAfterMinRttProbeBytes, budget);
+        }
+
+        Volatile.Write(ref _budgetBytes, budget);
+    }
+
+    private long ComputeBudget(
+        bool minRttProbeActive,
+        bool capacityProbeActive,
+        double minRttSeconds)
+    {
         long budget;
         if (_rateMaxCount == 0)
         {
@@ -200,17 +353,17 @@ internal sealed class BrokerUnackedByteBudget
         }
         else
         {
-            var horizonSeconds = _hasRttSample
-                ? Math.Max(_targetSeconds, RttSafetyMultiplier * _ewmaRttSeconds)
+            var horizonSeconds = _hasMinRttSample && !minRttProbeActive
+                ? Math.Max(_targetSeconds, RttSafetyMultiplier * minRttSeconds)
                 : _targetSeconds;
             var estimatedBytes = _rateMaxValues[_rateMaxHead] * horizonSeconds;
-            if (_probeUntilTimestamp != 0)
+            if (capacityProbeActive && !minRttProbeActive)
                 estimatedBytes *= ProbeBudgetMultiplier;
 
             budget = (long)estimatedBytes;
             budget = Math.Clamp(budget, _floorBytes, _capBytes);
         }
 
-        Volatile.Write(ref _budgetBytes, budget);
+        return budget;
     }
 }

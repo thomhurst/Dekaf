@@ -2261,10 +2261,10 @@ public sealed class BrokerSenderSendLoopTests
                 responses[i].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: i * 10));
             }
 
-            // The deliberately tiny target makes the 1.5 × RTT safety horizon dominate,
-            // cancelling RTT from bytes/RTT × 1.5×RTT: budget = 5,000 × 1.5 = 7,500.
+            // The first ack establishes a rate and starts the target-only base-RTT probe.
+            // Its tiny target clamps the published estimate to the 200-byte floor.
             await WaitUntilAsync(() => budget.BudgetBytes != 1_000_000, cancellationToken);
-            await Assert.That(budget.BudgetBytes).IsBetween(7_490, 7_510);
+            await Assert.That(budget.BudgetBytes).IsEqualTo(200);
         }
         finally
         {

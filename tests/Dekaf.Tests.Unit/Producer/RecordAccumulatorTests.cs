@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
@@ -3424,6 +3425,58 @@ public class RecordAccumulatorTests
 
             await Assert.That(action).ThrowsNothing();
             await Assert.That(op.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+                op.ReturnToPoolAfterTryFail();
+        }
+    }
+
+    [Test]
+    public async Task PendingAppend_AdmissionRecheckRetriesWhenDrainGuardIsBusy()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var pool = new PendingAppendPool(1);
+        var op = CreatePendingAppend(accumulator, pool);
+        var queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
+
+        queue.Enqueue(op);
+        SetPrivateField(accumulator, "_draining", 1);
+        SetPrivateField(op, "_admissionRecheckTickCount", Dekaf.MonotonicClock.GetMilliseconds() - 1);
+
+        try
+        {
+            InvokePendingAppendTimeout(op);
+            var retryAt = GetPrivateField<long>(op, "_admissionRecheckTickCount");
+
+            await Assert.That(retryAt).IsGreaterThan(0);
+            await Assert.That(op.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            SetPrivateField(accumulator, "_draining", 0);
+            queue.TryDequeue(out _);
+            if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+                op.ReturnToPoolAfterTryFail();
+        }
+    }
+
+    [Test]
+    public async Task PendingAppend_AdmissionRecheckKeepsEarlierDeadline()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var pool = new PendingAppendPool(1);
+        var op = CreatePendingAppend(accumulator, pool);
+        var firstRecheckAt = Dekaf.MonotonicClock.GetMilliseconds() + 10_000;
+
+        try
+        {
+            op.ScheduleAdmissionRecheck(firstRecheckAt);
+            op.ScheduleAdmissionRecheck(firstRecheckAt + 1_000);
+
+            await Assert.That(GetPrivateField<long>(op, "_admissionRecheckTickCount"))
+                .IsEqualTo(firstRecheckAt);
         }
         finally
         {

@@ -565,8 +565,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly long[] _pendingResponseBytesByConnection;
 
     // Per-broker unacked-byte admission budget (owned by the accumulator, shared with the
-    // producer's admission gate). This send loop is the single writer of its EWMA drain
-    // estimate (OnAcked) and cap (SetCap); null when the bound is disabled.
+    // producer's admission gate). This send loop is the single writer of its drain-rate
+    // and minimum-RTT estimates (OnAcked) and cap (SetCap); null when the bound is disabled.
     private readonly BrokerUnackedByteBudget? _unackedBudget;
 
     // Snapshot of the budget's admission-block counter for scale-pressure deltas. The gate
@@ -2834,7 +2834,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void UpdateInFlightByteBudget(int connectionCount)
     {
         _totalMaxInFlightBytes = GetInFlightByteBudget(connectionCount);
-        _unackedBudget?.SetCap(_options.UnackedByteBudgetCapOverride ?? _totalMaxInFlightBytes);
+        _unackedBudget?.SetCap(
+            _options.UnackedByteBudgetCapOverride ?? _totalMaxInFlightBytes,
+            _getTimestamp());
     }
 
     private static long SumEncodedBytes(List<PendingResponse> pendingResponses)

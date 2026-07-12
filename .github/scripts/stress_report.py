@@ -190,11 +190,41 @@ def paired_latency_thresholds(results):
     evaluations = []
     for result in results:
         client = str(result.get('client', ''))
+        if not client.casefold().startswith('dekaf'):
+            continue
+        latency = result.get('latency')
+        if not isinstance(latency, dict):
+            continue
+
+        target_ms = result.get('deliveryLatencyTargetMs')
+        p95_us = latency.get('p95Us')
+        if _positive_finite_number(target_ms) and _positive_finite_number(p95_us):
+            ratio = p95_us / (target_ms * 1_000)
+            breached = ratio > 3.0
+            evaluations.append({
+                'scenario': _latency_scenario_label(result),
+                'metric': 'latencyP95TargetRatio',
+                'metricLabel': 'Delivery latency p95 / target',
+                'current': ratio,
+                'baselineCount': 0,
+                'median': None,
+                'mad': None,
+                'lower': None,
+                'upper': 3.0,
+                'status': 'regression' if breached else 'stable',
+                'repeatedRegression': False,
+                'thresholdBreach': breached,
+                'thresholdDirection': 'maximum',
+                'latencyThreshold': True,
+            })
+
+        # Multi-connection Dekaf variants use their own throughput profile and have no
+        # like-for-like Confluent pair, but the absolute configured target still applies.
         if client.casefold() != 'dekaf':
             continue
+
         baseline = baselines.get(_latency_identity(result))
-        latency = result.get('latency')
-        if baseline is None or not isinstance(latency, dict):
+        if baseline is None:
             continue
 
         for field, metric, label in (

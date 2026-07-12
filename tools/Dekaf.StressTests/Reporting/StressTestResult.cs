@@ -15,6 +15,7 @@ internal sealed class StressTestResult
     public required string Client { get; set; }
     public required int DurationMinutes { get; init; }
     public required int MessageSizeBytes { get; init; }
+    public int? DeliveryLatencyTargetMs { get; init; }
     public int? ConsumerSeedBatchSizeBytes { get; init; }
 
     /// <summary>
