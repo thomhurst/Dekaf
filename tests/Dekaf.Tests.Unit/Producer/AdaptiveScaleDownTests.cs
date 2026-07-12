@@ -609,13 +609,14 @@ public sealed class AdaptiveScaleDownTests
             var mutePartition = typeof(BrokerSender).GetMethod(
                 "MutePartition",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
-            var unmutePartition = typeof(BrokerSender).GetMethod(
-                "UnmutePartition",
-                BindingFlags.Instance | BindingFlags.NonPublic)!;
             for (var partition = 0; partition < 3; partition++)
                 mutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
-            for (var partition = 0; partition < 3; partition++)
-                unmutePartition.Invoke(sender, [new TopicPartition(Topic, partition)]);
+
+            // Simulate all partitions clearing between scale checks without calling
+            // UnmutePartition, whose wake event lets the live sender loop race this
+            // test's direct MaybeScaleConnections invocation.
+            GetField<ConcurrentDictionary<TopicPartition, byte>>(sender, "_mutedPartitions").Clear();
+            SetField(sender, "_mutedPartitionCount", 0);
             SetField(sender, "_totalPendingResponseCount", 0);
             SetField(sender, "_lowUtilizationStartTicks", 1L);
             InvokeMaybeScaleConnections(sender);
