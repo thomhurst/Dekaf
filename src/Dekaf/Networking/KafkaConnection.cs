@@ -82,6 +82,7 @@ public sealed partial class KafkaConnection :
     private readonly ILogger _logger;
     private readonly ConnectionOptions _options;
     private readonly ResponseBufferPool _responseBufferPool;
+    private readonly Func<Task, TimeSpan, Task> _waitForAbandonedWriteAsync;
 
     private Socket? _socket;
     private string? _resolvedTargetHost;
@@ -229,7 +230,8 @@ public sealed partial class KafkaConnection :
         ConnectionOptions? options,
         ILogger<KafkaConnection>? logger,
         ResponseBufferPool responseBufferPool,
-        ClientTelemetryMetricCollector? telemetryMetricCollector = null)
+        ClientTelemetryMetricCollector? telemetryMetricCollector = null,
+        Func<Task, TimeSpan, Task>? waitForAbandonedWriteAsync = null)
     {
         _host = host;
         _port = port;
@@ -243,6 +245,7 @@ public sealed partial class KafkaConnection :
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConnection>.Instance;
         _responseBufferPool = responseBufferPool;
         _telemetryMetricCollector = telemetryMetricCollector;
+        _waitForAbandonedWriteAsync = waitForAbandonedWriteAsync ?? WaitForAbandonedWriteAsync;
         _receiveTimeoutStopwatchTicks =
             (long)(_options.RequestTimeout.Ticks * (double)Stopwatch.Frequency / TimeSpan.TicksPerSecond);
     }
@@ -1136,7 +1139,7 @@ public sealed partial class KafkaConnection :
     {
         try
         {
-            await writeTask.WaitAsync(_options.RequestTimeout).ConfigureAwait(false);
+            await _waitForAbandonedWriteAsync(writeTask, _options.RequestTimeout).ConfigureAwait(false);
 
             // Completed after the caller gave up: the frame is intact, the outgoing stream is
             // still frame-aligned, and the connection remains usable. Any late response is
@@ -1165,6 +1168,9 @@ public sealed partial class KafkaConnection :
             // already aborted the connection. Nothing to do beyond observing the exception.
         }
     }
+
+    private static Task WaitForAbandonedWriteAsync(Task writeTask, TimeSpan timeout)
+        => writeTask.WaitAsync(timeout);
 
     /// <summary>
     /// Marks the connection unusable after a frame write faulted or stayed stuck past its grace
