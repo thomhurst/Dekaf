@@ -516,7 +516,7 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    public async Task ReapIdleConnectionsAsync_Group_ReapsOnlyConnectionsWithoutPendingRequests()
+    public async Task ReapIdleConnectionsAsync_Group_DoesNotDisposeOwnerAttachedConnections()
     {
         var created = new TestIdleConnection[2];
         var pool = new ConnectionPool(
@@ -542,9 +542,10 @@ public sealed class ConnectionPoolTests
             created[1].LastUsedTimestampMs = StaleIdleTimestamp();
             var reaped = await pool.ReapIdleConnectionsAsync();
 
-            await Assert.That(reaped).IsEqualTo(1);
+            await Assert.That(reaped).IsEqualTo(0);
             await Assert.That(created[0].DisposeCount).IsEqualTo(0);
-            await Assert.That(created[1].DisposeCount).IsEqualTo(1);
+            await Assert.That(created[1].DisposeCount).IsEqualTo(0);
+            await Assert.That(created[1].IsConnected).IsTrue();
         }
     }
 

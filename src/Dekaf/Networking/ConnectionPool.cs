@@ -1052,21 +1052,8 @@ public sealed partial class ConnectionPool : IConnectionPool
                     reaped++;
             }
 
-            foreach (var (_, group) in _connectionGroupsById.ToArray())
-            {
-                var connectedCount = CountConnected(group);
-                for (var i = 0; i < group.Length; i++)
-                {
-                    var connection = group[i];
-                    if (connection is not null
-                        && await TryReapGroupConnectionAsync(group, i, connection, connectedCount, now).ConfigureAwait(false))
-                    {
-                        connectedCount--;
-                        reaped++;
-                    }
-                }
-            }
-
+            // Group slots are owned by senders that retain their width and index routing.
+            // Their lifecycle is coordinated through ShrinkConnectionGroupAsync instead.
             return reaped;
         }
         finally
@@ -1102,29 +1089,6 @@ public sealed partial class ConnectionPool : IConnectionPool
         }
 
         return true;
-    }
-
-    private async ValueTask<bool> TryReapGroupConnectionAsync(
-        IKafkaConnection[] group,
-        int index,
-        IKafkaConnection connection,
-        int connectedCount,
-        long now)
-    {
-        if (!IsIdleReapable(connection, now))
-            return false;
-
-        if (connectedCount <= 1 && HasPendingRequests(group))
-            return false;
-
-        if (Interlocked.CompareExchange(ref group[index], null!, connection) != connection)
-            return false;
-
-        var disposed = await DisposeIdleConnectionAsync(connection, index, now).ConfigureAwait(false);
-        if (!disposed && connection.IsConnected)
-            Interlocked.CompareExchange(ref group[index], connection, null!);
-
-        return disposed;
     }
 
     private bool IsIdleReapable(IKafkaConnection connection, long now)
@@ -1189,29 +1153,6 @@ public sealed partial class ConnectionPool : IConnectionPool
                 IdleDurationMs = idleDurationMs
             });
         }
-    }
-
-    private static int CountConnected(IKafkaConnection[] group)
-    {
-        var count = 0;
-        foreach (var connection in group)
-        {
-            if (connection is not null && connection.IsConnected)
-                count++;
-        }
-
-        return count;
-    }
-
-    private static bool HasPendingRequests(IKafkaConnection[] group)
-    {
-        foreach (var connection in group)
-        {
-            if (connection is IIdleTrackedKafkaConnection { PendingRequestCount: > 0 })
-                return true;
-        }
-
-        return false;
     }
 
     private static bool TryRemoveExact<TKey, TValue>(
