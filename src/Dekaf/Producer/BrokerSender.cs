@@ -478,12 +478,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Partition-affined connections: each partition pins to _pinnedConnections[GetConnectionForPartition(topicPartition)].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
-    // All producers use partition affinity (partition % N) for CPU cache locality.
+    // All producers use dense per-broker partition ordinals for CPU cache locality and
+    // even distribution when raw Kafka partition IDs are congruent modulo the width.
     // Idempotent producers additionally require affinity for per-partition sequence ordering;
-    // during scaling, _migratingPartitions overrides the modulo to preserve ordering.
+    // during routing changes, _migratingPartitions preserves ordering.
     private readonly IKafkaConnection?[] _pinnedConnections;
     private int _connectionCount;
     private readonly bool _isIdempotent;
+
+    // Dense routing ranks derived from the immutable metadata snapshot's broker reverse index.
+    // The dictionary keeps GetConnectionForPartition O(1); the reusable list is sorted only
+    // when metadata replaces the broker's partition-list snapshot. Send-loop owned.
+    private readonly Dictionary<TopicPartition, int> _partitionOrdinals = new();
+    private readonly List<TopicPartition> _rankedPartitions = [];
+    private IReadOnlyList<TopicPartition>? _partitionRoutingSnapshot;
 
     // Adaptive connection scaling state (send-loop owned, single-threaded)
     private bool _adaptiveScalingEnabled;
@@ -520,11 +528,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private volatile bool _loopExited;
     private volatile bool _redeliverAfterLoopExit;
 
-    // Per-partition migration fencing for all acknowledged producers: during a scale-UP,
-    // partitions whose connection assignment changes (partition % oldCount != partition % newCount)
-    // are fenced here if they have in-flight batches on the old connection. The partition
-    // continues routing to the old connection until its in-flight clears, then is removed
-    // from this dictionary and routes via the new partition % _connectionCount.
+    // Per-partition migration fencing for all acknowledged producers: when connection width
+    // or metadata changes an assignment, partitions with in-flight batches stay on their old
+    // connection until those batches clear, then use the latest ordinal assignment.
     // Scale-down never fences (its drain gates guarantee no in-flight) and clears any
     // stale entries at initiation. Send-loop owned (single-threaded) — no synchronization needed.
     private readonly Dictionary<TopicPartition, int> _migratingPartitions = new();
@@ -680,7 +686,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // same partition can be appended out of order even when no retry occurs.
         _muteOnSend = !_isIdempotent || _maxInFlight <= 1;
 
-        // All producers use partition affinity (partition % connectionCount) for CPU cache
+        // All producers use dense broker-partition affinity for CPU cache
         // locality. Idempotent producers additionally need affinity for sequence ordering.
         _connectionCount = options.ConnectionsPerBroker;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
@@ -1452,9 +1458,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             metadataRefreshTopics.Clear();
 
                             // Distribute coalesced batches into per-connection buckets.
-                            // Partition affinity (partition % N) keeps each partition's batches
-                            // on the same connection for CPU cache locality. This also preserves
-                            // per-partition sequence ordering for idempotent producers.
+                            // Dense broker-partition affinity keeps each partition's batches on
+                            // one connection for CPU cache locality and sequence ordering.
                             // Note: when ConnectionsPerBroker exceeds the partition count, some
                             // connections will be idle. Adaptive scaling handles this naturally
                             // by scaling down unused connections.
@@ -1821,6 +1826,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         var batch = batchRef.Batch;
+
+        RefreshPartitionRouting();
 
         // Track distinct partitions this broker serves for MicroLinger skip optimization.
         _knownPartitions.Add(batch.TopicPartition);
@@ -3593,10 +3600,68 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         // Common case: no migrations active — dictionary Count check is a single branch on 0.
         // During migration: one hash lookup per batch, negligible vs TCP write cost.
-        return _migratingPartitions.Count > 0
-            && _migratingPartitions.TryGetValue(topicPartition, out var oldConn)
-            ? oldConn
+        if (_migratingPartitions.Count > 0
+            && _migratingPartitions.TryGetValue(topicPartition, out var oldConn))
+        {
+            return oldConn;
+        }
+
+        if (_partitionOrdinals.TryGetValue(topicPartition, out var ordinal))
+            return ordinal % _connectionCount;
+
+        // First route can precede CoalesceBatch in focused callers/tests. Production normally
+        // refreshes once per coalesced batch, before connection selection.
+        RefreshPartitionRouting();
+        return _partitionOrdinals.TryGetValue(topicPartition, out ordinal)
+            ? ordinal % _connectionCount
             : topicPartition.Partition % _connectionCount;
+    }
+
+    /// <summary>
+    /// Rebuilds dense, deterministic broker-partition ordinals when metadata changes.
+    /// Any acknowledged partition whose route changes while a request is in flight stays
+    /// fenced to its old connection until response processing clears the migration.
+    /// </summary>
+    private void RefreshPartitionRouting()
+    {
+        var metadataPartitions = _metadataManager.GetPartitionsForNode(_brokerId);
+        if (ReferenceEquals(metadataPartitions, _partitionRoutingSnapshot))
+            return;
+
+        _rankedPartitions.Clear();
+        for (var i = 0; i < metadataPartitions.Count; i++)
+            _rankedPartitions.Add(metadataPartitions[i]);
+        _rankedPartitions.Sort(static (left, right) =>
+        {
+            var topicComparison = string.CompareOrdinal(left.Topic, right.Topic);
+            return topicComparison != 0
+                ? topicComparison
+                : left.Partition.CompareTo(right.Partition);
+        });
+
+        for (var newOrdinal = 0; newOrdinal < _rankedPartitions.Count; newOrdinal++)
+        {
+            var topicPartition = _rankedPartitions[newOrdinal];
+            if (!_partitionOrdinals.TryGetValue(topicPartition, out var oldOrdinal))
+                continue;
+
+            var oldConnection = oldOrdinal % _connectionCount;
+            var newConnection = newOrdinal % _connectionCount;
+            if (oldConnection != newConnection
+                && HasInflightForPartition(oldConnection, topicPartition))
+            {
+                _migratingPartitions.TryAdd(topicPartition, oldConnection);
+            }
+        }
+
+        _partitionOrdinals.Clear();
+        for (var ordinal = 0; ordinal < _rankedPartitions.Count; ordinal++)
+            _partitionOrdinals.Add(_rankedPartitions[ordinal], ordinal);
+
+        if (_migrationRemovalBuffer.Capacity < _migratingPartitions.Count)
+            _migrationRemovalBuffer.Capacity = _migratingPartitions.Count;
+
+        _partitionRoutingSnapshot = metadataPartitions;
     }
 
     /// <summary>
@@ -3660,9 +3725,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         foreach (var tp in _knownPartitions)
         {
-            var partition = tp.Partition;
-            var oldConn = partition % oldConnCount;
-            var newConn = partition % newConnCount;
+            var routeKey = _partitionOrdinals.TryGetValue(tp, out var ordinal)
+                ? ordinal
+                : tp.Partition;
+            var oldConn = routeKey % oldConnCount;
+            var newConn = routeKey % newConnCount;
 
             if (oldConn != newConn && HasInflightForPartition(oldConn, tp))
             {
@@ -4336,7 +4403,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var targetCount = ComputeScaleTarget(scalePressureDelta, _connectionCount, _maxConnectionsPerBroker);
 
-            // Partition affinity (partition % N) means connections beyond the partition
+            // Dense partition affinity means connections beyond the partition
             // count can never receive traffic — they'd sit idle and immediately arm
             // scale-down churn. Cap the target at the partitions this broker serves.
             if (_knownPartitions.Count > 0 && targetCount > _knownPartitions.Count)
