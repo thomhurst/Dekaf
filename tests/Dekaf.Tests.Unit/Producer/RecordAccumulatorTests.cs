@@ -3463,6 +3463,29 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task PendingAppend_AdmissionRecheckKeepsEarlierDeadline()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var pool = new PendingAppendPool(1);
+        var op = CreatePendingAppend(accumulator, pool);
+        var firstRecheckAt = Dekaf.MonotonicClock.GetMilliseconds() + 10_000;
+
+        try
+        {
+            op.ScheduleAdmissionRecheck(firstRecheckAt);
+            op.ScheduleAdmissionRecheck(firstRecheckAt + 1_000);
+
+            await Assert.That(GetPrivateField<long>(op, "_admissionRecheckTickCount"))
+                .IsEqualTo(firstRecheckAt);
+        }
+        finally
+        {
+            if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+                op.ReturnToPoolAfterTryFail();
+        }
+    }
+
+    [Test]
     public async Task AppendFromSpansAsync_SlowPath_CompletesWhenMemoryReleased()
     {
         var options = new ProducerOptions

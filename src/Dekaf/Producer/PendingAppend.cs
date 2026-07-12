@@ -182,17 +182,30 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
 
     /// <summary>
     /// Arms the reusable timeout timer to re-evaluate admission when a temporary broker
-    /// budget probe expires. The max.block.ms deadline remains the final deadline.
+    /// budget probe expires. An existing earlier deadline is retained so repeated drain
+    /// scans do not issue another <see cref="Timer.Change(long, long)"/> per waiter.
+    /// The max.block.ms deadline remains the final deadline.
     /// </summary>
-    internal void ScheduleAdmissionRecheck(int delayMilliseconds)
+    internal void ScheduleAdmissionRecheck(long recheckAt)
     {
-        if (delayMilliseconds == Timeout.Infinite || Volatile.Read(ref _completed) != 0)
+        if (recheckAt == 0 || Volatile.Read(ref _completed) != 0)
             return;
 
-        var now = Dekaf.MonotonicClock.GetMilliseconds();
-        var recheckAt = now + Math.Max(1, delayMilliseconds);
-        Volatile.Write(ref _admissionRecheckTickCount, recheckAt);
-        ArmNextTimer(now);
+        while (true)
+        {
+            var existingRecheckAt = Volatile.Read(ref _admissionRecheckTickCount);
+            if (existingRecheckAt != 0 && existingRecheckAt <= recheckAt)
+                return;
+
+            if (Interlocked.CompareExchange(
+                    ref _admissionRecheckTickCount,
+                    recheckAt,
+                    existingRecheckAt) == existingRecheckAt)
+            {
+                ArmNextTimer(Dekaf.MonotonicClock.GetMilliseconds());
+                return;
+            }
+        }
     }
 
     /// <summary>

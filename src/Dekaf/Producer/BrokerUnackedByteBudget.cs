@@ -42,6 +42,12 @@ internal sealed class BrokerUnackedByteBudget
     /// </summary>
     private static readonly long MinRttProbeDurationTicks = Stopwatch.Frequency / 20;
 
+    /// <summary>
+    /// Maximum target-only drain interval. An RTT outlier must not disable the retained
+    /// RTT safety floor for its full (potentially multi-second) duration.
+    /// </summary>
+    private static readonly long MaxMinRttProbeDurationTicks = Stopwatch.Frequency / 4;
+
     /// <summary>Budget never drops below this multiple of the measured bandwidth-delay
     /// product (rate × RTT). Without this guard a target below the broker RTT would shrink
     /// the budget below BDP, underfill the pipe, lower the measured rate, and ratchet the
@@ -267,7 +273,11 @@ internal sealed class BrokerUnackedByteBudget
     {
         _minRttProbeMinimumSeconds = double.MaxValue;
         var observedRttTicks = (long)(observedRttSeconds * Stopwatch.Frequency);
-        _minRttProbeUntilTimestamp = nowTicks + Math.Max(MinRttProbeDurationTicks, observedRttTicks);
+        var probeDurationTicks = Math.Clamp(
+            observedRttTicks,
+            MinRttProbeDurationTicks,
+            MaxMinRttProbeDurationTicks);
+        _minRttProbeUntilTimestamp = nowTicks + probeDurationTicks;
     }
 
     private void AddRateSample(double bytesPerSecond)

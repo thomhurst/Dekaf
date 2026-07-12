@@ -1122,7 +1122,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly PendingAppendPool _pendingAppendPool;
     private readonly ConcurrentQueue<PendingAppend> _pendingAppends = new();
     private readonly object _pendingAppendQueueLock = new();
-    private readonly Dictionary<TopicPartition, int> _blockedPendingPartitionRecheckDelays = [];
+    private readonly Dictionary<TopicPartition, long> _blockedPendingPartitionRecheckTimes = [];
     private readonly List<PendingAppend> _pendingAppendScan = [];
     private readonly List<PendingAppend> _drainablePendingAppends = [];
     private int _draining; // CAS guard for DrainPendingAppends
@@ -1787,7 +1787,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     _pendingAppendScan.Clear();
                     _drainablePendingAppends.Clear();
-                    _blockedPendingPartitionRecheckDelays.Clear();
+                    _blockedPendingPartitionRecheckTimes.Clear();
 
                     var remainingToInspect = _pendingAppends.Count;
                     while (remainingToInspect-- > 0 && _pendingAppends.TryDequeue(out var candidate))
@@ -1807,12 +1807,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             continue;
                         }
 
-                        if (_blockedPendingPartitionRecheckDelays.TryGetValue(
+                        if (_blockedPendingPartitionRecheckTimes.TryGetValue(
                                 topicPartition,
-                                out var existingRecheckDelayMs))
+                                out var existingRecheckAt))
                         {
                             _pendingAppends.Enqueue(candidate);
-                            candidate.ScheduleAdmissionRecheck(existingRecheckDelayMs);
+                            candidate.ScheduleAdmissionRecheck(existingRecheckAt);
                             continue;
                         }
 
@@ -1823,11 +1823,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             out var admissionRecheckDelayMs);
                         if (admissionBlocked)
                         {
+                            var recheckAt = admissionRecheckDelayMs == Timeout.Infinite
+                                ? 0
+                                : Dekaf.MonotonicClock.GetMilliseconds()
+                                  + Math.Max(1, admissionRecheckDelayMs);
                             _pendingAppends.Enqueue(candidate);
-                            candidate.ScheduleAdmissionRecheck(admissionRecheckDelayMs);
-                            _blockedPendingPartitionRecheckDelays.Add(
+                            candidate.ScheduleAdmissionRecheck(recheckAt);
+                            _blockedPendingPartitionRecheckTimes.Add(
                                 topicPartition,
-                                admissionRecheckDelayMs);
+                                recheckAt);
                             continue;
                         }
 
@@ -1903,7 +1907,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             if (ownsDrainGuard)
             {
-                _blockedPendingPartitionRecheckDelays.Clear();
+                _blockedPendingPartitionRecheckTimes.Clear();
                 _pendingAppendScan.Clear();
                 _drainablePendingAppends.Clear();
                 // Ensure drain lock is released on exception. Once ownership passes to

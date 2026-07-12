@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Reflection;
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Serialization;
@@ -10,6 +13,71 @@ namespace Dekaf.Tests.Integration;
 [Category("Producer")]
 public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    [Test]
+    [Timeout(30_000)]
+    public async Task Producer_AdmissionProbeExpiry_DeliversQueuedRecord(
+        CancellationToken cancellationToken)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        await using var producer = (KafkaProducer<string, string>)await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-admission-probe")
+            .WithBatchSize(64 * 1024)
+            .WithDeliveryLatencyTarget(TimeSpan.FromMilliseconds(10))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Partition = 0,
+            Key = "seed",
+            Value = "seed"
+        }, cancellationToken);
+
+        await using var admin = new AdminClientBuilder()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-admin-admission-probe")
+            .Build();
+        var cluster = await admin.DescribeClusterAsync(cancellationToken).ConfigureAwait(false);
+        var leaderId = cluster.Nodes[0].NodeId;
+        var budget = producer.RecordAccumulator.GetBrokerUnackedBudget(leaderId)!;
+        var nowTicks = Stopwatch.GetTimestamp();
+
+        SetPrivateField(budget, "_hasMinRttSample", true);
+        SetPrivateField(budget, "_minRttSeconds", 0.050);
+        SetPrivateField(budget, "_minRttTimestamp", nowTicks - 11 * Stopwatch.Frequency);
+        SetPrivateField(budget, "_minRttProbeUntilTimestamp", 0L);
+        budget.OnAcked(1_000_000, Stopwatch.Frequency / 20, nowTicks);
+        budget.Charge(1_200_000);
+
+        try
+        {
+            var queuedProduce = producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = 0,
+                Key = "queued",
+                Value = "queued"
+            }, cancellationToken);
+
+            await Assert.That(queuedProduce.IsCompleted).IsFalse();
+            var metadata = await queuedProduce;
+            await Assert.That(metadata.Topic).IsEqualTo(topic);
+            await Assert.That(metadata.Partition).IsEqualTo(0);
+        }
+        finally
+        {
+            budget.Release(1_200_000);
+        }
+    }
+
+    private static void SetPrivateField<T>(object instance, string fieldName, T value)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+        field!.SetValue(instance, value);
+    }
+
     [Test]
     public async Task Producer_ProduceWithAcksAll_SuccessfullyProduces()
     {
