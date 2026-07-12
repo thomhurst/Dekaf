@@ -2982,7 +2982,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     internal TransactionPartitionEnrollmentResult TryEnsurePartitionsInTransaction(
         ReadyBatch[] batches,
         int count,
-        Action enrollmentCompleted)
+        Action enrollmentCompleted,
+        HashSet<TopicPartition> enrollmentPendingPartitions)
     {
         var startEnrollment = false;
 
@@ -2999,6 +3000,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     continue;
 
                 allEnrolled = false;
+                enrollmentPendingPartitions.Add(topicPartition);
                 if (!_transactionPartitionsBeingEnrolled.Contains(topicPartition))
                     _pendingTransactionPartitions.Add(topicPartition);
             }

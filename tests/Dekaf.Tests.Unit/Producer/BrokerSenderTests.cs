@@ -159,7 +159,7 @@ public sealed class BrokerSenderTests
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => true,
-            tryEnsurePartitionsInTransaction: (_, _, _) =>
+            tryEnsurePartitionsInTransaction: (_, _, _, _) =>
             {
                 transactionCalled = true;
                 return TransactionPartitionEnrollmentResult.Enrolled;

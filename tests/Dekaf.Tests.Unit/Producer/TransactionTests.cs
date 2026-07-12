@@ -630,14 +630,17 @@ public sealed class TransactionTests
             CreateEnrollmentBatch("topic-b", 0)
         };
         var enrollmentCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pendingPartitions = new HashSet<TopicPartition>();
 
         var enrolled = producer.TryEnsurePartitionsInTransaction(
             batches,
             batches.Length,
-            enrollmentCompleted.SetResult);
+            enrollmentCompleted.SetResult,
+            pendingPartitions);
 
         await Assert.That(enrolled.IsEnrolled).IsFalse();
         await Assert.That(enrolled.Error).IsNull();
+        await Assert.That(pendingPartitions).IsEquivalentTo(batches.Select(batch => batch.TopicPartition));
         var requestedPartitions = await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
         await Assert.That(requestedPartitions).IsEquivalentTo(new[]
         {
@@ -651,7 +654,20 @@ public sealed class TransactionTests
         await Assert.That(producer.TryEnsurePartitionsInTransaction(
             batches,
             batches.Length,
-            static () => { }).IsEnrolled).IsTrue();
+            static () => { },
+            []).IsEnrolled).IsTrue();
+
+        var mixedBatches = new[] { batches[0], CreateEnrollmentBatch("topic-c", 2) };
+        var mixedPendingPartitions = new HashSet<TopicPartition>();
+        var mixedResult = producer.TryEnsurePartitionsInTransaction(
+            mixedBatches,
+            mixedBatches.Length,
+            static () => { },
+            mixedPendingPartitions);
+
+        await Assert.That(mixedResult.IsEnrolled).IsFalse();
+        await Assert.That(mixedPendingPartitions).IsEquivalentTo(
+            [new TopicPartition("topic-c", 2)]);
     }
 
     private static ReadyBatch CreateEnrollmentBatch(string topic, int partition)

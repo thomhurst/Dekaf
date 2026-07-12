@@ -461,7 +461,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Transaction support
     private readonly Func<bool> _isTransactional;
-    private readonly Func<ReadyBatch[], int, Action, TransactionPartitionEnrollmentResult>?
+    private readonly Func<ReadyBatch[], int, Action, HashSet<TopicPartition>,
+        TransactionPartitionEnrollmentResult>?
         _tryEnsurePartitionsInTransaction;
     private readonly Action _transactionEnrollmentCompleted;
     private readonly HashSet<TopicPartition> _transactionEnrollmentPendingPartitions = [];
@@ -646,7 +647,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<int> getProduceApiVersion,
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
-        Func<ReadyBatch[], int, Action, TransactionPartitionEnrollmentResult>?
+        Func<ReadyBatch[], int, Action, HashSet<TopicPartition>,
+            TransactionPartitionEnrollmentResult>?
             tryEnsurePartitionsInTransaction,
         Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? bumpEpoch,
         Func<short>? getCurrentEpoch,
@@ -1397,7 +1399,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             var enrollment = _tryEnsurePartitionsInTransaction(
                                 coalescedBatches,
                                 coalescedCount,
-                                _transactionEnrollmentCompleted);
+                                _transactionEnrollmentCompleted,
+                                _transactionEnrollmentPendingPartitions);
                             if (enrollment.Error is not null)
                             {
                                 for (var i = 0; i < coalescedCount; i++)
@@ -1423,9 +1426,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                             if (!enrollment.IsEnrolled)
                             {
-                                for (var i = 0; i < coalescedCount; i++)
-                                    _transactionEnrollmentPendingPartitions.Add(coalescedBatches[i].TopicPartition);
-
                                 MoveCoalescedToCarryOver(
                                     coalescedBatches,
                                     coalescedGenerations,

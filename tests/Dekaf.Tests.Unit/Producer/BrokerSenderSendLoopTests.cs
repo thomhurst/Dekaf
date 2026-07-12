@@ -258,7 +258,8 @@ public sealed class BrokerSenderSendLoopTests
         Action? onBlockedBucketRequeued = null,
         BrokerUnackedByteBudget? unackedBudget = null,
         Func<bool>? isTransactional = null,
-        Func<ReadyBatch[], int, Action, TransactionPartitionEnrollmentResult>?
+        Func<ReadyBatch[], int, Action, HashSet<TopicPartition>,
+            TransactionPartitionEnrollmentResult>?
             tryEnsurePartitionsInTransaction = null) =>
         new(
             brokerId: 1, pool,
@@ -411,12 +412,17 @@ public sealed class BrokerSenderSendLoopTests
         Action? completeEnrollment = null;
         var partitionZeroEnrolled = false;
 
-        TransactionPartitionEnrollmentResult TryEnsure(ReadyBatch[] batches, int count, Action completed)
+        TransactionPartitionEnrollmentResult TryEnsure(
+            ReadyBatch[] batches,
+            int count,
+            Action completed,
+            HashSet<TopicPartition> pendingPartitions)
         {
             for (var i = 0; i < count; i++)
             {
                 if (batches[i].TopicPartition.Partition == 0 && !partitionZeroEnrolled)
                 {
+                    pendingPartitions.Add(batches[i].TopicPartition);
                     completeEnrollment = completed;
                     enrollmentStarted.TrySetResult();
                     return TransactionPartitionEnrollmentResult.Pending;
@@ -484,7 +490,7 @@ public sealed class BrokerSenderSendLoopTests
             accumulator,
             (_, _, _, _, _) => { },
             isTransactional: () => true,
-            tryEnsurePartitionsInTransaction: (_, _, _) =>
+            tryEnsurePartitionsInTransaction: (_, _, _, _) =>
                 TransactionPartitionEnrollmentResult.Failed(enrollmentError));
 
         try
