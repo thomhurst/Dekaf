@@ -281,13 +281,11 @@ public class RecordAccumulatorTests
         {
             await headerValue.WaitUntilEnteredAsync().WaitAsync(TimeSpan.FromSeconds(5));
 
-            using var purgeStarted = new ManualResetEventSlim();
-            var purgeTask = RunOnDedicatedThread(() =>
-            {
-                purgeStarted.Set();
-                return accumulator.Purge(PurgeOptions.Queue, CreatePurgedException());
-            });
-            await Assert.That(purgeStarted.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+            var purgeWaitObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            accumulator.PurgeAppendWaitObservedForTest = () => purgeWaitObserved.TrySetResult();
+            var purgeTask = RunOnDedicatedThread(
+                () => accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()));
+            await purgeWaitObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(purgeTask.IsCompleted).IsFalse();
 
             headerValue.Release();
