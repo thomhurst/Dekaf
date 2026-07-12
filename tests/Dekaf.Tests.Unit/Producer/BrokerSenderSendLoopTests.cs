@@ -30,7 +30,8 @@ public sealed class BrokerSenderSendLoopTests
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
         int connectionsPerBroker = 1, bool enableAdaptiveConnections = true,
         bool enableIdempotence = true, int batchSize = 1_048_576,
-        long? unackedByteBudgetCapOverride = null, long? scaleCooldownMsOverride = null) => new()
+        long? unackedByteBudgetCapOverride = null, long? scaleCooldownMsOverride = null,
+        string? transactionalId = null) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
@@ -44,6 +45,7 @@ public sealed class BrokerSenderSendLoopTests
             RequestTimeoutMs = requestTimeoutMs,
             BatchSize = batchSize,
             LingerMs = 0,
+            TransactionalId = transactionalId,
             UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride,
             ScaleCooldownMsOverride = scaleCooldownMsOverride
         };
@@ -254,7 +256,9 @@ public sealed class BrokerSenderSendLoopTests
         Func<long>? getTimestamp = null,
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
-        BrokerUnackedByteBudget? unackedBudget = null) =>
+        BrokerUnackedByteBudget? unackedBudget = null,
+        Func<bool>? isTransactional = null,
+        Func<ReadyBatch[], int, Action, bool>? tryEnsurePartitionsInTransaction = null) =>
         new(
             brokerId: 1, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -263,8 +267,8 @@ public sealed class BrokerSenderSendLoopTests
             inflightTracker: new PartitionInflightTracker(),
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
-            isTransactional: () => false,
-            ensurePartitionInTransaction: null,
+            isTransactional: isTransactional ?? (() => false),
+            tryEnsurePartitionsInTransaction: tryEnsurePartitionsInTransaction,
             bumpEpoch: null,
             getCurrentEpoch: null,
             rerouteBatch,
@@ -378,6 +382,86 @@ public sealed class BrokerSenderSendLoopTests
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionEnrollmentPending_SendsAlreadyEnrolledPartition(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, secondResponse]);
+        var sendCount = 0;
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+        var (pool, _) = CreateMockConnection(responses, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            if (index < sendSignals.Length)
+                sendSignals[index].TrySetResult();
+        });
+        var options = CreateOptions(maxInFlight: 2, transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
+        var enrollmentStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Action? completeEnrollment = null;
+        var partitionZeroEnrolled = false;
+
+        bool TryEnsure(ReadyBatch[] batches, int count, Action completed)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                if (batches[i].TopicPartition.Partition == 0 && !partitionZeroEnrolled)
+                {
+                    completeEnrollment = completed;
+                    enrollmentStarted.TrySetResult();
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        var acknowledged = 0;
+        var allAcknowledged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) =>
+            {
+                if (exception is null && Interlocked.Increment(ref acknowledged) == 2)
+                    allAcknowledged.TrySetResult();
+            },
+            isTransactional: () => true,
+            tryEnsurePartitionsInTransaction: TryEnsure);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 0));
+            await enrollmentStarted.Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskPool, "test-topic", partition: 1));
+            await sendSignals[0].Task.WaitAsync(cancellationToken);
+
+            firstResponse.SetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 10));
+            partitionZeroEnrolled = true;
+            completeEnrollment!();
+
+            await sendSignals[1].Task.WaitAsync(cancellationToken);
+            secondResponse.SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 11));
+            await allAcknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            firstResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 1, baseOffset: 10));
+            secondResponse.TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 11));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskPool.DisposeAsync();
         }
     }
 

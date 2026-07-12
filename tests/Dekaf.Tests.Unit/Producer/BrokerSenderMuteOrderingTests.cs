@@ -232,7 +232,7 @@ public sealed class BrokerSenderMuteOrderingTests
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
-            ensurePartitionInTransaction: null,
+            tryEnsurePartitionsInTransaction: null,
             bumpEpoch: null,
             getCurrentEpoch: null,
             rerouteBatch: rerouteBatch,

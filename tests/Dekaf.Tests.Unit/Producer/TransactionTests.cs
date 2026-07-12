@@ -6,6 +6,7 @@ using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using NSubstitute;
 
@@ -584,6 +585,85 @@ public sealed class TransactionTests
 
         await Assert.That(tpo1).IsEqualTo(tpo2);
         await Assert.That(tpo1).IsNotEqualTo(tpo3);
+    }
+
+    [Test]
+    public async Task TransactionPartitionEnrollment_BatchesCoalescedPartitions()
+    {
+        var requestStarted = new TaskCompletionSource<IReadOnlyList<TopicPartition>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async ValueTask AddPartitions(
+            IReadOnlyList<TopicPartition> partitions,
+            CancellationToken cancellationToken)
+        {
+            requestStarted.TrySetResult([.. partitions]);
+            await completeRequest.Task.WaitAsync(cancellationToken);
+        }
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            TransactionalId = "test-txn-id",
+            CloseTimeoutMs = 100
+        };
+        await using var connectionPool = new ConnectionPool(
+            options.ClientId,
+            connectionOptions: null,
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) =>
+                throw new InvalidOperationException("Enrollment test must use the injected request callback."));
+        await using var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String,
+            connectionPool,
+            metadataManager,
+            DekafMemoryBudget.Global,
+            addPartitionsToTransaction: AddPartitions);
+        var batches = new[]
+        {
+            CreateEnrollmentBatch("topic-a", 0),
+            CreateEnrollmentBatch("topic-a", 1),
+            CreateEnrollmentBatch("topic-b", 0)
+        };
+        var enrollmentCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var enrolled = producer.TryEnsurePartitionsInTransaction(
+            batches,
+            batches.Length,
+            enrollmentCompleted.SetResult);
+
+        await Assert.That(enrolled).IsFalse();
+        var requestedPartitions = await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(requestedPartitions).IsEquivalentTo(new[]
+        {
+            new TopicPartition("topic-a", 0),
+            new TopicPartition("topic-a", 1),
+            new TopicPartition("topic-b", 0)
+        });
+
+        completeRequest.SetResult();
+        await enrollmentCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await Assert.That(producer.TryEnsurePartitionsInTransaction(
+            batches,
+            batches.Length,
+            static () => { })).IsTrue();
+    }
+
+    private static ReadyBatch CreateEnrollmentBatch(string topic, int partition)
+    {
+        var batch = new ReadyBatch();
+        batch.Initialize(
+            new TopicPartition(topic, partition),
+            new RecordBatch(),
+            completionSourcesArray: null,
+            completionSourcesCount: 1,
+            dataSize: 1,
+            recordCount: 1);
+        return batch;
     }
 
     private static KafkaProducer<string, string> BuildInitializedTransactionalProducer(bool enableTwoPhaseCommit)

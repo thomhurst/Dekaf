@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Internal;
@@ -98,6 +99,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly System.Threading.Lock _epochBumpLock = new();
     internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
+    private readonly HashSet<TopicPartition> _pendingTransactionPartitions = [];
+    private readonly HashSet<TopicPartition> _transactionPartitionsBeingEnrolled = [];
+    private readonly HashSet<Action> _partitionEnrollmentWaiters = [];
+    private Exception? _partitionEnrollmentError;
+    private bool _partitionEnrollmentActive;
+    private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask> _addPartitionsToTransaction;
     internal volatile bool _currentTransactionUsesTV2;
 
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
@@ -196,7 +203,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ConnectionPool connectionPool,
         MetadataManager metadataManager,
         IDekafMemoryBudget memoryBudget,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null)
         : this(
             options,
             keySerializer,
@@ -204,7 +212,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Producer)),
             loggerFactory,
             ownsInfrastructure: false,
-            memoryBudget)
+            memoryBudget,
+            addPartitionsToTransaction)
     {
     }
 
@@ -272,9 +281,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         (ConnectionPool Pool, MetadataManager Metadata, ClientTelemetryMetricCollector TelemetryMetricCollector) infrastructure,
         ILoggerFactory? loggerFactory,
         bool ownsInfrastructure,
-        IDekafMemoryBudget memoryBudget)
+        IDekafMemoryBudget memoryBudget,
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null)
     {
         _options = options;
+        _addPartitionsToTransaction = addPartitionsToTransaction ?? AddPartitionsToTransactionAsync;
         _keySerializer = keySerializer;
         _valueSerializer = valueSerializer;
         _keyPreparer = keySerializer as IAsyncSerializerPreparer<TKey>;
@@ -1734,6 +1745,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         lock (_partitionsInTransactionLock)
         {
             _partitionsInTransaction.Clear();
+            _pendingTransactionPartitions.Clear();
+            _transactionPartitionsBeingEnrolled.Clear();
+            _partitionEnrollmentWaiters.Clear();
+            _partitionEnrollmentError = null;
+            _partitionEnrollmentActive = false;
         }
 
         return new Transaction<TKey, TValue>(this);
@@ -1909,6 +1925,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         lock (_partitionsInTransactionLock)
         {
             _partitionsInTransaction.Clear();
+            _pendingTransactionPartitions.Clear();
+            _transactionPartitionsBeingEnrolled.Clear();
+            _partitionEnrollmentWaiters.Clear();
+            _partitionEnrollmentError = null;
+            _partitionEnrollmentActive = false;
         }
 
         _preparedTransactionState = PreparedTransactionState.Empty;
@@ -2878,7 +2899,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             () => _produceApiVersion,
             version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
-            EnsurePartitionInTransactionAsync,
+            TryEnsurePartitionsInTransaction,
             bumpEpoch: useEpochRecovery ? BumpEpochLocally : null,
             getCurrentEpoch: useEpochRecovery ? () => _producerEpoch : null,
             RerouteBatchToCurrentLeader,
@@ -2956,23 +2977,112 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// Ensures a partition is registered in the current transaction.
-    /// Used as a callback by BrokerSender for transactional producers.
+    /// Queues every new partition in a coalesced broker pass for one background TV1
+    /// AddPartitionsToTxn request. Returns false while any requested partition is pending.
     /// </summary>
-    private async ValueTask EnsurePartitionInTransactionAsync(
-        TopicPartition topicPartition, CancellationToken cancellationToken)
+    internal bool TryEnsurePartitionsInTransaction(
+        ReadyBatch[] batches,
+        int count,
+        Action enrollmentCompleted)
     {
-        bool needsRegistration;
+        var startEnrollment = false;
+
         lock (_partitionsInTransactionLock)
         {
-            needsRegistration = _partitionsInTransaction.Add(topicPartition);
+            if (_partitionEnrollmentError is not null)
+                ExceptionDispatchInfo.Capture(_partitionEnrollmentError).Throw();
+
+            var allEnrolled = true;
+            for (var i = 0; i < count; i++)
+            {
+                var topicPartition = batches[i].TopicPartition;
+                if (_partitionsInTransaction.Contains(topicPartition))
+                    continue;
+
+                allEnrolled = false;
+                if (!_transactionPartitionsBeingEnrolled.Contains(topicPartition))
+                    _pendingTransactionPartitions.Add(topicPartition);
+            }
+
+            if (allEnrolled)
+                return true;
+
+            _partitionEnrollmentWaiters.Add(enrollmentCompleted);
+            if (!_partitionEnrollmentActive)
+            {
+                _partitionEnrollmentActive = true;
+                startEnrollment = true;
+            }
         }
 
-        if (!needsRegistration)
-            return;
+        if (startEnrollment)
+            _ = EnrollPendingTransactionPartitionsAsync();
 
-        await AddPartitionsToTransactionAsync([topicPartition], cancellationToken)
-            .ConfigureAwait(false);
+        return false;
+    }
+
+    private async Task EnrollPendingTransactionPartitionsAsync()
+    {
+        while (true)
+        {
+            TopicPartition[] partitions;
+            lock (_partitionsInTransactionLock)
+            {
+                if (_pendingTransactionPartitions.Count == 0)
+                {
+                    _partitionEnrollmentActive = false;
+                    return;
+                }
+
+                partitions = [.. _pendingTransactionPartitions];
+                _pendingTransactionPartitions.Clear();
+                foreach (var partition in partitions)
+                    _transactionPartitionsBeingEnrolled.Add(partition);
+            }
+
+            try
+            {
+                await _addPartitionsToTransaction(partitions, _senderCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                Action[] waiters;
+                lock (_partitionsInTransactionLock)
+                {
+                    _partitionEnrollmentError = exception;
+                    _partitionEnrollmentActive = false;
+                    _pendingTransactionPartitions.Clear();
+                    _transactionPartitionsBeingEnrolled.Clear();
+                    waiters = [.. _partitionEnrollmentWaiters];
+                    _partitionEnrollmentWaiters.Clear();
+                }
+
+                NotifyPartitionEnrollmentWaiters(waiters);
+                return;
+            }
+
+            Action[] completedWaiters;
+            lock (_partitionsInTransactionLock)
+            {
+                foreach (var partition in partitions)
+                {
+                    _transactionPartitionsBeingEnrolled.Remove(partition);
+                    _partitionsInTransaction.Add(partition);
+                }
+
+                completedWaiters = [.. _partitionEnrollmentWaiters];
+                _partitionEnrollmentWaiters.Clear();
+            }
+
+            NotifyPartitionEnrollmentWaiters(completedWaiters);
+        }
+    }
+
+    private static void NotifyPartitionEnrollmentWaiters(Action[] waiters)
+    {
+        foreach (var waiter in waiters)
+            waiter();
     }
 
     private async Task LingerLoopAsync(CancellationToken cancellationToken)

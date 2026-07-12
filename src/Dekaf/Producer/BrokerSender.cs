@@ -209,7 +209,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         NewBatch,
         ResponseReady, // Lightweight signal: a response task completed, poll _pendingResponsesByConnection
-        Unmute
+        Unmute,
+        TransactionEnrollmentReady
     }
 
     private readonly struct BatchReference
@@ -251,6 +252,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public static SendLoopEvent ResponseReady() => new(SendLoopEventType.ResponseReady);
 
         public static SendLoopEvent Unmute() => new(SendLoopEventType.Unmute);
+
+        public static SendLoopEvent TransactionEnrollmentReady() =>
+            new(SendLoopEventType.TransactionEnrollmentReady);
     }
 
     /// <summary>
@@ -448,7 +452,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Transaction support
     private readonly Func<bool> _isTransactional;
-    private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
+    private readonly Func<ReadyBatch[], int, Action, bool>? _tryEnsurePartitionsInTransaction;
+    private readonly Action _transactionEnrollmentCompleted;
+    private readonly HashSet<TopicPartition> _transactionEnrollmentPendingPartitions = [];
 
     // Send-time muting limits each partition to 1 in-flight batch when producer sequence
     // numbers are unavailable, or when the configured request limit is already 1.
@@ -630,7 +636,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Func<int> getProduceApiVersion,
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
-        Func<TopicPartition, CancellationToken, ValueTask>? ensurePartitionInTransaction,
+        Func<ReadyBatch[], int, Action, bool>? tryEnsurePartitionsInTransaction,
         Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? bumpEpoch,
         Func<short>? getCurrentEpoch,
         Action<ReadyBatch, int>? rerouteBatch,
@@ -655,7 +661,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _getProduceApiVersion = getProduceApiVersion;
         _setProduceApiVersion = setProduceApiVersion;
         _isTransactional = isTransactional;
-        _ensurePartitionInTransaction = ensurePartitionInTransaction;
+        _tryEnsurePartitionsInTransaction = tryEnsurePartitionsInTransaction;
         _bumpEpoch = bumpEpoch;
         _getCurrentEpoch = getCurrentEpoch;
         _rerouteBatch = rerouteBatch;
@@ -672,6 +678,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             SingleReader = true,
             SingleWriter = false
         });
+        _transactionEnrollmentCompleted = () =>
+            _eventChannel.Writer.TryWrite(SendLoopEvent.TransactionEnrollmentReady());
 
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
         _isIdempotent = options.EnableIdempotence;
@@ -1023,6 +1031,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 cancellationToken.ThrowIfCancellationRequested();
 
                 LogSendLoopIteration(_brokerId, carryOver.Count, _totalPendingResponseCount);
+                var transactionEnrollmentReady = false;
 
                 // ── 1. Poll pending responses (like Java's client.poll()) ──
                 // Signal events (ResponseReady, Unmute) may have woken us up — processing
@@ -1171,6 +1180,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     break;
                             }
                         }
+                        else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
+                        {
+                            _transactionEnrollmentPendingPartitions.Clear();
+                            transactionEnrollmentReady = true;
+                            break;
+                        }
                         // ResponseReady/Unmute: consumed as wake-up signals, no data to process
                     }
                 }
@@ -1214,6 +1229,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver);
                             if (coalescedCount > MicroLingerBatchThreshold)
                                 break;
+                        }
+                        else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
+                        {
+                            _transactionEnrollmentPendingPartitions.Clear();
+                            transactionEnrollmentReady = true;
+                            break;
                         }
                     }
                 }
@@ -1359,6 +1380,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         coalescedCount = CompactCurrentBatches(coalescedBatches, coalescedGenerations, coalescedCount);
                         if (coalescedCount == 0)
                             continue;
+
+                        if (_isTransactional()
+                            && _tryEnsurePartitionsInTransaction is not null
+                            && !_tryEnsurePartitionsInTransaction(
+                                coalescedBatches,
+                                coalescedCount,
+                                _transactionEnrollmentCompleted))
+                        {
+                            for (var i = 0; i < coalescedCount; i++)
+                                _transactionEnrollmentPendingPartitions.Add(coalescedBatches[i].TopicPartition);
+
+                            MoveCoalescedToCarryOver(
+                                coalescedBatches,
+                                coalescedGenerations,
+                                ref coalescedCount,
+                                carryOver);
+                            continue;
+                        }
 
                         // Finalize retry batches now that we know they will actually be sent
                         // (epoch bump check passed). Clear IsRetry and unmute partitions.
@@ -1531,6 +1570,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 7. Compute timeout and wait ──
+                if (transactionEnrollmentReady)
+                    continue;
+
                 var waitPendingCount = Volatile.Read(ref _totalPendingResponseCount);
                 if (carryOver.Count == 0
                     && waitPendingCount == 0
@@ -1603,6 +1645,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 else if (carryOver.Count > 0)
                 {
+                    if (_transactionEnrollmentPendingPartitions.Count > 0)
+                    {
+                        if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                            break;
+                        continue;
+                    }
+
                     if (hasPendingSingleConnectionFireAndForgetSend)
                     {
                         await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false);
@@ -1909,7 +1958,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Normal batch: skip any local retry/recovery mute and crash barriers owned by
         // another sender. The accumulator check closes the handoff gap before the first
         // recovered batch reaches this replacement sender.
-        if (_mutedPartitions.ContainsKey(batch.TopicPartition)
+        if (_transactionEnrollmentPendingPartitions.Contains(batch.TopicPartition)
+            || _mutedPartitions.ContainsKey(batch.TopicPartition)
             || _accumulator.IsMuted(batch.TopicPartition))
         {
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
@@ -2964,23 +3014,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 batches[i].AppendDiag('G');
 
             var apiVersion = EnsureApiVersion();
-
-            // Register new partitions in transaction if needed
-            if (_isTransactional() && _ensurePartitionInTransaction is not null)
-            {
-                for (var i = 0; i < count; i++)
-                {
-                    await _ensurePartitionInTransaction(batches[i].TopicPartition, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-
-                count = CompactCurrentBatches(batches, generations, count);
-                if (count == 0)
-                {
-                    ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
-                    return;
-                }
-            }
 
             count = AcquireResourcePins(batches, generations, count);
             if (count == 0)
