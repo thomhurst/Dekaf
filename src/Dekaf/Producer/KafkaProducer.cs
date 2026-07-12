@@ -4104,21 +4104,39 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
     }
 
-    public async ValueTask<RecordMetadata> ProduceAsync(
+    public ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfProducerDisposed();
-        _producer.ThrowIfFatalTransactionError("Cannot produce");
+        try
+        {
+            ThrowIfProducerDisposed();
+            _producer.ThrowIfFatalTransactionError("Cannot produce");
 
-        if (_committed || _aborted)
-            throw new InvalidOperationException("Transaction is already completed");
+            if (_committed || _aborted)
+                throw new InvalidOperationException("Transaction is already completed");
 
-        _producer.ThrowIfInPreparedTransaction();
+            _producer.ThrowIfInPreparedTransaction();
 
-        // Partition registration with AddPartitionsToTxn is handled automatically
-        // by BrokerSender before the ProduceRequest is sent to the broker.
-        return await _producer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
+            // Partition registration with AddPartitionsToTxn is handled automatically
+            // by BrokerSender before the ProduceRequest is sent to the broker.
+            return _producer.ProduceAsync(message, cancellationToken);
+        }
+        catch (OperationCanceledException exception)
+        {
+            var canceledToken = exception.CancellationToken.IsCancellationRequested
+                ? exception.CancellationToken
+                : cancellationToken.IsCancellationRequested
+                    ? cancellationToken
+                    : new CancellationToken(canceled: true);
+            return new ValueTask<RecordMetadata>(Task.FromCanceled<RecordMetadata>(canceledToken));
+        }
+        catch (Exception exception)
+        {
+            // Preserve async-method exception timing: validation failures fault the returned
+            // ValueTask instead of escaping synchronously from ProduceAsync.
+            return new ValueTask<RecordMetadata>(Task.FromException<RecordMetadata>(exception));
+        }
     }
 
     public ValueTask CommitAsync(CancellationToken cancellationToken = default) =>

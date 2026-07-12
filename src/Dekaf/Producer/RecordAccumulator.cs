@@ -4309,8 +4309,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         _partitionQueueBytes.AddOrUpdate(
             batch.TopicPartition,
-            batch.DataSize,
-            (_, current) => SaturatingAdd(current, batch.DataSize));
+            static (_, batch) => batch.DataSize,
+            static (_, current, batch) => SaturatingAdd(current, batch.DataSize),
+            batch);
 
         // Counter first, list second. If a batch races between the counter increment
         // and the list add, the sweep will miss it in the snapshot — but that's acceptable
