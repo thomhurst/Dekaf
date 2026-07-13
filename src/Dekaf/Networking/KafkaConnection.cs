@@ -3459,6 +3459,10 @@ public sealed class ConnectionOptions
 /// </summary>
 internal sealed class ResponseBufferPool
 {
+    // Managed arrays at or above this size enter the LOH and force full collections while
+    // high-throughput consumers warm their response-buffer buckets.
+    internal const int NativeMemoryThresholdBytes = 85_000;
+
     /// <summary>
     /// Overhead bytes added to <c>FetchMaxBytes</c> to account for Kafka protocol framing
     /// (message size prefix, response headers, tagged fields, per-partition overhead).
@@ -3480,6 +3484,7 @@ internal sealed class ResponseBufferPool
     internal static readonly ResponseBufferPool Default = new(DefaultMaxArrayLength, DefaultMaxArraysPerBucket);
     private static readonly ConcurrentDictionary<(int MaxArrayLength, int MaxArraysPerBucket), ResponseBufferPool>
         s_sharedPools = new();
+    private readonly ConcurrentDictionary<int, NativeBufferBucket> _nativeBuckets = new();
 
     internal ArrayPool<byte> Pool { get; }
     internal int MaxArrayLength { get; }
@@ -3530,28 +3535,172 @@ internal sealed class ResponseBufferPool
         var rounded = ((value + SizeTierBytes - 1) / SizeTierBytes) * SizeTierBytes;
         return rounded >= int.MaxValue ? int.MaxValue : (int)rounded;
     }
+
+    internal NativeResponseBuffer RentNative(int minimumLength)
+    {
+        var capacity = RoundUpToPowerOfTwo(minimumLength);
+        var bucket = _nativeBuckets.GetOrAdd(
+            capacity,
+            static (size, retention) => new NativeBufferBucket(size, retention),
+            MaxArraysPerBucket);
+        return NativeResponseBuffer.Rent(this, bucket.Rent(), capacity);
+    }
+
+    internal void ReturnNative(IntPtr pointer, int capacity)
+    {
+        var bucket = _nativeBuckets.GetOrAdd(
+            capacity,
+            static (size, retention) => new NativeBufferBucket(size, retention),
+            MaxArraysPerBucket);
+        bucket.Return(pointer);
+    }
+
+    private static int RoundUpToPowerOfTwo(int value)
+    {
+        if (value > 1 << 30)
+            return value;
+
+        var rounded = (uint)(value - 1);
+        rounded |= rounded >> 1;
+        rounded |= rounded >> 2;
+        rounded |= rounded >> 4;
+        rounded |= rounded >> 8;
+        rounded |= rounded >> 16;
+        rounded++;
+        return (int)rounded;
+    }
+
+    private sealed class NativeBufferBucket(int capacity, int maxRetained)
+    {
+        private readonly ConcurrentStack<IntPtr> _buffers = new();
+        private int _retained;
+
+        internal IntPtr Rent()
+        {
+            if (_buffers.TryPop(out var pointer))
+            {
+                Interlocked.Decrement(ref _retained);
+                return pointer;
+            }
+
+            return Marshal.AllocHGlobal(capacity);
+        }
+
+        internal void Return(IntPtr pointer)
+        {
+            if (Interlocked.Increment(ref _retained) <= maxRetained)
+            {
+                _buffers.Push(pointer);
+                return;
+            }
+
+            Interlocked.Decrement(ref _retained);
+            Marshal.FreeHGlobal(pointer);
+        }
+    }
+}
+
+/// <summary>
+/// Contiguous pooled response storage outside the managed large object heap. Ownership
+/// follows the same explicit transfer and disposal path as managed pooled responses.
+/// </summary>
+internal sealed unsafe class NativeResponseBuffer : MemoryManager<byte>
+{
+    private static readonly NativeResponseBufferPool s_pool = new();
+
+    private ResponseBufferPool? _pool;
+    private IntPtr _pointer;
+    private int _capacity;
+    private int _disposed = 1;
+
+    private NativeResponseBuffer() { }
+
+    internal IntPtr Address => _pointer;
+
+    internal static NativeResponseBuffer Rent(ResponseBufferPool pool, IntPtr pointer, int capacity)
+    {
+        var buffer = s_pool.Rent();
+        buffer._pool = pool;
+        buffer._pointer = pointer;
+        buffer._capacity = capacity;
+        Volatile.Write(ref buffer._disposed, 0);
+        return buffer;
+    }
+
+    public override Span<byte> GetSpan()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        return new Span<byte>((void*)_pointer, _capacity);
+    }
+
+    public override MemoryHandle Pin(int elementIndex = 0)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan((uint)elementIndex, (uint)_capacity);
+        return new MemoryHandle((byte*)_pointer + elementIndex, default, this);
+    }
+
+    public override void Unpin() { }
+
+    internal void Return() => Dispose(disposing: true);
+
+    protected override void Dispose(bool disposing)
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        var pool = _pool!;
+        var pointer = _pointer;
+        var capacity = _capacity;
+        _pool = null;
+        _pointer = IntPtr.Zero;
+        _capacity = 0;
+        pool.ReturnNative(pointer, capacity);
+        s_pool.Return(this);
+    }
+
+    private sealed class NativeResponseBufferPool() : ObjectPool<NativeResponseBuffer>(maxPoolSize: 256)
+    {
+        protected override NativeResponseBuffer Create() => new();
+        protected override void Reset(NativeResponseBuffer item) { }
+    }
 }
 
 internal readonly struct PooledResponseBuffer : IDisposable
 {
-    private readonly byte[] _buffer;
+    private readonly byte[]? _buffer;
+    private readonly NativeResponseBuffer? _nativeBuffer;
     private readonly int _offset;
     private readonly ResponseBufferPool? _pool;
 
     public PooledResponseBuffer(byte[] buffer, int length, bool isPooled, int offset = 0, ResponseBufferPool? pool = null)
     {
         _buffer = buffer;
+        _nativeBuffer = null;
         Length = length;
         IsPooled = isPooled;
         _offset = offset;
         _pool = pool;
     }
 
-    public byte[] Buffer => _buffer;
+    internal PooledResponseBuffer(NativeResponseBuffer buffer, int length, int offset = 0)
+    {
+        _buffer = null;
+        _nativeBuffer = buffer;
+        Length = length;
+        IsPooled = true;
+        _offset = offset;
+        _pool = null;
+    }
+
+    public byte[] Buffer => _buffer ?? throw new InvalidOperationException("Response uses native memory.");
     public int Length { get; }
     public bool IsPooled { get; }
+    internal bool UsesNativeMemory => _nativeBuffer is not null;
 
-    public ReadOnlyMemory<byte> Data => _buffer.AsMemory(_offset, Length);
+    public ReadOnlyMemory<byte> Data => _nativeBuffer is not null
+        ? _nativeBuffer.Memory.Slice(_offset, Length)
+        : _buffer.AsMemory(_offset, Length);
 
     /// <summary>
     /// Creates a new view of the buffer with an adjusted offset.
@@ -3559,7 +3708,9 @@ internal readonly struct PooledResponseBuffer : IDisposable
     /// </summary>
     public PooledResponseBuffer Slice(int additionalOffset)
     {
-        return new PooledResponseBuffer(_buffer, Length - additionalOffset, IsPooled, _offset + additionalOffset, _pool);
+        return _nativeBuffer is not null
+            ? new PooledResponseBuffer(_nativeBuffer, Length - additionalOffset, _offset + additionalOffset)
+            : new PooledResponseBuffer(_buffer!, Length - additionalOffset, IsPooled, _offset + additionalOffset, _pool);
     }
 
     /// <summary>
@@ -3568,12 +3719,18 @@ internal readonly struct PooledResponseBuffer : IDisposable
     /// </summary>
     public PooledResponseMemory TransferOwnership()
     {
-        return PooledResponseMemory.Create(_buffer, Length, IsPooled, _offset, _pool);
+        return _nativeBuffer is not null
+            ? PooledResponseMemory.Create(_nativeBuffer, Length, _offset)
+            : PooledResponseMemory.Create(_buffer!, Length, IsPooled, _offset, _pool);
     }
 
     public void Dispose()
     {
-        if (IsPooled && _buffer is not null)
+        if (_nativeBuffer is not null)
+        {
+            _nativeBuffer.Return();
+        }
+        else if (IsPooled && _buffer is not null)
         {
             Debug.Assert(_pool is not null, "Pooled buffer must have a non-null pool reference");
             _pool!.Pool.Return(_buffer);
@@ -3591,6 +3748,7 @@ internal sealed class PooledResponseMemory : IPooledMemory
     private static readonly PooledResponseMemoryPool s_pool = new();
 
     private byte[]? _buffer;
+    private NativeResponseBuffer? _nativeBuffer;
     private int _length;
     private bool _isPooled;
     private int _offset;
@@ -3607,9 +3765,24 @@ internal sealed class PooledResponseMemory : IPooledMemory
         return memory;
     }
 
+    internal static PooledResponseMemory Create(NativeResponseBuffer buffer, int length, int offset)
+    {
+        var memory = s_pool.Rent();
+        memory._buffer = null;
+        memory._nativeBuffer = buffer;
+        memory._length = length;
+        memory._isPooled = true;
+        memory._offset = offset;
+        memory._pool = null;
+        memory._pooled = 1;
+        Volatile.Write(ref memory._disposed, 0);
+        return memory;
+    }
+
     private void Initialize(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool, bool pooled)
     {
         _buffer = buffer;
+        _nativeBuffer = null;
         _length = length;
         _isPooled = isPooled;
         _offset = offset;
@@ -3618,9 +3791,11 @@ internal sealed class PooledResponseMemory : IPooledMemory
         Volatile.Write(ref _disposed, 0);
     }
 
-    public ReadOnlyMemory<byte> Memory => _buffer is not null
-        ? _buffer.AsMemory(_offset, _length)
-        : throw new ObjectDisposedException(nameof(PooledResponseMemory));
+    public ReadOnlyMemory<byte> Memory => _nativeBuffer is not null
+        ? _nativeBuffer.Memory.Slice(_offset, _length)
+        : _buffer is not null
+            ? _buffer.AsMemory(_offset, _length)
+            : throw new ObjectDisposedException(nameof(PooledResponseMemory));
 
     public void Dispose()
     {
@@ -3628,6 +3803,8 @@ internal sealed class PooledResponseMemory : IPooledMemory
             return;
 
         var buffer = Interlocked.Exchange(ref _buffer, null);
+        var nativeBuffer = Interlocked.Exchange(ref _nativeBuffer, null);
+        nativeBuffer?.Return();
         if (_isPooled && buffer is not null)
         {
             Debug.Assert(_pool is not null, "Pooled buffer must have a non-null pool reference");
@@ -3645,6 +3822,7 @@ internal sealed class PooledResponseMemory : IPooledMemory
         protected override void Reset(PooledResponseMemory item)
         {
             item._buffer = null;
+            item._nativeBuffer = null;
             item._length = 0;
             item._isPooled = false;
             item._offset = 0;

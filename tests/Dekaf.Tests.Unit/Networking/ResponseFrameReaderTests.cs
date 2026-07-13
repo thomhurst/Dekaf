@@ -1,4 +1,8 @@
 using System.Buffers.Binary;
+using System.Net;
+using System.Net.Sockets;
+using System.Reflection;
+using System.Runtime.Versioning;
 using Dekaf.Errors;
 using Dekaf.Networking;
 
@@ -83,6 +87,55 @@ public sealed class ResponseFrameReaderTests
     }
 
     [Test]
+    public async Task ReadFrameAsync_LargeStreamFrame_UsesNativePooledMemory()
+    {
+#if NET8_0
+        // The net8 test target consumes Dekaf's netstandard2.0 asset, so this test executes
+        // ReadSourceAsync's NETSTANDARD2_0 native-stream staging branch in CI.
+        var framework = typeof(ResponseFrameReader).Assembly
+            .GetCustomAttribute<TargetFrameworkAttribute>()?.FrameworkName;
+        await Assert.That(framework).IsEqualTo(".NETStandard,Version=v2.0");
+#endif
+        var frame = BuildFrame(correlationId: 12, payloadSize: ResponseBufferPool.NativeMemoryThresholdBytes);
+        using var reader = CreateReader(out _, receiveBufferSize: 4096, chunks: [frame]);
+
+        var result = await reader.ReadFrameAsync();
+
+        await Assert.That(result.Buffer.UsesNativeMemory).IsTrue();
+        await Assert.That(result.CorrelationId).IsEqualTo(12);
+        await AssertPayloadAsync(result, ResponseBufferPool.NativeMemoryThresholdBytes);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task ReadFrameAsync_LargeSocketFrame_UsesNativePooledMemory(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var endpoint = (IPEndPoint)listener.LocalEndpoint;
+        using var client = new TcpClient();
+        var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+        await client.ConnectAsync(endpoint.Address, endpoint.Port, cancellationToken);
+        using var server = await acceptTask;
+        using var memoryPool = new PipeMemoryPool();
+        using var reader = new ResponseFrameReader(
+            client.Client,
+            stream: null,
+            receiveBufferSize: 4096,
+            ResponseBufferPool.Default,
+            memoryPool);
+        var frame = BuildFrame(correlationId: 13, payloadSize: ResponseBufferPool.NativeMemoryThresholdBytes);
+
+        await server.GetStream().WriteAsync(frame, cancellationToken);
+        var result = await reader.ReadFrameAsync();
+
+        await Assert.That(result.Buffer.UsesNativeMemory).IsTrue();
+        await Assert.That(result.CorrelationId).IsEqualTo(13);
+        await AssertPayloadAsync(result, ResponseBufferPool.NativeMemoryThresholdBytes);
+    }
+
+    [Test]
     public async Task ReadFrameAsync_TrailingPartialFrame_CompletesOnNextChunk()
     {
         var first = BuildFrame(correlationId: 1, payloadSize: 20);
@@ -127,6 +180,25 @@ public sealed class ResponseFrameReaderTests
         var result = await reader.ReadFrameAsync();
 
         await Assert.That(result.IsEndOfStream).IsTrue();
+    }
+
+    [Test]
+    public async Task ReadFrameAsync_EofMidNativeFrame_ReturnsBufferToPool()
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var seeded = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var address = seeded.Address;
+        seeded.Return();
+        var frame = BuildFrame(correlationId: 5, payloadSize: ResponseBufferPool.NativeMemoryThresholdBytes);
+        using var stream = new ScriptedReadStream([frame[..200]]);
+        using var reader = ResponseFrameTestHelpers.CreateReader(stream, responseBufferPool: pool);
+
+        var result = await reader.ReadFrameAsync();
+
+        await Assert.That(result.IsEndOfStream).IsTrue();
+        var reused = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        await Assert.That(reused.Address).IsEqualTo(address);
+        reused.Return();
     }
 
     [Test]
@@ -246,8 +318,11 @@ public sealed class ResponseFrameReaderTests
         // (offset by the 4-byte size prefix that is not part of the payload).
         for (var i = 4; i < payloadSize; i++)
         {
-            if (payload.Span[i] != (byte)((i + 4) % 251))
-                throw new InvalidOperationException($"Payload mismatch at offset {i}");
+            var expected = (byte)((i + 4) % 251);
+            var actual = payload.Span[i];
+            if (actual != expected)
+                throw new InvalidOperationException(
+                    $"Payload mismatch at offset {i}: expected {expected}, actual {actual}");
         }
 
         result.Buffer.Dispose();

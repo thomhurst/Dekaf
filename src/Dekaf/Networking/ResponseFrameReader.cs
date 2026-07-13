@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 
@@ -8,7 +9,7 @@ namespace Dekaf.Networking;
 /// <summary>
 /// Reads length-prefixed Kafka response frames directly from the connection's read source
 /// (the raw <see cref="Socket"/> for plain TCP, the <c>SslStream</c> for TLS) into pooled
-/// response arrays.
+/// response storage.
 /// <para/>
 /// <b>Why not a Pipe?</b> The previous receive path pumped socket bytes into a
 /// <c>System.IO.Pipelines.Pipe</c> and then copied every frame out of the pipe's segments
@@ -41,8 +42,9 @@ internal sealed class ResponseFrameReader : IDisposable
     private int _end;
 
     // In-progress frame assembly state. Kept in fields (not locals) so that an EOF or a
-    // faulted read mid-frame can release the pooled array via AbandonInProgressFrame.
+    // faulted read mid-frame can release pooled storage via AbandonInProgressFrame.
     private byte[]? _frameArray;
+    private NativeResponseBuffer? _nativeFrame;
     private int _frameSize;
     private int _frameFilled;
 
@@ -87,7 +89,7 @@ internal sealed class ResponseFrameReader : IDisposable
 #endif
     public async ValueTask<ResponseFrame> ReadFrameAsync()
     {
-        if (_frameArray is null)
+        if (_frameArray is null && _nativeFrame is null)
         {
             // Accumulate the 4-byte size prefix through the internal buffer. Only ever
             // buffers ahead within the current receive; compaction moves at most 3 bytes.
@@ -111,12 +113,15 @@ internal sealed class ResponseFrameReader : IDisposable
             ConnectionHelper.ValidateResponseFrameSize(frameSize, _responseBufferPool.MaxArrayLength);
             _start += 4;
 
-            _frameArray = _responseBufferPool.Pool.Rent(frameSize);
+            if (frameSize >= ResponseBufferPool.NativeMemoryThresholdBytes)
+                _nativeFrame = _responseBufferPool.RentNative(frameSize);
+            else
+                _frameArray = _responseBufferPool.Pool.Rent(frameSize);
             _frameSize = frameSize;
 
             // Copy whatever part of the payload is already buffered.
             var buffered = Math.Min(frameSize, BufferedByteCount);
-            _buffer.Span.Slice(_start, buffered).CopyTo(_frameArray);
+            _buffer.Span.Slice(_start, buffered).CopyTo(FrameMemory.Span);
             _start += buffered;
             _frameFilled = buffered;
 
@@ -127,11 +132,11 @@ internal sealed class ResponseFrameReader : IDisposable
             }
         }
 
-        // Receive the remainder of the payload directly into the pooled array — no
-        // intermediate buffer, so large fetch payloads are copied exactly once.
+        // Receive the remainder directly into pooled storage. ReadSourceAsync handles
+        // the netstandard2.0 TLS compatibility case without affecting plain sockets.
         while (_frameFilled < _frameSize)
         {
-            var read = await ReadSourceAsync(_frameArray.AsMemory(_frameFilled, _frameSize - _frameFilled))
+            var read = await ReadSourceAsync(FrameMemory.Slice(_frameFilled, _frameSize - _frameFilled))
                 .ConfigureAwait(false);
             if (read == 0)
             {
@@ -143,8 +148,11 @@ internal sealed class ResponseFrameReader : IDisposable
             _frameFilled += read;
         }
 
-        var correlationId = BinaryPrimitives.ReadInt32BigEndian(_frameArray);
-        var response = new PooledResponseBuffer(_frameArray, _frameSize, isPooled: true, pool: _responseBufferPool);
+        var correlationId = BinaryPrimitives.ReadInt32BigEndian(FrameMemory.Span);
+        var response = _nativeFrame is not null
+            ? new PooledResponseBuffer(_nativeFrame, _frameSize)
+            : new PooledResponseBuffer(_frameArray!, _frameSize, isPooled: true, pool: _responseBufferPool);
+        _nativeFrame = null;
         _frameArray = null;
         return ResponseFrame.ForResponse(correlationId, response);
     }
@@ -158,6 +166,20 @@ internal sealed class ResponseFrameReader : IDisposable
         Volatile.Write(ref _readInFlight, true);
         try
         {
+#if NETSTANDARD2_0
+            // Polyfill's Stream.ReadAsync(Memory<byte>) drops data when Memory is backed by
+            // a MemoryManager instead of an array. TLS on the netstandard asset therefore
+            // reads through the existing small receive buffer before copying into native
+            // frame storage. Plain sockets and modern target frameworks remain direct-fill.
+            if (_stream is not null && _nativeFrame is not null)
+            {
+                Debug.Assert(BufferedByteCount == 0);
+                var intermediate = _buffer[..Math.Min(_buffer.Length, destination.Length)];
+                read = await _stream.ReadAsync(intermediate).ConfigureAwait(false);
+                intermediate.Span[..read].CopyTo(destination.Span);
+            }
+            else
+#endif
             read = _stream is not null
                 ? await _stream.ReadAsync(destination).ConfigureAwait(false)
                 : await _socket!.ReceiveAsync(destination, SocketFlags.None).ConfigureAwait(false);
@@ -223,10 +245,17 @@ internal sealed class ResponseFrameReader : IDisposable
     private void AbandonInProgressFrame()
     {
         var frameArray = _frameArray;
+        var nativeFrame = _nativeFrame;
         _frameArray = null;
+        _nativeFrame = null;
         if (frameArray is not null)
             _responseBufferPool.Pool.Return(frameArray);
+        nativeFrame?.Return();
     }
+
+    private Memory<byte> FrameMemory => _nativeFrame is not null
+        ? _nativeFrame.Memory
+        : _frameArray.AsMemory();
 }
 
 /// <summary>

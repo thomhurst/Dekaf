@@ -118,6 +118,57 @@ public class ResponseBufferPoolTests
     }
 
     [Test]
+    public async Task NativePool_ReusesReturnedLargeBuffer()
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var first = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var address = first.Address;
+        first.GetSpan()[0] = 42;
+
+        var response = new PooledResponseBuffer(first, ResponseBufferPool.NativeMemoryThresholdBytes);
+        await Assert.That(response.Data.Span[0]).IsEqualTo((byte)42);
+        response.Dispose();
+
+        var second = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        await Assert.That(second.Address).IsEqualTo(address);
+        second.Return();
+    }
+
+    [Test]
+    public async Task NativeBuffer_TransferOwnershipReturnsBufferOnce()
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var native = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var address = native.Address;
+        native.GetSpan()[0] = 99;
+        var response = new PooledResponseBuffer(native, ResponseBufferPool.NativeMemoryThresholdBytes);
+
+        var memory = response.TransferOwnership();
+        await Assert.That(memory.Memory.Span[0]).IsEqualTo((byte)99);
+        memory.Dispose();
+        memory.Dispose();
+
+        var reused = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        await Assert.That(reused.Address).IsEqualTo(address);
+        reused.Return();
+    }
+
+    [Test]
+    public async Task NativeBuffer_SlicedMemoryCopyPreservesOffset()
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var native = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        native.GetSpan().Clear();
+        var source = new byte[] { 10, 20, 30, 40 };
+
+        source.AsMemory().CopyTo(native.Memory.Slice(4092, source.Length));
+
+        await Assert.That(native.GetSpan()[4091]).IsEqualTo((byte)0);
+        await Assert.That(native.GetSpan().Slice(4092, source.Length).ToArray()).IsEquivalentTo(source);
+        native.Return();
+    }
+
+    [Test]
     public async Task PooledResponseBuffer_ReturnsToCorrectPool()
     {
         var pool = ResponseBufferPool.Create(20 * 1024 * 1024);

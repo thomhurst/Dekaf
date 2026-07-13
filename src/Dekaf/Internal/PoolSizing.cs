@@ -25,6 +25,8 @@ internal static class PoolSizing
     private const int MaxConsumerPrefetchBufferCapacity = 1024;
     private const int MinConsumerResponseBuffersPerBucket = 16;
     private const int MaxConsumerResponseBuffersPerBucket = 256;
+    private const int MinConsumerParsedRecordSlabsPerBucket = 16;
+    private const int MaxConsumerParsedRecordSlabsPerBucket = 64;
 
     /// <summary>
     /// Approximate number of coalesced partitions per batch — used to scale
@@ -50,6 +52,7 @@ internal static class PoolSizing
     internal readonly record struct ConsumerPoolSizes
     {
         public required int FetchDataPool { get; init; }
+        public required int ParsedRecordSlabsPerBucket { get; init; }
         public required int CancellationTokenSources { get; init; }
     }
 
@@ -109,11 +112,25 @@ internal static class PoolSizing
 
     internal static ConsumerPoolSizes ForConsumer(int maxPartitionCount)
     {
+        var partitionCount = Math.Max((long)maxPartitionCount, 0L);
+        var fetchDataPool = (int)Math.Clamp(partitionCount * 2L, 32L, 512L);
         return new ConsumerPoolSizes
         {
-            FetchDataPool = Math.Clamp(maxPartitionCount * 2, 32, 512),
-            CancellationTokenSources = Math.Clamp(maxPartitionCount * 4, 64, 2048),
+            FetchDataPool = fetchDataPool,
+            ParsedRecordSlabsPerBucket = ForConsumerParsedRecordSlabs(fetchDataPool),
+            CancellationTokenSources = (int)Math.Clamp(partitionCount * 4L, 64L, 2048L),
         };
+    }
+
+    internal static int ForConsumerParsedRecordSlabs(int fetchDataPool)
+    {
+        // Only eagerly parsed fetches need slabs, so retaining one slab per eight pending
+        // fetch slots covers normal overlap without letting this process-wide LOH pool grow
+        // as deep as the lightweight PendingFetchData object pool.
+        return Math.Clamp(
+            fetchDataPool / 8,
+            MinConsumerParsedRecordSlabsPerBucket,
+            MaxConsumerParsedRecordSlabsPerBucket);
     }
 
     internal static int ForConsumerRecordWrappers(long prefetchMaxBytes)

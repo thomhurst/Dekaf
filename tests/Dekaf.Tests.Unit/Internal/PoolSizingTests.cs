@@ -195,7 +195,32 @@ public class PoolSizingTests
     {
         var sizes = PoolSizing.ForConsumer(maxPartitionCount: 10000);
 
-        await Assert.That(sizes.FetchDataPool).IsLessThanOrEqualTo(512);
+        await Assert.That(sizes.FetchDataPool).IsEqualTo(512);
+        await Assert.That(sizes.ParsedRecordSlabsPerBucket).IsEqualTo(64);
+        await Assert.That(sizes.CancellationTokenSources).IsEqualTo(2048);
+    }
+
+    [Test]
+    public async Task ForConsumer_PathologicalPartitionCount_ClampsWithoutOverflow()
+    {
+        var sizes = PoolSizing.ForConsumer(maxPartitionCount: int.MaxValue);
+
+        await Assert.That(sizes.FetchDataPool).IsEqualTo(512);
+        await Assert.That(sizes.ParsedRecordSlabsPerBucket).IsEqualTo(64);
+        await Assert.That(sizes.CancellationTokenSources).IsEqualTo(2048);
+    }
+
+    [Test]
+    [Arguments(32, 16)]
+    [Arguments(128, 16)]
+    [Arguments(400, 50)]
+    [Arguments(512, 64)]
+    public async Task ForConsumerParsedRecordSlabs_ScalesWithinRetentionBounds(
+        int fetchDataPool,
+        int expected)
+    {
+        await Assert.That(PoolSizing.ForConsumerParsedRecordSlabs(fetchDataPool))
+            .IsEqualTo(expected);
     }
 
     [Test]

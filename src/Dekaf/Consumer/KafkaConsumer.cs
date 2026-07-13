@@ -41,18 +41,32 @@ internal sealed class PendingFetchData : IDisposable
     // Pool for reusing PendingFetchData instances to eliminate per-partition-per-fetch allocation.
     // LockFreeStack avoids the ConcurrentStack node allocation on every return to the pool.
     private const int DefaultMaxPoolSize = 128;
+    // Slabs outlive an individual PendingFetchData use, but not the pooled object itself.
+    // Bound retention per size bucket so deep prefetch cannot pin one large slab per item;
+    // PoolSizing ratchets the depth for high-partition workloads.
+    private const int DefaultMaxParsedRecordSlabsPerBucket = 16;
     private static int s_maxPoolSize = DefaultMaxPoolSize;
     private static LockFreeStack<PendingFetchData> s_pool = new(DefaultMaxPoolSize);
+    private static int s_maxParsedRecordSlabsPerBucket = DefaultMaxParsedRecordSlabsPerBucket;
+    private static ArrayPool<Record> s_parsedRecordSlabPool = ArrayPool<Record>.Create(
+        RecordBatch.MaxReasonableLazyRecordCount,
+        DefaultMaxParsedRecordSlabsPerBucket);
     private static readonly Lock s_resizeLock = new();
 
     internal static int MaxPoolSizeValue => Volatile.Read(ref s_maxPoolSize);
+    internal static int MaxParsedRecordSlabsPerBucketValue =>
+        Volatile.Read(ref s_maxParsedRecordSlabsPerBucket);
 
-    internal static void RatchetPoolSize(int newSize)
+    internal static void RatchetPoolSize(int newSize) =>
+        RatchetPoolSize(newSize, PoolSizing.ForConsumerParsedRecordSlabs(newSize));
+
+    internal static void RatchetPoolSize(int newSize, int desiredSlabDepth)
     {
         InterlockedHelper.RatchetUp(ref s_maxPoolSize, newSize);
 
         var currentPool = Volatile.Read(ref s_pool);
-        if (currentPool.Capacity < newSize)
+        if (currentPool.Capacity < newSize ||
+            Volatile.Read(ref s_maxParsedRecordSlabsPerBucket) < desiredSlabDepth)
         {
             lock (s_resizeLock)
             {
@@ -70,6 +84,15 @@ internal sealed class PendingFetchData : IDisposable
                         newPool.TryPush(item);
                     Volatile.Write(ref s_pool, newPool);
                 }
+
+                if (Volatile.Read(ref s_maxParsedRecordSlabsPerBucket) < desiredSlabDepth)
+                {
+                    var newSlabPool = ArrayPool<Record>.Create(
+                        RecordBatch.MaxReasonableLazyRecordCount,
+                        desiredSlabDepth);
+                    Volatile.Write(ref s_parsedRecordSlabPool, newSlabPool);
+                    Volatile.Write(ref s_maxParsedRecordSlabsPerBucket, desiredSlabDepth);
+                }
             }
         }
     }
@@ -78,7 +101,7 @@ internal sealed class PendingFetchData : IDisposable
     private Dictionary<long, Queue<long>>? _abortedProducers;
     private IPooledMemory? _memoryOwner;
     private Record[]? _parsedRecordSlab;
-    private int _parsedRecordSlabCount;
+    private ArrayPool<Record>? _parsedRecordSlabOwner;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
     private int _disposed;
@@ -192,18 +215,11 @@ internal sealed class PendingFetchData : IDisposable
         if (totalRecordCount == 0)
             return;
 
-        var slab = _parsedRecordSlab;
-        if (slab is null || slab.Length < totalRecordCount)
-        {
-            if (slab is not null)
-                ArrayPool<Record>.Shared.Return(slab, clearArray: false);
-
-            slab = ArrayPool<Record>.Shared.Rent(totalRecordCount);
-            _parsedRecordSlab = slab;
-        }
-
+        var slabPool = Volatile.Read(ref s_parsedRecordSlabPool);
+        var slab = slabPool.Rent(totalRecordCount);
+        _parsedRecordSlab = slab;
+        _parsedRecordSlabOwner = slabPool;
         slab.AsSpan(0, totalRecordCount).Clear();
-        _parsedRecordSlabCount = totalRecordCount;
         var offset = 0;
         for (var i = 0; i < batches.Count; i++)
         {
@@ -532,9 +548,12 @@ internal sealed class PendingFetchData : IDisposable
         }
 
         var parsedRecordSlab = _parsedRecordSlab;
+        var parsedRecordSlabOwner = _parsedRecordSlabOwner;
+        _parsedRecordSlab = null;
+        _parsedRecordSlabOwner = null;
         if (parsedRecordSlab is not null)
-            parsedRecordSlab.AsSpan(0, _parsedRecordSlabCount).Clear();
-        _parsedRecordSlabCount = 0;
+            (parsedRecordSlabOwner ?? Volatile.Read(ref s_parsedRecordSlabPool))
+                .Return(parsedRecordSlab, clearArray: true);
 
         // Return the batch list to the pool for reuse
         if (_batches is List<RecordBatch> batchList)
@@ -1093,7 +1112,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Use 64 as default partition count estimate — covers most workloads.
         // PendingFetchData uses a ratchet, so this only increases over time.
         var consumerSizes = PoolSizing.ForConsumer(maxPartitionCount: 64);
-        PendingFetchData.RatchetPoolSize(consumerSizes.FetchDataPool);
+        PendingFetchData.RatchetPoolSize(
+            consumerSizes.FetchDataPool,
+            consumerSizes.ParsedRecordSlabsPerBucket);
         RatchetRecordWrapperPools(partitionCount: 64);
         _ctsPool = new CancellationTokenSourcePool(consumerSizes.CancellationTokenSources);
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
@@ -6793,7 +6814,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void RatchetConsumerPoolSizes(int partitionCount)
     {
         var sizes = PoolSizing.ForConsumer(partitionCount);
-        PendingFetchData.RatchetPoolSize(sizes.FetchDataPool);
+        PendingFetchData.RatchetPoolSize(
+            sizes.FetchDataPool,
+            sizes.ParsedRecordSlabsPerBucket);
         RatchetRecordWrapperPools(partitionCount);
     }
 

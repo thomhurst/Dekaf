@@ -113,9 +113,13 @@ public class PendingFetchDataTests
     public async Task RatchetPoolSize_IncreasesMaxPoolSize()
     {
         var before = PendingFetchData.MaxPoolSizeValue;
+        var target = before + 100;
 
-        PendingFetchData.RatchetPoolSize(before + 100);
-        await Assert.That(PendingFetchData.MaxPoolSizeValue).IsGreaterThanOrEqualTo(before + 100);
+        PendingFetchData.RatchetPoolSize(target);
+
+        await Assert.That(PendingFetchData.MaxPoolSizeValue).IsGreaterThanOrEqualTo(target);
+        await Assert.That(PendingFetchData.MaxParsedRecordSlabsPerBucketValue)
+            .IsGreaterThanOrEqualTo(PoolSizing.ForConsumerParsedRecordSlabs(target));
     }
 
     [Test]
@@ -191,7 +195,7 @@ public class PendingFetchDataTests
 
     [Test]
     [NotInParallel]
-    public async Task Dispose_RetainsParsedRecordSlabAcrossPooledReuse()
+    public async Task Dispose_ReleasesParsedRecordSlabBeforePooledReuse()
     {
         var originalMaxPoolSize = MaxPoolSizeField.GetValue(null);
         var originalPool = PoolField.GetValue(null);
@@ -206,13 +210,15 @@ public class PendingFetchDataTests
 
             var first = PendingFetchData.Create("topic-1", 0, Array.Empty<RecordBatch>());
             var slab = new Record[32];
+            slab[^1] = new Record { Value = new byte[] { 42 } };
             slabField.SetValue(first, slab);
             first.Dispose();
 
             second = PendingFetchData.Create("topic-2", 1, Array.Empty<RecordBatch>());
 
             await Assert.That(second).IsSameReferenceAs(first);
-            await Assert.That(slabField.GetValue(second)).IsSameReferenceAs(slab);
+            await Assert.That(slabField.GetValue(second)).IsNull();
+            await Assert.That(slab[^1]).IsEqualTo(default(Record));
         }
         finally
         {
