@@ -1621,6 +1621,240 @@ public sealed class BrokerSenderSendLoopTests
 
     [Test]
     [Timeout(120_000)]
+    public async Task SendLoop_ScaleUpWhileWritePending_FencesPartitionToOldConnection(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstWriteStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondWriteStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var scaleRequested = new TaskCompletionSource<int>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstWrite = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockedBucketRequeued = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var firstConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = async () =>
+            {
+                firstWriteStarted.TrySetResult();
+                await releaseFirstWrite.Task;
+                return firstResponse.Task;
+            }
+        };
+        var secondConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () =>
+            {
+                secondWriteStarted.TrySetResult();
+                return new ValueTask<Task<ProduceResponse>>(secondResponse.Task);
+            }
+        };
+        var controlConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(
+                Task.FromResult(CreateSuccessResponse(
+                    "test-topic",
+                    partition: 1,
+                    baseOffset: 50)))
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(firstConnection);
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(firstConnection));
+        pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(controlConnection));
+        pool.GetConnectionByIndexAsync(1, 2, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(secondConnection));
+        pool.ScaleConnectionGroupAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var targetCount = (int)callInfo[1]!;
+                scaleRequested.TrySetResult(targetCount);
+                return new ValueTask<int>(targetCount);
+            });
+
+        var options = CreateOptions(
+            maxInFlight: 5,
+            connectionsPerBroker: 2,
+            enableAdaptiveConnections: true,
+            enableIdempotence: false,
+            unackedByteBudgetCapOverride: 1_000_000,
+            scaleCooldownMsOverride: 0);
+        var accumulator = new RecordAccumulator(options);
+        var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateLeaderMetadataResponse(
+            "test-topic",
+            leaderId: 1,
+            leaderEpoch: 1,
+            partitionCount: 3));
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        var acknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgementCount = 0;
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (topicPartition, _, _, _, exception) =>
+            {
+                if (exception is null
+                    && topicPartition.Partition == 2
+                    && Interlocked.Increment(ref acknowledgementCount) == 2)
+                    acknowledged.TrySetResult();
+            },
+            metadataManager,
+            onBlockedBucketRequeued: () => blockedBucketRequeued.TrySetResult(),
+            unackedBudget: budget);
+
+        var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender)
+            .GetField("_knownPartitions", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(sender)!;
+        knownPartitions.Add(new TopicPartition("test-topic", 0));
+        knownPartitions.Add(new TopicPartition("test-topic", 1));
+        knownPartitions.Add(new TopicPartition("test-topic", 2));
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 2));
+            await firstWriteStarted.Task.WaitAsync(cancellationToken);
+
+            for (var i = 0; i < 200; i++)
+                budget.RecordAdmissionBlock();
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 1));
+
+            await scaleRequested.Task.WaitAsync(cancellationToken);
+            var connectionCount = typeof(BrokerSender).GetField(
+                "_connectionCount",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            await WaitUntilAsync(
+                () => (int)connectionCount.GetValue(sender)! == 3,
+                cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 2));
+
+            var firstSignal = await Task.WhenAny(
+                blockedBucketRequeued.Task,
+                secondWriteStarted.Task).WaitAsync(cancellationToken);
+            await Assert.That(firstSignal).IsSameReferenceAs(blockedBucketRequeued.Task);
+            await Assert.That(secondWriteStarted.Task.IsCompleted).IsFalse();
+
+            releaseFirstWrite.TrySetResult();
+            firstResponse.TrySetResult(
+                CreateSuccessResponse("test-topic", partition: 2, baseOffset: 100));
+            await secondWriteStarted.Task.WaitAsync(cancellationToken);
+            secondResponse.TrySetResult(
+                CreateSuccessResponse("test-topic", partition: 2, baseOffset: 200));
+            await acknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            releaseFirstWrite.TrySetResult();
+            firstResponse.TrySetResult(
+                CreateSuccessResponse("test-topic", partition: 2, baseOffset: 100));
+            secondResponse.TrySetResult(
+                CreateSuccessResponse("test-topic", partition: 2, baseOffset: 200));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_StaleSendReady_DoesNotAwaitNewerConnectionWrite(
+        CancellationToken cancellationToken)
+    {
+        var secondWriteStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var otherConnectionWriteStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSecondWrite = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        BrokerSender? sender = null;
+        var sendCount = 0;
+
+        var firstConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = async () =>
+            {
+                var currentSend = Interlocked.Increment(ref sendCount);
+                if (currentSend == 1)
+                {
+                    for (var i = 0; i < 5; i++)
+                    {
+                        sender!.Enqueue(CreateTestBatch(
+                            valueTaskSourcePool,
+                            "test-topic",
+                            partition: 0));
+                    }
+                }
+                else if (currentSend == 2)
+                {
+                    secondWriteStarted.TrySetResult();
+                    await releaseSecondWrite.Task;
+                }
+
+                return Task.FromResult(
+                    CreateSuccessResponse("test-topic", partition: 0, baseOffset: currentSend));
+            }
+        };
+        var secondConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () =>
+            {
+                otherConnectionWriteStarted.TrySetResult();
+                return new ValueTask<Task<ProduceResponse>>(Task.FromResult(
+                    CreateSuccessResponse("test-topic", partition: 1, baseOffset: 100)));
+            }
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(firstConnection));
+        pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(secondConnection));
+
+        var options = CreateOptions(
+            maxInFlight: 1,
+            connectionsPerBroker: 2,
+            enableAdaptiveConnections: false,
+            enableIdempotence: false);
+        var accumulator = new RecordAccumulator(options);
+        sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await secondWriteStarted.Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 1));
+            await otherConnectionWriteStarted.Task.WaitAsync(
+                TimeSpan.FromSeconds(5),
+                cancellationToken);
+        }
+        finally
+        {
+            releaseSecondWrite.TrySetResult();
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
     public async Task SendLoop_BlockedBucket_DoesNotPreventFreshWorkOnIdleConnection(
         CancellationToken cancellationToken)
     {

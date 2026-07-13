@@ -227,6 +227,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public readonly ReadyBatch? Batch;
         public readonly int BatchGeneration;
         public readonly int ConnectionIndex;
+        public readonly int ConnectionSendGeneration;
         public readonly Exception? EnrollmentError;
 
         private SendLoopEvent(
@@ -234,12 +235,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ReadyBatch? batch = null,
             int batchGeneration = 0,
             int connectionIndex = -1,
+            int connectionSendGeneration = 0,
             Exception? enrollmentError = null)
         {
             Type = type;
             Batch = batch;
             BatchGeneration = batchGeneration;
             ConnectionIndex = connectionIndex;
+            ConnectionSendGeneration = connectionSendGeneration;
             EnrollmentError = enrollmentError;
         }
 
@@ -252,8 +255,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         public static SendLoopEvent ResponseReady() => new(SendLoopEventType.ResponseReady);
 
-        public static SendLoopEvent SendReady(int connectionIndex) =>
-            new(SendLoopEventType.SendReady, connectionIndex: connectionIndex);
+        public static SendLoopEvent SendReady(int connectionIndex, int sendGeneration) =>
+            new(
+                SendLoopEventType.SendReady,
+                connectionIndex: connectionIndex,
+                connectionSendGeneration: sendGeneration);
 
         public static SendLoopEvent Unmute() => new(SendLoopEventType.Unmute);
 
@@ -608,6 +614,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private long _totalMaxInFlightBytes;
     private readonly long _maxInFlightBytesPerConnection;
     private readonly long[] _pendingResponseBytesByConnection;
+    private readonly List<BatchReference>[] _activeConnectionSendBatches;
 
     // Per-broker unacked-byte admission budget (owned by the accumulator, shared with the
     // producer's admission gate). This send loop is the single writer of its drain-rate
@@ -775,8 +782,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _retainedConnectionIndices = new bool[connectionCapacity];
         _pendingResponsesByConnection = new List<PendingResponse>[connectionCapacity];
         _pendingResponseBytesByConnection = new long[connectionCapacity];
+        _activeConnectionSendBatches = new List<BatchReference>[connectionCapacity];
         for (var i = 0; i < connectionCapacity; i++)
+        {
             _pendingResponsesByConnection[i] = new List<PendingResponse>();
+            _activeConnectionSendBatches[i] = [];
+        }
 
         _responseCompletionCallback = () =>
         {
@@ -1124,6 +1135,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var hasPendingConnectionSend = connectionCapacity > 1
             ? new bool[connectionCapacity]
             : Array.Empty<bool>();
+        var connectionSendGenerations = connectionCapacity > 1
+            ? new int[connectionCapacity]
+            : Array.Empty<int>();
         HashSet<string>? retryMetadataRefreshTopics = null;
 
         // Per-connection timeout CTS for multi-connection mode, reused with TryReset()
@@ -1182,6 +1196,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
             finally
             {
+                _activeConnectionSendBatches[connectionIndex].Clear();
                 pendingConnectionSends[connectionIndex] = default;
                 hasPendingConnectionSend[connectionIndex] = false;
                 Interlocked.Decrement(ref _activeConnectionSendCount);
@@ -1202,10 +1217,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
         }
 
-        async ValueTask CompleteSignaledConnectionSendAsync(int connectionIndex)
+        async ValueTask CompleteSignaledConnectionSendAsync(
+            int connectionIndex,
+            int sendGeneration)
         {
             if ((uint)connectionIndex < (uint)hasPendingConnectionSend.Length
-                && hasPendingConnectionSend[connectionIndex])
+                && hasPendingConnectionSend[connectionIndex]
+                && connectionSendGenerations[connectionIndex] == sendGeneration)
             {
                 await CompleteConnectionSendAsync(connectionIndex).ConfigureAwait(false);
             }
@@ -1402,7 +1420,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                         else if (evt.Type == SendLoopEventType.SendReady)
                         {
-                            await CompleteSignaledConnectionSendAsync(evt.ConnectionIndex)
+                            await CompleteSignaledConnectionSendAsync(
+                                    evt.ConnectionIndex,
+                                    evt.ConnectionSendGeneration)
                                 .ConfigureAwait(false);
                         }
                         else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
@@ -1478,7 +1498,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                         else if (evt.Type == SendLoopEventType.SendReady)
                         {
-                            await CompleteSignaledConnectionSendAsync(evt.ConnectionIndex)
+                            await CompleteSignaledConnectionSendAsync(
+                                    evt.ConnectionIndex,
+                                    evt.ConnectionSendGeneration)
                                 .ConfigureAwait(false);
                         }
                         else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
@@ -1817,8 +1839,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     >= _maxInFlightBytesPerConnection) continue;
 
                                 ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
+                                var sendGeneration = unchecked(++connectionSendGenerations[c]);
+                                TrackActiveConnectionSend(c, ref connectionBuckets[c]);
                                 pendingConnectionSends[c] = SendConnectionBucketAsync(
                                     c,
+                                    sendGeneration,
                                     connectionBuckets,
                                     scratches[c],
                                     metadataRefreshTopics,
@@ -4028,6 +4053,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         cts.CancelAfter(SendCoalescedTimeoutMs);
     }
 
+    private void TrackActiveConnectionSend(int connectionIndex, ref ConnectionBucket bucket)
+    {
+        var activeBatches = _activeConnectionSendBatches[connectionIndex];
+        activeBatches.Clear();
+        for (var i = 0; i < bucket.Count; i++)
+        {
+            var batchReference = new BatchReference(bucket.Batches[i], bucket.Generations[i]);
+            if (batchReference.IsCurrentIncarnation())
+                activeBatches.Add(batchReference);
+        }
+    }
+
     /// <summary>
     /// Sends a bucket of batches on the specified connection. Rents a pooled array,
     /// acquires the connection, and calls SendCoalescedAsync.
@@ -4035,32 +4072,34 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// because async methods cannot have ref parameters.
     /// </summary>
     private async ValueTask<PendingResponse?> SendConnectionBucketAsync(
-        int connIdx, ConnectionBucket[] connectionBuckets,
+        int connIdx,
+        int sendGeneration,
+        ConnectionBucket[] connectionBuckets,
         ProduceRequestScratch scratch,
         HashSet<string> metadataRefreshTopics,
         CancellationToken cancellationToken)
     {
-        ref var bucket = ref connectionBuckets[connIdx];
-        var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(bucket.Count);
-        var countToSend = 0;
-        for (var i = 0; i < bucket.Count; i++)
-        {
-            var batch = bucket.Batches[i];
-            if (batch.IsCurrentIncarnation(bucket.Generations[i]))
-                batchesToSend[countToSend++] = batch;
-            else
-                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
-        }
-        bucket.Clear();
-
-        if (countToSend == 0)
-        {
-            ArrayPool<ReadyBatch>.Shared.Return(batchesToSend, clearArray: true);
-            return null;
-        }
-
         try
         {
+            ref var bucket = ref connectionBuckets[connIdx];
+            var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(bucket.Count);
+            var countToSend = 0;
+            for (var i = 0; i < bucket.Count; i++)
+            {
+                var batch = bucket.Batches[i];
+                if (batch.IsCurrentIncarnation(bucket.Generations[i]))
+                    batchesToSend[countToSend++] = batch;
+                else
+                    LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+            }
+            bucket.Clear();
+
+            if (countToSend == 0)
+            {
+                ArrayPool<ReadyBatch>.Shared.Return(batchesToSend, clearArray: true);
+                return null;
+            }
+
             return await SendCoalescedAsync(
                     batchesToSend,
                     countToSend,
@@ -4072,7 +4111,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         finally
         {
-            _eventChannel.Writer.TryWrite(SendLoopEvent.SendReady(connIdx));
+            _eventChannel.Writer.TryWrite(SendLoopEvent.SendReady(connIdx, sendGeneration));
         }
     }
 
@@ -4205,14 +4244,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Checks whether a specific partition has any in-flight batches on the given connection.
-    /// Scans pending responses (at most _maxInFlight entries, typically 5) for the connection.
-    /// Only called during migration transitions — not on the hot path.
+    /// Checks whether a specific partition has an active write or pending response on the
+    /// given connection. Only called during migration transitions — not on the hot path.
     /// </summary>
     private bool HasInflightForPartition(int connectionIndex, TopicPartition topicPartition)
     {
         if ((uint)connectionIndex >= (uint)_pendingResponsesByConnection.Length)
             return false;
+
+        var activeSendBatches = _activeConnectionSendBatches[connectionIndex];
+        for (var i = 0; i < activeSendBatches.Count; i++)
+        {
+            var batchReference = activeSendBatches[i];
+            if (batchReference.IsCurrentIncarnation()
+                && batchReference.Batch.TopicPartition == topicPartition)
+                return true;
+        }
 
         var pendingList = _pendingResponsesByConnection[connectionIndex];
         for (var i = 0; i < pendingList.Count; i++)
