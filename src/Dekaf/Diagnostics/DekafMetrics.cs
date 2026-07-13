@@ -40,6 +40,12 @@ internal static class DekafMetrics
             unit: "{retry}",
             description: "Number of produce retries.");
 
+    internal static readonly Counter<long> InlineContinuationExceptions =
+        DekafDiagnostics.Meter.CreateCounter<long>(
+            "dekaf.producer.inline_continuation.exceptions",
+            unit: "{exception}",
+            description: "Exceptions isolated from inline transactional produce continuations.");
+
     // Consumer metrics
     internal static readonly Counter<long> MessagesReceived =
         DekafDiagnostics.Meter.CreateCounter<long>(

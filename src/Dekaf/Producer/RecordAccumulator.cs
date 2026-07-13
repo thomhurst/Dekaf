@@ -130,6 +130,7 @@ internal static class ProducerDebugCounters
     private static int _batchesFailed;
     private static int _completionSourcesCompleted;
     private static int _completionSourcesFailed;
+    private static int _inlineContinuationExceptions;
 
     // ReadyBatch pool lifecycle. A return count above the rent count proves the same
     // object entered the pool more than once and can be handed to concurrent renters.
@@ -189,6 +190,10 @@ internal static class ProducerDebugCounters
         Interlocked.Add(ref _completionSourcesFailed, count);
 
     [Conditional("DEBUG")]
+    public static void RecordInlineContinuationException() =>
+        Interlocked.Increment(ref _inlineContinuationExceptions);
+
+    [Conditional("DEBUG")]
     public static void RecordReadyBatchRented() => Interlocked.Increment(ref _readyBatchesRented);
 
     [Conditional("DEBUG")]
@@ -220,6 +225,7 @@ internal static class ProducerDebugCounters
         _batchesFailed = 0;
         _completionSourcesCompleted = 0;
         _completionSourcesFailed = 0;
+        _inlineContinuationExceptions = 0;
         _readyBatchesRented = 0;
         _readyBatchesReturned = 0;
         _readyBatchDuplicateReturns = 0;
@@ -276,6 +282,7 @@ internal static class ProducerDebugCounters
               Batches failed: {_batchesFailed}
               Completion sources completed: {_completionSourcesCompleted}
               Completion sources failed: {_completionSourcesFailed}
+              Inline continuation exceptions: {_inlineContinuationExceptions}
             Stage 5 - Flush/Dispose:
               Flush calls: {_flushCalls}
               Batches flushed from dictionary: {_batchesFlushedFromDictionary}
@@ -404,6 +411,73 @@ internal static class ProducerContainerPools
     internal static readonly ArrayPool<Action<RecordMetadata, Exception?>?> Callbacks =
         ArrayPool<Action<RecordMetadata, Exception?>?>.Create(
             maxArrayLength: MaxRecordArrayLength, maxArraysPerBucket: 16);
+}
+
+internal static class PooledCompletionSource
+{
+    internal static bool TrySetResult(
+        PooledValueTaskSource<RecordMetadata>? source,
+        RecordMetadata metadata)
+    {
+        if (source is null)
+            return false;
+
+        try
+        {
+            return source.TrySetResult(metadata);
+        }
+        catch
+        {
+            // A raw inline continuation can throw after the source is complete.
+            // Isolate it so sibling completions and producer cleanup can continue.
+            RecordInlineContinuationException();
+            return true;
+        }
+    }
+
+    internal static bool TrySetException(
+        PooledValueTaskSource<RecordMetadata>? source,
+        Exception exception)
+    {
+        if (source is null)
+            return false;
+
+        try
+        {
+            return source.TrySetException(exception);
+        }
+        catch
+        {
+            RecordInlineContinuationException();
+            return true;
+        }
+    }
+
+    internal static bool TrySetCanceled(
+        PooledValueTaskSource<RecordMetadata>? source,
+        CancellationToken cancellationToken)
+    {
+        if (source is null)
+            return false;
+
+        try
+        {
+            return source.TrySetCanceled(cancellationToken);
+        }
+        catch
+        {
+            RecordInlineContinuationException();
+            return true;
+        }
+    }
+
+    private static void RecordInlineContinuationException()
+    {
+        // The source already completed. Preserve sibling progress while exposing the raw
+        // continuation failure through Release telemetry and richer DEBUG diagnostics.
+        ProducerDebugCounters.RecordInlineContinuationException();
+        Diagnostics.DekafMetrics.InlineContinuationExceptions.Add(1);
+    }
 }
 
 /// <summary>
@@ -2224,18 +2298,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (!await appendTask.ConfigureAwait(false))
                 {
                     CleanupWorkItemResources(in workItem);
-                    workItem.Completion.TrySetException(new ObjectDisposedException(nameof(RecordAccumulator)));
+                    PooledCompletionSource.TrySetException(
+                        workItem.Completion,
+                        new ObjectDisposedException(nameof(RecordAccumulator)));
                 }
             }
             catch (OperationCanceledException) when (workItem.CancellationToken.IsCancellationRequested)
             {
                 if (!appendStarted)
                     CleanupWorkItemResources(in workItem);
-                workItem.Completion.TrySetCanceled(workItem.CancellationToken);
+                PooledCompletionSource.TrySetCanceled(workItem.Completion, workItem.CancellationToken);
             }
             catch (Exception ex)
             {
-                workItem.Completion.TrySetException(ex);
+                PooledCompletionSource.TrySetException(workItem.Completion, ex);
             }
             finally
             {
@@ -2290,7 +2366,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             DecrementSlowPathAppendCount(topic, partition);
             CleanupWorkItemResources(in workItem);
-            completion.TrySetException(new ObjectDisposedException(nameof(RecordAccumulator)));
+            PooledCompletionSource.TrySetException(
+                completion,
+                new ObjectDisposedException(nameof(RecordAccumulator)));
         }
     }
 
@@ -5403,7 +5481,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             while (channel.Reader.TryRead(out var workItem))
             {
                 CleanupWorkItemResources(in workItem);
-                workItem.Completion?.TrySetException(disposedException);
+                PooledCompletionSource.TrySetException(workItem.Completion, disposedException);
             }
         }
 
@@ -6403,7 +6481,7 @@ internal sealed class PartitionBatch
         if (_completionSourceCount > 0 && _completionSources is not null)
         {
             for (var i = 0; i < _completionSourceCount; i++)
-                _completionSources[i]?.TrySetException(exception);
+                PooledCompletionSource.TrySetException(_completionSources[i], exception);
         }
 
         if (_callbackCount > 0 && _callbacks is not null)
@@ -7205,7 +7283,8 @@ internal sealed class ReadyBatch
                     $"completed={Volatile.Read(ref _completed)}, trace={DiagTrace})");
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
-                    if (_completionSourcesArray[i]?.TrySetException(orphanedException) == true)
+                    if (PooledCompletionSource.TrySetException(
+                        _completionSourcesArray[i], orphanedException))
                         failedCount++;
                 }
             }
@@ -7288,13 +7367,13 @@ internal sealed class ReadyBatch
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    if (source?.TrySetResult(new RecordMetadata
+                    if (PooledCompletionSource.TrySetResult(source, new RecordMetadata
                     {
                         Topic = _topicPartition.Topic,
                         Partition = _topicPartition.Partition,
                         Offset = baseOffset + i,
                         Timestamp = timestamp
-                    }) == true)
+                    }))
                     {
 #if DEBUG
                         completedCount++;
@@ -7437,7 +7516,7 @@ internal sealed class ReadyBatch
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    if (source?.TrySetException(exception) == true)
+                    if (PooledCompletionSource.TrySetException(source, exception))
                     {
 #if DEBUG
                         failedCount++;

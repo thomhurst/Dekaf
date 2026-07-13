@@ -42,6 +42,12 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
         _pool = pool;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void SetRunContinuationsAsynchronously(bool value)
+    {
+        _core.RunContinuationsAsynchronously = value;
+    }
+
     /// <summary>
     /// Sets a delivery handler to be invoked when the operation completes.
     /// The handler receives the result (or default) and any exception that occurred.
@@ -180,6 +186,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
             // Reset completion flag and core for reuse
             Volatile.Write(ref _hasCompleted, 0);
             _core.Reset();
+            _core.RunContinuationsAsynchronously = true;
             pool?.Return(this);
         }
     }

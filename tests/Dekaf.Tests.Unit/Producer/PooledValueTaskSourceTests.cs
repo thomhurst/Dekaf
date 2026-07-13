@@ -749,6 +749,76 @@ public class PooledValueTaskSourceTests
     }
 
     [Test]
+    public async Task InlineContinuationMode_ResetsToAsynchronousWhenReused()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+        var source = pool.Rent();
+        source.SetRunContinuationsAsynchronously(false);
+        var awaiter = source.Task.GetAwaiter();
+        var continuationRan = false;
+        awaiter.UnsafeOnCompleted(() => continuationRan = true);
+
+        source.SetResult(1);
+
+        await Assert.That(continuationRan).IsTrue();
+        await Assert.That(awaiter.GetResult()).IsEqualTo(1);
+
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(source);
+        var result = await CompleteWithoutRunningContinuationInlineAsync(
+            reused.Task,
+            () => reused.SetResult(2)).ConfigureAwait(false);
+
+        await Assert.That(result).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task ReadyBatch_ThrowingInlineContinuation_DoesNotStrandLaterCompletions(bool succeeds)
+    {
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>(maxPoolSize: 2);
+        var first = pool.Rent();
+        var second = pool.Rent();
+        first.SetRunContinuationsAsynchronously(false);
+        second.SetRunContinuationsAsynchronously(false);
+        var firstAwaiter = first.Task.GetAwaiter();
+        var secondTask = second.Task;
+        firstAwaiter.UnsafeOnCompleted(static () => throw new InvalidOperationException("expected"));
+        var sources = ProducerContainerPools.CompletionSources.Rent(2);
+        sources[0] = first;
+        sources[1] = second;
+        var batch = new ReadyBatch();
+        batch.Initialize(
+            new TopicPartition("test-topic", 0),
+            new RecordBatch { Records = Array.Empty<Record>() },
+            sources,
+            completionSourcesCount: 2,
+            dataSize: 0);
+        var doneTask = batch.DoneTask;
+
+        if (succeeds)
+        {
+            batch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+            await Assert.That(firstAwaiter.GetResult().Offset).IsEqualTo(7);
+            await Assert.That((await secondTask.ConfigureAwait(false)).Offset).IsEqualTo(8);
+        }
+        else
+        {
+            batch.Fail(new InvalidOperationException("delivery failed"));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            {
+                _ = firstAwaiter.GetResult();
+                await Task.CompletedTask;
+            });
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await secondTask.ConfigureAwait(false));
+        }
+
+        await Assert.That(await doneTask.ConfigureAwait(false)).IsEqualTo(succeeds);
+    }
+
+    [Test]
     public async Task ReadyBatchDoneTask_RunContinuationsAsynchronously_SurvivesResetAndReuse()
     {
         var batch = new ReadyBatch();
