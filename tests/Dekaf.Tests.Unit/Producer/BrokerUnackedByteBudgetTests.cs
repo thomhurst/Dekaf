@@ -1505,6 +1505,25 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task LoadedDeliveryEpoch_RollsAfterOneHundredMilliseconds()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 200_000_000);
+
+        var firstSend = budget.SnapshotDelivery(T0, appLimited: true);
+        budget.OnAcked(1_000, firstSend, T0 + Seconds(0.005));
+
+        var nextEpochTimestamp = T0 + Seconds(0.101);
+        var loadedSend = budget.SnapshotDelivery(nextEpochTimestamp, appLimited: false);
+
+        await Assert.That(loadedSend.DeliveryEpochDeliveredBytes).IsEqualTo(1_000);
+        await Assert.That(loadedSend.DeliveryEpochFirstSendTimestamp).IsEqualTo(nextEpochTimestamp)
+            .Because("a continuously loaded producer must still adapt to capacity changes");
+    }
+
+    [Test]
     public async Task LoadedDeliveryEpoch_RejectsSubTwoMillisecondSpikeThenMeasuresCumulativeRate()
     {
         var budget = new BrokerUnackedByteBudget(
@@ -1536,7 +1555,7 @@ public sealed class BrokerUnackedByteBudgetTests
         // took to arrive, not its own 5ms sojourn (which would read 20 MB/s).
         Ack(budget, 100_000, 0.005, T0 + Seconds(0.5), appLimitedAtSend: false);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(99_019);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(100_000);
     }
 
     [Test]

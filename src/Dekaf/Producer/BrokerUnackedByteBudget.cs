@@ -21,10 +21,10 @@ namespace Dekaf.Producer;
 /// its cap (the 3-broker acks=all latency ratchet, #2009).
 /// <para>
 /// Sustainable drain rate is measured over a delivery epoch. An app-limited send starts the
-/// epoch; loaded sends retain its delivered-byte and first-send anchors even as acknowledgements
-/// advance the current delivery clock. The sample is cumulative delivered bytes over the full
-/// epoch elapsed time, bounded below by the request sojourn and delivery clock. Loaded samples
-/// shorter than 2ms are ignored because host scheduling resolution can dominate them. A separate
+/// epoch; loaded sends retain its delivered-byte and first-send anchors across acknowledgements
+/// for a bounded rolling interval. The sample is cumulative delivered bytes over the full epoch
+/// elapsed time, bounded below by the request sojourn and delivery clock. Loaded samples shorter
+/// than 2ms are ignored because host scheduling resolution can dominate them. A separate
 /// per-request rate remains available to the capacity probe, which needs each probe admission's
 /// immediate response. These axes prevent serialized send/ack cycles, hot polling, clustered
 /// completions, and processing stalls from manufacturing inflated sustainable-rate samples.
@@ -189,6 +189,8 @@ internal sealed class BrokerUnackedByteBudget
     private static readonly long MaxProbeIntervalTicks = Stopwatch.Frequency;
     // Shorter loaded epochs are dominated by timer and scheduler quantization on common hosts.
     private static readonly long MinimumLoadedRateSampleTicks = Math.Max(1, Stopwatch.Frequency / 500);
+    // Bound smoothing so a continuously loaded producer still tracks capacity changes promptly.
+    private static readonly long MaximumLoadedDeliveryEpochTicks = Math.Max(1, Stopwatch.Frequency / 10);
     private const long NoDeliveryEpoch = -1;
     private const long DeliveryEpochUpdating = -2;
 
@@ -367,13 +369,16 @@ internal sealed class BrokerUnackedByteBudget
                 continue;
             }
 
-            // A loaded pipe belongs to the existing send epoch even after acknowledgements
-            // advance the delivery counter. Reset only when a send observes an empty pipe;
-            // otherwise serialized send/ack cycles collapse back to requestBytes / ownRTT.
-            if (!appLimited && epochDeliveredBytes != NoDeliveryEpoch)
+            // A loaded pipe keeps a bounded rolling epoch across acknowledgements. Reset at
+            // app-limited boundaries or after 100ms: the lower bound prevents serialized
+            // requestBytes / ownRTT spikes; the upper bound preserves capacity adaptation.
+            var epochFirstSendTimestamp = Volatile.Read(ref _sendEpochFirstTimestamp);
+            if (!appLimited
+                && epochDeliveredBytes != NoDeliveryEpoch
+                && sendTimestamp - epochFirstSendTimestamp < MaximumLoadedDeliveryEpochTicks)
             {
                 deliveryEpochDeliveredBytes = epochDeliveredBytes;
-                return Volatile.Read(ref _sendEpochFirstTimestamp);
+                return epochFirstSendTimestamp;
             }
 
             if (Interlocked.CompareExchange(
