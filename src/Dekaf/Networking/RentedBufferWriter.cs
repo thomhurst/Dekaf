@@ -30,6 +30,8 @@ internal sealed class RentedBufferWriter : IBufferWriter<byte>, IDisposable
         _buffer = DekafPools.SerializationBuffers.Rent(initialCapacity + offset);
     }
 
+    internal int WrittenCount => _written;
+
     /// <summary>
     /// Detaches the underlying rented array. The caller owns the array and must return it
     /// to <see cref="DekafPools.SerializationBuffers"/>. After this call, the writer must not be used.

@@ -1097,6 +1097,63 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         }
     }
 
+    internal bool TryWriteSegmentedHeader(
+        IBufferWriter<byte> output,
+        CompressionType compression,
+        out ReadOnlyMemory<byte> encodedRecords)
+    {
+        uint encodedRecordsCrc;
+        CompressionType effectiveCompression;
+        if (PreCompressedRecords is { } preCompressedRecords)
+        {
+            encodedRecords = preCompressedRecords.AsMemory(0, PreCompressedLength);
+            encodedRecordsCrc = PreCompressedRecordsCrc;
+            effectiveCompression = PreCompressedType;
+        }
+        else if (compression == CompressionType.None && _hasPreEncodedRecords)
+        {
+            encodedRecords = _preEncodedRecords;
+            encodedRecordsCrc = _preEncodedRecordsCrc;
+            effectiveCompression = CompressionType.None;
+        }
+        else
+        {
+            encodedRecords = default;
+            return false;
+        }
+
+        var writer = new KafkaProtocolWriter(output);
+        writer.WriteInt64(BaseOffset);
+        writer.WriteInt32(BatchHeaderSize + encodedRecords.Length);
+        writer.WriteInt32(PartitionLeaderEpoch);
+        writer.WriteUInt8(Magic);
+
+        var crcAndContentSpan = output.GetSpan(sizeof(uint) + CrcContentFixedSize);
+        var contentSpan = crcAndContentSpan[sizeof(uint)..];
+        var attributes = (short)Attributes;
+        if (effectiveCompression != CompressionType.None)
+            attributes = (short)((attributes & ~0x07) | (int)effectiveCompression);
+
+        BinaryPrimitives.WriteInt16BigEndian(contentSpan, attributes);
+        BinaryPrimitives.WriteInt32BigEndian(contentSpan[2..], LastOffsetDelta);
+        BinaryPrimitives.WriteInt64BigEndian(contentSpan[6..], BaseTimestamp);
+        BinaryPrimitives.WriteInt64BigEndian(contentSpan[14..], MaxTimestamp);
+        BinaryPrimitives.WriteInt64BigEndian(contentSpan[22..], ProducerId);
+        BinaryPrimitives.WriteInt16BigEndian(contentSpan[30..], ProducerEpoch);
+        BinaryPrimitives.WriteInt32BigEndian(contentSpan[32..], BaseSequence);
+        BinaryPrimitives.WriteInt32BigEndian(contentSpan[36..], Records.Count);
+
+        var headerCrc = Crc32C.Compute(contentSpan[..CrcContentFixedSize]);
+        var crc = Crc32C.Combine(headerCrc, encodedRecordsCrc, encodedRecords.Length);
+        BinaryPrimitives.WriteInt32BigEndian(crcAndContentSpan, (int)crc);
+        output.Advance(sizeof(uint) + CrcContentFixedSize);
+        return true;
+    }
+
+    internal bool CanWriteSegmented(CompressionType compression)
+        => PreCompressedRecords is not null
+            || (compression == CompressionType.None && _hasPreEncodedRecords);
+
     internal int GetEncodedSize(CompressionType compression = CompressionType.None)
     {
         var recordsLength = GetEncodedRecordsLength(compression);
