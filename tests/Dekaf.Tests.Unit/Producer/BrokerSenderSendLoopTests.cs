@@ -127,16 +127,8 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task GetWaveCoalesceMaxTicks_UsesLingerBoundAndHardCap()
-    {
-        await Assert.That(BrokerSender.GetWaveCoalesceMaxTicks(0)).IsEqualTo(0);
-        await Assert.That(BrokerSender.GetWaveCoalesceMaxTicks(1)).IsEqualTo(
-            Math.Max(1, 500L * Stopwatch.Frequency / 1_000_000));
-    }
-
-    [Test]
     [Timeout(120_000)]
-    public async Task SendLoop_WaveCoalesce_RearmsAfterIdleWait(
+    public async Task SendLoop_WaveCoalesce_RearmsAfterIdleWaitAtDefaultLinger(
         CancellationToken cancellationToken)
     {
         var connection = new TestKafkaConnection
@@ -150,7 +142,7 @@ public sealed class BrokerSenderSendLoopTests
         var options = CreateOptions(
             acks: Acks.None,
             enableIdempotence: false,
-            lingerMs: 1,
+            lingerMs: 0,
             enableDeliveryDiagnostics: true);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();

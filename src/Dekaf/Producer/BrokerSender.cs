@@ -111,6 +111,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // the hard cap prevents a continuously busy producer from postponing dispatch forever.
     private const int WaveCoalesceQuietMicroseconds = 75;
     private const int WaveCoalesceMaxMicroseconds = 500;
+    private static readonly long WaveCoalesceMaxTicks =
+        MicrosecondsToStopwatchTicks(WaveCoalesceMaxMicroseconds);
 
     /// <summary>
     /// Maximum batches coalesced into one send-loop pass. The in-flight limit can be very
@@ -1082,7 +1084,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Sum individually framed batch sizes, matching RecordAccumulator.Drain's
         // conservative request budget across batches from separate drain passes.
         var coalescedRequestBudgetUsed = 0L;
-        var waveCoalesceMaxTicks = GetWaveCoalesceMaxTicks(_options.LingerMs);
+        var waveCoalesceMaxTicks = WaveCoalesceMaxTicks;
         var waveCoalesceQuietTicks = MicrosecondsToStopwatchTicks(WaveCoalesceQuietMicroseconds);
         var waveCoalesceArmed = true;
 
@@ -1357,7 +1359,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // the spin pure waste. This is especially important for single-partition topics
                 // where coalescedCount is always 1 and every MicroLinger iteration is wasted.
                 if (waveCoalesceArmed
-                    && waveCoalesceMaxTicks > 0
                     && coalescedCount > 0
                     && coalescedCount < maxCoalesce
                     && coalescedPartitions.Count < _knownPartitions.Count
@@ -2231,11 +2232,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var batch = coalescedBatches[0];
         return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }
-
-    internal static long GetWaveCoalesceMaxTicks(int lingerMs) =>
-        lingerMs <= 0
-            ? 0
-            : MicrosecondsToStopwatchTicks(Math.Min(lingerMs * 1_000L, WaveCoalesceMaxMicroseconds));
 
     private static long MicrosecondsToStopwatchTicks(long microseconds) =>
         Math.Max(1, microseconds * Stopwatch.Frequency / 1_000_000);
