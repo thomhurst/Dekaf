@@ -240,7 +240,6 @@ internal sealed class BrokerUnackedByteBudget
     private long _lastLatencyControlAdmissionBlockEvents;
     private long _lastNormalBudgetBytes;
     private long _lastBudgetUpdateTimestamp;
-    private long _lastBudgetAdmissionBlockEvents;
 
     public BrokerUnackedByteBudget(
         double targetSeconds,
@@ -440,7 +439,7 @@ internal sealed class BrokerUnackedByteBudget
         CompleteExpiredMinRttProbe(nowTicks);
         if (_capacityProbeActive && nowTicks >= _capacityProbeDeadlineTimestamp)
             DeactivateCapacityProbe();
-        RecomputeBudget(nowTicks, consumeAdmissionBlockEvents: false);
+        RecomputeBudget(nowTicks);
     }
 
     /// <summary>
@@ -553,7 +552,7 @@ internal sealed class BrokerUnackedByteBudget
         if (writtenUnackedPeak > 0)
             AddOccupancySample(writtenUnackedPeak);
 
-        RecomputeBudget(nowTicks, consumeAdmissionBlockEvents: true);
+        RecomputeBudget(nowTicks);
     }
 
     private void UpdateDeliveryLatency(
@@ -975,7 +974,7 @@ internal sealed class BrokerUnackedByteBudget
         return maximum;
     }
 
-    private void RecomputeBudget(long nowTicks, bool consumeAdmissionBlockEvents)
+    private void RecomputeBudget(long nowTicks)
     {
         var minRttProbeActive = _minRttProbeUntilTimestamp != 0;
         var postProbeMinRttSeconds = _minRttSeconds;
@@ -985,10 +984,7 @@ internal sealed class BrokerUnackedByteBudget
             minRttProbeActive: false,
             capacityProbeActive: false,
             postProbeMinRttSeconds);
-        var normalBudget = ApplyNormalBudgetDecayHysteresis(
-            computedNormalBudget,
-            nowTicks,
-            consumeAdmissionBlockEvents);
+        var normalBudget = ApplyNormalBudgetDecayHysteresis(computedNormalBudget, nowTicks);
         var probeBudget = ComputeBudget(
             minRttProbeActive: false,
             capacityProbeActive: true,
@@ -1013,34 +1009,25 @@ internal sealed class BrokerUnackedByteBudget
         Volatile.Write(ref _budgetBytes, budget);
     }
 
-    private long ApplyNormalBudgetDecayHysteresis(
-        long computedBudget,
-        long nowTicks,
-        bool consumeAdmissionBlockEvents)
+    private long ApplyNormalBudgetDecayHysteresis(long computedBudget, long nowTicks)
     {
-        // Smooth downward changes only while fresh admission blocks prove demand.
-        // Capping decay at 10%/s prevents the short estimator window from draining
-        // the budget faster than a loaded pipeline can demonstrate recovery.
-        var admissionBlockEvents = AdmissionBlockEvents;
-        var admissionWasBlocked = admissionBlockEvents > _lastBudgetAdmissionBlockEvents;
+        // Smooth every downward change. Capping decay at 10%/s prevents the short
+        // estimator window (including the first cold-start sample) from draining the
+        // budget faster than a loaded pipeline can demonstrate recovery.
         var elapsedSeconds = _lastBudgetUpdateTimestamp == 0
             ? 0
             : Math.Max(0, (double)(nowTicks - _lastBudgetUpdateTimestamp) / Stopwatch.Frequency);
         // _unackedBytes shares a contended cache line with every appender's Interlocked.Add;
-        // only pay for the read when the decay bound can actually consult it.
+        // only pay for the read when a downward move can consult the queue bypass.
+        var unackedBytes = computedBudget < _lastNormalBudgetBytes ? UnackedBytes : 0;
         var budget = BoundBudgetDecay(
             _lastNormalBudgetBytes,
             computedBudget,
             elapsedSeconds,
-            admissionWasBlocked,
-            admissionWasBlocked ? UnackedBytes : 0);
+            unackedBytes);
         budget = Math.Min(budget, _capBytes);
         _lastNormalBudgetBytes = budget;
         _lastBudgetUpdateTimestamp = nowTicks;
-        // SetCap may run immediately before the ack pass that owns this pressure signal.
-        // Only that pass consumes the cursor, so scaling cannot erase decay protection.
-        if (consumeAdmissionBlockEvents)
-            _lastBudgetAdmissionBlockEvents = admissionBlockEvents;
         return budget;
     }
 
@@ -1048,24 +1035,19 @@ internal sealed class BrokerUnackedByteBudget
         long previousBudget,
         long computedBudget,
         double elapsedSeconds,
-        bool admissionWasBlocked,
         long unackedBytes)
     {
-        if (!admissionWasBlocked
-            || computedBudget >= previousBudget
-            || elapsedSeconds <= 0)
-        {
+        if (computedBudget >= previousBudget)
             return computedBudget;
-        }
 
-        // Under saturation admission is always blocked, so blocks alone cannot distinguish
-        // protected demand from a standing queue the recompute is trying to drain. Bytes at
-        // a multiple of the fresh budget are that proof — smoothing would preserve the
-        // over-admission for minutes at 10%/s.
+        // Bytes at a multiple of the fresh budget prove the old budget over-admitted;
+        // smoothing would otherwise preserve the standing queue for minutes at 10%/s.
         if (unackedBytes >= StandingQueueDecayBypassMultiplier * computedBudget)
             return computedBudget;
 
-        var decayFraction = Math.Min(1.0, MaximumBudgetDecayPerSecond * elapsedSeconds);
+        var decayFraction = Math.Min(
+            1.0,
+            MaximumBudgetDecayPerSecond * Math.Max(0, elapsedSeconds));
         var minimumBudget = (long)Math.Ceiling(previousBudget * (1.0 - decayFraction));
         return Math.Max(computedBudget, minimumBudget);
     }
