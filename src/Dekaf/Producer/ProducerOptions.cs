@@ -307,6 +307,13 @@ public sealed class ProducerOptions
     public string? TransactionalId { get; init; }
 
     /// <summary>
+    /// Whether transactional produce continuations run inline on the broker sender thread.
+    /// Disable this when continuation code may block or perform long-running synchronous work.
+    /// Default is true for maximum transactional throughput.
+    /// </summary>
+    public bool InlineTransactionCompletions { get; init; } = true;
+
+    /// <summary>
     /// Enables KIP-939 two-phase commit participation for transactional producers.
     /// Requires broker support for <c>transaction.version</c> 3 and InitProducerId v6.
     /// </summary>
