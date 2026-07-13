@@ -2617,7 +2617,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // preserving per-partition FIFO ordering during the next coalescing pass.
         // Reverse iteration (swap-with-last O(1) removal) would process R2 before R1,
         // causing the newer batch to be coalesced first and violating ordering.
-        var ackedRequestsThisPass = 0;
+        var anyAckedThisPass = false;
+        long lastAckTimestamp = 0;
         for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
         {
             var pendingList = _pendingResponsesByConnection[connIdx];
@@ -2703,11 +2704,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // timestamp per call keeps 'now' honest when a pass spends time in
                     // acknowledgement callbacks between completions. The budget itself is
                     // republished once per pass via CompleteAckedPass below.
+                    lastAckTimestamp = Stopwatch.GetTimestamp();
                     unackedBudget.OnAcked(
                         pending.EncodedBytes,
                         pending.DeliverySnapshotAtSend,
-                        Stopwatch.GetTimestamp());
-                    ackedRequestsThisPass++;
+                        lastAckTimestamp);
+                    anyAckedThisPass = true;
                 }
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis
@@ -2769,8 +2771,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
         }
 
-        if (ackedRequestsThisPass > 0 && _unackedBudget is { } budgetToPublish)
-            budgetToPublish.CompleteAckedPass(Stopwatch.GetTimestamp());
+        if (anyAckedThisPass)
+            _unackedBudget!.CompleteAckedPass(lastAckTimestamp);
     }
 
     /// <summary>

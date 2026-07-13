@@ -91,8 +91,7 @@ public sealed class BrokerUnackedByteBudgetTests
                 now - Seconds(0.001),
                 appLimited: true,
                 oldestBatchTimestamp: now - Seconds(0.020));
-            budget.OnAcked(1_000, snapshot, now);
-            budget.CompleteAckedPass(now);
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
         }
 
         await Assert.That(budget.DeliveryLatencyEwmaMicros).IsEqualTo(20_000).Within(10);
@@ -117,8 +116,7 @@ public sealed class BrokerUnackedByteBudgetTests
                 now - Seconds(0.001),
                 appLimited: true,
                 oldestBatchTimestamp: now - Seconds(0.020));
-            budget.OnAcked(1_000, snapshot, now);
-            budget.CompleteAckedPass(now);
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
         }
         var reducedScale = budget.LatencyBudgetScale;
 
@@ -129,8 +127,7 @@ public sealed class BrokerUnackedByteBudgetTests
                 now - Seconds(0.001),
                 appLimited: true,
                 oldestBatchTimestamp: now - Seconds(0.005));
-            budget.OnAcked(1_000, snapshot, now);
-            budget.CompleteAckedPass(now);
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
         }
 
         await Assert.That(budget.DeliveryLatencyEwmaMicros).IsLessThan(6_000);
