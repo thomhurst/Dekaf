@@ -206,6 +206,7 @@ public class PendingFetchDataTests
 
             var first = PendingFetchData.Create("topic-1", 0, Array.Empty<RecordBatch>());
             var slab = new Record[32];
+            slab[^1] = new Record { Value = new byte[] { 42 } };
             slabField.SetValue(first, slab);
             first.Dispose();
 
@@ -213,6 +214,7 @@ public class PendingFetchDataTests
 
             await Assert.That(second).IsSameReferenceAs(first);
             await Assert.That(slabField.GetValue(second)).IsNull();
+            await Assert.That(slab[^1]).IsEqualTo(default(Record));
         }
         finally
         {

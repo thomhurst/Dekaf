@@ -174,6 +174,25 @@ public sealed class ResponseFrameReaderTests
     }
 
     [Test]
+    public async Task ReadFrameAsync_EofMidNativeFrame_ReturnsBufferToPool()
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var seeded = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var address = seeded.Address;
+        seeded.Return();
+        var frame = BuildFrame(correlationId: 5, payloadSize: ResponseBufferPool.NativeMemoryThresholdBytes);
+        using var stream = new ScriptedReadStream([frame[..200]]);
+        using var reader = ResponseFrameTestHelpers.CreateReader(stream, responseBufferPool: pool);
+
+        var result = await reader.ReadFrameAsync();
+
+        await Assert.That(result.IsEndOfStream).IsTrue();
+        var reused = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        await Assert.That(reused.Address).IsEqualTo(address);
+        reused.Return();
+    }
+
+    [Test]
     public async Task ReadFrameAsync_NegativeFrameSize_ThrowsKafkaException()
     {
         var invalid = new byte[8];

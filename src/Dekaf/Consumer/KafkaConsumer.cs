@@ -84,7 +84,6 @@ internal sealed class PendingFetchData : IDisposable
     private Dictionary<long, Queue<long>>? _abortedProducers;
     private IPooledMemory? _memoryOwner;
     private Record[]? _parsedRecordSlab;
-    private int _parsedRecordSlabCount;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
     private int _disposed;
@@ -198,18 +197,9 @@ internal sealed class PendingFetchData : IDisposable
         if (totalRecordCount == 0)
             return;
 
-        var slab = _parsedRecordSlab;
-        if (slab is null || slab.Length < totalRecordCount)
-        {
-            if (slab is not null)
-                s_parsedRecordSlabPool.Return(slab, clearArray: false);
-
-            slab = s_parsedRecordSlabPool.Rent(totalRecordCount);
-            _parsedRecordSlab = slab;
-        }
-
+        var slab = s_parsedRecordSlabPool.Rent(totalRecordCount);
+        _parsedRecordSlab = slab;
         slab.AsSpan(0, totalRecordCount).Clear();
-        _parsedRecordSlabCount = totalRecordCount;
         var offset = 0;
         for (var i = 0; i < batches.Count; i++)
         {
@@ -540,11 +530,7 @@ internal sealed class PendingFetchData : IDisposable
         var parsedRecordSlab = _parsedRecordSlab;
         _parsedRecordSlab = null;
         if (parsedRecordSlab is not null)
-        {
-            parsedRecordSlab.AsSpan(0, _parsedRecordSlabCount).Clear();
-            s_parsedRecordSlabPool.Return(parsedRecordSlab, clearArray: false);
-        }
-        _parsedRecordSlabCount = 0;
+            s_parsedRecordSlabPool.Return(parsedRecordSlab, clearArray: true);
 
         // Return the batch list to the pool for reuse
         if (_batches is List<RecordBatch> batchList)
