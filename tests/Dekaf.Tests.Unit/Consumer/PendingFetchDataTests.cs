@@ -113,9 +113,13 @@ public class PendingFetchDataTests
     public async Task RatchetPoolSize_IncreasesMaxPoolSize()
     {
         var before = PendingFetchData.MaxPoolSizeValue;
+        var target = before + 100;
 
-        PendingFetchData.RatchetPoolSize(before + 100);
-        await Assert.That(PendingFetchData.MaxPoolSizeValue).IsGreaterThanOrEqualTo(before + 100);
+        PendingFetchData.RatchetPoolSize(target);
+
+        await Assert.That(PendingFetchData.MaxPoolSizeValue).IsGreaterThanOrEqualTo(target);
+        await Assert.That(PendingFetchData.MaxParsedRecordSlabsPerBucketValue)
+            .IsGreaterThanOrEqualTo(PoolSizing.ForConsumerParsedRecordSlabs(target));
     }
 
     [Test]
