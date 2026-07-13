@@ -430,7 +430,7 @@ internal static class PooledCompletionSource
         {
             // A raw inline continuation can throw after the source is complete.
             // Isolate it so sibling completions and producer cleanup can continue.
-            ProducerDebugCounters.RecordInlineContinuationException();
+            RecordInlineContinuationException();
             return true;
         }
     }
@@ -448,9 +448,7 @@ internal static class PooledCompletionSource
         }
         catch
         {
-            // A raw inline continuation can throw after the source is complete.
-            // Isolate it so sibling completions and producer cleanup can continue.
-            ProducerDebugCounters.RecordInlineContinuationException();
+            RecordInlineContinuationException();
             return true;
         }
     }
@@ -468,11 +466,17 @@ internal static class PooledCompletionSource
         }
         catch
         {
-            // A raw inline continuation can throw after the source is complete.
-            // Isolate it so sibling completions and producer cleanup can continue.
-            ProducerDebugCounters.RecordInlineContinuationException();
+            RecordInlineContinuationException();
             return true;
         }
+    }
+
+    private static void RecordInlineContinuationException()
+    {
+        // The source already completed. Preserve sibling progress while exposing the raw
+        // continuation failure through Release telemetry and richer DEBUG diagnostics.
+        ProducerDebugCounters.RecordInlineContinuationException();
+        Diagnostics.DekafMetrics.InlineContinuationExceptions.Add(1);
     }
 }
 
