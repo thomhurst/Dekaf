@@ -7,6 +7,7 @@ using Dekaf.Consumer;
 using Dekaf.Diagnostics;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
+using Dekaf.Tests.Unit.Producer;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Unit.Consumer;
@@ -364,7 +365,7 @@ public sealed class ConsumeOneFastPathTests
         };
         listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
-            if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+            if (AccumulatorTestHelpers.GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
                 return;
 
             if (instrument.Name == "messaging.client.consumed.messages")
@@ -391,17 +392,6 @@ public sealed class ConsumeOneFastPathTests
 
         await Assert.That(messagesReceived).IsEquivalentTo([2L]);
         await Assert.That(bytesReceived.Sum()).IsEqualTo(8L);
-    }
-
-    private static string? GetTag(ReadOnlySpan<KeyValuePair<string, object?>> tags, string key)
-    {
-        foreach (var tag in tags)
-        {
-            if (tag.Key == key)
-                return tag.Value?.ToString();
-        }
-
-        return null;
     }
 
     [Test]
