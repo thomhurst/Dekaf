@@ -753,9 +753,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     }
 
     /// <summary>
-    /// Disposes any pooled memory associated with this batch's records.
-    /// Consumer-read batches are not object-pooled because callers own their disposable
-    /// lifetime. Producer-owned batches use <see cref="ReturnToPool"/> explicitly.
+    /// Disposes pooled memory associated with this batch's records without returning the
+    /// batch object to its pool. Consumer paths must use the owner-aware return helpers;
+    /// producer paths call <see cref="ReturnToPool"/> after their ownership ends.
     /// </summary>
     public void Dispose()
     {
