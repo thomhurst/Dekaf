@@ -135,6 +135,7 @@ public sealed partial class KafkaConnection :
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
     private readonly ClientTelemetryMetricCollector? _telemetryMetricCollector;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly SemaphoreSlim _scatterGatherSenderLock = new(1, 1);
     private SocketScatterGatherSender? _scatterGatherSender;
 
     private Task? _receiveTask;
@@ -1483,8 +1484,12 @@ public sealed partial class KafkaConnection :
         int suffixOffset,
         int suffixLength)
     {
+        var scatterGatherSenderLockHeld = false;
         try
         {
+            await _scatterGatherSenderLock.WaitAsync().ConfigureAwait(false);
+            scatterGatherSenderLockHeld = true;
+
             var socket = _socket ?? throw new InvalidOperationException("Not connected");
             if (_stream is null)
                 throw new InvalidOperationException("Not connected");
@@ -1516,7 +1521,12 @@ public sealed partial class KafkaConnection :
         }
         finally
         {
-            _scatterGatherSender?.Segments.Clear();
+            if (scatterGatherSenderLockHeld)
+            {
+                _scatterGatherSender?.Segments.Clear();
+                SemaphoreHelper.ReleaseSafely(_scatterGatherSenderLock);
+            }
+
             DekafPools.SerializationBuffers.Return(metadataArray, clearArray: false);
             SemaphoreHelper.ReleaseSafely(_writeLock);
         }
@@ -3444,18 +3454,21 @@ public sealed partial class KafkaConnection :
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();
         _connectLock.Dispose();
-        await _writeLock.WaitAsync().ConfigureAwait(false);
+        // The sender is shared by segmented writes. Use its dedicated lifetime lock so
+        // background write-failure disposal cannot transiently reacquire _writeLock after the
+        // faulted writer releases it. This still waits for an active socket send to unwind.
+        await _scatterGatherSenderLock.WaitAsync().ConfigureAwait(false);
         try
         {
             _scatterGatherSender?.Dispose();
         }
         finally
         {
-            SemaphoreHelper.ReleaseSafely(_writeLock);
+            SemaphoreHelper.ReleaseSafely(_scatterGatherSenderLock);
         }
 
-        // Do not dispose _writeLock here. Writers queued before disposal must still acquire it,
-        // observe the disposed connection, and release it from their finally blocks.
+        // Do not dispose either write semaphore here. Writers queued before disposal must still
+        // acquire them, observe the disposed connection, and release them from finally blocks.
         _timeoutCtsPool.Clear();
         _ownedTokenProvider?.Dispose();
 
