@@ -9,7 +9,7 @@ namespace Dekaf.Tests.Unit.StressTests;
 public sealed class ConsumerFetchDiagnosticsTests
 {
     [Test]
-    [NotInParallel]
+    [NotInParallel("MeterListener")]
     public async Task Listener_CollectsFetchDurationAndTopicBytes()
     {
         var startedAt = new DateTimeOffset(2026, 7, 13, 10, 0, 0, TimeSpan.Zero);
@@ -36,7 +36,7 @@ public sealed class ConsumerFetchDiagnosticsTests
     }
 
     [Test]
-    [NotInParallel]
+    [NotInParallel("MeterListener")]
     public async Task Listener_RejectsConcurrentConsumerDiagnosticsTracker()
     {
         using var tracker = new ConsumerFetchDiagnosticsTracker("consumer-topic");
