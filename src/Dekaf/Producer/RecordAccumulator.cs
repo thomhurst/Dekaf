@@ -4668,8 +4668,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var batches = new List<DiagnosticBatchReference>();
         InFlightBatchDiagnosticSnapshot(batches);
 
-        var produceRequestCount = Interlocked.Read(ref _produceRequestCount);
         var startedAt = Volatile.Read(ref _produceRequestDiagnosticsStartedAt);
+        var produceRequestCount = Interlocked.Read(ref _produceRequestCount);
         var produceRequestElapsedSeconds = Math.Max(
             0,
             (Stopwatch.GetTimestamp() - startedAt) / (double)Stopwatch.Frequency);
@@ -4744,10 +4744,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (widthCounts is null)
             return;
 
-        Volatile.Write(ref _produceRequestDiagnosticsStartedAt, Stopwatch.GetTimestamp());
         Interlocked.Exchange(ref _produceRequestCount, 0);
         for (var width = 1; width < widthCounts.Length; width++)
             Interlocked.Exchange(ref widthCounts[width], 0);
+        Volatile.Write(ref _produceRequestDiagnosticsStartedAt, Stopwatch.GetTimestamp());
     }
 
     internal void RecordConnectionScaleEvent(
