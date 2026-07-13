@@ -362,7 +362,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task PeriodicProbe_RaisesBudgetForOneRtt_ThenRevertsWithoutRateGain()
+    public async Task PeriodicProbe_CollectsOneRtt_ThenRevertsWithoutRateGain()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
 
@@ -372,8 +372,28 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
 
         Ack(budget, 1_000, 0.100, T0 + Seconds(0.900));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+
+        Ack(budget, 1_000, 0.100, T0 + Seconds(1.000));
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
+    }
+
+    [Test]
+    public async Task PeriodicProbe_CollectsFullRttBeforeJudgingRateGain()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
+
+        for (var i = 0; i <= 8; i++)
+            Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
+
+        // One small response can arrive first after the larger budget is published.
+        // It must not cancel the probe before other requests from the same RTT land.
+        Ack(budget, 500, 0.100, T0 + Seconds(0.900));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+
+        Ack(budget, 1_250, 0.100, T0 + Seconds(0.950));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(7_812);
     }
 
     [Test]
@@ -431,8 +451,12 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 1_000, 0.200, T0 + Seconds(0.900));
         await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
 
-        // First request wholly admitted under the probe confirms no rate gain and ends it.
+        // First request wholly admitted under the probe starts one RTT of measurement.
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.000));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+
+        // A full RTT of wholly-probed responses confirms no gain and ends the probe.
+        Ack(budget, 1_000, 0.100, T0 + Seconds(1.100));
         await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
     }
 
@@ -450,9 +474,13 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.000));
         await Assert.That(budget.BudgetBytes).IsEqualTo(9_762);
 
-        // A second wholly-probed sample at the same rate confirms capacity and publishes
-        // the newly discovered base budget without the temporary 1.25x multiplier.
+        // The first sample under the higher level starts another full-RTT measurement.
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.100));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(9_762);
+
+        // One RTT without further growth publishes the newly discovered base budget
+        // without the temporary 1.25x multiplier.
+        Ack(budget, 1_562, 0.100, T0 + Seconds(1.200));
         await Assert.That(budget.BudgetBytes).IsEqualTo(7_810);
     }
 
