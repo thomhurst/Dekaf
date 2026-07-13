@@ -1,5 +1,8 @@
+using System.Reflection;
 using Dekaf.Consumer;
+using Dekaf.Internal;
 using Dekaf.Networking;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
@@ -63,4 +66,34 @@ public sealed class ConsumerResponseBufferSizingTests
 
         await Assert.That(maximumPayload).IsEqualTo(int.MaxValue);
     }
+
+    [Test]
+    public async Task ConsumerInfrastructure_SizesResponsePoolForAdaptiveConnectionCeiling()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092", "localhost:9093"],
+            ConnectionsPerBroker = 1,
+            MaxConnectionsPerBroker = 4,
+            EnableAdaptiveConnections = true,
+            PrefetchPipelineDepth = 3
+        };
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+
+        var connectionPool = GetField<ConnectionPool>(consumer, "_connectionPool");
+        var responsePool = GetField<ResponseBufferPool>(connectionPool, "_responseBufferPool");
+
+        await Assert.That(responsePool.MaxArraysPerBucket).IsEqualTo(
+            PoolSizing.ForConsumerResponseBuffers(
+                options.BootstrapServers.Count,
+                options.PrefetchPipelineDepth,
+                options.MaxConnectionsPerBroker));
+    }
+
+    private static T GetField<T>(object target, string name) =>
+        (T)(target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(target)!);
 }

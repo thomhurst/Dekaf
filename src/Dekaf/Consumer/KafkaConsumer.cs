@@ -1028,7 +1028,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 PoolSizing.ForConsumerResponseBuffers(
                     options.BootstrapServers.Count,
                     options.PrefetchPipelineDepth,
-                    options.ConnectionsPerBroker)),
+                    options.MaxConnectionsPerBroker)),
             telemetryMetricCollector: telemetryMetricCollector);
 
         var metadataManager = new MetadataManager(
