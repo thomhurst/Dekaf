@@ -210,6 +210,16 @@ public sealed class ConnectionScaleReportingTests
                 ProduceRequestCount = 2_500,
                 ProduceRequestElapsedSeconds = 5,
                 ProduceRequestsPerSecond = 500,
+                BrokerProduceRequests =
+                [
+                    new ProducerBrokerRequestDiagnostic
+                    {
+                        BrokerId = 1,
+                        RequestCount = 2_500,
+                        RequestsPerSecond = 500,
+                        AverageRequestBytes = 262_144
+                    }
+                ],
                 CoalesceWidthHistogram =
                 [
                     new ProducerCoalesceWidthDiagnostic
@@ -257,6 +267,8 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(markdown).Contains("75%");
         await Assert.That(markdown).Contains("120/340");
         await Assert.That(markdown).Contains("6.0s / 2,500 msg/s");
+        await Assert.That(markdown).Contains("Producer Request Diagnostics - Fire-and-Forget");
+        await Assert.That(markdown).Contains("| Dekaf | 1 | 2,500 | 500.00 | 256.0 KiB |");
         await Assert.That(markdown).Contains("Delivery Latency Outliers - Fire-and-Forget");
         await Assert.That(markdown).Contains("42");
         await Assert.That(markdown).Contains("connection transition");
@@ -269,6 +281,7 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(markdown).Contains("3 additional latency outlier sample(s) exceeded the bounded diagnostic capacity");
         await Assert.That(json).Contains("\"produceRequestCount\": 2500");
         await Assert.That(json).Contains("\"produceRequestsPerSecond\": 500");
+        await Assert.That(json).Contains("\"averageRequestBytes\": 262144");
         await Assert.That(json).Contains("\"coalesceWidthHistogram\"");
         await Assert.That(json).Contains("\"requestCount\": 2000");
     }

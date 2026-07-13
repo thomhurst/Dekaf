@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Dekaf.Producer;
 
 /// <summary>
@@ -6,9 +8,9 @@ namespace Dekaf.Producer;
 /// arrives; on workloads whose requests are effectively single-partition (large batches,
 /// few partitions per broker) that wait is pure CPU burn on every wave. After
 /// <see cref="FruitlessSpinSuppressThreshold"/> consecutive spins that coalesced nothing,
-/// the gate closes and only re-opens for a single probe spin every
-/// <see cref="SuppressedReprobeSendInterval"/> sends, so a workload shift back toward
-/// coalescible waves is still detected quickly.
+/// the gate closes and only re-opens for a probe after a short time interval. Time-based
+/// recovery lets a low-rate workload probe on its next wave instead of remaining suppressed
+/// for an arbitrarily long fixed number of sends.
 /// </summary>
 internal struct WaveCoalesceGate
 {
@@ -19,43 +21,39 @@ internal struct WaveCoalesceGate
     internal const int FruitlessSpinSuppressThreshold = 8;
 
     /// <summary>
-    /// Sends between probe spins while suppressed. Keeps steady-state waste to one quiet
-    /// window per this many waves (&lt;0.1% of a core at millisecond wave cadence) while
-    /// re-detecting coalescible workloads within one interval.
+    /// Minimum time between probe spins while suppressed. Keeps steady-state spin cost bounded
+    /// under high request rates while allowing the first wave after a low-rate idle period to
+    /// detect a workload shift immediately.
     /// </summary>
-    internal const int SuppressedReprobeSendInterval = 64;
+    internal static readonly long SuppressedReprobeIntervalTicks = Math.Max(1, Stopwatch.Frequency / 20);
 
     private int _consecutiveFruitlessSpins;
-    private int _sendsSinceSuppressed;
+    private long _nextProbeTimestamp;
 
     private readonly bool IsSuppressed => _consecutiveFruitlessSpins >= FruitlessSpinSuppressThreshold;
 
     /// <summary>Whether the next wave may enter the coalesce spin.</summary>
-    public readonly bool ShouldSpin()
-        => !IsSuppressed || _sendsSinceSuppressed >= SuppressedReprobeSendInterval;
+    public readonly bool ShouldSpin(long nowTicks)
+        => !IsSuppressed || nowTicks >= _nextProbeTimestamp;
 
     /// <summary>
     /// Records the outcome of a spin permitted by <see cref="ShouldSpin"/>.
     /// A spin that coalesced at least one additional batch re-opens the gate.
     /// </summary>
-    public void OnSpinCompleted(bool coalescedAdditionalBatch)
+    public void OnSpinCompleted(bool coalescedAdditionalBatch, long nowTicks)
     {
         if (coalescedAdditionalBatch)
         {
             _consecutiveFruitlessSpins = 0;
+            _nextProbeTimestamp = 0;
         }
-        else if (!IsSuppressed)
+        else
         {
-            _consecutiveFruitlessSpins++;
+            if (!IsSuppressed)
+                _consecutiveFruitlessSpins++;
+
+            if (IsSuppressed)
+                _nextProbeTimestamp = nowTicks + SuppressedReprobeIntervalTicks;
         }
-
-        _sendsSinceSuppressed = 0;
-    }
-
-    /// <summary>Advances the probe schedule while suppressed. Call once per completed send pass.</summary>
-    public void OnSent()
-    {
-        if (IsSuppressed)
-            _sendsSinceSuppressed++;
     }
 }

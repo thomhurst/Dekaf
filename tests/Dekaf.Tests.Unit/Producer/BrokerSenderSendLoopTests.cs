@@ -172,20 +172,21 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task SelectWaveCoalesceBounds_ZeroLingerRetainsLowLatencyBounds()
+    public async Task SelectWaveCoalesceBounds_ScalesWithLingerAndRetainsHardCaps()
     {
-        var zeroLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 0, deliveryLatencyTargetMs: 10);
-        var configuredLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 5, deliveryLatencyTargetMs: 10);
-        var oneMillisecondTarget = BrokerSender.SelectWaveCoalesceBounds(
-            lingerMs: 5,
-            deliveryLatencyTargetMs: 1);
+        var zeroLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 0);
+        var oneMillisecondLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 1);
+        var configuredLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 5);
+        var longLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 20);
 
         await Assert.That(zeroLinger.QuietMicroseconds).IsEqualTo(75);
         await Assert.That(zeroLinger.MaximumMicroseconds).IsEqualTo(500);
-        await Assert.That(configuredLinger.QuietMicroseconds).IsEqualTo(500);
-        await Assert.That(configuredLinger.MaximumMicroseconds).IsEqualTo(1_000);
-        await Assert.That(oneMillisecondTarget.QuietMicroseconds).IsEqualTo(50);
-        await Assert.That(oneMillisecondTarget.MaximumMicroseconds).IsEqualTo(100);
+        await Assert.That(oneMillisecondLinger.QuietMicroseconds).IsEqualTo(200);
+        await Assert.That(oneMillisecondLinger.MaximumMicroseconds).IsEqualTo(400);
+        await Assert.That(configuredLinger.QuietMicroseconds).IsEqualTo(1_000);
+        await Assert.That(configuredLinger.MaximumMicroseconds).IsEqualTo(2_000);
+        await Assert.That(longLinger.QuietMicroseconds).IsEqualTo(1_000);
+        await Assert.That(longLinger.MaximumMicroseconds).IsEqualTo(2_000);
     }
 
     [Test]

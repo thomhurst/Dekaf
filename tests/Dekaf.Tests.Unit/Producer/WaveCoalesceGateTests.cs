@@ -9,7 +9,7 @@ public class WaveCoalesceGateTests
     {
         var gate = new WaveCoalesceGate();
 
-        await Assert.That(gate.ShouldSpin()).IsTrue();
+        await Assert.That(gate.ShouldSpin(nowTicks: 0)).IsTrue();
     }
 
     [Test]
@@ -18,9 +18,9 @@ public class WaveCoalesceGateTests
         var gate = new WaveCoalesceGate();
 
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold - 1; i++)
-            gate.OnSpinCompleted(coalescedAdditionalBatch: false);
+            gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
 
-        await Assert.That(gate.ShouldSpin()).IsTrue();
+        await Assert.That(gate.ShouldSpin(nowTicks: 0)).IsTrue();
     }
 
     [Test]
@@ -29,9 +29,9 @@ public class WaveCoalesceGateTests
         var gate = new WaveCoalesceGate();
 
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold; i++)
-            gate.OnSpinCompleted(coalescedAdditionalBatch: false);
+            gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
 
-        await Assert.That(gate.ShouldSpin()).IsFalse();
+        await Assert.That(gate.ShouldSpin(nowTicks: 0)).IsFalse();
     }
 
     [Test]
@@ -39,47 +39,41 @@ public class WaveCoalesceGateTests
     {
         var gate = new WaveCoalesceGate();
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold - 1; i++)
-            gate.OnSpinCompleted(coalescedAdditionalBatch: false);
+            gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
 
-        gate.OnSpinCompleted(coalescedAdditionalBatch: true);
-        gate.OnSpinCompleted(coalescedAdditionalBatch: false);
+        gate.OnSpinCompleted(coalescedAdditionalBatch: true, nowTicks: 0);
+        gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
 
-        await Assert.That(gate.ShouldSpin()).IsTrue();
+        await Assert.That(gate.ShouldSpin(nowTicks: 0)).IsTrue();
     }
 
     [Test]
-    public async Task SuppressedGate_ReopensForProbe_AfterReprobeSendInterval()
+    public async Task SuppressedGate_ReopensForProbe_AfterReprobeTimeInterval()
     {
         var gate = new WaveCoalesceGate();
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold; i++)
-            gate.OnSpinCompleted(coalescedAdditionalBatch: false);
+            gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
 
-        for (var i = 0; i < WaveCoalesceGate.SuppressedReprobeSendInterval - 1; i++)
-            gate.OnSent();
-        await Assert.That(gate.ShouldSpin()).IsFalse();
+        await Assert.That(gate.ShouldSpin(WaveCoalesceGate.SuppressedReprobeIntervalTicks - 1)).IsFalse();
 
-        gate.OnSent();
-
-        await Assert.That(gate.ShouldSpin()).IsTrue();
+        await Assert.That(gate.ShouldSpin(WaveCoalesceGate.SuppressedReprobeIntervalTicks)).IsTrue();
     }
 
     [Test]
-    public async Task FruitlessProbe_ResuppressesForAnotherFullInterval()
+    public async Task FruitlessProbe_ResuppressesUntilAnotherTimeIntervalPasses()
     {
         var gate = new WaveCoalesceGate();
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold; i++)
-            gate.OnSpinCompleted(coalescedAdditionalBatch: false);
-        for (var i = 0; i < WaveCoalesceGate.SuppressedReprobeSendInterval; i++)
-            gate.OnSent();
+            gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
+        var firstProbeAt = WaveCoalesceGate.SuppressedReprobeIntervalTicks;
 
-        gate.OnSpinCompleted(coalescedAdditionalBatch: false);
+        gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: firstProbeAt);
 
-        await Assert.That(gate.ShouldSpin()).IsFalse();
-        for (var i = 0; i < WaveCoalesceGate.SuppressedReprobeSendInterval - 1; i++)
-            gate.OnSent();
-        await Assert.That(gate.ShouldSpin()).IsFalse();
-        gate.OnSent();
-        await Assert.That(gate.ShouldSpin()).IsTrue();
+        await Assert.That(gate.ShouldSpin(firstProbeAt)).IsFalse();
+        await Assert.That(gate.ShouldSpin(firstProbeAt + WaveCoalesceGate.SuppressedReprobeIntervalTicks - 1))
+            .IsFalse();
+        await Assert.That(gate.ShouldSpin(firstProbeAt + WaveCoalesceGate.SuppressedReprobeIntervalTicks))
+            .IsTrue();
     }
 
     [Test]
@@ -87,14 +81,13 @@ public class WaveCoalesceGateTests
     {
         var gate = new WaveCoalesceGate();
         for (var i = 0; i < WaveCoalesceGate.FruitlessSpinSuppressThreshold; i++)
-            gate.OnSpinCompleted(coalescedAdditionalBatch: false);
-        for (var i = 0; i < WaveCoalesceGate.SuppressedReprobeSendInterval; i++)
-            gate.OnSent();
+            gate.OnSpinCompleted(coalescedAdditionalBatch: false, nowTicks: 0);
 
-        gate.OnSpinCompleted(coalescedAdditionalBatch: true);
+        gate.OnSpinCompleted(
+            coalescedAdditionalBatch: true,
+            nowTicks: WaveCoalesceGate.SuppressedReprobeIntervalTicks);
 
-        await Assert.That(gate.ShouldSpin()).IsTrue();
-        gate.OnSent();
-        await Assert.That(gate.ShouldSpin()).IsTrue();
+        await Assert.That(gate.ShouldSpin(WaveCoalesceGate.SuppressedReprobeIntervalTicks)).IsTrue();
+        await Assert.That(gate.ShouldSpin(long.MaxValue)).IsTrue();
     }
 }

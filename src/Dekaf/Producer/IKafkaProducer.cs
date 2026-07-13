@@ -268,12 +268,21 @@ internal sealed class ProducerDeliveryDiagnosticsSnapshot
     public long ProduceRequestCount { get; init; }
     public double ProduceRequestElapsedSeconds { get; init; }
     public double ProduceRequestsPerSecond { get; init; }
+    public List<ProducerBrokerRequestDiagnostic> BrokerProduceRequests { get; init; } = [];
     public List<ProducerCoalesceWidthDiagnostic> CoalesceWidthHistogram { get; init; } = [];
     public List<ProducerBatchDeliveryDiagnostic> Batches { get; init; } = [];
     public List<ProducerBrokerBudgetDiagnostic> BrokerBudgets { get; init; } = [];
     public List<ProducerBrokerBudgetDiagnostic> BrokerBudgetSamples { get; init; } = [];
     public List<ConnectionReapDiagnostic> ConnectionReapEvents { get; init; } = [];
     public List<ProducerConnectionScaleDiagnostic> ConnectionScaleEvents { get; init; } = [];
+}
+
+internal sealed class ProducerBrokerRequestDiagnostic
+{
+    public required int BrokerId { get; init; }
+    public required long RequestCount { get; init; }
+    public required double RequestsPerSecond { get; init; }
+    public required double AverageRequestBytes { get; init; }
 }
 
 internal sealed class ProducerCoalesceWidthDiagnostic

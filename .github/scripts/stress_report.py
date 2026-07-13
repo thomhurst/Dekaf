@@ -471,6 +471,41 @@ def format_connection_scale_timeline(results, title):
     return lines
 
 
+def format_producer_request_diagnostics(results, title):
+    """Show per-broker ProduceRequest rate and average size so fragmentation is visible."""
+    rows = [
+        (result, diagnostic)
+        for result in results
+        for diagnostic in (
+            (result.get('producerDeliveryDiagnostics') or {}).get('brokerProduceRequests') or []
+        )
+    ]
+    if not rows:
+        return []
+
+    rows.sort(key=lambda row: (row[0].get('client', ''), row[1].get('brokerId', 0)))
+    lines = [
+        f"## Producer Request Diagnostics - {title}",
+        "",
+        "| Client | Broker | Requests | Requests/s | Avg bytes/request |",
+        "|--------|-------:|---------:|-----------:|------------------:|",
+    ]
+    for result, diagnostic in rows:
+        lines.append(
+            f"| {result.get('client', 'Unknown')} | {diagnostic.get('brokerId', '-')} | "
+            f"{diagnostic.get('requestCount', 0):,} | "
+            f"{diagnostic.get('requestsPerSecond', 0):.2f} | "
+            f"{format_bytes(diagnostic.get('averageRequestBytes', 0))} |"
+        )
+
+    lines.extend([
+        "",
+        "*Average bytes/request is Kafka ProduceRequest body bytes; smaller requests at higher request rates indicate batching fragmentation.*",
+        "",
+    ])
+    return lines
+
+
 def format_latency_outlier_timeline(results, title):
     """Correlate sampled delivery stalls with scaling, throughput, and GC."""
     rows = [
@@ -758,6 +793,7 @@ def generate_scenario_tables(results, include_ratio=False, include_callout=False
             scenario_results = scenarios[scenario_key]
             output.extend(format_throughput_table(scenario_results, f"{title} Throughput", include_ratio=include_ratio))
             output.extend(format_connection_scale_timeline(scenario_results, title))
+            output.extend(format_producer_request_diagnostics(scenario_results, title))
             output.extend(format_latency_outlier_timeline(scenario_results, title))
             output.extend(format_transaction_verification(scenario_results))
             output.extend(format_roundtrip_validation_table(scenario_results))

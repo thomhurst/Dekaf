@@ -3,6 +3,7 @@ import unittest
 from stress_report import (
     format_roundtrip_validation_table,
     format_connection_scale_timeline,
+    format_producer_request_diagnostics,
     format_throughput_table,
     generate_scenario_tables,
     intra_run_throughput,
@@ -35,6 +36,22 @@ def stress_result(client, effective_rate, median_rate=None, is_message_bounded=F
 
 
 class StressReportTests(unittest.TestCase):
+    def test_producer_request_diagnostics_surface_per_broker_fragmentation(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["producerDeliveryDiagnostics"] = {
+            "brokerProduceRequests": [{
+                "brokerId": 1,
+                "requestCount": 2500,
+                "requestsPerSecond": 500,
+                "averageRequestBytes": 262144,
+            }]
+        }
+
+        report = "\n".join(format_producer_request_diagnostics([value], "Producer"))
+
+        self.assertIn("Producer Request Diagnostics - Producer", report)
+        self.assertIn("| Dekaf | 1 | 2,500 | 500.00 | 256.00 KB |", report)
+
     def test_connection_scale_timeline_correlates_nearest_throughput_sample(self):
         value = stress_result("Dekaf", effective_rate=1400)
         value["throughput"]["intervalSamples"] = [
