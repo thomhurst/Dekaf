@@ -171,6 +171,20 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithInlineTransactionCompletions_Disabled_WiresProducerOption()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("txn-1")
+            .WithInlineTransactionCompletions(false)
+            .Build();
+
+        var options = GetOptions(producer);
+
+        await Assert.That(options.InlineTransactionCompletions).IsFalse();
+    }
+
+    [Test]
     public async Task UseGzipCompression_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();

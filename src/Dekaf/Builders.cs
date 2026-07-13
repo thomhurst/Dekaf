@@ -30,6 +30,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int _lingerMs;
     private int _batchSize = 1048576;
     private string? _transactionalId;
+    private bool _inlineTransactionCompletions = true;
     private int? _transactionTimeoutMs;
     private bool _enableTwoPhaseCommit;
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
@@ -208,6 +209,20 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithTransactionalId(string transactionalId)
     {
         _transactionalId = transactionalId;
+        return this;
+    }
+
+    /// <summary>
+    /// Controls whether transactional produce continuations run inline on the broker sender thread.
+    /// </summary>
+    /// <param name="enable">
+    /// <see langword="true"/> for maximum throughput; <see langword="false"/> to isolate
+    /// blocking or long-running continuation code from broker send processing.
+    /// </param>
+    /// <remarks>Enabled by default. This setting only affects transactional produce operations.</remarks>
+    public ProducerBuilder<TKey, TValue> WithInlineTransactionCompletions(bool enable = true)
+    {
+        _inlineTransactionCompletions = enable;
         return this;
     }
 
@@ -1208,6 +1223,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             EnableIdempotence = _enableIdempotence,
             ConnectionsPerBroker = _connectionsPerBroker,
             TransactionalId = _transactionalId,
+            InlineTransactionCompletions = _inlineTransactionCompletions,
             EnableTwoPhaseCommit = _enableTwoPhaseCommit,
             TransactionTimeoutMs = _transactionTimeoutMs ?? 60000,
             CloseTimeoutMs = _closeTimeoutMs,

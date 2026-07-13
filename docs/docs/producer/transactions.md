@@ -30,6 +30,25 @@ await using var producer = await Kafka.CreateProducer<string, string>()
 await producer.InitTransactionsAsync();
 ```
 
+By default, code after `await transaction.ProduceAsync(...)` resumes inline on the broker
+sender thread for maximum throughput. That thread also sends, retries, and handles timeouts
+for other work using the same broker connection, so continuation code must not block or do
+long-running synchronous work.
+
+If your continuation code cannot guarantee that, isolate it from broker processing:
+
+```csharp
+await using var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithTransactionalId("my-service-instance-1")
+    .WithInlineTransactionCompletions(false)
+    .BuildAsync();
+```
+
+This schedules transactional produce continuations asynchronously and prevents a blocking
+continuation from stalling sends, retries, or timeout handling on that broker. It adds one
+continuation dispatch per transactional produce.
+
 :::warning
 The transactional ID must be unique per producer instance. If two producers use the same ID, one will be fenced (killed) by Kafka.
 :::

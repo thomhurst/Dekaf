@@ -159,6 +159,66 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task TransactionProduceAsync_InlineDisabled_BlockingContinuationDoesNotBlockCompleter()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-async-transaction-producer",
+            TransactionalId = "test-transaction-id",
+            InlineTransactionCompletions = false,
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        producer._transactionState = TransactionState.Ready;
+        var transaction = producer.BeginTransaction();
+        var produceTask = transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value"
+        });
+        var awaiter = produceTask.GetAwaiter();
+        var continuationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseContinuation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        awaiter.UnsafeOnCompleted(() =>
+        {
+            continuationStarted.TrySetResult();
+            releaseContinuation.Task.GetAwaiter().GetResult();
+        });
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+
+        var completionTask = Task.Run(() => readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow));
+        bool completionReturned;
+        try
+        {
+            await continuationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            completionReturned = await Task.WhenAny(completionTask, Task.Delay(500)) == completionTask;
+        }
+        finally
+        {
+            releaseContinuation.TrySetResult();
+        }
+        await completionTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(completionReturned).IsTrue();
+        await Assert.That(awaiter.GetResult().Offset).IsEqualTo(7);
+        producer._transactionState = TransactionState.Ready;
+    }
+
+    [Test]
     public async Task TransactionProduceAsync_SequentialAwaitCanReenterProducerOnSenderThread()
     {
         var options = new ProducerOptions

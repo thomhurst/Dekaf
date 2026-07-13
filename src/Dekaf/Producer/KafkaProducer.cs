@@ -498,10 +498,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
     {
+        var runContinuationsAsynchronously = !_options.InlineTransactionCompletions;
         if (_retryPolicy is not null)
-            return ProduceAsyncWithRetry(message, runContinuationsAsynchronously: false, cancellationToken);
+            return ProduceAsyncWithRetry(message, runContinuationsAsynchronously, cancellationToken);
 
-        return ProduceAsyncCore(message, runContinuationsAsynchronously: false, cancellationToken);
+        return ProduceAsyncCore(message, runContinuationsAsynchronously, cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAsyncCore(
