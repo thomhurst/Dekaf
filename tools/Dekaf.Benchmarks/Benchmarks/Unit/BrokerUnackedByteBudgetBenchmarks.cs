@@ -35,6 +35,30 @@ public class BrokerUnackedByteBudgetBenchmarks
             _budget.OnAcked(ackedBytes: 1024 * 1024, snapshotAtSend, _timestamp);
         }
 
+        _budget.CompleteAckedPass(_timestamp);
+        return _budget.BudgetBytes;
+    }
+
+    /// <summary>
+    /// Models the production response-pass shape: a handful of acks drained per pass followed
+    /// by one budget publish, so the per-message cost of the publish shows up amortized.
+    /// </summary>
+    [Benchmark(OperationsPerInvoke = Operations)]
+    public long RecordAcknowledgementPasses()
+    {
+        const int acksPerPass = 5;
+        for (var i = 0; i < Operations / acksPerPass; i++)
+        {
+            for (var j = 0; j < acksPerPass; j++)
+            {
+                var snapshotAtSend = _budget.SnapshotDelivery(_timestamp, appLimited: false);
+                _timestamp += RttTicks;
+                _budget.OnAcked(ackedBytes: 1024 * 1024, snapshotAtSend, _timestamp);
+            }
+
+            _budget.CompleteAckedPass(_timestamp);
+        }
+
         return _budget.BudgetBytes;
     }
 }

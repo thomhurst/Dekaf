@@ -201,6 +201,7 @@ public sealed class BrokerUnackedAdmissionTests
             budget.SnapshotDelivery(
                 nowTicks - System.Diagnostics.Stopwatch.Frequency / 100, appLimited: true),
             nowTicks);
+        budget.CompleteAckedPass(nowTicks);
         budget.Charge(1_200_000);
 
         var gatedAppend = accumulator.AppendAsync(
@@ -230,6 +231,7 @@ public sealed class BrokerUnackedAdmissionTests
             budget.SnapshotDelivery(
                 nowTicks - System.Diagnostics.Stopwatch.Frequency, appLimited: true),
             nowTicks);
+        budget.CompleteAckedPass(nowTicks);
         budget.Charge(1_200_000);
 
         var firstAppend = accumulator.AppendAsync(

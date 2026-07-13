@@ -162,6 +162,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
             1_000,
             budget.SnapshotDelivery(ackTimestamp - Stopwatch.Frequency / 1_000, appLimited: true),
             ackTimestamp);
+        budget.CompleteAckedPass(ackTimestamp);
 
         await accumulator.ExpireLingerAsync(CancellationToken.None);
         var snapshot = accumulator.GetDeliveryDiagnosticsSnapshot();

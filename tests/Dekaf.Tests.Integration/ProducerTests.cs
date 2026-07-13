@@ -52,6 +52,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             1_000_000,
             budget.SnapshotDelivery(nowTicks - Stopwatch.Frequency / 20, appLimited: true),
             nowTicks);
+        budget.CompleteAckedPass(nowTicks);
         budget.Charge(1_200_000);
 
         try

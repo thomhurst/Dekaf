@@ -26,11 +26,12 @@ namespace Dekaf.Producer;
 /// <see cref="IsOverBudgetAt"/>/<see cref="RecordAdmissionBlock"/>/
 /// <see cref="ObserveWrittenUnackedBytes"/>/<see cref="SnapshotDelivery"/> are cross-thread
 /// (producer appenders, terminal batch paths, and parallel connection sends).
-/// <see cref="OnAcked"/> and <see cref="SetCap"/> are single-writer — only the owning broker's
-/// send loop calls them — so the remaining estimator state needs no synchronization; the
-/// computed budget is published with a volatile write. <see cref="SnapshotDelivery"/> performs
-/// two independent volatile reads racing the single writer; both fields are monotonic, so a
-/// torn pair only skews one rate sample marginally and the windowed max filters it.
+/// <see cref="OnAcked"/>, <see cref="CompleteAckedPass"/>, and <see cref="SetCap"/> are
+/// single-writer — only the owning broker's send loop calls them — so the remaining estimator
+/// state needs no synchronization; the computed budget is published with a volatile write.
+/// <see cref="SnapshotDelivery"/> performs two independent volatile reads racing the single
+/// writer; both fields are monotonic, so a torn pair only skews one rate sample marginally
+/// and the windowed max filters it.
 /// </para>
 /// </summary>
 internal sealed class BrokerUnackedByteBudget
@@ -351,9 +352,10 @@ internal sealed class BrokerUnackedByteBudget
     }
 
     /// <summary>
-    /// Feeds one successfully acknowledged request into the drain estimate, then republishes
-    /// the budget. Called only from the owning send loop, once per acked request. O(1),
-    /// allocation-free.
+    /// Feeds one successfully acknowledged request into the drain estimate. Called only from
+    /// the owning send loop, once per acked request. O(1), allocation-free. The budget itself
+    /// is republished once per response pass by <see cref="CompleteAckedPass"/>, which owns
+    /// the per-pass-vs-per-request rationale.
     /// </summary>
     /// <param name="ackedBytes">Encoded payload bytes of the acknowledged request.</param>
     /// <param name="sendSnapshot">Token minted via <see cref="SnapshotDelivery"/> just before
@@ -396,11 +398,23 @@ internal sealed class BrokerUnackedByteBudget
             Volatile.Write(ref _maxRateBytesPerSecond, (long)_windowMaxRate);
         }
 
+        UpdateCapacityProbe(bytesPerSecond, sendSnapshot.SendTimestamp, rttTicks, nowTicks);
+    }
+
+    /// <summary>
+    /// Drains the cross-thread written-occupancy peak into the sample window and republishes
+    /// the budget. Called by the owning send loop once per response pass, after every
+    /// <see cref="OnAcked"/> for that pass. The interlocked peak drain and the budget
+    /// recompute are the estimator's expensive steps; a pass at the in-flight ceiling drains
+    /// many requests, and the admission gate only reads the budget between passes, so
+    /// per-request publishing multiplied that cost for no admission-precision gain.
+    /// </summary>
+    public void CompleteAckedPass(long nowTicks)
+    {
+        AdvanceWindow(nowTicks);
         var writtenUnackedPeak = Interlocked.Exchange(ref _pendingWrittenUnackedPeakBytes, 0);
         if (writtenUnackedPeak > 0)
             AddOccupancySample(writtenUnackedPeak);
-
-        UpdateCapacityProbe(bytesPerSecond, sendSnapshot.SendTimestamp, rttTicks, nowTicks);
 
         RecomputeBudget();
     }

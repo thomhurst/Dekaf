@@ -39,10 +39,13 @@ public sealed class BrokerUnackedByteBudgetTests
         long nowTicks,
         BrokerUnackedByteBudget.DeliverySnapshot? snapshotAtSend = null,
         bool appLimitedAtSend = true)
-        => budget.OnAcked(
+    {
+        budget.OnAcked(
             ackedBytes,
             snapshotAtSend ?? budget.SnapshotDelivery(nowTicks - Seconds(rttSeconds), appLimitedAtSend),
             nowTicks);
+        budget.CompleteAckedPass(nowTicks);
+    }
 
     /// <summary>
     /// Establishes a per-request drain-rate sample of <paramref name="bytesPerSecond"/>.
@@ -88,7 +91,7 @@ public sealed class BrokerUnackedByteBudgetTests
                 now - Seconds(0.001),
                 appLimited: true,
                 oldestBatchTimestamp: now - Seconds(0.020));
-            budget.OnAcked(1_000, snapshot, now);
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
         }
 
         await Assert.That(budget.DeliveryLatencyEwmaMicros).IsEqualTo(20_000).Within(10);
@@ -113,7 +116,7 @@ public sealed class BrokerUnackedByteBudgetTests
                 now - Seconds(0.001),
                 appLimited: true,
                 oldestBatchTimestamp: now - Seconds(0.020));
-            budget.OnAcked(1_000, snapshot, now);
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
         }
         var reducedScale = budget.LatencyBudgetScale;
 
@@ -124,7 +127,7 @@ public sealed class BrokerUnackedByteBudgetTests
                 now - Seconds(0.001),
                 appLimited: true,
                 oldestBatchTimestamp: now - Seconds(0.005));
-            budget.OnAcked(1_000, snapshot, now);
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
         }
 
         await Assert.That(budget.DeliveryLatencyEwmaMicros).IsLessThan(6_000);
@@ -374,6 +377,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var secondSend = budget.SnapshotDelivery(T0 + Seconds(0.001) - Seconds(0.005), appLimited: false);
         budget.OnAcked(1_000, firstSend, T0);
         budget.OnAcked(1_000, secondSend, T0 + Seconds(0.001));
+        budget.CompleteAckedPass(T0 + Seconds(0.001));
 
         // The second sample's delivered-counter delta covers both deliveries: 2,000 bytes
         // over its own 5ms sojourn = 400,000 B/s aggregate drain, independent of the 1ms
@@ -622,6 +626,7 @@ public sealed class BrokerUnackedByteBudgetTests
             sendSnapshots[i] = budget.SnapshotDelivery(T0 + Seconds(i * 0.00001), appLimited: false);
         for (var i = 0; i < 5; i++)
             budget.OnAcked(1_000_000, sendSnapshots[i], T0 + Seconds(0.100 + i * 0.00001));
+        budget.CompleteAckedPass(T0 + Seconds(0.100 + 4 * 0.00001));
 
         // Each sample measures the cumulative delivered delta over its own ~100ms sojourn;
         // the last one reads the true aggregate drain of ~50 MB/s.

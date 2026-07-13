@@ -1070,6 +1070,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var waveCoalesceMaxTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.MaximumMicroseconds);
         var waveCoalesceQuietTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.QuietMicroseconds);
         var waveCoalesceArmed = true;
+        var waveCoalesceGate = new WaveCoalesceGate();
 
         // Pre-allocate reusable response lookup dictionary to avoid per-response allocation.
         // Single-threaded: only accessed by the send loop, cleared after each use.
@@ -1346,6 +1347,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && coalescedCount < maxCoalesce
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
+                    && waveCoalesceGate.ShouldSpin()
                     && ShouldMicroLinger(
                         coalescedBatches,
                         coalescedCount,
@@ -1353,6 +1355,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     waveCoalesceArmed = false;
                     _onWaveCoalesceStarted?.Invoke();
+                    var coalescedCountBeforeSpin = coalescedCount;
                     var started = Stopwatch.GetTimestamp();
                     var hardDeadline = started + waveCoalesceMaxTicks;
                     var quietDeadline = Math.Min(started + waveCoalesceQuietTicks, hardDeadline);
@@ -1394,6 +1397,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             break;
                         }
                     }
+
+                    waveCoalesceGate.OnSpinCompleted(coalescedCount > coalescedCountBeforeSpin);
                 }
 
                 // ── 6. Send or wait ──
@@ -1748,8 +1753,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // Keep forming request waves while the pipeline is busy. Without rearming here,
                 // only the first request after an idle period can coalesce adjacent partitions.
+                // The gate suppresses the spin itself once it proves fruitless on this workload.
                 if (sentThisIteration)
+                {
                     waveCoalesceArmed = true;
+                    waveCoalesceGate.OnSent();
+                }
 
                 // ── 7. Compute timeout and wait ──
                 if (transactionEnrollmentReady)
@@ -2608,6 +2617,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // preserving per-partition FIFO ordering during the next coalescing pass.
         // Reverse iteration (swap-with-last O(1) removal) would process R2 before R1,
         // causing the newer batch to be coalesced first and violating ordering.
+        var anyAckedThisPass = false;
+        long lastAckTimestamp = 0;
         for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
         {
             var pendingList = _pendingResponsesByConnection[connIdx];
@@ -2691,11 +2702,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Per-request BBR delivery-rate sample: the delivered-counter delta since
                     // this request's send snapshot covers concurrent connection lanes. A fresh
                     // timestamp per call keeps 'now' honest when a pass spends time in
-                    // acknowledgement callbacks between completions.
+                    // acknowledgement callbacks between completions. The budget itself is
+                    // republished once per pass via CompleteAckedPass below.
+                    lastAckTimestamp = Stopwatch.GetTimestamp();
                     unackedBudget.OnAcked(
                         pending.EncodedBytes,
                         pending.DeliverySnapshotAtSend,
-                        Stopwatch.GetTimestamp());
+                        lastAckTimestamp);
+                    anyAckedThisPass = true;
                 }
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis
@@ -2757,6 +2771,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
         }
 
+        if (anyAckedThisPass)
+            _unackedBudget!.CompleteAckedPass(lastAckTimestamp);
     }
 
     /// <summary>
