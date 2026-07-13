@@ -11,7 +11,6 @@ using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-[NotInParallel("MeterListener")]
 public sealed class ConsumeOneFastPathTests
 {
     private const string Topic = "test-topic";
@@ -347,6 +346,7 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    [NotInParallel("MeterListener")]
     public async Task ConsumeOneAsync_EmitsFetchMetricsAsDeltas()
     {
         var topic = $"metrics-test-{Guid.NewGuid():N}";

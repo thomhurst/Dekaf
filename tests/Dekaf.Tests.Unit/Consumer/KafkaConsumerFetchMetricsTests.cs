@@ -11,10 +11,10 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-[NotInParallel("MeterListener")]
 public sealed class KafkaConsumerFetchMetricsTests
 {
     [Test]
+    [NotInParallel("MeterListener")]
     public async Task RecordFetchDuration_WhenDisabled_DoesNotCreateBrokerTags()
     {
         await using var consumer = CreateConsumer();
@@ -25,6 +25,7 @@ public sealed class KafkaConsumerFetchMetricsTests
     }
 
     [Test]
+    [NotInParallel("MeterListener")]
     public async Task RecordFetchDuration_WhenEnabled_ReusesBrokerTags()
     {
         var expectedBrokerId = BitConverter.ToInt32(Guid.NewGuid().ToByteArray());
