@@ -370,22 +370,31 @@ internal sealed class BrokerUnackedByteBudget
         {
             deliveredBytes = Volatile.Read(ref _totalDeliveredBytes);
             var epochDeliveredBytes = Volatile.Read(ref _sendEpochDeliveredBytes);
-            if (epochDeliveredBytes == deliveredBytes)
-            {
-                deliveryEpochDeliveredBytes = epochDeliveredBytes;
-                return Volatile.Read(ref _sendEpochFirstTimestamp);
-            }
-
             if (epochDeliveredBytes == DeliveryEpochUpdating)
             {
                 spinner.SpinOnce();
                 continue;
             }
 
+            // The timestamp and delivered marker form one publication. Re-read the marker
+            // after the timestamp so a reader spanning another publisher's two writes retries
+            // instead of pairing an old byte anchor with a new time anchor.
+            var epochFirstSendTimestamp = Volatile.Read(ref _sendEpochFirstTimestamp);
+            if (Volatile.Read(ref _sendEpochDeliveredBytes) != epochDeliveredBytes)
+            {
+                spinner.SpinOnce();
+                continue;
+            }
+
+            if (epochDeliveredBytes == deliveredBytes)
+            {
+                deliveryEpochDeliveredBytes = epochDeliveredBytes;
+                return epochFirstSendTimestamp;
+            }
+
             // A loaded pipe keeps a bounded rolling epoch across acknowledgements. Reset at
             // rate-app-limited boundaries or after 100ms: the lower bound prevents serialized
             // requestBytes / ownRTT spikes; the upper bound preserves capacity adaptation.
-            var epochFirstSendTimestamp = Volatile.Read(ref _sendEpochFirstTimestamp);
             if (!rateAppLimited
                 && epochDeliveredBytes != NoDeliveryEpoch
                 && sendTimestamp - epochFirstSendTimestamp < MaximumLoadedDeliveryEpochTicks)

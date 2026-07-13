@@ -1721,6 +1721,55 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task DeliveryEpochSnapshots_NeverMixConcurrentPublisherGenerations(
+        CancellationToken ct)
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 3_200);
+        const int publisherIterations = 100_000;
+        const long deliveryEpochUpdating = -2;
+        using var start = new Barrier(participantCount: 5);
+        var publisherComplete = 0;
+        var mixedGenerationCount = 0;
+
+        SetField(budget, "_totalDeliveredBytes", 0L);
+        SetField(budget, "_sendEpochDeliveredBytes", 0L);
+        SetField(budget, "_sendEpochFirstTimestamp", 0L);
+
+        var readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+        {
+            start.SignalAndWait(ct);
+            while (!ct.IsCancellationRequested && Volatile.Read(ref publisherComplete) == 0)
+            {
+                var snapshot = budget.SnapshotDelivery(sendTimestamp: 1, appLimited: false);
+                if (snapshot.DeliveryEpochFirstSendTimestamp
+                    != snapshot.DeliveryEpochDeliveredBytes * 10)
+                {
+                    Interlocked.Increment(ref mixedGenerationCount);
+                }
+            }
+        }, ct)).ToArray();
+
+        start.SignalAndWait(ct);
+        for (var generation = 1; generation <= publisherIterations; generation++)
+        {
+            SetField(budget, "_totalDeliveredBytes", (long)generation);
+            SetField(budget, "_sendEpochDeliveredBytes", deliveryEpochUpdating);
+            SetField(budget, "_sendEpochFirstTimestamp", generation * 10L);
+            Thread.Yield();
+            SetField(budget, "_sendEpochDeliveredBytes", (long)generation);
+        }
+        Volatile.Write(ref publisherComplete, 1);
+
+        await Task.WhenAll(readers).WaitAsync(ct);
+        await Assert.That(mixedGenerationCount).IsEqualTo(0)
+            .Because("the delivered-byte and first-send anchors belong to one publication");
+    }
+
+    [Test]
     public async Task DeliveryEpoch_RedundantPublisherPreservesFirstSendAnchor()
     {
         var budget = new BrokerUnackedByteBudget(
