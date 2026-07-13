@@ -478,10 +478,103 @@ public class RoundTripMessageCodecTests
                 UnexpectedMessages = 0,
                 TimedOut = false
             },
+            RoundTripScenarioHelpers.CreatePhaseSnapshot(
+                producedMessages: 200,
+                produceElapsed: TimeSpan.FromSeconds(2),
+                consumedMessages: 200,
+                consumeElapsed: TimeSpan.FromSeconds(4)),
             snapshot);
 
         await Assert.That(result.ProducerDeliveryDiagnostics).IsSameReferenceAs(snapshot);
         await Assert.That(result.IsMessageBounded).IsTrue();
+        await Assert.That(result.RoundTripPhases!.ProduceMessagesPerSecond).IsEqualTo(100);
+        await Assert.That(result.RoundTripPhases.ConsumeMessagesPerSecond).IsEqualTo(50);
+    }
+
+    [Test]
+    public async Task RoundTripPhaseSnapshot_SerializesPhaseCountsDurationsAndRates()
+    {
+        var phases = RoundTripScenarioHelpers.CreatePhaseSnapshot(
+            producedMessages: 250_000,
+            produceElapsed: TimeSpan.FromSeconds(2),
+            consumedMessages: 250_000,
+            consumeElapsed: TimeSpan.FromSeconds(0.25));
+
+        var result = CreateRoundTripResult(phases);
+        var json = result.ToJson();
+        var restored = StressTestResult.FromJson(json);
+
+        await Assert.That(json).Contains("\"roundTripPhases\"");
+        await Assert.That(json).Contains("\"produceMessagesPerSecond\": 125000");
+        await Assert.That(json).Contains("\"consumeMessagesPerSecond\": 1000000");
+        await Assert.That(restored!.RoundTripPhases!.ProducedMessages).IsEqualTo(250_000);
+        await Assert.That(restored.RoundTripPhases.ProduceElapsedSeconds).IsEqualTo(2);
+        await Assert.That(restored.RoundTripPhases.ConsumedMessages).IsEqualTo(250_000);
+        await Assert.That(restored.RoundTripPhases.ConsumeElapsedSeconds).IsEqualTo(0.25);
+    }
+
+    [Test]
+    public async Task RoundTripPhaseSnapshot_ZeroDurationReportsZeroRate()
+    {
+        var phases = RoundTripScenarioHelpers.CreatePhaseSnapshot(
+            producedMessages: 1,
+            produceElapsed: TimeSpan.Zero,
+            consumedMessages: 1,
+            consumeElapsed: TimeSpan.Zero);
+
+        await Assert.That(phases.ProduceMessagesPerSecond).IsEqualTo(0);
+        await Assert.That(phases.ConsumeMessagesPerSecond).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task RoundTripReport_ShowsProduceAndConsumePhaseRates()
+    {
+        var resultWithoutValidation = CreateRoundTripResult(RoundTripScenarioHelpers.CreatePhaseSnapshot(
+            producedMessages: 250_000,
+            produceElapsed: TimeSpan.FromSeconds(2),
+            consumedMessages: 250_000,
+            consumeElapsed: TimeSpan.FromSeconds(0.25)));
+        var result = WithValidation(resultWithoutValidation);
+        var now = DateTime.UtcNow;
+
+        var markdown = MarkdownReporter.Generate(new StressTestResults
+        {
+            RunStartedAtUtc = now,
+            RunCompletedAtUtc = now.AddSeconds(2.25),
+            MachineName = "test",
+            ProcessorCount = 1,
+            Results = [result]
+        });
+
+        await Assert.That(markdown).Contains("| Produce msg/s | Consume msg/s |");
+        await Assert.That(markdown).Contains("125,000");
+        await Assert.That(markdown).Contains("1,000,000");
+
+        static StressTestResult WithValidation(StressTestResult source) => new()
+        {
+            Scenario = source.Scenario,
+            Client = source.Client,
+            DurationMinutes = source.DurationMinutes,
+            MessageSizeBytes = source.MessageSizeBytes,
+            StartedAtUtc = source.StartedAtUtc,
+            CompletedAtUtc = source.CompletedAtUtc,
+            Throughput = source.Throughput,
+            GcStats = source.GcStats,
+            IsMessageBounded = true,
+            RoundTripPhases = source.RoundTripPhases,
+            RoundTripValidation = new RoundTripValidationSnapshot
+            {
+                ExpectedMessages = 250_000,
+                ConsumedMessages = 250_000,
+                MissingMessages = 0,
+                DuplicateMessages = 0,
+                CorruptMessages = 0,
+                OutOfOrderMessages = 0,
+                MispartitionedMessages = 0,
+                UnexpectedMessages = 0,
+                TimedOut = false
+            }
+        };
     }
 
     [Test]
@@ -518,5 +611,39 @@ public class RoundTripMessageCodecTests
         };
 
         await Assert.That(result.MedianIntervalMessagesPerSecond).IsNull();
+    }
+
+    private static StressTestResult CreateRoundTripResult(RoundTripPhaseSnapshot phases)
+    {
+        var now = DateTime.UtcNow;
+        return new StressTestResult
+        {
+            Scenario = "producer-roundtrip",
+            Client = "Dekaf",
+            DurationMinutes = 1,
+            MessageSizeBytes = 128,
+            StartedAtUtc = now,
+            CompletedAtUtc = now.AddSeconds(2.25),
+            Throughput = new ThroughputSnapshot
+            {
+                TotalMessages = 250_000,
+                TotalBytes = 32_000_000,
+                TotalErrors = 0,
+                ElapsedSeconds = 2.25,
+                AverageMessagesPerSecond = 111_111.11,
+                AverageMegabytesPerSecond = 13.56,
+                MessagesPerSecondSamples = [],
+                ErrorSamples = []
+            },
+            GcStats = new GcSnapshot
+            {
+                Gen0Collections = 0,
+                Gen1Collections = 0,
+                Gen2Collections = 0,
+                AllocatedBytes = 0
+            },
+            IsMessageBounded = true,
+            RoundTripPhases = phases
+        };
     }
 }

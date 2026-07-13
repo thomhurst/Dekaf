@@ -167,18 +167,37 @@ internal static class ConfluentStressTestHelpers
     /// drain wait, warmup messages landing after the snapshot inflate the run's delivered
     /// count and can mask real loss.
     /// </summary>
-    internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
+    internal static Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
         ConfluentKafka.IProducer<string, string> producer,
         StressTestOptions options,
         string producerName,
-        ThroughputTracker throughput)
+        ThroughputTracker throughput) =>
+        WarmUpProducerAndQueryStartOffsetAsync(
+            producer,
+            options,
+            producerName,
+            throughput,
+            "warmup",
+            "warmup");
+
+    internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync<TKey, TValue>(
+        ConfluentKafka.IProducer<TKey, TValue> producer,
+        StressTestOptions options,
+        string producerName,
+        ThroughputTracker throughput,
+        TKey warmupKey,
+        TValue warmupValue)
     {
         var warmupStartOffset = QueryTotalEndOffset(options.BootstrapServers, options.Topic, options.Partitions);
 
         Console.WriteLine($"  Warming up {producerName}...");
         for (var i = 0; i < StressTestHelpers.ProducerWarmupMessageCount; i++)
         {
-            producer.Produce(options.Topic, new ConfluentKafka.Message<string, string> { Key = "warmup", Value = "warmup" });
+            producer.Produce(options.Topic, new ConfluentKafka.Message<TKey, TValue>
+            {
+                Key = warmupKey,
+                Value = warmupValue
+            });
         }
         FlushWithTimeout(producer, throughput);
 

@@ -132,11 +132,28 @@ internal static class StressTestHelpers
         }
     }
 
-    internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
+    internal static Task<long?> WarmUpProducerAndQueryStartOffsetAsync(
         IKafkaProducer<string, string> producer,
         StressTestOptions options,
         string producerName,
         ThroughputTracker throughput,
+        CancellationToken cancellationToken) =>
+        WarmUpProducerAndQueryStartOffsetAsync(
+            producer,
+            options,
+            producerName,
+            throughput,
+            "warmup",
+            "warmup",
+            cancellationToken);
+
+    internal static async Task<long?> WarmUpProducerAndQueryStartOffsetAsync<TKey, TValue>(
+        IKafkaProducer<TKey, TValue> producer,
+        StressTestOptions options,
+        string producerName,
+        ThroughputTracker throughput,
+        TKey warmupKey,
+        TValue warmupValue,
         CancellationToken cancellationToken)
     {
         var warmupStartOffset = await QueryTotalEndOffsetAsync(
@@ -148,10 +165,10 @@ internal static class StressTestHelpers
         // First produce uses ProduceAsync to prime the topic metadata cache asynchronously.
         // Send() would block the thread via FetchTopicMetadataSync (.GetAwaiter().GetResult())
         // which hangs if the broker is slow to respond to new topic metadata requests.
-        await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
+        await producer.ProduceAsync(options.Topic, warmupKey, warmupValue, cancellationToken).ConfigureAwait(false);
         for (var i = 1; i < ProducerWarmupMessageCount; i++)
         {
-            await producer.FireAsync(options.Topic, "warmup", "warmup").ConfigureAwait(false);
+            await producer.FireAsync(options.Topic, warmupKey, warmupValue).ConfigureAwait(false);
         }
 
         await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);

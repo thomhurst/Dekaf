@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
@@ -30,12 +31,6 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .BuildAsync(cancellationToken);
 
-        var startOffsets = await StressTestHelpers.QueryEndOffsetsAsync(
-            consumer,
-            options.Topic,
-            options.Partitions,
-            cancellationToken);
-
         var builder = Kafka.CreateProducer<string, byte[]>()
             .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(options.BootstrapServers)
@@ -59,59 +54,72 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         };
         StressTestHelpers.ConfigureProducerDeliveryDiagnostics(builder, options);
 
+        using var deliveryErrorListener = CreateDeliveryErrorListener(throughput);
+        await using var producer = await builder.BuildAsync(cancellationToken);
+        _ = await StressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync(
+            producer,
+            options,
+            "Dekaf round-trip producer",
+            throughput,
+            "warmup",
+            new byte[options.MessageSizeBytes],
+            cancellationToken).ConfigureAwait(false);
+        var startOffsets = await StressTestHelpers.QueryEndOffsetsAsync(
+            consumer,
+            options.Topic,
+            options.Partitions,
+            cancellationToken).ConfigureAwait(false);
+
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
         using var gcStats = new GcStats();
-        using var deliveryErrorListener = CreateDeliveryErrorListener(throughput);
         throughput.Start();
         await using var sampler = StressTestHelpers.StartSampler(throughput, cancellationToken);
+        var produceTimer = Stopwatch.StartNew();
 
-        ProducerDeliveryDiagnosticsSnapshot? producerDiagnostics;
-        await using (var producer = await builder.BuildAsync(cancellationToken))
+        using var watchdog = options.ProgressWatchdog.Track(
+            throughput,
+            Client,
+            Name,
+            () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
+        using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
+
+        Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Dekaf...");
+        for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
         {
-            using var watchdog = options.ProgressWatchdog.Track(
-                throughput,
-                Client,
-                Name,
-                () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
-            using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
-
-            Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Dekaf...");
-            for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
+            if (RoundTripScenarioHelpers.TryRecordProduceTimeout(
+                    produceTimeout.IsCancellationRequested,
+                    throughput,
+                    client: "Dekaf",
+                    ordinal: ordinal,
+                    cancellationToken: cancellationToken))
             {
-                if (RoundTripScenarioHelpers.TryRecordProduceTimeout(
-                        produceTimeout.IsCancellationRequested,
-                        throughput,
-                        client: "Dekaf",
-                        ordinal: ordinal,
-                        cancellationToken: cancellationToken))
-                {
-                    break;
-                }
-
-                var message = factory.Create(ordinal % options.Partitions);
-                try
-                {
-                    await producer.FireAsync(options.Topic, message.Key, message.Value).ConfigureAwait(false);
-                    throughput.RecordMessage(message.Value.Length);
-                }
-                catch (Exception ex)
-                {
-                    throughput.RecordError(ex, "Round-trip produce", ordinal);
-                }
-
-                if ((ordinal + 1) % 50_000 == 0)
-                {
-                    Console.WriteLine($"  Produced {ordinal + 1:N0} / {options.RoundTripMessages:N0}");
-                }
+                break;
             }
 
-            await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
-            producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
+            var message = factory.Create(ordinal % options.Partitions);
+            try
+            {
+                await producer.FireAsync(options.Topic, message.Key, message.Value).ConfigureAwait(false);
+                throughput.RecordMessage(message.Value.Length);
+            }
+            catch (Exception ex)
+            {
+                throughput.RecordError(ex, "Round-trip produce", ordinal);
+            }
+
+            if ((ordinal + 1) % 50_000 == 0)
+            {
+                Console.WriteLine($"  Produced {ordinal + 1:N0} / {options.RoundTripMessages:N0}");
+            }
         }
+
+        await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
+        produceTimer.Stop();
+        var producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
         await sampler.StopAsync().ConfigureAwait(false);
 
         var queriedEndOffsets = await RoundTripScenarioHelpers.TryQueryEndOffsetsAsync(
@@ -130,6 +138,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         var validator = new RoundTripValidator(factory.ExpectedPerPartition);
         var consumeProgress = new ThroughputTracker();
         consumeProgress.Start();
+        var consumeTimer = Stopwatch.StartNew();
         using var consumeWatchdog = options.ProgressWatchdog.Track(
             consumeProgress,
             Client,
@@ -151,6 +160,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         }
         finally
         {
+            consumeTimer.Stop();
             consumeProgress.Stop();
         }
 
@@ -169,6 +179,11 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             gcStats,
             delivered,
             validation,
+            RoundTripScenarioHelpers.CreatePhaseSnapshot(
+                throughput.MessageCount,
+                produceTimer.Elapsed,
+                validation.ConsumedMessages,
+                consumeTimer.Elapsed),
             producerDiagnostics);
     }
 
@@ -260,12 +275,6 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
         };
 
         using var consumer = new ConfluentKafka.ConsumerBuilder<string, byte[]>(consumerConfig).Build();
-        var startOffsets = ConfluentStressTestHelpers.QueryEndOffsets(
-            consumer,
-            options.Topic,
-            options.Partitions,
-            TimeSpan.FromSeconds(30));
-
         var producerConfig = new ConfluentKafka.ProducerConfig
         {
             BootstrapServers = options.BootstrapServers,
@@ -287,6 +296,20 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             }
         };
 
+        using var producer = new ConfluentKafka.ProducerBuilder<string, byte[]>(producerConfig).Build();
+        _ = await ConfluentStressTestHelpers.WarmUpProducerAndQueryStartOffsetAsync(
+            producer,
+            options,
+            "Confluent round-trip producer",
+            throughput,
+            "warmup",
+            new byte[options.MessageSizeBytes]).ConfigureAwait(false);
+        var startOffsets = ConfluentStressTestHelpers.QueryEndOffsets(
+            consumer,
+            options.Topic,
+            options.Partitions,
+            TimeSpan.FromSeconds(30));
+
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
@@ -294,68 +317,67 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
         using var gcStats = new GcStats();
         throughput.Start();
         await using var sampler = StressTestHelpers.StartSampler(throughput, cancellationToken);
+        var produceTimer = Stopwatch.StartNew();
 
-        using (var producer = new ConfluentKafka.ProducerBuilder<string, byte[]>(producerConfig).Build())
+        using var watchdog = options.ProgressWatchdog.Track(throughput, Client, Name);
+        using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
+
+        Action<ConfluentKafka.DeliveryReport<string, byte[]>> deliveryHandler = report =>
+            RecordDeliveryReportError(throughput, report.Error);
+
+        Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Confluent.Kafka...");
+        for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
         {
-            using var watchdog = options.ProgressWatchdog.Track(throughput, Client, Name);
-            using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
-
-            Action<ConfluentKafka.DeliveryReport<string, byte[]>> deliveryHandler = report =>
-                RecordDeliveryReportError(throughput, report.Error);
-
-            Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Confluent.Kafka...");
-            for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
+            if (RoundTripScenarioHelpers.TryRecordProduceTimeout(
+                    produceTimeout.IsCancellationRequested,
+                    throughput,
+                    client: "Confluent",
+                    ordinal: ordinal,
+                    cancellationToken: cancellationToken))
             {
-                if (RoundTripScenarioHelpers.TryRecordProduceTimeout(
-                        produceTimeout.IsCancellationRequested,
-                        throughput,
-                        client: "Confluent",
-                        ordinal: ordinal,
-                        cancellationToken: cancellationToken))
-                {
-                    break;
-                }
-
-                var message = factory.Create(ordinal % options.Partitions);
-                try
-                {
-                    ConfluentStressTestHelpers.ProduceWithBackpressure(
-                        producer,
-                        options.Topic,
-                        new ConfluentKafka.Message<string, byte[]>
-                        {
-                            Key = message.Key,
-                            Value = message.Value
-                        },
-                        deliveryHandler,
-                        produceTimeout.Token);
-                    throughput.RecordMessage(message.Value.Length);
-                }
-                catch (OperationCanceledException) when (produceTimeout.IsCancellationRequested)
-                {
-                    _ = RoundTripScenarioHelpers.TryRecordProduceTimeout(
-                        produceTimeout.IsCancellationRequested,
-                        throughput,
-                        client: "Confluent",
-                        ordinal: ordinal,
-                        cancellationToken: cancellationToken);
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    throughput.RecordError(ex, "Round-trip produce", ordinal);
-                }
-
-                if ((ordinal + 1) % 50_000 == 0)
-                {
-                    Console.WriteLine($"  Produced {ordinal + 1:N0} / {options.RoundTripMessages:N0}");
-                    await Task.Yield();
-                }
+                break;
             }
 
-            ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput);
+            var message = factory.Create(ordinal % options.Partitions);
+            try
+            {
+                ConfluentStressTestHelpers.ProduceWithBackpressure(
+                    producer,
+                    options.Topic,
+                    new ConfluentKafka.Message<string, byte[]>
+                    {
+                        Key = message.Key,
+                        Value = message.Value
+                    },
+                    deliveryHandler,
+                    produceTimeout.Token);
+                throughput.RecordMessage(message.Value.Length);
+            }
+            catch (OperationCanceledException) when (produceTimeout.IsCancellationRequested)
+            {
+                _ = RoundTripScenarioHelpers.TryRecordProduceTimeout(
+                    produceTimeout.IsCancellationRequested,
+                    throughput,
+                    client: "Confluent",
+                    ordinal: ordinal,
+                    cancellationToken: cancellationToken);
+                break;
+            }
+            catch (Exception ex)
+            {
+                throughput.RecordError(ex, "Round-trip produce", ordinal);
+            }
+
+            if ((ordinal + 1) % 50_000 == 0)
+            {
+                Console.WriteLine($"  Produced {ordinal + 1:N0} / {options.RoundTripMessages:N0}");
+                await Task.Yield();
+            }
         }
+
+        ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput);
+        produceTimer.Stop();
         await sampler.StopAsync().ConfigureAwait(false);
 
         var endOffsets = ConfluentStressTestHelpers.QueryEndOffsets(
@@ -365,6 +387,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             TimeSpan.FromSeconds(30));
         var delivered = RoundTripScenarioHelpers.CountRecords(startOffsets, endOffsets);
         var validator = new RoundTripValidator(factory.ExpectedPerPartition);
+        var consumeTimer = Stopwatch.StartNew();
         var timedOut = ConsumeAndValidate(
             consumer,
             options,
@@ -373,6 +396,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             validator,
             throughput,
             cancellationToken);
+        consumeTimer.Stop();
 
         throughput.Stop();
 
@@ -389,6 +413,11 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             gcStats,
             delivered,
             validation,
+            RoundTripScenarioHelpers.CreatePhaseSnapshot(
+                throughput.MessageCount,
+                produceTimer.Elapsed,
+                validation.ConsumedMessages,
+                consumeTimer.Elapsed),
             producerDeliveryDiagnostics: null);
     }
 
@@ -570,6 +599,7 @@ internal static class RoundTripScenarioHelpers
         GcStats gcStats,
         long delivered,
         RoundTripValidationSnapshot validation,
+        RoundTripPhaseSnapshot phases,
         ProducerDeliveryDiagnosticsSnapshot? producerDeliveryDiagnostics) =>
         new()
         {
@@ -587,6 +617,20 @@ internal static class RoundTripScenarioHelpers
             CpuTimeSeconds = throughput.CpuTimeSeconds,
             IsMessageBounded = true,
             RoundTripValidation = validation,
+            RoundTripPhases = phases,
             ProducerDeliveryDiagnostics = producerDeliveryDiagnostics
+        };
+
+    public static RoundTripPhaseSnapshot CreatePhaseSnapshot(
+        long producedMessages,
+        TimeSpan produceElapsed,
+        long consumedMessages,
+        TimeSpan consumeElapsed) =>
+        new()
+        {
+            ProducedMessages = producedMessages,
+            ProduceElapsedSeconds = produceElapsed.TotalSeconds,
+            ConsumedMessages = consumedMessages,
+            ConsumeElapsedSeconds = consumeElapsed.TotalSeconds
         };
 }
