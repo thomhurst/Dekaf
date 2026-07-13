@@ -5,7 +5,7 @@ namespace Dekaf.StressTests.Reporting;
 
 internal static class MarkdownReporter
 {
-    private const int MaxConnectionScaleTimelineRows = 100;
+    private const int MaxTimelineRows = 100;
 
     public static string Generate(StressTestResults results)
     {
@@ -180,7 +180,7 @@ internal static class MarkdownReporter
         if (rows.Count == 0)
             return;
 
-        var displayedRows = SampleEvenly(rows, MaxConnectionScaleTimelineRows);
+        var displayedRows = SampleEvenly(rows, MaxTimelineRows);
         var omittedRows = rows.Count - displayedRows.Count;
 
         sb.AppendLine($"## Connection Scale Timeline - {label}");
@@ -234,11 +234,14 @@ internal static class MarkdownReporter
         if (rows.Count == 0)
             return;
 
+        var displayedRows = SampleEvenly(rows, MaxTimelineRows);
+        var omittedRows = rows.Count - displayedRows.Count;
+
         sb.AppendLine($"## Consumer Fetch Timeline - {label}");
         sb.AppendLine();
         sb.AppendLine("| Client | Interval end UTC | Fetch req/s | Bytes/fetch | Avg fetch RTT | Queues (pending / buffer / total) | Prefetched | Connection reaps | Nearest throughput |");
         sb.AppendLine("|--------|------------------|------------:|------------:|--------------:|----------------------------------:|-----------:|-----------------:|-------------------:|");
-        foreach (var row in rows)
+        foreach (var row in displayedRows)
         {
             var nearest = row.Result.Throughput.IntervalSamples
                 .MinBy(sample => Math.Abs((sample.CapturedAtUtc - row.Sample.CapturedAtUtc).TotalMilliseconds));
@@ -257,6 +260,9 @@ internal static class MarkdownReporter
                 $"{row.Sample.PendingFetchDepth} / {row.Sample.PrefetchBufferDepth} / {row.Sample.PrefetchDepth} | " +
                 $"{FormatDiagnosticBytes(row.Sample.PrefetchedBytes)} | {reapSummary} | {throughput} |");
         }
+
+        if (omittedRows > 0)
+            sb.AppendLine($"*{omittedRows:N0} fetch sample(s) omitted; rows sampled across the full timeline.*");
 
         sb.AppendLine();
         sb.AppendLine("*Bytes/fetch is consumed message payload bytes divided by completed fetch requests for the interval; queue depths are point-in-time samples.*");
@@ -553,21 +559,21 @@ internal static class MarkdownReporter
         _ => scenario
     };
 
-    private static string FormatBytes(long numBytes) => numBytes switch
-    {
-        < 1024 => $"{numBytes} B",
-        < 1024 * 1024 => $"{numBytes / 1024.0:F2} KB",
-        < 1024 * 1024 * 1024 => $"{numBytes / (1024.0 * 1024):F2} MB",
-        _ => $"{numBytes / (1024.0 * 1024 * 1024):F2} GB"
-    };
+    private static string FormatBytes(long numBytes) => FormatBytes(numBytes, 2);
 
-    private static string FormatDiagnosticBytes(double bytes) => bytes switch
+    private static string FormatDiagnosticBytes(double bytes) => FormatBytes(bytes, 1);
+
+    private static string FormatBytes(double bytes, int decimalPlaces)
     {
-        < 1024 => $"{bytes:F0} B",
-        < 1024 * 1024 => $"{bytes / 1024:F1} KiB",
-        < 1024 * 1024 * 1024 => $"{bytes / (1024 * 1024):F1} MiB",
-        _ => $"{bytes / (1024 * 1024 * 1024):F1} GiB"
-    };
+        var format = $"F{decimalPlaces}";
+        return bytes switch
+        {
+            < 1024 => $"{bytes:F0} B",
+            < 1024 * 1024 => $"{(bytes / 1024.0).ToString(format)} KiB",
+            < 1024 * 1024 * 1024 => $"{(bytes / (1024.0 * 1024)).ToString(format)} MiB",
+            _ => $"{(bytes / (1024.0 * 1024 * 1024)).ToString(format)} GiB"
+        };
+    }
 
     private static string EscapeTableCell(string value) =>
         value

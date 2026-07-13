@@ -149,6 +149,43 @@ public sealed class ConsumerFetchDiagnosticsTests
         await Assert.That(markdown).Contains("2 / 3 / 5");
     }
 
+    [Test]
+    public async Task Report_CapsConsumerFetchTimelineRows()
+    {
+        var capturedAt = new DateTimeOffset(2026, 7, 13, 10, 1, 0, TimeSpan.Zero);
+        var result = CreateResult(new ConsumerFetchDiagnosticsSnapshot
+        {
+            Samples =
+            [
+                .. Enumerable.Range(0, 150).Select(index => new ConsumerFetchDiagnosticSample
+                {
+                    CapturedAtUtc = capturedAt.AddMinutes(index),
+                    IntervalSeconds = 60,
+                    FetchRequestCount = 0,
+                    FetchRequestsPerSecond = 0,
+                    BytesPerFetch = 0,
+                    AverageFetchRttMs = 0,
+                    PendingFetchDepth = 0,
+                    PrefetchBufferDepth = 0,
+                    PrefetchDepth = 0,
+                    PrefetchedBytes = 0
+                })
+            ],
+            ConnectionReapEvents = []
+        });
+
+        var markdown = MarkdownReporter.Generate(new StressTestResults
+        {
+            RunStartedAtUtc = capturedAt.UtcDateTime,
+            RunCompletedAtUtc = capturedAt.UtcDateTime.AddMinutes(150),
+            MachineName = "test",
+            ProcessorCount = 4,
+            Results = [result]
+        });
+
+        await Assert.That(markdown).Contains("50 fetch sample(s) omitted");
+    }
+
     private static ConsumerDiagnosticSnapshot CreateConsumerSnapshot(
         DateTimeOffset capturedAtUtc,
         int pendingFetchDepth = 0,
