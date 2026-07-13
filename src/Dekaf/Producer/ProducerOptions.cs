@@ -352,9 +352,10 @@ public sealed class ProducerOptions
     public int MaxBlockMs { get; init; } = 60000;
 
     /// <summary>
-    /// Maximum request size in bytes.
+    /// Maximum request size in bytes. Defaults to 8 MB so full batches from separate
+    /// partitions can share one ProduceRequest.
     /// </summary>
-    public int MaxRequestSize { get; init; } = 1048576;
+    public int MaxRequestSize { get; init; } = 8388608;
 
     /// <summary>
     /// Partitioner type.

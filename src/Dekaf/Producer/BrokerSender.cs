@@ -109,8 +109,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // A request wave often reaches the sender over hundreds of microseconds. Waiting for one
     // short quiet period coalesces that wave without paying the full configured linger, while
     // the hard cap prevents a continuously busy producer from postponing dispatch forever.
-    private const int WaveCoalesceQuietMicroseconds = 75;
-    private const int WaveCoalesceMaxMicroseconds = 500;
+    private const int WaveCoalesceQuietMicroseconds = 1000;
+    private const int WaveCoalesceMaxMicroseconds = 2000;
     private static readonly long WaveCoalesceMaxTicks =
         MicrosecondsToStopwatchTicks(WaveCoalesceMaxMicroseconds);
 
