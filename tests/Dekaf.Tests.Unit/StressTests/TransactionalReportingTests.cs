@@ -1,5 +1,6 @@
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
+using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.StressTests;
 
@@ -63,6 +64,31 @@ public sealed class TransactionalReportingTests
     }
 
     [Test]
+    public async Task Generate_TransactionalResult_ReportsCpuPerRequestAndStandingCores()
+    {
+        var result = CreateResult(
+            CreateVerification(),
+            elapsedSeconds: 100,
+            cpuTimeSeconds: 20,
+            produceRequestCount: 50);
+        var results = new StressTestResults
+        {
+            RunStartedAtUtc = result.StartedAtUtc,
+            RunCompletedAtUtc = result.CompletedAtUtc,
+            MachineName = "test",
+            ProcessorCount = 4,
+            Results = [result]
+        };
+
+        var markdown = MarkdownReporter.Generate(results);
+
+        await Assert.That(result.CpuMicrosPerRequest).IsEqualTo(400_000);
+        await Assert.That(result.StandingCores).IsEqualTo(0.2);
+        await Assert.That(markdown).Contains("CPU μs/request");
+        await Assert.That(markdown).Contains("Standing cores");
+    }
+
+    [Test]
     public async Task CheckForFailures_DuplicateTransactionalRecord_FailsRun()
     {
         var verification = CreateVerification(duplicateMessages: 1);
@@ -96,7 +122,9 @@ public sealed class TransactionalReportingTests
         TransactionVerificationSnapshot verification,
         string client = "Dekaf",
         double elapsedSeconds = 900,
-        long? allocatedBytes = 0)
+        long? allocatedBytes = 0,
+        double? cpuTimeSeconds = null,
+        long? produceRequestCount = null)
     {
         var now = DateTime.UtcNow;
         return new StressTestResult
@@ -119,6 +147,10 @@ public sealed class TransactionalReportingTests
                 ErrorSamples = []
             },
             DeliveredMessages = verification.DeliveredMessages,
+            CpuTimeSeconds = cpuTimeSeconds,
+            ProducerDeliveryDiagnostics = produceRequestCount is { } requestCount
+                ? new ProducerDeliveryDiagnosticsSnapshot { ProduceRequestCount = requestCount }
+                : null,
             GcStats = new GcSnapshot
             {
                 Gen0Collections = 0,

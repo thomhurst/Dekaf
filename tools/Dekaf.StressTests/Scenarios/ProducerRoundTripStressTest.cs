@@ -72,7 +72,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             options.Topic,
             options.Partitions,
             cancellationToken).ConfigureAwait(false);
-        StressTestHelpers.ResetProducerDeliveryDiagnostics(producer, options);
+        StressTestHelpers.ResetProducerDeliveryDiagnostics(producer);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();

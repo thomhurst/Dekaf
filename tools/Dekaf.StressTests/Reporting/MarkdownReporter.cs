@@ -102,8 +102,8 @@ internal static class MarkdownReporter
             var messageSizeKb = messageSize >= 1024 ? $"{messageSize / 1024.0:F1}KB" : $"{messageSize}B";
             sb.AppendLine($"## {title} ({durationMinutes} minutes, {messageSizeKb} messages)");
             sb.AppendLine();
-            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used | Comparison Ratio |");
-            sb.AppendLine($"|{new string('-', clientWidth + 2)}|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|------------------|");
+            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores | Comparison Ratio |");
+            sb.AppendLine($"|{new string('-', clientWidth + 2)}|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|------------------|");
 
             var baseline = sizeResults
                 .Where(r => r.Client.Equals("Confluent", StringComparison.OrdinalIgnoreCase))
@@ -125,7 +125,8 @@ internal static class MarkdownReporter
                 var slope = result.ThroughputSlopePercentPerMinute is { } slopePercent ? $"{slopePercent:+0.00;-0.00;0.00}%" : "-";
                 var accepted = result.AcceptedMessagesPerSecond is { } acceptedRate ? acceptedRate.ToString("N0") : "-";
                 var cpuPerMessage = result.CpuMicrosPerMessage is { } cpu ? $"{cpu:F2}" : "-";
-                var coresUsed = result.AverageCoresUsed is { } cores ? $"{cores:F2}" : "-";
+                var cpuPerRequest = result.CpuMicrosPerRequest is { } requestCpu ? $"{requestCpu:F2}" : "-";
+                var standingCores = result.StandingCores is { } cores ? $"{cores:F2}" : "-";
                 // Errors column includes broker-side delivery failures so a run that lost
                 // accepted messages can never render a clean zero; the "dlv" suffix keeps
                 // "client loop broke" distinguishable from "broker rejected accepted messages".
@@ -133,7 +134,7 @@ internal static class MarkdownReporter
                 var errors = deliveryErrors > 0
                     ? $"{result.Throughput.TotalErrors} (+{deliveryErrors} dlv)"
                     : result.Throughput.TotalErrors.ToString()!;
-                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {cpuPerMessage,10} | {rate,12:N0} | {median,12} | {drift,7} | {slope,11} | {result.EffectiveMegabytesPerSecond,6:F2} | {accepted,14} | {errors,6} | {coresUsed,10} | {ratio:F2}x |");
+                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {cpuPerMessage,10} | {cpuPerRequest,14} | {rate,12:N0} | {median,12} | {drift,7} | {slope,11} | {result.EffectiveMegabytesPerSecond,6:F2} | {accepted,14} | {errors,6} | {standingCores,14} | {ratio:F2}x |");
             }
 
             sb.AppendLine();

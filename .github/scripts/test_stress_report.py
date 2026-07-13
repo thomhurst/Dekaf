@@ -277,6 +277,19 @@ class StressReportTests(unittest.TestCase):
         self.assertIn("Slope %/min", report)
         self.assertIn("-35.9%", report)
 
+    def test_throughput_table_surfaces_request_cpu_and_standing_cores(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value.update({
+            "cpuTimeSeconds": 0.2,
+            "produceRequestCount": 500,
+        })
+
+        report = "\n".join(format_throughput_table([value], "Producer Throughput"))
+
+        self.assertIn("CPU μs/request", report)
+        self.assertIn("Standing cores", report)
+        self.assertIn("| 200.00 | 400.00 |", report)
+
     def test_intra_run_throughput_accepts_stable_samples(self):
         value = stress_result("Dekaf", effective_rate=1400)
         value.update({
@@ -359,7 +372,7 @@ class StressReportTests(unittest.TestCase):
         dekaf_columns = [column.strip() for column in rows[0].strip("|").split("|")]
 
         self.assertTrue(rows[0].startswith("| Dekaf"))
-        self.assertEqual("-", dekaf_columns[3])
+        self.assertEqual("-", dekaf_columns[4])
         self.assertIn("| 2.00x |", rows[0])
 
     def test_transactional_scenario_reports_verification_counts(self):
