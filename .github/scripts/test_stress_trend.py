@@ -272,6 +272,35 @@ class StressTrendTests(unittest.TestCase):
         repeated = {item["metric"] for item in evaluations if item["repeatedRegression"]}
         self.assertEqual({"messagesPerSecond", "cpuMicrosPerMessage"}, repeated)
 
+    def test_confluent_consecutive_regressions_warn_but_never_fail(self):
+        runs = [history_run(i, client="Confluent") for i in range(1, 4)]
+        runs.append(history_run(
+            4,
+            client="Confluent",
+            messages_per_second=700.0,
+            cpu_micros_per_message=3.0,
+            messagesPerSecondTrend="regression",
+            cpuMicrosPerMessageTrend="regression",
+        ))
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(
+                client="Confluent",
+                messages_per_second=650.0,
+                cpu_micros_per_message=3.2,
+            )],
+            "2026-07-01T02:00:00Z",
+        )
+
+        self.assertFalse(should_fail)
+        repeated = [item for item in evaluations if item["repeatedRegression"]]
+        self.assertEqual(2, len(repeated))
+        self.assertTrue(all(not item["failureEligible"] for item in repeated))
+        markdown = format_markdown(repeated)
+        self.assertIn("Repeated regression (warning)", markdown)
+        self.assertNotIn("Repeated regression (fail)", markdown)
+
     def test_warned_run_does_not_widen_next_baseline(self):
         runs = [
             history_run(1, messages_per_second=950.0),

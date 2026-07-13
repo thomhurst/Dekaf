@@ -202,6 +202,7 @@ def evaluate_and_update(history, current_results, run_started_at):
         observation["consumerConnectionsPerBroker"] = _consumer_connections_per_broker(result)
         observation["brokerCount"] = result.get("brokerCount", 1)
         observation["roundTripMessages"] = _roundtrip_messages(result)
+        is_dekaf = str(result.get("client", "")).casefold().startswith("dekaf")
         throughput_regression = False
 
         for metric, definition in _METRICS.items():
@@ -234,6 +235,7 @@ def evaluate_and_update(history, current_results, run_started_at):
                 "upper": None,
                 "status": "insufficient-history",
                 "repeatedRegression": False,
+                "failureEligible": False,
             }
 
             if len(history_values) >= MIN_BASELINE_RUNS:
@@ -243,6 +245,7 @@ def evaluate_and_update(history, current_results, run_started_at):
                     definition["lower_is_regression"],
                 )
                 repeated = status == "regression" and previous_trend == "regression"
+                failure_eligible = repeated and is_dekaf
                 evaluation.update({
                     "median": center,
                     "mad": mad,
@@ -250,8 +253,9 @@ def evaluate_and_update(history, current_results, run_started_at):
                     "upper": upper,
                     "status": status,
                     "repeatedRegression": repeated,
+                    "failureEligible": failure_eligible,
                 })
-                should_fail = should_fail or repeated
+                should_fail = should_fail or failure_eligible
 
             observation[metric] = value
             observation[f"{metric}Trend"] = evaluation["status"]
@@ -262,8 +266,6 @@ def evaluate_and_update(history, current_results, run_started_at):
         intra_run = intra_run_throughput(result)
         if intra_run is not None:
             slope_breached = intra_run["slopeThresholdBreached"]
-            client = str(result.get("client", "")).casefold()
-            is_confluent = client.startswith("confluent")
             threshold_metrics = (
                 (
                     "steadyStatePeakRatio",
@@ -301,7 +303,7 @@ def evaluate_and_update(history, current_results, run_started_at):
                     else slope_breached or throughput_regression
                 )
                 failure_eligible = (
-                    breached and repeated and corroborated and not is_confluent
+                    breached and repeated and corroborated and is_dekaf
                 )
                 evaluations.append({
                     "scenario": _scenario_label(result),
@@ -350,12 +352,12 @@ def format_markdown(evaluations):
             f"Current metrics are compared with up to {HISTORY_LIMIT} matching runs. "
             f"The noise band is trailing median ± max({MAD_MULTIPLIER:g}×MAD, "
             f"{RELATIVE_NOISE_FLOOR:.0%} of median); "
-            "a second consecutive adverse excursion fails the job."
+            "a second consecutive adverse Dekaf excursion fails the job."
         ),
         (
             "Intra-run breaches warn first; repeated Dekaf breaches fail only when "
             "corroborated by negative slope or baseline throughput regression. "
-            "Confluent intra-run breaches remain warnings."
+            "Confluent regressions remain warnings."
         ),
         "",
         "| Scenario | Metric | Current | Baseline median | Band | Status |",
@@ -394,7 +396,11 @@ def format_markdown(evaluations):
             else:
                 status = "Threshold breach (warning)"
         elif item["repeatedRegression"]:
-            status = "Repeated regression (fail)"
+            status = (
+                "Repeated regression (fail)"
+                if item.get("failureEligible", True)
+                else "Repeated regression (warning)"
+            )
         elif item["status"] == "regression":
             status = "Regression (warning)"
 
