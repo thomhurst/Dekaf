@@ -7,6 +7,88 @@ namespace Dekaf.Tests.Unit.StressTests;
 public sealed class ConnectionScaleReportingTests
 {
     [Test]
+    public async Task Generate_LongScaleTimeline_SamplesWholeRunAndReportsOmissions()
+    {
+        var startedAt = new DateTimeOffset(2026, 7, 12, 2, 0, 0, TimeSpan.Zero);
+        var events = Enumerable.Range(0, 150)
+            .Select(index => new ProducerConnectionScaleDiagnostic
+            {
+                OccurredAtUtc = startedAt.AddSeconds(index * 6),
+                BrokerId = 1,
+                OldConnectionCount = 6,
+                NewConnectionCount = 6,
+                PartitionLimited = true,
+                BufferUtilization = 0,
+                BufferPressureDelta = 0,
+                SendLoopPressureDelta = 100,
+                ObservationCount = 10,
+                ObservedDurationMs = 6_000
+            })
+            .ToList();
+        var result = new StressTestResult
+        {
+            Scenario = "producer",
+            Client = "Dekaf",
+            DurationMinutes = 15,
+            BrokerCount = 1,
+            MessageSizeBytes = 1000,
+            StartedAtUtc = startedAt.UtcDateTime,
+            CompletedAtUtc = startedAt.AddMinutes(15).UtcDateTime,
+            Throughput = new ThroughputSnapshot
+            {
+                TotalMessages = 1_000,
+                TotalBytes = 1_000_000,
+                TotalErrors = 0,
+                ElapsedSeconds = 900,
+                AverageMessagesPerSecond = 1_000,
+                AverageMegabytesPerSecond = 1,
+                MessagesPerSecondSamples = [1_000, 900],
+                IntervalSamples =
+                [
+                    new ThroughputIntervalSample
+                    {
+                        CapturedAtUtc = startedAt,
+                        ElapsedSeconds = 0,
+                        MessagesPerSecond = 1_000
+                    },
+                    new ThroughputIntervalSample
+                    {
+                        CapturedAtUtc = startedAt.AddMinutes(15),
+                        ElapsedSeconds = 900,
+                        MessagesPerSecond = 900
+                    }
+                ]
+            },
+            GcStats = new GcSnapshot
+            {
+                Gen0Collections = 0,
+                Gen1Collections = 0,
+                Gen2Collections = 0,
+                AllocatedBytes = 0
+            },
+            ProducerDeliveryDiagnostics = new ProducerDeliveryDiagnosticsSnapshot
+            {
+                DiagnosticsEnabled = true,
+                CapturedAtUtc = startedAt.AddMinutes(15),
+                ConnectionScaleEvents = events
+            }
+        };
+
+        var markdown = MarkdownReporter.Generate(new StressTestResults
+        {
+            RunStartedAtUtc = result.StartedAtUtc,
+            RunCompletedAtUtc = result.CompletedAtUtc,
+            MachineName = "test",
+            ProcessorCount = 4,
+            Results = [result]
+        });
+
+        await Assert.That(markdown).Contains("50 scale event(s) omitted");
+        await Assert.That(markdown).Contains("02:00:00.000");
+        await Assert.That(markdown).Contains("02:14:54.000");
+    }
+
+    [Test]
     public async Task Generate_ConnectionScaleEvent_CorrelatesNearestThroughputSample()
     {
         var startedAt = new DateTimeOffset(2026, 7, 12, 2, 0, 0, TimeSpan.Zero);

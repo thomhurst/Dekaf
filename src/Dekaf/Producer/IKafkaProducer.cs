@@ -305,6 +305,8 @@ internal sealed class ProducerConnectionScaleDiagnostic
         }
     }
     public bool PartitionLimited { get; init; }
+    public long ObservationCount { get; init; } = 1;
+    public long ObservedDurationMs { get; init; }
     public required double BufferUtilization { get; init; }
     public required long BufferPressureDelta { get; init; }
     public required long SendLoopPressureDelta { get; init; }

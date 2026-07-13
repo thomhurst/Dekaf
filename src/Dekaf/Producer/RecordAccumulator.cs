@@ -4757,7 +4757,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         double bufferUtilization,
         long bufferPressureDelta,
         long sendLoopPressureDelta,
-        bool partitionLimited = false)
+        bool partitionLimited = false,
+        long observationCount = 1,
+        long observedDurationMs = 0)
     {
         if (!_options.EnableDeliveryDiagnostics)
             return;
@@ -4776,7 +4778,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 BufferUtilization = bufferUtilization,
                 BufferPressureDelta = bufferPressureDelta,
                 SendLoopPressureDelta = sendLoopPressureDelta,
-                PartitionLimited = partitionLimited
+                PartitionLimited = partitionLimited,
+                ObservationCount = observationCount,
+                ObservedDurationMs = observedDurationMs
             });
         }
     }

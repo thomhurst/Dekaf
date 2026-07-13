@@ -89,8 +89,91 @@ public sealed class AdaptiveScaleDownTests
                 .ConnectionScaleEvents.Single();
             await Assert.That(diagnostic.Direction).IsEqualTo("capped");
             await Assert.That(diagnostic.SendLoopPressureDelta).IsEqualTo(100);
+            await Assert.That(diagnostic.ObservationCount).IsEqualTo(1);
+            await Assert.That(diagnostic.ObservedDurationMs).IsEqualTo(0);
             await Assert.That(GetField<long>(sender, "_lastPartitionLimitedPressureSnapshot"))
                 .IsEqualTo(100);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task PartitionLimitedPressure_CoalescesUntilDiagnosticInterval()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            enableDeliveryDiagnostics: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
+            GetField<HashSet<TopicPartition>>(sender, "_knownPartitions")
+                .Add(new TopicPartition(Topic, 0));
+
+            for (var observation = 0; observation < 3; observation++)
+            {
+                SetField(sender, "_partitionLimitedPressureEvents", (observation + 1L) * 100L);
+                if (observation == 2)
+                {
+                    SetField(
+                        sender,
+                        "_lastPartitionLimitedDiagnosticMs",
+                        Dekaf.MonotonicClock.GetMilliseconds() - 15_001L);
+                }
+
+                InvokeMaybeScaleConnections(sender);
+            }
+
+            var diagnostics = accumulator.GetDeliveryDiagnosticsSnapshot().ConnectionScaleEvents;
+            await Assert.That(diagnostics.Count).IsEqualTo(2);
+            await Assert.That(diagnostics[0].ObservationCount).IsEqualTo(1);
+            await Assert.That(diagnostics[1].ObservationCount).IsEqualTo(2);
+            await Assert.That(diagnostics[1].SendLoopPressureDelta).IsEqualTo(100);
+            await Assert.That(diagnostics[1].ObservedDurationMs).IsGreaterThanOrEqualTo(15_000);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task PartitionLimitedPressure_DisposeFlushesPartialWindow()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            enableDeliveryDiagnostics: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            var observe = typeof(BrokerSender).GetMethod(
+                "ObservePartitionLimitedPressure",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var now = Dekaf.MonotonicClock.GetMilliseconds();
+            observe.Invoke(sender, [now, 0.5, 10L, 20L]);
+            observe.Invoke(sender, [now + 1, 0.6, 30L, 40L]);
+
+            await sender.DisposeAsync();
+
+            var diagnostics = accumulator.GetDeliveryDiagnosticsSnapshot().ConnectionScaleEvents;
+            await Assert.That(diagnostics.Count).IsEqualTo(2);
+            await Assert.That(diagnostics[1].ObservationCount).IsEqualTo(1);
+            await Assert.That(diagnostics[1].BufferPressureDelta).IsEqualTo(30);
+            await Assert.That(diagnostics[1].SendLoopPressureDelta).IsEqualTo(40);
         }
         finally
         {

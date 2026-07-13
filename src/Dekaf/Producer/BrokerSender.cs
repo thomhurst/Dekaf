@@ -555,6 +555,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private long _lastSendLoopPressureSnapshot;
     private long _partitionLimitedPressureEvents;
     private long _lastPartitionLimitedPressureSnapshot;
+    private long _lastPartitionLimitedDiagnosticMs;
+    private long _partitionLimitedDiagnosticObservationCount;
+    private long _partitionLimitedDiagnosticMaxBufferPressureDelta;
+    private long _partitionLimitedDiagnosticMaxSendLoopPressureDelta;
+    private double _partitionLimitedDiagnosticMaxBufferUtilization;
     private long _lastScaleTimeTicks;
     private Task<int>? _pendingScaleTask; // Background connection creation, polled by send loop
     private double _pendingScaleBufferUtilization;
@@ -597,6 +602,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // so changing this value affects both trigger sensitivity and per-step magnitude.
     private const long ScalePressureDeltaThreshold = 100;
     private const long ScaleCooldownMs = 5_000;
+    private const long PartitionLimitedDiagnosticIntervalMs = 15_000;
     private const double ScaleUtilizationThreshold = 0.7;
 
     private const int MaxScaleStep = 3; // Cap per scale-up to avoid over-provisioning from a brief spike
@@ -1877,6 +1883,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         finally
         {
+            EmitPartitionLimitedDiagnostic(Dekaf.MonotonicClock.GetMilliseconds());
+
             var redeliver = crashed
                 && Volatile.Read(ref _disposed) == 0
                 && _rerouteBatch is not null;
@@ -4947,17 +4955,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 || (utilization >= ScaleUtilizationThreshold
                     && partitionLimitedBufferPressureDelta >= ScalePressureDeltaThreshold)))
         {
-            _accumulator.RecordConnectionScaleEvent(
-                _brokerId,
-                _connectionCount,
-                _connectionCount,
+            ObservePartitionLimitedPressure(
+                now,
                 utilization,
                 partitionLimitedBufferPressureDelta + partitionLimitedUnackedBlockDelta,
-                partitionLimitedPressureDelta,
-                partitionLimited: true);
+                partitionLimitedPressureDelta);
             _lastPartitionLimitedPressureSnapshot = _partitionLimitedPressureEvents;
             _lastPartitionLimitedBufferPressureSnapshot = _accumulator.BufferPressureEvents;
             _lastPartitionLimitedUnackedBlockSnapshot = unackedBlockEvents;
+        }
+        else if (!partitionLimitedScalePressure)
+        {
+            EndPartitionLimitedDiagnosticState(now);
         }
         var scalePressureDelta = ComputeScalePressureDelta(
             bufferPressureDelta + usefulUnackedBlockDelta, sendLoopPressureDelta);
@@ -5111,6 +5120,65 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _brokerId, targetShrinkCount, _cts.Token).AsTask();
 
         return 0;
+    }
+
+    private void ObservePartitionLimitedPressure(
+        long now,
+        double bufferUtilization,
+        long bufferPressureDelta,
+        long sendLoopPressureDelta)
+    {
+        _partitionLimitedDiagnosticObservationCount++;
+        _partitionLimitedDiagnosticMaxBufferUtilization = Math.Max(
+            _partitionLimitedDiagnosticMaxBufferUtilization,
+            bufferUtilization);
+        _partitionLimitedDiagnosticMaxBufferPressureDelta = Math.Max(
+            _partitionLimitedDiagnosticMaxBufferPressureDelta,
+            bufferPressureDelta);
+        _partitionLimitedDiagnosticMaxSendLoopPressureDelta = Math.Max(
+            _partitionLimitedDiagnosticMaxSendLoopPressureDelta,
+            sendLoopPressureDelta);
+
+        if (_lastPartitionLimitedDiagnosticMs == 0
+            || now - _lastPartitionLimitedDiagnosticMs >= PartitionLimitedDiagnosticIntervalMs)
+        {
+            EmitPartitionLimitedDiagnostic(now);
+        }
+    }
+
+    private void EndPartitionLimitedDiagnosticState(long now)
+    {
+        EmitPartitionLimitedDiagnostic(now);
+        _lastPartitionLimitedDiagnosticMs = 0;
+    }
+
+    private void EmitPartitionLimitedDiagnostic(long now)
+    {
+        var observationCount = _partitionLimitedDiagnosticObservationCount;
+        if (observationCount == 0)
+            return;
+
+        var observedDurationMs = _lastPartitionLimitedDiagnosticMs == 0
+            ? 0
+            : Math.Max(0, now - _lastPartitionLimitedDiagnosticMs);
+        // Partition-limited pressure means no additional connection can serve a distinct
+        // partition, so the connection count remains stable throughout this window.
+        _accumulator.RecordConnectionScaleEvent(
+            _brokerId,
+            _connectionCount,
+            _connectionCount,
+            _partitionLimitedDiagnosticMaxBufferUtilization,
+            _partitionLimitedDiagnosticMaxBufferPressureDelta,
+            _partitionLimitedDiagnosticMaxSendLoopPressureDelta,
+            partitionLimited: true,
+            observationCount,
+            observedDurationMs);
+
+        _partitionLimitedDiagnosticObservationCount = 0;
+        _partitionLimitedDiagnosticMaxBufferUtilization = 0;
+        _partitionLimitedDiagnosticMaxBufferPressureDelta = 0;
+        _partitionLimitedDiagnosticMaxSendLoopPressureDelta = 0;
+        _lastPartitionLimitedDiagnosticMs = now;
     }
 
     private bool HasMutedPartitionLoad(PartitionCarryOver carryOver, bool hasUnreadEvent)
