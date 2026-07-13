@@ -352,6 +352,8 @@ public sealed class AdaptiveScaleDownTests
                 await pool.GetConnectionAsync(1);
 
                 var senderType = typeof(BrokerSender);
+                GetField<MetadataManager>(sender, "_metadataManager")
+                    .Metadata.Update(CreateMetadata(leaderId: 1));
                 var getConnection = senderType.GetMethod(
                     "GetConnectionForPartition",
                     BindingFlags.Instance | BindingFlags.NonPublic)!;
