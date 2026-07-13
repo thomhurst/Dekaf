@@ -30,6 +30,7 @@ internal static class MarkdownReporter
 
             GenerateThroughputTable(sb, title, groupResults);
             GenerateConnectionScaleTimeline(sb, groupResults, label);
+            GenerateProducerBudgetTimeline(sb, groupResults, label);
             GenerateConsumerFetchTimeline(sb, groupResults, label);
             GenerateLatencyOutlierTimeline(sb, groupResults, label);
 
@@ -219,6 +220,45 @@ internal static class MarkdownReporter
         }
 
         return sampled;
+    }
+
+    private static void GenerateProducerBudgetTimeline(
+        StringBuilder sb,
+        List<StressTestResult> results,
+        string label)
+    {
+        var rows = results
+            .SelectMany(result => (result.ProducerDeliveryDiagnostics?.BrokerBudgetSamples ?? [])
+                .Select(sample => (Result: result, Sample: sample)))
+            .OrderBy(row => row.Sample.CapturedAtUtc)
+            .ToList();
+        if (rows.Count == 0)
+            return;
+
+        var displayedRows = SampleEvenly(rows, MaxTimelineRows);
+        var omittedRows = rows.Count - displayedRows.Count;
+
+        sb.AppendLine($"## Producer Budget Timeline - {label}");
+        sb.AppendLine();
+        sb.AppendLine("| Client | Sample UTC | Broker | Budget / unacked | Max rate | Probe success/failure | Admission blocks | Nearest throughput sample |");
+        sb.AppendLine("|--------|------------|-------:|------------------|---------:|----------------------:|-----------------:|---------------------------|");
+        foreach (var row in displayedRows)
+        {
+            var nearest = row.Result.Throughput.IntervalSamples
+                .MinBy(sample => Math.Abs((sample.CapturedAtUtc - row.Sample.CapturedAtUtc).TotalMilliseconds));
+            var throughput = nearest is null
+                ? "-"
+                : $"{nearest.ElapsedSeconds:F1}s / {nearest.MessagesPerSecond:N0} msg/s";
+            sb.AppendLine(
+                $"| {row.Result.Client} | {row.Sample.CapturedAtUtc:HH:mm:ss.fff} | {row.Sample.BrokerId} | " +
+                $"{row.Sample.BudgetBytes / 1_048_576.0:F1} MiB / {row.Sample.UnackedBytes / 1_048_576.0:F1} MiB | " +
+                $"{row.Sample.MaxRateBytesPerSec / 1_000_000.0:F1} MB/s | " +
+                $"{row.Sample.CapacityProbeSuccessCount:N0}/{row.Sample.CapacityProbeFailureCount:N0} | " +
+                $"{row.Sample.AdmissionBlockCount:N0} | {throughput} |");
+        }
+        if (omittedRows > 0)
+            sb.AppendLine($"*{omittedRows:N0} budget sample(s) omitted; rows sampled across the full timeline.*");
+        sb.AppendLine();
     }
 
     private static void GenerateConsumerFetchTimeline(
