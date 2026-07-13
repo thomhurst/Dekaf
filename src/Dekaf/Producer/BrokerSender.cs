@@ -106,20 +106,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private const int BlockedBucketPollIntervalMs = 1;
     private static readonly TimeSpan DisposalDrainTimeout = TimeSpan.FromSeconds(5);
 
-    /// <summary>
-    /// Micro-linger: when coalesced batch count is at or below this threshold,
-    /// briefly spin-wait for more batches before sending. Reduces per-request
-    /// overhead in multi-broker setups with few partitions per broker.
-    /// </summary>
-    private const int MicroLingerBatchThreshold = 3;
-
-    /// <summary>
-    /// Maximum SpinWait iterations for the micro-linger. Bounds the spin cost
-    /// regardless of channel activity. Higher values (20 vs 10) give the sender
-    /// loop more time to enqueue all batches for this broker, improving coalescing
-    /// in multi-broker setups where per-broker batch counts are low.
-    /// </summary>
-    private const int MicroLingerMaxSpins = 20;
+    // A request wave often reaches the sender over hundreds of microseconds. Waiting for one
+    // short quiet period coalesces that wave without paying the full configured linger, while
+    // the hard cap prevents a continuously busy producer from postponing dispatch forever.
+    private const int WaveCoalesceQuietMicroseconds = 75;
+    private const int WaveCoalesceMaxMicroseconds = 500;
+    private static readonly long WaveCoalesceMaxTicks =
+        MicrosecondsToStopwatchTicks(WaveCoalesceMaxMicroseconds);
 
     /// <summary>
     /// Maximum batches coalesced into one send-loop pass. The in-flight limit can be very
@@ -155,6 +148,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Action<int>? _onBrokerThrottle;
     private readonly Action? _onBlockedBucketRequeued;
     private readonly Action? _onPipelinedResponseAcquired;
+    private readonly Action? _onWaveCoalesceStarted;
     private readonly Func<long> _getTimestamp;
     private readonly Func<int, CancellationToken, ValueTask> _delayForThrottle;
     private readonly TimeSpan _disposalDrainTimeout;
@@ -718,7 +712,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         BrokerUnackedByteBudget? unackedBudget = null,
         TimeSpan? disposalDrainTimeout = null,
         Func<bool>? usesTransactionV2 = null,
-        Action? onPipelinedResponseAcquired = null)
+        Action? onPipelinedResponseAcquired = null,
+        Action? onWaveCoalesceStarted = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -743,6 +738,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _delayForThrottle = delayForThrottle ?? DelayForThrottleAsync;
         _onBlockedBucketRequeued = onBlockedBucketRequeued;
         _onPipelinedResponseAcquired = onPipelinedResponseAcquired;
+        _onWaveCoalesceStarted = onWaveCoalesceStarted;
         _disposalDrainTimeout = disposalDrainTimeout ?? DisposalDrainTimeout;
 
         _eventChannel = Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
@@ -1088,6 +1084,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Sum individually framed batch sizes, matching RecordAccumulator.Drain's
         // conservative request budget across batches from separate drain passes.
         var coalescedRequestBudgetUsed = 0L;
+        var waveCoalesceMaxTicks = WaveCoalesceMaxTicks;
+        var waveCoalesceQuietTicks = MicrosecondsToStopwatchTicks(WaveCoalesceQuietMicroseconds);
+        var waveCoalesceArmed = true;
 
         // Pre-allocate reusable response lookup dictionary to avoid per-response allocation.
         // Single-threaded: only accessed by the send loop, cleared after each use.
@@ -1350,43 +1349,53 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (carryOver.Count > 0 || coalescedCount == maxCoalesce)
                     RecordSendLoopPressureIfScaleUseful();
 
-                // ── 5b. Micro-linger for small coalesced batches ──
-                // When very few batches are coalesced (e.g., broker has only 2 partitions in a
-                // multi-broker setup), sending immediately produces many small ProduceRequests.
-                // A brief adaptive spin gives the sender coordinator time to post more batches,
-                // reducing per-request overhead. SpinWait adapts across core counts (spins on
-                // multi-core, yields on single-core) and avoids kernel transitions when possible.
-                // The iteration count caps total work (both spins and channel reads).
+                // ── 5b. Form a request wave across known partitions ──
+                // Sealed batches for one producer wave reach this broker over hundreds of
+                // microseconds. Wait for a short quiet interval, extending it whenever another
+                // distinct partition arrives, but never beyond the configured hard cap.
                 //
                 // Skip when all known partitions are already coalesced — any new batch from the
                 // channel would be for an already-coalesced partition and get carried over, making
                 // the spin pure waste. This is especially important for single-partition topics
                 // where coalescedCount is always 1 and every MicroLinger iteration is wasted.
-                if (coalescedCount > 0 && coalescedCount <= MicroLingerBatchThreshold
+                if (waveCoalesceArmed
+                    && coalescedCount > 0
                     && coalescedCount < maxCoalesce
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
-                    && Volatile.Read(ref _totalPendingResponseCount) < _totalMaxInFlight
+                    && Volatile.Read(ref _totalPendingResponseCount) == 0
                     && ShouldMicroLinger(
                         coalescedBatches,
                         coalescedCount,
                         _options.TransactionalId is not null))
                 {
-                    var spinWait = new SpinWait();
-                    for (var spin = 0; spin < MicroLingerMaxSpins && coalescedCount < maxCoalesce; spin++)
+                    waveCoalesceArmed = false;
+                    _onWaveCoalesceStarted?.Invoke();
+                    var started = Stopwatch.GetTimestamp();
+                    var hardDeadline = started + waveCoalesceMaxTicks;
+                    var quietDeadline = Math.Min(started + waveCoalesceQuietTicks, hardDeadline);
+                    while (coalescedCount < maxCoalesce
+                           && coalescedPartitions.Count < _knownPartitions.Count
+                           && Stopwatch.GetTimestamp() < quietDeadline)
                     {
                         if (!eventReader.TryRead(out var evt))
                         {
-                            spinWait.SpinOnce();
+                            // Fixed CPU spin never escalates to Sleep(1), so the deadline
+                            // remains a real sub-millisecond hard cap.
+                            global::System.Threading.Thread.SpinWait(32);
                             continue;
                         }
 
                         if (evt.Type == SendLoopEventType.NewBatch)
                         {
+                            var countBefore = coalescedCount;
                             CoalesceBatch(evt.GetBatchReference(), coalescedBatches, coalescedGenerations, ref coalescedCount,
                                 ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver);
-                            if (coalescedCount > MicroLingerBatchThreshold)
-                                break;
+                            if (coalescedCount > countBefore)
+                            {
+                                var now = Stopwatch.GetTimestamp();
+                                quietDeadline = Math.Min(now + waveCoalesceQuietTicks, hardDeadline);
+                            }
                         }
                         else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
                         {
@@ -1798,6 +1807,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         break;
                     }
+
+                    waveCoalesceArmed = true;
                 }
                 else if (carryOver.Count > 0 && sentThisIteration)
                 {
@@ -2221,6 +2232,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var batch = coalescedBatches[0];
         return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }
+
+    private static long MicrosecondsToStopwatchTicks(long microseconds) =>
+        Math.Max(1, microseconds * Stopwatch.Frequency / 1_000_000);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool CarryOverIfCoalescedLimitReached(
@@ -2936,7 +2950,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         PartitionCarryOver carryOver,
         CancellationToken cancellationToken)
     {
-        var now = Stopwatch.GetTimestamp();
+        var now = _getTimestamp();
         var requestTimeoutTicks = _options.RequestTimeoutTicks;
 
         // Check each connection's pending responses for timeout.
