@@ -131,12 +131,24 @@ internal sealed class ResponseFrameReader : IDisposable
             }
         }
 
-        // Receive the remainder of the payload directly into the pooled array — no
-        // intermediate buffer, so large fetch payloads are copied exactly once.
+        // Modern targets receive the remainder directly into pooled storage. The
+        // netstandard2.0 native path uses the bounded receive buffer for compatibility.
         while (_frameFilled < _frameSize)
         {
+#if NETSTANDARD2_0
+            // The netstandard2.0 compatibility read path only supports array-backed
+            // Memory<byte>. Stage native destinations through the bounded receive buffer.
+            var remaining = _frameSize - _frameFilled;
+            var destination = _nativeFrame is not null
+                ? _buffer[..Math.Min(_buffer.Length, remaining)]
+                : FrameMemory.Slice(_frameFilled, remaining);
+            var read = await ReadSourceAsync(destination).ConfigureAwait(false);
+            if (_nativeFrame is not null && read > 0)
+                destination.Span[..read].CopyTo(FrameMemory.Span.Slice(_frameFilled));
+#else
             var read = await ReadSourceAsync(FrameMemory.Slice(_frameFilled, _frameSize - _frameFilled))
                 .ConfigureAwait(false);
+#endif
             if (read == 0)
             {
                 // EOF mid-frame: discard the partial frame; the caller fails pending requests.

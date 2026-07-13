@@ -91,6 +91,7 @@ public sealed class ResponseFrameReaderTests
         var result = await reader.ReadFrameAsync();
 
         await Assert.That(result.Buffer.UsesNativeMemory).IsTrue();
+        await Assert.That(result.CorrelationId).IsEqualTo(12);
         await AssertPayloadAsync(result, ResponseBufferPool.NativeMemoryThresholdBytes);
     }
 
@@ -258,8 +259,11 @@ public sealed class ResponseFrameReaderTests
         // (offset by the 4-byte size prefix that is not part of the payload).
         for (var i = 4; i < payloadSize; i++)
         {
-            if (payload.Span[i] != (byte)((i + 4) % 251))
-                throw new InvalidOperationException($"Payload mismatch at offset {i}");
+            var expected = (byte)((i + 4) % 251);
+            var actual = payload.Span[i];
+            if (actual != expected)
+                throw new InvalidOperationException(
+                    $"Payload mismatch at offset {i}: expected {expected}, actual {actual}");
         }
 
         result.Buffer.Dispose();
