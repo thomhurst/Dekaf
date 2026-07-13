@@ -5,6 +5,7 @@ from stress_report import (
     format_roundtrip_validation_table,
     format_connection_scale_timeline,
     format_producer_request_diagnostics,
+    format_producer_budget_timeline,
     format_throughput_table,
     generate_scenario_tables,
     intra_run_throughput,
@@ -120,6 +121,33 @@ class StressReportTests(unittest.TestCase):
         self.assertIn("1→2", report)
         self.assertIn("20.0s / 2,000 msg/s", report)
         self.assertIn("120/150", report)
+
+    def test_producer_budget_timeline_surfaces_probe_outcomes(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["throughput"]["intervalSamples"] = [{
+            "capturedAtUtc": "2026-07-12T02:20:50+00:00",
+            "elapsedSeconds": 20.0,
+            "messagesPerSecond": 2000.0,
+        }]
+        value["producerDeliveryDiagnostics"] = {
+            "brokerBudgetSamples": [{
+                "capturedAtUtc": "2026-07-12T02:20:49+00:00",
+                "brokerId": 1,
+                "budgetBytes": 8 * 1024 * 1024,
+                "unackedBytes": 6 * 1024 * 1024,
+                "maxRateBytesPerSec": 750_000_000,
+                "capacityProbeSuccessCount": 3,
+                "capacityProbeFailureCount": 2,
+                "admissionBlockCount": 12,
+            }]
+        }
+
+        report = "\n".join(format_producer_budget_timeline([value], "Producer"))
+
+        self.assertIn("8.0 MiB", report)
+        self.assertIn("750.0 MB/s", report)
+        self.assertIn("3/2", report)
+        self.assertIn("20.0s / 2,000 msg/s", report)
 
     def test_scenario_tables_surface_latency_outlier_diagnostics(self):
         value = stress_result("Dekaf", effective_rate=1400)
