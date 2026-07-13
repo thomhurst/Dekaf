@@ -140,6 +140,30 @@ public sealed class ProgressWatchdogTests
         }
     }
 
+    [Test]
+    public void Track_SequentialPhases_ReusesWatchdog()
+    {
+        var outputDirectory = CreateOutputDirectory();
+        try
+        {
+            using var watchdog = new ProgressWatchdog(outputDirectory);
+            var produceProgress = new ThroughputTracker();
+            var consumeProgress = new ThroughputTracker();
+
+            using (watchdog.Track(produceProgress, "Dekaf", "producer-roundtrip"))
+            {
+            }
+
+            using (watchdog.Track(consumeProgress, "Dekaf", "producer-roundtrip-consume"))
+            {
+            }
+        }
+        finally
+        {
+            Directory.Delete(outputDirectory, recursive: true);
+        }
+    }
+
     private static string CreateOutputDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), $"dekaf-watchdog-tests-{Guid.NewGuid():N}");
