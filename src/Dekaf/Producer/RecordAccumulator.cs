@@ -6365,7 +6365,8 @@ internal sealed class PartitionBatch
                 _callbacks,
                 _callbackCount,
                 _arrayReuseQueue,
-                _recordCount);
+                _recordCount,
+                _createdStopwatchTimestamp);
 
             _completedBatch = readyBatch;
 
@@ -6979,14 +6980,20 @@ internal sealed class ReadyBatch
     internal long RetryNotBefore { get; set; }
 
     /// <summary>
-    /// Stopwatch timestamp when this batch was initialized. Used for absolute delivery deadline
-    /// computation in ProcessCompletedResponses (prevents infinite retries with relative deadlines).
+    /// Stopwatch timestamp when the accumulator batch was created. Used for absolute delivery
+    /// deadline computation in ProcessCompletedResponses (prevents infinite retries with relative
+    /// deadlines and includes configured linger time).
     /// </summary>
     internal long StopwatchCreatedTicks { get; private set; }
 
     /// <summary>
-    /// Age of this batch in milliseconds since creation (or since last reenqueue).
-    /// Used by Ready() to determine if linger time has expired.
+    /// Stopwatch timestamp when the accumulator batch was sealed into this ready batch. Producer
+    /// queue-latency control starts here so configured linger is not mistaken for admission delay.
+    /// </summary>
+    internal long StopwatchSealedTicks { get; private set; }
+
+    /// <summary>
+    /// Age of this ready batch in milliseconds since sealing (or since last reenqueue).
     /// </summary>
     internal int AgeMs => (int)((Stopwatch.GetTimestamp() - _createdTimestamp) * 1000 / Stopwatch.Frequency);
     private long _createdTimestamp;
@@ -7127,7 +7134,8 @@ internal sealed class ReadyBatch
         Action<RecordMetadata, Exception?>?[]? callbacks = null,
         int callbackCount = 0,
         BatchArrayReuseQueue? arrayReuseQueue = null,
-        int recordCount = 0)
+        int recordCount = 0,
+        long createdStopwatchTimestamp = 0)
     {
         // The generation increment must happen BEFORE the lifecycle flags are cleared.
         // Stale-reference holders validate liveness by reading _returnedToPool first and
@@ -7168,8 +7176,11 @@ internal sealed class ReadyBatch
         _callbacks = callbacks;
         _callbackCount = callbackCount;
         _arrayReuseQueue = arrayReuseQueue;
-        StopwatchCreatedTicks = Stopwatch.GetTimestamp();
-        _createdTimestamp = StopwatchCreatedTicks;
+        StopwatchSealedTicks = Stopwatch.GetTimestamp();
+        StopwatchCreatedTicks = createdStopwatchTimestamp > 0
+            ? createdStopwatchTimestamp
+            : StopwatchSealedTicks;
+        _createdTimestamp = StopwatchSealedTicks;
     }
 
     /// <summary>

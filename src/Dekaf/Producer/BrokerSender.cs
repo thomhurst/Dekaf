@@ -2253,6 +2253,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private static long MicrosecondsToStopwatchTicks(long microseconds) =>
         Math.Max(1, microseconds * Stopwatch.Frequency / 1_000_000);
 
+    internal static long GetOldestBatchSealTimestamp(ReadyBatch[] batches, int count)
+    {
+        var oldestBatchTimestamp = long.MaxValue;
+        for (var i = 0; i < count; i++)
+            oldestBatchTimestamp = Math.Min(oldestBatchTimestamp, batches[i].StopwatchSealedTicks);
+
+        return oldestBatchTimestamp == long.MaxValue ? 0 : oldestBatchTimestamp;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool CarryOverIfCoalescedLimitReached(
         BatchReference batchRef,
@@ -3512,11 +3521,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // RTT samples and disabled the budget's RTT safety floor. Including TCP write
                 // time biases individual RTT samples high, which the budget's minimum filter
                 // discards.
-                var oldestBatchTimestamp = long.MaxValue;
-                for (var i = 0; i < count; i++)
-                    oldestBatchTimestamp = Math.Min(oldestBatchTimestamp, batches[i].StopwatchCreatedTicks);
-                if (oldestBatchTimestamp == long.MaxValue)
-                    oldestBatchTimestamp = 0;
+                var oldestBatchTimestamp = GetOldestBatchSealTimestamp(batches, count);
 
                 var deliverySnapshotAtSend = _unackedBudget?.SnapshotDelivery(
                     Stopwatch.GetTimestamp(),
