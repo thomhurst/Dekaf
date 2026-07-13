@@ -308,14 +308,14 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
             $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
 
         if (TryFail(exception))
-            accumulator.DrainPendingAppends();
+            accumulator.DrainPendingAppendsIfHead(this);
     }
 
     private void OnCancellation()
     {
         var accumulator = _accumulator;
         if (TryFail(new OperationCanceledException(_cancellationToken)))
-            accumulator?.DrainPendingAppends();
+            accumulator?.DrainPendingAppendsIfHead(this);
     }
 
     /// <summary>

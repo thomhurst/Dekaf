@@ -3604,6 +3604,51 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task AppendFromSpansAsync_CancellationStormRescansOnlyAtHead()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var cancellationSources = Enumerable.Range(0, 32)
+            .Select(_ => new CancellationTokenSource())
+            .ToArray();
+        var tasks = new Task<bool>[cancellationSources.Length];
+
+        await Assert.That(accumulator.TryReserveMemoryForTest(4096)).IsTrue();
+        for (var i = 0; i < tasks.Length; i++)
+        {
+            tasks[i] = accumulator.AppendFromSpansAsync(
+                "test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                ReadOnlySpan<byte>.Empty, valueIsNull: true,
+                null, 0, null, cancellationSources[i].Token).AsTask();
+        }
+
+        for (var i = cancellationSources.Length - 1; i > 0; i--)
+            cancellationSources[i].Cancel();
+
+        await Assert.That(accumulator.PendingAppendDrainEntryCountForTest).IsEqualTo(1)
+            .Because("tail cancellations cannot unblock the FIFO head");
+
+        cancellationSources[0].Cancel();
+
+        await Assert.That(accumulator.PendingAppendDrainEntryCountForTest).IsEqualTo(2)
+            .Because("the head cancellation coalesces the completed burst into one scan");
+        await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected: every deliberately blocked append was cancelled.
+        }
+
+        foreach (var cancellationSource in cancellationSources)
+            cancellationSource.Dispose();
+    }
+
+    [Test]
     public async Task AppendFromSpansAsync_ReopenedMemory_PreservesPendingAppendFifo()
     {
         var options = new ProducerOptions

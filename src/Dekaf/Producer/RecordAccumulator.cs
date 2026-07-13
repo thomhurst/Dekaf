@@ -2034,17 +2034,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             continue;
                         }
 
-                        var admissionBlocked = IsBrokerAdmissionBlocked(
-                            candidate.Topic,
-                            candidate.Partition,
-                            recordBlockEvent: false,
-                            out var admissionRecheckDelayMs);
-                        if (admissionBlocked)
+                        if (TryGetAdmissionRecheckAt(
+                                candidate.Topic,
+                                candidate.Partition,
+                                out var recheckAt))
                         {
-                            var recheckAt = admissionRecheckDelayMs == Timeout.Infinite
-                                ? 0
-                                : Dekaf.MonotonicClock.GetMilliseconds()
-                                  + Math.Max(1, admissionRecheckDelayMs);
                             _pendingAppends.Enqueue(candidate);
                             candidate.ScheduleAdmissionRecheck(recheckAt);
                             _blockedPendingPartitionRecheckTimes.Add(
@@ -2133,6 +2127,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 Volatile.Write(ref _draining, 0);
             }
         }
+    }
+
+    /// <summary>
+    /// Rescans after a failed append only when it occupied the FIFO head. Tail failures
+    /// cannot unblock another operation; suppressing their scans coalesces a timeout or
+    /// cancellation storm into the single scan triggered by the head.
+    /// </summary>
+    internal void DrainPendingAppendsIfHead(PendingAppend completed)
+    {
+        lock (_pendingAppendQueueLock)
+        {
+            if (!_pendingAppends.TryPeek(out var head)
+                || !ReferenceEquals(head, completed))
+            {
+                return;
+            }
+        }
+
+        DrainPendingAppends();
     }
 
     /// <summary>
@@ -2992,17 +3005,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         else
         {
-            var admissionBlocked = IsBrokerAdmissionBlocked(
-                topic,
-                partition,
-                recordBlockEvent: false,
-                out var admissionRecheckDelayMs);
-            if (admissionBlocked && admissionRecheckDelayMs != Timeout.Infinite)
-            {
-                op.ScheduleAdmissionRecheck(
-                    Dekaf.MonotonicClock.GetMilliseconds()
-                    + Math.Max(1, admissionRecheckDelayMs));
-            }
+            if (TryGetAdmissionRecheckAt(topic, partition, out var recheckAt))
+                op.ScheduleAdmissionRecheck(recheckAt);
         }
 
         return new ValueTask<bool>(op, op.Version);
@@ -4773,6 +4777,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         recheckDelayMilliseconds = currentBudget.GetAdmissionRecheckDelayMilliseconds(nowTicks);
         if (recordBlockEvent)
             currentBudget.RecordAdmissionBlock();
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryGetAdmissionRecheckAt(
+        string topic,
+        int partition,
+        out long recheckAt)
+    {
+        recheckAt = 0;
+        if (!IsBrokerAdmissionBlocked(
+                topic,
+                partition,
+                recordBlockEvent: false,
+                out var recheckDelayMilliseconds))
+        {
+            return false;
+        }
+
+        if (recheckDelayMilliseconds != Timeout.Infinite)
+        {
+            recheckAt = Dekaf.MonotonicClock.GetMilliseconds()
+                + Math.Max(1, recheckDelayMilliseconds);
+        }
+
         return true;
     }
 
