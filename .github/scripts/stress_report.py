@@ -72,9 +72,24 @@ def cpu_micros_per_message(result):
     return cpu_time_seconds * 1_000_000 / total_messages
 
 
+def cpu_micros_per_request(result):
+    """CPU microseconds per produce request, derived when needed."""
+    cpu_us_per_request = result.get('cpuMicrosPerRequest')
+    if cpu_us_per_request is not None:
+        return cpu_us_per_request
+
+    cpu_time_seconds = result.get('cpuTimeSeconds')
+    request_count = result.get('produceRequestCount')
+    if request_count is None:
+        request_count = (result.get('producerDeliveryDiagnostics') or {}).get('produceRequestCount')
+    if cpu_time_seconds is None or not request_count:
+        return None
+    return cpu_time_seconds * 1_000_000 / request_count
+
+
 def average_cores_used(result):
     """Average cores used, derived when older result files omit it."""
-    cores_used = result.get('averageCoresUsed')
+    cores_used = result.get('standingCores', result.get('averageCoresUsed'))
     if cores_used is not None:
         return cores_used
 
@@ -86,11 +101,13 @@ def average_cores_used(result):
 
 
 def format_cpu_columns(result):
-    """Format CPU-per-message / cores-used values, or '-' when not recorded."""
+    """Format CPU-per-message, CPU-per-request, and standing cores."""
     cpu_us_per_msg = cpu_micros_per_message(result)
+    cpu_us_per_request = cpu_micros_per_request(result)
     cores_used = average_cores_used(result)
     return (
         f"{cpu_us_per_msg:.2f}" if cpu_us_per_msg is not None else '-',
+        f"{cpu_us_per_request:.2f}" if cpu_us_per_request is not None else '-',
         f"{cores_used:.2f}" if cores_used is not None else '-',
     )
 
@@ -357,11 +374,11 @@ def format_throughput_table(results, title, include_ratio=False):
     lines.append("")
 
     if include_ratio:
-        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used | Comparison Ratio |")
-        lines.append("|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|------------------|")
+        lines.append("| Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores | Comparison Ratio |")
+        lines.append("|--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|------------------|")
     else:
-        lines.append("| Client | CPU μs/msg | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Cores Used |")
-        lines.append("|--------|------------|--------------|--------------|-------|-------------|--------|----------------|--------|------------|")
+        lines.append("| Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores |")
+        lines.append("|--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|")
 
     baseline = find_confluent_baseline(results) if include_ratio else 0
     sorted_results = sorted(results, key=throughput_sort_key)
@@ -379,13 +396,13 @@ def format_throughput_table(results, title, include_ratio=False):
         accepted_rate = accepted_messages_per_second(r)
         accepted = f"{accepted_rate:,.0f}" if accepted_rate is not None else '-'
         errors = throughput.get('totalErrors', 0)
-        cpu_us_per_msg, cores_used = format_cpu_columns(r)
+        cpu_us_per_msg, cpu_us_per_request, cores_used = format_cpu_columns(r)
 
         if include_ratio:
             ratio = comparison_rate(r) / baseline if baseline > 0 else 1.0
-            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} | {ratio:.2f}x |")
+            lines.append(f"| {client} | {cpu_us_per_msg} | {cpu_us_per_request} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} | {ratio:.2f}x |")
         else:
-            lines.append(f"| {client} | {cpu_us_per_msg} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} |")
+            lines.append(f"| {client} | {cpu_us_per_msg} | {cpu_us_per_request} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} |")
 
     lines.append("")
 

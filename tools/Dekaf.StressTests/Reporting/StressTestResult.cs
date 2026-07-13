@@ -145,10 +145,26 @@ internal sealed class StressTestResult
             ? cpu * 1_000_000.0 / Throughput.TotalMessages
             : null;
 
+    public long? ProduceRequestCount =>
+        ProducerDeliveryDiagnostics is { ProduceRequestCount: > 0 } diagnostics
+            ? diagnostics.ProduceRequestCount
+            : null;
+
+    public double? CpuMicrosPerRequest =>
+        CpuTimeSeconds is { } cpu && ProduceRequestCount is { } requestCount
+            ? cpu * 1_000_000.0 / requestCount
+            : null;
+
     public double? AverageCoresUsed =>
         CpuTimeSeconds is { } cpu && Throughput.ElapsedSeconds > 0
             ? cpu / Throughput.ElapsedSeconds
             : null;
+
+    /// <summary>
+    /// Average process CPU demand across the full wall-clock measurement window.
+    /// This is the standing core count for latency-bound scenarios.
+    /// </summary>
+    public double? StandingCores => AverageCoresUsed;
 
     public double? AllocatedBytesPerMessage =>
         GcStats.AllocatedBytes is { } allocated && Throughput.TotalMessages > 0

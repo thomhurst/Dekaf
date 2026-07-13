@@ -2152,11 +2152,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _onRecordAppended = onRecordAppended;
         _resolveLeaderId = resolveLeaderId;
         _unackedBudgetEnabled = options.DeliveryLatencyTargetMs > 0 && resolveLeaderId is not null;
+        _produceRequestDiagnosticsStartedAt = Stopwatch.GetTimestamp();
         if (options.EnableDeliveryDiagnostics)
         {
             _coalesceWidthCounts = new long[MaxTrackedCoalesceWidth + 2];
             _brokerProduceRequestCounters = new ConcurrentDictionary<int, ProducerRequestDiagnosticCounters>();
-            _produceRequestDiagnosticsStartedAt = Stopwatch.GetTimestamp();
         }
 
         ProducerOptions.ValidateArenaCapacity(options.BatchSize, options.ArenaCapacity);
@@ -4843,10 +4843,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         if (!_options.EnableDeliveryDiagnostics)
         {
+            var measurementStartedAt = Volatile.Read(ref _produceRequestDiagnosticsStartedAt);
+            var requestCount = Interlocked.Read(ref _produceRequestCount);
+            var elapsedSeconds = Math.Max(
+                0,
+                (Stopwatch.GetTimestamp() - measurementStartedAt) / (double)Stopwatch.Frequency);
             return new ProducerDeliveryDiagnosticsSnapshot
             {
                 CapturedAtUtc = DateTimeOffset.UtcNow,
-                DiagnosticsEnabled = false
+                DiagnosticsEnabled = false,
+                ProduceRequestCount = requestCount,
+                ProduceRequestElapsedSeconds = elapsedSeconds,
+                ProduceRequestsPerSecond = elapsedSeconds > 0
+                    ? requestCount / elapsedSeconds
+                    : 0
             };
         }
 
@@ -4933,11 +4943,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void RecordProduceRequest(int brokerId, int coalesceWidth, int requestBytes)
     {
+        Interlocked.Increment(ref _produceRequestCount);
         var widthCounts = _coalesceWidthCounts;
         if (widthCounts is null)
             return;
 
-        Interlocked.Increment(ref _produceRequestCount);
         Interlocked.Increment(ref widthCounts[Math.Min(coalesceWidth, MaxTrackedCoalesceWidth + 1)]);
         var counters = _brokerProduceRequestCounters!.GetOrAdd(
             brokerId,
@@ -4948,11 +4958,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal void ResetProduceRequestDiagnostics()
     {
+        Interlocked.Exchange(ref _produceRequestCount, 0);
+        Volatile.Write(ref _produceRequestDiagnosticsStartedAt, Stopwatch.GetTimestamp());
         var widthCounts = _coalesceWidthCounts;
         if (widthCounts is null)
             return;
 
-        Interlocked.Exchange(ref _produceRequestCount, 0);
         for (var width = 1; width < widthCounts.Length; width++)
             Interlocked.Exchange(ref widthCounts[width], 0);
         foreach (var counters in _brokerProduceRequestCounters!.Values)
@@ -4960,7 +4971,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Interlocked.Exchange(ref counters.RequestCount, 0);
             Interlocked.Exchange(ref counters.RequestBytes, 0);
         }
-        Volatile.Write(ref _produceRequestDiagnosticsStartedAt, Stopwatch.GetTimestamp());
     }
 
     private sealed class ProducerRequestDiagnosticCounters

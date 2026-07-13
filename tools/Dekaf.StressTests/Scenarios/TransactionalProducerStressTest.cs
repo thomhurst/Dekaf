@@ -46,6 +46,7 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
         var producer = await builder.BuildAsync(cancellationToken).ConfigureAwait(false);
         await producer.InitTransactionsAsync(cancellationToken).ConfigureAwait(false);
         await WarmUpAsync(producer, options.Topic, cancellationToken).ConfigureAwait(false);
+        StressTestHelpers.ResetProducerDeliveryDiagnostics(producer);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();

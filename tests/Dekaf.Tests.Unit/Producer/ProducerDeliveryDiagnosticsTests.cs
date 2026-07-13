@@ -143,14 +143,15 @@ public sealed class ProducerDeliveryDiagnosticsTests
     }
 
     [Test]
-    public async Task ProduceRequestDiagnostics_Disabled_DoesNotRecord()
+    public async Task ProduceRequestDiagnostics_Disabled_RecordsOnlyLightweightRequestCount()
     {
         await using var accumulator = new RecordAccumulator(CreateOptions());
 
         accumulator.RecordProduceRequest(brokerId: 1, coalesceWidth: 2, requestBytes: 200);
         var snapshot = accumulator.GetDeliveryDiagnosticsSnapshot();
 
-        await Assert.That(snapshot.ProduceRequestCount).IsEqualTo(0);
+        await Assert.That(snapshot.DiagnosticsEnabled).IsFalse();
+        await Assert.That(snapshot.ProduceRequestCount).IsEqualTo(1);
         await Assert.That(snapshot.CoalesceWidthHistogram).IsEmpty();
         await Assert.That(snapshot.BrokerProduceRequests).IsEmpty();
     }

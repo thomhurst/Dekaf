@@ -183,7 +183,7 @@ internal static class StressTestHelpers
             ProducerWarmupMessageCount,
             throughput,
             "Warmup drain").ConfigureAwait(false);
-        ResetProducerDeliveryDiagnostics(producer, options);
+        ResetProducerDeliveryDiagnostics(producer);
         return startOffset;
     }
 
@@ -355,14 +355,11 @@ internal static class StressTestHelpers
         IKafkaProducer<TKey, TValue> producer,
         StressTestOptions options)
     {
-        if (!options.EnableProducerDeliveryDiagnostics)
-            return null;
-
         if (producer is not IProducerDiagnostics diagnostics)
             return null;
 
         var snapshot = diagnostics.GetDeliveryDiagnosticsSnapshot();
-        if (snapshot.Batches.Count > 0)
+        if (options.EnableProducerDeliveryDiagnostics && snapshot.Batches.Count > 0)
         {
             Console.WriteLine($"  Captured producer delivery diagnostics: " +
                 $"inFlight={snapshot.InFlightBatchCount:N0}, batches={snapshot.Batches.Count:N0}");
@@ -372,10 +369,9 @@ internal static class StressTestHelpers
     }
 
     internal static void ResetProducerDeliveryDiagnostics<TKey, TValue>(
-        IKafkaProducer<TKey, TValue> producer,
-        StressTestOptions options)
+        IKafkaProducer<TKey, TValue> producer)
     {
-        if (options.EnableProducerDeliveryDiagnostics && producer is IProducerDiagnostics diagnostics)
+        if (producer is IProducerDiagnostics diagnostics)
             diagnostics.ResetProduceRequestDiagnostics();
     }
 

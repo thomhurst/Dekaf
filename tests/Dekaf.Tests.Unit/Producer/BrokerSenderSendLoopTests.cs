@@ -172,6 +172,24 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    public async Task ShouldPublishResponseReadyEvent_DepthOneUsesDirectSignalOnly()
+    {
+        await Assert.That(BrokerSender.ShouldPublishResponseReadyEvent(totalMaxInFlight: 1))
+            .IsFalse();
+        await Assert.That(BrokerSender.ShouldPublishResponseReadyEvent(totalMaxInFlight: 2))
+            .IsTrue();
+    }
+
+    [Test]
+    public async Task SelectPendingResponseWaitMs_UsesRequestDeadline()
+    {
+        await Assert.That(BrokerSender.SelectPendingResponseWaitMs(nextWakeupMs: 30_000))
+            .IsEqualTo(30_000);
+        await Assert.That(BrokerSender.SelectPendingResponseWaitMs(nextWakeupMs: 0))
+            .IsEqualTo(1);
+    }
+
+    [Test]
     public async Task SelectWaveCoalesceBounds_ScalesWithLingerAndRetainsHardCaps()
     {
         var zeroLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 0);

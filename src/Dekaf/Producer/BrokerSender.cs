@@ -778,7 +778,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         _responseCompletionCallback = () =>
         {
-            _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
+            if (ShouldPublishResponseReadyEvent(Volatile.Read(ref _totalMaxInFlight)))
+                _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
             _anyResponseCompleted.Signal();
         };
         _cts = new CancellationTokenSource();
@@ -1044,10 +1045,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Main send loop: drains events from the unified channel, coalesces batches by partition,
     /// and sends pipelined requests. Single-threaded: coalescing is deterministically FIFO.
     ///
-    /// All wake-up sources (new batches, response completions, partition unmutes) flow through
-    /// <see cref="_eventChannel"/>. The loop drains all available events, processes responses
-    /// inline, then waits on a single <c>WaitToReadAsync</c> with a computed timeout — like
-    /// Java Kafka's Sender.poll() model.
+    /// New batches, partition unmutes, and pipelined response completions flow through
+    /// <see cref="_eventChannel"/>. A capacity-one sender uses its direct response signal instead,
+    /// avoiding a redundant channel event. The loop processes responses inline like Java Kafka's
+    /// Sender.poll() model.
     /// </summary>
     private async Task SendLoopAsync(CancellationToken cancellationToken)
     {
@@ -1168,7 +1169,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Signal events (ResponseReady, Unmute) may have woken us up — processing
                 // completed responses here handles them. Batch events stay in the channel
                 // and are read lazily during coalescing (step 5) to avoid O(n²) carry-over growth.
-                ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
+                if (Volatile.Read(ref _totalPendingResponseCount) > 0)
+                    ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
 
                 // ── 2. Pick up send-failed retries ──
                 // Process these through the common retriable-error path. In particular, a
@@ -1204,7 +1206,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 3. Handle timed-out requests (Java handleTimedOutRequests pattern) ──
-                HandleTimedOutRequests(carryOver, cancellationToken);
+                var pendingResponseCount = Volatile.Read(ref _totalPendingResponseCount);
+                if (pendingResponseCount > 0
+                    && (pendingResponseCount > 1
+                        || carryOver.Count > 0
+                        || !_sendFailedRetries.IsEmpty
+                        || !_loopExitRedeliveries.IsEmpty
+                        || IsRequestTimeoutDue()))
+                {
+                    HandleTimedOutRequests(carryOver, cancellationToken);
+                }
 
                 // ── 4. Epoch bump (Java-style client-side, KIP-360) ──
                 // Synchronous: no network call, just epoch+1 + per-partition sequence reset.
@@ -1445,7 +1456,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // contain unread NewBatch events that cause immediate (synchronous)
                             // return, creating a spin loop that starves the thread pool and
                             // prevents I/O completion callbacks from running.
-                            await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+                            await WaitForAnyResponseAsync(
+                                    SelectPendingResponseWaitMs(ComputeNextWakeupMs(carryOver)),
+                                    cancellationToken)
+                                .ConfigureAwait(false);
                             pendingCount = Volatile.Read(ref _totalPendingResponseCount);
                             pendingBytes = Interlocked.Read(ref _totalPendingResponseBytes);
                         }
@@ -1528,7 +1542,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 var responseWaitMs = ComputeThrottledResponseWaitMs(
                                     throttleDelayMs,
                                     nextDeadlineMs);
-                                await WaitForAnyResponseAsync(cancellationToken, responseWaitMs)
+                                await WaitForAnyResponseAsync(responseWaitMs, cancellationToken)
                                     .ConfigureAwait(false);
                                 continue;
                             }
@@ -1855,7 +1869,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // synchronously and can starve response callbacks. Poll briefly so
                         // fresh work for another connection waits at most 1 ms while the
                         // guaranteed asynchronous yield lets acknowledgements make progress.
-                        await WaitForAnyResponseAsync(cancellationToken, BlockedBucketPollIntervalMs)
+                        await WaitForAnyResponseAsync(BlockedBucketPollIntervalMs, cancellationToken)
                             .ConfigureAwait(false);
                     }
                     else
@@ -1863,7 +1877,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Either carry-over exists (muted partitions may generate stale events),
                         // or at in-flight capacity limit, or no progress was made this iteration —
                         // wait for a response only.
-                        await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+                        await WaitForAnyResponseAsync(
+                                SelectPendingResponseWaitMs(ComputeNextWakeupMs(carryOver)),
+                                cancellationToken)
+                            .ConfigureAwait(false);
                     }
                 }
                 else if (carryOver.Count > 0)
@@ -2959,7 +2976,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Java-style request timeout handling (handleTimedOutRequests pattern).
-    /// On every send loop iteration, checks if ANY pending response has exceeded the
+    /// When the scheduled deadline is due, or multiple requests/work queues require a sweep,
+    /// checks if ANY pending response has exceeded the
     /// request timeout. If so, removes ALL entries from the connection's pending list and processes
     /// each batch — exactly like Java's NetworkClient.handleTimedOutRequests() which closes
     /// the connection and calls cancelInFlightRequests() for the node.
@@ -3129,6 +3147,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         return Math.Max(1, (int)(delayTicks * 1000.0 / Stopwatch.Frequency));
     }
 
+    private bool IsRequestTimeoutDue()
+    {
+        var now = _getTimestamp();
+        var requestTimeoutTicks = _options.RequestTimeoutTicks;
+        for (var connectionIndex = 0;
+             connectionIndex < _pendingResponsesByConnection.Length;
+             connectionIndex++)
+        {
+            var pendingResponses = _pendingResponsesByConnection[connectionIndex];
+            for (var i = 0; i < pendingResponses.Count; i++)
+            {
+                if (now >= pendingResponses[i].RequestStartTime + requestTimeoutTicks)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// Handles a single batch that received a retriable error. Checks delivery timeout,
     /// mutes the partition, signals epoch bump if needed, sets backoff, and adds to carry-over.
@@ -3274,17 +3311,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits for any pending response to complete using an <see cref="AsyncAutoResetSignal"/>,
-    /// with a bounded periodic wake-up to re-sweep delivery timeouts for zombie entries.
-    /// Signal may be missed if multiple responses complete between iterations;
-    /// the 100ms default fallback ensures we don't wait indefinitely.
+    /// Waits for any pending response to complete using an <see cref="AsyncAutoResetSignal"/>
+    /// for the supplied interval. The normal response-only path supplies the next request
+    /// deadline; shorter polling intervals remain available for blocked buckets and throttling.
     ///
     /// Zero-allocation in steady state: the signal uses a reusable internal timer for
     /// the timeout and a one-time shutdown token registration for cancellation.
     /// </summary>
     private async ValueTask WaitForAnyResponseAsync(
-        CancellationToken cancellationToken,
-        int timeoutMs = ResponsePollIntervalMs)
+        int timeoutMs,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -3292,6 +3328,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Throws OperationCanceledException only on shutdown (via RegisterShutdownToken).
         await _anyResponseCompleted.WaitAsync(timeoutMs).ConfigureAwait(false);
     }
+
+    internal static bool ShouldPublishResponseReadyEvent(int totalMaxInFlight)
+        => totalMaxInFlight > 1;
+
+    internal static int SelectPendingResponseWaitMs(int nextWakeupMs)
+        => Math.Max(1, nextWakeupMs);
 
     internal static int ComputeThrottledResponseWaitMs(int throttleDelayMs, int batchDeadlineMs)
         => Math.Min(ResponsePollIntervalMs, Math.Min(throttleDelayMs, batchDeadlineMs));
