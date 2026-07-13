@@ -1883,6 +1883,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         finally
         {
+            EmitPartitionLimitedDiagnostic(Dekaf.MonotonicClock.GetMilliseconds());
+
             var redeliver = crashed
                 && Volatile.Read(ref _disposed) == 0
                 && _rerouteBatch is not null;
@@ -5158,6 +5160,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var observedDurationMs = _lastPartitionLimitedDiagnosticMs == 0
             ? 0
             : Math.Max(0, now - _lastPartitionLimitedDiagnosticMs);
+        // Partition-limited pressure means no additional connection can serve a distinct
+        // partition, so the connection count remains stable throughout this window.
         _accumulator.RecordConnectionScaleEvent(
             _brokerId,
             _connectionCount,

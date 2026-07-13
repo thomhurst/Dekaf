@@ -148,6 +148,41 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    public async Task PartitionLimitedPressure_DisposeFlushesPartialWindow()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            enableDeliveryDiagnostics: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+
+        try
+        {
+            var observe = typeof(BrokerSender).GetMethod(
+                "ObservePartitionLimitedPressure",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var now = Dekaf.MonotonicClock.GetMilliseconds();
+            observe.Invoke(sender, [now, 0.5, 10L, 20L]);
+            observe.Invoke(sender, [now + 1, 0.6, 30L, 40L]);
+
+            await sender.DisposeAsync();
+
+            var diagnostics = accumulator.GetDeliveryDiagnosticsSnapshot().ConnectionScaleEvents;
+            await Assert.That(diagnostics.Count).IsEqualTo(2);
+            await Assert.That(diagnostics[1].ObservationCount).IsEqualTo(1);
+            await Assert.That(diagnostics[1].BufferPressureDelta).IsEqualTo(30);
+            await Assert.That(diagnostics[1].SendLoopPressureDelta).IsEqualTo(40);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task PartitionLimitedBufferPressure_RecordsCappedEventOncePerDelta()
     {
         var options = CreateOptions(
