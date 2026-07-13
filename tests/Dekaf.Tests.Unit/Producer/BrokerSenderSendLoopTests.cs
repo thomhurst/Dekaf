@@ -128,6 +128,18 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    public async Task SelectWaveCoalesceBounds_ZeroLingerRetainsLowLatencyBounds()
+    {
+        var zeroLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 0);
+        var configuredLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 5);
+
+        await Assert.That(zeroLinger.QuietMicroseconds).IsEqualTo(75);
+        await Assert.That(zeroLinger.MaximumMicroseconds).IsEqualTo(500);
+        await Assert.That(configuredLinger.QuietMicroseconds).IsEqualTo(1_000);
+        await Assert.That(configuredLinger.MaximumMicroseconds).IsEqualTo(2_000);
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task SendLoop_WaveCoalesce_RearmsAfterIdleWaitAtDefaultLinger(
         CancellationToken cancellationToken)
