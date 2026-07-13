@@ -3572,9 +3572,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 else
                 {
-                    // Unlike ContinueWith(ExecuteSynchronously), UnsafeOnCompleted schedules the
-                    // callback on the ThreadPool rather than running inline on the completing thread.
-                    // This is intentional — it keeps the I/O completion thread free.
+                    // KafkaConnection invokes this callback inline from its asynchronous
+                    // pending-request completion. The callback only publishes wake-up signals;
+                    // response processing remains in ProcessCompletedResponses.
                     responseTask.UnsafeOnCompleted(_responseCompletionCallback);
                 }
 
