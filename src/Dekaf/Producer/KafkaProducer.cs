@@ -489,13 +489,24 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         CancellationToken cancellationToken = default)
     {
         if (_retryPolicy is not null)
-            return ProduceAsyncWithRetry(message, cancellationToken);
+            return ProduceAsyncWithRetry(message, runContinuationsAsynchronously: true, cancellationToken);
 
-        return ProduceAsyncCore(message, cancellationToken);
+        return ProduceAsyncCore(message, runContinuationsAsynchronously: true, cancellationToken);
+    }
+
+    internal ValueTask<RecordMetadata> ProduceTransactionAsync(
+        ProducerMessage<TKey, TValue> message,
+        CancellationToken cancellationToken)
+    {
+        if (_retryPolicy is not null)
+            return ProduceAsyncWithRetry(message, runContinuationsAsynchronously: false, cancellationToken);
+
+        return ProduceAsyncCore(message, runContinuationsAsynchronously: false, cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAsyncCore(
         ProducerMessage<TKey, TValue> message,
+        bool runContinuationsAsynchronously,
         CancellationToken cancellationToken)
     {
         ThrowIfProduceCannotStart();
@@ -528,11 +539,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (!prepare.IsCompletedSuccessfully)
             {
-                return AwaitPrepareThenProduce(prepare, message, activity, cancellationToken);
+                return AwaitPrepareThenProduce(
+                    prepare,
+                    message,
+                    activity,
+                    runContinuationsAsynchronously,
+                    cancellationToken);
             }
         }
 
-        return ProduceAfterPrepare(message, activity, cancellationToken);
+        return ProduceAfterPrepare(message, activity, runContinuationsAsynchronously, cancellationToken);
     }
 
     // Stops and error-tags a started span when async serializer preparation fails before the
@@ -552,11 +568,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private ValueTask<RecordMetadata> ProduceAfterPrepare(
         ProducerMessage<TKey, TValue> message,
         Activity? activity,
+        bool runContinuationsAsynchronously,
         CancellationToken cancellationToken)
     {
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
-        if (TryProduceSyncForAsync(message, out var completion))
+        if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, out var completion))
         {
             // POST-QUEUE: Message appended to batch, committed to being sent
             // Message WILL be delivered, but caller can stop waiting via cancellation token.
@@ -577,13 +594,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
-        return ProduceAsyncSlow(message, activity, cancellationToken);
+        return ProduceAsyncSlow(message, activity, runContinuationsAsynchronously, cancellationToken);
     }
 
     private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
         ValueTask prepare,
         ProducerMessage<TKey, TValue> message,
         Activity? activity,
+        bool runContinuationsAsynchronously,
         CancellationToken cancellationToken)
     {
         try
@@ -598,7 +616,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             throw;
         }
 
-        return await ProduceAfterPrepare(message, activity, cancellationToken).ConfigureAwait(false);
+        return await ProduceAfterPrepare(
+            message,
+            activity,
+            runContinuationsAsynchronously,
+            cancellationToken).ConfigureAwait(false);
     }
 
     // Ensures any serializer that implements IAsyncSerializerPreparer<T> has fetched its schema (or
@@ -707,7 +729,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         DateTimeOffset? timestamp,
         CancellationToken cancellationToken)
     {
-        if (TryProduceSyncForAsync(topic, key, value, headers, partition, timestamp, out var completion))
+        if (TryProduceSyncForAsync(
+            topic,
+            key,
+            value,
+            headers,
+            partition,
+            timestamp,
+            runContinuationsAsynchronously: true,
+            out var completion))
         {
             // POST-QUEUE: Message appended to batch, committed to being sent
             // Message WILL be delivered, but caller can stop waiting via cancellation token.
@@ -731,7 +761,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             Headers = headers,
             Partition = partition,
             Timestamp = timestamp
-        }, activity: null, cancellationToken);
+        }, activity: null, runContinuationsAsynchronously: true, cancellationToken);
     }
 
     private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
@@ -751,6 +781,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     [MethodImpl(MethodImplOptions.NoInlining)]
     private async ValueTask<RecordMetadata> ProduceAsyncWithRetry(
         ProducerMessage<TKey, TValue> message,
+        bool runContinuationsAsynchronously,
         CancellationToken cancellationToken)
     {
         var attempt = 0;
@@ -758,7 +789,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             try
             {
-                return await ProduceAsyncCore(message, cancellationToken).ConfigureAwait(false);
+                return await ProduceAsyncCore(
+                    message,
+                    runContinuationsAsynchronously,
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (KafkaException ex) when (ex.IsRetriable)
             {
@@ -880,8 +914,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// Uses thread-local metadata cache for maximum performance on hot path.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryProduceSyncForAsync(ProducerMessage<TKey, TValue> message, out PooledValueTaskSource<RecordMetadata>? completion)
-        => TryProduceSyncForAsync(message.Topic, message.Key, message.Value, message.Headers, message.Partition, message.Timestamp, out completion);
+    private bool TryProduceSyncForAsync(
+        ProducerMessage<TKey, TValue> message,
+        bool runContinuationsAsynchronously,
+        out PooledValueTaskSource<RecordMetadata>? completion)
+        => TryProduceSyncForAsync(
+            message.Topic,
+            message.Key,
+            message.Value,
+            message.Headers,
+            message.Partition,
+            message.Timestamp,
+            runContinuationsAsynchronously,
+            out completion);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSyncForAsync(
@@ -891,6 +936,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Headers? headers,
         int? partition,
         DateTimeOffset? timestamp,
+        bool runContinuationsAsynchronously,
         out PooledValueTaskSource<RecordMetadata>? completion)
     {
         completion = null;
@@ -925,6 +971,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // All checks passed - we can proceed synchronously
         completion = _valueTaskSourcePool.Rent();
+        completion.SetRunContinuationsAsynchronously(runContinuationsAsynchronously);
         var result = SyncProduceResult.Success;
         try
         {
@@ -957,10 +1004,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private async ValueTask<RecordMetadata> ProduceAsyncSlow(
         ProducerMessage<TKey, TValue> message,
         Activity? activity,
+        bool runContinuationsAsynchronously,
         CancellationToken cancellationToken)
     {
         // Retry fast path - metadata should already be initialized via InitializeAsync()
-        if (TryProduceSyncForAsync(message, out var fastCompletion))
+        if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, out var fastCompletion))
         {
             if (activity is not null)
             {
@@ -979,6 +1027,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Topic cache miss — fetch topic metadata inline and produce
         var completion = _valueTaskSourcePool.Rent();
+        completion.SetRunContinuationsAsynchronously(runContinuationsAsynchronously);
         try
         {
             await ProduceInternalAsync(message, completion, cancellationToken).ConfigureAwait(false);
@@ -1296,6 +1345,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 // Clean up headers — the async slow path will re-serialize.
                 RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray);
+                completion.SetRunContinuationsAsynchronously(true);
                 _valueTaskSourcePool.Return(completion);
                 customPartitionerKey.Return();
                 customPartitionerValue.Return();
@@ -4377,7 +4427,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
             // Partition registration with AddPartitionsToTxn is handled automatically
             // by BrokerSender before the ProduceRequest is sent to the broker.
-            return _producer.ProduceAsync(message, cancellationToken);
+            return _producer.ProduceTransactionAsync(message, cancellationToken);
         }
         catch (OperationCanceledException exception)
         {

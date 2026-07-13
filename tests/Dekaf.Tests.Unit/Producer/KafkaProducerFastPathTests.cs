@@ -115,6 +115,104 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task TransactionProduceAsync_CompletesContinuationInlineOnSenderThread()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-transaction-producer",
+            TransactionalId = "test-transaction-id",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        producer._transactionState = TransactionState.Ready;
+        var transaction = producer.BeginTransaction();
+        var produceTask = transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = Topic,
+            Key = "key",
+            Value = "value"
+        });
+        var awaiter = produceTask.GetAwaiter();
+        var continuationThreadId = 0;
+        awaiter.UnsafeOnCompleted(() => continuationThreadId = Environment.CurrentManagedThreadId);
+        var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        var senderThreadId = Environment.CurrentManagedThreadId;
+
+        readyBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+
+        await Assert.That(continuationThreadId).IsEqualTo(senderThreadId);
+        await Assert.That(awaiter.GetResult().Offset).IsEqualTo(7);
+        producer._transactionState = TransactionState.Ready;
+    }
+
+    [Test]
+    public async Task TransactionProduceAsync_SequentialAwaitCanReenterProducerOnSenderThread()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-sequential-transaction-producer",
+            TransactionalId = "test-transaction-id",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 4096,
+            LingerMs = 10,
+            RequestTimeoutMs = 500,
+            DeliveryTimeoutMs = 1000,
+            CloseTimeoutMs = 1000
+        };
+
+        await using var producer = new KafkaProducer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+        await StopProducerBackgroundLoopsAsync(producer);
+        SeedProducerMetadata(producer);
+        SetInstanceField(producer, "_initialized", true);
+        producer._transactionState = TransactionState.Ready;
+        var transaction = producer.BeginTransaction();
+        var produceTask = ProduceSequentiallyAsync(transaction);
+        var firstBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+
+        firstBatch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+
+        var secondBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
+        secondBatch.CompleteSend(baseOffset: 8, DateTimeOffset.UtcNow);
+        var offsets = await produceTask.ConfigureAwait(false);
+        await Assert.That(offsets).IsEquivalentTo([7L, 8L]);
+        producer._transactionState = TransactionState.Ready;
+
+        static async ValueTask<long[]> ProduceSequentiallyAsync(ITransaction<string, string> transaction)
+        {
+            var first = await transaction.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = Topic,
+                Key = "key-1",
+                Value = "value-1"
+            }).ConfigureAwait(false);
+            var second = await transaction.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = Topic,
+                Key = "key-2",
+                Value = "value-2"
+            }).ConfigureAwait(false);
+            return [first.Offset, second.Offset];
+        }
+    }
+
+    [Test]
     public async Task FireAsync_KeyedMessageOnStickyPartition_DoesNotAdvanceUniformStickyCounter()
     {
         const int partitionCount = 3;

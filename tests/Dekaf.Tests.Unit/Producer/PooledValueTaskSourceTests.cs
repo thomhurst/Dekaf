@@ -749,6 +749,30 @@ public class PooledValueTaskSourceTests
     }
 
     [Test]
+    public async Task InlineContinuationMode_ResetsToAsynchronousWhenReused()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+        var source = pool.Rent();
+        source.SetRunContinuationsAsynchronously(false);
+        var awaiter = source.Task.GetAwaiter();
+        var continuationRan = false;
+        awaiter.UnsafeOnCompleted(() => continuationRan = true);
+
+        source.SetResult(1);
+
+        await Assert.That(continuationRan).IsTrue();
+        await Assert.That(awaiter.GetResult()).IsEqualTo(1);
+
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(source);
+        var result = await CompleteWithoutRunningContinuationInlineAsync(
+            reused.Task,
+            () => reused.SetResult(2)).ConfigureAwait(false);
+
+        await Assert.That(result).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task ReadyBatchDoneTask_RunContinuationsAsynchronously_SurvivesResetAndReuse()
     {
         var batch = new ReadyBatch();
