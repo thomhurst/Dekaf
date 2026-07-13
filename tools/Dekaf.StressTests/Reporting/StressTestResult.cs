@@ -31,6 +31,7 @@ internal sealed class StressTestResult
     public required GcSnapshot GcStats { get; init; }
     public int BrokerCount { get; init; } = 1;
     public ProducerDeliveryDiagnosticsSnapshot? ProducerDeliveryDiagnostics { get; init; }
+    public ConsumerFetchDiagnosticsSnapshot? ConsumerFetchDiagnostics { get; init; }
     public RoundTripValidationSnapshot? RoundTripValidation { get; init; }
     public RoundTripPhaseSnapshot? RoundTripPhases { get; init; }
 

@@ -30,6 +30,7 @@ internal static class MarkdownReporter
 
             GenerateThroughputTable(sb, title, groupResults);
             GenerateConnectionScaleTimeline(sb, groupResults, label);
+            GenerateConsumerFetchTimeline(sb, groupResults, label);
             GenerateLatencyOutlierTimeline(sb, groupResults, label);
 
             var transactionalResults = groupResults
@@ -218,6 +219,48 @@ internal static class MarkdownReporter
         }
 
         return sampled;
+    }
+
+    private static void GenerateConsumerFetchTimeline(
+        StringBuilder sb,
+        List<StressTestResult> results,
+        string label)
+    {
+        var rows = results
+            .SelectMany(result => (result.ConsumerFetchDiagnostics?.Samples ?? [])
+                .Select(sample => (Result: result, Sample: sample)))
+            .OrderBy(row => row.Sample.CapturedAtUtc)
+            .ToList();
+        if (rows.Count == 0)
+            return;
+
+        sb.AppendLine($"## Consumer Fetch Timeline - {label}");
+        sb.AppendLine();
+        sb.AppendLine("| Client | Interval end UTC | Fetch req/s | Bytes/fetch | Avg fetch RTT | Queues (pending / buffer / total) | Prefetched | Connection reaps | Nearest throughput |");
+        sb.AppendLine("|--------|------------------|------------:|------------:|--------------:|----------------------------------:|-----------:|-----------------:|-------------------:|");
+        foreach (var row in rows)
+        {
+            var nearest = row.Result.Throughput.IntervalSamples
+                .MinBy(sample => Math.Abs((sample.CapturedAtUtc - row.Sample.CapturedAtUtc).TotalMilliseconds));
+            var throughput = nearest is null
+                ? "-"
+                : $"{nearest.ElapsedSeconds:F0}s / {nearest.MessagesPerSecond:N0} msg/s";
+            var intervalStart = row.Sample.CapturedAtUtc.AddSeconds(-row.Sample.IntervalSeconds);
+            var reaps = row.Result.ConsumerFetchDiagnostics!.ConnectionReapEvents.Count(reap =>
+                reap.OccurredAtUtc > intervalStart && reap.OccurredAtUtc <= row.Sample.CapturedAtUtc);
+            var reapSummary = reaps == 0 ? "-" : $"{reaps} reap{(reaps == 1 ? "" : "s")}";
+
+            sb.AppendLine(
+                $"| {row.Result.Client} | {row.Sample.CapturedAtUtc:HH:mm:ss} | " +
+                $"{row.Sample.FetchRequestsPerSecond:F2} | {FormatDiagnosticBytes(row.Sample.BytesPerFetch)} | " +
+                $"{row.Sample.AverageFetchRttMs:F2}ms | " +
+                $"{row.Sample.PendingFetchDepth} / {row.Sample.PrefetchBufferDepth} / {row.Sample.PrefetchDepth} | " +
+                $"{FormatDiagnosticBytes(row.Sample.PrefetchedBytes)} | {reapSummary} | {throughput} |");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("*Bytes/fetch is consumed message payload bytes divided by completed fetch requests for the interval; queue depths are point-in-time samples.*");
+        sb.AppendLine();
     }
 
     private static double ComparisonMessagesPerSecond(StressTestResult result) =>
@@ -516,6 +559,14 @@ internal static class MarkdownReporter
         < 1024 * 1024 => $"{numBytes / 1024.0:F2} KB",
         < 1024 * 1024 * 1024 => $"{numBytes / (1024.0 * 1024):F2} MB",
         _ => $"{numBytes / (1024.0 * 1024 * 1024):F2} GB"
+    };
+
+    private static string FormatDiagnosticBytes(double bytes) => bytes switch
+    {
+        < 1024 => $"{bytes:F0} B",
+        < 1024 * 1024 => $"{bytes / 1024:F1} KiB",
+        < 1024 * 1024 * 1024 => $"{bytes / (1024 * 1024):F1} MiB",
+        _ => $"{bytes / (1024 * 1024 * 1024):F1} GiB"
     };
 
     private static string EscapeTableCell(string value) =>

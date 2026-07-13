@@ -1,5 +1,7 @@
 namespace Dekaf.Consumer;
 
+using Dekaf.Networking;
+
 internal sealed class ConsumerDiagnosticSnapshot
 {
     public required DateTimeOffset CapturedAtUtc { get; init; }
@@ -18,6 +20,7 @@ internal sealed class ConsumerDiagnosticSnapshot
     public required ConsumerPartitionEpochDiagnostic[] MinimumFetchBufferEpochsByPartition { get; init; }
     public required int? AdaptivePartitionFetchBytes { get; init; }
     public required int? AdaptiveFetchMaxBytes { get; init; }
+    public ConnectionReapDiagnostic[] ConnectionReapEvents { get; init; } = [];
 }
 
 internal sealed record ConsumerTopicPartitionDiagnostic(string Topic, int Partition);
