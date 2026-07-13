@@ -423,7 +423,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task PeriodicProbe_RaisesBudgetForOneRtt_ThenRevertsWithoutRateGain()
+    public async Task PeriodicProbe_WarmsForOneRtt_ThenRevertsWithoutRateGain()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
 
@@ -433,6 +433,11 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
 
         Ack(budget, 1_000, 0.100, T0 + Seconds(0.900));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250)
+            .Because("the first post-publication response cannot have traversed the probed pipe");
+
+        Ack(budget, 1_000, 0.100, T0 + Seconds(1.000));
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
     }
@@ -478,7 +483,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task PeriodicProbe_WaitsForSampleWhollyAdmittedUnderProbe()
+    public async Task PeriodicProbe_WaitsForWarmupBeforeEvaluatingRate()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
 
@@ -492,7 +497,7 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 1_000, 0.200, T0 + Seconds(0.900));
         await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
 
-        // First request wholly admitted under the probe confirms no rate gain and ends it.
+        // The first request sent after one full warm-up RTT confirms no rate gain and ends it.
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.000));
         await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
     }
@@ -505,15 +510,20 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 0; i <= 8; i++)
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
 
+        // This response warms the probe. Its rate sample still refreshes the estimator,
+        // but it cannot confirm the probe before newly admitted work traverses the pipe.
         Ack(budget, 1_250, 0.100, T0 + Seconds(0.900));
         await Assert.That(budget.BudgetBytes).IsEqualTo(7_812);
 
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.000));
         await Assert.That(budget.BudgetBytes).IsEqualTo(9_762);
 
-        // A second wholly-probed sample at the same rate confirms capacity and publishes
-        // the newly discovered base budget without the temporary 1.25x multiplier.
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.100));
+        await Assert.That(budget.BudgetBytes).IsEqualTo(9_762);
+
+        // A sample sent after the new level's warm-up RTT confirms capacity and publishes
+        // the newly discovered base budget without the temporary 1.25x multiplier.
+        Ack(budget, 1_562, 0.100, T0 + Seconds(1.200));
         await Assert.That(budget.BudgetBytes).IsEqualTo(7_810);
     }
 

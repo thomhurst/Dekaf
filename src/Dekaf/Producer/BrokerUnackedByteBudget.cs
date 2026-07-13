@@ -154,7 +154,7 @@ internal sealed class BrokerUnackedByteBudget
     // the matching precomputed post-probe budgets.
     private long _minRttProbeUntilTimestamp;
     private long _nextProbeTimestamp;
-    private long _capacityProbeStartTimestamp;
+    private long _capacityProbeEvaluationTimestamp;
     private long _capacityProbeDeadlineTimestamp;
     private double _capacityProbeBaselineRate;
     private bool _capacityProbeActive;
@@ -588,16 +588,17 @@ internal sealed class BrokerUnackedByteBudget
                 return;
             }
 
-            // A response can confirm the probe only when its request was sent after the
-            // larger budget was published. If observed rate grows, retain the probe and
-            // require another wholly-probed sample at the new level.
-            if (sendTimestamp < _capacityProbeStartTimestamp)
+            // Admission released by the larger budget must traverse batch sealing,
+            // serialization, and one network round trip before a response can measure the
+            // probed pipe. A request sent earlier may have been queued under the normal
+            // budget; treating it as proof of no gain closes every probe before it fills.
+            if (sendTimestamp < _capacityProbeEvaluationTimestamp)
                 return;
 
             if (bytesPerSecond > _capacityProbeBaselineRate * ProbeGrowthThreshold)
             {
                 _capacityProbeBaselineRate = bytesPerSecond;
-                _capacityProbeStartTimestamp = nowTicks;
+                _capacityProbeEvaluationTimestamp = nowTicks + rttTicks;
                 Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeIntervalTicks);
             }
             else
@@ -614,7 +615,7 @@ internal sealed class BrokerUnackedByteBudget
 
         if (nowTicks - _nextProbeTimestamp < probeIntervalTicks)
         {
-            _capacityProbeStartTimestamp = nowTicks;
+            _capacityProbeEvaluationTimestamp = nowTicks + rttTicks;
             _capacityProbeBaselineRate = _windowMaxRate;
             Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeIntervalTicks);
             Volatile.Write(ref _capacityProbeActive, true);
@@ -629,6 +630,7 @@ internal sealed class BrokerUnackedByteBudget
     {
         Volatile.Write(ref _capacityProbeActive, false);
         Volatile.Write(ref _capacityProbeDeadlineTimestamp, 0);
+        _capacityProbeEvaluationTimestamp = 0;
     }
 
     private static double Max(double[] values)
