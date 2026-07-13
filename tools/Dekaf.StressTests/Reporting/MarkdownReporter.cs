@@ -271,8 +271,8 @@ internal static class MarkdownReporter
 
         sb.AppendLine($"## Consumer Fetch Timeline - {label}");
         sb.AppendLine();
-        sb.AppendLine("| Client | Interval end UTC | Fetch req/s | Bytes/fetch | Avg fetch RTT | Queues (pending / buffer / total) | Prefetched | Connection reaps | Nearest throughput |");
-        sb.AppendLine("|--------|------------------|------------:|------------:|--------------:|----------------------------------:|-----------:|-----------------:|-------------------:|");
+        sb.AppendLine("| Client | Interval end UTC | Fetch req/s | Bytes/fetch | Avg fetch RTT | Queues (pending / buffer / total) | Prefetched | Connection reaps | GC delta (0 / 1 / 2) | GC pause | Heap / heaps | GC mode | Nearest throughput |");
+        sb.AppendLine("|--------|------------------|------------:|------------:|--------------:|----------------------------------:|-----------:|-----------------:|----------------------:|---------:|--------------:|---------|-------------------:|");
         foreach (var row in displayedRows)
         {
             var nearest = row.Result.Throughput.IntervalSamples
@@ -284,20 +284,27 @@ internal static class MarkdownReporter
             var reaps = row.Result.ConsumerFetchDiagnostics!.ConnectionReapEvents.Count(reap =>
                 reap.OccurredAtUtc > intervalStart && reap.OccurredAtUtc <= row.Sample.CapturedAtUtc);
             var reapSummary = reaps == 0 ? "-" : $"{reaps} reap{(reaps == 1 ? "" : "s")}";
+            var gcMode = $"{(row.Sample.ServerGc ? "Server" : "Workstation")} GC; " +
+                $"DATAS={(row.Sample.GcDynamicAdaptationMode >= 0 ? row.Sample.GcDynamicAdaptationMode : "?")}";
 
             sb.AppendLine(
                 $"| {row.Result.Client} | {row.Sample.CapturedAtUtc:HH:mm:ss} | " +
                 $"{row.Sample.FetchRequestsPerSecond:F2} | {FormatDiagnosticBytes(row.Sample.BytesPerFetch)} | " +
                 $"{row.Sample.AverageFetchRttMs:F2}ms | " +
                 $"{row.Sample.PendingFetchDepth} / {row.Sample.PrefetchBufferDepth} / {row.Sample.PrefetchDepth} | " +
-                $"{FormatDiagnosticBytes(row.Sample.PrefetchedBytes)} | {reapSummary} | {throughput} |");
+                $"{FormatDiagnosticBytes(row.Sample.PrefetchedBytes)} | {reapSummary} | " +
+                $"{row.Sample.Gen0Collections} / {row.Sample.Gen1Collections} / {row.Sample.Gen2Collections} | " +
+                $"{row.Sample.GcPauseDurationMs:F1}ms | " +
+                $"{FormatDiagnosticBytes(row.Sample.GcHeapSizeBytes)} / " +
+                $"{(row.Sample.GcHeapCount >= 0 ? row.Sample.GcHeapCount : "?")} | " +
+                $"{gcMode} | {throughput} |");
         }
 
         if (omittedRows > 0)
             sb.AppendLine($"*{omittedRows:N0} fetch sample(s) omitted; rows sampled across the full timeline.*");
 
         sb.AppendLine();
-        sb.AppendLine("*Bytes/fetch is consumed message payload bytes divided by completed fetch requests for the interval; queue depths are point-in-time samples.*");
+        sb.AppendLine("*Bytes/fetch is consumed message payload bytes divided by completed fetch requests for the interval; queue depths, managed heap size, and active GC heap count are point-in-time samples. GC collection counts and pause time are interval deltas. DATAS is .NET dynamic GC adaptation mode.*");
         sb.AppendLine();
     }
 

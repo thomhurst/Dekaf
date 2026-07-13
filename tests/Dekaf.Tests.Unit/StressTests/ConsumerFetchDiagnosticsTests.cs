@@ -74,6 +74,34 @@ public sealed class ConsumerFetchDiagnosticsTests
     }
 
     [Test]
+    public async Task TakeSample_ReportsPerIntervalGcDiagnostics()
+    {
+        var startedAt = new DateTimeOffset(2026, 7, 13, 10, 0, 0, TimeSpan.Zero);
+        var gcSnapshots = new Queue<GcDiagnosticSnapshot>(
+        [
+            new GcDiagnosticSnapshot(10, 4, 2, 100, 20 * 1024 * 1024, 2, 1, true),
+            new GcDiagnosticSnapshot(13, 6, 3, 145, 24 * 1024 * 1024, 1, 1, true)
+        ]);
+        using var tracker = new ConsumerFetchDiagnosticsTracker(
+            "consumer-topic",
+            listenToMetrics: false,
+            captureGcDiagnostics: gcSnapshots.Dequeue);
+        tracker.Start(CreateConsumerSnapshot(startedAt));
+
+        tracker.TakeSample(CreateConsumerSnapshot(startedAt.AddMinutes(1)));
+
+        var sample = tracker.GetSnapshot().Samples.Single();
+        await Assert.That(sample.Gen0Collections).IsEqualTo(3);
+        await Assert.That(sample.Gen1Collections).IsEqualTo(2);
+        await Assert.That(sample.Gen2Collections).IsEqualTo(1);
+        await Assert.That(sample.GcPauseDurationMs).IsEqualTo(45);
+        await Assert.That(sample.GcHeapSizeBytes).IsEqualTo(24 * 1024 * 1024);
+        await Assert.That(sample.GcHeapCount).IsEqualTo(1);
+        await Assert.That(sample.GcDynamicAdaptationMode).IsEqualTo(1);
+        await Assert.That(sample.ServerGc).IsTrue();
+    }
+
+    [Test]
     public async Task TakeSample_UsesPerIntervalDeltasAndKeepsConnectionReaps()
     {
         var startedAt = new DateTimeOffset(2026, 7, 13, 10, 0, 0, TimeSpan.Zero);
@@ -134,7 +162,15 @@ public sealed class ConsumerFetchDiagnosticsTests
                     PendingFetchDepth = 2,
                     PrefetchBufferDepth = 3,
                     PrefetchDepth = 5,
-                    PrefetchedBytes = 8_388_608
+                    PrefetchedBytes = 8_388_608,
+                    Gen0Collections = 3,
+                    Gen1Collections = 2,
+                    Gen2Collections = 1,
+                    GcPauseDurationMs = 45,
+                    GcHeapSizeBytes = 24 * 1024 * 1024,
+                    GcHeapCount = 1,
+                    GcDynamicAdaptationMode = 0,
+                    ServerGc = true
                 }
             ],
             ConnectionReapEvents =
@@ -167,6 +203,10 @@ public sealed class ConsumerFetchDiagnosticsTests
         await Assert.That(markdown).Contains("7.50ms");
         await Assert.That(markdown).Contains("1 reap");
         await Assert.That(markdown).Contains("2 / 3 / 5");
+        await Assert.That(markdown).Contains("3 / 2 / 1");
+        await Assert.That(markdown).Contains("45.0ms");
+        await Assert.That(markdown).Contains("24.0 MiB / 1");
+        await Assert.That(markdown).Contains("Server GC; DATAS=0");
     }
 
     [Test]
