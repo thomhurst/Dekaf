@@ -35,6 +35,19 @@ public sealed class ProducerDeliveryDiagnosticsTests
     }
 
     [Test]
+    public async Task SnapshotDeliveryDiagnostics_Enabled_IncludesBatchArenaPoolState()
+    {
+        await using var accumulator = new RecordAccumulator(
+            CreateOptions(enableDeliveryDiagnostics: true));
+
+        var snapshot = accumulator.GetDeliveryDiagnosticsSnapshot();
+
+        await Assert.That(snapshot.BatchArenaPoolMisses).IsEqualTo(BatchArena.Misses);
+        await Assert.That(snapshot.BatchArenaPoolDrops).IsEqualTo(BatchArena.Drops);
+        await Assert.That(snapshot.BatchArenaPoolCapacity).IsEqualTo(BatchArena.PoolCapacity);
+    }
+
+    [Test]
     public async Task ConnectionScaleDiagnostics_Disabled_DoesNotRecordEvents()
     {
         await using var accumulator = new RecordAccumulator(CreateOptions());

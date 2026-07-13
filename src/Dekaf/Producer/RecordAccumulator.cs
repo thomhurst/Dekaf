@@ -650,8 +650,11 @@ internal sealed class BatchArena
     // With 256KB batches and 256MB buffer: 512 × ~280KB ≈ 140MB POH retention.
     // With 1MB batches: ComputePoolSize returns 128 (not 512), so 128 × ~1.1MB ≈ ~140MB.
     internal const int MaxPoolSizeCap = 512;
+    internal const long MissRatchetThreshold = 128;
     private static int s_maxPoolSize = DefaultPoolSize;
     private static long s_misses;
+    private static long s_drops;
+    private static long s_lastRatchetMissCount;
 
     /// <summary>
     /// Increases the static pool size limit if the new value is larger.
@@ -671,8 +674,8 @@ internal sealed class BatchArena
 
         // Grow the pool if needed. The lock serializes concurrent resize attempts
         // (e.g. multiple producers created simultaneously with different batch sizes).
-        // Brief lock is acceptable because RatchetPoolSize is called only during
-        // producer initialization, not on the hot path.
+        // Brief lock is acceptable because RatchetPoolSize is called during producer
+        // initialization or after a sustained run of pool misses, not for every rental.
         var currentPool = Volatile.Read(ref s_pool);
         if (currentPool.Capacity < newSize)
         {
@@ -686,9 +689,8 @@ internal sealed class BatchArena
                     // Note: threads holding a stale reference to currentPool (captured
                     // before this lock) may ReturnToPool into it after this drain completes
                     // but before the Volatile.Write below. Those arenas are not migrated
-                    // and will be GC'd. This is acceptable because RatchetPoolSize only
-                    // runs at producer initialization — the one-time loss is recovered
-                    // on demand via the miss path.
+                    // and will be GC'd. This one-time loss is recovered on demand via
+                    // the miss path.
                     while (currentPool.TryPop(out var arena))
                         newPool.TryPush(arena);
                     Volatile.Write(ref s_pool, newPool);
@@ -702,6 +704,45 @@ internal sealed class BatchArena
     /// Use this to diagnose pool sizing — sustained misses under load indicate the pool is too small.
     /// </summary>
     internal static long Misses => Volatile.Read(ref s_misses);
+
+    /// <summary>
+    /// Number of arenas rejected from the pool because their buffer was oversized or the pool was full.
+    /// </summary>
+    internal static long Drops => Volatile.Read(ref s_drops);
+
+    /// <summary>
+    /// Current capacity of the process-wide arena pool.
+    /// </summary>
+    internal static int PoolCapacity => Volatile.Read(ref s_pool).Capacity;
+
+    internal static int ComputeRatchetPoolSize(int currentSize, long missesSinceLastRatchet)
+    {
+        if (missesSinceLastRatchet < MissRatchetThreshold || currentSize >= MaxPoolSizeCap)
+            return currentSize;
+
+        return Math.Min(MaxPoolSizeCap, currentSize * 2);
+    }
+
+    private static void MaybeRatchetPoolSize(long missCount)
+    {
+        var previousThreshold = Volatile.Read(ref s_lastRatchetMissCount);
+        var nextThreshold = previousThreshold + MissRatchetThreshold;
+        if (missCount < nextThreshold)
+            return;
+
+        if (Interlocked.CompareExchange(
+                ref s_lastRatchetMissCount,
+                nextThreshold,
+                previousThreshold) != previousThreshold)
+        {
+            return;
+        }
+
+        var currentSize = PoolCapacity;
+        var newSize = ComputeRatchetPoolSize(currentSize, MissRatchetThreshold);
+        if (newSize > currentSize)
+            RatchetPoolSize(newSize);
+    }
 
     /// <summary>
     /// Pre-allocates arenas into the static pool to eliminate ramp-up allocation bursts.
@@ -760,7 +801,8 @@ internal sealed class BatchArena
             return arena;
         }
 
-        Interlocked.Increment(ref s_misses);
+        var missCount = Interlocked.Increment(ref s_misses);
+        MaybeRatchetPoolSize(missCount);
         return new BatchArena(capacity, maxPooledCapacity);
     }
 
@@ -775,6 +817,7 @@ internal sealed class BatchArena
         if (arena._buffer.Length > arena._maxPooledCapacity)
         {
             arena._buffer = null!;
+            Interlocked.Increment(ref s_drops);
             return false;
         }
 
@@ -784,6 +827,7 @@ internal sealed class BatchArena
             // Pool full — drop the reference so the GC can reclaim the POH segment
             // once all objects on it are dead. No ArrayPool return needed.
             arena._buffer = null!;
+            Interlocked.Increment(ref s_drops);
             return false;
         }
 
@@ -4783,7 +4827,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ProduceRequestElapsedSeconds = produceRequestElapsedSeconds,
             ProduceRequestsPerSecond = produceRequestElapsedSeconds > 0
                 ? produceRequestCount / produceRequestElapsedSeconds
-                : 0
+                : 0,
+            BatchArenaPoolMisses = BatchArena.Misses,
+            BatchArenaPoolDrops = BatchArena.Drops,
+            BatchArenaPoolCapacity = BatchArena.PoolCapacity
         };
 
         var widthCounts = _coalesceWidthCounts!;

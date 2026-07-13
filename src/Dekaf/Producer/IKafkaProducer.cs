@@ -268,6 +268,9 @@ internal sealed class ProducerDeliveryDiagnosticsSnapshot
     public long ProduceRequestCount { get; init; }
     public double ProduceRequestElapsedSeconds { get; init; }
     public double ProduceRequestsPerSecond { get; init; }
+    public long BatchArenaPoolMisses { get; init; }
+    public long BatchArenaPoolDrops { get; init; }
+    public int BatchArenaPoolCapacity { get; init; }
     public List<ProducerBrokerRequestDiagnostic> BrokerProduceRequests { get; init; } = [];
     public List<ProducerCoalesceWidthDiagnostic> CoalesceWidthHistogram { get; init; } = [];
     public List<ProducerBatchDeliveryDiagnostic> Batches { get; init; } = [];
