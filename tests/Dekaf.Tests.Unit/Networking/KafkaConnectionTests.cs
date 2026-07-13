@@ -998,6 +998,36 @@ public sealed class KafkaConnectionTests
 
     [Test]
     [Timeout(5_000)]
+    public async Task WriteTimeout_BorrowedWrite_AbortsAndWaitsForWriteCompletion(
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new KafkaConnection("localhost", 9092);
+        var writeCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var waitTask = InvokeAwaitBorrowedFrameWriteAsync(
+                connection,
+                writeCompletion.Task,
+                callerOwnsTimeout: true,
+                cts.Token)
+            .AsTask();
+
+        // Unlike a copied frame, a borrowed payload cannot outlive its producer resource pin.
+        // The timeout aborts the connection immediately but stays pending until the send unwinds.
+        await Assert.That(GetPrivateField<int>(connection, "_disposed")).IsNotEqualTo(0);
+        await Assert.That(waitTask.IsCompleted).IsFalse();
+
+        writeCompletion.SetResult();
+
+        var exception = await Assert.ThrowsAsync<KafkaException>(async () =>
+            await waitTask.WaitAsync(cancellationToken));
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+        await Assert.That(exception.Message).Contains("Flush timeout");
+    }
+
+    [Test]
+    [Timeout(5_000)]
     public async Task WriteTimeout_AbandonedWriteStuckPastGracePeriod_AbortsConnectionAndReleasesWriteLock(
         CancellationToken cancellationToken)
     {
@@ -1228,6 +1258,22 @@ public sealed class KafkaConnectionTests
             BindingFlags.NonPublic | BindingFlags.Instance);
         if (method is null)
             throw new InvalidOperationException("AwaitFrameWriteAsync was not found.");
+
+        var result = method.Invoke(connection, [writeTask, 1, callerOwnsTimeout, cancellationToken]);
+        await ((ValueTask)result!).ConfigureAwait(false);
+    }
+
+    private static async ValueTask InvokeAwaitBorrowedFrameWriteAsync(
+        KafkaConnection connection,
+        Task writeTask,
+        bool callerOwnsTimeout,
+        CancellationToken cancellationToken)
+    {
+        var method = typeof(KafkaConnection).GetMethod(
+            "AwaitBorrowedFrameWriteAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        if (method is null)
+            throw new InvalidOperationException("AwaitBorrowedFrameWriteAsync was not found.");
 
         var result = method.Invoke(connection, [writeTask, 1, callerOwnsTimeout, cancellationToken]);
         await ((ValueTask)result!).ConfigureAwait(false);
