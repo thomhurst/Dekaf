@@ -28,7 +28,10 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     private CancellationTokenSource? _idleReaperCts;
     private Task? _idleReaperTask;
     private readonly object _connectionReapDiagnosticsLock = new();
-    private readonly List<ConnectionReapDiagnostic> _connectionReapEvents = [];
+    private readonly ConnectionReapDiagnostic?[] _connectionReapEvents =
+        new ConnectionReapDiagnostic?[MaxConnectionReapDiagnosticEvents];
+    private int _connectionReapEventCount;
+    private int _nextConnectionReapEventIndex;
 
     /// <summary>
     /// Process-shared memory pool for all clients with this size configuration. Bounds total
@@ -1289,7 +1292,20 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     internal List<ConnectionReapDiagnostic> GetConnectionReapDiagnosticsSnapshot()
     {
         lock (_connectionReapDiagnosticsLock)
-            return [.. _connectionReapEvents];
+        {
+            var snapshot = new List<ConnectionReapDiagnostic>(_connectionReapEventCount);
+            var startIndex = _connectionReapEventCount == MaxConnectionReapDiagnosticEvents
+                ? _nextConnectionReapEventIndex
+                : 0;
+
+            for (var i = 0; i < _connectionReapEventCount; i++)
+            {
+                var index = (startIndex + i) % MaxConnectionReapDiagnosticEvents;
+                snapshot.Add(_connectionReapEvents[index]!);
+            }
+
+            return snapshot;
+        }
     }
 
     IReadOnlyList<ConnectionReapDiagnostic> IConnectionPoolDiagnostics.GetConnectionReapDiagnosticsSnapshot() =>
@@ -1299,17 +1315,18 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     {
         lock (_connectionReapDiagnosticsLock)
         {
-            if (_connectionReapEvents.Count >= MaxConnectionReapDiagnosticEvents)
-                return;
-
-            _connectionReapEvents.Add(new ConnectionReapDiagnostic
+            _connectionReapEvents[_nextConnectionReapEventIndex] = new ConnectionReapDiagnostic
             {
                 OccurredAtUtc = DateTimeOffset.UtcNow,
                 BrokerId = brokerId,
                 ConnectionIndex = connectionIndex,
                 IdleDurationMs = idleDurationMs,
                 IsBootstrapConnection = brokerId < 0
-            });
+            };
+            _nextConnectionReapEventIndex =
+                (_nextConnectionReapEventIndex + 1) % MaxConnectionReapDiagnosticEvents;
+            if (_connectionReapEventCount < MaxConnectionReapDiagnosticEvents)
+                _connectionReapEventCount++;
         }
     }
 

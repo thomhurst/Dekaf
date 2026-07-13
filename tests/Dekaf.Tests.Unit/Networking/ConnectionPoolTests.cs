@@ -577,7 +577,7 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    public async Task ConnectionReapDiagnostics_DropsEventsBeyond256()
+    public async Task ConnectionReapDiagnostics_RetainsMostRecent256Events()
     {
         var pool = new ConnectionPool(
             clientId: "test-client",
@@ -589,14 +589,14 @@ public sealed class ConnectionPoolTests
             var recordDiagnostic = typeof(ConnectionPool).GetMethod(
                 "RecordConnectionReapDiagnostic",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
-            for (var i = 0; i < 257; i++)
+            for (var i = 0; i < 513; i++)
                 recordDiagnostic.Invoke(pool, [i, 0, 1_000L + i]);
 
             var diagnostics = pool.GetConnectionReapDiagnosticsSnapshot();
 
             await Assert.That(diagnostics.Count).IsEqualTo(256);
-            await Assert.That(diagnostics[0].BrokerId).IsEqualTo(0);
-            await Assert.That(diagnostics[^1].BrokerId).IsEqualTo(255);
+            await Assert.That(diagnostics[0].BrokerId).IsEqualTo(257);
+            await Assert.That(diagnostics[^1].BrokerId).IsEqualTo(512);
         }
     }
 
