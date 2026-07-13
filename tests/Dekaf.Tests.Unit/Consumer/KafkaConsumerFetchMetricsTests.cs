@@ -11,7 +11,7 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-[NotInParallel]
+[NotInParallel("MeterListener")]
 public sealed class KafkaConsumerFetchMetricsTests
 {
     [Test]

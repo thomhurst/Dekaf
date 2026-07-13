@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-[NotInParallel]
+[NotInParallel("MeterListener")]
 public sealed class ConsumeOneFastPathTests
 {
     private const string Topic = "test-topic";

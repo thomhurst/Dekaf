@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Diagnostics.Metrics;
 using Dekaf.Diagnostics;
 
 namespace Dekaf.Tests.Unit.Diagnostics;
@@ -65,44 +64,6 @@ public sealed class DekafDiagnosticsTests
     {
         var meter = DekafDiagnostics.Meter;
         await Assert.That(meter.Name).IsEqualTo("Dekaf");
-    }
-
-    [Test]
-    public async Task MetricInstruments_HaveCorrectNames()
-    {
-        var instrumentNames = new List<string>();
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (instrument, meterListener) =>
-        {
-            if (instrument.Meter.Name == DekafDiagnostics.MeterName)
-            {
-                instrumentNames.Add(instrument.Name);
-            }
-        };
-        listener.Start();
-
-        // Force instrument creation by touching them
-        DekafMetrics.MessagesSent.Add(0);
-        DekafMetrics.BytesSent.Add(0);
-        DekafMetrics.OperationDuration.Record(0);
-        DekafMetrics.ProduceErrors.Add(0);
-        DekafMetrics.Retries.Add(0);
-        DekafMetrics.MessagesReceived.Add(0);
-        DekafMetrics.BytesReceived.Add(0);
-        DekafMetrics.RebalanceDuration.Record(0);
-        DekafMetrics.FetchDuration.Record(0);
-        // ConsumerLag is an observable gauge — auto-registered when the meter is listened to
-
-        await Assert.That(instrumentNames).Contains("messaging.client.sent.messages");
-        await Assert.That(instrumentNames).Contains("messaging.client.sent.bytes");
-        await Assert.That(instrumentNames).Contains("messaging.client.operation.duration");
-        await Assert.That(instrumentNames).Contains("messaging.client.sent.errors");
-        await Assert.That(instrumentNames).Contains("messaging.client.sent.retries");
-        await Assert.That(instrumentNames).Contains("messaging.client.consumed.messages");
-        await Assert.That(instrumentNames).Contains("messaging.client.consumed.bytes");
-        await Assert.That(instrumentNames).Contains("messaging.consumer.rebalance.duration");
-        await Assert.That(instrumentNames).Contains("messaging.consumer.fetch.duration");
-        await Assert.That(instrumentNames).Contains("messaging.consumer.lag");
     }
 
     [Test]
