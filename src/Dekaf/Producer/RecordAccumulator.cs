@@ -4472,10 +4472,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var cap = _options.UnackedByteBudgetCapOverride
             ?? BrokerUnackedByteBudget.ComputeCap(_options.BatchSize, _options.ConnectionsPerBroker);
-        // Floor keeps the pipe full (≥ 2 batches, ≥ 1MiB BDP headroom) but must not exceed a
-        // deliberately tiny test cap, or the gate could never bind in unit tests.
-        var floor = Math.Min(Math.Max(2L * Math.Max(1, _options.BatchSize), 1L << 20), cap);
-        return new BrokerUnackedByteBudget(_options.DeliveryLatencyTargetMs / 1000.0, floor, cap);
+        // Cold start uses the cap. After the first drain sample, target × rate and the
+        // minimum-RTT BDP guard provide time-derived floors; a fixed batch-byte floor makes
+        // standing latency grow as per-broker drain rate falls under fan-out.
+        return new BrokerUnackedByteBudget(
+            _options.DeliveryLatencyTargetMs / 1000.0,
+            floorBytes: 1,
+            initialCapBytes: cap);
     }
 
     /// <summary>

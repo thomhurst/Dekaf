@@ -1066,7 +1066,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Sum individually framed batch sizes, matching RecordAccumulator.Drain's
         // conservative request budget across batches from separate drain passes.
         var coalescedRequestBudgetUsed = 0L;
-        var waveCoalesceBounds = SelectWaveCoalesceBounds(_options.LingerMs);
+        var waveCoalesceBounds = SelectWaveCoalesceBounds(
+            _options.LingerMs,
+            _options.DeliveryLatencyTargetMs);
         var waveCoalesceMaxTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.MaximumMicroseconds);
         var waveCoalesceQuietTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.QuietMicroseconds);
         var waveCoalesceArmed = true;
@@ -2231,9 +2233,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     internal static (int QuietMicroseconds, int MaximumMicroseconds) SelectWaveCoalesceBounds(
-        int lingerMs) => lingerMs == 0
+        int lingerMs,
+        int deliveryLatencyTargetMs)
+    {
+        (int QuietMicroseconds, int MaximumMicroseconds) bounds = lingerMs == 0
             ? (ZeroLingerWaveCoalesceQuietMicroseconds, ZeroLingerWaveCoalesceMaxMicroseconds)
             : (WaveCoalesceQuietMicroseconds, WaveCoalesceMaxMicroseconds);
+        if (deliveryLatencyTargetMs <= 0)
+            return bounds;
+
+        var targetMicroseconds = (long)deliveryLatencyTargetMs * 1_000;
+        var quietCap = Math.Max(1, targetMicroseconds / 20);
+        var maximumCap = Math.Max(quietCap, targetMicroseconds / 10);
+        return (
+            (int)Math.Min(bounds.QuietMicroseconds, quietCap),
+            (int)Math.Min(bounds.MaximumMicroseconds, maximumCap));
+    }
 
     private static long MicrosecondsToStopwatchTicks(long microseconds) =>
         Math.Max(1, microseconds * Stopwatch.Frequency / 1_000_000);

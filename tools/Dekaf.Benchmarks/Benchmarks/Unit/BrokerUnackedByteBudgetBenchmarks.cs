@@ -20,7 +20,7 @@ public class BrokerUnackedByteBudgetBenchmarks
     {
         _budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
-            floorBytes: 2 * 1024 * 1024,
+            floorBytes: 1,
             initialCapBytes: 32 * 1024 * 1024);
         _timestamp = Stopwatch.GetTimestamp();
     }
@@ -30,7 +30,10 @@ public class BrokerUnackedByteBudgetBenchmarks
     {
         for (var i = 0; i < Operations; i++)
         {
-            var snapshotAtSend = _budget.SnapshotDelivery(_timestamp, appLimited: false);
+            var snapshotAtSend = _budget.SnapshotDelivery(
+                _timestamp,
+                appLimited: false,
+                oldestBatchTimestamp: _timestamp - RttTicks);
             _timestamp += RttTicks;
             _budget.OnAcked(ackedBytes: 1024 * 1024, snapshotAtSend, _timestamp);
         }
@@ -51,7 +54,10 @@ public class BrokerUnackedByteBudgetBenchmarks
         {
             for (var j = 0; j < acksPerPass; j++)
             {
-                var snapshotAtSend = _budget.SnapshotDelivery(_timestamp, appLimited: false);
+                var snapshotAtSend = _budget.SnapshotDelivery(
+                    _timestamp,
+                    appLimited: false,
+                    oldestBatchTimestamp: _timestamp - RttTicks);
                 _timestamp += RttTicks;
                 _budget.OnAcked(ackedBytes: 1024 * 1024, snapshotAtSend, _timestamp);
             }

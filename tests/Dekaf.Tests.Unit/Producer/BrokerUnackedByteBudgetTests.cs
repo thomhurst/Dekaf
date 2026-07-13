@@ -94,13 +94,58 @@ public sealed class BrokerUnackedByteBudgetTests
             Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
         }
 
-        await Assert.That(budget.DeliveryLatencyEwmaMicros).IsEqualTo(20_000).Within(10);
+        await Assert.That(budget.DeliveryLatencyEwmaMicros).IsEqualTo(19_000).Within(10);
         await Assert.That(budget.LatencyBudgetScale).IsLessThan(0.25);
         await Assert.That(budget.BudgetBytes).IsLessThan(2_500);
     }
 
     [Test]
-    public async Task DeliveryLatencyBelowTarget_RecoversReducedBudget()
+    public async Task DeliveryLatencyBelowTarget_DoesNotGrowBudgetWithoutAdmissionPressure()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+
+        var now = T0;
+        for (var i = 0; i < 6; i++)
+        {
+            now += Seconds(0.110);
+            var snapshot = budget.SnapshotDelivery(
+                now - Seconds(0.001),
+                appLimited: true,
+                oldestBatchTimestamp: now - Seconds(0.020));
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
+        }
+        for (var i = 0; i < 30; i++)
+        {
+            now += Seconds(0.110);
+            var snapshot = budget.SnapshotDelivery(
+                now - Seconds(0.001),
+                appLimited: true,
+                oldestBatchTimestamp: now - Seconds(0.005));
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
+        }
+        var scaleAfterLatencySettledBelowTarget = budget.LatencyBudgetScale;
+
+        for (var i = 0; i < 20; i++)
+        {
+            now += Seconds(0.110);
+            var snapshot = budget.SnapshotDelivery(
+                now - Seconds(0.001),
+                appLimited: true,
+                oldestBatchTimestamp: now - Seconds(0.005));
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
+        }
+
+        await Assert.That(budget.DeliveryLatencyEwmaMicros).IsLessThan(6_000);
+        await Assert.That(budget.LatencyBudgetScale)
+            .IsEqualTo(scaleAfterLatencySettledBelowTarget).Within(0.000_001);
+    }
+
+    [Test]
+    public async Task DeliveryLatencyBelowTarget_RecoversReducedBudgetWhenAdmissionBlocked()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
@@ -123,6 +168,7 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 0; i < 30; i++)
         {
             now += Seconds(0.110);
+            budget.RecordAdmissionBlock();
             var snapshot = budget.SnapshotDelivery(
                 now - Seconds(0.001),
                 appLimited: true,
@@ -133,6 +179,24 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.DeliveryLatencyEwmaMicros).IsLessThan(6_000);
         await Assert.That(budget.LatencyBudgetScale).IsGreaterThan(reducedScale);
         await Assert.That(budget.BudgetBytes).IsGreaterThan(2_500);
+    }
+
+    [Test]
+    public async Task DeliveryLatencySample_UsesSealToSendQueueDelay_NotBrokerRoundTrip()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        var now = T0;
+        var snapshot = budget.SnapshotDelivery(
+            sendTimestamp: now - Seconds(0.015),
+            appLimited: true,
+            oldestBatchTimestamp: now - Seconds(0.020));
+
+        Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
+
+        await Assert.That(budget.DeliveryLatencyEwmaMicros).IsEqualTo(5_000).Within(10);
     }
 
     [Test]
@@ -559,10 +623,9 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 100, 0.100, T0 + Seconds(0.101));
 
         // Rate budget = 1,000 B/s × max(10ms, 1.5 × 100ms) = 150 bytes. The demonstrated
-        // 20,000-byte occupancy grants headroom above that, but only up to 1.5 × the rate
-        // budget — occupancy is admission-bounded by the budget itself, so an uncapped
-        // floor would ratchet the budget to its cap (#1941).
-        await Assert.That(budget.BudgetBytes).IsEqualTo(225);
+        // Occupancy is admission-bounded by the budget itself. It must never inflate the
+        // latency-governed rate budget; the configured 200-byte minimum wins here.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
     }
 
     [Test]
@@ -579,7 +642,7 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.ObserveWrittenUnackedBytes(20_000);
         Ack(budget, 100, 0.100, T0 + Seconds(0.101));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(225);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
     }
 
     [Test]
@@ -609,8 +672,8 @@ public sealed class BrokerUnackedByteBudgetTests
             Ack(budget, 100, 0.001, T0 + Seconds(i * 0.100));
         }
 
-        // Fixed point is 1.5 × the rate budget, not the 1,000,000-byte cap.
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
+        // Fixed point is the rate budget, not a multiple of it or the 1,000,000-byte cap.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
     }
 
     [Test]

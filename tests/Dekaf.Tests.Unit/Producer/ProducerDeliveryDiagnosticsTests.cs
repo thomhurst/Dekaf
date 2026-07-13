@@ -186,6 +186,25 @@ public sealed class ProducerDeliveryDiagnosticsTests
     }
 
     [Test]
+    public async Task BrokerBudgetFloor_UsesMeasuredTimeBudget_NotFixedBatchBytes()
+    {
+        await using var accumulator = new RecordAccumulator(
+            CreateOptions(deliveryLatencyTargetMs: 10),
+            resolveLeaderId: static (_, _) => 7);
+        var budget = accumulator.GetBrokerUnackedBudget(7)!;
+        var now = Stopwatch.GetTimestamp();
+
+        budget.OnAcked(
+            100,
+            budget.SnapshotDelivery(now - Stopwatch.Frequency / 1_000, appLimited: true),
+            now);
+        budget.CompleteAckedPass(now);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000)
+            .Because("100 kB/s at a 10 ms target needs a 1 kB time-derived budget");
+    }
+
+    [Test]
     public async Task BrokerBudgetDiagnostics_RollingWindowKeepsNewest4096Samples()
     {
         var options = CreateOptions(

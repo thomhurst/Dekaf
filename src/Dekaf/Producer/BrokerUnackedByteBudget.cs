@@ -68,16 +68,6 @@ internal sealed class BrokerUnackedByteBudget
     private const double MaximumLatencyAdjustmentFactor = 1.05;
 
     /// <summary>
-    /// Bounds the occupancy floor to this multiple of the rate-derived budget once a drain
-    /// estimate exists. Occupancy is itself admission-bounded by the budget, so an uncapped
-    /// <c>1.5 × occupancy</c> floor is a positive feedback loop that ratchets the budget to
-    /// its cap. With the bound, the iteration's fixed point is this multiple of the rate
-    /// budget (1.5 × target = 15 ms standing latency at the 10 ms default) instead of the cap.
-    /// Genuine wire demand beyond the estimate recovers via capacity probes within 8 RTTs.
-    /// </summary>
-    private const double OccupancyFloorHeadroom = 1.5;
-
-    /// <summary>
     /// Log2 histogram buckets for per-request diagnostics. Request sizes shift by
     /// <see cref="RequestSizeHistogramShift"/> (bucket 0 = under 512 B, bucket 15 = 8 MB and
     /// above); RTT buckets are unshifted microseconds (bucket 0 = under 2 µs, bucket 15 =
@@ -164,6 +154,7 @@ internal sealed class BrokerUnackedByteBudget
     private double _deliveryLatencyEwmaSeconds;
     private double _latencyBudgetScale = 1.0;
     private long _nextLatencyControlTimestamp;
+    private long _lastLatencyControlAdmissionBlockEvents;
 
     public BrokerUnackedByteBudget(double targetSeconds, long floorBytes, long initialCapBytes)
     {
@@ -198,6 +189,8 @@ internal sealed class BrokerUnackedByteBudget
 
     internal long MaxRateBytesPerSecond => Volatile.Read(ref _maxRateBytesPerSecond);
 
+    /// <summary>EWMA of controllable seal-to-send queue latency. The diagnostic property
+    /// retains its original name for compatibility.</summary>
     internal long DeliveryLatencyEwmaMicros =>
         (long)(Volatile.Read(ref _deliveryLatencyEwmaSeconds) * 1_000_000);
 
@@ -372,7 +365,10 @@ internal sealed class BrokerUnackedByteBudget
         var rttSeconds = (double)rttTicks / Stopwatch.Frequency;
         UpdateMinRtt(rttSeconds, nowTicks);
         Volatile.Write(ref _minimumRttMicros, (long)(_minRttSeconds * 1_000_000));
-        UpdateDeliveryLatency(sendSnapshot.OldestBatchTimestamp, nowTicks);
+        UpdateDeliveryLatency(
+            sendSnapshot.OldestBatchTimestamp,
+            sendSnapshot.SendTimestamp,
+            nowTicks);
 
         RecordRequestHistograms(ackedBytes, rttSeconds);
 
@@ -419,12 +415,18 @@ internal sealed class BrokerUnackedByteBudget
         RecomputeBudget();
     }
 
-    private void UpdateDeliveryLatency(long oldestBatchTimestamp, long nowTicks)
+    private void UpdateDeliveryLatency(
+        long oldestBatchTimestamp,
+        long sendTimestamp,
+        long nowTicks)
     {
-        if (oldestBatchTimestamp <= 0 || oldestBatchTimestamp >= nowTicks)
+        if (oldestBatchTimestamp <= 0 || oldestBatchTimestamp >= sendTimestamp)
             return;
 
-        var sampleSeconds = (double)(nowTicks - oldestBatchTimestamp) / Stopwatch.Frequency;
+        // Only producer-controlled queueing belongs in the controller. Broker RTT, linger
+        // before sealing, and response scheduling cannot be reduced by shrinking admission;
+        // including them made the target an equilibrium setpoint and suppressed fan-out.
+        var sampleSeconds = (double)(sendTimestamp - oldestBatchTimestamp) / Stopwatch.Frequency;
         var latencyEstimate = _deliveryLatencyEwmaSeconds == 0
             ? sampleSeconds
             : _deliveryLatencyEwmaSeconds
@@ -434,16 +436,26 @@ internal sealed class BrokerUnackedByteBudget
         if (_nextLatencyControlTimestamp == 0)
         {
             _nextLatencyControlTimestamp = nowTicks + LatencyControlIntervalTicks;
+            _lastLatencyControlAdmissionBlockEvents = AdmissionBlockEvents;
             return;
         }
 
         if (nowTicks < _nextLatencyControlTimestamp)
             return;
 
+        var admissionBlockEvents = AdmissionBlockEvents;
+        var admissionWasBlocked = admissionBlockEvents > _lastLatencyControlAdmissionBlockEvents;
+        _lastLatencyControlAdmissionBlockEvents = admissionBlockEvents;
+
         var targetRatio = _targetSeconds / latencyEstimate;
-        var adjustment = targetRatio < 1
-            ? Math.Max(MinimumLatencyAdjustmentFactor, targetRatio)
-            : Math.Min(MaximumLatencyAdjustmentFactor, targetRatio);
+        double adjustment;
+        if (targetRatio < 1)
+            adjustment = Math.Max(MinimumLatencyAdjustmentFactor, targetRatio);
+        else if (admissionWasBlocked)
+            adjustment = Math.Min(MaximumLatencyAdjustmentFactor, targetRatio);
+        else
+            adjustment = 1.0;
+
         Volatile.Write(ref _latencyBudgetScale, Math.Clamp(
             _latencyBudgetScale * adjustment,
             MinimumLatencyBudgetScale,
@@ -753,7 +765,7 @@ internal sealed class BrokerUnackedByteBudget
                 // occupancy proxy may exceed the rate budget by a bounded headroom only —
                 // otherwise occupancy (itself admission-bounded by the budget) ratchets the
                 // budget to its cap and the latency target is never enforced.
-                occupancyFloor = Math.Min(occupancyFloor, (long)(OccupancyFloorHeadroom * rateBudgetBytes));
+                occupancyFloor = Math.Min(occupancyFloor, (long)rateBudgetBytes);
             }
 
             budget = Math.Max(budget, occupancyFloor);
