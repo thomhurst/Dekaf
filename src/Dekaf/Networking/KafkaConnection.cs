@@ -803,10 +803,11 @@ public sealed partial class KafkaConnection :
         private static readonly ConcurrentStack<PooledPipelinedResponse<TRequest, TResponse>> Pool = new();
         private static int s_poolCount;
 
-        private ManualResetValueTaskSourceCore<TResponse> _core = new()
-        {
-            RunContinuationsAsynchronously = true
-        };
+        // The pending request already enters this completion from an asynchronous callback.
+        // Resume the internal response consumer inline to avoid a second ThreadPool hop;
+        // _returnReadiness prevents pooling until this completion frame exits. Producer
+        // delivery sources still dispatch application continuations asynchronously.
+        private ManualResetValueTaskSourceCore<TResponse> _core;
         private readonly Action _pendingContinuation;
         private KafkaConnection? _connection;
         private PooledPendingRequest? _pending;
