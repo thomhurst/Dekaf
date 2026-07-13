@@ -172,6 +172,25 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    public async Task IsMatchingResponsePartition_RequiresExactTopicPartition()
+    {
+        var expected = new TopicPartition("test-topic", 2);
+
+        await Assert.That(BrokerSender.IsMatchingResponsePartition(
+            expected,
+            responseTopic: "test-topic",
+            responsePartition: 2)).IsTrue();
+        await Assert.That(BrokerSender.IsMatchingResponsePartition(
+            expected,
+            responseTopic: "test-topic",
+            responsePartition: 3)).IsFalse();
+        await Assert.That(BrokerSender.IsMatchingResponsePartition(
+            expected,
+            responseTopic: "other-topic",
+            responsePartition: 2)).IsFalse();
+    }
+
+    [Test]
     public async Task ShouldPublishResponseReadyEvent_DepthOneUsesDirectSignalOnly()
     {
         await Assert.That(BrokerSender.ShouldPublishResponseReadyEvent(totalMaxInFlight: 1))
