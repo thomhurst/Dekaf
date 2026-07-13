@@ -92,6 +92,8 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 0; i < 6; i++)
         {
             now += Seconds(0.110);
+            // Sender-backlog shrink requires the wire to demonstrably carry the budget.
+            budget.ObserveWrittenUnackedBytes(8_000);
             var snapshot = budget.SnapshotDelivery(
                 now - Seconds(0.001),
                 appLimited: true,
@@ -162,6 +164,7 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 0; i < 6; i++)
         {
             now += Seconds(0.110);
+            budget.ObserveWrittenUnackedBytes(8_000);
             var snapshot = budget.SnapshotDelivery(
                 now - Seconds(0.001),
                 appLimited: true,
@@ -876,15 +879,43 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task StandingQueueDelayAboveTarget_ShrinksLatencyScale()
+    public async Task BrokerQueueDelayAboveTarget_ShrinksLatencyScale()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
             floorBytes: 200,
             initialCapBytes: 32_000_000);
         EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
-        budget.Charge(100_000); // 100ms of standing queue at 1 MB/s — 10x the target.
 
+        // Batches leave the sender 2ms after sealing but sit 50ms at the broker: latency the
+        // seal-to-send sample cannot see. No wire-occupancy evidence is required — broker
+        // queueing always responds to admission.
+        var now = T0;
+        for (var i = 0; i < 6; i++)
+        {
+            now += Seconds(0.110);
+            var snapshot = budget.SnapshotDelivery(
+                now - Seconds(0.050),
+                appLimited: true,
+                oldestBatchTimestamp: now - Seconds(0.052));
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
+        }
+
+        await Assert.That(budget.LatencyBudgetScale).IsLessThan(0.5)
+            .Because("seal-to-ack beyond the base round trip is queueing the budget controls");
+    }
+
+    [Test]
+    public async Task SendLoopBacklog_WithoutWireOccupancy_DoesNotShrinkScale()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+
+        // 19ms of seal-to-send backlog with an empty wire: the send loop, not broker
+        // admission, is the bottleneck. Shrinking would starve the sender below capacity.
         var now = T0;
         for (var i = 0; i < 6; i++)
         {
@@ -892,13 +923,67 @@ public sealed class BrokerUnackedByteBudgetTests
             var snapshot = budget.SnapshotDelivery(
                 now - Seconds(0.001),
                 appLimited: true,
+                oldestBatchTimestamp: now - Seconds(0.020));
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
+        }
+
+        await Assert.That(budget.LatencyBudgetScale).IsEqualTo(1.0).Within(0.000_001)
+            .Because("sender backlog with an underfilled wire is not actionable by admission");
+    }
+
+    [Test]
+    public async Task AdmissionPressureWithLatencyHeadroom_GrowsBudgetBeyondRateParity()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 32_000_000);
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(10_000);
+
+        // The drain estimate only ever measures traffic the gate admitted, so rate x target
+        // is self-confirming at any throughput (#2008). Blocked demand with latency headroom
+        // must grow the budget past that parity so real capacity can be discovered.
+        var now = T0;
+        for (var i = 0; i < 30; i++)
+        {
+            now += Seconds(0.110);
+            budget.RecordAdmissionBlock();
+            var snapshot = budget.SnapshotDelivery(
+                now - Seconds(0.001),
+                appLimited: true,
                 oldestBatchTimestamp: now - Seconds(0.002));
             Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
         }
-        budget.Release(100_000);
 
-        await Assert.That(budget.LatencyBudgetScale).IsLessThan(0.5)
-            .Because("bytes queued beyond the socket are latency the seal-to-send sample cannot see");
+        await Assert.That(budget.LatencyBudgetScale).IsGreaterThan(1.5);
+        await Assert.That(budget.BudgetBytes).IsGreaterThan(15_000);
+    }
+
+    [Test]
+    public async Task LatencyBudgetScale_IsBoundedAboveByCeiling()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 32_000_000);
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+
+        var now = T0;
+        for (var i = 0; i < 80; i++)
+        {
+            now += Seconds(0.110);
+            budget.RecordAdmissionBlock();
+            var snapshot = budget.SnapshotDelivery(
+                now - Seconds(0.001),
+                appLimited: true,
+                oldestBatchTimestamp: now - Seconds(0.002));
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
+        }
+
+        await Assert.That(budget.LatencyBudgetScale).IsEqualTo(10.0).Within(0.000_001)
+            .Because("a stale-high scale must stay within a short shrink-back window");
+        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(100_000);
     }
 
     [Test]

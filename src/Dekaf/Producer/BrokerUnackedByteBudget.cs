@@ -74,9 +74,31 @@ internal sealed class BrokerUnackedByteBudget
     private const double DeliveryLatencyEwmaWeight = 0.125;
     private const double ServingRttEwmaWeight = 0.125;
     private const double MinimumLatencyBudgetScale = 0.10;
+
+    /// <summary>
+    /// Upper bound on the latency budget scale. Above 1.0 the scale is the budget's only
+    /// unconditional upward force (#2008): the drain-rate estimate is measured from traffic
+    /// the admission gate itself admitted, so <c>rate × target</c> is self-confirming at any
+    /// throughput level — without headroom above parity the budget can never discover broker
+    /// or sender capacity beyond whatever it happens to be admitting. The controller grows
+    /// the scale only while admission is blocking (proof of demand) and measured delivery
+    /// latency sits below target, and growth decelerates as latency approaches target. The
+    /// bound keeps a stale-high scale's overshoot window short: shrinking back to parity
+    /// from here takes ~8 control intervals (~0.8 s).
+    /// </summary>
+    private const double MaximumLatencyBudgetScale = 10.0;
     private const double MinimumLatencyAdjustmentFactor = 0.75;
     private const double MaximumLatencyAdjustmentFactor = 1.05;
     private const double MaximumBudgetDecayPerSecond = 0.10;
+
+    /// <summary>
+    /// The scale shrinks only while written-unacked occupancy demonstrates at least this
+    /// fraction of the budget on the wire. Seal-to-send backlog with an underfilled wire
+    /// means the send loop, not broker admission, is the bottleneck — shrinking admission
+    /// there cannot reduce the latency, it only starves the sender below its capacity
+    /// (the 1-broker collapse mode of #2008).
+    /// </summary>
+    private const double ShrinkOccupancyFraction = 0.5;
 
     /// <summary>
     /// Log2 histogram buckets for per-request diagnostics. Request sizes shift by
@@ -184,7 +206,7 @@ internal sealed class BrokerUnackedByteBudget
     private double _minRttSeconds;
     private double _servingRttEwmaSeconds;
     private double _rawServingRttEwmaSeconds;
-    private double _lastNormalRttFloorSeconds;
+    private double _sealToAckEwmaSeconds;
     private double _minRttProbeMinimumSeconds;
     private bool _hasMinRttSample;
     private long _minRttTimestamp;
@@ -513,15 +535,24 @@ internal sealed class BrokerUnackedByteBudget
         if (oldestBatchTimestamp <= 0 || oldestBatchTimestamp >= sendTimestamp)
             return;
 
-        // Only producer-controlled queueing belongs in the controller. Broker RTT, linger
-        // before sealing, and response scheduling cannot be reduced by shrinking admission;
-        // including them made the target an equilibrium setpoint and suppressed fan-out.
         var sampleSeconds = (double)(sendTimestamp - oldestBatchTimestamp) / Stopwatch.Frequency;
         var latencyEstimate = _deliveryLatencyEwmaSeconds == 0
             ? sampleSeconds
             : _deliveryLatencyEwmaSeconds
                 + DeliveryLatencyEwmaWeight * (sampleSeconds - _deliveryLatencyEwmaSeconds);
         Volatile.Write(ref _deliveryLatencyEwmaSeconds, latencyEstimate);
+
+        // Measured seal-to-ack is the delivery latency users experience from the moment a
+        // batch is eligible to send. The queue-drained base RTT is subtracted before the
+        // control decision: broker round-trip time cannot be reduced by shrinking admission,
+        // and charging it to the controller is what turned the target into an equilibrium
+        // setpoint that suppressed fan-out (#1988). What remains — sender backlog plus
+        // broker-side queueing — is exactly the delay the budget controls (#2008, #2009).
+        var sealToAckSeconds = (double)(nowTicks - oldestBatchTimestamp) / Stopwatch.Frequency;
+        _sealToAckEwmaSeconds = _sealToAckEwmaSeconds == 0
+            ? sealToAckSeconds
+            : _sealToAckEwmaSeconds
+                + DeliveryLatencyEwmaWeight * (sealToAckSeconds - _sealToAckEwmaSeconds);
 
         if (_nextLatencyControlTimestamp == 0)
         {
@@ -537,44 +568,45 @@ internal sealed class BrokerUnackedByteBudget
         var admissionWasBlocked = admissionBlockEvents > _lastLatencyControlAdmissionBlockEvents;
         _lastLatencyControlAdmissionBlockEvents = admissionBlockEvents;
 
-        // Seal-to-send alone is blind to bytes already written and queued at the broker —
-        // the delay the budget most directly controls. Standing queue delay beyond the
-        // floor-sanctioned occupancy is that signal; controlling on the larger of the two
-        // lets the governor see broker-side queueing that never shows up between seal and
-        // socket write (#2009).
-        var controlLatencySeconds = Math.Max(latencyEstimate, GetStandingQueueDelaySeconds());
+        var baseRttSeconds = _hasMinRttSample ? _minRttSeconds : 0;
+        var brokerQueueSeconds = _sealToAckEwmaSeconds - baseRttSeconds;
+        var controlLatencySeconds = Math.Max(latencyEstimate, brokerQueueSeconds);
         var targetRatio = _targetSeconds / controlLatencySeconds;
         double adjustment;
         if (targetRatio < 1)
-            adjustment = Math.Max(MinimumLatencyAdjustmentFactor, targetRatio);
+        {
+            // Broker-side queueing always responds to admission — shrink acts on it
+            // unconditionally. When the seal-to-send backlog dominates instead, shrink only
+            // if the wire is demonstrably carrying the budget: backlog with an underfilled
+            // wire means the send loop, not admission, is the bottleneck, and shrinking
+            // there starves the sender below its capacity without reducing the backlog
+            // (the 1-broker collapse mode of #2008).
+            var senderBacklogDominates = latencyEstimate >= brokerQueueSeconds;
+            var shrinkActionable = !senderBacklogDominates
+                || _windowMaxOccupancyBytes
+                    >= ShrinkOccupancyFraction * _lastNormalBudgetBytes;
+            adjustment = shrinkActionable
+                ? Math.Max(MinimumLatencyAdjustmentFactor, targetRatio)
+                : 1.0;
+        }
         else if (admissionWasBlocked)
+        {
+            // The budget's only unconditional upward force: blocked demand with measured
+            // latency below target grows the scale past rate parity, breaking the
+            // self-confirming rate x target equilibrium (#2008). Growth decelerates as
+            // latency approaches target (adjustment -> 1 as targetRatio -> 1).
             adjustment = Math.Min(MaximumLatencyAdjustmentFactor, targetRatio);
+        }
         else
+        {
             adjustment = 1.0;
+        }
 
         Volatile.Write(ref _latencyBudgetScale, Math.Clamp(
             _latencyBudgetScale * adjustment,
             MinimumLatencyBudgetScale,
-            1.0));
+            MaximumLatencyBudgetScale));
         _nextLatencyControlTimestamp = nowTicks + LatencyControlIntervalTicks;
-    }
-
-    /// <summary>Producer-controlled standing queue delay: unacked bytes over the drain rate,
-    /// less the occupancy the budget's own RTT floor sanctions to keep the pipe full. Delay
-    /// inside the sanctioned floor is not actionable — shrinking the scale cannot reduce a
-    /// budget the floor holds up — so charging it to the governor would only wind the scale
-    /// down against a wall.</summary>
-    private double GetStandingQueueDelaySeconds()
-    {
-        var effectiveMaxRate = GetEffectiveMaxRate();
-        if (effectiveMaxRate <= 0)
-            return 0;
-
-        var sanctionedSeconds = Math.Max(
-            _lastNormalRttFloorSeconds,
-            _hasMinRttSample ? _minRttSeconds : 0);
-        var standingSeconds = UnackedBytes / effectiveMaxRate;
-        return Math.Max(0, standingSeconds - sanctionedSeconds);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -996,8 +1028,6 @@ internal sealed class BrokerUnackedByteBudget
             var rttFloorSeconds = minRttProbeActive
                 ? MinRttProbeSafetyMultiplier * minRttSeconds
                 : RttSafetyMultiplier * loadAwareRttSeconds;
-            if (!minRttProbeActive)
-                _lastNormalRttFloorSeconds = rttFloorSeconds;
             var horizonSeconds = _hasMinRttSample
                 ? Math.Max(latencyGovernedTargetSeconds, rttFloorSeconds)
                 : latencyGovernedTargetSeconds;
