@@ -1183,7 +1183,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private long _oldestBatchCreatedTicks = long.MaxValue;
 
     // Track whether there are unsealed batches containing awaited produces (ProduceAsync).
-    // These need micro-linger checks regardless of LingerMs, so ExpireLingerAsync drains the
+    // These need short-linger checks regardless of LingerMs, so ExpireLingerAsync drains the
     // active linger queue when this counter is non-zero. Count is per batch, not per message.
     private int _pendingAwaitedProduceCount;
 
@@ -4360,7 +4360,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Fast path 2: if the oldest batch hasn't reached linger time yet AND there are no
         // pending awaited produces, skip active queue checks. Awaited produces (ProduceAsync)
-        // use a micro-linger (min(1ms, LingerMs/10)) so they need more frequent checks.
+        // use a short linger (min(2ms, LingerMs/2)) so they need more frequent checks.
         if (Volatile.Read(ref _pendingAwaitedProduceCount) == 0)
         {
             var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
@@ -5971,6 +5971,9 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
 /// </summary>
 internal sealed class PartitionBatch
 {
+    private const double AwaitedLingerFraction = 0.5;
+    private const double MaximumAwaitedLingerMilliseconds = 2.0;
+
     private TopicPartition _topicPartition;
     private int _partitionCount;
     private ProducerOptions _options;
@@ -6583,8 +6586,8 @@ internal sealed class PartitionBatch
     /// The worst case of a stale read is harmless - we'll catch it on the next check.
     ///
     /// Smart batching strategy:
-    /// - If there are completion sources waiting (awaited produces), use a micro-linger
-    ///   of min(1ms, LingerMs/10) to let co-temporal messages batch together
+    /// - If there are completion sources waiting (awaited produces), use a short linger
+    ///   of min(2ms, LingerMs/2) to let co-temporal messages batch together
     /// - When LingerMs == 0, awaited produces still flush immediately
     /// - Fire-and-forget messages wait for full linger time
     /// This balances low latency for awaited produces with efficient batching.
@@ -6600,13 +6603,22 @@ internal sealed class PartitionBatch
 
         var elapsedMs = Stopwatch.GetElapsedTime(_createdStopwatchTimestamp, nowStopwatchTimestamp).TotalMilliseconds;
 
-        // Awaited produces: use micro-linger instead of immediate flush.
-        // When LingerMs > 0 (default is 5), wait min(1ms, LingerMs/10) to let co-temporal messages batch.
+        // Awaited produces: use a short linger instead of immediate flush. A sub-millisecond
+        // threshold seals on the first 1 ms timer tick, making request size depend on host timer
+        // coalescing. Waiting min(2ms, LingerMs/2) keeps batching stable across timer granularity.
         // When LingerMs == 0, flush immediately.
         // Fire-and-forget messages (Send) don't add completion sources, so they
         // still benefit from full linger time batching.
         if (Volatile.Read(ref _completionSourceCount) > 0)
-            return lingerMs == 0 || elapsedMs >= Math.Min(1.0, lingerMs / 10.0);
+        {
+            if (lingerMs == 0)
+                return true;
+
+            var awaitedLingerMilliseconds = Math.Min(
+                MaximumAwaitedLingerMilliseconds,
+                lingerMs * AwaitedLingerFraction);
+            return elapsedMs >= awaitedLingerMilliseconds;
+        }
 
         return elapsedMs >= lingerMs;
     }
