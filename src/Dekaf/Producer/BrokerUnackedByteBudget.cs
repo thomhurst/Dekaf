@@ -36,9 +36,9 @@ namespace Dekaf.Producer;
 /// <see cref="OnAcked"/>, <see cref="CompleteAckedPass"/>, and <see cref="SetCap"/> are
 /// single-writer — only the owning broker's send loop calls them — so the remaining estimator
 /// state needs no synchronization; the computed budget is published with a volatile write.
-/// <see cref="SnapshotDelivery"/> performs two independent volatile reads racing the single
-/// writer; both fields are monotonic, so a torn pair only skews one rate sample marginally
-/// and the windowed max filters it.
+/// <see cref="SnapshotDelivery"/> serializes delivery-epoch publication with a CAS while the
+/// most-recent-delivery timestamp remains an independent monotonic read. Skew between those
+/// clocks only widens one sample marginally.
 /// </para>
 /// </summary>
 internal sealed class BrokerUnackedByteBudget
@@ -53,6 +53,7 @@ internal sealed class BrokerUnackedByteBudget
     internal readonly record struct DeliverySnapshot(
         long DeliveredBytes,
         long DeliveredTimestamp,
+        long DeliveryEpochFirstSendTimestamp,
         long SendTimestamp,
         bool AppLimited,
         long OldestBatchTimestamp,
@@ -169,12 +170,17 @@ internal sealed class BrokerUnackedByteBudget
     // then three wholly-probed RTTs to average before accepting or rejecting growth.
     private const int ProbeEvaluationRtts = 3;
     private const double ProbeBudgetMultiplier = 1.25;
+    /// <summary>Only probe when standing demand fills at least this fraction of the gate;
+    /// enlarging a more-open gate cannot reveal additional delivery capacity.</summary>
+    private const double CapacityProbeDemandFraction = 0.5;
     /// <summary>A probe confirms capacity only when rate rises without the round trip
     /// inflating past this tolerance. Through a saturated broker, delivered rate never drops
     /// when queue is added, so a rate-only acceptance test converts every probe into budget
     /// growth; requiring a flat RTT distinguishes real headroom from added queueing.</summary>
     private const double ProbeRttGrowthTolerance = 1.25;
     private static readonly long MaxProbeIntervalTicks = Stopwatch.Frequency;
+    private const long NoDeliveryEpoch = -1;
+    private const long DeliveryEpochUpdating = -2;
 
     // Cross-thread state.
     private long _unackedBytes;
@@ -190,6 +196,8 @@ internal sealed class BrokerUnackedByteBudget
     // via volatile reads by parallel connection sends at send time.
     private long _totalDeliveredBytes;
     private long _lastDeliveredTimestamp;
+    private long _sendEpochDeliveredBytes = NoDeliveryEpoch;
+    private long _sendEpochFirstTimestamp;
 
     // Single-writer state (owning send loop only; constructor runs before the loop starts).
     private readonly long _floorBytes;
@@ -229,7 +237,6 @@ internal sealed class BrokerUnackedByteBudget
     private double _capacityProbeRateSum;
     private double _capacityProbeRttSumSeconds;
     private double _capacityProbePreProbeRttSeconds;
-    private double _capacityProbeMaxRate;
     private int _capacityProbeRateSampleCount;
     private bool _capacityProbeActive;
     private long _capacityProbeSuccessCount;
@@ -296,9 +303,9 @@ internal sealed class BrokerUnackedByteBudget
     /// <summary>
     /// Cross-thread: parallel connection sends mint the per-request delivery token immediately
     /// before the socket write (so <paramref name="sendTimestamp"/> can never postdate the
-    /// response's arrival), feeding it back to <see cref="OnAcked"/> on the response. Two
-    /// independent volatile reads — tearing is benign because both fields are monotonic and a
-    /// skewed pair only shifts one rate sample marginally.
+    /// response's arrival), feeding it back to <see cref="OnAcked"/> on the response. Delivery
+    /// epoch changes are CAS-published so parallel sends cannot regress the delivered-byte
+    /// marker; the independent last-delivery timestamp may only conservatively widen a sample.
     /// </summary>
     /// <param name="sendTimestamp">Stopwatch timestamp taken just before the socket write.</param>
     /// <param name="appLimited">True when the broker pipe was empty at send time.</param>
@@ -308,13 +315,66 @@ internal sealed class BrokerUnackedByteBudget
         long sendTimestamp,
         bool appLimited,
         long oldestBatchTimestamp = 0)
-        => new(
-            Volatile.Read(ref _totalDeliveredBytes),
+    {
+        var deliveryEpochFirstSendTimestamp = CaptureDeliveryEpoch(
+            sendTimestamp,
+            out var deliveredBytes);
+        return new DeliverySnapshot(
+            deliveredBytes,
             Volatile.Read(ref _lastDeliveredTimestamp),
+            deliveryEpochFirstSendTimestamp,
             sendTimestamp,
             appLimited,
             oldestBatchTimestamp,
             Volatile.Read(ref _unackedBytes));
+    }
+
+    private long CaptureDeliveryEpoch(long sendTimestamp, out long deliveredBytes)
+    {
+        var spinner = new SpinWait();
+        while (true)
+        {
+            deliveredBytes = Volatile.Read(ref _totalDeliveredBytes);
+            var epochDeliveredBytes = Volatile.Read(ref _sendEpochDeliveredBytes);
+            if (epochDeliveredBytes == deliveredBytes)
+                return Volatile.Read(ref _sendEpochFirstTimestamp);
+
+            if (epochDeliveredBytes == DeliveryEpochUpdating)
+            {
+                spinner.SpinOnce();
+                continue;
+            }
+
+            if (Interlocked.CompareExchange(
+                    ref _sendEpochDeliveredBytes,
+                    DeliveryEpochUpdating,
+                    epochDeliveredBytes) != epochDeliveredBytes)
+            {
+                spinner.SpinOnce();
+                continue;
+            }
+
+            return PublishDeliveryEpoch(sendTimestamp, epochDeliveredBytes, out deliveredBytes);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private long PublishDeliveryEpoch(
+        long sendTimestamp,
+        long previousEpochDeliveredBytes,
+        out long deliveredBytes)
+    {
+        // The loop-top delivery read can predate a newer epoch value observed by the
+        // successful CAS. Re-read after winning so publication never regresses that value.
+        // A redundant publisher must also preserve the first send timestamp already chosen
+        // for the epoch; moving it forward would narrow the send-axis delivery interval.
+        deliveredBytes = Volatile.Read(ref _totalDeliveredBytes);
+        if (deliveredBytes != previousEpochDeliveredBytes)
+            Volatile.Write(ref _sendEpochFirstTimestamp, sendTimestamp);
+
+        Volatile.Write(ref _sendEpochDeliveredBytes, deliveredBytes);
+        return Volatile.Read(ref _sendEpochFirstTimestamp);
+    }
 
     /// <summary>Diagnostics: log2 histogram of acked request payload sizes (see
     /// <see cref="HistogramBucketCount"/> for bucket semantics).</summary>
@@ -515,6 +575,12 @@ internal sealed class BrokerUnackedByteBudget
         var deliveredDelta = totalDelivered - sendSnapshot.DeliveredBytes;
 
         var intervalTicks = rttTicks;
+        if (sendSnapshot.DeliveryEpochFirstSendTimestamp > 0)
+        {
+            intervalTicks = Math.Max(
+                intervalTicks,
+                sendSnapshot.SendTimestamp - sendSnapshot.DeliveryEpochFirstSendTimestamp);
+        }
         if (!sendSnapshot.AppLimited && sendSnapshot.DeliveredTimestamp != 0)
             intervalTicks = Math.Max(intervalTicks, nowTicks - sendSnapshot.DeliveredTimestamp);
         Volatile.Write(ref _lastDeliveredTimestamp, nowTicks);
@@ -865,7 +931,6 @@ internal sealed class BrokerUnackedByteBudget
 
             _capacityProbeRateSum += bytesPerSecond;
             _capacityProbeRttSumSeconds += rttSeconds;
-            _capacityProbeMaxRate = Math.Max(_capacityProbeMaxRate, bytesPerSecond);
             _capacityProbeRateSampleCount++;
             if (_capacityProbeEvaluationDeadlineTimestamp == 0)
             {
@@ -891,10 +956,9 @@ internal sealed class BrokerUnackedByteBudget
                 || averageRttSeconds <= _capacityProbePreProbeRttSeconds * ProbeRttGrowthTolerance;
             if (rttHeld && averageRate > _capacityProbeBaselineRate * ProbeGrowthThreshold)
             {
-                // Use the strongest rate actually demonstrated by this successful probe as
-                // the next rung's baseline. Otherwise a slow first response depresses the
-                // average and unchanged steady-state traffic falsely succeeds again.
-                _capacityProbeBaselineRate = Math.Max(averageRate, _capacityProbeMaxRate);
+                // Compare like with like across rungs. A single clustered-response peak is not
+                // a sustainable baseline and would make the next average-rate rung unwinnable.
+                _capacityProbeBaselineRate = averageRate;
                 _capacityProbePreProbeRttSeconds = averageRttSeconds;
                 _capacityProbeStartTimestamp = nowTicks;
                 ResetCapacityProbeSamples();
@@ -913,7 +977,8 @@ internal sealed class BrokerUnackedByteBudget
         if (nowTicks < _nextProbeTimestamp)
             return;
 
-        if (nowTicks - _nextProbeTimestamp < probeIntervalTicks)
+        if (nowTicks - _nextProbeTimestamp < probeIntervalTicks
+            && HasCapacityProbeDemand())
         {
             _capacityProbeStartTimestamp = nowTicks;
             _capacityProbeBaselineRate = GetWindowAverageRate();
@@ -932,6 +997,15 @@ internal sealed class BrokerUnackedByteBudget
         _nextProbeTimestamp = nowTicks + probeIntervalTicks;
     }
 
+    private bool HasCapacityProbeDemand()
+    {
+        var budgetBytes = Volatile.Read(ref _budgetBytes);
+        var minimumDemandBytes = Math.Max(
+            1,
+            (long)(budgetBytes * CapacityProbeDemandFraction));
+        return Volatile.Read(ref _unackedBytes) >= minimumDemandBytes;
+    }
+
     private static long GetProbeIntervalTicks(long rttTicks)
         => rttTicks >= MaxProbeIntervalTicks / ProbeIntervalRtts
             ? MaxProbeIntervalTicks
@@ -941,7 +1015,6 @@ internal sealed class BrokerUnackedByteBudget
     {
         _capacityProbeRateSum = 0;
         _capacityProbeRttSumSeconds = 0;
-        _capacityProbeMaxRate = 0;
         _capacityProbeRateSampleCount = 0;
         _capacityProbeEvaluationDeadlineTimestamp = 0;
     }
