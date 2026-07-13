@@ -1881,7 +1881,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         var result = AppendAfterReservation(
                             op.Topic, op.Partition, op.Timestamp,
                             op.Key, op.Value, op.Headers, op.HeaderCount,
-                            op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount);
+                            op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount,
+                            op.AdmissionStartedStopwatchTicks);
 
                         op.ReleasePendingCountAfterClaim();
                         op.CompleteResult(result);
@@ -2458,10 +2459,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        int partitionCount)
+        int partitionCount,
+        long admissionStartedStopwatchTicks = 0)
     {
         return AppendPooledAfterReservationCore(topic, partition, timestamp, key, value, headers, headerCount,
-            completionSource, callback, recordSize, partitionCount);
+            completionSource, callback, recordSize, partitionCount, admissionStartedStopwatchTicks);
     }
 
     private bool AppendPooledAfterReservationCore(
@@ -2475,7 +2477,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        int partitionCount)
+        int partitionCount,
+        long admissionStartedStopwatchTicks = 0)
     {
         var topicPartition = new TopicPartition(topic, partition);
         var pd = GetOrCreateDeque(topic, partition);
@@ -2553,6 +2556,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 completionSource, callback, recordSize, out var appendedBytes,
                                 out var firstAwaitedProduceInBatch))
                             {
+                                currentBatch.TrackOldestAppendStart(admissionStartedStopwatchTicks);
                                 actualBytesAdded = appendedBytes;
                                 ownsReservation = false;
                                 ownsRecordResources = false;
@@ -2593,6 +2597,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 completionSource, callback, recordSize, out var appendedBytes,
                                 out var firstAwaitedProduceInBatch))
                             {
+                                newBatch.TrackOldestAppendStart(admissionStartedStopwatchTicks);
                                 actualBytesAdded = appendedBytes;
                                 ownsReservation = false;
                                 ownsRecordResources = false;
@@ -2745,12 +2750,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return new ValueTask<bool>(Task.FromException<bool>(new OperationCanceledException(cancellationToken)));
         }
 
+        var admissionStartedStopwatchTicks = Stopwatch.GetTimestamp();
         var (startTicks, deadline) = BeginReservationWait(recordSize);
 
         var op = _pendingAppendPool.Rent();
         op.Initialize(topic, partition, partitionCount, timestamp, key, value, headers, headerCount,
             completionSource, callback, recordSize, startTicks, deadline,
-            this, _pendingAppendPool, cancellationToken);
+            this, _pendingAppendPool, cancellationToken, admissionStartedStopwatchTicks);
 
         lock (_pendingAppendQueueLock)
             _pendingAppends.Enqueue(op);
@@ -3561,23 +3567,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _serializeBatchesPerPartition,
             hasPipelineBatch,
             batch.EstimatedSize,
-            batch.EffectiveBatchSizeLimit);
+            batch.EffectiveBatchSizeLimit,
+            _options.DeliveryLatencyTargetMs > 0);
     }
 
-    // An earlier pipeline batch provides a short delivery clock under load. Keep the next
-    // partial batch open until it fills; if traffic becomes sparse, the predecessor exits,
-    // queued bytes reach zero, and the next linger pass seals normally. Size-full batches
-    // bypass this method in ShouldSealAppendedBatch and continue pipelining immediately.
+    // An earlier pipeline batch normally provides a short delivery clock under load. A
+    // configured latency bound cannot rely on that: an underfilled 1MiB batch may itself
+    // exceed the target at the broker's per-partition rate, so let linger seal it. Muted or
+    // serialized partitions still defer because their next batch cannot be sent yet.
     internal static bool ShouldDeferPartialBatchSeal(
         bool isMuted,
         bool serializeBatchesPerPartition,
         bool hasPipelineBatch,
         int currentBatchSize,
-        int maximumBatchSize) =>
+        int maximumBatchSize,
+        bool deliveryLatencyBoundEnabled) =>
         isMuted
         || (hasPipelineBatch
             && (serializeBatchesPerPartition
-                || currentBatchSize < maximumBatchSize));
+                || (!deliveryLatencyBoundEnabled && currentBatchSize < maximumBatchSize)));
 
     private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
     {
@@ -4472,9 +4480,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var cap = _options.UnackedByteBudgetCapOverride
             ?? BrokerUnackedByteBudget.ComputeCap(_options.BatchSize, _options.ConnectionsPerBroker);
-        // Floor keeps the pipe full (≥ 2 batches, ≥ 1MiB BDP headroom) but must not exceed a
-        // deliberately tiny test cap, or the gate could never bind in unit tests.
-        var floor = Math.Min(Math.Max(2L * Math.Max(1, _options.BatchSize), 1L << 20), cap);
+        // Linger can seal partial batches, so a 1MiB BatchSize must not impose 1MiB of
+        // standing queue on a slower broker. Keep at most 64KiB of startup headroom; the
+        // measured rate and minimum-RTT safety horizon supply the real BDP. Oversized
+        // records may exceed the floor once, then the gate blocks subsequent appends.
+        var floor = Math.Min(Math.Min(Math.Max(1, _options.BatchSize), 64L << 10), cap);
         return new BrokerUnackedByteBudget(_options.DeliveryLatencyTargetMs / 1000.0, floor, cap);
     }
 
@@ -4850,6 +4860,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         UnackedBytes = budget.UnackedBytes,
         MinRttMicros = budget.MinimumRttMicros,
         MaxRateBytesPerSec = budget.MaxRateBytesPerSecond,
+        DeliveryLatencyP95Micros = budget.DeliveryLatencyP95Micros,
         AdmissionBlockCount = budget.AdmissionBlockEvents,
         RequestSizeLog2Histogram = includeHistograms ? budget.CopyRequestSizeHistogram() : null,
         RequestRttMicrosLog2Histogram = includeHistograms ? budget.CopyRequestRttMicrosHistogram() : null
@@ -5753,6 +5764,16 @@ internal sealed class PartitionBatch
     }
 
     /// <summary>
+    /// Extends the batch age to include time an append spent waiting for admission.
+    /// Called under the owning partition deque lock after the append succeeds.
+    /// </summary>
+    internal void TrackOldestAppendStart(long stopwatchTicks)
+    {
+        if (stopwatchTicks > 0 && stopwatchTicks < _createdStopwatchTimestamp)
+            _createdStopwatchTimestamp = stopwatchTicks;
+    }
+
+    /// <summary>
     /// Resets the batch for reuse with a new topic-partition.
     /// Called when renting from the pool.
     /// </summary>
@@ -6360,7 +6381,8 @@ internal sealed class PartitionBatch
                 _callbacks,
                 _callbackCount,
                 _arrayReuseQueue,
-                _recordCount);
+                _recordCount,
+                _createdStopwatchTimestamp);
 
             _completedBatch = readyBatch;
 
@@ -7122,7 +7144,8 @@ internal sealed class ReadyBatch
         Action<RecordMetadata, Exception?>?[]? callbacks = null,
         int callbackCount = 0,
         BatchArrayReuseQueue? arrayReuseQueue = null,
-        int recordCount = 0)
+        int recordCount = 0,
+        long stopwatchCreatedTicks = 0)
     {
         // The generation increment must happen BEFORE the lifecycle flags are cleared.
         // Stale-reference holders validate liveness by reading _returnedToPool first and
@@ -7163,7 +7186,9 @@ internal sealed class ReadyBatch
         _callbacks = callbacks;
         _callbackCount = callbackCount;
         _arrayReuseQueue = arrayReuseQueue;
-        StopwatchCreatedTicks = Stopwatch.GetTimestamp();
+        StopwatchCreatedTicks = stopwatchCreatedTicks > 0
+            ? stopwatchCreatedTicks
+            : Stopwatch.GetTimestamp();
         _createdTimestamp = StopwatchCreatedTicks;
     }
 

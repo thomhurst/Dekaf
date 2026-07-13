@@ -285,6 +285,7 @@ internal sealed class ProducerBrokerBudgetDiagnostic
     public required long UnackedBytes { get; init; }
     public required long MinRttMicros { get; init; }
     public required long MaxRateBytesPerSec { get; init; }
+    public required long DeliveryLatencyP95Micros { get; init; }
     public required long AdmissionBlockCount { get; init; }
 
     /// <summary>

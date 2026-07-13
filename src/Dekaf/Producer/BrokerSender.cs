@@ -3468,9 +3468,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // RTT samples and disabled the budget's RTT safety floor. Including TCP write
                 // time biases individual RTT samples high, which the budget's minimum filter
                 // discards.
+                var oldestBatchTimestamp = batches[0].StopwatchCreatedTicks;
+                for (var i = 1; i < count; i++)
+                {
+                    oldestBatchTimestamp = Math.Min(
+                        oldestBatchTimestamp,
+                        batches[i].StopwatchCreatedTicks);
+                }
                 var deliverySnapshotAtSend = _unackedBudget?.SnapshotDelivery(
                     Stopwatch.GetTimestamp(),
-                    appLimited: Volatile.Read(ref _totalPendingResponseCount) == 0) ?? default;
+                    appLimited: Volatile.Read(ref _totalPendingResponseCount) == 0,
+                    oldestBatchTimestamp) ?? default;
                 responseTask = await SendPipelinedAfterWriteAsync(
                     connection,
                     request,

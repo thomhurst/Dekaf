@@ -90,6 +90,22 @@ public sealed class BrokerUnackedAdmissionTests
     }
 
     [Test]
+    public async Task BudgetFloor_DoesNotForceOneFullDefaultBatch()
+    {
+        const int batchSize = 1 << 20;
+        await using var accumulator = new RecordAccumulator(
+            CreateOptions(capOverride: 100L << 20, batchSize: batchSize),
+            resolveLeaderId: (_, _) => LeaderNodeId);
+        var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
+        var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        var sendTicks = nowTicks - System.Diagnostics.Stopwatch.Frequency / 1_000;
+
+        budget.OnAcked(1, budget.SnapshotDelivery(sendTicks, appLimited: true), nowTicks);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(64 << 10);
+    }
+
+    [Test]
     public async Task Seal_ChargesLeaderBudget_AndBatchExitReleases()
     {
         var options = CreateOptions(capOverride: null);
@@ -170,6 +186,7 @@ public sealed class BrokerUnackedAdmissionTests
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 PooledMemory.Null, PooledMemory.Null, null, 0, null, null, cancellationToken);
             await Assert.That(gatedAppend.IsCompleted).IsFalse();
+            await Task.Delay(25, cancellationToken);
 
             // Acking (exiting) the charged batches reopens the gate and serves the queue.
             foreach (var batch in DrainSealedBatches(accumulator, metadataManager))
@@ -177,6 +194,15 @@ public sealed class BrokerUnackedAdmissionTests
 
             var appended = await gatedAppend;
             await Assert.That(appended).IsTrue();
+
+            await SealAllAsync(accumulator);
+            var admittedBatches = DrainSealedBatches(accumulator, metadataManager);
+            var admittedBatch = admittedBatches.MaxBy(static batch => batch.StopwatchCreatedTicks)!;
+            await Assert.That(System.Diagnostics.Stopwatch.GetElapsedTime(
+                    admittedBatch.StopwatchCreatedTicks).TotalMilliseconds)
+                .IsGreaterThanOrEqualTo(20);
+            foreach (var batch in admittedBatches)
+                ExitAndReturn(accumulator, batch);
         }
         finally
         {

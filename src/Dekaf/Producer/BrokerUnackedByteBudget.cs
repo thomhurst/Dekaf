@@ -12,14 +12,17 @@ namespace Dekaf.Producer;
 /// by the broker's drain rate; capping the standing bytes to
 /// <c>target × measured drain rate</c> caps the latency. The RTT safety floor uses a
 /// periodically refreshed minimum RTT so standing queue delay cannot inflate its horizon.
+/// A two-second append-to-ack p95 feeds back queueing before the socket write; when it exceeds
+/// the target, the admission horizon contracts by <c>target / observed p95</c>.
 /// <para>
 /// Drain rate is measured per acknowledged request, BBR-style: each request snapshots the
 /// cumulative delivered-bytes counter at send time, and its rate sample is the delivered
 /// delta over the larger of the request's own sojourn and the interval since the delivery
 /// clock at send (sojourn only for app-limited sends, where the pipe was empty and the
-/// preceding interval is idle time). The denominator is therefore never smaller than one
-/// real round trip, so response-pass timing (hot polling, clustered completions,
-/// processing stalls) cannot manufacture inflated samples.
+/// preceding interval is idle time). It also carries the oldest batch's append-start timestamp
+/// so the acknowledgement can measure queueing that happened before admission and send.
+/// The drain-rate denominator is never smaller than one real round trip, so response-pass
+/// timing cannot manufacture inflated samples.
 /// </para>
 /// <para>
 /// Ownership contract: <see cref="Charge"/>/<see cref="Release"/>/<see cref="IsOverBudget"/>/
@@ -46,7 +49,8 @@ internal sealed class BrokerUnackedByteBudget
         long DeliveredBytes,
         long DeliveredTimestamp,
         long SendTimestamp,
-        bool AppLimited);
+        bool AppLimited,
+        long OldestBatchTimestamp);
 
     /// <summary>
     /// Budget ceiling in batches per connection. Sized so a ~1 GB/s drain with ~30 ms ack
@@ -78,6 +82,9 @@ internal sealed class BrokerUnackedByteBudget
     /// 32 ms and above).
     /// </summary>
     private const int HistogramBucketCount = 16;
+    private const int DeliveryLatencySubBucketsPerPowerOfTwo = 4;
+    private const int DeliveryLatencyHistogramBucketCount =
+        24 * DeliveryLatencySubBucketsPerPowerOfTwo;
     private const int RequestSizeHistogramShift = 8;
 
     /// <summary>
@@ -119,6 +126,7 @@ internal sealed class BrokerUnackedByteBudget
     private long _admissionBlockEvents;
     private long _minimumRttMicros;
     private long _maxRateBytesPerSecond;
+    private long _deliveryLatencyP95Micros;
     private long _pendingWrittenUnackedPeakBytes;
     // BBR delivery clock: cumulative acked bytes ("delivered") and the timestamp of the most
     // recent delivery ("delivered_mstamp"). Written only by OnAcked (single writer); snapshot
@@ -132,6 +140,10 @@ internal sealed class BrokerUnackedByteBudget
     private long _capBytes;
     private readonly double[] _rateBucketMaxValues = new double[WindowBucketCount];
     private readonly long[] _occupancyBucketMaxValues = new long[WindowBucketCount];
+    private readonly long[] _deliveryLatencyBucketCounts =
+        new long[WindowBucketCount * DeliveryLatencyHistogramBucketCount];
+    private readonly long[] _deliveryLatencyWindowCounts =
+        new long[DeliveryLatencyHistogramBucketCount];
     // Per-request diagnostics: log2 histograms of acked request sizes and RTTs. Incremented
     // only by the owning send loop; snapshot copies use per-element volatile reads, so
     // readers may observe slightly stale counts (acceptable for diagnostics).
@@ -140,6 +152,8 @@ internal sealed class BrokerUnackedByteBudget
     private long _currentWindowBucket = long.MinValue;
     private double _windowMaxRate;
     private long _windowMaxOccupancyBytes;
+    private long _deliveryLatencySampleCount;
+    private double _deliveryLatencyP95Seconds;
     private double _minRttSeconds;
     private double _minRttProbeMinimumSeconds;
     private bool _hasMinRttSample;
@@ -186,6 +200,8 @@ internal sealed class BrokerUnackedByteBudget
 
     internal long MaxRateBytesPerSecond => Volatile.Read(ref _maxRateBytesPerSecond);
 
+    internal long DeliveryLatencyP95Micros => Volatile.Read(ref _deliveryLatencyP95Micros);
+
     /// <summary>
     /// Cross-thread: parallel connection sends mint the per-request delivery token immediately
     /// before the socket write (so <paramref name="sendTimestamp"/> can never postdate the
@@ -195,12 +211,18 @@ internal sealed class BrokerUnackedByteBudget
     /// </summary>
     /// <param name="sendTimestamp">Stopwatch timestamp taken just before the socket write.</param>
     /// <param name="appLimited">True when the broker pipe was empty at send time.</param>
-    internal DeliverySnapshot SnapshotDelivery(long sendTimestamp, bool appLimited)
+    /// <param name="oldestBatchTimestamp">Oldest append-start timestamp represented by the
+    /// request, or zero when the caller has no batch-age signal.</param>
+    internal DeliverySnapshot SnapshotDelivery(
+        long sendTimestamp,
+        bool appLimited,
+        long oldestBatchTimestamp = 0)
         => new(
             Volatile.Read(ref _totalDeliveredBytes),
             Volatile.Read(ref _lastDeliveredTimestamp),
             sendTimestamp,
-            appLimited);
+            appLimited,
+            oldestBatchTimestamp);
 
     /// <summary>Diagnostics: log2 histogram of acked request payload sizes (see
     /// <see cref="HistogramBucketCount"/> for bucket semantics).</summary>
@@ -366,6 +388,11 @@ internal sealed class BrokerUnackedByteBudget
         Volatile.Write(ref _lastDeliveredTimestamp, nowTicks);
 
         AdvanceWindow(nowTicks);
+        if (sendSnapshot.OldestBatchTimestamp > 0
+            && sendSnapshot.OldestBatchTimestamp <= nowTicks)
+        {
+            AddDeliveryLatencySample(nowTicks - sendSnapshot.OldestBatchTimestamp);
+        }
         var bytesPerSecond = deliveredDelta * (double)Stopwatch.Frequency / intervalTicks;
         if (bytesPerSecond > 0)
         {
@@ -476,8 +503,12 @@ internal sealed class BrokerUnackedByteBudget
         {
             Array.Clear(_rateBucketMaxValues);
             Array.Clear(_occupancyBucketMaxValues);
+            Array.Clear(_deliveryLatencyBucketCounts);
+            Array.Clear(_deliveryLatencyWindowCounts);
             _windowMaxRate = 0;
             _windowMaxOccupancyBytes = 0;
+            _deliveryLatencySampleCount = 0;
+            PublishDeliveryLatencyP95(0);
         }
         else
         {
@@ -491,12 +522,14 @@ internal sealed class BrokerUnackedByteBudget
                     && _occupancyBucketMaxValues[slot] >= _windowMaxOccupancyBytes;
                 _rateBucketMaxValues[slot] = 0;
                 _occupancyBucketMaxValues[slot] = 0;
+                ClearDeliveryLatencyWindowSlot(slot);
             }
 
             if (recomputeRate)
                 _windowMaxRate = Max(_rateBucketMaxValues);
             if (recomputeOccupancy)
                 _windowMaxOccupancyBytes = Max(_occupancyBucketMaxValues);
+            RecomputeDeliveryLatencyP95();
         }
 
         _currentWindowBucket = bucket;
@@ -514,6 +547,78 @@ internal sealed class BrokerUnackedByteBudget
         var slot = (int)(_currentWindowBucket % WindowBucketCount);
         _occupancyBucketMaxValues[slot] = Math.Max(_occupancyBucketMaxValues[slot], bytes);
         _windowMaxOccupancyBytes = Math.Max(_windowMaxOccupancyBytes, bytes);
+    }
+
+    private void AddDeliveryLatencySample(long latencyTicks)
+    {
+        var latencyMicros = Math.Max(
+            1UL,
+            (ulong)(latencyTicks * (1_000_000.0 / Stopwatch.Frequency)));
+        var log2 = BitOperations.Log2(latencyMicros);
+        var powerOfTwoFloor = 1UL << log2;
+        var subBucket = (int)Math.Min(
+            DeliveryLatencySubBucketsPerPowerOfTwo - 1,
+            (latencyMicros - powerOfTwoFloor)
+            * DeliveryLatencySubBucketsPerPowerOfTwo
+            / powerOfTwoFloor);
+        var histogramBucket = Math.Min(
+            log2 * DeliveryLatencySubBucketsPerPowerOfTwo + subBucket,
+            DeliveryLatencyHistogramBucketCount - 1);
+        var windowSlot = (int)(_currentWindowBucket % WindowBucketCount);
+        _deliveryLatencyBucketCounts[
+            windowSlot * DeliveryLatencyHistogramBucketCount + histogramBucket]++;
+        _deliveryLatencyWindowCounts[histogramBucket]++;
+        _deliveryLatencySampleCount++;
+        RecomputeDeliveryLatencyP95();
+    }
+
+    private void ClearDeliveryLatencyWindowSlot(int windowSlot)
+    {
+        var offset = windowSlot * DeliveryLatencyHistogramBucketCount;
+        for (var bucket = 0; bucket < DeliveryLatencyHistogramBucketCount; bucket++)
+        {
+            var expired = _deliveryLatencyBucketCounts[offset + bucket];
+            if (expired == 0)
+                continue;
+
+            _deliveryLatencyBucketCounts[offset + bucket] = 0;
+            _deliveryLatencyWindowCounts[bucket] -= expired;
+            _deliveryLatencySampleCount -= expired;
+        }
+    }
+
+    private void RecomputeDeliveryLatencyP95()
+    {
+        if (_deliveryLatencySampleCount == 0)
+        {
+            PublishDeliveryLatencyP95(0);
+            return;
+        }
+
+        var rank = (_deliveryLatencySampleCount * 95 + 99) / 100;
+        long cumulative = 0;
+        for (var bucket = 0; bucket < DeliveryLatencyHistogramBucketCount; bucket++)
+        {
+            cumulative += _deliveryLatencyWindowCounts[bucket];
+            if (cumulative < rank)
+                continue;
+
+            var log2 = bucket / DeliveryLatencySubBucketsPerPowerOfTwo;
+            var subBucket = bucket % DeliveryLatencySubBucketsPerPowerOfTwo;
+            var powerOfTwoFloor = 1L << log2;
+            var bucketUpperBound = powerOfTwoFloor
+                + (powerOfTwoFloor * (subBucket + 1)
+                    + DeliveryLatencySubBucketsPerPowerOfTwo - 1)
+                / DeliveryLatencySubBucketsPerPowerOfTwo;
+            PublishDeliveryLatencyP95(bucketUpperBound);
+            return;
+        }
+    }
+
+    private void PublishDeliveryLatencyP95(long latencyMicros)
+    {
+        _deliveryLatencyP95Seconds = latencyMicros / 1_000_000.0;
+        Volatile.Write(ref _deliveryLatencyP95Micros, latencyMicros);
     }
 
     private void UpdateCapacityProbe(
@@ -644,9 +749,13 @@ internal sealed class BrokerUnackedByteBudget
         }
         else
         {
+            var governedTargetSeconds = _targetSeconds;
+            if (_deliveryLatencyP95Seconds > _targetSeconds)
+                governedTargetSeconds *= _targetSeconds / _deliveryLatencyP95Seconds;
+
             var horizonSeconds = _hasMinRttSample && !minRttProbeActive
-                ? Math.Max(_targetSeconds, RttSafetyMultiplier * minRttSeconds)
-                : _targetSeconds;
+                ? Math.Max(governedTargetSeconds, RttSafetyMultiplier * minRttSeconds)
+                : governedTargetSeconds;
             rateBudgetBytes = _windowMaxRate * horizonSeconds;
             var estimatedBytes = rateBudgetBytes;
             if (capacityProbeActive && !minRttProbeActive)

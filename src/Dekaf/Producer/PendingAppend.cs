@@ -54,6 +54,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     private CancellationTokenRegistration _cancellationRegistration;
     private CancellationToken _cancellationToken;
     private long _startTicks;
+    private long _admissionStartedStopwatchTicks;
     private long _deadlineTickCount;
     private long _admissionRecheckTickCount;
     private RecordAccumulator _accumulator = null!;
@@ -84,6 +85,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     internal PooledValueTaskSource<RecordMetadata>? CompletionSource => _completionSource;
     internal Action<RecordMetadata, Exception?>? Callback => _callback;
     internal int RecordSize => _recordSize;
+    internal long AdmissionStartedStopwatchTicks => _admissionStartedStopwatchTicks;
 
     public PendingAppend()
     {
@@ -118,7 +120,8 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         long deadlineTickCount,
         RecordAccumulator accumulator,
         PendingAppendPool pool,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        long admissionStartedStopwatchTicks = 0)
     {
         _topic = topic;
         _partition = partition;
@@ -132,6 +135,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _callback = callback;
         _recordSize = recordSize;
         _startTicks = startTicks;
+        _admissionStartedStopwatchTicks = admissionStartedStopwatchTicks;
         _deadlineTickCount = deadlineTickCount;
         _admissionRecheckTickCount = 0;
         _cancellationToken = cancellationToken;
@@ -330,6 +334,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
         _completionSource = null;
         _callback = null;
         _cancellationToken = default;
+        _admissionStartedStopwatchTicks = 0;
         _deadlineTickCount = 0;
         _admissionRecheckTickCount = 0;
         _accumulator = null!;

@@ -160,7 +160,10 @@ public sealed class ProducerDeliveryDiagnosticsTests
         var ackTimestamp = Stopwatch.GetTimestamp();
         budget.OnAcked(
             1_000,
-            budget.SnapshotDelivery(ackTimestamp - Stopwatch.Frequency / 1_000, appLimited: true),
+            budget.SnapshotDelivery(
+                ackTimestamp - Stopwatch.Frequency / 1_000,
+                appLimited: true,
+                oldestBatchTimestamp: ackTimestamp - Stopwatch.Frequency / 200),
             ackTimestamp);
 
         await accumulator.ExpireLingerAsync(CancellationToken.None);
@@ -173,6 +176,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(current.UnackedBytes).IsEqualTo(600);
         await Assert.That(current.MinRttMicros).IsGreaterThan(0);
         await Assert.That(current.MaxRateBytesPerSec).IsGreaterThan(0);
+        await Assert.That(current.DeliveryLatencyP95Micros).IsEqualTo(5_120);
         await Assert.That(current.AdmissionBlockCount).IsEqualTo(1);
         await Assert.That(current.RequestSizeLog2Histogram).IsNotNull();
         await Assert.That(current.RequestSizeLog2Histogram!.Sum()).IsEqualTo(1);

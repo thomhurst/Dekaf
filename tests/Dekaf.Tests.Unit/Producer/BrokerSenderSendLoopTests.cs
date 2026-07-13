@@ -3130,8 +3130,16 @@ public sealed class BrokerSenderSendLoopTests
             sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1, dataSize: 5_000));
             await WaitUntilAsync(() => GetPendingResponseCount(sender) == 2, cancellationToken);
 
-            await Assert.That(GetDeliverySnapshot(sender, 0).AppLimited).IsTrue();
-            await Assert.That(GetDeliverySnapshot(sender, 1).AppLimited).IsFalse();
+            var firstSnapshot = GetDeliverySnapshot(sender, 0);
+            var secondSnapshot = GetDeliverySnapshot(sender, 1);
+            await Assert.That(firstSnapshot.AppLimited).IsTrue();
+            await Assert.That(secondSnapshot.AppLimited).IsFalse();
+            await Assert.That(firstSnapshot.OldestBatchTimestamp).IsGreaterThan(0);
+            await Assert.That(firstSnapshot.OldestBatchTimestamp)
+                .IsLessThanOrEqualTo(firstSnapshot.SendTimestamp);
+            await Assert.That(secondSnapshot.OldestBatchTimestamp).IsGreaterThan(0);
+            await Assert.That(secondSnapshot.OldestBatchTimestamp)
+                .IsLessThanOrEqualTo(secondSnapshot.SendTimestamp);
 
             responses[0].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
             responses[1].SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 1));
