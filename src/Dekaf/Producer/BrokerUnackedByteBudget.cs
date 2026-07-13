@@ -354,13 +354,26 @@ internal sealed class BrokerUnackedByteBudget
                 continue;
             }
 
-            // The loop-top delivery read can predate a newer epoch value observed by the
-            // successful CAS. Re-read after winning so publication never regresses that value.
-            deliveredBytes = Volatile.Read(ref _totalDeliveredBytes);
-            Volatile.Write(ref _sendEpochFirstTimestamp, sendTimestamp);
-            Volatile.Write(ref _sendEpochDeliveredBytes, deliveredBytes);
-            return sendTimestamp;
+            return PublishDeliveryEpoch(sendTimestamp, epochDeliveredBytes, out deliveredBytes);
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private long PublishDeliveryEpoch(
+        long sendTimestamp,
+        long previousEpochDeliveredBytes,
+        out long deliveredBytes)
+    {
+        // The loop-top delivery read can predate a newer epoch value observed by the
+        // successful CAS. Re-read after winning so publication never regresses that value.
+        // A redundant publisher must also preserve the first send timestamp already chosen
+        // for the epoch; moving it forward would narrow the send-axis delivery interval.
+        deliveredBytes = Volatile.Read(ref _totalDeliveredBytes);
+        if (deliveredBytes != previousEpochDeliveredBytes)
+            Volatile.Write(ref _sendEpochFirstTimestamp, sendTimestamp);
+
+        Volatile.Write(ref _sendEpochDeliveredBytes, deliveredBytes);
+        return Volatile.Read(ref _sendEpochFirstTimestamp);
     }
 
     /// <summary>Diagnostics: log2 histogram of acked request payload sizes (see

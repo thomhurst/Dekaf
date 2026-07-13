@@ -1570,6 +1570,33 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task DeliveryEpoch_RedundantPublisherPreservesFirstSendAnchor()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 3_200);
+        const long deliveredBytes = 100;
+        const long firstSendTimestamp = 6_000;
+        const long stalePublisherTimestamp = 7_000;
+        const long deliveryEpochUpdating = -2;
+
+        SetField(budget, "_totalDeliveredBytes", deliveredBytes);
+        SetField(budget, "_sendEpochDeliveredBytes", deliveryEpochUpdating);
+        SetField(budget, "_sendEpochFirstTimestamp", firstSendTimestamp);
+
+        var arguments = new object?[] { stalePublisherTimestamp, deliveredBytes, null };
+        var anchor = (long)typeof(BrokerUnackedByteBudget)
+            .GetMethod("PublishDeliveryEpoch", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(budget, arguments)!;
+
+        await Assert.That(anchor).IsEqualTo(firstSendTimestamp);
+        await Assert.That(arguments[2]).IsEqualTo(deliveredBytes);
+        await Assert.That(GetField<long>(budget, "_sendEpochFirstTimestamp")).IsEqualTo(firstSendTimestamp);
+        await Assert.That(GetField<long>(budget, "_sendEpochDeliveredBytes")).IsEqualTo(deliveredBytes);
+    }
+
+    [Test]
     public async Task IsOverBudget_TransitionsWithChargesAndReleases()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 100, initialCapBytes: 100);
