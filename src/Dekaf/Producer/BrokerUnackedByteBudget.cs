@@ -11,8 +11,14 @@ namespace Dekaf.Producer;
 /// Under open-loop saturation, append-to-ack latency equals standing unacked bytes divided
 /// by the broker's drain rate; capping the standing bytes to
 /// <c>target × measured drain rate</c> caps the latency. The RTT safety floor uses a
-/// periodically refreshed minimum RTT or the loaded serving RTT, so standing queue delay
-/// cannot replace the base RTT while replicated service time still keeps the pipe full.
+/// periodically refreshed minimum RTT or the loaded serving RTT, so replicated service time
+/// still keeps the pipe full. Raw round trips include the drain time of bytes the budget
+/// itself admitted ahead of the request, so RTT samples are queue-corrected at intake (raw
+/// RTT minus unacked-at-send over the measured max rate) before feeding the minimum and
+/// serving estimates, and the serving EWMA is additionally clamped to a bounded multiple of
+/// the minimum: an uncorrected floor of <c>1.5 × servingRtt</c> has loop gain above one —
+/// each budget raise lengthens the RTT that justifies the next raise until the budget rides
+/// its cap (the 3-broker acks=all latency ratchet, #2009).
 /// <para>
 /// Drain rate is measured per acknowledged request, BBR-style: each request snapshots the
 /// cumulative delivered-bytes counter at send time, and its rate sample is the delivered
@@ -49,7 +55,8 @@ internal sealed class BrokerUnackedByteBudget
         long DeliveredTimestamp,
         long SendTimestamp,
         bool AppLimited,
-        long OldestBatchTimestamp);
+        long OldestBatchTimestamp,
+        long UnackedBytesAtSend);
 
     /// <summary>
     /// Budget ceiling in batches per connection. Sized so a ~1 GB/s drain with ~30 ms ack
@@ -98,13 +105,13 @@ internal sealed class BrokerUnackedByteBudget
     private static readonly long MinRttWindowTicks = 10 * Stopwatch.Frequency;
 
     /// <summary>
-    /// Minimum target-only drain interval used to refresh base RTT without standing
-    /// queue delay. Long-base-RTT links probe for at least one observed round-trip.
+    /// Minimum queue-drain interval used to refresh base RTT without standing queue
+    /// delay. Long-base-RTT links probe for at least one observed round-trip.
     /// </summary>
     private static readonly long MinRttProbeDurationTicks = Stopwatch.Frequency / 20;
 
     /// <summary>
-    /// Maximum target-only drain interval. An RTT outlier must not disable the retained
+    /// Maximum queue-drain interval. An RTT outlier must not disable the retained
     /// RTT safety floor for its full (potentially multi-second) duration.
     /// </summary>
     private static readonly long MaxMinRttProbeDurationTicks = Stopwatch.Frequency / 4;
@@ -116,12 +123,32 @@ internal sealed class BrokerUnackedByteBudget
     private const double RttSafetyMultiplier = 1.5;
     private const double MinRttProbeSafetyMultiplier = 1.0;
 
+    /// <summary>Ceiling on the loaded serving RTT as a multiple of the queue-drained minimum
+    /// RTT. The serving EWMA includes queueing delay the budget itself admitted, so letting
+    /// it grow the RTT floor unboundedly is a positive-feedback loop with gain above one;
+    /// clamping bounds the floor at <c>RttSafetyMultiplier × this × minRtt</c> (3 × BDP) —
+    /// enough slack for replication service-time variance without the ratchet.</summary>
+    private const double ServingRttClampMultiplier = 2.0;
+
+    /// <summary>Standing unacked bytes at this multiple of the freshly computed budget prove
+    /// the previous budget over-admitted; decay smoothing then yields to the recompute.</summary>
+    private const long StandingQueueDecayBypassMultiplier = 2;
+
+    /// <summary>Lower bound on queue-corrected RTT samples as a fraction of the raw round
+    /// trip, so an overestimated drain rate cannot collapse the corrected service estimate
+    /// (and with it the RTT floor) toward zero.</summary>
+    private const double MinCorrectedRttFraction = 0.25;
+
     private const int ProbeIntervalRtts = 8;
     // A capacity probe needs one RTT for the enlarged budget to reach the wire,
     // then three wholly-probed RTTs to average before accepting or rejecting growth.
     private const int ProbeEvaluationRtts = 3;
     private const double ProbeBudgetMultiplier = 1.25;
-    private const double RttFloorProbeBudgetMultiplier = 1.5;
+    /// <summary>A probe confirms capacity only when rate rises without the round trip
+    /// inflating past this tolerance. Through a saturated broker, delivered rate never drops
+    /// when queue is added, so a rate-only acceptance test converts every probe into budget
+    /// growth; requiring a flat RTT distinguishes real headroom from added queueing.</summary>
+    private const double ProbeRttGrowthTolerance = 1.25;
     private static readonly long MaxProbeIntervalTicks = Stopwatch.Frequency;
 
     // Cross-thread state.
@@ -156,6 +183,8 @@ internal sealed class BrokerUnackedByteBudget
     private long _windowMaxOccupancyBytes;
     private double _minRttSeconds;
     private double _servingRttEwmaSeconds;
+    private double _rawServingRttEwmaSeconds;
+    private double _lastNormalRttFloorSeconds;
     private double _minRttProbeMinimumSeconds;
     private bool _hasMinRttSample;
     private long _minRttTimestamp;
@@ -168,6 +197,8 @@ internal sealed class BrokerUnackedByteBudget
     private long _capacityProbeEvaluationDeadlineTimestamp;
     private double _capacityProbeBaselineRate;
     private double _capacityProbeRateSum;
+    private double _capacityProbeRttSumSeconds;
+    private double _capacityProbePreProbeRttSeconds;
     private int _capacityProbeRateSampleCount;
     private bool _capacityProbeActive;
     private double _deliveryLatencyEwmaSeconds;
@@ -239,7 +270,8 @@ internal sealed class BrokerUnackedByteBudget
             Volatile.Read(ref _lastDeliveredTimestamp),
             sendTimestamp,
             appLimited,
-            oldestBatchTimestamp);
+            oldestBatchTimestamp,
+            Volatile.Read(ref _unackedBytes));
 
     /// <summary>Diagnostics: log2 histogram of acked request payload sizes (see
     /// <see cref="HistogramBucketCount"/> for bucket semantics).</summary>
@@ -397,13 +429,30 @@ internal sealed class BrokerUnackedByteBudget
         var minRttProbeActive = _minRttProbeUntilTimestamp != 0
             && (nowTicks < _minRttProbeUntilTimestamp
                 || (nowTicks == _minRttProbeUntilTimestamp && _servingRttEwmaSeconds > 0));
-        UpdateMinRtt(rttSeconds, nowTicks);
+        // Queue-corrected service RTT: the raw round trip includes the time this request
+        // spent behind bytes the budget itself admitted (unacked at send, drained at the
+        // measured max rate). Feeding raw RTTs into the minimum and serving estimates lets
+        // self-queueing masquerade as service time and re-inflate the RTT floor those
+        // estimates size (#2009). The windowed-max rate under-corrects (biased-safe), and a
+        // fraction guard bounds outlier over-correction.
+        var serviceRttSeconds = CorrectRttForSelfQueueing(
+            rttSeconds,
+            sendSnapshot.UnackedBytesAtSend,
+            ackedBytes);
+        UpdateMinRtt(serviceRttSeconds, rttSeconds, nowTicks);
         if (loadedSample && !minRttProbeActive)
         {
             _servingRttEwmaSeconds = _servingRttEwmaSeconds == 0
-                ? rttSeconds
+                ? serviceRttSeconds
                 : _servingRttEwmaSeconds
-                    + ServingRttEwmaWeight * (rttSeconds - _servingRttEwmaSeconds);
+                    + ServingRttEwmaWeight * (serviceRttSeconds - _servingRttEwmaSeconds);
+            // Raw (uncorrected) companion estimate for the capacity probe: probe samples are
+            // raw round trips, so their acceptance baseline must live in the same domain —
+            // a corrected baseline under standing load would reject every probe.
+            _rawServingRttEwmaSeconds = _rawServingRttEwmaSeconds == 0
+                ? rttSeconds
+                : _rawServingRttEwmaSeconds
+                    + ServingRttEwmaWeight * (rttSeconds - _rawServingRttEwmaSeconds);
         }
         Volatile.Write(ref _minimumRttMicros, (long)(_minRttSeconds * 1_000_000));
         UpdateDeliveryLatency(
@@ -435,7 +484,7 @@ internal sealed class BrokerUnackedByteBudget
             Volatile.Write(ref _maxRateBytesPerSecond, (long)GetEffectiveMaxRate());
         }
 
-        UpdateCapacityProbe(bytesPerSecond, sendSnapshot.SendTimestamp, rttTicks, nowTicks);
+        UpdateCapacityProbe(bytesPerSecond, sendSnapshot.SendTimestamp, rttTicks, rttSeconds, nowTicks);
     }
 
     /// <summary>
@@ -488,7 +537,13 @@ internal sealed class BrokerUnackedByteBudget
         var admissionWasBlocked = admissionBlockEvents > _lastLatencyControlAdmissionBlockEvents;
         _lastLatencyControlAdmissionBlockEvents = admissionBlockEvents;
 
-        var targetRatio = _targetSeconds / latencyEstimate;
+        // Seal-to-send alone is blind to bytes already written and queued at the broker —
+        // the delay the budget most directly controls. Standing queue delay beyond the
+        // floor-sanctioned occupancy is that signal; controlling on the larger of the two
+        // lets the governor see broker-side queueing that never shows up between seal and
+        // socket write (#2009).
+        var controlLatencySeconds = Math.Max(latencyEstimate, GetStandingQueueDelaySeconds());
+        var targetRatio = _targetSeconds / controlLatencySeconds;
         double adjustment;
         if (targetRatio < 1)
             adjustment = Math.Max(MinimumLatencyAdjustmentFactor, targetRatio);
@@ -502,6 +557,24 @@ internal sealed class BrokerUnackedByteBudget
             MinimumLatencyBudgetScale,
             1.0));
         _nextLatencyControlTimestamp = nowTicks + LatencyControlIntervalTicks;
+    }
+
+    /// <summary>Producer-controlled standing queue delay: unacked bytes over the drain rate,
+    /// less the occupancy the budget's own RTT floor sanctions to keep the pipe full. Delay
+    /// inside the sanctioned floor is not actionable — shrinking the scale cannot reduce a
+    /// budget the floor holds up — so charging it to the governor would only wind the scale
+    /// down against a wall.</summary>
+    private double GetStandingQueueDelaySeconds()
+    {
+        var effectiveMaxRate = GetEffectiveMaxRate();
+        if (effectiveMaxRate <= 0)
+            return 0;
+
+        var sanctionedSeconds = Math.Max(
+            _lastNormalRttFloorSeconds,
+            _hasMinRttSample ? _minRttSeconds : 0);
+        var standingSeconds = UnackedBytes / effectiveMaxRate;
+        return Math.Max(0, standingSeconds - sanctionedSeconds);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -518,14 +591,30 @@ internal sealed class BrokerUnackedByteBudget
         _requestRttMicrosLog2Histogram[rttBucket]++;
     }
 
-    private void UpdateMinRtt(double rttSeconds, long nowTicks)
+    /// <summary>Removes the drain time of bytes already unacked at send from a measured
+    /// round trip, leaving an estimate of the broker's service time. The correction is
+    /// bounded below by <see cref="MinCorrectedRttFraction"/> of the raw round trip so a
+    /// rate-estimate outlier cannot collapse the RTT floor the result feeds.</summary>
+    private double CorrectRttForSelfQueueing(double rttSeconds, long unackedBytesAtSend, long ackedBytes)
+    {
+        var effectiveMaxRate = GetEffectiveMaxRate();
+        var queueAheadBytes = unackedBytesAtSend - ackedBytes;
+        if (effectiveMaxRate <= 0 || queueAheadBytes <= 0)
+            return rttSeconds;
+
+        return Math.Max(
+            rttSeconds * MinCorrectedRttFraction,
+            rttSeconds - queueAheadBytes / effectiveMaxRate);
+    }
+
+    private void UpdateMinRtt(double serviceRttSeconds, double rawRttSeconds, long nowTicks)
     {
         if (!_hasMinRttSample)
         {
-            _minRttSeconds = rttSeconds;
+            _minRttSeconds = serviceRttSeconds;
             _minRttTimestamp = nowTicks;
             _hasMinRttSample = true;
-            StartMinRttProbe(nowTicks, rttSeconds);
+            StartMinRttProbe(nowTicks, rawRttSeconds);
             return;
         }
 
@@ -537,20 +626,22 @@ internal sealed class BrokerUnackedByteBudget
             }
             else
             {
-                _minRttProbeMinimumSeconds = Math.Min(_minRttProbeMinimumSeconds, rttSeconds);
+                _minRttProbeMinimumSeconds = Math.Min(_minRttProbeMinimumSeconds, serviceRttSeconds);
                 return;
             }
         }
 
-        if (rttSeconds < _minRttSeconds)
+        if (serviceRttSeconds < _minRttSeconds)
         {
-            _minRttSeconds = rttSeconds;
+            _minRttSeconds = serviceRttSeconds;
             _minRttTimestamp = nowTicks;
             return;
         }
 
+        // Probe duration is sized from the raw round trip: draining the standing queue
+        // takes real wall-clock time even when the corrected service estimate is small.
         if (nowTicks - _minRttTimestamp >= MinRttWindowTicks)
-            StartMinRttProbe(nowTicks, rttSeconds);
+            StartMinRttProbe(nowTicks, rawRttSeconds);
     }
 
     private void CompleteExpiredMinRttProbe(long nowTicks)
@@ -657,6 +748,7 @@ internal sealed class BrokerUnackedByteBudget
         double bytesPerSecond,
         long sendTimestamp,
         long rttTicks,
+        double rttSeconds,
         long nowTicks)
     {
         var probeIntervalTicks = GetProbeIntervalTicks(rttTicks);
@@ -683,6 +775,7 @@ internal sealed class BrokerUnackedByteBudget
                 return;
 
             _capacityProbeRateSum += bytesPerSecond;
+            _capacityProbeRttSumSeconds += rttSeconds;
             _capacityProbeRateSampleCount++;
             if (_capacityProbeEvaluationDeadlineTimestamp == 0)
             {
@@ -693,14 +786,22 @@ internal sealed class BrokerUnackedByteBudget
             if (nowTicks < _capacityProbeEvaluationDeadlineTimestamp)
                 return;
 
+            // Real headroom shows as rate-up with a flat round trip. A saturated broker also
+            // shows rate-not-down when the probe adds queue, so a rate-only test would accept
+            // every probe under load and ratchet the budget into standing latency. The rate
+            // gate stays primary; the RTT guard (raw-domain baseline vs raw probe samples,
+            // <= 0 only when reflection-seeded in tests) catches the queue-dominated regime
+            // where round trips inflate well past the tolerance.
             var averageRate = _capacityProbeRateSum / _capacityProbeRateSampleCount;
-            if (averageRate > _capacityProbeBaselineRate * ProbeGrowthThreshold)
+            var averageRttSeconds = _capacityProbeRttSumSeconds / _capacityProbeRateSampleCount;
+            var rttHeld = _capacityProbePreProbeRttSeconds <= 0
+                || averageRttSeconds <= _capacityProbePreProbeRttSeconds * ProbeRttGrowthTolerance;
+            if (rttHeld && averageRate > _capacityProbeBaselineRate * ProbeGrowthThreshold)
             {
                 _capacityProbeBaselineRate = averageRate;
+                _capacityProbePreProbeRttSeconds = averageRttSeconds;
                 _capacityProbeStartTimestamp = nowTicks;
-                _capacityProbeRateSum = 0;
-                _capacityProbeRateSampleCount = 0;
-                _capacityProbeEvaluationDeadlineTimestamp = 0;
+                ResetCapacityProbeSamples();
                 Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeDurationTicks);
             }
             else
@@ -719,9 +820,12 @@ internal sealed class BrokerUnackedByteBudget
         {
             _capacityProbeStartTimestamp = nowTicks;
             _capacityProbeBaselineRate = GetEffectiveMaxRate();
-            _capacityProbeRateSum = 0;
-            _capacityProbeRateSampleCount = 0;
-            _capacityProbeEvaluationDeadlineTimestamp = 0;
+            // Raw-domain baseline to match the raw probe samples; the queue-corrected
+            // serving EWMA sits below loaded round trips and would fail every probe.
+            _capacityProbePreProbeRttSeconds = _rawServingRttEwmaSeconds > 0
+                ? _rawServingRttEwmaSeconds
+                : rttSeconds;
+            ResetCapacityProbeSamples();
             Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeDurationTicks);
             Volatile.Write(ref _capacityProbeActive, true);
         }
@@ -736,11 +840,17 @@ internal sealed class BrokerUnackedByteBudget
             ? MaxProbeIntervalTicks
             : ProbeIntervalRtts * rttTicks;
 
-    private void DeactivateCapacityProbe()
+    private void ResetCapacityProbeSamples()
     {
         _capacityProbeRateSum = 0;
+        _capacityProbeRttSumSeconds = 0;
         _capacityProbeRateSampleCount = 0;
         _capacityProbeEvaluationDeadlineTimestamp = 0;
+    }
+
+    private void DeactivateCapacityProbe()
+    {
+        ResetCapacityProbeSamples();
         Volatile.Write(ref _capacityProbeActive, false);
         Volatile.Write(ref _capacityProbeDeadlineTimestamp, 0);
     }
@@ -814,11 +924,14 @@ internal sealed class BrokerUnackedByteBudget
         var elapsedSeconds = _lastBudgetUpdateTimestamp == 0
             ? 0
             : Math.Max(0, (double)(nowTicks - _lastBudgetUpdateTimestamp) / Stopwatch.Frequency);
+        // _unackedBytes shares a contended cache line with every appender's Interlocked.Add;
+        // only pay for the read when the decay bound can actually consult it.
         var budget = BoundBudgetDecay(
             _lastNormalBudgetBytes,
             computedBudget,
             elapsedSeconds,
-            admissionWasBlocked);
+            admissionWasBlocked,
+            admissionWasBlocked ? UnackedBytes : 0);
         budget = Math.Min(budget, _capBytes);
         _lastNormalBudgetBytes = budget;
         _lastBudgetUpdateTimestamp = nowTicks;
@@ -833,7 +946,8 @@ internal sealed class BrokerUnackedByteBudget
         long previousBudget,
         long computedBudget,
         double elapsedSeconds,
-        bool admissionWasBlocked)
+        bool admissionWasBlocked,
+        long unackedBytes)
     {
         if (!admissionWasBlocked
             || computedBudget >= previousBudget
@@ -841,6 +955,13 @@ internal sealed class BrokerUnackedByteBudget
         {
             return computedBudget;
         }
+
+        // Under saturation admission is always blocked, so blocks alone cannot distinguish
+        // protected demand from a standing queue the recompute is trying to drain. Bytes at
+        // a multiple of the fresh budget are that proof — smoothing would preserve the
+        // over-admission for minutes at 10%/s.
+        if (unackedBytes >= StandingQueueDecayBypassMultiplier * computedBudget)
+            return computedBudget;
 
         var decayFraction = Math.Min(1.0, MaximumBudgetDecayPerSecond * elapsedSeconds);
         var minimumBudget = (long)Math.Ceiling(previousBudget * (1.0 - decayFraction));
@@ -864,24 +985,26 @@ internal sealed class BrokerUnackedByteBudget
         else
         {
             var latencyGovernedTargetSeconds = _targetSeconds * _latencyBudgetScale;
+            // The serving EWMA and the minimum RTT are queue-corrected at sample intake
+            // (see OnAcked), so neither re-inflates from queueing this budget admitted;
+            // the clamp below is a residual guard for correction error.
             var loadAwareRttSeconds = _retainedLoadedMaxRate > 0
-                ? Math.Max(minRttSeconds, _servingRttEwmaSeconds)
+                ? Math.Max(
+                    minRttSeconds,
+                    Math.Min(_servingRttEwmaSeconds, ServingRttClampMultiplier * minRttSeconds))
                 : minRttSeconds;
             var rttFloorSeconds = minRttProbeActive
                 ? MinRttProbeSafetyMultiplier * minRttSeconds
                 : RttSafetyMultiplier * loadAwareRttSeconds;
+            if (!minRttProbeActive)
+                _lastNormalRttFloorSeconds = rttFloorSeconds;
             var horizonSeconds = _hasMinRttSample
                 ? Math.Max(latencyGovernedTargetSeconds, rttFloorSeconds)
                 : latencyGovernedTargetSeconds;
             rateBudgetBytes = effectiveMaxRate * horizonSeconds;
             var estimatedBytes = rateBudgetBytes;
             if (capacityProbeActive && !minRttProbeActive)
-            {
-                var multiplier = rttFloorSeconds > latencyGovernedTargetSeconds
-                    ? RttFloorProbeBudgetMultiplier
-                    : ProbeBudgetMultiplier;
-                estimatedBytes *= multiplier;
-            }
+                estimatedBytes *= ProbeBudgetMultiplier;
 
             budget = (long)estimatedBytes;
         }
