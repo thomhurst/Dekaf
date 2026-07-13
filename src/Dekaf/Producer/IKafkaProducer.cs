@@ -286,6 +286,8 @@ internal sealed class ProducerBrokerBudgetDiagnostic
     public required long MinRttMicros { get; init; }
     public required long MaxRateBytesPerSec { get; init; }
     public required long AdmissionBlockCount { get; init; }
+    public required long DeliveryLatencyEwmaMicros { get; init; }
+    public required double LatencyBudgetScale { get; init; }
 
     /// <summary>
     /// Log2 histogram of acked produce-request payload sizes; bucket semantics are defined

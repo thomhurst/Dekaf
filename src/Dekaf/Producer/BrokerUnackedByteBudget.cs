@@ -46,7 +46,8 @@ internal sealed class BrokerUnackedByteBudget
         long DeliveredBytes,
         long DeliveredTimestamp,
         long SendTimestamp,
-        bool AppLimited);
+        bool AppLimited,
+        long OldestBatchTimestamp);
 
     /// <summary>
     /// Budget ceiling in batches per connection. Sized so a ~1 GB/s drain with ~30 ms ack
@@ -60,6 +61,10 @@ internal sealed class BrokerUnackedByteBudget
     private const double WindowBucketSeconds = 0.100;
     private const double OccupancySafetyMultiplier = 1.5;
     private const double ProbeGrowthThreshold = 1.01;
+    private const double DeliveryLatencyEwmaWeight = 0.125;
+    private const double MinimumLatencyBudgetScale = 0.10;
+    private const double MinimumLatencyAdjustmentFactor = 0.75;
+    private const double MaximumLatencyAdjustmentFactor = 1.05;
 
     /// <summary>
     /// Bounds the occupancy floor to this multiple of the rate-derived budget once a drain
@@ -86,6 +91,7 @@ internal sealed class BrokerUnackedByteBudget
     /// enough history to ignore short scheduler and broker stalls.
     /// </summary>
     private static readonly long WindowBucketTicks = Math.Max(1, (long)(WindowBucketSeconds * Stopwatch.Frequency));
+    private static readonly long LatencyControlIntervalTicks = Math.Max(1, Stopwatch.Frequency / 10);
 
     /// <summary>How long an observed base RTT remains valid before it is refreshed.</summary>
     private static readonly long MinRttWindowTicks = 10 * Stopwatch.Frequency;
@@ -152,6 +158,9 @@ internal sealed class BrokerUnackedByteBudget
     private long _capacityProbeDeadlineTimestamp;
     private double _capacityProbeBaselineRate;
     private bool _capacityProbeActive;
+    private double _deliveryLatencyEwmaSeconds;
+    private double _latencyBudgetScale = 1.0;
+    private long _nextLatencyControlTimestamp;
 
     public BrokerUnackedByteBudget(double targetSeconds, long floorBytes, long initialCapBytes)
     {
@@ -186,6 +195,11 @@ internal sealed class BrokerUnackedByteBudget
 
     internal long MaxRateBytesPerSecond => Volatile.Read(ref _maxRateBytesPerSecond);
 
+    internal long DeliveryLatencyEwmaMicros =>
+        (long)(Volatile.Read(ref _deliveryLatencyEwmaSeconds) * 1_000_000);
+
+    internal double LatencyBudgetScale => Volatile.Read(ref _latencyBudgetScale);
+
     /// <summary>
     /// Cross-thread: parallel connection sends mint the per-request delivery token immediately
     /// before the socket write (so <paramref name="sendTimestamp"/> can never postdate the
@@ -195,12 +209,18 @@ internal sealed class BrokerUnackedByteBudget
     /// </summary>
     /// <param name="sendTimestamp">Stopwatch timestamp taken just before the socket write.</param>
     /// <param name="appLimited">True when the broker pipe was empty at send time.</param>
-    internal DeliverySnapshot SnapshotDelivery(long sendTimestamp, bool appLimited)
+    /// <param name="oldestBatchTimestamp">Seal timestamp of the oldest batch in the request,
+    /// or zero when delivery-age feedback is unavailable.</param>
+    internal DeliverySnapshot SnapshotDelivery(
+        long sendTimestamp,
+        bool appLimited,
+        long oldestBatchTimestamp = 0)
         => new(
             Volatile.Read(ref _totalDeliveredBytes),
             Volatile.Read(ref _lastDeliveredTimestamp),
             sendTimestamp,
-            appLimited);
+            appLimited,
+            oldestBatchTimestamp);
 
     /// <summary>Diagnostics: log2 histogram of acked request payload sizes (see
     /// <see cref="HistogramBucketCount"/> for bucket semantics).</summary>
@@ -348,6 +368,7 @@ internal sealed class BrokerUnackedByteBudget
         var rttSeconds = (double)rttTicks / Stopwatch.Frequency;
         UpdateMinRtt(rttSeconds, nowTicks);
         Volatile.Write(ref _minimumRttMicros, (long)(_minRttSeconds * 1_000_000));
+        UpdateDeliveryLatency(sendSnapshot.OldestBatchTimestamp, nowTicks);
 
         RecordRequestHistograms(ackedBytes, rttSeconds);
 
@@ -380,6 +401,38 @@ internal sealed class BrokerUnackedByteBudget
         UpdateCapacityProbe(bytesPerSecond, sendSnapshot.SendTimestamp, rttTicks, nowTicks);
 
         RecomputeBudget();
+    }
+
+    private void UpdateDeliveryLatency(long oldestBatchTimestamp, long nowTicks)
+    {
+        if (oldestBatchTimestamp <= 0 || oldestBatchTimestamp >= nowTicks)
+            return;
+
+        var sampleSeconds = (double)(nowTicks - oldestBatchTimestamp) / Stopwatch.Frequency;
+        var latencyEstimate = _deliveryLatencyEwmaSeconds == 0
+            ? sampleSeconds
+            : _deliveryLatencyEwmaSeconds
+                + DeliveryLatencyEwmaWeight * (sampleSeconds - _deliveryLatencyEwmaSeconds);
+        Volatile.Write(ref _deliveryLatencyEwmaSeconds, latencyEstimate);
+
+        if (_nextLatencyControlTimestamp == 0)
+        {
+            _nextLatencyControlTimestamp = nowTicks + LatencyControlIntervalTicks;
+            return;
+        }
+
+        if (nowTicks < _nextLatencyControlTimestamp)
+            return;
+
+        var targetRatio = _targetSeconds / latencyEstimate;
+        var adjustment = targetRatio < 1
+            ? Math.Max(MinimumLatencyAdjustmentFactor, targetRatio)
+            : Math.Min(MaximumLatencyAdjustmentFactor, targetRatio);
+        Volatile.Write(ref _latencyBudgetScale, Math.Clamp(
+            _latencyBudgetScale * adjustment,
+            MinimumLatencyBudgetScale,
+            1.0));
+        _nextLatencyControlTimestamp = nowTicks + LatencyControlIntervalTicks;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -644,9 +697,10 @@ internal sealed class BrokerUnackedByteBudget
         }
         else
         {
+            var latencyGovernedTargetSeconds = _targetSeconds * _latencyBudgetScale;
             var horizonSeconds = _hasMinRttSample && !minRttProbeActive
-                ? Math.Max(_targetSeconds, RttSafetyMultiplier * minRttSeconds)
-                : _targetSeconds;
+                ? Math.Max(latencyGovernedTargetSeconds, RttSafetyMultiplier * minRttSeconds)
+                : latencyGovernedTargetSeconds;
             rateBudgetBytes = _windowMaxRate * horizonSeconds;
             var estimatedBytes = rateBudgetBytes;
             if (capacityProbeActive && !minRttProbeActive)
