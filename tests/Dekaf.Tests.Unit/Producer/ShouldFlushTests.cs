@@ -241,19 +241,17 @@ public class ShouldFlushTests
     }
 
     [Test]
-    [Arguments(true, false, false, 0, false, true)]
-    [Arguments(false, true, true, 100, false, true)]
-    [Arguments(false, true, false, 100, false, false)]
-    [Arguments(false, false, true, 100, false, true)]
-    [Arguments(false, false, true, 999, false, true)]
-    [Arguments(false, false, true, 999, true, false)]
-    [Arguments(false, false, true, 1_000, false, false)]
+    [Arguments(true, false, false, 0, true)]
+    [Arguments(false, true, true, 100, true)]
+    [Arguments(false, true, false, 100, false)]
+    [Arguments(false, false, true, 100, true)]
+    [Arguments(false, false, true, 999, true)]
+    [Arguments(false, false, true, 1_000, false)]
     public async Task DeliveryCoupledLinger_DefersOnlyBusyUnderfilledBatches(
         bool isMuted,
         bool serializeBatchesPerPartition,
         bool hasPipelineBatch,
         int currentBatchSize,
-        bool deliveryLatencyBoundEnabled,
         bool expected)
     {
         var result = RecordAccumulator.ShouldDeferPartialBatchSeal(
@@ -261,8 +259,7 @@ public class ShouldFlushTests
             serializeBatchesPerPartition,
             hasPipelineBatch,
             currentBatchSize,
-            maximumBatchSize: 1_000,
-            deliveryLatencyBoundEnabled);
+            maximumBatchSize: 1_000);
 
         await Assert.That(result).IsEqualTo(expected);
     }

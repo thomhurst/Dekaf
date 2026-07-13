@@ -3567,25 +3567,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _serializeBatchesPerPartition,
             hasPipelineBatch,
             batch.EstimatedSize,
-            batch.EffectiveBatchSizeLimit,
-            _options.DeliveryLatencyTargetMs > 0);
+            batch.EffectiveBatchSizeLimit);
     }
 
-    // An earlier pipeline batch normally provides a short delivery clock under load. A
-    // configured latency bound cannot rely on that: an underfilled 1MiB batch may itself
-    // exceed the target at the broker's per-partition rate, so let linger seal it. Muted or
-    // serialized partitions still defer because their next batch cannot be sent yet.
+    // An earlier pipeline batch provides a short delivery clock under load. Keep the next
+    // partial batch open until it fills; if traffic becomes sparse, the predecessor exits,
+    // queued bytes reach zero, and the next linger pass seals normally. Size-full batches
+    // bypass this method in ShouldSealAppendedBatch and continue pipelining immediately.
     internal static bool ShouldDeferPartialBatchSeal(
         bool isMuted,
         bool serializeBatchesPerPartition,
         bool hasPipelineBatch,
         int currentBatchSize,
-        int maximumBatchSize,
-        bool deliveryLatencyBoundEnabled) =>
+        int maximumBatchSize) =>
         isMuted
         || (hasPipelineBatch
             && (serializeBatchesPerPartition
-                || (!deliveryLatencyBoundEnabled && currentBatchSize < maximumBatchSize)));
+                || currentBatchSize < maximumBatchSize));
 
     private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
     {
@@ -4480,11 +4478,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var cap = _options.UnackedByteBudgetCapOverride
             ?? BrokerUnackedByteBudget.ComputeCap(_options.BatchSize, _options.ConnectionsPerBroker);
-        // Linger can seal partial batches, so a 1MiB BatchSize must not impose 1MiB of
-        // standing queue on a slower broker. Keep at most 64KiB of startup headroom; the
-        // measured rate and minimum-RTT safety horizon supply the real BDP. Oversized
-        // records may exceed the floor once, then the gate blocks subsequent appends.
-        var floor = Math.Min(Math.Min(Math.Max(1, _options.BatchSize), 64L << 10), cap);
+        // Floor keeps the pipe full (>= 2 batches, >= 1MiB BDP headroom) but must not exceed a
+        // deliberately tiny test cap, or the gate could never bind in unit tests.
+        var floor = Math.Min(Math.Max(2L * Math.Max(1, _options.BatchSize), 1L << 20), cap);
         return new BrokerUnackedByteBudget(_options.DeliveryLatencyTargetMs / 1000.0, floor, cap);
     }
 

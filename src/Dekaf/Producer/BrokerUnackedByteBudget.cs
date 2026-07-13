@@ -13,7 +13,8 @@ namespace Dekaf.Producer;
 /// <c>target × measured drain rate</c> caps the latency. The RTT safety floor uses a
 /// periodically refreshed minimum RTT so standing queue delay cannot inflate its horizon.
 /// A two-second append-to-ack p95 feeds back queueing before the socket write; when it exceeds
-/// the target, the admission horizon contracts by <c>target / observed p95</c>.
+/// the target, the admission horizon contracts by <c>target / observed p95</c>, bounded to
+/// half the configured horizon so transient scheduler stalls cannot collapse throughput.
 /// <para>
 /// Drain rate is measured per acknowledged request, BBR-style: each request snapshots the
 /// cumulative delivered-bytes counter at send time, and its rate sample is the delivered
@@ -85,6 +86,7 @@ internal sealed class BrokerUnackedByteBudget
     private const int DeliveryLatencySubBucketsPerPowerOfTwo = 4;
     private const int DeliveryLatencyHistogramBucketCount =
         24 * DeliveryLatencySubBucketsPerPowerOfTwo;
+    private const double MinimumLatencyFeedbackFactor = 0.5;
     private const int RequestSizeHistogramShift = 8;
 
     /// <summary>
@@ -751,7 +753,11 @@ internal sealed class BrokerUnackedByteBudget
         {
             var governedTargetSeconds = _targetSeconds;
             if (_deliveryLatencyP95Seconds > _targetSeconds)
-                governedTargetSeconds *= _targetSeconds / _deliveryLatencyP95Seconds;
+            {
+                governedTargetSeconds *= Math.Max(
+                    MinimumLatencyFeedbackFactor,
+                    _targetSeconds / _deliveryLatencyP95Seconds);
+            }
 
             var horizonSeconds = _hasMinRttSample && !minRttProbeActive
                 ? Math.Max(governedTargetSeconds, RttSafetyMultiplier * minRttSeconds)

@@ -90,22 +90,6 @@ public sealed class BrokerUnackedAdmissionTests
     }
 
     [Test]
-    public async Task BudgetFloor_DoesNotForceOneFullDefaultBatch()
-    {
-        const int batchSize = 1 << 20;
-        await using var accumulator = new RecordAccumulator(
-            CreateOptions(capOverride: 100L << 20, batchSize: batchSize),
-            resolveLeaderId: (_, _) => LeaderNodeId);
-        var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
-        var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-        var sendTicks = nowTicks - System.Diagnostics.Stopwatch.Frequency / 1_000;
-
-        budget.OnAcked(1, budget.SnapshotDelivery(sendTicks, appLimited: true), nowTicks);
-
-        await Assert.That(budget.BudgetBytes).IsEqualTo(64 << 10);
-    }
-
-    [Test]
     public async Task Seal_ChargesLeaderBudget_AndBatchExitReleases()
     {
         var options = CreateOptions(capOverride: null);

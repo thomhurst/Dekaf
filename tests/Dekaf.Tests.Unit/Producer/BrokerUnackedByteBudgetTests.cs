@@ -72,7 +72,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task Budget_DeliveryLatencyAboveTarget_ShrinksAdmissionHorizon()
+    public async Task Budget_DeliveryLatencyAboveTarget_BoundsAdmissionCorrection()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
@@ -89,7 +89,7 @@ public sealed class BrokerUnackedByteBudgetTests
 
         await Assert.That(budget.DeliveryLatencyP95Micros)
             .IsGreaterThanOrEqualTo(32_000);
-        await Assert.That(budget.BudgetBytes).IsLessThan(2_500);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
     }
 
     [Test]
@@ -104,7 +104,7 @@ public sealed class BrokerUnackedByteBudgetTests
             appLimited: true,
             oldestBatchTimestamp: T0 - Seconds(0.040));
         budget.OnAcked(1_000, highLatencySnapshot, T0);
-        await Assert.That(budget.BudgetBytes).IsLessThan(2_500);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
 
         var recoveredAt = T0 + Seconds(2.1);
         var recoveredSnapshot = budget.SnapshotDelivery(
