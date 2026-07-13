@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Reflection;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
 using Dekaf.Errors;
@@ -3014,6 +3015,74 @@ public sealed class BrokerSenderSendLoopTests
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
         }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task DeliverySnapshot_SecondPipelinedRequest_IsNotAppLimited(
+        CancellationToken cancellationToken)
+    {
+        var responses = new[]
+        {
+            new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously),
+            new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var (pool, _) = CreateMockConnection(
+            new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        var options = CreateOptions(maxInFlight: 2, unackedByteBudgetCapOverride: 1_000_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            unackedBudget: budget);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 5_000));
+            await WaitUntilAsync(() => GetPendingResponseCount(sender) == 1, cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1, dataSize: 5_000));
+            await WaitUntilAsync(() => GetPendingResponseCount(sender) == 2, cancellationToken);
+
+            await Assert.That(GetDeliverySnapshot(sender, 0).AppLimited).IsTrue();
+            await Assert.That(GetDeliverySnapshot(sender, 1).AppLimited).IsFalse();
+
+            responses[0].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
+            responses[1].SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 1));
+        }
+        finally
+        {
+            responses[0].TrySetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
+            responses[1].TrySetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 1));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    private static int GetPendingResponseCount(BrokerSender sender) =>
+        (int)typeof(BrokerSender).GetField(
+            "_totalPendingResponseCount",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+
+    private static BrokerUnackedByteBudget.DeliverySnapshot GetDeliverySnapshot(
+        BrokerSender sender,
+        int index)
+    {
+        var pendingByConnection = (Array)typeof(BrokerSender).GetField(
+            "_pendingResponsesByConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+        var pending = pendingByConnection.GetValue(0)!;
+        var item = pending.GetType().GetProperty("Item")!.GetValue(pending, [index])!;
+        return (BrokerUnackedByteBudget.DeliverySnapshot)item.GetType()
+            .GetProperty("DeliverySnapshotAtSend")!.GetValue(item)!;
     }
 
     [Test]

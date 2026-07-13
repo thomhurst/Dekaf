@@ -4142,7 +4142,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var j = 0; j < pr.Count; j++)
             {
                 // Entries within Count can legally be null: batches with stale generations
-                // are nulled out before PendingResponse.Create captures the array.
+                // are nulled out before PendingResponse captures the array.
                 if (pr.IsSameIncarnation(j)
                     && pr.Batches[j].TopicPartition == topicPartition)
                     return true;
