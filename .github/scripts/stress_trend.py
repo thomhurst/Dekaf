@@ -92,6 +92,26 @@ def _identity(result):
     )
 
 
+def _is_confluent(result):
+    return str(result.get("client", "")).casefold().startswith("confluent")
+
+
+def _pair_identity(result):
+    """Match a Dekaf scenario to its same-run Confluent control.
+
+    Client and consumer connection count are intentionally excluded: each client uses its
+    own connection preset, while broker count and workload shape define the paired run.
+    """
+    return (
+        str(result.get("scenario", "unknown")).casefold(),
+        result.get("brokerCount", 1),
+        result.get("durationMinutes"),
+        result.get("messageSizeBytes"),
+        _consumer_seed_batch_size(result),
+        _roundtrip_messages(result),
+    )
+
+
 def _matching_observations(runs, result):
     key = _identity(result)
     matches = []
@@ -103,6 +123,44 @@ def _matching_observations(runs, result):
         if observation is not None:
             matches.append(observation)
     return matches
+
+
+def _matching_control_ratios(runs, result, metric):
+    pair_key = _pair_identity(result)
+    candidate_key = _identity(result)
+    trend_field = f"{metric}ControlRatioTrend"
+    ratios = []
+
+    for run in runs:
+        if run.get("environmentShiftSuspected", False):
+            continue
+        matching_results = [
+            item
+            for item in run.get("results", [])
+            if _pair_identity(item) == pair_key
+            and not item.get("environmentShiftSuspected", False)
+        ]
+        candidate = next(
+            (item for item in matching_results if _identity(item) == candidate_key),
+            None,
+        )
+        control = next((item for item in matching_results if _is_confluent(item)), None)
+        if candidate is None or control is None:
+            continue
+
+        candidate_value = candidate.get(metric)
+        control_value = control.get(metric)
+        if (
+            not _finite_number(candidate_value)
+            or not _finite_number(control_value)
+            or control_value == 0
+            or candidate.get(trend_field) == "regression"
+        ):
+            continue
+
+        ratios.append(candidate_value / control_value)
+
+    return ratios[-HISTORY_LIMIT:]
 
 
 def _limit_observations_per_identity(runs):
@@ -124,6 +182,7 @@ def _limit_observations_per_identity(runs):
                 if (
                     _finite_number(observation.get(metric))
                     and observation.get(f"{metric}Trend") != "regression"
+                    and not observation.get("environmentShiftSuspected", False)
                     and retained_baseline_counts.get(baseline_key, 0) < HISTORY_LIMIT
                 ):
                     baseline_keys.append(baseline_key)
@@ -179,6 +238,42 @@ def _metric_status(value, baseline, lower_is_regression):
     return status, baseline_median, mad, lower, upper
 
 
+def _control_ratio_evaluation(baseline_runs, result, metric, definition, value, control_value):
+    ratio = value / control_value
+    ratio_history = _matching_control_ratios(baseline_runs, result, metric)
+    evaluation = {
+        "scenario": _scenario_label(result),
+        "metric": f"{metric}ControlRatio",
+        "metricLabel": f"{definition['label']} / Confluent",
+        "current": ratio,
+        "baselineCount": len(ratio_history),
+        "median": None,
+        "mad": None,
+        "lower": None,
+        "upper": None,
+        "status": "insufficient-history",
+        "repeatedRegression": False,
+        "failureEligible": False,
+        "corroboratesBaselineRegression": False,
+    }
+    if len(ratio_history) < MIN_BASELINE_RUNS:
+        return evaluation
+
+    status, center, mad, lower, upper = _metric_status(
+        ratio,
+        ratio_history,
+        definition["lower_is_regression"],
+    )
+    evaluation.update({
+        "median": center,
+        "mad": mad,
+        "lower": lower,
+        "upper": upper,
+        "status": status,
+    })
+    return evaluation
+
+
 def evaluate_and_update(history, current_results, run_started_at):
     """Evaluate current results, append one compact run, and return failure state."""
     if history is not None and history.get("version") != HISTORY_VERSION:
@@ -194,8 +289,15 @@ def evaluate_and_update(history, current_results, run_started_at):
     evaluations = []
     observations = []
     should_fail = False
+    environment_shift_suspected = False
+    controls = {
+        _pair_identity(result): result
+        for result in current_results
+        if _is_confluent(result)
+    }
 
     for result in current_results:
+        is_confluent = _is_confluent(result)
         prior = _matching_observations(baseline_runs, result)
         observation = {field: result.get(field) for field in _IDENTITY_FIELDS}
         observation["consumerSeedBatchSizeBytes"] = _consumer_seed_batch_size(result)
@@ -217,6 +319,7 @@ def evaluate_and_update(history, current_results, run_started_at):
                 item.get(metric)
                 for item in prior
                 if item.get(trend_field) != "regression"
+                and not item.get("environmentShiftSuspected", False)
             ]
             history_values = [
                 item for item in history_values if _finite_number(item)
@@ -234,6 +337,8 @@ def evaluate_and_update(history, current_results, run_started_at):
                 "upper": None,
                 "status": "insufficient-history",
                 "repeatedRegression": False,
+                "failureEligible": False,
+                "corroborated": None,
             }
 
             if len(history_values) >= MIN_BASELINE_RUNS:
@@ -251,19 +356,49 @@ def evaluate_and_update(history, current_results, run_started_at):
                     "status": status,
                     "repeatedRegression": repeated,
                 })
-                should_fail = should_fail or repeated
 
             observation[metric] = value
             observation[f"{metric}Trend"] = evaluation["status"]
+
+            ratio_evaluation = None
+            control = controls.get(_pair_identity(result)) if not is_confluent else None
+            control_value = definition["extract"](control) if control is not None else None
+            if _finite_number(control_value) and control_value != 0:
+                ratio_evaluation = _control_ratio_evaluation(
+                    baseline_runs,
+                    result,
+                    metric,
+                    definition,
+                    value,
+                    control_value,
+                )
+                ratio_metric = ratio_evaluation["metric"]
+                observation[ratio_metric] = ratio_evaluation["current"]
+                observation[f"{ratio_metric}Trend"] = ratio_evaluation["status"]
+                evaluation["corroborated"] = ratio_evaluation["status"] == "regression"
+                evaluation["failureEligible"] = (
+                    evaluation["repeatedRegression"] and evaluation["corroborated"]
+                )
+                ratio_evaluation["corroboratesBaselineRegression"] = evaluation[
+                    "failureEligible"
+                ]
+            elif not is_confluent:
+                evaluation["failureEligible"] = evaluation["repeatedRegression"]
+
+            if is_confluent and evaluation["status"] == "regression":
+                environment_shift_suspected = True
+                evaluation["environmentShiftSuspected"] = True
+
             evaluations.append(evaluation)
+            if ratio_evaluation is not None:
+                evaluations.append(ratio_evaluation)
+            should_fail = should_fail or evaluation["failureEligible"]
             if metric == "messagesPerSecond":
                 throughput_regression = evaluation["status"] == "regression"
 
         intra_run = intra_run_throughput(result)
         if intra_run is not None:
             slope_breached = intra_run["slopeThresholdBreached"]
-            client = str(result.get("client", "")).casefold()
-            is_confluent = client.startswith("confluent")
             threshold_metrics = (
                 (
                     "steadyStatePeakRatio",
@@ -325,16 +460,25 @@ def evaluate_and_update(history, current_results, run_started_at):
 
         observations.append(observation)
 
+    # Environment shifts model runner-wide noise: one regressed Confluent control makes
+    # every observation from the same run unsafe for future absolute baselines.
+    if environment_shift_suspected:
+        for observation in observations:
+            observation["environmentShiftSuspected"] = True
+
     latency_evaluations = paired_latency_thresholds(current_results)
     evaluations.extend(latency_evaluations)
     should_fail = should_fail or any(
         item['thresholdBreach'] for item in latency_evaluations
     )
 
-    updated_runs = baseline_runs + [{
+    current_run = {
         "runStartedAtUtc": run_started_at,
         "results": observations,
-    }]
+    }
+    if environment_shift_suspected:
+        current_run["environmentShiftSuspected"] = True
+    updated_runs = baseline_runs + [current_run]
     updated = {
         "version": HISTORY_VERSION,
         "runs": _limit_observations_per_identity(updated_runs),
@@ -347,20 +491,31 @@ def format_markdown(evaluations):
         "## Stress Trend Analysis",
         "",
         (
-            f"Current metrics are compared with up to {HISTORY_LIMIT} matching runs. "
+            f"Current metrics and paired Dekaf/Confluent ratios are compared with up to "
+            f"{HISTORY_LIMIT} matching runs. "
             f"The noise band is trailing median ± max({MAD_MULTIPLIER:g}×MAD, "
             f"{RELATIVE_NOISE_FLOOR:.0%} of median); "
-            "a second consecutive adverse excursion fails the job."
+            "a second consecutive adverse excursion becomes a failure candidate."
         ),
         (
-            "Intra-run breaches warn first; repeated Dekaf breaches fail only when "
-            "corroborated by negative slope or baseline throughput regression. "
-            "Confluent intra-run breaches remain warnings."
+            "Paired Dekaf baseline regressions fail only when the same-run ratio also "
+            "regresses; unpaired scenarios retain the consecutive-regression gate. "
+            "Confluent regressions remain environment warnings."
         ),
+    ]
+
+    if any(item.get("environmentShiftSuspected") for item in evaluations):
+        lines.extend([
+            "",
+            "> Environment shift suspected: Confluent control regressed beyond its trailing band; "
+            "this run is excluded from absolute baselines.",
+        ])
+
+    lines.extend([
         "",
         "| Scenario | Metric | Current | Baseline median | Band | Status |",
         "|----------|--------|--------:|----------------:|------|--------|",
-    ]
+    ])
 
     labels = {
         "insufficient-history": "Collecting baseline",
@@ -393,8 +548,17 @@ def format_markdown(evaluations):
                 status = "Threshold breach (uncorroborated warning)"
             else:
                 status = "Threshold breach (warning)"
+        elif item.get("environmentShiftSuspected"):
+            status = "Environment shift suspected (warning)"
         elif item["repeatedRegression"]:
-            status = "Repeated regression (fail)"
+            if item.get("failureEligible"):
+                status = "Repeated regression (fail)"
+            elif item.get("corroborated") is False:
+                status = "Repeated regression (control-normalized warning)"
+            else:
+                status = "Repeated regression (warning)"
+        elif item.get("corroboratesBaselineRegression"):
+            status = "Regression (corroborates fail)"
         elif item["status"] == "regression":
             status = "Regression (warning)"
 
@@ -423,9 +587,19 @@ def emit_annotations(evaluations):
                 if item.get("latencyThreshold")
                 else "Intra-run threshold breach"
             )
+        elif item.get("environmentShiftSuspected"):
+            level = "warning"
+            prefix = "Environment shift suspected"
         elif item["repeatedRegression"]:
+            level = "error" if item.get("failureEligible") else "warning"
+            prefix = (
+                "Repeated regression"
+                if item.get("failureEligible")
+                else "Control-normalized regression warning"
+            )
+        elif item.get("corroboratesBaselineRegression"):
             level = "error"
-            prefix = "Repeated regression"
+            prefix = "Control ratio regression"
         elif item["status"] == "regression":
             level = "warning"
             prefix = "Regression"

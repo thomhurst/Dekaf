@@ -5,7 +5,13 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from stress_trend import HISTORY_LIMIT, evaluate_and_update, format_markdown, main
+from stress_trend import (
+    HISTORY_LIMIT,
+    emit_annotations,
+    evaluate_and_update,
+    format_markdown,
+    main,
+)
 
 
 def result(messages_per_second=1000.0, cpu_micros_per_message=2.0, **overrides):
@@ -38,6 +44,22 @@ def history_run(index, messages_per_second=1000.0, cpu_micros_per_message=2.0, *
         "runStartedAtUtc": f"2026-06-{index:02d}T02:00:00Z",
         "results": [observation],
     }
+
+
+def paired_history_run(
+    index,
+    dekaf_messages_per_second=1000.0,
+    confluent_messages_per_second=500.0,
+    **trends,
+):
+    run = history_run(index, dekaf_messages_per_second, **trends)
+    confluent = {
+        **run["results"][0],
+        "client": "Confluent",
+        "messagesPerSecond": confluent_messages_per_second,
+    }
+    run["results"].append(confluent)
+    return run
 
 
 def intra_run_result(client="Dekaf", steady_ratio=0.6, slope=-8.0, **overrides):
@@ -229,6 +251,224 @@ class StressTrendTests(unittest.TestCase):
         self.assertTrue(all(item["repeatedRegression"] for item in intra_run))
         self.assertTrue(all(not item["failureEligible"] for item in intra_run))
         self.assertNotIn("(fail)", format_markdown(intra_run))
+        self.assertFalse(should_fail)
+
+    def test_confluent_baseline_regressions_mark_environment_shift_but_never_fail(self):
+        runs = [
+            history_run(i, client="Confluent")
+            for i in range(1, 4)
+        ]
+        runs.append(history_run(
+            4,
+            messages_per_second=700.0,
+            client="Confluent",
+            messagesPerSecondTrend="regression",
+        ))
+
+        evaluations, updated, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(client="Confluent", messages_per_second=650.0)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertTrue(throughput["repeatedRegression"])
+        self.assertFalse(throughput["failureEligible"])
+        self.assertTrue(throughput["environmentShiftSuspected"])
+        self.assertTrue(updated["runs"][-1]["environmentShiftSuspected"])
+        self.assertTrue(
+            updated["runs"][-1]["results"][0]["environmentShiftSuspected"]
+        )
+        self.assertIn("Environment shift suspected", format_markdown(evaluations))
+        with redirect_stdout(StringIO()) as annotations:
+            emit_annotations(evaluations)
+        self.assertIn("::warning", annotations.getvalue())
+        self.assertIn("Environment shift suspected", annotations.getvalue())
+        self.assertFalse(should_fail)
+
+    def test_environment_shift_excludes_every_observation_in_same_run(self):
+        runs = []
+        for index in range(1, 4):
+            run = history_run(index, client="Confluent")
+            run["results"].append({
+                **run["results"][0],
+                "scenario": "consumer",
+                "client": "Dekaf",
+            })
+            runs.append(run)
+        previous = history_run(
+            4,
+            messages_per_second=700.0,
+            client="Confluent",
+            messagesPerSecondTrend="regression",
+        )
+        previous["results"].append({
+            **previous["results"][0],
+            "scenario": "consumer",
+            "client": "Dekaf",
+        })
+        runs.append(previous)
+
+        _, updated, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(client="Confluent", messages_per_second=650.0),
+                result(scenario="consumer", messages_per_second=1_000.0),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        current = updated["runs"][-1]
+        self.assertTrue(current["environmentShiftSuspected"])
+        self.assertTrue(all(
+            observation["environmentShiftSuspected"]
+            for observation in current["results"]
+        ))
+        self.assertFalse(should_fail)
+
+    def test_paired_proportional_regressions_do_not_fail_when_control_ratio_is_stable(self):
+        runs = [paired_history_run(i) for i in range(1, 4)]
+        runs.append(paired_history_run(
+            4,
+            dekaf_messages_per_second=700.0,
+            confluent_messages_per_second=350.0,
+            messagesPerSecondTrend="regression",
+        ))
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(messages_per_second=650.0),
+                result(client="Confluent", messages_per_second=325.0),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        dekaf_throughput = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecond"
+            and item["scenario"].split(" / ")[1] == "Dekaf"
+        )
+        ratio = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+        )
+        self.assertTrue(dekaf_throughput["repeatedRegression"])
+        self.assertFalse(dekaf_throughput["corroborated"])
+        self.assertFalse(dekaf_throughput["failureEligible"])
+        self.assertEqual("stable", ratio["status"])
+        self.assertFalse(should_fail)
+
+    def test_paired_dekaf_regression_fails_when_control_ratio_also_regresses(self):
+        runs = [paired_history_run(i) for i in range(1, 4)]
+        runs.append(paired_history_run(
+            4,
+            dekaf_messages_per_second=700.0,
+            confluent_messages_per_second=350.0,
+            messagesPerSecondTrend="regression",
+        ))
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(messages_per_second=550.0),
+                result(client="Confluent", messages_per_second=325.0),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        dekaf_throughput = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecond"
+            and item["scenario"].split(" / ")[1] == "Dekaf"
+        )
+        ratio = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+        )
+        self.assertTrue(dekaf_throughput["corroborated"])
+        self.assertTrue(dekaf_throughput["failureEligible"])
+        self.assertEqual("regression", ratio["status"])
+        self.assertTrue(should_fail)
+
+    def test_environment_shift_observations_do_not_enter_absolute_baseline(self):
+        runs = [history_run(i) for i in range(1, 4)]
+        runs.append({
+            **history_run(4, messages_per_second=5000.0),
+            "environmentShiftSuspected": True,
+        })
+        runs[-1]["results"][0]["environmentShiftSuspected"] = True
+
+        evaluations, _, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(messages_per_second=1000.0)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(3, throughput["baselineCount"])
+        self.assertEqual(1000.0, throughput["median"])
+
+    def test_environment_shift_observations_do_not_enter_ratio_baseline(self):
+        runs = [paired_history_run(i) for i in range(1, 4)]
+        environment_shift = paired_history_run(
+            4,
+            dekaf_messages_per_second=5000.0,
+            confluent_messages_per_second=1000.0,
+        )
+        for observation in environment_shift["results"]:
+            observation["environmentShiftSuspected"] = True
+        runs.append(environment_shift)
+
+        evaluations, _, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(), result(client="Confluent", messages_per_second=500.0)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        ratio = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+        )
+        self.assertEqual(3, ratio["baselineCount"])
+        self.assertEqual(2.0, ratio["median"])
+
+    def test_control_ratio_history_keeps_dekaf_connection_profiles_separate(self):
+        runs = [
+            paired_history_run(
+                i,
+                scenario="consumer",
+                consumerConnectionsPerBroker=2,
+            )
+            for i in range(1, 4)
+        ]
+        for run in runs:
+            run["results"][1]["consumerConnectionsPerBroker"] = 1
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(scenario="consumer", consumerConnectionsPerBroker=3),
+                result(
+                    scenario="consumer",
+                    client="Confluent",
+                    consumerConnectionsPerBroker=1,
+                    messages_per_second=500.0,
+                ),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        ratio = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+        )
+        self.assertEqual(0, ratio["baselineCount"])
+        self.assertEqual("insufficient-history", ratio["status"])
         self.assertFalse(should_fail)
 
     def test_empty_history_is_rejected(self):
