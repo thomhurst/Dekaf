@@ -3552,7 +3552,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _serializeBatchesPerPartition,
             hasPipelineBatch,
             batch.EstimatedSize,
-            _options.BatchSize);
+            batch.EffectiveBatchSizeLimit);
     }
 
     // An earlier pipeline batch provides a short delivery clock under load. Keep the next
@@ -5772,7 +5772,7 @@ internal sealed class PartitionBatch
     public bool IsExactlyAtSizeLimit =>
         (long)RecordBatch.TotalBatchHeaderSize + _encodedRecordsLength == EffectiveBatchSizeLimit;
 
-    private int EffectiveBatchSizeLimit => _effectiveBatchSizeLimit;
+    internal int EffectiveBatchSizeLimit => _effectiveBatchSizeLimit;
 
     private static int GetEffectiveBatchSizeLimit(
         TopicPartition topicPartition,
