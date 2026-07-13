@@ -7288,13 +7288,13 @@ internal sealed class ReadyBatch
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    if (source?.TrySetResult(new RecordMetadata
+                    if (TryCompleteSource(source, new RecordMetadata
                     {
                         Topic = _topicPartition.Topic,
                         Partition = _topicPartition.Partition,
                         Offset = baseOffset + i,
                         Timestamp = timestamp
-                    }) == true)
+                    }))
                     {
 #if DEBUG
                         completedCount++;
@@ -7437,7 +7437,7 @@ internal sealed class ReadyBatch
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    if (source?.TrySetException(exception) == true)
+                    if (TryFailSource(source, exception))
                     {
 #if DEBUG
                         failedCount++;
@@ -7478,6 +7478,44 @@ internal sealed class ReadyBatch
         finally
         {
             Cleanup();
+        }
+    }
+
+    private static bool TryCompleteSource(
+        PooledValueTaskSource<RecordMetadata>? source,
+        RecordMetadata metadata)
+    {
+        if (source is null)
+            return false;
+
+        try
+        {
+            return source.TrySetResult(metadata);
+        }
+        catch
+        {
+            // A raw inline continuation can throw after the source is complete.
+            // Keep resolving the rest of the batch.
+            return true;
+        }
+    }
+
+    private static bool TryFailSource(
+        PooledValueTaskSource<RecordMetadata>? source,
+        Exception exception)
+    {
+        if (source is null)
+            return false;
+
+        try
+        {
+            return source.TrySetException(exception);
+        }
+        catch
+        {
+            // A raw inline continuation can throw after the source is complete.
+            // Keep resolving the rest of the batch.
+            return true;
         }
     }
 

@@ -773,6 +773,36 @@ public class PooledValueTaskSourceTests
     }
 
     [Test]
+    public async Task ReadyBatch_ThrowingInlineContinuation_DoesNotStrandLaterCompletions()
+    {
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>(maxPoolSize: 2);
+        var first = pool.Rent();
+        var second = pool.Rent();
+        first.SetRunContinuationsAsynchronously(false);
+        second.SetRunContinuationsAsynchronously(false);
+        var firstAwaiter = first.Task.GetAwaiter();
+        var secondTask = second.Task;
+        firstAwaiter.UnsafeOnCompleted(static () => throw new InvalidOperationException("expected"));
+        var sources = ProducerContainerPools.CompletionSources.Rent(2);
+        sources[0] = first;
+        sources[1] = second;
+        var batch = new ReadyBatch();
+        batch.Initialize(
+            new TopicPartition("test-topic", 0),
+            new RecordBatch { Records = Array.Empty<Record>() },
+            sources,
+            completionSourcesCount: 2,
+            dataSize: 0);
+        var doneTask = batch.DoneTask;
+
+        batch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+
+        await Assert.That(firstAwaiter.GetResult().Offset).IsEqualTo(7);
+        await Assert.That((await secondTask.ConfigureAwait(false)).Offset).IsEqualTo(8);
+        await Assert.That(await doneTask.ConfigureAwait(false)).IsTrue();
+    }
+
+    [Test]
     public async Task ReadyBatchDoneTask_RunContinuationsAsynchronously_SurvivesResetAndReuse()
     {
         var batch = new ReadyBatch();

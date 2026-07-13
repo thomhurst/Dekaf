@@ -970,9 +970,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // All checks passed - we can proceed synchronously
-        completion = _valueTaskSourcePool.Rent();
-        if (!runContinuationsAsynchronously)
-            completion.SetRunContinuationsAsynchronously(false);
+        completion = RentCompletion(runContinuationsAsynchronously);
         var result = SyncProduceResult.Success;
         try
         {
@@ -1027,9 +1025,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Topic cache miss — fetch topic metadata inline and produce
-        var completion = _valueTaskSourcePool.Rent();
-        if (!runContinuationsAsynchronously)
-            completion.SetRunContinuationsAsynchronously(false);
+        var completion = RentCompletion(runContinuationsAsynchronously);
         try
         {
             await ProduceInternalAsync(message, completion, cancellationToken).ConfigureAwait(false);
@@ -1056,6 +1052,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
         }
         return await completion.Task.ConfigureAwait(false);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private PooledValueTaskSource<RecordMetadata> RentCompletion(bool runContinuationsAsynchronously)
+    {
+        var completion = _valueTaskSourcePool.Rent();
+        if (!runContinuationsAsynchronously)
+            completion.SetRunContinuationsAsynchronously(false);
+        return completion;
     }
 
     /// <inheritdoc />

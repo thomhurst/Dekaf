@@ -303,6 +303,70 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
+    public async Task TransactionFastPath_BufferFull_RestoresAsyncModeBeforePoolReturn()
+    {
+        await using var producer = await CreateBufferBoundaryProducerAsync(maxBlockMs: 30_000);
+        var accumulator = producer.RecordAccumulator;
+        var pool = GetInstanceField<ValueTaskSourcePool<RecordMetadata>>(producer, "_valueTaskSourcePool");
+        await Assert.That(accumulator.TryReserveMemoryForTest(BufferMemoryLimit)).IsTrue();
+
+        try
+        {
+            var pooledBefore = pool.ApproximateCount;
+            var usedFastPath = InvokeTryProduceSyncForAsync(
+                producer,
+                new ProducerMessage<string, string> { Topic = Topic, Key = "key", Value = "value" },
+                runContinuationsAsynchronously: false,
+                out var completion);
+
+            await Assert.That(usedFastPath).IsFalse();
+            await Assert.That(completion).IsNull();
+            await Assert.That(pool.ApproximateCount).IsEqualTo(pooledBefore + 1);
+
+            var reused = pool.Rent();
+            var awaiter = reused.Task.GetAwaiter();
+            var continuationThreadId = 0;
+            var continuation = new TaskCompletionSource<RecordMetadata>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            awaiter.UnsafeOnCompleted(() =>
+            {
+                continuationThreadId = Environment.CurrentManagedThreadId;
+                try
+                {
+                    continuation.SetResult(awaiter.GetResult());
+                }
+                catch (Exception ex)
+                {
+                    continuation.SetException(ex);
+                }
+            });
+            var completionThreadId = 0;
+            var completionThread = new Thread(() =>
+            {
+                completionThreadId = Environment.CurrentManagedThreadId;
+                reused.SetResult(new RecordMetadata
+                {
+                    Topic = Topic,
+                    Partition = 0,
+                    Offset = 0,
+                    Timestamp = DateTimeOffset.UtcNow
+                });
+            }) { IsBackground = true };
+
+            completionThread.Start();
+            completionThread.Join();
+            var metadata = await continuation.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+            await Assert.That(metadata.Topic).IsEqualTo(Topic);
+            await Assert.That(continuationThreadId).IsNotEqualTo(completionThreadId);
+        }
+        finally
+        {
+            accumulator.ReleaseMemory(BufferMemoryLimit);
+        }
+    }
+
+    [Test]
     public async Task FireAsync_BufferMemoryFull_MaxBlockExpiryThrowsKafkaTimeoutException()
     {
         const int maxBlockMs = 100;
@@ -466,6 +530,37 @@ public class KafkaProducerFastPathTests
         try
         {
             return method!.Invoke(producer, [message, topicInfo, completion])!;
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+            throw;
+        }
+    }
+
+    private static bool InvokeTryProduceSyncForAsync(
+        KafkaProducer<string, string> producer,
+        ProducerMessage<string, string> message,
+        bool runContinuationsAsynchronously,
+        out PooledValueTaskSource<RecordMetadata>? completion)
+    {
+        var method = typeof(KafkaProducer<string, string>).GetMethod(
+            "TryProduceSyncForAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance,
+            binder: null,
+            [
+                typeof(ProducerMessage<string, string>),
+                typeof(bool),
+                typeof(PooledValueTaskSource<RecordMetadata>).MakeByRefType()
+            ],
+            modifiers: null);
+        object?[] arguments = [message, runContinuationsAsynchronously, null];
+
+        try
+        {
+            var result = (bool)method!.Invoke(producer, arguments)!;
+            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[2];
+            return result;
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)
         {
