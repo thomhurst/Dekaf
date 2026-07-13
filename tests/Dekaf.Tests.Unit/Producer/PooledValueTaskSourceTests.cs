@@ -773,7 +773,9 @@ public class PooledValueTaskSourceTests
     }
 
     [Test]
-    public async Task ReadyBatch_ThrowingInlineContinuation_DoesNotStrandLaterCompletions()
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task ReadyBatch_ThrowingInlineContinuation_DoesNotStrandLaterCompletions(bool succeeds)
     {
         await using var pool = new ValueTaskSourcePool<RecordMetadata>(maxPoolSize: 2);
         var first = pool.Rent();
@@ -795,11 +797,25 @@ public class PooledValueTaskSourceTests
             dataSize: 0);
         var doneTask = batch.DoneTask;
 
-        batch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+        if (succeeds)
+        {
+            batch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+            await Assert.That(firstAwaiter.GetResult().Offset).IsEqualTo(7);
+            await Assert.That((await secondTask.ConfigureAwait(false)).Offset).IsEqualTo(8);
+        }
+        else
+        {
+            batch.Fail(new InvalidOperationException("delivery failed"));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            {
+                _ = firstAwaiter.GetResult();
+                await Task.CompletedTask;
+            });
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await secondTask.ConfigureAwait(false));
+        }
 
-        await Assert.That(firstAwaiter.GetResult().Offset).IsEqualTo(7);
-        await Assert.That((await secondTask.ConfigureAwait(false)).Offset).IsEqualTo(8);
-        await Assert.That(await doneTask.ConfigureAwait(false)).IsTrue();
+        await Assert.That(await doneTask.ConfigureAwait(false)).IsEqualTo(succeeds);
     }
 
     [Test]
