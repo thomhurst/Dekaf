@@ -306,6 +306,10 @@ internal sealed class ProducerBrokerBudgetDiagnostic
     public required long MinRttMicros { get; init; }
     public required long MaxRateBytesPerSec { get; init; }
     public required long AdmissionBlockCount { get; init; }
+    // Optional for backward compatibility with persisted stress results captured before
+    // probe outcomes were added; missing JSON values naturally deserialize as zero.
+    public long CapacityProbeSuccessCount { get; init; }
+    public long CapacityProbeFailureCount { get; init; }
     /// <summary>Controllable seal-to-send queue-latency EWMA. Name retained for diagnostic
     /// output compatibility.</summary>
     public required long DeliveryLatencyEwmaMicros { get; init; }
