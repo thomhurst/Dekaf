@@ -1342,6 +1342,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly List<PendingAppend> _pendingAppendScan = [];
     private readonly List<PendingAppend> _drainablePendingAppends = [];
     private int _draining; // CAS guard for DrainPendingAppends
+    private long _pendingAppendDrainEntryCount;
 
     /// <summary>
     /// Per-partition state matching Java's Deque&lt;ProducerBatch&gt; design.
@@ -1989,6 +1990,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
             return false;
 
+        Interlocked.Increment(ref _pendingAppendDrainEntryCount);
         var ownsDrainGuard = true;
         try
         {
@@ -2032,17 +2034,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             continue;
                         }
 
-                        var admissionBlocked = IsBrokerAdmissionBlocked(
-                            candidate.Topic,
-                            candidate.Partition,
-                            recordBlockEvent: false,
-                            out var admissionRecheckDelayMs);
-                        if (admissionBlocked)
+                        if (TryGetAdmissionRecheckAt(
+                                candidate.Topic,
+                                candidate.Partition,
+                                out var recheckAt))
                         {
-                            var recheckAt = admissionRecheckDelayMs == Timeout.Infinite
-                                ? 0
-                                : Dekaf.MonotonicClock.GetMilliseconds()
-                                  + Math.Max(1, admissionRecheckDelayMs);
                             _pendingAppends.Enqueue(candidate);
                             candidate.ScheduleAdmissionRecheck(recheckAt);
                             _blockedPendingPartitionRecheckTimes.Add(
@@ -2131,6 +2127,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 Volatile.Write(ref _draining, 0);
             }
         }
+    }
+
+    /// <summary>
+    /// Rescans after a failed append only when it occupied the FIFO head. Tail failures
+    /// cannot unblock another operation; suppressing their scans coalesces a timeout or
+    /// cancellation storm into the single scan triggered by the head.
+    /// </summary>
+    internal void DrainPendingAppendsIfHead(PendingAppend completed)
+    {
+        lock (_pendingAppendQueueLock)
+        {
+            if (!_pendingAppends.TryPeek(out var head)
+                || !ReferenceEquals(head, completed))
+            {
+                return;
+            }
+        }
+
+        DrainPendingAppends();
     }
 
     /// <summary>
@@ -2960,8 +2975,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
 
+        bool wasQueueEmpty;
         lock (_pendingAppendQueueLock)
+        {
+            wasQueueEmpty = _pendingAppends.IsEmpty;
             _pendingAppends.Enqueue(op);
+        }
 
         // Close TOCTOU window: if DisposeAsync ran between the _disposed check above and the
         // Enqueue, this op would sit in the queue until its timer fires. Fail it promptly.
@@ -2977,8 +2996,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Try immediate serve — memory may have been freed between TryReserveMemory and now
-        DrainPendingAppends();
+        // Close the memory-release TOCTOU window for the first queued operation. Later
+        // admission-blocked appends arm their own broker deadline without rescanning the
+        // queue; memory-blocked appends rely on ReleaseMemory's unconditional drain.
+        if (wasQueueEmpty)
+        {
+            DrainPendingAppends();
+        }
+        else
+        {
+            if (TryGetAdmissionRecheckAt(topic, partition, out var recheckAt))
+                op.ScheduleAdmissionRecheck(recheckAt);
+        }
 
         return new ValueTask<bool>(op, op.Version);
     }
@@ -4024,6 +4053,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal int PendingAppendCountForTest => _pendingAppends.Count;
 
+    internal long PendingAppendDrainEntryCountForTest =>
+        Volatile.Read(ref _pendingAppendDrainEntryCount);
+
     /// <summary>
     /// Gets the current buffer utilization as a ratio (0.0 to 1.0+).
     /// Used by adaptive connection scaling to confirm buffer is actually full.
@@ -4745,6 +4777,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         recheckDelayMilliseconds = currentBudget.GetAdmissionRecheckDelayMilliseconds(nowTicks);
         if (recordBlockEvent)
             currentBudget.RecordAdmissionBlock();
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryGetAdmissionRecheckAt(
+        string topic,
+        int partition,
+        out long recheckAt)
+    {
+        recheckAt = 0;
+        if (!IsBrokerAdmissionBlocked(
+                topic,
+                partition,
+                recordBlockEvent: false,
+                out var recheckDelayMilliseconds))
+        {
+            return false;
+        }
+
+        if (recheckDelayMilliseconds != Timeout.Infinite)
+        {
+            recheckAt = Dekaf.MonotonicClock.GetMilliseconds()
+                + Math.Max(1, recheckDelayMilliseconds);
+        }
+
         return true;
     }
 

@@ -307,12 +307,15 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
             $"Producer is generating messages faster than the network can send them. " +
             $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
 
-        TryFail(exception);
+        if (TryFail(exception))
+            accumulator.DrainPendingAppendsIfHead(this);
     }
 
     private void OnCancellation()
     {
-        TryFail(new OperationCanceledException(_cancellationToken));
+        var accumulator = _accumulator;
+        if (TryFail(new OperationCanceledException(_cancellationToken)))
+            accumulator?.DrainPendingAppendsIfHead(this);
     }
 
     /// <summary>

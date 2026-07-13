@@ -548,7 +548,11 @@ internal sealed class BrokerUnackedByteBudget
             rttSeconds,
             sendSnapshot.UnackedBytesAtSend,
             ackedBytes);
-        UpdateMinRtt(serviceRttSeconds, rttSeconds, nowTicks);
+        UpdateMinRtt(
+            serviceRttSeconds,
+            rttSeconds,
+            nowTicks,
+            naturalMinRttSample: sendSnapshot.AppLimited && !sustainedIdle);
         if (loadedSample && !minRttProbeActive)
         {
             _servingRttEwmaSeconds = _servingRttEwmaSeconds == 0
@@ -750,7 +754,11 @@ internal sealed class BrokerUnackedByteBudget
             rttSeconds - queueAheadBytes / effectiveMaxRate);
     }
 
-    private void UpdateMinRtt(double serviceRttSeconds, double rawRttSeconds, long nowTicks)
+    private void UpdateMinRtt(
+        double serviceRttSeconds,
+        double rawRttSeconds,
+        long nowTicks,
+        bool naturalMinRttSample)
     {
         if (!_hasMinRttSample)
         {
@@ -758,6 +766,24 @@ internal sealed class BrokerUnackedByteBudget
             _minRttTimestamp = nowTicks;
             _hasMinRttSample = true;
             StartMinRttProbe(nowTicks, rawRttSeconds);
+            return;
+        }
+
+        if (naturalMinRttSample
+            && serviceRttSeconds <= _minRttSeconds * ProbeRttGrowthTolerance)
+        {
+            if (_minRttProbeUntilTimestamp != 0)
+            {
+                _minRttProbeMinimumSeconds = Math.Min(
+                    _minRttProbeMinimumSeconds,
+                    serviceRttSeconds);
+                CompleteMinRttProbe(nowTicks);
+            }
+            else
+            {
+                _minRttSeconds = Math.Min(_minRttSeconds, serviceRttSeconds);
+                _minRttTimestamp = nowTicks;
+            }
             return;
         }
 
