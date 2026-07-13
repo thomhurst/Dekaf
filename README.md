@@ -2,7 +2,7 @@
 
 **Taking the Java out of Kafka.**
 
-Dekaf is a high-performance, pure C# Apache Kafka client for .NET 10+. No JVM, no interop, no native dependencies—just clean, modern C# all the way down.
+Dekaf is a high-performance, pure C# Apache Kafka client for .NET 10+. No JVM, no interop, no native dependencies - just clean, modern C# all the way down.
 
 **[Benchmarks vs Confluent](https://thomhurst.github.io/Dekaf/docs/stress-tests)**
 
