@@ -3213,6 +3213,8 @@ public sealed class BrokerSenderSendLoopTests
 
             await Assert.That(GetDeliverySnapshot(sender, 0).AppLimited).IsTrue();
             await Assert.That(GetDeliverySnapshot(sender, 1).AppLimited).IsFalse();
+            await Assert.That(GetDeliverySnapshot(sender, 0).OldestBatchTimestamp).IsGreaterThan(0);
+            await Assert.That(GetDeliverySnapshot(sender, 1).OldestBatchTimestamp).IsGreaterThan(0);
 
             responses[0].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
             responses[1].SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 1));

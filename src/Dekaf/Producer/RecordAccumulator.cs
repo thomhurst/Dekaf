@@ -4851,6 +4851,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         MinRttMicros = budget.MinimumRttMicros,
         MaxRateBytesPerSec = budget.MaxRateBytesPerSecond,
         AdmissionBlockCount = budget.AdmissionBlockEvents,
+        DeliveryLatencyEwmaMicros = budget.DeliveryLatencyEwmaMicros,
+        LatencyBudgetScale = budget.LatencyBudgetScale,
         RequestSizeLog2Histogram = includeHistograms ? budget.CopyRequestSizeHistogram() : null,
         RequestRttMicrosLog2Histogram = includeHistograms ? budget.CopyRequestRttMicrosHistogram() : null
     };

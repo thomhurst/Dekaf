@@ -72,6 +72,67 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task DeliveryLatencyAboveTarget_ReducesRateBudget()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+
+        var now = T0;
+        for (var i = 0; i < 6; i++)
+        {
+            now += Seconds(0.110);
+            var snapshot = budget.SnapshotDelivery(
+                now - Seconds(0.001),
+                appLimited: true,
+                oldestBatchTimestamp: now - Seconds(0.020));
+            budget.OnAcked(1_000, snapshot, now);
+        }
+
+        await Assert.That(budget.DeliveryLatencyEwmaMicros).IsEqualTo(20_000).Within(10);
+        await Assert.That(budget.LatencyBudgetScale).IsLessThan(0.25);
+        await Assert.That(budget.BudgetBytes).IsLessThan(2_500);
+    }
+
+    [Test]
+    public async Task DeliveryLatencyBelowTarget_RecoversReducedBudget()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+
+        var now = T0;
+        for (var i = 0; i < 6; i++)
+        {
+            now += Seconds(0.110);
+            var snapshot = budget.SnapshotDelivery(
+                now - Seconds(0.001),
+                appLimited: true,
+                oldestBatchTimestamp: now - Seconds(0.020));
+            budget.OnAcked(1_000, snapshot, now);
+        }
+        var reducedScale = budget.LatencyBudgetScale;
+
+        for (var i = 0; i < 30; i++)
+        {
+            now += Seconds(0.110);
+            var snapshot = budget.SnapshotDelivery(
+                now - Seconds(0.001),
+                appLimited: true,
+                oldestBatchTimestamp: now - Seconds(0.005));
+            budget.OnAcked(1_000, snapshot, now);
+        }
+
+        await Assert.That(budget.DeliveryLatencyEwmaMicros).IsLessThan(6_000);
+        await Assert.That(budget.LatencyBudgetScale).IsGreaterThan(reducedScale);
+        await Assert.That(budget.BudgetBytes).IsGreaterThan(2_500);
+    }
+
+    [Test]
     public async Task Budget_ClampsToFloor_WhenRateCollapses()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 3_200);
