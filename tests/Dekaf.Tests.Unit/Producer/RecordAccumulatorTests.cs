@@ -3248,6 +3248,33 @@ public class RecordAccumulatorTests
         await Assert.That(poolSize).IsEqualTo(expectedPoolSize);
     }
 
+    [Test]
+    [Arguments(128, 127L, 128)]
+    [Arguments(128, 128L, 256)]
+    [Arguments(300, 128L, 512)]
+    [Arguments(512, 128L, 512)]
+    public async Task ComputeBatchArenaRatchetSize_RequiresSustainedMissesAndHonorsCap(
+        int currentSize,
+        long missesSinceLastRatchet,
+        int expectedSize)
+    {
+        var size = BatchArena.ComputeRatchetPoolSize(currentSize, missesSinceLastRatchet);
+
+        await Assert.That(size).IsEqualTo(expectedSize);
+    }
+
+    [Test]
+    public async Task BatchArena_OversizedReturn_IncrementsDropCounter()
+    {
+        var dropsBefore = BatchArena.Drops;
+        var arena = new BatchArena(capacity: 128, maxPooledCapacity: 64);
+
+        var returned = BatchArena.ReturnToPool(arena);
+
+        await Assert.That(returned).IsFalse();
+        await Assert.That(BatchArena.Drops).IsGreaterThanOrEqualTo(dropsBefore + 1);
+    }
+
     #endregion
 
     #region AppendFromSpansAsync Slow Path Tests
