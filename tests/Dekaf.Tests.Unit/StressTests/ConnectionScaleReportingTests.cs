@@ -237,6 +237,23 @@ public sealed class ConnectionScaleReportingTests
                         BufferPressureDelta = 120,
                         SendLoopPressureDelta = 340
                     }
+                ],
+                BrokerBudgetSamples =
+                [
+                    new ProducerBrokerBudgetDiagnostic
+                    {
+                        CapturedAtUtc = startedAt.AddSeconds(6),
+                        BrokerId = 1,
+                        BudgetBytes = 8 * 1024 * 1024,
+                        UnackedBytes = 6 * 1024 * 1024,
+                        MinRttMicros = 800,
+                        MaxRateBytesPerSec = 750_000_000,
+                        AdmissionBlockCount = 12,
+                        DeliveryLatencyEwmaMicros = 2_500,
+                        LatencyBudgetScale = 1.0,
+                        CapacityProbeSuccessCount = 3,
+                        CapacityProbeFailureCount = 2
+                    }
                 ]
             }
         };
@@ -257,6 +274,10 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(markdown).Contains("75%");
         await Assert.That(markdown).Contains("120/340");
         await Assert.That(markdown).Contains("6.0s / 2,500 msg/s");
+        await Assert.That(markdown).Contains("Producer Budget Timeline - Fire-and-Forget");
+        await Assert.That(markdown).Contains("8.0 MiB");
+        await Assert.That(markdown).Contains("750.0 MB/s");
+        await Assert.That(markdown).Contains("3/2");
         await Assert.That(markdown).Contains("Delivery Latency Outliers - Fire-and-Forget");
         await Assert.That(markdown).Contains("42");
         await Assert.That(markdown).Contains("connection transition");

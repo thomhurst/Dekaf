@@ -4556,7 +4556,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return new BrokerUnackedByteBudget(
             _options.DeliveryLatencyTargetMs / 1000.0,
             floorBytes: 1,
-            initialCapBytes: cap);
+            initialCapBytes: cap,
+            lingerSeconds: _options.LingerMs / 1000.0);
     }
 
     /// <summary>
@@ -4932,6 +4933,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         MinRttMicros = budget.MinimumRttMicros,
         MaxRateBytesPerSec = budget.MaxRateBytesPerSecond,
         AdmissionBlockCount = budget.AdmissionBlockEvents,
+        CapacityProbeSuccessCount = budget.CapacityProbeSuccessCount,
+        CapacityProbeFailureCount = budget.CapacityProbeFailureCount,
         DeliveryLatencyEwmaMicros = budget.DeliveryLatencyEwmaMicros,
         LatencyBudgetScale = budget.LatencyBudgetScale,
         RequestSizeLog2Histogram = includeHistograms ? budget.CopyRequestSizeHistogram() : null,
