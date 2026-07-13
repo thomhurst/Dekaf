@@ -989,7 +989,7 @@ public class RecordAccumulatorReadyTests
     }
 
     [Test]
-    public async Task ZeroLinger_NonIdempotentPipeline_SealsWhilePreviousBatchQueued()
+    public async Task ZeroLinger_NonIdempotentPipeline_FillsWhilePreviousBatchQueued()
     {
         var options = CreateTestOptions(
             batchSize: 100_000,
@@ -998,26 +998,52 @@ public class RecordAccumulatorReadyTests
             maxInFlight: 2);
         await using var accumulator = new RecordAccumulator(options);
 
-        foreach (var value in new[] { "first"u8.ToArray(), "second"u8.ToArray() })
-        {
-            var appended = await accumulator.AppendFromSpansAsync(
-                "test-topic",
-                partition: 0,
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                ReadOnlySpan<byte>.Empty,
-                keyIsNull: true,
-                value,
-                valueIsNull: false,
-                headers: null,
-                headerCount: 0,
-                callback: null,
-                CancellationToken.None,
-                partitionCount: 1);
+        var firstAppended = await accumulator.AppendFromSpansAsync(
+            "test-topic",
+            partition: 0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            "first"u8,
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
 
-            await Assert.That(appended).IsTrue();
-            await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsFalse()
-                .Because("max-in-flight greater than one must expose another sealed batch to the sender");
-        }
+        await Assert.That(firstAppended).IsTrue();
+        await Assert.That(accumulator.TryDrainBatch(out var firstBatch)).IsTrue();
+
+        var secondAppended = await accumulator.AppendFromSpansAsync(
+            "test-topic",
+            partition: 0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            "second"u8,
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            callback: null,
+            CancellationToken.None,
+            partitionCount: 1);
+
+        await Assert.That(secondAppended).IsTrue();
+        await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue()
+            .Because("an in-flight predecessor should keep the next partial batch open");
+
+        firstBatch!.CompleteSend(baseOffset: 0, timestamp: DateTimeOffset.UtcNow);
+        accumulator.OnBatchExitsPipeline(firstBatch);
+        accumulator.ReturnReadyBatch(firstBatch);
+
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+        await Assert.That(accumulator.TryDrainBatch(out var secondBatch)).IsTrue()
+            .Because("the partial batch should seal after its predecessor exits");
+
+        secondBatch!.CompleteSend(baseOffset: 1, timestamp: DateTimeOffset.UtcNow);
+        accumulator.OnBatchExitsPipeline(secondBatch);
+        accumulator.ReturnReadyBatch(secondBatch);
     }
 
     [Test]

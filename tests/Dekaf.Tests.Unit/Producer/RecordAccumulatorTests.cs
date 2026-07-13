@@ -714,6 +714,7 @@ public class RecordAccumulatorTests
 
             var purged = accumulator.Purge(PurgeOptions.InFlight, CreatePurgedException());
             await Assert.That(purged).IsEqualTo(1);
+            await accumulator.ExpireLingerAsync(CancellationToken.None);
             await Assert.That(accumulator.TryDrainBatch(out nextBatch)).IsTrue();
 
             var nextSequence = accumulator.GetAndIncrementSequence(
