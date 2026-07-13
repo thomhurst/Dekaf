@@ -8,6 +8,30 @@ namespace Dekaf.Tests.Unit.StressTests;
 public sealed class ProgressWatchdogTests
 {
     [Test]
+    public void Track_SequentialRoundTripPhases_ReusesWatchdog()
+    {
+        var outputDirectory = CreateOutputDirectory();
+        try
+        {
+            var produceProgress = new ThroughputTracker();
+            var consumeProgress = new ThroughputTracker();
+            using var watchdog = new ProgressWatchdog(outputDirectory);
+
+            using (watchdog.Track(produceProgress, "Dekaf", "producer-roundtrip"))
+            {
+            }
+
+            using (watchdog.Track(consumeProgress, "Dekaf", "producer-roundtrip-consume"))
+            {
+            }
+        }
+        finally
+        {
+            Directory.Delete(outputDirectory, recursive: true);
+        }
+    }
+
+    [Test]
     public async Task Track_Stall_CapturesStacksAndProducerDiagnosticsThenExits()
     {
         var outputDirectory = CreateOutputDirectory();
