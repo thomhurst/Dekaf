@@ -463,6 +463,25 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task MinimumRtt_NaturalSampleCompletesProbeWithBestObservedRtt()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SetField(budget, "_hasMinRttSample", true);
+        SetField(budget, "_minRttSeconds", 0.010);
+        SetField(budget, "_minRttProbeUntilTimestamp", T0 + Seconds(1.0));
+        SetField(budget, "_minRttProbeMinimumSeconds", 0.004);
+
+        Ack(budget, 600, 0.006, T0, appLimitedAtSend: true);
+
+        await Assert.That(budget.MinimumRttMicros).IsEqualTo(4_000)
+            .Because("ending a drain on a natural sample must retain the probe's best earlier RTT");
+        await Assert.That(GetField<long>(budget, "_minRttProbeUntilTimestamp")).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task MinimumRtt_ExpiredWindowProbeUsesCurrentRttDuration()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);

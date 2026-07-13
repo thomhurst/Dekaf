@@ -772,10 +772,18 @@ internal sealed class BrokerUnackedByteBudget
         if (naturalMinRttSample
             && serviceRttSeconds <= _minRttSeconds * ProbeRttGrowthTolerance)
         {
-            _minRttSeconds = Math.Min(_minRttSeconds, serviceRttSeconds);
-            _minRttTimestamp = nowTicks;
-            _minRttProbeMinimumSeconds = double.MaxValue;
-            _minRttProbeUntilTimestamp = 0;
+            if (_minRttProbeUntilTimestamp != 0)
+            {
+                _minRttProbeMinimumSeconds = Math.Min(
+                    _minRttProbeMinimumSeconds,
+                    serviceRttSeconds);
+                CompleteMinRttProbe(nowTicks);
+            }
+            else
+            {
+                _minRttSeconds = Math.Min(_minRttSeconds, serviceRttSeconds);
+                _minRttTimestamp = nowTicks;
+            }
             return;
         }
 

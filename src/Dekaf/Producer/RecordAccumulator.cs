@@ -1342,7 +1342,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly List<PendingAppend> _pendingAppendScan = [];
     private readonly List<PendingAppend> _drainablePendingAppends = [];
     private int _draining; // CAS guard for DrainPendingAppends
-    private long _nextPendingAdmissionRecheckTickCount;
     private long _pendingAppendDrainEntryCount;
 
     /// <summary>
@@ -1985,10 +1984,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal bool DrainPendingAppends()
     {
         if (_pendingAppends.IsEmpty)
-        {
-            Volatile.Write(ref _nextPendingAdmissionRecheckTickCount, 0);
             return true;
-        }
 
         // Only one thread drains at a time — others return immediately.
         if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
@@ -2010,7 +2006,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     _pendingAppendScan.Clear();
                     _drainablePendingAppends.Clear();
                     _blockedPendingPartitionRecheckTimes.Clear();
-                    var nextAdmissionRecheckAt = long.MaxValue;
 
                     var remainingToInspect = _pendingAppends.Count;
                     while (remainingToInspect-- > 0 && _pendingAppends.TryDequeue(out var candidate))
@@ -2052,8 +2047,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                   + Math.Max(1, admissionRecheckDelayMs);
                             _pendingAppends.Enqueue(candidate);
                             candidate.ScheduleAdmissionRecheck(recheckAt);
-                            if (recheckAt != 0)
-                                nextAdmissionRecheckAt = Math.Min(nextAdmissionRecheckAt, recheckAt);
                             _blockedPendingPartitionRecheckTimes.Add(
                                 topicPartition,
                                 recheckAt);
@@ -2070,9 +2063,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         _drainablePendingAppends.Add(candidate);
                     }
 
-                    Volatile.Write(
-                        ref _nextPendingAdmissionRecheckTickCount,
-                        nextAdmissionRecheckAt == long.MaxValue ? 0 : nextAdmissionRecheckAt);
                     _pendingAppendScan.Clear();
                     madeProgress = _drainablePendingAppends.Count > 0;
                 }
@@ -2994,17 +2984,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Close the memory-release TOCTOU window for the first queued operation. Later
-        // appends join the same wake-driven drain instead of rescanning the growing queue.
+        // admission-blocked appends arm their own broker deadline without rescanning the
+        // queue; memory-blocked appends rely on ReleaseMemory's unconditional drain.
         if (wasQueueEmpty)
         {
             DrainPendingAppends();
         }
         else
         {
-            var admissionRecheckAt = Volatile.Read(
-                ref _nextPendingAdmissionRecheckTickCount);
-            if (admissionRecheckAt != 0)
-                op.ScheduleAdmissionRecheck(admissionRecheckAt);
+            var admissionBlocked = IsBrokerAdmissionBlocked(
+                topic,
+                partition,
+                recordBlockEvent: false,
+                out var admissionRecheckDelayMs);
+            if (admissionBlocked && admissionRecheckDelayMs != Timeout.Infinite)
+            {
+                op.ScheduleAdmissionRecheck(
+                    Dekaf.MonotonicClock.GetMilliseconds()
+                    + Math.Max(1, admissionRecheckDelayMs));
+            }
         }
 
         return new ValueTask<bool>(op, op.Version);
