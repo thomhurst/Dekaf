@@ -34,6 +34,8 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     /// </summary>
     public short Version => _core.Version;
 
+    internal bool RunContinuationsAsynchronously => _core.RunContinuationsAsynchronously;
+
     /// <summary>
     /// Associates this source with a pool for automatic return on completion.
     /// </summary>

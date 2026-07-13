@@ -415,6 +415,7 @@ internal static class ProducerContainerPools
 
 internal static class PooledCompletionSource
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool TrySetResult(
         PooledValueTaskSource<RecordMetadata>? source,
         RecordMetadata metadata)
@@ -422,6 +423,16 @@ internal static class PooledCompletionSource
         if (source is null)
             return false;
 
+        return source.RunContinuationsAsynchronously
+            ? source.TrySetResult(metadata)
+            : TrySetResultInline(source, metadata);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetResultInline(
+        PooledValueTaskSource<RecordMetadata> source,
+        RecordMetadata metadata)
+    {
         try
         {
             return source.TrySetResult(metadata);
@@ -435,6 +446,7 @@ internal static class PooledCompletionSource
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool TrySetException(
         PooledValueTaskSource<RecordMetadata>? source,
         Exception exception)
@@ -442,6 +454,16 @@ internal static class PooledCompletionSource
         if (source is null)
             return false;
 
+        return source.RunContinuationsAsynchronously
+            ? source.TrySetException(exception)
+            : TrySetExceptionInline(source, exception);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetExceptionInline(
+        PooledValueTaskSource<RecordMetadata> source,
+        Exception exception)
+    {
         try
         {
             return source.TrySetException(exception);
@@ -453,6 +475,7 @@ internal static class PooledCompletionSource
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool TrySetCanceled(
         PooledValueTaskSource<RecordMetadata>? source,
         CancellationToken cancellationToken)
@@ -460,6 +483,16 @@ internal static class PooledCompletionSource
         if (source is null)
             return false;
 
+        return source.RunContinuationsAsynchronously
+            ? source.TrySetCanceled(cancellationToken)
+            : TrySetCanceledInline(source, cancellationToken);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetCanceledInline(
+        PooledValueTaskSource<RecordMetadata> source,
+        CancellationToken cancellationToken)
+    {
         try
         {
             return source.TrySetCanceled(cancellationToken);
