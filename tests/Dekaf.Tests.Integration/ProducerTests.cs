@@ -48,7 +48,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         SetPrivateField(budget, "_minRttSeconds", 0.050);
         SetPrivateField(budget, "_minRttTimestamp", nowTicks - 11 * Stopwatch.Frequency);
         SetPrivateField(budget, "_minRttProbeUntilTimestamp", 0L);
-        budget.OnAcked(1_000_000, Stopwatch.Frequency / 20, nowTicks);
+        budget.OnAcked(
+            1_000_000,
+            budget.SnapshotDelivery(nowTicks - Stopwatch.Frequency / 20, appLimited: true),
+            nowTicks);
         budget.Charge(1_200_000);
 
         try

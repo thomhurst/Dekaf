@@ -198,7 +198,8 @@ public sealed class BrokerUnackedAdmissionTests
 
         budget.OnAcked(
             ackedBytes: 1_000_000,
-            rttTicks: System.Diagnostics.Stopwatch.Frequency / 100,
+            budget.SnapshotDelivery(
+                nowTicks - System.Diagnostics.Stopwatch.Frequency / 100, appLimited: true),
             nowTicks);
         budget.Charge(1_200_000);
 
@@ -226,7 +227,8 @@ public sealed class BrokerUnackedAdmissionTests
 
         budget.OnAcked(
             ackedBytes: 1_000_000,
-            rttTicks: System.Diagnostics.Stopwatch.Frequency,
+            budget.SnapshotDelivery(
+                nowTicks - System.Diagnostics.Stopwatch.Frequency, appLimited: true),
             nowTicks);
         budget.Charge(1_200_000);
 

@@ -30,8 +30,9 @@ public class BrokerUnackedByteBudgetBenchmarks
     {
         for (var i = 0; i < Operations; i++)
         {
+            var snapshotAtSend = _budget.SnapshotDelivery(_timestamp, appLimited: false);
             _timestamp += RttTicks;
-            _budget.OnAcked(ackedBytes: 1024 * 1024, RttTicks, _timestamp);
+            _budget.OnAcked(ackedBytes: 1024 * 1024, snapshotAtSend, _timestamp);
         }
 
         return _budget.BudgetBytes;

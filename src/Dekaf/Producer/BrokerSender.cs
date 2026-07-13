@@ -161,6 +161,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // request is sent and removed by ProcessCompletedResponses when the response task completes.
     // HandleTimedOutRequests (Java pattern) checks request timeout centrally and fails all
     // pending responses on timeout, invalidating the connection.
+    /// <summary>
+    /// Wraps a pipelined response with the batch-generation snapshot the send captured
+    /// at send start (before its first await) — the generations detect batch object
+    /// recycling between send and response processing. Ownership of the rented
+    /// <paramref name="BatchGenerations"/> and <paramref name="Batches"/> arrays transfers
+    /// to this PendingResponse; they are returned by <see cref="ReturnBatchesArray"/>.
+    /// </summary>
     private readonly record struct PendingResponse(
         PipelinedResponse<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
@@ -168,21 +175,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int Count,
         long EncodedBytes,
         long RequestStartTime,
-        long RttStartTime)
+        BrokerUnackedByteBudget.DeliverySnapshot DeliverySnapshotAtSend)
     {
-        /// <summary>
-        /// Wraps a pipelined response with the batch-generation snapshot the send captured
-        /// at send start (before its first await) — the generations detect batch object
-        /// recycling between send and response processing. Ownership of the rented
-        /// <paramref name="generations"/> array transfers to this PendingResponse;
-        /// it is returned by <see cref="ReturnBatchesArray"/>.
-        /// </summary>
-        public static PendingResponse Create(
-            PipelinedResponse<ProduceResponse> responseTask, ReadyBatch[] batches, int[] generations,
-            int count, long encodedBytes, long requestStartTime, long rttStartTime)
-            => new(responseTask, batches, generations, count, encodedBytes,
-                requestStartTime, rttStartTime);
-
         /// <summary>
         /// Returns true if the batch at index <paramref name="i"/> is the same incarnation
         /// that was present when this PendingResponse was created.
@@ -199,20 +193,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             ArrayPool<int>.Shared.Return(BatchGenerations);
             ArrayPool<ReadyBatch>.Shared.Return(Batches, clearArray: true);
-        }
-    }
-
-    internal struct AckedResponsePass
-    {
-        public long Bytes { get; private set; }
-        public long EarliestRequestStart { get; private set; }
-
-        public void Add(long bytes, long requestStart)
-        {
-            EarliestRequestStart = Bytes == 0
-                ? requestStart
-                : Math.Min(EarliestRequestStart, requestStart);
-            Bytes += bytes;
         }
     }
 
@@ -2609,10 +2589,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         CancellationToken cancellationToken,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? reusableResponseLookup = null)
     {
-        // Aggregate every successful request completed in this pass. Multiple connection
-        // lanes drain concurrently, so per-request samples understate broker-wide capacity.
-        var ackedPass = new AckedResponsePass();
-
         // CRITICAL: Process responses in FORWARD order (oldest request first).
         // With multi-inflight, R1 and R2 may both complete with errors for the same partition.
         // Forward iteration ensures R1's retry batches are added to carry-over before R2's,
@@ -2697,8 +2673,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                if (allPartitionsSucceeded)
-                    ackedPass.Add(pending.EncodedBytes, pending.RttStartTime);
+                if (allPartitionsSucceeded && _unackedBudget is { } unackedBudget)
+                {
+                    // Per-request BBR delivery-rate sample: the delivered-counter delta since
+                    // this request's send snapshot covers concurrent connection lanes. A fresh
+                    // timestamp per call keeps 'now' honest when a pass spends time in
+                    // acknowledgement callbacks between completions.
+                    unackedBudget.OnAcked(
+                        pending.EncodedBytes,
+                        pending.DeliverySnapshotAtSend,
+                        Stopwatch.GetTimestamp());
+                }
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -2759,17 +2744,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
         }
 
-        if (ackedPass.Bytes > 0 && _unackedBudget is { } unackedBudget)
-        {
-            // Oldest start spans the whole concurrent completion window. Dividing total
-            // bytes by that busy time captures aggregate broker drain without counting
-            // admission-blocked gaps between response passes.
-            var ackTimestamp = Stopwatch.GetTimestamp();
-            unackedBudget.OnAcked(
-                ackedPass.Bytes,
-                ackTimestamp - ackedPass.EarliestRequestStart,
-                ackTimestamp);
-        }
     }
 
     /// <summary>
@@ -3488,14 +3462,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Use the connection-owned timeout path for pipelined sends. The send loop can
                 // have multiple responses in flight on this connection; a reusable caller-owned
                 // CTS would let a later send reset or cancel an earlier response timeout.
+                // The delivery token is minted post-serialization but pre-write: an RTT anchor
+                // stamped after the write-completion await can postdate the response's arrival
+                // (the continuation may run arbitrarily late), which manufactured microsecond
+                // RTT samples and disabled the budget's RTT safety floor. Including TCP write
+                // time biases individual RTT samples high, which the budget's minimum filter
+                // discards.
+                var deliverySnapshotAtSend = _unackedBudget?.SnapshotDelivery(
+                    Stopwatch.GetTimestamp(),
+                    appLimited: Volatile.Read(ref _totalPendingResponseCount) == 0) ?? default;
                 responseTask = await SendPipelinedAfterWriteAsync(
                     connection,
                     request,
                     (short)apiVersion).ConfigureAwait(false);
                 _onPipelinedResponseAcquired?.Invoke();
-                // Response RTT starts after the request is written. Including request
-                // construction and TCP write time biases admission-rate samples low.
-                var rttStartTime = Stopwatch.GetTimestamp();
 
                 // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
                 scratch.ClearReferences();
@@ -3526,14 +3506,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     encodedBytes += Math.Max(batch.EncodedSize, batch.DataSize);
                 }
 
-                var pendingResponse = PendingResponse.Create(
+                var pendingResponse = new PendingResponse(
                     responseTask,
                     batches,
                     generations,
                     count,
                     encodedBytes,
                     requestStartTime,
-                    rttStartTime);
+                    deliverySnapshotAtSend);
                 _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
                 pendingResponseAdded = true; // Array ownership transferred to PendingResponse
                 Interlocked.Increment(ref _totalPendingResponseCount);
@@ -4176,7 +4156,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var j = 0; j < pr.Count; j++)
             {
                 // Entries within Count can legally be null: batches with stale generations
-                // are nulled out before PendingResponse.Create captures the array.
+                // are nulled out before PendingResponse captures the array.
                 if (pr.IsSameIncarnation(j)
                     && pr.Batches[j].TopicPartition == topicPartition)
                     return true;

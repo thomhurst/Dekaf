@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Reflection;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
 using Dekaf.Errors;
@@ -3051,16 +3052,116 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task AckedResponsePass_AggregatesBytesAndKeepsOldestRequestStart()
+    [Timeout(120_000)]
+    public async Task RttAnchor_PrecedesWrite_SynchronousResponseCannotYieldMicrosecondRtt(
+        CancellationToken cancellationToken)
     {
-        var pass = new BrokerSender.AckedResponsePass();
+        // The mock write takes ~20ms and hands back an already-completed response — the
+        // pathological localhost shape where the response arrives before the write await
+        // resumes. An RTT anchor stamped after that await measured poll-loop latency here
+        // (microseconds), disabling the budget's RTT safety floor (#1941). The pre-write
+        // anchor includes the write time, so the observed minimum cannot undercut it.
+        var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>());
+        var responseSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendProducePipelinedAfterWrite = async () =>
+        {
+            await Task.Delay(20);
+            responseSent.TrySetResult();
+            return Task.FromResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
+        };
 
-        pass.Add(bytes: 5_000, requestStart: 200);
-        pass.Add(bytes: 7_000, requestStart: 100);
-        pass.Add(bytes: 3_000, requestStart: 300);
+        var options = CreateOptions(maxInFlight: 1, unackedByteBudgetCapOverride: 1_000_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { },
+            unackedBudget: budget);
 
-        await Assert.That(pass.Bytes).IsEqualTo(15_000);
-        await Assert.That(pass.EarliestRequestStart).IsEqualTo(100);
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 5_000));
+
+            await responseSent.Task.WaitAsync(cancellationToken);
+            await WaitUntilAsync(() => budget.MinimumRttMicros > 0, cancellationToken);
+
+            // Half the injected write delay keeps this robust on slow runners while still
+            // catching a post-write anchor, which reads single-digit microseconds.
+            await Assert.That(budget.MinimumRttMicros).IsGreaterThanOrEqualTo(10_000);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task DeliverySnapshot_SecondPipelinedRequest_IsNotAppLimited(
+        CancellationToken cancellationToken)
+    {
+        var responses = new[]
+        {
+            new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously),
+            new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var (pool, _) = CreateMockConnection(
+            new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        var options = CreateOptions(maxInFlight: 2, unackedByteBudgetCapOverride: 1_000_000);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            unackedBudget: budget);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: 5_000));
+            await WaitUntilAsync(() => GetPendingResponseCount(sender) == 1, cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1, dataSize: 5_000));
+            await WaitUntilAsync(() => GetPendingResponseCount(sender) == 2, cancellationToken);
+
+            await Assert.That(GetDeliverySnapshot(sender, 0).AppLimited).IsTrue();
+            await Assert.That(GetDeliverySnapshot(sender, 1).AppLimited).IsFalse();
+
+            responses[0].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
+            responses[1].SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 1));
+        }
+        finally
+        {
+            responses[0].TrySetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
+            responses[1].TrySetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 1));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    private static int GetPendingResponseCount(BrokerSender sender) =>
+        (int)typeof(BrokerSender).GetField(
+            "_totalPendingResponseCount",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+
+    private static BrokerUnackedByteBudget.DeliverySnapshot GetDeliverySnapshot(
+        BrokerSender sender,
+        int index)
+    {
+        var pendingByConnection = (Array)typeof(BrokerSender).GetField(
+            "_pendingResponsesByConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+        var pending = pendingByConnection.GetValue(0)!;
+        var item = pending.GetType().GetProperty("Item")!.GetValue(pending, [index])!;
+        return (BrokerUnackedByteBudget.DeliverySnapshot)item.GetType()
+            .GetProperty("DeliverySnapshotAtSend")!.GetValue(item)!;
     }
 
     [Test]
