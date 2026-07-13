@@ -55,8 +55,8 @@ public class AdaptiveFetchSizerTests
 
         sizer.EvaluateAndAdjust(0.3);
 
-        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(2_000_000);
-        await Assert.That(sizer.CurrentFetchMaxBytes).IsEqualTo(100_000_000);
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(2 * 1024 * 1024);
+        await Assert.That(sizer.CurrentFetchMaxBytes).IsEqualTo(100 * 1024 * 1024);
     }
 
     [Test]
@@ -75,13 +75,13 @@ public class AdaptiveFetchSizerTests
         };
         var sizer = new AdaptiveFetchSizer(options);
 
-        // Step 1: 1M -> 1.5M
+        // Adaptive sizes stay on ArrayPool power-of-two bucket boundaries.
         sizer.EvaluateAndAdjust(0.3);
-        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(1_500_000);
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(2 * 1024 * 1024);
 
-        // Step 2: 1.5M -> 2.25M
+        // Next growth moves to the next bucket instead of stranding the 2 MiB tier.
         sizer.EvaluateAndAdjust(0.3);
-        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(2_250_000);
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(4 * 1024 * 1024);
     }
 
     #endregion
@@ -138,8 +138,8 @@ public class AdaptiveFetchSizerTests
 
         sizer.ReportMemoryPressure();
 
-        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(2_000_000);
-        await Assert.That(sizer.CurrentFetchMaxBytes).IsEqualTo(50_000_000);
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(1 * 1024 * 1024);
+        await Assert.That(sizer.CurrentFetchMaxBytes).IsEqualTo(32 * 1024 * 1024);
     }
 
     #endregion
@@ -366,7 +366,7 @@ public class AdaptiveFetchSizerTests
 
         // 5th signal triggers growth
         sizer.EvaluateAndAdjust(0.3);
-        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(1_500_000);
+        await Assert.That(sizer.CurrentPartitionFetchBytes).IsEqualTo(2 * 1024 * 1024);
     }
 
     #endregion

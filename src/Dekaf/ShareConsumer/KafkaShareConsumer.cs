@@ -738,52 +738,57 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 break; // Partial batch
             }
 
-            foreach (var record in batch.Records)
+            try
             {
-                if (results.Count >= maxRecords)
-                    break;
-
-                var offset = batch.BaseOffset + record.OffsetDelta;
-
-                var deliveryCount = FindDeliveryCount(
-                    partition.AcquiredRecords,
-                    offset,
-                    ref acquiredRecordIndex);
-                if (deliveryCount < 0)
-                    continue;
-
-                t_serializationContext.Topic = topicInfo.Name;
-                t_serializationContext.Component = SerializationComponent.Key;
-                var key = record.IsKeyNull
-                    ? default
-                    : _keyDeserializer.Deserialize(record.Key, t_serializationContext);
-
-                t_serializationContext.Component = SerializationComponent.Value;
-                var value = record.IsValueNull
-                    ? default!
-                    : _valueDeserializer.Deserialize(record.Value, t_serializationContext);
-
-                Header[]? headers = null;
-                if (record.Headers is not null && record.HeaderCount > 0)
+                foreach (var record in batch.Records)
                 {
-                    headers = new Header[record.HeaderCount];
-                    Array.Copy(record.Headers, headers, record.HeaderCount);
+                    if (results.Count >= maxRecords)
+                        break;
+
+                    var offset = batch.BaseOffset + record.OffsetDelta;
+
+                    var deliveryCount = FindDeliveryCount(
+                        partition.AcquiredRecords,
+                        offset,
+                        ref acquiredRecordIndex);
+                    if (deliveryCount < 0)
+                        continue;
+
+                    t_serializationContext.Topic = topicInfo.Name;
+                    t_serializationContext.Component = SerializationComponent.Key;
+                    var key = record.IsKeyNull
+                        ? default
+                        : _keyDeserializer.Deserialize(record.Key, t_serializationContext);
+
+                    t_serializationContext.Component = SerializationComponent.Value;
+                    var value = record.IsValueNull
+                        ? default!
+                        : _valueDeserializer.Deserialize(record.Value, t_serializationContext);
+
+                    Header[]? headers = null;
+                    if (record.Headers is not null && record.HeaderCount > 0)
+                    {
+                        headers = new Header[record.HeaderCount];
+                        Array.Copy(record.Headers, headers, record.HeaderCount);
+                    }
+
+                    results.Add(new ShareConsumeResult<TKey, TValue>
+                    {
+                        Topic = topicInfo.Name,
+                        Partition = partition.PartitionIndex,
+                        Offset = offset,
+                        Key = key,
+                        Value = value,
+                        Headers = headers,
+                        TimestampMs = batch.BaseTimestamp + record.TimestampDelta,
+                        DeliveryCount = deliveryCount
+                    });
                 }
-
-                results.Add(new ShareConsumeResult<TKey, TValue>
-                {
-                    Topic = topicInfo.Name,
-                    Partition = partition.PartitionIndex,
-                    Offset = offset,
-                    Key = key,
-                    Value = value,
-                    Headers = headers,
-                    TimestampMs = batch.BaseTimestamp + record.TimestampDelta,
-                    DeliveryCount = deliveryCount
-                });
             }
-
-            batch.Dispose();
+            finally
+            {
+                batch.DisposeAndReturnUnownedConsumerBatch();
+            }
         }
 
         return results;

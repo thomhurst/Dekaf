@@ -78,6 +78,7 @@ internal sealed class PendingFetchData : IDisposable
     private Dictionary<long, Queue<long>>? _abortedProducers;
     private IPooledMemory? _memoryOwner;
     private Record[]? _parsedRecordSlab;
+    private int _parsedRecordSlabCount;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
     private int _disposed;
@@ -155,6 +156,9 @@ internal sealed class PendingFetchData : IDisposable
         instance._batches = batches;
         instance._memoryOwner = memoryOwner;
 
+        for (var i = 0; i < batches.Count; i++)
+            batches[i].AttachConsumerPoolOwner(instance, instance.HeaderGeneration);
+
         if (abortedTransactions is { Count: > 0 })
         {
             instance._abortedProducers ??= new Dictionary<long, Queue<long>>();
@@ -188,8 +192,18 @@ internal sealed class PendingFetchData : IDisposable
         if (totalRecordCount == 0)
             return;
 
-        var slab = ArrayPool<Record>.Shared.Rent(totalRecordCount);
-        slab.AsSpan().Clear();
+        var slab = _parsedRecordSlab;
+        if (slab is null || slab.Length < totalRecordCount)
+        {
+            if (slab is not null)
+                ArrayPool<Record>.Shared.Return(slab, clearArray: false);
+
+            slab = ArrayPool<Record>.Shared.Rent(totalRecordCount);
+            _parsedRecordSlab = slab;
+        }
+
+        slab.AsSpan(0, totalRecordCount).Clear();
+        _parsedRecordSlabCount = totalRecordCount;
         var offset = 0;
         for (var i = 0; i < batches.Count; i++)
         {
@@ -198,8 +212,6 @@ internal sealed class PendingFetchData : IDisposable
             batch.UseParsedRecordSlab(slab, offset);
             offset += recordCount;
         }
-
-        _parsedRecordSlab = slab;
     }
 
     public static PendingFetchData CreateError(string topic, int partitionIndex, ConsumeException error)
@@ -516,13 +528,13 @@ internal sealed class PendingFetchData : IDisposable
         var batches = _batches;
         for (var i = 0; i < batches.Count; i++)
         {
-            batches[i].Dispose();
+            batches[i].DisposeAndReturnConsumerBatch(this, HeaderGeneration);
         }
 
         var parsedRecordSlab = _parsedRecordSlab;
-        _parsedRecordSlab = null;
         if (parsedRecordSlab is not null)
-            ArrayPool<Record>.Shared.Return(parsedRecordSlab, clearArray: false);
+            parsedRecordSlab.AsSpan(0, _parsedRecordSlabCount).Clear();
+        _parsedRecordSlabCount = 0;
 
         // Return the batch list to the pool for reuse
         if (_batches is List<RecordBatch> batchList)
@@ -1011,7 +1023,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             },
             loggerFactory,
             connectionsPerBroker: options.ConnectionsPerBroker,
-            ResponseBufferPool.Create(CalculateMaximumFetchResponsePayloadBytes(options)),
+            ResponseBufferPool.Create(
+                CalculateMaximumFetchResponsePayloadBytes(options),
+                PoolSizing.ForConsumerResponseBuffers(
+                    options.BootstrapServers.Count,
+                    options.PrefetchPipelineDepth,
+                    options.MaxConnectionsPerBroker)),
             telemetryMetricCollector: telemetryMetricCollector);
 
         var metadataManager = new MetadataManager(

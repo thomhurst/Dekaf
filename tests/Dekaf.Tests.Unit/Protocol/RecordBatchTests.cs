@@ -1234,6 +1234,35 @@ public class RecordBatchTests
     }
 
     [Test]
+    [NotInParallel]
+    public async Task RecordBatch_Read_IsReusedAfterPendingFetchDisposal()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        new RecordBatch
+        {
+            BaseOffset = 17,
+            Records = [new Record { IsKeyNull = true, Value = "pooled"u8.ToArray() }]
+        }.Write(buffer);
+
+        var firstReader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var first = RecordBatch.Read(ref firstReader);
+        var pending = PendingFetchData.Create("topic", 0, [first]);
+        pending.Dispose();
+
+        var secondReader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var second = RecordBatch.Read(ref secondReader);
+
+        await Assert.That(second).IsSameReferenceAs(first);
+        await Assert.That(second.BaseOffset).IsEqualTo(17L);
+
+        // Stale owner disposal remains harmless after the batch gets a new lease.
+        pending.Dispose();
+        await Assert.That(second.Records.Count).IsEqualTo(1);
+
+        using var secondOwner = PendingFetchData.Create("topic", 0, [second]);
+    }
+
+    [Test]
     public async Task RecordBatch_RatchetPoolSize_GrowsAndDoesNotShrink()
     {
         var target = RecordBatch.MaxPoolSizeValue + 1;

@@ -230,4 +230,17 @@ public class ResponseBufferPoolTests
 
         await Assert.That(default1).IsSameReferenceAs(default2);
     }
+
+    [Test]
+    public async Task Create_DifferentRetentionDepths_UseDifferentSharedPools()
+    {
+        var shallow = ResponseBufferPool.Create(20 * 1024 * 1024, maxArraysPerBucket: 4);
+        var consumer = ResponseBufferPool.Create(20 * 1024 * 1024, maxArraysPerBucket: 16);
+
+        await Assert.That(shallow).IsNotSameReferenceAs(consumer);
+        await Assert.That(shallow.MaxArraysPerBucket).IsEqualTo(4);
+        await Assert.That(consumer.MaxArraysPerBucket).IsEqualTo(16);
+        await Assert.That(ResponseBufferPool.Create(20 * 1024 * 1024, 16))
+            .IsSameReferenceAs(consumer);
+    }
 }

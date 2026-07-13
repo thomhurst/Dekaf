@@ -351,7 +351,7 @@ public sealed class FetchResponsePartition
 
         for (var i = 0; i < list.Count; i++)
         {
-            list[i].Dispose();
+            list[i].DisposeAndReturnUnownedConsumerBatch();
         }
 
         s_recordBatchListPool.Return(list);
@@ -544,9 +544,7 @@ public sealed class FetchResponsePartition
                         DekafMetrics.BatchParseErrors.Add(1);
                         recordParseError = new MalformedProtocolDataException(
                             $"Failed to parse record batch for partition {partitionIndex}", ex);
-                        foreach (var record in records)
-                            record.Dispose();
-                        ReturnRecordBatchList(records);
+                        ReturnRecordBatchListAfterFailedParse(records);
                         records = null;
                         break;
                     }

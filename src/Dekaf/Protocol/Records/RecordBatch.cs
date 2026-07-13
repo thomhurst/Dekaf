@@ -7,6 +7,7 @@ using System.Runtime.Intrinsics.X86;
 using ArmCrc32 = System.Runtime.Intrinsics.Arm.Crc32;
 #endif
 using Dekaf.Compression;
+using Dekaf.Consumer;
 using Dekaf.Internal;
 using Dekaf.Producer;
 using Dekaf.Serialization;
@@ -752,9 +753,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     }
 
     /// <summary>
-    /// Disposes any pooled memory associated with this batch's records.
-    /// Consumer-read batches are not object-pooled because callers own their disposable
-    /// lifetime. Producer-owned batches use <see cref="ReturnToPool"/> explicitly.
+    /// Disposes pooled memory associated with this batch's records without returning the
+    /// batch object to its pool. Consumer paths must use the owner-aware return helpers;
+    /// producer paths call <see cref="ReturnToPool"/> after their ownership ends.
     /// </summary>
     public void Dispose()
     {
@@ -766,9 +767,36 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         DisposeRecordList();
     }
 
-    // ── Pool for producer-path RecordBatch reuse ──
+    private PendingFetchData? _consumerPoolOwner;
+    private int _consumerPoolOwnerGeneration;
+
+    internal void AttachConsumerPoolOwner(PendingFetchData owner, int generation)
+    {
+        _consumerPoolOwner = owner;
+        _consumerPoolOwnerGeneration = generation;
+    }
+
+    internal void DisposeAndReturnConsumerBatch(PendingFetchData owner, int generation)
+    {
+        if (!ReferenceEquals(_consumerPoolOwner, owner) || _consumerPoolOwnerGeneration != generation)
+            return;
+
+        Dispose();
+        ReturnToPool();
+    }
+
+    internal void DisposeAndReturnUnownedConsumerBatch()
+    {
+        if (_consumerPoolOwner is not null)
+            return;
+
+        Dispose();
+        ReturnToPool();
+    }
+
+    // ── Pool for producer and consumer RecordBatch reuse ──
     // Eliminates per-batch class allocation (~120 bytes) that survives Gen0 due to
-    // its lifetime spanning the send pipeline (1-10ms), contributing to high Gen1/Gen0 ratio.
+    // its lifetime spanning producer and consumer pipelines, contributing to Gen1 pressure.
     // Reuses ObjectPool<T> for zero-alloc CAS-based pooling with miss tracking and exception safety.
     private static readonly RecordBatchPool s_pool = new();
 
@@ -799,6 +827,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             item._preEncodedRecords = default;
             item._hasPreEncodedRecords = false;
             item._preEncodedRecordsCrc = 0;
+            item._consumerPoolOwner = null;
+            item._consumerPoolOwnerGeneration = 0;
 
             // Reset mutable state to defaults
             item.BaseOffset = 0;
@@ -819,6 +849,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     /// <summary>
     /// Rents a RecordBatch from the pool or creates a new one.
     /// Caller must call <see cref="ReturnToPool"/> after the batch is fully processed.
+    /// Consumer-read batches are returned by their owning <c>PendingFetchData</c>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static RecordBatch RentFromPool()
@@ -831,8 +862,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     /// <summary>
     /// Returns this RecordBatch to the pool for reuse. Clears all references to avoid
-    /// holding onto Records data. Caller must call <see cref="ReturnPreCompressedBuffer"/>
-    /// before this method to return any pooled compression buffers.
+    /// holding onto Records data. Producer callers must call
+    /// <see cref="ReturnPreCompressedBuffer"/> first when applicable.
     /// </summary>
     internal void ReturnToPool()
     {
@@ -1293,11 +1324,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             pooledRecordData = pooledArray;
         }
 
-        // A RecordBatch returned by Read is directly disposable by its caller. Pooling that
-        // instance cannot make a stale second Dispose distinguish its old lease from a later
-        // renter, so consumer-read batches remain unpooled while producer-owned batches use
-        // RentFromPool explicitly.
-        var batch = new RecordBatch();
+        var batch = RentFromPool();
         batch.BaseOffset = baseOffset;
         batch.BatchLength = batchLength;
         batch.PartitionLeaderEpoch = partitionLeaderEpoch;
