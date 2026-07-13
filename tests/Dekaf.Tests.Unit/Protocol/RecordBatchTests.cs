@@ -1235,7 +1235,7 @@ public class RecordBatchTests
 
     [Test]
     [NotInParallel]
-    public async Task RecordBatch_Read_IsReusedAfterPendingFetchDisposal()
+    public async Task RecordBatch_Read_PendingFetchDisposal_ReturnsBatchAndStaleOwnerIsHarmless()
     {
         var buffer = new ArrayBufferWriter<byte>();
         new RecordBatch
@@ -1247,16 +1247,37 @@ public class RecordBatchTests
         var firstReader = new KafkaProtocolReader(buffer.WrittenMemory);
         var first = RecordBatch.Read(ref firstReader);
         var pending = PendingFetchData.Create("topic", 0, [first]);
-        pending.Dispose();
+
+        RecordBatch.BeginTrackingPoolReturnsForCurrentThread();
+        int initialReturnCount;
+        try
+        {
+            pending.Dispose();
+        }
+        finally
+        {
+            initialReturnCount = RecordBatch.EndTrackingPoolReturnsForCurrentThread();
+        }
 
         var secondReader = new KafkaProtocolReader(buffer.WrittenMemory);
         var second = RecordBatch.Read(ref secondReader);
 
-        await Assert.That(second).IsSameReferenceAs(first);
+        await Assert.That(initialReturnCount).IsEqualTo(1);
         await Assert.That(second.BaseOffset).IsEqualTo(17L);
 
         // Stale owner disposal remains harmless after the batch gets a new lease.
-        pending.Dispose();
+        RecordBatch.BeginTrackingPoolReturnsForCurrentThread();
+        int staleReturnCount;
+        try
+        {
+            pending.Dispose();
+        }
+        finally
+        {
+            staleReturnCount = RecordBatch.EndTrackingPoolReturnsForCurrentThread();
+        }
+
+        await Assert.That(staleReturnCount).IsEqualTo(0);
         await Assert.That(second.Records.Count).IsEqualTo(1);
 
         using var secondOwner = PendingFetchData.Create("topic", 0, [second]);
