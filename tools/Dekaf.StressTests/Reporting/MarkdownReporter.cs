@@ -146,7 +146,7 @@ internal static class MarkdownReporter
 
             if (sizeResults.Any(r => r.IntraRunDriftPercent is not null))
             {
-                sb.AppendLine($"*Drift compares last-third with first-third average throughput. Slope is the normalized least-squares trend; steady-state below {StressTestResult.SteadyStatePeakThreshold:P0} of peak or slope below {StressTestResult.SlopePercentPerMinuteThreshold:F0}%/min fails the regression gate.*");
+                sb.AppendLine($"*Drift compares last-third with first-third average throughput. Runs of at least three minutes use one-minute trend windows; shorter runs use raw intervals. Slope is the normalized least-squares trend; steady-state below {StressTestResult.SteadyStatePeakThreshold:P0} of peak or slope below {StressTestResult.SlopePercentPerMinuteThreshold:F0}%/min fails the regression gate.*");
                 sb.AppendLine();
             }
 
