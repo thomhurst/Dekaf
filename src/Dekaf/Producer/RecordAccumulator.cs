@@ -3538,19 +3538,37 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private bool ShouldSealAppendedBatch(PartitionBatch batch)
         => batch.IsExactlyAtSizeLimit
             || (_options.LingerMs == 0
-                && !ShouldDeferPartialBatchSeal(batch.TopicPartition)
+                && !ShouldDeferPartialBatchSeal(batch)
                 && batch.ShouldFlush(Stopwatch.GetTimestamp(), _options.LingerMs));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool ShouldDeferPartialBatchSeal(TopicPartition topicPartition)
+    private bool ShouldDeferPartialBatchSeal(PartitionBatch batch)
     {
-        if (_mutedPartitions.ContainsKey(topicPartition))
-            return true;
-
-        return _serializeBatchesPerPartition
-            && _partitionQueueBytes.TryGetValue(topicPartition, out var queuedBytes)
+        var topicPartition = batch.TopicPartition;
+        var hasPipelineBatch = _partitionQueueBytes.TryGetValue(topicPartition, out var queuedBytes)
             && queuedBytes > 0;
+        return ShouldDeferPartialBatchSeal(
+            _mutedPartitions.ContainsKey(topicPartition),
+            _serializeBatchesPerPartition,
+            hasPipelineBatch,
+            batch.EstimatedSize,
+            _options.BatchSize);
     }
+
+    // An earlier pipeline batch provides a short delivery clock under load. Keep the next
+    // partial batch open until it fills; if traffic becomes sparse, the predecessor exits,
+    // queued bytes reach zero, and the next linger pass seals normally. Size-full batches
+    // bypass this method in ShouldSealAppendedBatch and continue pipelining immediately.
+    internal static bool ShouldDeferPartialBatchSeal(
+        bool isMuted,
+        bool serializeBatchesPerPartition,
+        bool hasPipelineBatch,
+        int currentBatchSize,
+        int maximumBatchSize) =>
+        isMuted
+        || (hasPipelineBatch
+            && (serializeBatchesPerPartition
+                || currentBatchSize < maximumBatchSize));
 
     private ReadyBatch? CompleteDetachedBatchAndEnqueue(PartitionDeque pd, PartitionBatch batchToComplete)
     {
@@ -4259,7 +4277,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // allocating one BatchSize arena per record while they wait. Size-full batches
                 // still seal in the append path, and FlushAsync must always seal.
                 else if (sealAll
-                    || (!ShouldDeferPartialBatchSeal(topicPartition)
+                    || (!ShouldDeferPartialBatchSeal(pd.CurrentBatch)
                         && pd.CurrentBatch.ShouldFlush(now, _options.LingerMs)))
                 {
                     ProducerDebugCounters.RecordBatchFlushedFromDictionary();
