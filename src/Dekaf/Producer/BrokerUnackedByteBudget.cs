@@ -626,6 +626,17 @@ internal sealed class BrokerUnackedByteBudget
             // latency approaches target (adjustment -> 1 as targetRatio -> 1).
             adjustment = Math.Min(MaximumLatencyAdjustmentFactor, targetRatio);
         }
+        else if (_latencyBudgetScale < 1.0)
+        {
+            // A transient queue can legitimately derate the budget, but once measured
+            // latency is back below target the controller must return to its neutral scale.
+            // Requiring another admission block here makes the derating self-sealing: the
+            // smaller budget removes the pressure event that would restore it. Recovery
+            // without pressure stops at 1.0; only the branch above may probe past parity.
+            adjustment = Math.Min(
+                MaximumLatencyAdjustmentFactor,
+                1.0 / _latencyBudgetScale);
+        }
         else
         {
             adjustment = 1.0;

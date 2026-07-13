@@ -190,6 +190,31 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task DeliveryLatencyBelowTarget_RestoresReducedScaleToNeutralWithoutAdmissionPressure()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+        SetField(budget, "_latencyBudgetScale", 0.25);
+
+        var now = T0;
+        for (var i = 0; i < 40; i++)
+        {
+            now += Seconds(0.110);
+            var snapshot = budget.SnapshotDelivery(
+                now - Seconds(0.001),
+                appLimited: true,
+                oldestBatchTimestamp: now - Seconds(0.003));
+            Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
+        }
+
+        await Assert.That(budget.LatencyBudgetScale).IsEqualTo(1.0).Within(0.000_001)
+            .Because("transient queue control must not leave the normal budget permanently derated");
+    }
+
+    [Test]
     public async Task DeliveryLatencySample_UsesSealToSendQueueDelay_NotBrokerRoundTrip()
     {
         var budget = new BrokerUnackedByteBudget(
