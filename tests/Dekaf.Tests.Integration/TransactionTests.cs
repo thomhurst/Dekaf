@@ -23,7 +23,9 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
     }
 
     [Test]
-    public async Task Transaction_Commit_MessagesVisible()
+    [Timeout(60_000)]
+    public async Task Transaction_ProduceThenCommit_InlineContinuationDoesNotDeadlock(
+        CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-commit-{Guid.NewGuid():N}";
@@ -33,20 +35,22 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .BuildAsync(cancellationToken);
 
-        await producer.InitTransactionsAsync();
+        await producer.InitTransactionsAsync(cancellationToken);
 
         await using (var txn = producer.BeginTransaction())
         {
+            // Produce resumes inline on the sender thread. Commit must yield at the
+            // asynchronous flush boundary so the sender can finish batch cleanup.
             await txn.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "txn-key",
                 Value = "txn-value"
-            }, CancellationToken.None);
+            }, cancellationToken);
 
-            await txn.CommitAsync();
+            await txn.CommitAsync(cancellationToken);
         }
 
         // Consume the message - it should be visible after commit
@@ -55,7 +59,7 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
             .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
 

@@ -971,7 +971,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // All checks passed - we can proceed synchronously
         completion = _valueTaskSourcePool.Rent();
-        completion.SetRunContinuationsAsynchronously(runContinuationsAsynchronously);
+        if (!runContinuationsAsynchronously)
+            completion.SetRunContinuationsAsynchronously(false);
         var result = SyncProduceResult.Success;
         try
         {
@@ -1027,7 +1028,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Topic cache miss — fetch topic metadata inline and produce
         var completion = _valueTaskSourcePool.Rent();
-        completion.SetRunContinuationsAsynchronously(runContinuationsAsynchronously);
+        if (!runContinuationsAsynchronously)
+            completion.SetRunContinuationsAsynchronously(false);
         try
         {
             await ProduceInternalAsync(message, completion, cancellationToken).ConfigureAwait(false);
