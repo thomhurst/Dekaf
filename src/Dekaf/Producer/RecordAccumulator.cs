@@ -130,6 +130,7 @@ internal static class ProducerDebugCounters
     private static int _batchesFailed;
     private static int _completionSourcesCompleted;
     private static int _completionSourcesFailed;
+    private static int _inlineContinuationExceptions;
 
     // ReadyBatch pool lifecycle. A return count above the rent count proves the same
     // object entered the pool more than once and can be handed to concurrent renters.
@@ -189,6 +190,10 @@ internal static class ProducerDebugCounters
         Interlocked.Add(ref _completionSourcesFailed, count);
 
     [Conditional("DEBUG")]
+    public static void RecordInlineContinuationException() =>
+        Interlocked.Increment(ref _inlineContinuationExceptions);
+
+    [Conditional("DEBUG")]
     public static void RecordReadyBatchRented() => Interlocked.Increment(ref _readyBatchesRented);
 
     [Conditional("DEBUG")]
@@ -220,6 +225,7 @@ internal static class ProducerDebugCounters
         _batchesFailed = 0;
         _completionSourcesCompleted = 0;
         _completionSourcesFailed = 0;
+        _inlineContinuationExceptions = 0;
         _readyBatchesRented = 0;
         _readyBatchesReturned = 0;
         _readyBatchDuplicateReturns = 0;
@@ -276,6 +282,7 @@ internal static class ProducerDebugCounters
               Batches failed: {_batchesFailed}
               Completion sources completed: {_completionSourcesCompleted}
               Completion sources failed: {_completionSourcesFailed}
+              Inline continuation exceptions: {_inlineContinuationExceptions}
             Stage 5 - Flush/Dispose:
               Flush calls: {_flushCalls}
               Batches flushed from dictionary: {_batchesFlushedFromDictionary}
@@ -423,6 +430,7 @@ internal static class PooledCompletionSource
         {
             // A raw inline continuation can throw after the source is complete.
             // Isolate it so sibling completions and producer cleanup can continue.
+            ProducerDebugCounters.RecordInlineContinuationException();
             return true;
         }
     }
@@ -442,6 +450,7 @@ internal static class PooledCompletionSource
         {
             // A raw inline continuation can throw after the source is complete.
             // Isolate it so sibling completions and producer cleanup can continue.
+            ProducerDebugCounters.RecordInlineContinuationException();
             return true;
         }
     }
@@ -461,6 +470,7 @@ internal static class PooledCompletionSource
         {
             // A raw inline continuation can throw after the source is complete.
             // Isolate it so sibling completions and producer cleanup can continue.
+            ProducerDebugCounters.RecordInlineContinuationException();
             return true;
         }
     }
