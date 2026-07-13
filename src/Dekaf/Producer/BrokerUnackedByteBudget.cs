@@ -11,7 +11,7 @@ namespace Dekaf.Producer;
 /// Under open-loop saturation, append-to-ack latency equals standing unacked bytes divided
 /// by the broker's drain rate; capping the standing bytes to
 /// <c>target × measured drain rate</c> caps the latency. The RTT safety floor uses a
-/// periodically refreshed minimum RTT plus the loaded serving RTT, so standing queue delay
+/// periodically refreshed minimum RTT or the loaded serving RTT, so standing queue delay
 /// cannot replace the base RTT while replicated service time still keeps the pipe full.
 /// <para>
 /// Drain rate is measured per acknowledged request, BBR-style: each request snapshots the
@@ -86,6 +86,10 @@ internal sealed class BrokerUnackedByteBudget
     /// enough history to ignore short scheduler and broker stalls.
     /// </summary>
     private static readonly long WindowBucketTicks = Math.Max(1, (long)(WindowBucketSeconds * Stopwatch.Frequency));
+    // A momentarily empty pending-response count is normal between depth-one requests and
+    // concurrent send waves. Treat it as genuine application idle only after one full fast
+    // estimator window without a delivery.
+    private static readonly long WindowDurationTicks = WindowBucketCount * WindowBucketTicks;
     private static readonly double LoadedRateDecayPerBucket =
         Math.Pow(0.5, WindowBucketSeconds / LoadedRateHalfLifeSeconds);
     private static readonly long LatencyControlIntervalTicks = Math.Max(1, Stopwatch.Frequency / 10);
@@ -360,7 +364,7 @@ internal sealed class BrokerUnackedByteBudget
         CompleteExpiredMinRttProbe(nowTicks);
         if (_capacityProbeActive && nowTicks >= _capacityProbeDeadlineTimestamp)
             DeactivateCapacityProbe();
-        RecomputeBudget(nowTicks);
+        RecomputeBudget(nowTicks, consumeAdmissionBlockEvents: false);
     }
 
     /// <summary>
@@ -382,8 +386,16 @@ internal sealed class BrokerUnackedByteBudget
             return;
 
         var rttSeconds = (double)rttTicks / Stopwatch.Frequency;
+        var deliveryIdleTicks = sendSnapshot.SendTimestamp - sendSnapshot.DeliveredTimestamp;
+        var sustainedIdle = sendSnapshot.AppLimited
+            && sendSnapshot.DeliveredTimestamp != 0
+            && deliveryIdleTicks >= WindowDurationTicks;
+        var loadedSample = !sendSnapshot.AppLimited
+            || (sendSnapshot.DeliveredTimestamp != 0 && !sustainedIdle);
+        var minRttProbeActive = _minRttProbeUntilTimestamp != 0
+            && nowTicks < _minRttProbeUntilTimestamp;
         UpdateMinRtt(rttSeconds, nowTicks);
-        if (!sendSnapshot.AppLimited)
+        if (loadedSample && !minRttProbeActive)
         {
             _servingRttEwmaSeconds = _servingRttEwmaSeconds == 0
                 ? rttSeconds
@@ -416,7 +428,7 @@ internal sealed class BrokerUnackedByteBudget
         var bytesPerSecond = deliveredDelta * (double)Stopwatch.Frequency / intervalTicks;
         if (bytesPerSecond > 0)
         {
-            AddRateSample(bytesPerSecond, sendSnapshot.AppLimited);
+            AddRateSample(bytesPerSecond, loadedSample, sustainedIdle);
             Volatile.Write(ref _maxRateBytesPerSecond, (long)GetEffectiveMaxRate());
         }
 
@@ -438,7 +450,7 @@ internal sealed class BrokerUnackedByteBudget
         if (writtenUnackedPeak > 0)
             AddOccupancySample(writtenUnackedPeak);
 
-        RecomputeBudget(nowTicks);
+        RecomputeBudget(nowTicks, consumeAdmissionBlockEvents: true);
     }
 
     private void UpdateDeliveryLatency(
@@ -618,14 +630,15 @@ internal sealed class BrokerUnackedByteBudget
         _currentWindowBucket = bucket;
     }
 
-    private void AddRateSample(double bytesPerSecond, bool appLimited)
+    private void AddRateSample(double bytesPerSecond, bool loadedSample, bool sustainedIdle)
     {
         var slot = (int)(_currentWindowBucket % WindowBucketCount);
         _rateBucketMaxValues[slot] = Math.Max(_rateBucketMaxValues[slot], bytesPerSecond);
         _windowMaxRate = Math.Max(_windowMaxRate, bytesPerSecond);
-        _retainedLoadedMaxRate = appLimited
-            ? 0
-            : Math.Max(_retainedLoadedMaxRate, bytesPerSecond);
+        if (sustainedIdle)
+            _retainedLoadedMaxRate = 0;
+        else if (loadedSample)
+            _retainedLoadedMaxRate = Math.Max(_retainedLoadedMaxRate, bytesPerSecond);
     }
 
     private double GetEffectiveMaxRate() => Math.Max(_windowMaxRate, _retainedLoadedMaxRate);
@@ -747,7 +760,7 @@ internal sealed class BrokerUnackedByteBudget
         return maximum;
     }
 
-    private void RecomputeBudget(long nowTicks)
+    private void RecomputeBudget(long nowTicks, bool consumeAdmissionBlockEvents)
     {
         var minRttProbeActive = _minRttProbeUntilTimestamp != 0;
         var postProbeMinRttSeconds = _minRttSeconds;
@@ -757,7 +770,10 @@ internal sealed class BrokerUnackedByteBudget
             minRttProbeActive: false,
             capacityProbeActive: false,
             postProbeMinRttSeconds);
-        var normalBudget = ApplyNormalBudgetDecayHysteresis(computedNormalBudget, nowTicks);
+        var normalBudget = ApplyNormalBudgetDecayHysteresis(
+            computedNormalBudget,
+            nowTicks,
+            consumeAdmissionBlockEvents);
         var probeBudget = ComputeBudget(
             minRttProbeActive: false,
             capacityProbeActive: true,
@@ -782,7 +798,10 @@ internal sealed class BrokerUnackedByteBudget
         Volatile.Write(ref _budgetBytes, budget);
     }
 
-    private long ApplyNormalBudgetDecayHysteresis(long computedBudget, long nowTicks)
+    private long ApplyNormalBudgetDecayHysteresis(
+        long computedBudget,
+        long nowTicks,
+        bool consumeAdmissionBlockEvents)
     {
         // Smooth downward changes only while fresh admission blocks prove demand.
         // Capping decay at 10%/s prevents the short estimator window from draining
@@ -800,7 +819,10 @@ internal sealed class BrokerUnackedByteBudget
         budget = Math.Min(budget, _capBytes);
         _lastNormalBudgetBytes = budget;
         _lastBudgetUpdateTimestamp = nowTicks;
-        _lastBudgetAdmissionBlockEvents = admissionBlockEvents;
+        // SetCap may run immediately before the ack pass that owns this pressure signal.
+        // Only that pass consumes the cursor, so scaling cannot erase decay protection.
+        if (consumeAdmissionBlockEvents)
+            _lastBudgetAdmissionBlockEvents = admissionBlockEvents;
         return budget;
     }
 
