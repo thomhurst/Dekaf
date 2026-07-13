@@ -12,7 +12,7 @@ namespace Dekaf.Networking;
 /// Connection pool for managing connections to Kafka brokers.
 /// Supports multiple connections per broker for parallel request handling.
 /// </summary>
-public sealed partial class ConnectionPool : IConnectionPool
+public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDiagnostics
 {
     private const int MaxConnectionReapDiagnosticEvents = 256;
     private static readonly TimeSpan DefaultIdleReapDrainTimeout = TimeSpan.FromSeconds(5);
@@ -1291,6 +1291,9 @@ public sealed partial class ConnectionPool : IConnectionPool
         lock (_connectionReapDiagnosticsLock)
             return [.. _connectionReapEvents];
     }
+
+    IReadOnlyList<ConnectionReapDiagnostic> IConnectionPoolDiagnostics.GetConnectionReapDiagnosticsSnapshot() =>
+        GetConnectionReapDiagnosticsSnapshot();
 
     private void RecordConnectionReapDiagnostic(int brokerId, int connectionIndex, long idleDurationMs)
     {

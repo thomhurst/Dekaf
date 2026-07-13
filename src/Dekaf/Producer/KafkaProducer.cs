@@ -2600,7 +2600,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         var snapshot = _accumulator.GetDeliveryDiagnosticsSnapshot();
         if (snapshot.DiagnosticsEnabled)
-            snapshot.ConnectionReapEvents.AddRange(_connectionPool.GetConnectionReapDiagnosticsSnapshot());
+            snapshot.ConnectionReapEvents.AddRange(
+                ((IConnectionPoolDiagnostics)_connectionPool).GetConnectionReapDiagnosticsSnapshot());
 
         return snapshot;
     }

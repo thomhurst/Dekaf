@@ -108,7 +108,7 @@ internal sealed class ConsumerBatchStressTest : IStressTestScenario
         try { await samplerTask.ConfigureAwait(false); } catch { }
         try { await resourceMonitorTask.ConfigureAwait(false); } catch { }
         try { await consumerDiagnosticsTask.ConfigureAwait(false); } catch { }
-        consumerDiagnostics.TakeSample(StressTestHelpers.CaptureConsumerDiagnostics(consumer)!);
+        consumerDiagnostics.TryTakeSample(() => StressTestHelpers.CaptureConsumerDiagnostics(consumer));
 
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");

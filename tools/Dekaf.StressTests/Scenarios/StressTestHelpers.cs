@@ -454,31 +454,32 @@ internal static class StressTestHelpers
         }
     }
 
-    internal static async Task RunSamplerAsync(ThroughputTracker throughput, CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(SamplerIntervalSeconds), cancellationToken).ConfigureAwait(false);
-                throughput.TakeSample();
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-    }
+    internal static Task RunSamplerAsync(ThroughputTracker throughput, CancellationToken cancellationToken) =>
+        RunPeriodicAsync(
+            TimeSpan.FromSeconds(SamplerIntervalSeconds),
+            throughput.TakeSample,
+            cancellationToken);
 
-    internal static async Task RunResourceMonitorAsync(CancellationToken cancellationToken)
+    internal static Task RunResourceMonitorAsync(CancellationToken cancellationToken)
     {
         var process = Process.GetCurrentProcess();
+        return RunPeriodicAsync(
+            TimeSpan.FromSeconds(5),
+            () => LogResourceUsage("Monitor", process),
+            cancellationToken);
+    }
+
+    internal static async Task RunPeriodicAsync(
+        TimeSpan interval,
+        Action action,
+        CancellationToken cancellationToken)
+    {
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
-                LogResourceUsage("Monitor", process);
+                await Task.Delay(interval, cancellationToken).ConfigureAwait(false);
+                action();
             }
             catch (OperationCanceledException)
             {

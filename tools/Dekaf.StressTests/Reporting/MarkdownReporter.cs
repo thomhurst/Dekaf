@@ -559,20 +559,21 @@ internal static class MarkdownReporter
         _ => scenario
     };
 
-    private static string FormatBytes(long numBytes) => FormatBytes(numBytes, 2);
+    private static string FormatBytes(long numBytes) => FormatBytes(numBytes, 2, useBinaryPrefixes: false);
 
-    private static string FormatDiagnosticBytes(double bytes) => FormatBytes(bytes, 1);
+    private static string FormatDiagnosticBytes(double bytes) => FormatBytes(bytes, 1, useBinaryPrefixes: true);
 
-    private static string FormatBytes(double bytes, int decimalPlaces)
+    private static string FormatBytes(double bytes, int decimalPlaces, bool useBinaryPrefixes)
     {
         var format = $"F{decimalPlaces}";
-        return bytes switch
+        var (value, unit) = bytes switch
         {
-            < 1024 => $"{bytes:F0} B",
-            < 1024 * 1024 => $"{(bytes / 1024.0).ToString(format)} KiB",
-            < 1024 * 1024 * 1024 => $"{(bytes / (1024.0 * 1024)).ToString(format)} MiB",
-            _ => $"{(bytes / (1024.0 * 1024 * 1024)).ToString(format)} GiB"
+            < 1024 => (bytes, "B"),
+            < 1024 * 1024 => (bytes / 1024.0, useBinaryPrefixes ? "KiB" : "KB"),
+            < 1024 * 1024 * 1024 => (bytes / (1024.0 * 1024), useBinaryPrefixes ? "MiB" : "MB"),
+            _ => (bytes / (1024.0 * 1024 * 1024), useBinaryPrefixes ? "GiB" : "GB")
         };
+        return unit == "B" ? $"{value:F0} {unit}" : $"{value.ToString(format)} {unit}";
     }
 
     private static string EscapeTableCell(string value) =>

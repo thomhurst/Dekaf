@@ -1367,8 +1367,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             MinimumFetchBufferEpochsByPartition = minimumEpochs,
             AdaptivePartitionFetchBytes = _adaptiveFetchSizer?.CurrentPartitionFetchBytes,
             AdaptiveFetchMaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes,
-            ConnectionReapEvents = _connectionPool is ConnectionPool connectionPool
-                ? [.. connectionPool.GetConnectionReapDiagnosticsSnapshot()]
+            ConnectionReapEvents = _connectionPool is IConnectionPoolDiagnostics diagnostics
+                ? [.. diagnostics.GetConnectionReapDiagnosticsSnapshot()]
                 : []
         };
     }

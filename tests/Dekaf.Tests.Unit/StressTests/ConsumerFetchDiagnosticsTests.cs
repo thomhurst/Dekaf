@@ -36,6 +36,16 @@ public sealed class ConsumerFetchDiagnosticsTests
     }
 
     [Test]
+    [NotInParallel("MeterListener")]
+    public async Task Listener_RejectsConcurrentConsumerDiagnosticsTracker()
+    {
+        using var tracker = new ConsumerFetchDiagnosticsTracker("consumer-topic");
+
+        await Assert.That(() => new ConsumerFetchDiagnosticsTracker("other-topic"))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task TakeSample_ReportsIntervalFetchAndQueueMetrics()
     {
         var startedAt = new DateTimeOffset(2026, 7, 13, 10, 0, 0, TimeSpan.Zero);
@@ -93,6 +103,16 @@ public sealed class ConsumerFetchDiagnosticsTests
         await Assert.That(second.AverageFetchRttMs).IsBetween(249.9, 250.1);
         await Assert.That(snapshot.ConnectionReapEvents).HasSingleItem();
         await Assert.That(snapshot.ConnectionReapEvents[0].ConnectionIndex).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task TryTakeSample_DoesNotPropagateDiagnosticFailure()
+    {
+        using var tracker = new ConsumerFetchDiagnosticsTracker("consumer-topic", listenToMetrics: false);
+
+        tracker.TryTakeSample(() => throw new InvalidOperationException("diagnostic failure"));
+
+        await Assert.That(tracker.GetSnapshot().Samples).IsEmpty();
     }
 
     [Test]
@@ -186,6 +206,44 @@ public sealed class ConsumerFetchDiagnosticsTests
         await Assert.That(markdown).Contains("50 fetch sample(s) omitted");
     }
 
+    [Test]
+    public async Task Report_PreservesGcTableUnitConvention()
+    {
+        var capturedAt = new DateTimeOffset(2026, 7, 13, 10, 1, 0, TimeSpan.Zero);
+        var result = CreateResult(new ConsumerFetchDiagnosticsSnapshot
+        {
+            Samples =
+            [
+                new ConsumerFetchDiagnosticSample
+                {
+                    CapturedAtUtc = capturedAt,
+                    IntervalSeconds = 60,
+                    FetchRequestCount = 0,
+                    FetchRequestsPerSecond = 0,
+                    BytesPerFetch = 0,
+                    AverageFetchRttMs = 0,
+                    PendingFetchDepth = 0,
+                    PrefetchBufferDepth = 0,
+                    PrefetchDepth = 0,
+                    PrefetchedBytes = 0
+                }
+            ],
+            ConnectionReapEvents = []
+        }, allocatedBytes: 1_048_576);
+
+        var markdown = MarkdownReporter.Generate(new StressTestResults
+        {
+            RunStartedAtUtc = capturedAt.UtcDateTime.AddMinutes(-1),
+            RunCompletedAtUtc = capturedAt.UtcDateTime,
+            MachineName = "test",
+            ProcessorCount = 4,
+            Results = [result]
+        });
+
+        await Assert.That(markdown).Contains("1.00 MB");
+        await Assert.That(markdown).Contains("1.02 KB");
+    }
+
     private static ConsumerDiagnosticSnapshot CreateConsumerSnapshot(
         DateTimeOffset capturedAtUtc,
         int pendingFetchDepth = 0,
@@ -213,7 +271,9 @@ public sealed class ConsumerFetchDiagnosticsTests
             ConnectionReapEvents = connectionReaps ?? []
         };
 
-    private static StressTestResult CreateResult(ConsumerFetchDiagnosticsSnapshot diagnostics)
+    private static StressTestResult CreateResult(
+        ConsumerFetchDiagnosticsSnapshot diagnostics,
+        long allocatedBytes = 0)
     {
         var capturedAt = diagnostics.Samples[0].CapturedAtUtc;
         return new StressTestResult
@@ -250,7 +310,7 @@ public sealed class ConsumerFetchDiagnosticsTests
                 Gen0Collections = 0,
                 Gen1Collections = 0,
                 Gen2Collections = 0,
-                AllocatedBytes = 0
+                AllocatedBytes = allocatedBytes
             },
             ConsumerFetchDiagnostics = diagnostics
         };

@@ -2,12 +2,14 @@ using System.Diagnostics.Metrics;
 using Dekaf.Consumer;
 using Dekaf.Diagnostics;
 using Dekaf.Networking;
+using Dekaf.StressTests.Scenarios;
 
 namespace Dekaf.StressTests.Metrics;
 
 internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
 {
     private static readonly TimeSpan SampleInterval = TimeSpan.FromMinutes(1);
+    private static int s_activeMetricListener;
 
     private readonly string _topic;
     private readonly MeterListener? _listener;
@@ -26,31 +28,44 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
         _topic = topic;
         if (!listenToMetrics)
             return;
+        if (Interlocked.CompareExchange(ref s_activeMetricListener, 1, 0) != 0)
+            throw new InvalidOperationException("Only one consumer diagnostics metric listener can be active at a time.");
 
         var fetchDurationName = DekafMetrics.FetchDuration.Name;
         var bytesReceivedName = DekafMetrics.BytesReceived.Name;
-        _listener = new MeterListener
+        try
         {
-            InstrumentPublished = (instrument, listener) =>
+            _listener = new MeterListener
             {
-                if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
-                    (instrument.Name == fetchDurationName || instrument.Name == bytesReceivedName))
+                InstrumentPublished = (instrument, listener) =>
                 {
-                    listener.EnableMeasurementEvents(instrument);
+                    if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
+                        (instrument.Name == fetchDurationName || instrument.Name == bytesReceivedName))
+                    {
+                        listener.EnableMeasurementEvents(instrument);
+                    }
                 }
-            }
-        };
-        _listener.SetMeasurementEventCallback<double>((instrument, measurement, _, _) =>
+            };
+            _listener.SetMeasurementEventCallback<double>((instrument, measurement, _, _) =>
+            {
+                // Fetch duration has no destination tag. Stress scenarios run one consumer and
+                // one diagnostics listener at a time, enforced above, so process-wide RTT is exact.
+                if (instrument.Name == fetchDurationName)
+                    RecordFetchDuration(measurement);
+            });
+            _listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+            {
+                if (instrument.Name == bytesReceivedName && HasTopic(tags))
+                    RecordBytesReceived(measurement);
+            });
+            _listener.Start();
+        }
+        catch
         {
-            if (instrument.Name == fetchDurationName)
-                RecordFetchDuration(measurement);
-        });
-        _listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
-        {
-            if (instrument.Name == bytesReceivedName && HasTopic(tags))
-                RecordBytesReceived(measurement);
-        });
-        _listener.Start();
+            _listener?.Dispose();
+            Interlocked.Exchange(ref s_activeMetricListener, 0);
+            throw;
+        }
     }
 
     internal void Start(ConsumerDiagnosticSnapshot snapshot)
@@ -114,22 +129,24 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
         _lastReceivedBytes = receivedBytes;
     }
 
-    internal async Task RunSamplerAsync(
+    internal Task RunSamplerAsync(
         Func<ConsumerDiagnosticSnapshot?> captureSnapshot,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        StressTestHelpers.RunPeriodicAsync(
+            SampleInterval,
+            () => TryTakeSample(captureSnapshot),
+            cancellationToken);
+
+    internal void TryTakeSample(Func<ConsumerDiagnosticSnapshot?> captureSnapshot)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        try
         {
-            try
-            {
-                await Task.Delay(SampleInterval, cancellationToken).ConfigureAwait(false);
-                if (captureSnapshot() is { } snapshot)
-                    TakeSample(snapshot);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+            if (captureSnapshot() is { } snapshot)
+                TakeSample(snapshot);
+        }
+        catch
+        {
+            // Diagnostics are best-effort and must never abort a stress run.
         }
     }
 
@@ -154,7 +171,12 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
         return false;
     }
 
-    public void Dispose() => _listener?.Dispose();
+    public void Dispose()
+    {
+        _listener?.Dispose();
+        if (_listener is not null)
+            Interlocked.Exchange(ref s_activeMetricListener, 0);
+    }
 }
 
 internal sealed class ConsumerFetchDiagnosticsSnapshot

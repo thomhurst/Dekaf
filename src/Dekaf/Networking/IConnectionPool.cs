@@ -63,3 +63,8 @@ public interface IConnectionPool : IAsyncDisposable
     /// </summary>
     ValueTask CloseAllAsync();
 }
+
+internal interface IConnectionPoolDiagnostics
+{
+    IReadOnlyList<ConnectionReapDiagnostic> GetConnectionReapDiagnosticsSnapshot();
+}
