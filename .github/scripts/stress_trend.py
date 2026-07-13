@@ -457,6 +457,8 @@ def evaluate_and_update(history, current_results, run_started_at):
 
         observations.append(observation)
 
+    # Environment shifts model runner-wide noise: one regressed Confluent control makes
+    # every observation from the same run unsafe for future absolute baselines.
     if environment_shift_suspected:
         for observation in observations:
             observation["environmentShiftSuspected"] = True

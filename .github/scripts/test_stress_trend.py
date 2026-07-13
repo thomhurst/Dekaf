@@ -288,6 +288,46 @@ class StressTrendTests(unittest.TestCase):
         self.assertIn("Environment shift suspected", annotations.getvalue())
         self.assertFalse(should_fail)
 
+    def test_environment_shift_excludes_every_observation_in_same_run(self):
+        runs = []
+        for index in range(1, 4):
+            run = history_run(index, client="Confluent")
+            run["results"].append({
+                **run["results"][0],
+                "scenario": "consumer",
+                "client": "Dekaf",
+            })
+            runs.append(run)
+        previous = history_run(
+            4,
+            messages_per_second=700.0,
+            client="Confluent",
+            messagesPerSecondTrend="regression",
+        )
+        previous["results"].append({
+            **previous["results"][0],
+            "scenario": "consumer",
+            "client": "Dekaf",
+        })
+        runs.append(previous)
+
+        _, updated, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(client="Confluent", messages_per_second=650.0),
+                result(scenario="consumer", messages_per_second=1_000.0),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        current = updated["runs"][-1]
+        self.assertTrue(current["environmentShiftSuspected"])
+        self.assertTrue(all(
+            observation["environmentShiftSuspected"]
+            for observation in current["results"]
+        ))
+        self.assertFalse(should_fail)
+
     def test_paired_proportional_regressions_do_not_fail_when_control_ratio_is_stable(self):
         runs = [paired_history_run(i) for i in range(1, 4)]
         runs.append(paired_history_run(
