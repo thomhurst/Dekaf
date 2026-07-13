@@ -132,10 +132,13 @@ def _matching_control_ratios(runs, result, metric):
     ratios = []
 
     for run in runs:
+        if run.get("environmentShiftSuspected", False):
+            continue
         matching_results = [
             item
             for item in run.get("results", [])
             if _pair_identity(item) == pair_key
+            and not item.get("environmentShiftSuspected", False)
         ]
         candidate = next(
             (item for item in matching_results if _identity(item) == candidate_key),

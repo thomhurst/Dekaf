@@ -413,6 +413,30 @@ class StressTrendTests(unittest.TestCase):
         self.assertEqual(3, throughput["baselineCount"])
         self.assertEqual(1000.0, throughput["median"])
 
+    def test_environment_shift_observations_do_not_enter_ratio_baseline(self):
+        runs = [paired_history_run(i) for i in range(1, 4)]
+        environment_shift = paired_history_run(
+            4,
+            dekaf_messages_per_second=5000.0,
+            confluent_messages_per_second=1000.0,
+        )
+        for observation in environment_shift["results"]:
+            observation["environmentShiftSuspected"] = True
+        runs.append(environment_shift)
+
+        evaluations, _, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(), result(client="Confluent", messages_per_second=500.0)],
+            "2026-07-01T02:00:00Z",
+        )
+
+        ratio = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+        )
+        self.assertEqual(3, ratio["baselineCount"])
+        self.assertEqual(2.0, ratio["median"])
+
     def test_control_ratio_history_keeps_dekaf_connection_profiles_separate(self):
         runs = [
             paired_history_run(
