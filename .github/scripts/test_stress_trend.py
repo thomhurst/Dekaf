@@ -597,18 +597,20 @@ class StressTrendTests(unittest.TestCase):
             workflow,
         )
 
-    def test_history_merge_wait_retries_one_transient_state_query_failure(self):
+    def test_history_merge_uses_admin_token(self):
         workflow = (
             Path(__file__).parent.parent / "workflows" / "stress-tests.yml"
         ).read_text(encoding="utf-8")
         step = workflow[
-            workflow.index("      - name: Wait for History Merge"):
+            workflow.index("      - name: Auto-merge Pull Request"):
             workflow.index("  regression-gate:")
         ]
 
-        self.assertEqual(2, step.count('state=$(gh pr view "$PR_NUMBER"'))
-        self.assertIn("Failed to read stress history PR state; retrying once", step)
-        self.assertIn("Failed to read stress history PR state after retry", step)
+        self.assertIn("GH_TOKEN: ${{ secrets.BENCHMARK_MERGE_TOKEN }}", step)
+        self.assertIn(
+            'gh pr merge "$PR_NUMBER" --squash --delete-branch --admin',
+            step,
+        )
 
 
 if __name__ == "__main__":
