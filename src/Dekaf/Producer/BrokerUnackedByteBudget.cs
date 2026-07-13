@@ -113,6 +113,8 @@ internal sealed class BrokerUnackedByteBudget
     private const double MinRttProbeSafetyMultiplier = 1.0;
 
     private const int ProbeIntervalRtts = 8;
+    // A capacity probe needs one RTT for the enlarged budget to reach the wire,
+    // then three wholly-probed RTTs to average before accepting or rejecting growth.
     private const int ProbeEvaluationRtts = 3;
     private const double ProbeBudgetMultiplier = 1.25;
     private const double RttFloorProbeBudgetMultiplier = 1.5;
@@ -782,6 +784,9 @@ internal sealed class BrokerUnackedByteBudget
 
     private long ApplyNormalBudgetDecayHysteresis(long computedBudget, long nowTicks)
     {
+        // Smooth downward changes only while fresh admission blocks prove demand.
+        // Capping decay at 10%/s prevents the short estimator window from draining
+        // the budget faster than a loaded pipeline can demonstrate recovery.
         var admissionBlockEvents = AdmissionBlockEvents;
         var admissionWasBlocked = admissionBlockEvents > _lastBudgetAdmissionBlockEvents;
         var elapsedSeconds = _lastBudgetUpdateTimestamp == 0
