@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Threading.Tasks.Sources;
 using Dekaf.Producer;
@@ -816,6 +817,63 @@ public class PooledValueTaskSourceTests
         }
 
         await Assert.That(await doneTask.ConfigureAwait(false)).IsEqualTo(succeeds);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task ReadyBatch_AsynchronousSourceFault_DoesNotStrandSiblingCompletions(bool succeeds)
+    {
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>(maxPoolSize: 3);
+        var first = pool.Rent();
+        var faulted = pool.Rent();
+        var third = pool.Rent();
+        var firstTask = first.Task;
+        var faultedTask = faulted.Task;
+        var thirdTask = third.Task;
+        CompleteCoreWithoutUpdatingSourceState(faulted);
+
+        var sources = ProducerContainerPools.CompletionSources.Rent(3);
+        sources[0] = first;
+        sources[1] = faulted;
+        sources[2] = third;
+        var batch = new ReadyBatch();
+        batch.Initialize(
+            new TopicPartition("test-topic", 0),
+            new RecordBatch { Records = Array.Empty<Record>() },
+            sources,
+            completionSourcesCount: 3,
+            dataSize: 0);
+
+        if (succeeds)
+        {
+            batch.CompleteSend(baseOffset: 7, DateTimeOffset.UtcNow);
+            await Assert.That((await firstTask.ConfigureAwait(false)).Offset).IsEqualTo(7);
+            _ = await faultedTask.ConfigureAwait(false);
+            await Assert.That((await thirdTask.ConfigureAwait(false)).Offset).IsEqualTo(9);
+        }
+        else
+        {
+            var expected = new InvalidOperationException("delivery failed");
+            batch.Fail(expected);
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await firstTask.ConfigureAwait(false));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await faultedTask.ConfigureAwait(false));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await thirdTask.ConfigureAwait(false));
+        }
+    }
+
+    private static void CompleteCoreWithoutUpdatingSourceState(
+        PooledValueTaskSource<RecordMetadata> source)
+    {
+        var coreField = typeof(PooledValueTaskSource<RecordMetadata>).GetField(
+            "_core",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var core = (ManualResetValueTaskSourceCore<RecordMetadata>)coreField.GetValue(source)!;
+        core.SetResult(default!);
+        coreField.SetValue(source, core);
     }
 
     [Test]

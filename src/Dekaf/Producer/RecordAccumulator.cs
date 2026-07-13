@@ -424,8 +424,24 @@ internal static class PooledCompletionSource
             return false;
 
         return source.RunContinuationsAsynchronously
-            ? source.TrySetResult(metadata)
+            ? TrySetResultAsynchronous(source, metadata)
             : TrySetResultInline(source, metadata);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetResultAsynchronous(
+        PooledValueTaskSource<RecordMetadata> source,
+        RecordMetadata metadata)
+    {
+        try
+        {
+            return source.TrySetResult(metadata);
+        }
+        catch
+        {
+            RecordCompletionSourceFault();
+            return false;
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -455,8 +471,24 @@ internal static class PooledCompletionSource
             return false;
 
         return source.RunContinuationsAsynchronously
-            ? source.TrySetException(exception)
+            ? TrySetExceptionAsynchronous(source, exception)
             : TrySetExceptionInline(source, exception);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetExceptionAsynchronous(
+        PooledValueTaskSource<RecordMetadata> source,
+        Exception exception)
+    {
+        try
+        {
+            return source.TrySetException(exception);
+        }
+        catch
+        {
+            RecordCompletionSourceFault();
+            return false;
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -484,8 +516,24 @@ internal static class PooledCompletionSource
             return false;
 
         return source.RunContinuationsAsynchronously
-            ? source.TrySetCanceled(cancellationToken)
+            ? TrySetCanceledAsynchronous(source, cancellationToken)
             : TrySetCanceledInline(source, cancellationToken);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetCanceledAsynchronous(
+        PooledValueTaskSource<RecordMetadata> source,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return source.TrySetCanceled(cancellationToken);
+        }
+        catch
+        {
+            RecordCompletionSourceFault();
+            return false;
+        }
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -511,6 +559,9 @@ internal static class PooledCompletionSource
         ProducerDebugCounters.RecordInlineContinuationException();
         Diagnostics.DekafMetrics.InlineContinuationExceptions.Add(1);
     }
+
+    private static void RecordCompletionSourceFault() =>
+        Diagnostics.DekafMetrics.CompletionSourceFaults.Add(1);
 }
 
 /// <summary>
