@@ -349,6 +349,7 @@ public sealed class ConsumeOneFastPathTests
     [Test]
     public async Task ConsumeOneAsync_EmitsFetchMetricsAsDeltas()
     {
+        var topic = $"metrics-test-{Guid.NewGuid():N}";
         var messagesReceived = new List<long>();
         var bytesReceived = new List<long>();
         using var listener = new MeterListener();
@@ -361,8 +362,11 @@ public sealed class ConsumeOneFastPathTests
                 meterListener.EnableMeasurementEvents(instrument);
             }
         };
-        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
+            if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                return;
+
             if (instrument.Name == "messaging.client.consumed.messages")
                 messagesReceived.Add(measurement);
             else if (instrument.Name == "messaging.client.consumed.bytes")
@@ -370,7 +374,7 @@ public sealed class ConsumeOneFastPathTests
         });
         listener.Start();
 
-        var fetch = PendingFetchData.Create(Topic, Partition,
+        var fetch = PendingFetchData.Create(topic, Partition,
         [
             CreateBatch(40,
                 CreateRecord(0, "a", "one"),
@@ -387,6 +391,17 @@ public sealed class ConsumeOneFastPathTests
 
         await Assert.That(messagesReceived).IsEquivalentTo([2L]);
         await Assert.That(bytesReceived.Sum()).IsEqualTo(8L);
+    }
+
+    private static string? GetTag(ReadOnlySpan<KeyValuePair<string, object?>> tags, string key)
+    {
+        foreach (var tag in tags)
+        {
+            if (tag.Key == key)
+                return tag.Value?.ToString();
+        }
+
+        return null;
     }
 
     [Test]
