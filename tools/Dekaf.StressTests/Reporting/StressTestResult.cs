@@ -31,6 +31,7 @@ internal sealed class StressTestResult
     public int BrokerCount { get; init; } = 1;
     public ProducerDeliveryDiagnosticsSnapshot? ProducerDeliveryDiagnostics { get; init; }
     public RoundTripValidationSnapshot? RoundTripValidation { get; init; }
+    public RoundTripPhaseSnapshot? RoundTripPhases { get; init; }
 
     /// <summary>
     /// Whether a fixed message count, rather than <see cref="DurationMinutes"/>, defines
@@ -243,6 +244,20 @@ internal sealed class StressTestResult
 
     public static StressTestResult? FromJson(string json) =>
         JsonSerializer.Deserialize<StressTestResult>(json, JsonOptions);
+}
+
+internal sealed class RoundTripPhaseSnapshot
+{
+    public required long ProducedMessages { get; init; }
+    public required double ProduceElapsedSeconds { get; init; }
+    public required long ConsumedMessages { get; init; }
+    public required double ConsumeElapsedSeconds { get; init; }
+
+    public double ProduceMessagesPerSecond =>
+        ProduceElapsedSeconds > 0 ? ProducedMessages / ProduceElapsedSeconds : 0;
+
+    public double ConsumeMessagesPerSecond =>
+        ConsumeElapsedSeconds > 0 ? ConsumedMessages / ConsumeElapsedSeconds : 0;
 }
 
 internal sealed class TransactionVerificationSnapshot

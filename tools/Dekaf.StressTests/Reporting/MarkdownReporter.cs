@@ -432,14 +432,17 @@ internal static class MarkdownReporter
 
         sb.AppendLine($"## {title}");
         sb.AppendLine();
-        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Expected | Consumed | Missing | Duplicates | Corrupt | Out of Order | Wrong Partition | Unexpected | Timed Out | Result |");
-        sb.AppendLine($"|{new string('-', clientWidth + 2)}|----------|----------|---------|------------|---------|--------------|-----------------|------------|-----------|--------|");
+        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Produce msg/s | Consume msg/s | Expected | Consumed | Missing | Duplicates | Corrupt | Out of Order | Wrong Partition | Unexpected | Timed Out | Result |");
+        sb.AppendLine($"|{new string('-', clientWidth + 2)}|--------------:|--------------:|----------|----------|---------|------------|---------|--------------|-----------------|------------|-----------|--------|");
 
         foreach (var result in results.OrderBy(r => r.Client))
         {
             var validation = result.RoundTripValidation!;
+            var produceRate = result.RoundTripPhases?.ProduceMessagesPerSecond;
+            var consumeRate = result.RoundTripPhases?.ConsumeMessagesPerSecond;
             sb.AppendLine(
-                $"| {result.Client.PadRight(clientWidth)} | {validation.ExpectedMessages,8:N0} | " +
+                $"| {result.Client.PadRight(clientWidth)} | {produceRate?.ToString("N0") ?? "-",13} | " +
+                $"{consumeRate?.ToString("N0") ?? "-",13} | {validation.ExpectedMessages,8:N0} | " +
                 $"{validation.ConsumedMessages,8:N0} | {validation.MissingMessages,7:N0} | " +
                 $"{validation.DuplicateMessages,10:N0} | {validation.CorruptMessages,7:N0} | " +
                 $"{validation.OutOfOrderMessages,12:N0} | {validation.MispartitionedMessages,15:N0} | " +
