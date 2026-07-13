@@ -1537,6 +1537,90 @@ public sealed class BrokerSenderSendLoopTests
 
     [Test]
     [Timeout(120_000)]
+    public async Task SendLoop_SequentialWaves_WriteOnDifferentConnectionsConcurrently(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstWriteStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondWriteStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstWrite = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var firstConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = async () =>
+            {
+                firstWriteStarted.TrySetResult();
+                await releaseFirstWrite.Task;
+                return firstResponse.Task;
+            }
+        };
+        var secondConnection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () =>
+            {
+                secondWriteStarted.TrySetResult();
+                return new ValueTask<Task<ProduceResponse>>(secondResponse.Task);
+            }
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionByIndexAsync(1, 0, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(firstConnection));
+        pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(secondConnection));
+
+        var options = CreateOptions(
+            maxInFlight: 5,
+            connectionsPerBroker: 2,
+            enableAdaptiveConnections: false,
+            enableIdempotence: false);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgementCount = 0;
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, exception) =>
+        {
+            if (exception is null && Interlocked.Increment(ref acknowledgementCount) == 2)
+                acknowledged.TrySetResult();
+        });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+            await firstWriteStarted.Task.WaitAsync(cancellationToken);
+
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 1));
+
+            await secondWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+
+            releaseFirstWrite.TrySetResult();
+            firstResponse.TrySetResult(
+                CreateSuccessResponse("test-topic", partition: 0, baseOffset: 100));
+            secondResponse.TrySetResult(
+                CreateSuccessResponse("test-topic", partition: 1, baseOffset: 200));
+            await acknowledged.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            releaseFirstWrite.TrySetResult();
+            firstResponse.TrySetResult(
+                CreateSuccessResponse("test-topic", partition: 0, baseOffset: 100));
+            secondResponse.TrySetResult(
+                CreateSuccessResponse("test-topic", partition: 1, baseOffset: 200));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
     public async Task SendLoop_BlockedBucket_DoesNotPreventFreshWorkOnIdleConnection(
         CancellationToken cancellationToken)
     {

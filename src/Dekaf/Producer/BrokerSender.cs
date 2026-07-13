@@ -200,6 +200,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         NewBatch,
         ResponseReady, // Lightweight signal: a response task completed, poll _pendingResponsesByConnection
+        SendReady, // A connection write completed; collect its PendingResponse on the send loop
         Unmute,
         TransactionEnrollmentReady
     }
@@ -225,17 +226,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public readonly SendLoopEventType Type;
         public readonly ReadyBatch? Batch;
         public readonly int BatchGeneration;
+        public readonly int ConnectionIndex;
         public readonly Exception? EnrollmentError;
 
         private SendLoopEvent(
             SendLoopEventType type,
             ReadyBatch? batch = null,
             int batchGeneration = 0,
+            int connectionIndex = -1,
             Exception? enrollmentError = null)
         {
             Type = type;
             Batch = batch;
             BatchGeneration = batchGeneration;
+            ConnectionIndex = connectionIndex;
             EnrollmentError = enrollmentError;
         }
 
@@ -247,6 +251,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public BatchReference GetBatchReference() => new(Batch!, BatchGeneration);
 
         public static SendLoopEvent ResponseReady() => new(SendLoopEventType.ResponseReady);
+
+        public static SendLoopEvent SendReady(int connectionIndex) =>
+            new(SendLoopEventType.SendReady, connectionIndex: connectionIndex);
 
         public static SendLoopEvent Unmute() => new(SendLoopEventType.Unmute);
 
@@ -592,13 +599,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly long _scaleCooldownMs;
     private readonly long _scaleDownSustainedMs;
 
-    // Maintained counter for O(1) hot-path access. Incremented in SendCoalescedAsync
-    // when a PendingResponse is added, decremented in ProcessCompletedResponses and
-    // HandleTimedOutRequests when entries are removed. Must use Interlocked: with
-    // multi-connection sends, concurrent SendCoalescedAsync calls increment from
-    // different threads. Non-atomic ++ silently loses increments, causing the send
-    // loop to undercount pending responses and enter idle wait prematurely.
+    // Maintained counters for O(1) hot-path access. Updated by the send loop when a
+    // write completes, and by response/timeout handlers when an entry is removed.
+    // Interlocked keeps scale diagnostics and admission checks consistent across threads.
     private int _totalPendingResponseCount;
+    private int _activeConnectionSendCount;
     private long _totalPendingResponseBytes;
     private long _totalMaxInFlightBytes;
     private readonly long _maxInFlightBytesPerConnection;
@@ -1106,19 +1111,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
             }
             : Array.Empty<CancellationTokenSource>();
-        var pendingSingleConnectionFireAndForgetSend = default(ValueTask);
+        var pendingSingleConnectionFireAndForgetSend = default(ValueTask<PendingResponse?>);
         var hasPendingSingleConnectionFireAndForgetSend = false;
         var nextSingleConnectionFireAndForgetSlot = 0;
 
-        // Pre-allocated array for parallel multi-connection sends. Each entry holds
-        // a pending SendConnectionBucketAsync ValueTask so connections can flush concurrently
-        // instead of sequentially (overlaps TCP FlushAsync waits across connections).
-        var parallelSends = connectionCapacity > 1
-            ? new ValueTask[connectionCapacity]
-            : Array.Empty<ValueTask>();
-
-        // Shared by all connection buckets dispatched in one send-loop iteration. Send
-        // failures can complete concurrently, so PrepareDeferredNetworkRetry protects it.
+        // Keep one outstanding write per connection. Sticky partitioning commonly produces
+        // one full batch per sender-loop wave, so awaiting each wave serialized otherwise
+        // independent connections and left the remaining lanes idle.
+        var pendingConnectionSends = connectionCapacity > 1
+            ? new ValueTask<PendingResponse?>[connectionCapacity]
+            : Array.Empty<ValueTask<PendingResponse?>>();
+        var hasPendingConnectionSend = connectionCapacity > 1
+            ? new bool[connectionCapacity]
+            : Array.Empty<bool>();
         HashSet<string>? retryMetadataRefreshTopics = null;
 
         // Per-connection timeout CTS for multi-connection mode, reused with TryReset()
@@ -1140,9 +1145,97 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (!hasPendingSingleConnectionFireAndForgetSend)
                 return;
 
-            await pendingSingleConnectionFireAndForgetSend.ConfigureAwait(false);
+            _ = await pendingSingleConnectionFireAndForgetSend.ConfigureAwait(false);
             pendingSingleConnectionFireAndForgetSend = default;
             hasPendingSingleConnectionFireAndForgetSend = false;
+        }
+
+        void RegisterPendingResponse(int connectionIndex, PendingResponse pendingResponse)
+        {
+            _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
+            Interlocked.Increment(ref _totalPendingResponseCount);
+            var writtenUnackedBytes = Interlocked.Add(
+                ref _totalPendingResponseBytes,
+                pendingResponse.EncodedBytes);
+            _unackedBudget?.ObserveWrittenUnackedBytes(writtenUnackedBytes);
+            Interlocked.Add(
+                ref _pendingResponseBytesByConnection[connectionIndex],
+                pendingResponse.EncodedBytes);
+
+            if (pendingResponse.ResponseTask.IsCompleted)
+                _responseCompletionCallback();
+            else
+                pendingResponse.ResponseTask.UnsafeOnCompleted(_responseCompletionCallback);
+
+            MutePartitionsForSend(pendingResponse.Batches, pendingResponse.Count);
+            LogPipelinedSend(_brokerId, pendingResponse.Count, _totalPendingResponseCount);
+        }
+
+        async ValueTask CompleteConnectionSendAsync(int connectionIndex)
+        {
+            try
+            {
+                var pendingResponse = await pendingConnectionSends[connectionIndex]
+                    .ConfigureAwait(false);
+                if (pendingResponse is { } response)
+                    RegisterPendingResponse(connectionIndex, response);
+            }
+            finally
+            {
+                pendingConnectionSends[connectionIndex] = default;
+                hasPendingConnectionSend[connectionIndex] = false;
+                Interlocked.Decrement(ref _activeConnectionSendCount);
+            }
+        }
+
+        async ValueTask CollectCompletedConnectionSendsAsync()
+        {
+            for (var connectionIndex = 0;
+                 connectionIndex < hasPendingConnectionSend.Length;
+                 connectionIndex++)
+            {
+                if (hasPendingConnectionSend[connectionIndex]
+                    && pendingConnectionSends[connectionIndex].IsCompleted)
+                {
+                    await CompleteConnectionSendAsync(connectionIndex).ConfigureAwait(false);
+                }
+            }
+        }
+
+        async ValueTask CompleteSignaledConnectionSendAsync(int connectionIndex)
+        {
+            if ((uint)connectionIndex < (uint)hasPendingConnectionSend.Length
+                && hasPendingConnectionSend[connectionIndex])
+            {
+                await CompleteConnectionSendAsync(connectionIndex).ConfigureAwait(false);
+            }
+        }
+
+        async ValueTask AwaitAllConnectionSendsAsync()
+        {
+            Exception? firstException = null;
+            for (var connectionIndex = 0; connectionIndex < hasPendingConnectionSend.Length;
+                 connectionIndex++)
+            {
+                if (!hasPendingConnectionSend[connectionIndex])
+                    continue;
+
+                try
+                {
+                    await CompleteConnectionSendAsync(connectionIndex).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (firstException is null)
+                {
+                    firstException = exception;
+                }
+                catch
+                {
+                    // Observe every outstanding send; first failure wins.
+                }
+            }
+
+            if (firstException is not null)
+                ExceptionDispatchInfo.Capture(firstException).Throw();
         }
 
         // Records an UNEXPECTED loop exit (escaped exception) as opposed to shutdown —
@@ -1155,6 +1248,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                await CollectCompletedConnectionSendsAsync().ConfigureAwait(false);
 
                 LogSendLoopIteration(_brokerId, carryOver.Count, _totalPendingResponseCount);
                 var transactionEnrollmentReady = false;
@@ -1306,6 +1400,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     break;
                             }
                         }
+                        else if (evt.Type == SendLoopEventType.SendReady)
+                        {
+                            await CompleteSignaledConnectionSendAsync(evt.ConnectionIndex)
+                                .ConfigureAwait(false);
+                        }
                         else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
                         {
                             if (evt.EnrollmentError is not null)
@@ -1376,6 +1475,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 var now = Stopwatch.GetTimestamp();
                                 quietDeadline = Math.Min(now + waveCoalesceQuietTicks, hardDeadline);
                             }
+                        }
+                        else if (evt.Type == SendLoopEventType.SendReady)
+                        {
+                            await CompleteSignaledConnectionSendAsync(evt.ConnectionIndex)
+                                .ConfigureAwait(false);
                         }
                         else if (evt.Type == SendLoopEventType.TransactionEnrollmentReady)
                         {
@@ -1651,9 +1755,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 }
                                 sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
 
-                                await SendCoalescedAsync(batchesToSend, countToSend,
-                                        scratches[0], 0, sendTimeoutCts.Token)
+                                var pendingResponse = await SendCoalescedAsync(
+                                        batchesToSend,
+                                        countToSend,
+                                        scratches[0],
+                                        0,
+                                        sendTimeoutCts.Token)
                                     .ConfigureAwait(false);
+                                if (pendingResponse is { } response)
+                                    RegisterPendingResponse(0, response);
                             }
                             sentThisIteration = true;
                         }
@@ -1663,7 +1773,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                             var metadataRefreshTopics = retryMetadataRefreshTopics ??=
                                 new HashSet<string>(StringComparer.Ordinal);
-                            metadataRefreshTopics.Clear();
+                            if (Volatile.Read(ref _activeConnectionSendCount) == 0)
+                            {
+                                lock (metadataRefreshTopics)
+                                    metadataRefreshTopics.Clear();
+                            }
 
                             // Distribute coalesced batches into per-connection buckets.
                             // Dense broker-partition affinity keeps each partition's batches on
@@ -1690,26 +1804,32 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 if (connectionBuckets[c].HasBatches) remainingBuckets++;
                             }
 
-                            // Send on connections with in-flight capacity first.
-                            // Fire all eligible connection sends concurrently so TCP
-                            // FlushAsync waits overlap instead of serializing.
-                            var pendingSendCount = 0;
+                            // Start writes on every idle connection without awaiting them here.
+                            // Later sticky-partition waves can therefore use other connection
+                            // lanes while this wave's socket write remains in progress.
+                            var dispatchedSendCount = 0;
                             for (var c = 0; c < _connectionCount; c++)
                             {
                                 if (!connectionBuckets[c].HasBatches) continue;
+                                if (hasPendingConnectionSend[c]) continue;
                                 if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
                                 if (Interlocked.Read(ref _pendingResponseBytesByConnection[c])
                                     >= _maxInFlightBytesPerConnection) continue;
 
                                 ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
-                                parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
-                                    scratches[c], metadataRefreshTopics, bucketTimeoutCts[c].Token);
+                                pendingConnectionSends[c] = SendConnectionBucketAsync(
+                                    c,
+                                    connectionBuckets,
+                                    scratches[c],
+                                    metadataRefreshTopics,
+                                    bucketTimeoutCts[c].Token);
+                                hasPendingConnectionSend[c] = true;
+                                Interlocked.Increment(ref _activeConnectionSendCount);
+                                dispatchedSendCount++;
                             }
 
-                            var completedSends = await AwaitParallelSendsAsync(parallelSends, pendingSendCount)
-                                .ConfigureAwait(false);
-                            if (completedSends > 0) sentThisIteration = true;
-                            remainingBuckets -= completedSends;
+                            if (dispatchedSendCount > 0) sentThisIteration = true;
+                            remainingBuckets -= dispatchedSendCount;
 
                             // Do not wait here for a saturated connection. Requeue its batches
                             // so the outer loop can read fresh events and keep other connections
@@ -1750,6 +1870,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var waitPendingCount = Volatile.Read(ref _totalPendingResponseCount);
                 if (carryOver.Count == 0
                     && waitPendingCount == 0
+                    && Volatile.Read(ref _activeConnectionSendCount) == 0
                     && _sendFailedRetries.IsEmpty
                     && _loopExitRedeliveries.IsEmpty)
                 {
@@ -1847,6 +1968,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
                     }
                 }
+                else if (Volatile.Read(ref _activeConnectionSendCount) > 0)
+                {
+                    // A write completion and newly sealed work both publish channel events.
+                    // Wake for whichever arrives first so another idle connection can start
+                    // without polling or waiting for the current socket write.
+                    if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                        break;
+                }
                 else if (carryOver.Count > 0)
                 {
                     if (hasPendingSingleConnectionFireAndForgetSend)
@@ -1907,6 +2036,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             try
             {
                 try { await AwaitPendingSingleConnectionFireAndForgetSendAsync().ConfigureAwait(false); }
+                catch (Exception ex) { LogSendLoopFailed(ex, _brokerId); }
+
+                try { await AwaitAllConnectionSendsAsync().ConfigureAwait(false); }
                 catch (Exception ex) { LogSendLoopFailed(ex, _brokerId); }
 
                 sendTimeoutCts.Dispose();
@@ -3273,7 +3405,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Sends coalesced batches (one per partition) as a single ProduceRequest.
     /// The in-flight count was already incremented by the send loop before calling this method.
     /// </summary>
-    private async ValueTask SendCoalescedAsync(
+    private async ValueTask<PendingResponse?> SendCoalescedAsync(
         ReadyBatch[] batches,
         int count,
         ProduceRequestScratch scratch,
@@ -3376,7 +3508,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (count == 0)
             {
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
-                return;
+                return null;
             }
 
             // Diagnostic: mark batches as having acquired a connection.
@@ -3391,7 +3523,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (count == 0)
             {
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
-                return;
+                return null;
             }
 
             var resourcePinCount = count;
@@ -3451,7 +3583,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
 
                     ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
-                    return;
+                    return null;
                 }
 
                 // Pipelined send: write request, get response task.
@@ -3514,12 +3646,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     encodedBytes,
                     requestStartTime,
                     deliverySnapshotAtSend);
-                _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
                 pendingResponseAdded = true; // Array ownership transferred to PendingResponse
-                Interlocked.Increment(ref _totalPendingResponseCount);
-                var writtenUnackedBytes = Interlocked.Add(ref _totalPendingResponseBytes, encodedBytes);
-                _unackedBudget?.ObserveWrittenUnackedBytes(writtenUnackedBytes);
-                Interlocked.Add(ref _pendingResponseBytesByConnection[connectionIndex], encodedBytes);
 
                 // Diagnostic: log instance+task+partitions at PendingResponse creation time.
                 // This traces which batches are paired with which response task.
@@ -3536,34 +3663,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
                 for (var i = 0; i < count; i++)
                     batches[i]?.AppendDiag('W');
-
-                // Signal the send loop to wake up and poll when the response arrives.
-                // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
-                // Two signal paths: (1) channel write for the main WaitToReadAsync path,
-                // (2) AsyncAutoResetSignal for the direct response-wait paths (replaces Task.WhenAny).
-                //
-                // Uses UnsafeOnCompleted with a cached Action delegate instead of ContinueWith
-                // to avoid allocating a continuation Task on every pipelined send. The callback
-                // is pre-allocated once in the constructor and reused for all response tasks.
-                if (responseTask.IsCompleted)
-                {
-                    // Already completed — signal inline without registering a continuation.
-                    _responseCompletionCallback();
-                }
-                else
-                {
-                    // Unlike ContinueWith(ExecuteSynchronously), UnsafeOnCompleted schedules the
-                    // callback on the ThreadPool rather than running inline on the completing thread.
-                    // This is intentional — it keeps the I/O completion thread free.
-                    responseTask.UnsafeOnCompleted(_responseCompletionCallback);
-                }
-
-                // A request limit of one keeps its partition muted until the response.
-                // Deeper pipelines preserve order through same-connection wire ordering;
-                // retry errors install their own mute in HandleRetriableBatch.
-                MutePartitionsForSend(batches, count);
-
-                LogPipelinedSend(_brokerId, count, _totalPendingResponseCount);
+                return pendingResponse;
             }
             catch
             {
@@ -3674,6 +3774,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 ArrayPool<int>.Shared.Return(generations);
             }
         }
+
+        return null;
     }
 
     private void PrepareDeferredNetworkRetry(ReadyBatch batch, HashSet<string> metadataRefreshTopics)
@@ -3932,7 +4034,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Takes <paramref name="connectionBuckets"/> array + index instead of ref struct
     /// because async methods cannot have ref parameters.
     /// </summary>
-    private async ValueTask SendConnectionBucketAsync(
+    private async ValueTask<PendingResponse?> SendConnectionBucketAsync(
         int connIdx, ConnectionBucket[] connectionBuckets,
         ProduceRequestScratch scratch,
         HashSet<string> metadataRefreshTopics,
@@ -3954,61 +4056,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (countToSend == 0)
         {
             ArrayPool<ReadyBatch>.Shared.Return(batchesToSend, clearArray: true);
-            return;
+            return null;
         }
 
-        await SendCoalescedAsync(
-                batchesToSend,
-                countToSend,
-                scratch,
-                connIdx,
-                cancellationToken,
-                metadataRefreshTopics)
-            .ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Awaits all pending parallel sends, observing every ValueTask even if one faults.
-    /// Returns the number of successfully completed sends. When an exception is thrown,
-    /// the return value is not used — the exception unwinds the send loop entirely.
-    /// </summary>
-    /// <remarks>
-    /// All ValueTasks were started before this method is called, so the underlying TCP
-    /// FlushAsync operations run concurrently. The sequential await loop simply collects
-    /// results in index order — total wall-clock time is max(latencies), identical to
-    /// Task.WhenAll. We avoid Task.WhenAll because ValueTask.AsTask() allocates a Task
-    /// object per send, violating the zero-allocation hot-path principle.
-    /// Stale ValueTask entries from previous iterations are harmlessly overwritten by
-    /// the caller before each call (ValueTask is a struct).
-    /// </remarks>
-    private static async ValueTask<int> AwaitParallelSendsAsync(ValueTask[] sends, int count)
-    {
-        Exception? firstException = null;
-
-        for (var i = 0; i < count; i++)
+        try
         {
-            try
-            {
-                await sends[i].ConfigureAwait(false);
-            }
-            catch (Exception ex) when (firstException is null)
-            {
-                firstException = ex;
-            }
-            catch
-            {
-                // Observe but discard subsequent exceptions — first one wins.
-            }
+            return await SendCoalescedAsync(
+                    batchesToSend,
+                    countToSend,
+                    scratch,
+                    connIdx,
+                    cancellationToken,
+                    metadataRefreshTopics)
+                .ConfigureAwait(false);
         }
-
-        if (firstException is not null)
+        finally
         {
-            ExceptionDispatchInfo.Capture(firstException).Throw();
+            _eventChannel.Writer.TryWrite(SendLoopEvent.SendReady(connIdx));
         }
-
-        // All sends succeeded — partial completion is not possible on the success path
-        // because any failure throws above.
-        return count;
     }
 
     /// <summary>
@@ -5042,7 +5107,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // sustained window after the muted width was large enough to occupy every
         // connection. Tracking the peak catches mute/unmute cycles between scale checks
         // without treating continuous single-partition trickle as full-width load.
-        var pendingResponseCount = Volatile.Read(ref _totalPendingResponseCount);
+        var pendingResponseCount = Volatile.Read(ref _totalPendingResponseCount)
+            + Volatile.Read(ref _activeConnectionSendCount);
         var effectiveInFlightCapacity = activeMutedPartitionCount > 0
             ? Math.Min(_totalMaxInFlight, activeMutedPartitionCount)
             : _totalMaxInFlight;
@@ -5065,7 +5131,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Modulo routing changes for partitions on retained slots too (P % N -> P % (N-1));
         // moving a non-idempotent partition while its old request remains unacknowledged can
         // reorder broker appends just as surely as it can violate idempotent sequence order.
-        if (_totalPendingResponseCount > 0)
+        if (_totalPendingResponseCount > 0 || Volatile.Read(ref _activeConnectionSendCount) > 0)
             return 0;
 
         // Sustained low utilization with no in-flight on the connection being removed —
