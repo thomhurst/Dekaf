@@ -320,6 +320,7 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_servingRttEwmaSeconds", 0.015);
         SetField(budget, "_windowMaxRate", 1_000_000.0);
         SetField(budget, "_retainedLoadedMaxRate", 1_000_000.0);
+        SetField(budget, "_hasLoadedServingSample", true);
 
         SetCapWithoutDecay(budget, 1_000_000, T0);
 
@@ -343,6 +344,7 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_servingRttEwmaSeconds", 0.020);
         SetField(budget, "_windowMaxRate", 1_000_000.0);
         SetField(budget, "_retainedLoadedMaxRate", 1_000_000.0);
+        SetField(budget, "_hasLoadedServingSample", true);
 
         SetCapWithoutDecay(budget, 1_000_000, T0);
 
@@ -362,6 +364,7 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_servingRttEwmaSeconds", 0.020);
         SetField(budget, "_windowMaxRate", 1_000_000.0);
         SetField(budget, "_retainedLoadedMaxRate", 1_000_000.0);
+        SetField(budget, "_hasLoadedServingSample", true);
         SetField(budget, "_capacityProbeActive", true);
         SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(1.0));
 
@@ -655,10 +658,9 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.OnAcked(1_000, secondSend, T0 + Seconds(0.001));
         CompleteAckedPassWithoutDecay(budget, T0 + Seconds(0.001));
 
-        // The second sample's delivered-counter delta covers both deliveries: 2,000 bytes
-        // over its own 5ms sojourn = 400,000 B/s aggregate drain, independent of the 1ms
-        // gap between the two acknowledgements.
-        await Assert.That(budget.BudgetBytes).IsEqualTo(4_000);
+        // The second sample covers the full delivery epoch: 2,000 bytes over 6ms from the
+        // first send to the second acknowledgement = 333,333 B/s aggregate drain.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(3_333);
     }
 
     [Test]
@@ -747,8 +749,12 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 1_000, 0.100, T0, appLimitedAtSend: true);
         Ack(budget, 1_000, 0.100, T0 + Seconds(0.100), appLimitedAtSend: true);
 
-        await Assert.That(GetField<double>(budget, "_retainedLoadedMaxRate")).IsGreaterThan(0)
-            .Because("recent delivery distinguishes a depth-one loaded pipe from real idle");
+        await Assert.That(GetField<double>(budget, "_retainedLoadedMaxRate")).IsEqualTo(0)
+            .Because("an empty-pipe own-RTT sample must not persist as loaded capacity");
+        await Assert.That(GetField<double>(budget, "_windowMaxRate")).IsGreaterThan(0)
+            .Because("depth-one traffic still needs immediate windowed budget sizing");
+        await Assert.That(GetField<bool>(budget, "_hasLoadedServingSample")).IsTrue()
+            .Because("recent delivery still establishes a loaded serving-RTT horizon");
         await Assert.That(GetField<double>(budget, "_servingRttEwmaSeconds")).IsGreaterThan(0);
     }
 
@@ -1438,7 +1444,7 @@ public sealed class BrokerUnackedByteBudgetTests
 
         // The initial minimum-RTT probe now retains one BDP instead of draining the pipe;
         // this remains far below the cap the broken estimator pegged.
-        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(4_998_000);
     }
 
     [Test]
@@ -1469,9 +1475,53 @@ public sealed class BrokerUnackedByteBudgetTests
         }
         budget.CompleteAckedPass(T0 + Seconds(0.0045));
 
-        await Assert.That(budget.MaxRateBytesPerSecond).IsGreaterThanOrEqualTo(1_200_000_000);
-        await Assert.That(budget.MaxRateBytesPerSecond).IsLessThanOrEqualTo(1_400_000_000)
-            .Because("a cumulative delivery delta must include its delivery epoch's send time");
+        await Assert.That(budget.MaxRateBytesPerSecond).IsGreaterThanOrEqualTo(1_000_000_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsLessThanOrEqualTo(1_200_000_000)
+            .Because("a cumulative delivery delta must include its delivery epoch's full elapsed time");
+    }
+
+    [Test]
+    public async Task LoadedDeliveryEpoch_SpansAcknowledgementsUntilPipeBecomesAppLimited()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 200_000_000);
+
+        var firstSend = budget.SnapshotDelivery(T0, appLimited: true);
+        budget.OnAcked(1_000, firstSend, T0 + Seconds(0.005));
+
+        var loadedSend = budget.SnapshotDelivery(T0 + Seconds(0.006), appLimited: false);
+        await Assert.That(loadedSend.DeliveredBytes).IsEqualTo(1_000);
+        await Assert.That(loadedSend.DeliveryEpochDeliveredBytes).IsEqualTo(0)
+            .Because("delivery progress must not reset an epoch while the pipe remains loaded");
+        await Assert.That(loadedSend.DeliveryEpochFirstSendTimestamp).IsEqualTo(T0);
+
+        var appLimitedSend = budget.SnapshotDelivery(T0 + Seconds(0.007), appLimited: true);
+        await Assert.That(appLimitedSend.DeliveryEpochDeliveredBytes).IsEqualTo(1_000);
+        await Assert.That(appLimitedSend.DeliveryEpochFirstSendTimestamp)
+            .IsEqualTo(T0 + Seconds(0.007))
+            .Because("an empty-pipe send starts a new delivery epoch");
+    }
+
+    [Test]
+    public async Task LoadedDeliveryEpoch_RejectsSubTwoMillisecondSpikeThenMeasuresCumulativeRate()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 200_000_000);
+
+        var firstSend = budget.SnapshotDelivery(T0, appLimited: false);
+        budget.OnAcked(1_000_000, firstSend, T0 + Seconds(0.0005));
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(0)
+            .Because("a sub-2ms loaded sample is dominated by scheduler and timer resolution");
+
+        var secondSend = budget.SnapshotDelivery(T0 + Seconds(0.0006), appLimited: false);
+        budget.OnAcked(1_000_000, secondSend, T0 + Seconds(0.0025));
+
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(800_000_000)
+            .Because("the accepted sample covers 2MB over the full 2.5ms loaded epoch");
     }
 
     [Test]
@@ -1486,7 +1536,7 @@ public sealed class BrokerUnackedByteBudgetTests
         // took to arrive, not its own 5ms sojourn (which would read 20 MB/s).
         Ack(budget, 100_000, 0.005, T0 + Seconds(0.5), appLimitedAtSend: false);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(100_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(99_019);
     }
 
     [Test]
@@ -1615,7 +1665,7 @@ public sealed class BrokerUnackedByteBudgetTests
             budget.OnAcked(
                 1,
                 new BrokerUnackedByteBudget.DeliverySnapshot(
-                    i, 0, 0, now - 1, true, 0, 0),
+                    i, 0, i, 0, now - 1, true, 0, 0),
                 now);
         }
 
@@ -1640,13 +1690,14 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_sendEpochDeliveredBytes", deliveryEpochUpdating);
         SetField(budget, "_sendEpochFirstTimestamp", firstSendTimestamp);
 
-        var arguments = new object?[] { stalePublisherTimestamp, deliveredBytes, null };
+        var arguments = new object?[] { stalePublisherTimestamp, deliveredBytes, null, null };
         var anchor = (long)typeof(BrokerUnackedByteBudget)
             .GetMethod("PublishDeliveryEpoch", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(budget, arguments)!;
 
         await Assert.That(anchor).IsEqualTo(firstSendTimestamp);
         await Assert.That(arguments[2]).IsEqualTo(deliveredBytes);
+        await Assert.That(arguments[3]).IsEqualTo(deliveredBytes);
         await Assert.That(GetField<long>(budget, "_sendEpochFirstTimestamp")).IsEqualTo(firstSendTimestamp);
         await Assert.That(GetField<long>(budget, "_sendEpochDeliveredBytes")).IsEqualTo(deliveredBytes);
     }
