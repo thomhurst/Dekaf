@@ -165,6 +165,12 @@ internal sealed class BrokerUnackedByteBudget
     /// (and with it the RTT floor) toward zero.</summary>
     private const double MinCorrectedRttFraction = 0.25;
 
+    /// <summary>Maximum upward movement accepted from one minimum-RTT refresh. A drain
+    /// probe can remain partially queued across parallel connections; bounding one window
+    /// prevents that transient from multiplying the BDP floor, while repeated refreshes
+    /// still converge when the path's base RTT has genuinely increased.</summary>
+    private const double MinRttRefreshGrowthFactor = 1.25;
+
     private const int ProbeIntervalRtts = 8;
     // A capacity probe needs one RTT for the enlarged budget to reach the wire,
     // then three wholly-probed RTTs to average before accepting or rejecting growth.
@@ -790,7 +796,11 @@ internal sealed class BrokerUnackedByteBudget
     private void CompleteMinRttProbe(long nowTicks)
     {
         if (_minRttProbeMinimumSeconds != double.MaxValue)
-            _minRttSeconds = _minRttProbeMinimumSeconds;
+        {
+            _minRttSeconds = Math.Min(
+                _minRttProbeMinimumSeconds,
+                _minRttSeconds * MinRttRefreshGrowthFactor);
+        }
 
         // If the probe expired without an ack, retain the prior minimum and re-arm its
         // freshness window. An idle gap is not a base-RTT measurement.

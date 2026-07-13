@@ -427,6 +427,24 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task MinimumRtt_ProbeBoundsSingleWindowGrowth()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SetField(budget, "_hasMinRttSample", true);
+        SetField(budget, "_minRttSeconds", 0.001);
+        SetField(budget, "_minRttProbeUntilTimestamp", T0);
+        SetField(budget, "_minRttProbeMinimumSeconds", 0.010);
+
+        Ack(budget, 10_000, 0.010, T0, appLimitedAtSend: false);
+
+        await Assert.That(budget.MinimumRttMicros).IsEqualTo(1_250)
+            .Because("one partially queued refresh must not multiply the BDP floor");
+    }
+
+    [Test]
     public async Task MinimumRtt_ExpiredWindowProbeUsesCurrentRttDuration()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
