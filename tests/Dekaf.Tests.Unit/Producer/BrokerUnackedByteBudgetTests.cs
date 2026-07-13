@@ -1531,6 +1531,45 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task DeliverySnapshots_NeverRegressUnderConcurrentAcknowledgements()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 3_200);
+        using var start = new Barrier(participantCount: 9);
+        var regressionCount = 0;
+
+        var readers = Enumerable.Range(0, 8).Select(_ => Task.Run(() =>
+        {
+            start.SignalAndWait();
+            var previousDeliveredBytes = 0L;
+            for (var i = 0; i < 100_000; i++)
+            {
+                var snapshot = budget.SnapshotDelivery(i + 1, appLimited: false);
+                if (snapshot.DeliveredBytes < previousDeliveredBytes)
+                    Interlocked.Increment(ref regressionCount);
+                previousDeliveredBytes = snapshot.DeliveredBytes;
+            }
+        })).ToArray();
+
+        start.SignalAndWait();
+        for (var i = 0; i < 50_000; i++)
+        {
+            var now = T0 + i + 1;
+            budget.OnAcked(
+                1,
+                new BrokerUnackedByteBudget.DeliverySnapshot(
+                    i, 0, 0, now - 1, true, 0, 0),
+                now);
+        }
+
+        await Task.WhenAll(readers);
+        await Assert.That(regressionCount).IsEqualTo(0)
+            .Because("a completed send snapshot cannot predate an earlier snapshot on the same connection");
+    }
+
+    [Test]
     public async Task IsOverBudget_TransitionsWithChargesAndReleases()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 100, initialCapBytes: 100);

@@ -36,9 +36,9 @@ namespace Dekaf.Producer;
 /// <see cref="OnAcked"/>, <see cref="CompleteAckedPass"/>, and <see cref="SetCap"/> are
 /// single-writer — only the owning broker's send loop calls them — so the remaining estimator
 /// state needs no synchronization; the computed budget is published with a volatile write.
-/// <see cref="SnapshotDelivery"/> performs two independent volatile reads racing the single
-/// writer; both fields are monotonic, so a torn pair only skews one rate sample marginally
-/// and the windowed max filters it.
+/// <see cref="SnapshotDelivery"/> serializes delivery-epoch publication with a CAS while the
+/// most-recent-delivery timestamp remains an independent monotonic read. Skew between those
+/// clocks only widens one sample marginally.
 /// </para>
 /// </summary>
 internal sealed class BrokerUnackedByteBudget
@@ -170,6 +170,9 @@ internal sealed class BrokerUnackedByteBudget
     // then three wholly-probed RTTs to average before accepting or rejecting growth.
     private const int ProbeEvaluationRtts = 3;
     private const double ProbeBudgetMultiplier = 1.25;
+    /// <summary>Only probe when standing demand fills at least this fraction of the gate;
+    /// enlarging a more-open gate cannot reveal additional delivery capacity.</summary>
+    private const double CapacityProbeDemandFraction = 0.5;
     /// <summary>A probe confirms capacity only when rate rises without the round trip
     /// inflating past this tolerance. Through a saturated broker, delivered rate never drops
     /// when queue is added, so a rate-only acceptance test converts every probe into budget
@@ -300,9 +303,9 @@ internal sealed class BrokerUnackedByteBudget
     /// <summary>
     /// Cross-thread: parallel connection sends mint the per-request delivery token immediately
     /// before the socket write (so <paramref name="sendTimestamp"/> can never postdate the
-    /// response's arrival), feeding it back to <see cref="OnAcked"/> on the response. Two
-    /// independent volatile reads — tearing is benign because both fields are monotonic and a
-    /// skewed pair only shifts one rate sample marginally.
+    /// response's arrival), feeding it back to <see cref="OnAcked"/> on the response. Delivery
+    /// epoch changes are CAS-published so parallel sends cannot regress the delivered-byte
+    /// marker; the independent last-delivery timestamp may only conservatively widen a sample.
     /// </summary>
     /// <param name="sendTimestamp">Stopwatch timestamp taken just before the socket write.</param>
     /// <param name="appLimited">True when the broker pipe was empty at send time.</param>
@@ -351,6 +354,9 @@ internal sealed class BrokerUnackedByteBudget
                 continue;
             }
 
+            // The loop-top delivery read can predate a newer epoch value observed by the
+            // successful CAS. Re-read after winning so publication never regresses that value.
+            deliveredBytes = Volatile.Read(ref _totalDeliveredBytes);
             Volatile.Write(ref _sendEpochFirstTimestamp, sendTimestamp);
             Volatile.Write(ref _sendEpochDeliveredBytes, deliveredBytes);
             return sendTimestamp;
@@ -981,7 +987,9 @@ internal sealed class BrokerUnackedByteBudget
     private bool HasCapacityProbeDemand()
     {
         var budgetBytes = Volatile.Read(ref _budgetBytes);
-        var minimumDemandBytes = Math.Max(1, budgetBytes / 2);
+        var minimumDemandBytes = Math.Max(
+            1,
+            (long)(budgetBytes * CapacityProbeDemandFraction));
         return Volatile.Read(ref _unackedBytes) >= minimumDemandBytes;
     }
 
