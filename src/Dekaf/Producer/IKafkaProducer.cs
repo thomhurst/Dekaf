@@ -244,6 +244,11 @@ internal interface IProducerDiagnostics
     /// Captures batches still tracked inside the producer pipeline.
     /// </summary>
     ProducerDeliveryDiagnosticsSnapshot GetDeliveryDiagnosticsSnapshot();
+
+    /// <summary>
+    /// Starts a new produce-request diagnostics measurement window.
+    /// </summary>
+    void ResetProduceRequestDiagnostics();
 }
 
 /// <summary>
@@ -254,11 +259,22 @@ internal sealed class ProducerDeliveryDiagnosticsSnapshot
     public bool DiagnosticsEnabled { get; init; }
     public DateTimeOffset CapturedAtUtc { get; init; }
     public long InFlightBatchCount { get; init; }
+    public long ProduceRequestCount { get; init; }
+    public double ProduceRequestElapsedSeconds { get; init; }
+    public double ProduceRequestsPerSecond { get; init; }
+    public List<ProducerCoalesceWidthDiagnostic> CoalesceWidthHistogram { get; init; } = [];
     public List<ProducerBatchDeliveryDiagnostic> Batches { get; init; } = [];
     public List<ProducerBrokerBudgetDiagnostic> BrokerBudgets { get; init; } = [];
     public List<ProducerBrokerBudgetDiagnostic> BrokerBudgetSamples { get; init; } = [];
     public List<ConnectionReapDiagnostic> ConnectionReapEvents { get; init; } = [];
     public List<ProducerConnectionScaleDiagnostic> ConnectionScaleEvents { get; init; } = [];
+}
+
+internal sealed class ProducerCoalesceWidthDiagnostic
+{
+    public required int MinimumWidth { get; init; }
+    public int? MaximumWidth { get; init; }
+    public required long RequestCount { get; init; }
 }
 
 internal sealed class ProducerBrokerBudgetDiagnostic

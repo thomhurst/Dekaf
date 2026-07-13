@@ -3405,6 +3405,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 // Build coalesced ProduceRequest (reuses pre-allocated scratch structures)
                 var request = scratch.Build(batches, generations, count);
+                _accumulator.RecordProduceRequest(count);
 
                 // Handle Acks.None (fire-and-forget)
                 if (_options.Acks == Acks.None)

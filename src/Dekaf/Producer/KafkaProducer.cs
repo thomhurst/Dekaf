@@ -2605,6 +2605,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return snapshot;
     }
 
+    void IProducerDiagnostics.ResetProduceRequestDiagnostics() =>
+        _accumulator.ResetProduceRequestDiagnostics();
+
     int IProducerDiagnostics.MaxObservedBrokerThrottleTimeMs =>
         Volatile.Read(ref _maxObservedBrokerThrottleTimeMs);
 

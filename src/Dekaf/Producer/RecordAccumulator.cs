@@ -868,6 +868,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private const int MaxConnectionScaleDiagnosticEvents = 256;
     private const int MaxBrokerBudgetDiagnosticSamples = 4096;
     private const int BrokerBudgetDiagnosticIntervalMs = 1_000;
+    private const int MaxTrackedCoalesceWidth = 64;
     // ReadyBatch lifecycle (seal→send→response→cleanup) is longer than PartitionBatch
     // (create→fill→seal), so its pool needs proportionally more capacity.
     private const int ReadyBatchPoolSizeRatio = 2;
@@ -968,6 +969,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly object _deliveryDiagnosticsLock = new();
     private readonly List<ProducerConnectionScaleDiagnostic> _connectionScaleEvents = [];
     private readonly List<ProducerBrokerBudgetDiagnostic> _brokerBudgetSamples = [];
+    private readonly long[]? _coalesceWidthCounts;
+    private long _produceRequestCount;
+    private long _produceRequestDiagnosticsStartedAt;
     private long _nextBrokerBudgetDiagnosticTimestampMs;
 
     // Optimization: Track the oldest batch creation time to skip unnecessary enumeration.
@@ -1989,6 +1993,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _onRecordAppended = onRecordAppended;
         _resolveLeaderId = resolveLeaderId;
         _unackedBudgetEnabled = options.DeliveryLatencyTargetMs > 0 && resolveLeaderId is not null;
+        if (options.EnableDeliveryDiagnostics)
+        {
+            _coalesceWidthCounts = new long[MaxTrackedCoalesceWidth + 2];
+            _produceRequestDiagnosticsStartedAt = Stopwatch.GetTimestamp();
+        }
 
         ProducerOptions.ValidateArenaCapacity(options.BatchSize, options.ArenaCapacity);
 
@@ -4659,12 +4668,48 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var batches = new List<DiagnosticBatchReference>();
         InFlightBatchDiagnosticSnapshot(batches);
 
+        var startedAt = Volatile.Read(ref _produceRequestDiagnosticsStartedAt);
+        var produceRequestCount = Interlocked.Read(ref _produceRequestCount);
+        var produceRequestElapsedSeconds = Math.Max(
+            0,
+            (Stopwatch.GetTimestamp() - startedAt) / (double)Stopwatch.Frequency);
         var snapshot = new ProducerDeliveryDiagnosticsSnapshot
         {
             DiagnosticsEnabled = true,
             CapturedAtUtc = DateTimeOffset.UtcNow,
-            InFlightBatchCount = Volatile.Read(ref _inFlightBatchCount)
+            InFlightBatchCount = Volatile.Read(ref _inFlightBatchCount),
+            ProduceRequestCount = produceRequestCount,
+            ProduceRequestElapsedSeconds = produceRequestElapsedSeconds,
+            ProduceRequestsPerSecond = produceRequestElapsedSeconds > 0
+                ? produceRequestCount / produceRequestElapsedSeconds
+                : 0
         };
+
+        var widthCounts = _coalesceWidthCounts!;
+        for (var width = 1; width <= MaxTrackedCoalesceWidth; width++)
+        {
+            var requestCount = Interlocked.Read(ref widthCounts[width]);
+            if (requestCount > 0)
+            {
+                snapshot.CoalesceWidthHistogram.Add(new ProducerCoalesceWidthDiagnostic
+                {
+                    MinimumWidth = width,
+                    MaximumWidth = width,
+                    RequestCount = requestCount
+                });
+            }
+        }
+
+        var overflowCount = Interlocked.Read(ref widthCounts[MaxTrackedCoalesceWidth + 1]);
+        if (overflowCount > 0)
+        {
+            snapshot.CoalesceWidthHistogram.Add(new ProducerCoalesceWidthDiagnostic
+            {
+                MinimumWidth = MaxTrackedCoalesceWidth + 1,
+                MaximumWidth = null,
+                RequestCount = overflowCount
+            });
+        }
 
         var capturedAtUtc = snapshot.CapturedAtUtc;
         foreach (var (brokerId, budget) in _brokerUnackedBudgets)
@@ -4680,6 +4725,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             snapshot.Batches.Add(batch.Batch.CreateDeliveryDiagnostic(batch.Generation, batch.TopicPartition));
 
         return snapshot;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void RecordProduceRequest(int coalesceWidth)
+    {
+        var widthCounts = _coalesceWidthCounts;
+        if (widthCounts is null)
+            return;
+
+        Interlocked.Increment(ref _produceRequestCount);
+        Interlocked.Increment(ref widthCounts[Math.Min(coalesceWidth, MaxTrackedCoalesceWidth + 1)]);
+    }
+
+    internal void ResetProduceRequestDiagnostics()
+    {
+        var widthCounts = _coalesceWidthCounts;
+        if (widthCounts is null)
+            return;
+
+        Interlocked.Exchange(ref _produceRequestCount, 0);
+        for (var width = 1; width < widthCounts.Length; width++)
+            Interlocked.Exchange(ref widthCounts[width], 0);
+        Volatile.Write(ref _produceRequestDiagnosticsStartedAt, Stopwatch.GetTimestamp());
     }
 
     internal void RecordConnectionScaleEvent(
