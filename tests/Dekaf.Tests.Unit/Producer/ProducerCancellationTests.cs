@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Threading.Channels;
 using Dekaf.Producer;
 
@@ -56,6 +57,48 @@ public class ProducerCancellationTests
 
         await disposal.WaitAsync(TimeSpan.FromSeconds(5));
         await Assert.That(disposal.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    public async Task Cancellation_StopsActiveLingerTimerPromptly()
+    {
+        var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithLinger(TimeSpan.FromMinutes(1))
+            .Build();
+        var accumulator = GetField<RecordAccumulator>(producer, "_accumulator");
+        var senderCts = GetField<CancellationTokenSource>(producer, "_senderCts");
+        var lingerTask = GetField<Task>(producer, "_lingerTask");
+
+        try
+        {
+            // Append directly so the active linger path is covered without requiring Kafka I/O.
+            await accumulator.AppendAsync(
+                "test-topic",
+                partition: 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                new PooledMemory(null, 0, isNull: true),
+                new PooledMemory(null, 0, isNull: true),
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                CancellationToken.None);
+            await Assert.That(accumulator.HasPendingLingerBatches).IsTrue();
+
+            // Let the linger loop consume the wakeup and enter its periodic active cadence.
+            await Task.Delay(20);
+            senderCts.Cancel();
+
+            await lingerTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(lingerTask.IsCompletedSuccessfully).IsTrue();
+        }
+        finally
+        {
+            senderCts.Cancel();
+            await accumulator.DisposeAsync();
+            await producer.DisposeAsync();
+        }
     }
 
     [Test]
@@ -288,4 +331,9 @@ public class ProducerCancellationTests
             await accumulator.DisposeAsync();
         }
     }
+
+    private static T GetField<T>(object instance, string name)
+        => (T)instance.GetType()
+            .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(instance)!;
 }
