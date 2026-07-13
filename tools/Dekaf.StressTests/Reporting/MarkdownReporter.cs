@@ -5,6 +5,8 @@ namespace Dekaf.StressTests.Reporting;
 
 internal static class MarkdownReporter
 {
+    private const int MaxConnectionScaleTimelineRows = 100;
+
     public static string Generate(StressTestResults results)
     {
         var sb = new StringBuilder();
@@ -177,11 +179,14 @@ internal static class MarkdownReporter
         if (rows.Count == 0)
             return;
 
+        var displayedRows = SampleEvenly(rows, MaxConnectionScaleTimelineRows);
+        var omittedRows = rows.Count - displayedRows.Count;
+
         sb.AppendLine($"## Connection Scale Timeline - {label}");
         sb.AppendLine();
-        sb.AppendLine("| Client | Event UTC | Broker | Connections | Buffer | Pressure (buffer/send) | Nearest throughput sample |");
-        sb.AppendLine("|--------|-----------|-------:|-------------|-------:|------------------------|---------------------------|");
-        foreach (var row in rows)
+        sb.AppendLine("| Client | Event UTC | Broker | Connections | Buffer | Pressure (buffer/send) | Observations / duration | Nearest throughput sample |");
+        sb.AppendLine("|--------|-----------|-------:|-------------|-------:|------------------------|-------------------------|---------------------------|");
+        foreach (var row in displayedRows)
         {
             var nearest = row.Result.Throughput.IntervalSamples
                 .MinBy(sample => Math.Abs((sample.CapturedAtUtc - row.Event.OccurredAtUtc).TotalMilliseconds));
@@ -192,9 +197,27 @@ internal static class MarkdownReporter
                 $"| {row.Result.Client} | {row.Event.OccurredAtUtc:HH:mm:ss.fff} | " +
                 $"{row.Event.BrokerId} | {row.Event.OldConnectionCount}→{row.Event.NewConnectionCount} | " +
                 $"{row.Event.BufferUtilization * 100:F0}% | " +
-                $"{row.Event.BufferPressureDelta:N0}/{row.Event.SendLoopPressureDelta:N0} | {throughput} |");
+                $"{row.Event.BufferPressureDelta:N0}/{row.Event.SendLoopPressureDelta:N0} | " +
+                $"{row.Event.ObservationCount:N0} / {row.Event.ObservedDurationMs / 1000.0:F1}s | {throughput} |");
         }
+        if (omittedRows > 0)
+            sb.AppendLine($"*{omittedRows:N0} scale event(s) omitted; rows sampled across the full timeline.*");
         sb.AppendLine();
+    }
+
+    private static List<T> SampleEvenly<T>(IReadOnlyList<T> rows, int maximumRows)
+    {
+        if (rows.Count <= maximumRows)
+            return [.. rows];
+
+        var sampled = new List<T>(maximumRows);
+        for (var i = 0; i < maximumRows; i++)
+        {
+            var index = (int)Math.Round(i * (rows.Count - 1d) / (maximumRows - 1d));
+            sampled.Add(rows[index]);
+        }
+
+        return sampled;
     }
 
     private static double ComparisonMessagesPerSecond(StressTestResult result) =>
