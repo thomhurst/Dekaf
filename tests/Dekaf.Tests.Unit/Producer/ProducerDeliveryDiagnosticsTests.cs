@@ -90,6 +90,62 @@ public sealed class ProducerDeliveryDiagnosticsTests
     }
 
     [Test]
+    public async Task ProduceRequestDiagnostics_CapturesCountRateAndCoalesceWidths()
+    {
+        await using var accumulator = new RecordAccumulator(
+            CreateOptions(enableDeliveryDiagnostics: true));
+
+        accumulator.RecordProduceRequest(coalesceWidth: 1);
+        accumulator.RecordProduceRequest(coalesceWidth: 2);
+        accumulator.RecordProduceRequest(coalesceWidth: 2);
+        accumulator.RecordProduceRequest(coalesceWidth: 65);
+        accumulator.RecordProduceRequest(coalesceWidth: 100);
+
+        var snapshot = accumulator.GetDeliveryDiagnosticsSnapshot();
+
+        await Assert.That(snapshot.ProduceRequestCount).IsEqualTo(5);
+        await Assert.That(snapshot.ProduceRequestElapsedSeconds).IsGreaterThanOrEqualTo(0);
+        await Assert.That(snapshot.ProduceRequestsPerSecond).IsGreaterThanOrEqualTo(0);
+        await Assert.That(snapshot.CoalesceWidthHistogram.Single(bucket => bucket.MinimumWidth == 1).RequestCount)
+            .IsEqualTo(1);
+        await Assert.That(snapshot.CoalesceWidthHistogram.Single(bucket => bucket.MinimumWidth == 2).RequestCount)
+            .IsEqualTo(2);
+        var overflow = snapshot.CoalesceWidthHistogram.Single(bucket => bucket.MinimumWidth == 65);
+        await Assert.That(overflow.MaximumWidth).IsNull();
+        await Assert.That(overflow.RequestCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ProduceRequestDiagnostics_ResetStartsEmptyWindow()
+    {
+        await using var accumulator = new RecordAccumulator(
+            CreateOptions(enableDeliveryDiagnostics: true));
+        accumulator.RecordProduceRequest(coalesceWidth: 4);
+
+        accumulator.ResetProduceRequestDiagnostics();
+        var reset = accumulator.GetDeliveryDiagnosticsSnapshot();
+        accumulator.RecordProduceRequest(coalesceWidth: 3);
+        var afterRequest = accumulator.GetDeliveryDiagnosticsSnapshot();
+
+        await Assert.That(reset.ProduceRequestCount).IsEqualTo(0);
+        await Assert.That(reset.CoalesceWidthHistogram).IsEmpty();
+        await Assert.That(afterRequest.ProduceRequestCount).IsEqualTo(1);
+        await Assert.That(afterRequest.CoalesceWidthHistogram.Single().MinimumWidth).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task ProduceRequestDiagnostics_Disabled_DoesNotRecord()
+    {
+        await using var accumulator = new RecordAccumulator(CreateOptions());
+
+        accumulator.RecordProduceRequest(coalesceWidth: 2);
+        var snapshot = accumulator.GetDeliveryDiagnosticsSnapshot();
+
+        await Assert.That(snapshot.ProduceRequestCount).IsEqualTo(0);
+        await Assert.That(snapshot.CoalesceWidthHistogram).IsEmpty();
+    }
+
+    [Test]
     public async Task BrokerBudgetDiagnostics_CapturesCurrentStateAndPeriodicSample()
     {
         var options = CreateOptions(

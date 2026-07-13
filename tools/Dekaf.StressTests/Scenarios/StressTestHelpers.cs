@@ -175,7 +175,7 @@ internal static class StressTestHelpers
         // A stale start snapshot is a correctness hazard, not just noise: warmup messages
         // landing after the snapshot would inflate the run's delivered count and mask real
         // loss, so a catch-up timeout here is recorded as an error via the tracker.
-        return await QueryTotalEndOffsetAfterProducerDrainAsync(
+        var startOffset = await QueryTotalEndOffsetAfterProducerDrainAsync(
             options.BootstrapServers,
             options.Topic,
             options.Partitions,
@@ -183,6 +183,8 @@ internal static class StressTestHelpers
             ProducerWarmupMessageCount,
             throughput,
             "Warmup drain").ConfigureAwait(false);
+        ResetProducerDeliveryDiagnostics(producer, options);
+        return startOffset;
     }
 
     /// <summary>
@@ -367,6 +369,14 @@ internal static class StressTestHelpers
         }
 
         return snapshot;
+    }
+
+    internal static void ResetProducerDeliveryDiagnostics<TKey, TValue>(
+        IKafkaProducer<TKey, TValue> producer,
+        StressTestOptions options)
+    {
+        if (options.EnableProducerDeliveryDiagnostics && producer is IProducerDiagnostics diagnostics)
+            diagnostics.ResetProduceRequestDiagnostics();
     }
 
     internal static ConsumerDiagnosticSnapshot? CaptureConsumerDiagnostics<TKey, TValue>(

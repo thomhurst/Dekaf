@@ -125,6 +125,24 @@ public sealed class ConnectionScaleReportingTests
             {
                 DiagnosticsEnabled = true,
                 CapturedAtUtc = startedAt.AddMinutes(15),
+                ProduceRequestCount = 2_500,
+                ProduceRequestElapsedSeconds = 5,
+                ProduceRequestsPerSecond = 500,
+                CoalesceWidthHistogram =
+                [
+                    new ProducerCoalesceWidthDiagnostic
+                    {
+                        MinimumWidth = 1,
+                        MaximumWidth = 1,
+                        RequestCount = 2_000
+                    },
+                    new ProducerCoalesceWidthDiagnostic
+                    {
+                        MinimumWidth = 2,
+                        MaximumWidth = 2,
+                        RequestCount = 500
+                    }
+                ],
                 ConnectionScaleEvents =
                 [
                     new ProducerConnectionScaleDiagnostic
@@ -150,6 +168,7 @@ public sealed class ConnectionScaleReportingTests
         };
 
         var markdown = MarkdownReporter.Generate(results);
+        var json = result.ToJson();
 
         await Assert.That(markdown).Contains("Connection Scale Timeline - Fire-and-Forget");
         await Assert.That(markdown).Contains("1→3");
@@ -166,5 +185,9 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(markdown).Contains("Gen2 +2 / pause +25.0ms");
         await Assert.That(markdown).Contains("| Dekaf | 45 | 02:00:15.000 | 3.0s | throughput collapse |");
         await Assert.That(markdown).Contains("3 additional latency outlier sample(s) exceeded the bounded diagnostic capacity");
+        await Assert.That(json).Contains("\"produceRequestCount\": 2500");
+        await Assert.That(json).Contains("\"produceRequestsPerSecond\": 500");
+        await Assert.That(json).Contains("\"coalesceWidthHistogram\"");
+        await Assert.That(json).Contains("\"requestCount\": 2000");
     }
 }
