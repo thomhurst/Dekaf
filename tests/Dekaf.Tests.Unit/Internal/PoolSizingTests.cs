@@ -220,6 +220,26 @@ public class PoolSizingTests
         await Assert.That(capacity).IsEqualTo(1024);
     }
 
+    [Test]
+    [Arguments(1, 3, 1, 16)]
+    [Arguments(3, 3, 1, 16)]
+    [Arguments(3, 5, 2, 42)]
+    [Arguments(100, 100, 100, 256)]
+    [Arguments(int.MaxValue, int.MaxValue, int.MaxValue, 256)]
+    public async Task ForConsumerResponseBuffers_CoversPipelineWorkingSet(
+        int brokerCount,
+        int prefetchPipelineDepth,
+        int connectionsPerBroker,
+        int expected)
+    {
+        var capacity = PoolSizing.ForConsumerResponseBuffers(
+            brokerCount,
+            prefetchPipelineDepth,
+            connectionsPerBroker);
+
+        await Assert.That(capacity).IsEqualTo(expected);
+    }
+
     // --- ForSharedPools tests ---
 
     [Test]

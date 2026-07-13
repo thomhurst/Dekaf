@@ -192,24 +192,58 @@ internal sealed class AdaptiveFetchSizer
 
     private void Grow()
     {
-        _currentPartitionFetchBytes = Math.Min(
-            (int)Math.Min((long)(_currentPartitionFetchBytes * _growthFactor), int.MaxValue),
+        _currentPartitionFetchBytes = QuantizeGrowth(
+            _currentPartitionFetchBytes,
+            _growthFactor,
             _maxPartitionFetchBytes);
 
-        _currentFetchMaxBytes = Math.Min(
-            (int)Math.Min((long)(_currentFetchMaxBytes * _growthFactor), int.MaxValue),
+        _currentFetchMaxBytes = QuantizeGrowth(
+            _currentFetchMaxBytes,
+            _growthFactor,
             _maxFetchMaxBytes);
     }
 
     private void Shrink()
     {
-        _currentPartitionFetchBytes = Math.Max(
-            (int)(_currentPartitionFetchBytes * _shrinkFactor),
+        _currentPartitionFetchBytes = QuantizeShrink(
+            _currentPartitionFetchBytes,
+            _shrinkFactor,
             _minPartitionFetchBytes);
 
-        _currentFetchMaxBytes = Math.Max(
-            (int)(_currentFetchMaxBytes * _shrinkFactor),
+        _currentFetchMaxBytes = QuantizeShrink(
+            _currentFetchMaxBytes,
+            _shrinkFactor,
             _minFetchMaxBytes);
+    }
+
+    private static int QuantizeGrowth(int current, double factor, int maximum)
+    {
+        var candidate = Math.Min((long)(current * factor), maximum);
+        return Math.Min(RoundUpToPowerOfTwo(candidate), maximum);
+    }
+
+    private static int QuantizeShrink(int current, double factor, int minimum)
+    {
+        var candidate = Math.Max((long)(current * factor), minimum);
+        return Math.Max(RoundDownToPowerOfTwo(candidate), minimum);
+    }
+
+    private static int RoundUpToPowerOfTwo(long value)
+    {
+        var result = 1L;
+        while (result < value && result <= int.MaxValue)
+            result <<= 1;
+
+        return result > int.MaxValue ? int.MaxValue : (int)result;
+    }
+
+    private static int RoundDownToPowerOfTwo(long value)
+    {
+        var result = 1L;
+        while ((result << 1) <= value && result <= int.MaxValue / 2L)
+            result <<= 1;
+
+        return (int)result;
     }
 }
 

@@ -188,4 +188,37 @@ public class PendingFetchDataTests
         await Assert.That(second.Topic).IsEqualTo("topic");
         await Assert.That(second.LastYieldedOffset).IsEqualTo(-1L);
     }
+
+    [Test]
+    [NotInParallel]
+    public async Task Dispose_RetainsParsedRecordSlabAcrossPooledReuse()
+    {
+        var originalMaxPoolSize = MaxPoolSizeField.GetValue(null);
+        var originalPool = PoolField.GetValue(null);
+        var slabField = typeof(PendingFetchData)
+            .GetField("_parsedRecordSlab", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        PendingFetchData? second = null;
+
+        try
+        {
+            MaxPoolSizeField.SetValue(null, 1);
+            PoolField.SetValue(null, new LockFreeStack<PendingFetchData>(1));
+
+            var first = PendingFetchData.Create("topic-1", 0, Array.Empty<RecordBatch>());
+            var slab = new Record[32];
+            slabField.SetValue(first, slab);
+            first.Dispose();
+
+            second = PendingFetchData.Create("topic-2", 1, Array.Empty<RecordBatch>());
+
+            await Assert.That(second).IsSameReferenceAs(first);
+            await Assert.That(slabField.GetValue(second)).IsSameReferenceAs(slab);
+        }
+        finally
+        {
+            second?.Dispose();
+            MaxPoolSizeField.SetValue(null, originalMaxPoolSize);
+            PoolField.SetValue(null, originalPool);
+        }
+    }
 }

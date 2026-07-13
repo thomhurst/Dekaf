@@ -351,7 +351,7 @@ public sealed class FetchResponsePartition
 
         for (var i = 0; i < list.Count; i++)
         {
-            list[i].Dispose();
+            list[i].DisposeAndReturnUnownedConsumerBatch();
         }
 
         s_recordBatchListPool.Return(list);

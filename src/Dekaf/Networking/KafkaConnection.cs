@@ -3475,19 +3475,20 @@ internal sealed class ResponseBufferPool
     /// Default shared instance used by producers, admin clients, and connections
     /// that don't have consumer-specific configuration.
     /// </summary>
-    internal static readonly ResponseBufferPool Default = new(DefaultMaxArrayLength);
-    private static readonly ConcurrentDictionary<int, ResponseBufferPool> s_sharedPools = new();
+    private const int DefaultMaxArraysPerBucket = 4;
+    internal static readonly ResponseBufferPool Default = new(DefaultMaxArrayLength, DefaultMaxArraysPerBucket);
+    private static readonly ConcurrentDictionary<(int MaxArrayLength, int MaxArraysPerBucket), ResponseBufferPool>
+        s_sharedPools = new();
 
     internal ArrayPool<byte> Pool { get; }
     internal int MaxArrayLength { get; }
+    internal int MaxArraysPerBucket { get; }
 
-    internal ResponseBufferPool(int maxArrayLength)
+    internal ResponseBufferPool(int maxArrayLength, int maxArraysPerBucket = DefaultMaxArraysPerBucket)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxArraysPerBucket);
         MaxArrayLength = maxArrayLength;
-        // Limit bucket count to cap worst-case memory retention.
-        // 4 arrays per bucket: default pool = 4 × 16 MB = ~64 MB, consumer pool = 4 × 51 MB = ~204 MB.
-        // Previous values (32/8) caused up to 512 MB retention for the default pool alone.
-        const int maxArraysPerBucket = 4;
+        MaxArraysPerBucket = maxArraysPerBucket;
         Pool = ArrayPool<byte>.Create(
             maxArrayLength: maxArrayLength,
             maxArraysPerBucket: maxArraysPerBucket);
@@ -3498,12 +3499,18 @@ internal sealed class ResponseBufferPool
     /// <c>FetchMaxBytes</c> configuration. The pool's max array length is rounded up to
     /// a MiB tier after adding protocol overhead, with a minimum of <see cref="DefaultMaxArrayLength"/>.
     /// </summary>
-    internal static ResponseBufferPool Create(int fetchMaxBytes)
+    internal static ResponseBufferPool Create(
+        int fetchMaxBytes,
+        int maxArraysPerBucket = DefaultMaxArraysPerBucket)
     {
         var maxArrayLength = ComputeMaxArrayLength(fetchMaxBytes);
-        return maxArrayLength == DefaultMaxArrayLength
+        return maxArrayLength == DefaultMaxArrayLength && maxArraysPerBucket == DefaultMaxArraysPerBucket
             ? Default
-            : s_sharedPools.GetOrAdd(maxArrayLength, static length => new ResponseBufferPool(length));
+            : s_sharedPools.GetOrAdd(
+                (maxArrayLength, maxArraysPerBucket),
+                static configuration => new ResponseBufferPool(
+                    configuration.MaxArrayLength,
+                    configuration.MaxArraysPerBucket));
     }
 
     internal static int ComputeMaxArrayLength(int fetchMaxBytes)

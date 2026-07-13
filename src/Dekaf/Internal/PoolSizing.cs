@@ -23,6 +23,8 @@ internal static class PoolSizing
     private const int MaxValueTaskSources = 65536;
     private const int MinConsumerPrefetchBufferCapacity = 16;
     private const int MaxConsumerPrefetchBufferCapacity = 1024;
+    private const int MinConsumerResponseBuffersPerBucket = 16;
+    private const int MaxConsumerResponseBuffersPerBucket = 256;
 
     /// <summary>
     /// Approximate number of coalesced partitions per batch — used to scale
@@ -147,6 +149,24 @@ internal static class PoolSizing
             capacity,
             MinConsumerPrefetchBufferCapacity,
             MaxConsumerPrefetchBufferCapacity);
+    }
+
+    internal static int ForConsumerResponseBuffers(
+        int brokerCount,
+        int prefetchPipelineDepth,
+        int connectionsPerBroker)
+    {
+        var brokers = Math.Max((long)brokerCount, 1L);
+        var pipelineSlots = Math.Max((long)prefetchPipelineDepth, 1L) + 2L;
+        var connections = Math.Max((long)connectionsPerBroker, 1L);
+        var liveResponseBuffers = SaturatingMultiply(
+            SaturatingMultiply(brokers, pipelineSlots),
+            connections);
+
+        return ClampPoolDepth(
+            liveResponseBuffers,
+            MinConsumerResponseBuffersPerBucket,
+            MaxConsumerResponseBuffersPerBucket);
     }
 
     private static long CeilingDivide(long value, long divisor) =>
