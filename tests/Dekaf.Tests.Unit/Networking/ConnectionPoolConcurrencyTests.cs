@@ -13,6 +13,41 @@ namespace Dekaf.Tests.Unit.Networking;
 /// </summary>
 public sealed class ConnectionPoolConcurrencyTests
 {
+    [Test]
+    public async Task GetConnectionByIndex_CreatesOnlyRequestedRoutingWidth()
+    {
+        const int connectionsPerBroker = 3;
+        var createdIndices = new ConcurrentQueue<int>();
+        var pool = new ConnectionPool(
+            clientId: "test",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: connectionsPerBroker,
+            connectionFactory: (brokerId, host, port, index, _) =>
+            {
+                createdIndices.Enqueue(index);
+                var connection = Substitute.For<IKafkaConnection>();
+                connection.IsConnected.Returns(true);
+                connection.BrokerId.Returns(brokerId);
+                connection.Host.Returns(host);
+                connection.Port.Returns(port);
+                return ValueTask.FromResult(connection);
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            await pool.GetConnectionByIndexAsync(1, 0);
+            await Assert.That(createdIndices).IsEquivalentTo([0]);
+
+            await pool.GetConnectionByIndexAsync(1, 1);
+            await Assert.That(createdIndices).IsEquivalentTo([0, 1]);
+
+            await pool.GetConnectionByIndexAsync(1, 0);
+            await Assert.That(createdIndices).IsEquivalentTo([0, 1]);
+        }
+    }
+
     /// <summary>
     /// H4: When N concurrent callers trigger group creation for the same broker,
     /// only one group should be created — exactly connectionsPerBroker connections,
