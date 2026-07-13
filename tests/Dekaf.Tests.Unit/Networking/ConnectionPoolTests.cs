@@ -458,8 +458,122 @@ public sealed class ConnectionPoolTests
             var diagnostic = pool.GetConnectionReapDiagnosticsSnapshot().Single();
             await Assert.That(diagnostic.BrokerId).IsEqualTo(1);
             await Assert.That(diagnostic.ConnectionIndex).IsEqualTo(0);
+            await Assert.That(diagnostic.IsBootstrapConnection).IsFalse();
             await Assert.That(diagnostic.IdleDurationMs).IsGreaterThanOrEqualTo(IdleThresholdMs);
         }
+    }
+
+    [Test]
+    public async Task ReapIdleConnectionsAsync_BootstrapDiagnostic_IsExplicitlyIdentified()
+    {
+        var connection = new TestIdleConnection(-1, "bootstrap", 9092);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleThresholdMs },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => new ValueTask<IKafkaConnection>(connection));
+
+        await using (pool)
+        {
+            await pool.GetConnectionAsync("bootstrap", 9092);
+            connection.LastUsedTimestampMs = StaleIdleTimestamp();
+
+            var reaped = await pool.ReapIdleConnectionsAsync();
+
+            await Assert.That(reaped).IsEqualTo(1);
+            var diagnostic = pool.GetConnectionReapDiagnosticsSnapshot().Single();
+            await Assert.That(diagnostic.BrokerId).IsEqualTo(-1);
+            await Assert.That(diagnostic.IsBootstrapConnection).IsTrue();
+        }
+    }
+
+    [Test]
+    public async Task ReapIdleConnectionsAsync_ActiveLease_DrainsBeforeDisposal()
+    {
+        var connection = new TestIdleConnection(1, "localhost", 9092);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleThresholdMs },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => new ValueTask<IKafkaConnection>(connection));
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+            await pool.GetConnectionAsync(1);
+            connection.LastUsedTimestampMs = StaleIdleTimestamp();
+            await Assert.That(KafkaConnectionLease.TryAcquire(connection, out var lease)).IsTrue();
+
+            var reapTask = pool.ReapIdleConnectionsAsync().AsTask();
+            await Assert.That(SpinWait.SpinUntil(
+                () => connection.RetirementState == 1,
+                TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(connection.DisposeCount).IsEqualTo(0);
+
+            lease.Dispose();
+            var reaped = await reapTask;
+
+            await Assert.That(reaped).IsEqualTo(1);
+            await Assert.That(connection.DisposeCount).IsEqualTo(1);
+            await Assert.That(connection.RetirementState).IsEqualTo(2);
+        }
+    }
+
+    [Test]
+    public async Task ReapIdleConnectionsAsync_RequestWinsRecheck_RestoresConnection()
+    {
+        var connection = new TestIdleConnection(1, "localhost", 9092);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleThresholdMs },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => new ValueTask<IKafkaConnection>(connection));
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+            var first = await pool.GetConnectionAsync(1);
+            connection.LastUsedTimestampMs = StaleIdleTimestamp();
+            var pendingReads = 0;
+            connection.PendingRequestCountProvider = () =>
+                Interlocked.Increment(ref pendingReads) == 1 ? 0 : 1;
+
+            var reaped = await pool.ReapIdleConnectionsAsync();
+            var second = await pool.GetConnectionAsync(1);
+
+            await Assert.That(reaped).IsEqualTo(0);
+            await Assert.That(second).IsSameReferenceAs(first);
+            await Assert.That(connection.DisposeCount).IsEqualTo(0);
+            await Assert.That(connection.RetirementState).IsEqualTo(0);
+        }
+    }
+
+    [Test]
+    public async Task ReapIdleConnectionsAsync_DrainTimeout_DoesNotBlockPoolDisposal()
+    {
+        var connection = new TestIdleConnection(1, "localhost", 9092);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleThresholdMs },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => new ValueTask<IKafkaConnection>(connection),
+            idleReapDrainTimeout: TimeSpan.FromMilliseconds(20));
+
+        pool.RegisterBroker(1, "localhost", 9092);
+        await pool.GetConnectionAsync(1);
+        connection.LastUsedTimestampMs = StaleIdleTimestamp();
+        await Assert.That(KafkaConnectionLease.TryAcquire(connection, out var lease)).IsTrue();
+
+        var reaped = await pool.ReapIdleConnectionsAsync();
+        await pool.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(reaped).IsEqualTo(1);
+        await Assert.That(connection.DisposeCount).IsEqualTo(0);
+
+        lease.Dispose();
+        await Assert.That(SpinWait.SpinUntil(
+            () => connection.DisposeCount == 1,
+            TimeSpan.FromSeconds(5))).IsTrue();
     }
 
     [Test]
@@ -853,18 +967,24 @@ public sealed class ConnectionPoolTests
         return connection;
     }
 
-    internal sealed class TestIdleConnection(int brokerId, string host, int port) : IKafkaConnection, IIdleTrackedKafkaConnection
+    internal sealed class TestIdleConnection(int brokerId, string host, int port) :
+        IKafkaConnection,
+        IIdleTrackedKafkaConnection,
+        IRetirableKafkaConnection
     {
         private int _connected = 1;
         private long _lastUsedTimestampMs = Environment.TickCount64;
         private int _pendingRequestCount;
         private int _disposeCount;
+        private int _leaseCount;
+        private int _retirementState;
 
         public int BrokerId { get; } = brokerId;
         public string Host { get; } = host;
         public int Port { get; } = port;
         public bool IsConnected => Volatile.Read(ref _connected) != 0;
         public int DisposeCount => Volatile.Read(ref _disposeCount);
+        public int RetirementState => Volatile.Read(ref _retirementState);
 
         public long LastUsedTimestampMs
         {
@@ -878,11 +998,37 @@ public sealed class ConnectionPoolTests
             set => Volatile.Write(ref _pendingRequestCount, value);
         }
 
+        public Func<int>? PendingRequestCountProvider { get; set; }
+
         long IIdleTrackedKafkaConnection.LastUsedTimestampMs => LastUsedTimestampMs;
 
-        int IIdleTrackedKafkaConnection.PendingRequestCount => PendingRequestCount;
+        int IIdleTrackedKafkaConnection.PendingRequestCount =>
+            PendingRequestCountProvider?.Invoke() ?? PendingRequestCount;
 
         void IIdleTrackedKafkaConnection.Touch() => LastUsedTimestampMs = Environment.TickCount64;
+
+        int IRetirableKafkaConnection.LeaseCount => Volatile.Read(ref _leaseCount);
+
+        int IRetirableKafkaConnection.ActiveOperationCount => 0;
+
+        bool IRetirableKafkaConnection.TryAcquireLease()
+        {
+            if (Volatile.Read(ref _retirementState) != 0)
+                return false;
+
+            Interlocked.Increment(ref _leaseCount);
+            if (Volatile.Read(ref _retirementState) == 0)
+                return true;
+
+            Interlocked.Decrement(ref _leaseCount);
+            return false;
+        }
+
+        void IRetirableKafkaConnection.ReleaseLease() => Interlocked.Decrement(ref _leaseCount);
+
+        void IRetirableKafkaConnection.BeginRetirement() => Volatile.Write(ref _retirementState, 1);
+
+        void IRetirableKafkaConnection.CompleteRetirement() => Volatile.Write(ref _retirementState, 2);
 
         public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 
