@@ -12,6 +12,7 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class BrokerUnackedByteBudgetTests
 {
+    private const long BudgetDecayBypassBytes = 1L << 40;
     private static readonly long Frequency = Stopwatch.Frequency;
 
     /// <summary>An arbitrary positive anchor: tick 0 means "no window anchored yet".</summary>
@@ -49,7 +50,43 @@ public sealed class BrokerUnackedByteBudgetTests
             ackedBytes,
             snapshotAtSend ?? budget.SnapshotDelivery(nowTicks - Seconds(rttSeconds), appLimitedAtSend),
             nowTicks);
-        budget.CompleteAckedPass(nowTicks);
+        CompleteAckedPassWithoutDecay(budget, nowTicks);
+    }
+
+    /// <summary>
+    /// Most state-machine tests isolate estimator output from decay hysteresis. A standing
+    /// queue deliberately invokes the production bypass so those tests can assert the raw
+    /// computed budget; dedicated decay tests below exercise smoothing separately.
+    /// </summary>
+    private static void CompleteAckedPassWithoutDecay(
+        BrokerUnackedByteBudget budget,
+        long nowTicks)
+    {
+        budget.Charge(BudgetDecayBypassBytes);
+        try
+        {
+            budget.CompleteAckedPass(nowTicks);
+        }
+        finally
+        {
+            budget.Release(BudgetDecayBypassBytes);
+        }
+    }
+
+    private static void SetCapWithoutDecay(
+        BrokerUnackedByteBudget budget,
+        long capBytes,
+        long nowTicks)
+    {
+        budget.Charge(BudgetDecayBypassBytes);
+        try
+        {
+            budget.SetCap(capBytes, nowTicks);
+        }
+        finally
+        {
+            budget.Release(BudgetDecayBypassBytes);
+        }
     }
 
     /// <summary>
@@ -284,7 +321,7 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_windowMaxRate", 1_000_000.0);
         SetField(budget, "_retainedLoadedMaxRate", 1_000_000.0);
 
-        budget.SetCap(1_000_000, T0);
+        SetCapWithoutDecay(budget, 1_000_000, T0);
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(22_500)
             .Because("replicated serving RTT, not base RTT, determines the loaded BDP");
@@ -307,7 +344,7 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_windowMaxRate", 1_000_000.0);
         SetField(budget, "_retainedLoadedMaxRate", 1_000_000.0);
 
-        budget.SetCap(1_000_000, T0);
+        SetCapWithoutDecay(budget, 1_000_000, T0);
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(10_000)
             .Because("queue-inflated serving RTT must not raise the floor it feeds back into");
@@ -328,7 +365,7 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_capacityProbeActive", true);
         SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(1.0));
 
-        budget.SetCap(1_000_000, T0);
+        SetCapWithoutDecay(budget, 1_000_000, T0);
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(12_500)
             .Because("probing exactly when the RTT floor dominates accelerated the ratchet; " +
@@ -432,7 +469,7 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 20_000, 0.200, T0 + Seconds(10.2));
         await Assert.That(budget.BudgetBytes).IsEqualTo(10_000);
 
-        budget.SetCap(1_000_000, T0 + Seconds(10.401));
+        SetCapWithoutDecay(budget, 1_000_000, T0 + Seconds(10.401));
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(15_000);
     }
@@ -464,7 +501,7 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 20_000, 0.200, T0 + Seconds(10.2));
         Ack(budget, 500, 0.005, T0 + Seconds(10.25));
         SetField(budget, "_retainedLoadedMaxRate", 0.0);
-        budget.SetCap(1_000_000, T0 + Seconds(10.25));
+        SetCapWithoutDecay(budget, 1_000_000, T0 + Seconds(10.25));
         budget.Charge(2_000);
 
         // Once the probe expires without another ack, admission must use the refreshed
@@ -561,7 +598,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var secondSend = budget.SnapshotDelivery(T0 + Seconds(0.001) - Seconds(0.005), appLimited: false);
         budget.OnAcked(1_000, firstSend, T0);
         budget.OnAcked(1_000, secondSend, T0 + Seconds(0.001));
-        budget.CompleteAckedPass(T0 + Seconds(0.001));
+        CompleteAckedPassWithoutDecay(budget, T0 + Seconds(0.001));
 
         // The second sample's delivered-counter delta covers both deliveries: 2,000 bytes
         // over its own 5ms sojourn = 400,000 B/s aggregate drain, independent of the 1ms
@@ -724,7 +761,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task SetCap_DoesNotConsumeAdmissionPressureBeforeAckPass()
+    public async Task SetCap_AndAckPass_BothRateLimitBudgetDecay()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.5,
@@ -733,14 +770,11 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_windowMaxRate", 1_000.0);
         SetField(budget, "_lastNormalBudgetBytes", 100_000L);
         SetField(budget, "_lastBudgetUpdateTimestamp", T0);
-        budget.RecordAdmissionBlock();
-
         budget.SetCap(1_000_000, T0 + Seconds(1.0));
         await Assert.That(budget.BudgetBytes).IsEqualTo(90_000);
 
         budget.CompleteAckedPass(T0 + Seconds(2.0));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(81_000)
-            .Because("the ack pass must still observe pressure seen just before SetCap");
+        await Assert.That(budget.BudgetBytes).IsEqualTo(81_000);
     }
 
     [Test]
@@ -830,23 +864,28 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task BudgetDecay_IsRateLimitedOnlyWhileAdmissionBlocks()
+    public async Task BudgetDecay_IsRateLimitedWithoutAdmissionBlocks()
     {
-        var blocked = BrokerUnackedByteBudget.BoundBudgetDecay(
+        var budget = BrokerUnackedByteBudget.BoundBudgetDecay(
             previousBudget: 100_000,
             computedBudget: 10_000,
             elapsedSeconds: 1.0,
-            admissionWasBlocked: true,
-            unackedBytes: 0);
-        var unblocked = BrokerUnackedByteBudget.BoundBudgetDecay(
-            previousBudget: 100_000,
-            computedBudget: 10_000,
-            elapsedSeconds: 1.0,
-            admissionWasBlocked: false,
             unackedBytes: 0);
 
-        await Assert.That(blocked).IsEqualTo(90_000);
-        await Assert.That(unblocked).IsEqualTo(10_000);
+        await Assert.That(budget).IsEqualTo(90_000);
+    }
+
+    [Test]
+    public async Task BudgetDecay_FirstRecomputePreservesColdStartBudget()
+    {
+        var budget = BrokerUnackedByteBudget.BoundBudgetDecay(
+            previousBudget: 100_000,
+            computedBudget: 10_000,
+            elapsedSeconds: 0,
+            unackedBytes: 0);
+
+        await Assert.That(budget).IsEqualTo(100_000)
+            .Because("the first estimator sample has no elapsed decay interval");
     }
 
     [Test]
@@ -859,13 +898,11 @@ public sealed class BrokerUnackedByteBudgetTests
             previousBudget: 100_000,
             computedBudget: 10_000,
             elapsedSeconds: 1.0,
-            admissionWasBlocked: true,
             unackedBytes: 20_000);
         var modestOccupancy = BrokerUnackedByteBudget.BoundBudgetDecay(
             previousBudget: 100_000,
             computedBudget: 10_000,
             elapsedSeconds: 1.0,
-            admissionWasBlocked: true,
             unackedBytes: 19_999);
 
         await Assert.That(standingQueue).IsEqualTo(10_000);
@@ -1296,7 +1333,7 @@ public sealed class BrokerUnackedByteBudgetTests
             sendSnapshots[i] = budget.SnapshotDelivery(T0 + Seconds(i * 0.00001), appLimited: false);
         for (var i = 0; i < 5; i++)
             budget.OnAcked(1_000_000, sendSnapshots[i], T0 + Seconds(0.100 + i * 0.00001));
-        budget.CompleteAckedPass(T0 + Seconds(0.100 + 4 * 0.00001));
+        CompleteAckedPassWithoutDecay(budget, T0 + Seconds(0.100 + 4 * 0.00001));
 
         // Each sample measures the cumulative delivered delta over its own ~100ms sojourn;
         // the last one reads the true aggregate drain of ~50 MB/s.
