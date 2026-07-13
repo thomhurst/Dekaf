@@ -83,6 +83,18 @@ public sealed class ResponseFrameReaderTests
     }
 
     [Test]
+    public async Task ReadFrameAsync_LargeFrame_UsesNativePooledMemory()
+    {
+        var frame = BuildFrame(correlationId: 12, payloadSize: ResponseBufferPool.NativeMemoryThresholdBytes);
+        using var reader = CreateReader(out _, receiveBufferSize: 4096, chunks: [frame]);
+
+        var result = await reader.ReadFrameAsync();
+
+        await Assert.That(result.Buffer.UsesNativeMemory).IsTrue();
+        await AssertPayloadAsync(result, ResponseBufferPool.NativeMemoryThresholdBytes);
+    }
+
+    [Test]
     public async Task ReadFrameAsync_TrailingPartialFrame_CompletesOnNextChunk()
     {
         var first = BuildFrame(correlationId: 1, payloadSize: 20);

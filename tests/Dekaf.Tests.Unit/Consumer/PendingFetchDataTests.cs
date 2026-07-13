@@ -191,7 +191,7 @@ public class PendingFetchDataTests
 
     [Test]
     [NotInParallel]
-    public async Task Dispose_RetainsParsedRecordSlabAcrossPooledReuse()
+    public async Task Dispose_ReleasesParsedRecordSlabBeforePooledReuse()
     {
         var originalMaxPoolSize = MaxPoolSizeField.GetValue(null);
         var originalPool = PoolField.GetValue(null);
@@ -212,7 +212,7 @@ public class PendingFetchDataTests
             second = PendingFetchData.Create("topic-2", 1, Array.Empty<RecordBatch>());
 
             await Assert.That(second).IsSameReferenceAs(first);
-            await Assert.That(slabField.GetValue(second)).IsSameReferenceAs(slab);
+            await Assert.That(slabField.GetValue(second)).IsNull();
         }
         finally
         {

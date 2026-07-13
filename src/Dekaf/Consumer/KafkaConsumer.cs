@@ -41,8 +41,14 @@ internal sealed class PendingFetchData : IDisposable
     // Pool for reusing PendingFetchData instances to eliminate per-partition-per-fetch allocation.
     // LockFreeStack avoids the ConcurrentStack node allocation on every return to the pool.
     private const int DefaultMaxPoolSize = 128;
+    // Slabs outlive an individual PendingFetchData use, but not the pooled object itself.
+    // Bound retention per size bucket so deep prefetch cannot pin one large slab per item.
+    private const int MaxParsedRecordSlabsPerBucket = 16;
     private static int s_maxPoolSize = DefaultMaxPoolSize;
     private static LockFreeStack<PendingFetchData> s_pool = new(DefaultMaxPoolSize);
+    private static readonly ArrayPool<Record> s_parsedRecordSlabPool = ArrayPool<Record>.Create(
+        RecordBatch.MaxReasonableLazyRecordCount,
+        MaxParsedRecordSlabsPerBucket);
     private static readonly Lock s_resizeLock = new();
 
     internal static int MaxPoolSizeValue => Volatile.Read(ref s_maxPoolSize);
@@ -196,9 +202,9 @@ internal sealed class PendingFetchData : IDisposable
         if (slab is null || slab.Length < totalRecordCount)
         {
             if (slab is not null)
-                ArrayPool<Record>.Shared.Return(slab, clearArray: false);
+                s_parsedRecordSlabPool.Return(slab, clearArray: false);
 
-            slab = ArrayPool<Record>.Shared.Rent(totalRecordCount);
+            slab = s_parsedRecordSlabPool.Rent(totalRecordCount);
             _parsedRecordSlab = slab;
         }
 
@@ -532,8 +538,12 @@ internal sealed class PendingFetchData : IDisposable
         }
 
         var parsedRecordSlab = _parsedRecordSlab;
+        _parsedRecordSlab = null;
         if (parsedRecordSlab is not null)
+        {
             parsedRecordSlab.AsSpan(0, _parsedRecordSlabCount).Clear();
+            s_parsedRecordSlabPool.Return(parsedRecordSlab, clearArray: false);
+        }
         _parsedRecordSlabCount = 0;
 
         // Return the batch list to the pool for reuse

@@ -8,7 +8,7 @@ namespace Dekaf.Networking;
 /// <summary>
 /// Reads length-prefixed Kafka response frames directly from the connection's read source
 /// (the raw <see cref="Socket"/> for plain TCP, the <c>SslStream</c> for TLS) into pooled
-/// response arrays.
+/// pooled response storage.
 /// <para/>
 /// <b>Why not a Pipe?</b> The previous receive path pumped socket bytes into a
 /// <c>System.IO.Pipelines.Pipe</c> and then copied every frame out of the pipe's segments
@@ -41,8 +41,9 @@ internal sealed class ResponseFrameReader : IDisposable
     private int _end;
 
     // In-progress frame assembly state. Kept in fields (not locals) so that an EOF or a
-    // faulted read mid-frame can release the pooled array via AbandonInProgressFrame.
+    // faulted read mid-frame can release pooled storage via AbandonInProgressFrame.
     private byte[]? _frameArray;
+    private NativeResponseBuffer? _nativeFrame;
     private int _frameSize;
     private int _frameFilled;
 
@@ -87,7 +88,7 @@ internal sealed class ResponseFrameReader : IDisposable
 #endif
     public async ValueTask<ResponseFrame> ReadFrameAsync()
     {
-        if (_frameArray is null)
+        if (_frameArray is null && _nativeFrame is null)
         {
             // Accumulate the 4-byte size prefix through the internal buffer. Only ever
             // buffers ahead within the current receive; compaction moves at most 3 bytes.
@@ -111,12 +112,15 @@ internal sealed class ResponseFrameReader : IDisposable
             ConnectionHelper.ValidateResponseFrameSize(frameSize, _responseBufferPool.MaxArrayLength);
             _start += 4;
 
-            _frameArray = _responseBufferPool.Pool.Rent(frameSize);
+            if (frameSize >= ResponseBufferPool.NativeMemoryThresholdBytes)
+                _nativeFrame = _responseBufferPool.RentNative(frameSize);
+            else
+                _frameArray = _responseBufferPool.Pool.Rent(frameSize);
             _frameSize = frameSize;
 
             // Copy whatever part of the payload is already buffered.
             var buffered = Math.Min(frameSize, BufferedByteCount);
-            _buffer.Span.Slice(_start, buffered).CopyTo(_frameArray);
+            _buffer.Span.Slice(_start, buffered).CopyTo(FrameMemory.Span);
             _start += buffered;
             _frameFilled = buffered;
 
@@ -131,7 +135,7 @@ internal sealed class ResponseFrameReader : IDisposable
         // intermediate buffer, so large fetch payloads are copied exactly once.
         while (_frameFilled < _frameSize)
         {
-            var read = await ReadSourceAsync(_frameArray.AsMemory(_frameFilled, _frameSize - _frameFilled))
+            var read = await ReadSourceAsync(FrameMemory.Slice(_frameFilled, _frameSize - _frameFilled))
                 .ConfigureAwait(false);
             if (read == 0)
             {
@@ -143,8 +147,11 @@ internal sealed class ResponseFrameReader : IDisposable
             _frameFilled += read;
         }
 
-        var correlationId = BinaryPrimitives.ReadInt32BigEndian(_frameArray);
-        var response = new PooledResponseBuffer(_frameArray, _frameSize, isPooled: true, pool: _responseBufferPool);
+        var correlationId = BinaryPrimitives.ReadInt32BigEndian(FrameMemory.Span);
+        var response = _nativeFrame is not null
+            ? new PooledResponseBuffer(_nativeFrame, _frameSize)
+            : new PooledResponseBuffer(_frameArray!, _frameSize, isPooled: true, pool: _responseBufferPool);
+        _nativeFrame = null;
         _frameArray = null;
         return ResponseFrame.ForResponse(correlationId, response);
     }
@@ -223,10 +230,17 @@ internal sealed class ResponseFrameReader : IDisposable
     private void AbandonInProgressFrame()
     {
         var frameArray = _frameArray;
+        var nativeFrame = _nativeFrame;
         _frameArray = null;
+        _nativeFrame = null;
         if (frameArray is not null)
             _responseBufferPool.Pool.Return(frameArray);
+        nativeFrame?.Return();
     }
+
+    private Memory<byte> FrameMemory => _nativeFrame is not null
+        ? _nativeFrame.Memory
+        : _frameArray.AsMemory();
 }
 
 /// <summary>
