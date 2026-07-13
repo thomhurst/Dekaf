@@ -52,6 +52,8 @@ internal sealed class ConsumerRawBatchStressTest : IStressTestScenario
         using var gcStats = new GcStats();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
+        using var consumerDiagnostics = new ConsumerFetchDiagnosticsTracker(options.Topic);
+        consumerDiagnostics.Start(StressTestHelpers.CaptureConsumerDiagnostics(consumer)!);
 
         Console.WriteLine($"  Running Dekaf consumer-raw-batch stress test for {options.DurationMinutes} minutes...");
         Console.WriteLine($"  Start time: {DateTime.UtcNow:HH:mm:ss.fff} UTC");
@@ -67,6 +69,9 @@ internal sealed class ConsumerRawBatchStressTest : IStressTestScenario
 
         var samplerTask = StressTestHelpers.RunSamplerAsync(throughput, cts.Token);
         var resourceMonitorTask = StressTestHelpers.RunResourceMonitorAsync(cts.Token);
+        var consumerDiagnosticsTask = consumerDiagnostics.RunSamplerAsync(
+            () => StressTestHelpers.CaptureConsumerDiagnostics(consumer),
+            cts.Token);
 
         try
         {
@@ -102,6 +107,8 @@ internal sealed class ConsumerRawBatchStressTest : IStressTestScenario
 
         try { await samplerTask.ConfigureAwait(false); } catch { }
         try { await resourceMonitorTask.ConfigureAwait(false); } catch { }
+        try { await consumerDiagnosticsTask.ConfigureAwait(false); } catch { }
+        consumerDiagnostics.TryTakeSample(() => StressTestHelpers.CaptureConsumerDiagnostics(consumer));
 
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
@@ -121,7 +128,8 @@ internal sealed class ConsumerRawBatchStressTest : IStressTestScenario
             Throughput = throughput.GetSnapshot(),
             Latency = null,
             GcStats = gcStats.ToSnapshot(),
-            CpuTimeSeconds = throughput.CpuTimeSeconds
+            CpuTimeSeconds = throughput.CpuTimeSeconds,
+            ConsumerFetchDiagnostics = consumerDiagnostics.GetSnapshot()
         };
     }
 }

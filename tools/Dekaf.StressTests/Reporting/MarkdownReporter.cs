@@ -5,7 +5,7 @@ namespace Dekaf.StressTests.Reporting;
 
 internal static class MarkdownReporter
 {
-    private const int MaxConnectionScaleTimelineRows = 100;
+    private const int MaxTimelineRows = 100;
 
     public static string Generate(StressTestResults results)
     {
@@ -30,6 +30,7 @@ internal static class MarkdownReporter
 
             GenerateThroughputTable(sb, title, groupResults);
             GenerateConnectionScaleTimeline(sb, groupResults, label);
+            GenerateConsumerFetchTimeline(sb, groupResults, label);
             GenerateLatencyOutlierTimeline(sb, groupResults, label);
 
             var transactionalResults = groupResults
@@ -179,7 +180,7 @@ internal static class MarkdownReporter
         if (rows.Count == 0)
             return;
 
-        var displayedRows = SampleEvenly(rows, MaxConnectionScaleTimelineRows);
+        var displayedRows = SampleEvenly(rows, MaxTimelineRows);
         var omittedRows = rows.Count - displayedRows.Count;
 
         sb.AppendLine($"## Connection Scale Timeline - {label}");
@@ -218,6 +219,54 @@ internal static class MarkdownReporter
         }
 
         return sampled;
+    }
+
+    private static void GenerateConsumerFetchTimeline(
+        StringBuilder sb,
+        List<StressTestResult> results,
+        string label)
+    {
+        var rows = results
+            .SelectMany(result => (result.ConsumerFetchDiagnostics?.Samples ?? [])
+                .Select(sample => (Result: result, Sample: sample)))
+            .OrderBy(row => row.Sample.CapturedAtUtc)
+            .ToList();
+        if (rows.Count == 0)
+            return;
+
+        var displayedRows = SampleEvenly(rows, MaxTimelineRows);
+        var omittedRows = rows.Count - displayedRows.Count;
+
+        sb.AppendLine($"## Consumer Fetch Timeline - {label}");
+        sb.AppendLine();
+        sb.AppendLine("| Client | Interval end UTC | Fetch req/s | Bytes/fetch | Avg fetch RTT | Queues (pending / buffer / total) | Prefetched | Connection reaps | Nearest throughput |");
+        sb.AppendLine("|--------|------------------|------------:|------------:|--------------:|----------------------------------:|-----------:|-----------------:|-------------------:|");
+        foreach (var row in displayedRows)
+        {
+            var nearest = row.Result.Throughput.IntervalSamples
+                .MinBy(sample => Math.Abs((sample.CapturedAtUtc - row.Sample.CapturedAtUtc).TotalMilliseconds));
+            var throughput = nearest is null
+                ? "-"
+                : $"{nearest.ElapsedSeconds:F0}s / {nearest.MessagesPerSecond:N0} msg/s";
+            var intervalStart = row.Sample.CapturedAtUtc.AddSeconds(-row.Sample.IntervalSeconds);
+            var reaps = row.Result.ConsumerFetchDiagnostics!.ConnectionReapEvents.Count(reap =>
+                reap.OccurredAtUtc > intervalStart && reap.OccurredAtUtc <= row.Sample.CapturedAtUtc);
+            var reapSummary = reaps == 0 ? "-" : $"{reaps} reap{(reaps == 1 ? "" : "s")}";
+
+            sb.AppendLine(
+                $"| {row.Result.Client} | {row.Sample.CapturedAtUtc:HH:mm:ss} | " +
+                $"{row.Sample.FetchRequestsPerSecond:F2} | {FormatDiagnosticBytes(row.Sample.BytesPerFetch)} | " +
+                $"{row.Sample.AverageFetchRttMs:F2}ms | " +
+                $"{row.Sample.PendingFetchDepth} / {row.Sample.PrefetchBufferDepth} / {row.Sample.PrefetchDepth} | " +
+                $"{FormatDiagnosticBytes(row.Sample.PrefetchedBytes)} | {reapSummary} | {throughput} |");
+        }
+
+        if (omittedRows > 0)
+            sb.AppendLine($"*{omittedRows:N0} fetch sample(s) omitted; rows sampled across the full timeline.*");
+
+        sb.AppendLine();
+        sb.AppendLine("*Bytes/fetch is consumed message payload bytes divided by completed fetch requests for the interval; queue depths are point-in-time samples.*");
+        sb.AppendLine();
     }
 
     private static double ComparisonMessagesPerSecond(StressTestResult result) =>
@@ -510,13 +559,22 @@ internal static class MarkdownReporter
         _ => scenario
     };
 
-    private static string FormatBytes(long numBytes) => numBytes switch
+    private static string FormatBytes(long numBytes) => FormatBytes(numBytes, 2, useBinaryPrefixes: false);
+
+    private static string FormatDiagnosticBytes(double bytes) => FormatBytes(bytes, 1, useBinaryPrefixes: true);
+
+    private static string FormatBytes(double bytes, int decimalPlaces, bool useBinaryPrefixes)
     {
-        < 1024 => $"{numBytes} B",
-        < 1024 * 1024 => $"{numBytes / 1024.0:F2} KB",
-        < 1024 * 1024 * 1024 => $"{numBytes / (1024.0 * 1024):F2} MB",
-        _ => $"{numBytes / (1024.0 * 1024 * 1024):F2} GB"
-    };
+        var format = $"F{decimalPlaces}";
+        var (value, unit) = bytes switch
+        {
+            < 1024 => (bytes, "B"),
+            < 1024 * 1024 => (bytes / 1024.0, useBinaryPrefixes ? "KiB" : "KB"),
+            < 1024 * 1024 * 1024 => (bytes / (1024.0 * 1024), useBinaryPrefixes ? "MiB" : "MB"),
+            _ => (bytes / (1024.0 * 1024 * 1024), useBinaryPrefixes ? "GiB" : "GB")
+        };
+        return unit == "B" ? $"{value:F0} {unit}" : $"{value.ToString(format)} {unit}";
+    }
 
     private static string EscapeTableCell(string value) =>
         value

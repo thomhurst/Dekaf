@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
+using Dekaf.Networking;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 
@@ -44,6 +45,7 @@ public sealed class ConsumerDiagnosticSnapshotTests
         SetField(consumer, "_minimumFetchBufferEpoch", 5);
         SetField(consumer, "_coordinatorRevokedPartitionsPendingFetchClearMarkerPresent", 1);
         SetField(consumer, "_coordinatorRevokedPartitionsPendingFetchClearPending", 1);
+        RecordConnectionReap(consumer, brokerId: 2, connectionIndex: 1, idleDurationMs: 540_010);
         EnqueuePendingFetch(consumer, PendingFetchData.Create(
             partition.Topic,
             partition.Partition,
@@ -73,6 +75,10 @@ public sealed class ConsumerDiagnosticSnapshotTests
             item.EndOffset == 123 && item.Epoch == 8);
         await Assert.That(snapshot.AdaptivePartitionFetchBytes).IsEqualTo(2_000_000);
         await Assert.That(snapshot.AdaptiveFetchMaxBytes).IsEqualTo(20_000_000);
+        await Assert.That(snapshot.ConnectionReapEvents).HasSingleItem();
+        await Assert.That(snapshot.ConnectionReapEvents[0].BrokerId).IsEqualTo(2);
+        await Assert.That(snapshot.ConnectionReapEvents[0].ConnectionIndex).IsEqualTo(1);
+        await Assert.That(snapshot.ConnectionReapEvents[0].IdleDurationMs).IsEqualTo(540_010);
     }
 
     private static TField GetField<TField>(KafkaConsumer<string, string> consumer, string name) =>
@@ -94,4 +100,18 @@ public sealed class ConsumerDiagnosticSnapshotTests
             .GetMethod("EnqueuePendingFetch", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("Could not find EnqueuePendingFetch."))
         .Invoke(consumer, [pending]);
+
+    private static void RecordConnectionReap(
+        KafkaConsumer<string, string> consumer,
+        int brokerId,
+        int connectionIndex,
+        long idleDurationMs)
+    {
+        var pool = GetField<IConnectionPool>(consumer, "_connectionPool");
+        (pool.GetType().GetMethod(
+            "RecordConnectionReapDiagnostic",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Could not find RecordConnectionReapDiagnostic."))
+        .Invoke(pool, [brokerId, connectionIndex, idleDurationMs]);
+    }
 }
