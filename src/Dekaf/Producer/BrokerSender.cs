@@ -1343,7 +1343,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && coalescedCount < maxCoalesce
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
-                    && Volatile.Read(ref _totalPendingResponseCount) == 0
                     && ShouldMicroLinger(
                         coalescedBatches,
                         coalescedCount,
@@ -1742,6 +1741,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // No batches were coalesced at all — nothing to clear.
                     coalescedCount = 0;
                 }
+
+                // Keep forming request waves while the pipeline is busy. Without rearming here,
+                // only the first request after an idle period can coalesce adjacent partitions.
+                if (sentThisIteration)
+                    waveCoalesceArmed = true;
 
                 // ── 7. Compute timeout and wait ──
                 if (transactionEnrollmentReady)
