@@ -11,7 +11,8 @@ namespace Dekaf.Producer;
 /// Under open-loop saturation, append-to-ack latency equals standing unacked bytes divided
 /// by the broker's drain rate; capping the standing bytes to
 /// <c>target × measured drain rate</c> caps the latency. The RTT safety floor uses a
-/// periodically refreshed minimum RTT so standing queue delay cannot inflate its horizon.
+/// periodically refreshed minimum RTT plus the loaded serving RTT, so standing queue delay
+/// cannot replace the base RTT while replicated service time still keeps the pipe full.
 /// <para>
 /// Drain rate is measured per acknowledged request, BBR-style: each request snapshots the
 /// cumulative delivered-bytes counter at send time, and its rate sample is the delivered
@@ -60,12 +61,15 @@ internal sealed class BrokerUnackedByteBudget
 
     private const int WindowBucketCount = 20;
     private const double WindowBucketSeconds = 0.100;
+    private const double LoadedRateHalfLifeSeconds = 60.0;
     private const double OccupancySafetyMultiplier = 1.5;
     private const double ProbeGrowthThreshold = 1.01;
     private const double DeliveryLatencyEwmaWeight = 0.125;
+    private const double ServingRttEwmaWeight = 0.125;
     private const double MinimumLatencyBudgetScale = 0.10;
     private const double MinimumLatencyAdjustmentFactor = 0.75;
     private const double MaximumLatencyAdjustmentFactor = 1.05;
+    private const double MaximumBudgetDecayPerSecond = 0.10;
 
     /// <summary>
     /// Log2 histogram buckets for per-request diagnostics. Request sizes shift by
@@ -82,6 +86,8 @@ internal sealed class BrokerUnackedByteBudget
     /// enough history to ignore short scheduler and broker stalls.
     /// </summary>
     private static readonly long WindowBucketTicks = Math.Max(1, (long)(WindowBucketSeconds * Stopwatch.Frequency));
+    private static readonly double LoadedRateDecayPerBucket =
+        Math.Pow(0.5, WindowBucketSeconds / LoadedRateHalfLifeSeconds);
     private static readonly long LatencyControlIntervalTicks = Math.Max(1, Stopwatch.Frequency / 10);
 
     /// <summary>How long an observed base RTT remains valid before it is refreshed.</summary>
@@ -104,9 +110,13 @@ internal sealed class BrokerUnackedByteBudget
     /// the budget below BDP, underfill the pipe, lower the measured rate, and ratchet the
     /// budget down to the floor — collapsing throughput on high-latency links.</summary>
     private const double RttSafetyMultiplier = 1.5;
+    private const double MinRttProbeSafetyMultiplier = 1.0;
 
     private const int ProbeIntervalRtts = 8;
+    private const int ProbeEvaluationRtts = 3;
     private const double ProbeBudgetMultiplier = 1.25;
+    private const double RttFloorProbeBudgetMultiplier = 1.5;
+    private static readonly long MaxProbeIntervalTicks = Stopwatch.Frequency;
 
     // Cross-thread state.
     private long _unackedBytes;
@@ -136,8 +146,10 @@ internal sealed class BrokerUnackedByteBudget
     private readonly long[] _requestRttMicrosLog2Histogram = new long[HistogramBucketCount];
     private long _currentWindowBucket = long.MinValue;
     private double _windowMaxRate;
+    private double _retainedLoadedMaxRate;
     private long _windowMaxOccupancyBytes;
     private double _minRttSeconds;
+    private double _servingRttEwmaSeconds;
     private double _minRttProbeMinimumSeconds;
     private bool _hasMinRttSample;
     private long _minRttTimestamp;
@@ -149,18 +161,23 @@ internal sealed class BrokerUnackedByteBudget
     private long _capacityProbeDeadlineTimestamp;
     private long _capacityProbeEvaluationDeadlineTimestamp;
     private double _capacityProbeBaselineRate;
-    private double _capacityProbePeakRate;
+    private double _capacityProbeRateSum;
+    private int _capacityProbeRateSampleCount;
     private bool _capacityProbeActive;
     private double _deliveryLatencyEwmaSeconds;
     private double _latencyBudgetScale = 1.0;
     private long _nextLatencyControlTimestamp;
     private long _lastLatencyControlAdmissionBlockEvents;
+    private long _lastNormalBudgetBytes;
+    private long _lastBudgetUpdateTimestamp;
+    private long _lastBudgetAdmissionBlockEvents;
 
     public BrokerUnackedByteBudget(double targetSeconds, long floorBytes, long initialCapBytes)
     {
         _targetSeconds = targetSeconds;
         _floorBytes = Math.Max(1, floorBytes);
         _capBytes = Math.Max(_floorBytes, initialCapBytes);
+        _lastNormalBudgetBytes = _capBytes;
         Volatile.Write(ref _budgetBytes, _capBytes);
         Volatile.Write(ref _budgetAfterMinRttProbeBytes, _capBytes);
         Volatile.Write(ref _probeBudgetAfterMinRttProbeBytes, _capBytes);
@@ -341,7 +358,7 @@ internal sealed class BrokerUnackedByteBudget
         CompleteExpiredMinRttProbe(nowTicks);
         if (_capacityProbeActive && nowTicks >= _capacityProbeDeadlineTimestamp)
             DeactivateCapacityProbe();
-        RecomputeBudget();
+        RecomputeBudget(nowTicks);
     }
 
     /// <summary>
@@ -364,6 +381,13 @@ internal sealed class BrokerUnackedByteBudget
 
         var rttSeconds = (double)rttTicks / Stopwatch.Frequency;
         UpdateMinRtt(rttSeconds, nowTicks);
+        if (!sendSnapshot.AppLimited)
+        {
+            _servingRttEwmaSeconds = _servingRttEwmaSeconds == 0
+                ? rttSeconds
+                : _servingRttEwmaSeconds
+                    + ServingRttEwmaWeight * (rttSeconds - _servingRttEwmaSeconds);
+        }
         Volatile.Write(ref _minimumRttMicros, (long)(_minRttSeconds * 1_000_000));
         UpdateDeliveryLatency(
             sendSnapshot.OldestBatchTimestamp,
@@ -390,8 +414,8 @@ internal sealed class BrokerUnackedByteBudget
         var bytesPerSecond = deliveredDelta * (double)Stopwatch.Frequency / intervalTicks;
         if (bytesPerSecond > 0)
         {
-            AddRateSample(bytesPerSecond);
-            Volatile.Write(ref _maxRateBytesPerSecond, (long)_windowMaxRate);
+            AddRateSample(bytesPerSecond, sendSnapshot.AppLimited);
+            Volatile.Write(ref _maxRateBytesPerSecond, (long)GetEffectiveMaxRate());
         }
 
         UpdateCapacityProbe(bytesPerSecond, sendSnapshot.SendTimestamp, rttTicks, nowTicks);
@@ -412,7 +436,7 @@ internal sealed class BrokerUnackedByteBudget
         if (writtenUnackedPeak > 0)
             AddOccupancySample(writtenUnackedPeak);
 
-        RecomputeBudget();
+        RecomputeBudget(nowTicks);
     }
 
     private void UpdateDeliveryLatency(
@@ -580,15 +604,29 @@ internal sealed class BrokerUnackedByteBudget
                 _windowMaxOccupancyBytes = Max(_occupancyBucketMaxValues);
         }
 
+        if (_retainedLoadedMaxRate > _windowMaxRate)
+        {
+            var decay = elapsed == 1
+                ? LoadedRateDecayPerBucket
+                : Math.Pow(LoadedRateDecayPerBucket, elapsed);
+            _retainedLoadedMaxRate = _windowMaxRate
+                + (_retainedLoadedMaxRate - _windowMaxRate) * decay;
+        }
+
         _currentWindowBucket = bucket;
     }
 
-    private void AddRateSample(double bytesPerSecond)
+    private void AddRateSample(double bytesPerSecond, bool appLimited)
     {
         var slot = (int)(_currentWindowBucket % WindowBucketCount);
         _rateBucketMaxValues[slot] = Math.Max(_rateBucketMaxValues[slot], bytesPerSecond);
         _windowMaxRate = Math.Max(_windowMaxRate, bytesPerSecond);
+        _retainedLoadedMaxRate = appLimited
+            ? 0
+            : Math.Max(_retainedLoadedMaxRate, bytesPerSecond);
     }
+
+    private double GetEffectiveMaxRate() => Math.Max(_windowMaxRate, _retainedLoadedMaxRate);
 
     private void AddOccupancySample(long bytes)
     {
@@ -603,7 +641,10 @@ internal sealed class BrokerUnackedByteBudget
         long rttTicks,
         long nowTicks)
     {
-        var probeIntervalTicks = ProbeIntervalRtts * rttTicks;
+        var probeIntervalTicks = GetProbeIntervalTicks(rttTicks);
+        var probeDurationTicks = Math.Max(
+            probeIntervalTicks,
+            (ProbeEvaluationRtts + 1L) * rttTicks);
         if (_nextProbeTimestamp == 0)
             _nextProbeTimestamp = nowTicks + probeIntervalTicks;
 
@@ -623,23 +664,26 @@ internal sealed class BrokerUnackedByteBudget
             if (sendTimestamp < _capacityProbeStartTimestamp)
                 return;
 
-            _capacityProbePeakRate = Math.Max(_capacityProbePeakRate, bytesPerSecond);
+            _capacityProbeRateSum += bytesPerSecond;
+            _capacityProbeRateSampleCount++;
             if (_capacityProbeEvaluationDeadlineTimestamp == 0)
             {
-                _capacityProbeEvaluationDeadlineTimestamp = nowTicks + rttTicks;
+                _capacityProbeEvaluationDeadlineTimestamp = nowTicks + ProbeEvaluationRtts * rttTicks;
                 return;
             }
 
             if (nowTicks < _capacityProbeEvaluationDeadlineTimestamp)
                 return;
 
-            if (_capacityProbePeakRate > _capacityProbeBaselineRate * ProbeGrowthThreshold)
+            var averageRate = _capacityProbeRateSum / _capacityProbeRateSampleCount;
+            if (averageRate > _capacityProbeBaselineRate * ProbeGrowthThreshold)
             {
-                _capacityProbeBaselineRate = _capacityProbePeakRate;
+                _capacityProbeBaselineRate = averageRate;
                 _capacityProbeStartTimestamp = nowTicks;
-                _capacityProbePeakRate = 0;
+                _capacityProbeRateSum = 0;
+                _capacityProbeRateSampleCount = 0;
                 _capacityProbeEvaluationDeadlineTimestamp = 0;
-                Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeIntervalTicks);
+                Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeDurationTicks);
             }
             else
             {
@@ -656,10 +700,11 @@ internal sealed class BrokerUnackedByteBudget
         if (nowTicks - _nextProbeTimestamp < probeIntervalTicks)
         {
             _capacityProbeStartTimestamp = nowTicks;
-            _capacityProbeBaselineRate = _windowMaxRate;
-            _capacityProbePeakRate = 0;
+            _capacityProbeBaselineRate = GetEffectiveMaxRate();
+            _capacityProbeRateSum = 0;
+            _capacityProbeRateSampleCount = 0;
             _capacityProbeEvaluationDeadlineTimestamp = 0;
-            Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeIntervalTicks);
+            Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeDurationTicks);
             Volatile.Write(ref _capacityProbeActive, true);
         }
 
@@ -668,9 +713,15 @@ internal sealed class BrokerUnackedByteBudget
         _nextProbeTimestamp = nowTicks + probeIntervalTicks;
     }
 
+    private static long GetProbeIntervalTicks(long rttTicks)
+        => rttTicks >= MaxProbeIntervalTicks / ProbeIntervalRtts
+            ? MaxProbeIntervalTicks
+            : ProbeIntervalRtts * rttTicks;
+
     private void DeactivateCapacityProbe()
     {
-        _capacityProbePeakRate = 0;
+        _capacityProbeRateSum = 0;
+        _capacityProbeRateSampleCount = 0;
         _capacityProbeEvaluationDeadlineTimestamp = 0;
         Volatile.Write(ref _capacityProbeActive, false);
         Volatile.Write(ref _capacityProbeDeadlineTimestamp, 0);
@@ -694,20 +745,22 @@ internal sealed class BrokerUnackedByteBudget
         return maximum;
     }
 
-    private void RecomputeBudget()
+    private void RecomputeBudget(long nowTicks)
     {
         var minRttProbeActive = _minRttProbeUntilTimestamp != 0;
         var postProbeMinRttSeconds = _minRttSeconds;
         if (minRttProbeActive && _minRttProbeMinimumSeconds != double.MaxValue)
             postProbeMinRttSeconds = _minRttProbeMinimumSeconds;
-        var normalBudget = ComputeBudget(
+        var computedNormalBudget = ComputeBudget(
             minRttProbeActive: false,
             capacityProbeActive: false,
             postProbeMinRttSeconds);
+        var normalBudget = ApplyNormalBudgetDecayHysteresis(computedNormalBudget, nowTicks);
         var probeBudget = ComputeBudget(
             minRttProbeActive: false,
             capacityProbeActive: true,
             postProbeMinRttSeconds);
+        probeBudget = Math.Max(normalBudget, probeBudget);
         Volatile.Write(ref _budgetAfterMinRttProbeBytes, normalBudget);
         Volatile.Write(ref _probeBudgetAfterMinRttProbeBytes, probeBudget);
 
@@ -727,6 +780,43 @@ internal sealed class BrokerUnackedByteBudget
         Volatile.Write(ref _budgetBytes, budget);
     }
 
+    private long ApplyNormalBudgetDecayHysteresis(long computedBudget, long nowTicks)
+    {
+        var admissionBlockEvents = AdmissionBlockEvents;
+        var admissionWasBlocked = admissionBlockEvents > _lastBudgetAdmissionBlockEvents;
+        var elapsedSeconds = _lastBudgetUpdateTimestamp == 0
+            ? 0
+            : Math.Max(0, (double)(nowTicks - _lastBudgetUpdateTimestamp) / Stopwatch.Frequency);
+        var budget = BoundBudgetDecay(
+            _lastNormalBudgetBytes,
+            computedBudget,
+            elapsedSeconds,
+            admissionWasBlocked);
+        budget = Math.Min(budget, _capBytes);
+        _lastNormalBudgetBytes = budget;
+        _lastBudgetUpdateTimestamp = nowTicks;
+        _lastBudgetAdmissionBlockEvents = admissionBlockEvents;
+        return budget;
+    }
+
+    internal static long BoundBudgetDecay(
+        long previousBudget,
+        long computedBudget,
+        double elapsedSeconds,
+        bool admissionWasBlocked)
+    {
+        if (!admissionWasBlocked
+            || computedBudget >= previousBudget
+            || elapsedSeconds <= 0)
+        {
+            return computedBudget;
+        }
+
+        var decayFraction = Math.Min(1.0, MaximumBudgetDecayPerSecond * elapsedSeconds);
+        var minimumBudget = (long)Math.Ceiling(previousBudget * (1.0 - decayFraction));
+        return Math.Max(computedBudget, minimumBudget);
+    }
+
     private long ComputeBudget(
         bool minRttProbeActive,
         bool capacityProbeActive,
@@ -734,7 +824,8 @@ internal sealed class BrokerUnackedByteBudget
     {
         long budget;
         double rateBudgetBytes = 0;
-        if (_windowMaxRate == 0)
+        var effectiveMaxRate = GetEffectiveMaxRate();
+        if (effectiveMaxRate == 0)
         {
             // Cold start: no drain estimate yet — keep today's semantics (cap) so short-lived
             // producers and tests never see admission throttling.
@@ -743,13 +834,24 @@ internal sealed class BrokerUnackedByteBudget
         else
         {
             var latencyGovernedTargetSeconds = _targetSeconds * _latencyBudgetScale;
-            var horizonSeconds = _hasMinRttSample && !minRttProbeActive
-                ? Math.Max(latencyGovernedTargetSeconds, RttSafetyMultiplier * minRttSeconds)
+            var loadAwareRttSeconds = _retainedLoadedMaxRate > 0
+                ? Math.Max(minRttSeconds, _servingRttEwmaSeconds)
+                : minRttSeconds;
+            var rttFloorSeconds = minRttProbeActive
+                ? MinRttProbeSafetyMultiplier * minRttSeconds
+                : RttSafetyMultiplier * loadAwareRttSeconds;
+            var horizonSeconds = _hasMinRttSample
+                ? Math.Max(latencyGovernedTargetSeconds, rttFloorSeconds)
                 : latencyGovernedTargetSeconds;
-            rateBudgetBytes = _windowMaxRate * horizonSeconds;
+            rateBudgetBytes = effectiveMaxRate * horizonSeconds;
             var estimatedBytes = rateBudgetBytes;
             if (capacityProbeActive && !minRttProbeActive)
-                estimatedBytes *= ProbeBudgetMultiplier;
+            {
+                var multiplier = rttFloorSeconds > latencyGovernedTargetSeconds
+                    ? RttFloorProbeBudgetMultiplier
+                    : ProbeBudgetMultiplier;
+                estimatedBytes *= multiplier;
+            }
 
             budget = (long)estimatedBytes;
         }

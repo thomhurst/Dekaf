@@ -3167,11 +3167,12 @@ public sealed class BrokerSenderSendLoopTests
                 responses[i].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: i * 10));
             }
 
-            // The first ack establishes a rate and starts the target-only base-RTT probe.
-            // Its tiny target clamps to 200 bytes; recent occupancy is deliberately ignored
-            // until the standing queue drains and the minimum-RTT probe completes.
+            // The first ack establishes a rate and starts the base-RTT probe. The probe
+            // ignores recent occupancy but retains one BDP, exactly this one-request pipe,
+            // so sampling base RTT cannot empty the connection. Tick conversion may truncate
+            // the rate-times-RTT reconstruction by one byte.
             await WaitUntilAsync(() => budget.BudgetBytes != 1_000_000, cancellationToken);
-            await Assert.That(budget.BudgetBytes).IsEqualTo(200);
+            await Assert.That(budget.BudgetBytes).IsBetween(dataSize - 1, dataSize);
         }
         finally
         {
