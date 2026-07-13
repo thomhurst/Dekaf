@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
+using System.Runtime.Versioning;
 using Dekaf.Errors;
 using Dekaf.Networking;
 
@@ -85,8 +87,15 @@ public sealed class ResponseFrameReaderTests
     }
 
     [Test]
-    public async Task ReadFrameAsync_LargeFrame_UsesNativePooledMemory()
+    public async Task ReadFrameAsync_LargeStreamFrame_UsesNativePooledMemory()
     {
+#if NET8_0
+        // The net8 test target consumes Dekaf's netstandard2.0 asset, so this test executes
+        // ReadSourceAsync's NETSTANDARD2_0 native-stream staging branch in CI.
+        var framework = typeof(ResponseFrameReader).Assembly
+            .GetCustomAttribute<TargetFrameworkAttribute>()?.FrameworkName;
+        await Assert.That(framework).IsEqualTo(".NETStandard,Version=v2.0");
+#endif
         var frame = BuildFrame(correlationId: 12, payloadSize: ResponseBufferPool.NativeMemoryThresholdBytes);
         using var reader = CreateReader(out _, receiveBufferSize: 4096, chunks: [frame]);
 
