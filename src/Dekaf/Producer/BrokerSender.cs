@@ -2250,20 +2250,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// True when a response can be matched directly to its only batch without populating
-    /// the reusable topic-partition lookup.
+    /// True when a response partition belongs to the expected batch. The caller proves the
+    /// single-batch/single-response shape before indexing pooled response arrays.
     /// </summary>
-    internal static bool IsDirectSingleBatchResponse(
-        int batchCount,
-        int responseTopicCount,
-        int responsePartitionCount,
+    internal static bool IsMatchingResponsePartition(
         TopicPartition expected,
         string responseTopic,
         int responsePartition)
-        => batchCount == 1
-            && responseTopicCount == 1
-            && responsePartitionCount == 1
-            && expected.Topic == responseTopic
+        => expected.Topic == responseTopic
             && expected.Partition == responsePartition;
 
     internal static (int QuietMicroseconds, int MaximumMicroseconds) SelectWaveCoalesceBounds(int lingerMs)
@@ -2747,10 +2741,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && batches[0] is { } directBatch
                     && response.TopicCount == 1
                     && response.Responses[0].PartitionCount == 1
-                    && IsDirectSingleBatchResponse(
-                        count,
-                        response.TopicCount,
-                        response.Responses[0].PartitionCount,
+                    && IsMatchingResponsePartition(
                         directBatch.TopicPartition,
                         response.Responses[0].Name,
                         response.Responses[0].PartitionResponses[0].Index))

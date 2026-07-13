@@ -172,28 +172,19 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task IsDirectSingleBatchResponse_RequiresExactOnePartitionMatch()
+    public async Task IsMatchingResponsePartition_RequiresExactTopicPartition()
     {
         var expected = new TopicPartition("test-topic", 2);
 
-        await Assert.That(BrokerSender.IsDirectSingleBatchResponse(
-            batchCount: 1,
-            responseTopicCount: 1,
-            responsePartitionCount: 1,
+        await Assert.That(BrokerSender.IsMatchingResponsePartition(
             expected,
             responseTopic: "test-topic",
             responsePartition: 2)).IsTrue();
-        await Assert.That(BrokerSender.IsDirectSingleBatchResponse(
-            batchCount: 2,
-            responseTopicCount: 1,
-            responsePartitionCount: 1,
+        await Assert.That(BrokerSender.IsMatchingResponsePartition(
             expected,
             responseTopic: "test-topic",
-            responsePartition: 2)).IsFalse();
-        await Assert.That(BrokerSender.IsDirectSingleBatchResponse(
-            batchCount: 1,
-            responseTopicCount: 1,
-            responsePartitionCount: 1,
+            responsePartition: 3)).IsFalse();
+        await Assert.That(BrokerSender.IsMatchingResponsePartition(
             expected,
             responseTopic: "other-topic",
             responsePartition: 2)).IsFalse();
