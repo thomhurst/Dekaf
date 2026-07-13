@@ -178,6 +178,19 @@ await foreach (var batch in consumer.ConsumeAsync(cts.Token).Batch(100))
 }
 ```
 
+For sustained CPU-bound consumers on .NET 10 Server GC, watch throughput and GC
+telemetry over time. If permanent throughput steps line up with Gen2 collections and
+a changing GC heap count, benchmark with dynamic GC adaptation disabled:
+
+```bash
+DOTNET_GCDynamicAdaptationMode=0 dotnet MyConsumer.dll
+```
+
+Set the variable before process startup. Disabling DATAS keeps the Server GC heap
+topology stable, which can improve sustained throughput on tightly CPU-pinned
+workloads, but it may retain more managed memory. Keep the runtime default unless an
+A/B test of your production-shaped workload shows the same Gen2-correlated decay.
+
 #### Low Latency
 
 ```csharp

@@ -128,6 +128,11 @@ jobs:
     env:
       BROKER_CPUS: 0-5
       CLIENT_CPUS: 6,7
+      # .NET 10 DATAS can shrink Server GC heap count at Gen2 boundaries on the
+      # two-core consumer runner, creating permanent throughput steps unrelated to
+      # either Kafka client. Pin consumer jobs to stable Server GC topology so paired
+      # comparisons measure client work; producer jobs retain the runtime default.
+      DOTNET_GCDynamicAdaptationMode: ${{ startsWith(matrix.scenario, 'consumer') && '0' || '1' }}
       # Broker log dirs live on tmpfs so disk I/O never caps ingestion. Sized above the
       # worst-case retention overshoot (see KafkaEnvironment.RetentionConfig for the
       # math); a fill halts the broker, so the disk monitor below samples usage during

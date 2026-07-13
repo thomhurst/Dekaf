@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+using System.Runtime;
 using Dekaf.Consumer;
 using Dekaf.Diagnostics;
 using Dekaf.Networking;
@@ -13,6 +14,7 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
 
     private readonly string _topic;
     private readonly MeterListener? _listener;
+    private readonly Func<GcDiagnosticSnapshot> _captureGcDiagnostics;
     private readonly List<ConsumerFetchDiagnosticSample> _samples = [];
     private DateTimeOffset? _lastSampleAtUtc;
     private long _fetchRequestCount;
@@ -21,11 +23,16 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
     private long _lastFetchRequestCount;
     private long _lastFetchDurationTicks;
     private long _lastReceivedBytes;
+    private GcDiagnosticSnapshot _lastGcDiagnostics;
     private ConnectionReapDiagnostic[] _connectionReapEvents = [];
 
-    internal ConsumerFetchDiagnosticsTracker(string topic, bool listenToMetrics = true)
+    internal ConsumerFetchDiagnosticsTracker(
+        string topic,
+        bool listenToMetrics = true,
+        Func<GcDiagnosticSnapshot>? captureGcDiagnostics = null)
     {
         _topic = topic;
+        _captureGcDiagnostics = captureGcDiagnostics ?? CaptureGcDiagnostics;
         if (!listenToMetrics)
             return;
         if (Interlocked.CompareExchange(ref s_activeMetricListener, 1, 0) != 0)
@@ -74,6 +81,7 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
         _lastFetchRequestCount = Interlocked.Read(ref _fetchRequestCount);
         _lastFetchDurationTicks = Interlocked.Read(ref _fetchDurationTicks);
         _lastReceivedBytes = Interlocked.Read(ref _receivedBytes);
+        _lastGcDiagnostics = _captureGcDiagnostics();
         _connectionReapEvents = snapshot.ConnectionReapEvents;
     }
 
@@ -106,6 +114,7 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
         var intervalFetches = fetchRequestCount - _lastFetchRequestCount;
         var intervalFetchDurationTicks = fetchDurationTicks - _lastFetchDurationTicks;
         var intervalReceivedBytes = receivedBytes - _lastReceivedBytes;
+        var gcDiagnostics = _captureGcDiagnostics();
 
         _samples.Add(new ConsumerFetchDiagnosticSample
         {
@@ -120,13 +129,22 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
             PendingFetchDepth = snapshot.PendingFetchDepth,
             PrefetchBufferDepth = snapshot.PrefetchBufferDepth,
             PrefetchDepth = snapshot.PrefetchDepth,
-            PrefetchedBytes = snapshot.PrefetchedBytes
+            PrefetchedBytes = snapshot.PrefetchedBytes,
+            Gen0Collections = Math.Max(0, gcDiagnostics.Gen0Collections - _lastGcDiagnostics.Gen0Collections),
+            Gen1Collections = Math.Max(0, gcDiagnostics.Gen1Collections - _lastGcDiagnostics.Gen1Collections),
+            Gen2Collections = Math.Max(0, gcDiagnostics.Gen2Collections - _lastGcDiagnostics.Gen2Collections),
+            GcPauseDurationMs = Math.Max(0, gcDiagnostics.PauseDurationMs - _lastGcDiagnostics.PauseDurationMs),
+            GcHeapSizeBytes = gcDiagnostics.HeapSizeBytes,
+            GcHeapCount = gcDiagnostics.HeapCount,
+            GcDynamicAdaptationMode = gcDiagnostics.DynamicAdaptationMode,
+            ServerGc = gcDiagnostics.ServerGc
         });
 
         _lastSampleAtUtc = snapshot.CapturedAtUtc;
         _lastFetchRequestCount = fetchRequestCount;
         _lastFetchDurationTicks = fetchDurationTicks;
         _lastReceivedBytes = receivedBytes;
+        _lastGcDiagnostics = gcDiagnostics;
     }
 
     internal Task RunSamplerAsync(
@@ -171,6 +189,34 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
         return false;
     }
 
+    private static GcDiagnosticSnapshot CaptureGcDiagnostics()
+    {
+        var memoryInfo = GC.GetGCMemoryInfo();
+        var configuration = GC.GetConfigurationVariables();
+        return new GcDiagnosticSnapshot(
+            GC.CollectionCount(0),
+            GC.CollectionCount(1),
+            GC.CollectionCount(2),
+            GC.GetTotalPauseDuration().TotalMilliseconds,
+            memoryInfo.HeapSizeBytes,
+            ReadConfigurationInt32(configuration, "HeapCount"),
+            ReadConfigurationInt32(configuration, "GCDynamicAdaptationMode"),
+            GCSettings.IsServerGC);
+    }
+
+    private static int ReadConfigurationInt32(
+        IReadOnlyDictionary<string, object> configuration,
+        string key) =>
+        configuration.TryGetValue(key, out var value)
+            ? value switch
+            {
+                int result => result,
+                long result when result is >= int.MinValue and <= int.MaxValue => (int)result,
+                uint result when result <= int.MaxValue => (int)result,
+                _ => -1
+            }
+            : -1;
+
     public void Dispose()
     {
         _listener?.Dispose();
@@ -197,4 +243,22 @@ internal sealed class ConsumerFetchDiagnosticSample
     public required int PrefetchBufferDepth { get; init; }
     public required int PrefetchDepth { get; init; }
     public required long PrefetchedBytes { get; init; }
+    public int Gen0Collections { get; init; }
+    public int Gen1Collections { get; init; }
+    public int Gen2Collections { get; init; }
+    public double GcPauseDurationMs { get; init; }
+    public long GcHeapSizeBytes { get; init; }
+    public int GcHeapCount { get; init; }
+    public int GcDynamicAdaptationMode { get; init; } = -1;
+    public bool ServerGc { get; init; }
 }
+
+internal readonly record struct GcDiagnosticSnapshot(
+    int Gen0Collections,
+    int Gen1Collections,
+    int Gen2Collections,
+    double PauseDurationMs,
+    long HeapSizeBytes,
+    int HeapCount,
+    int DynamicAdaptationMode,
+    bool ServerGc);
