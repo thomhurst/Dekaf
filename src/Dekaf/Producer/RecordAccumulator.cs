@@ -1044,6 +1044,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly List<ProducerConnectionScaleDiagnostic> _connectionScaleEvents = [];
     private readonly List<ProducerBrokerBudgetDiagnostic> _brokerBudgetSamples = [];
     private readonly long[]? _coalesceWidthCounts;
+    private readonly ConcurrentDictionary<int, ProducerRequestDiagnosticCounters>? _brokerProduceRequestCounters;
     private long _produceRequestCount;
     private long _produceRequestDiagnosticsStartedAt;
     private long _nextBrokerBudgetDiagnosticTimestampMs;
@@ -2070,6 +2071,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (options.EnableDeliveryDiagnostics)
         {
             _coalesceWidthCounts = new long[MaxTrackedCoalesceWidth + 2];
+            _brokerProduceRequestCounters = new ConcurrentDictionary<int, ProducerRequestDiagnosticCounters>();
             _produceRequestDiagnosticsStartedAt = Stopwatch.GetTimestamp();
         }
 
@@ -4810,6 +4812,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             });
         }
 
+        foreach (var (brokerId, counters) in _brokerProduceRequestCounters!.OrderBy(entry => entry.Key))
+        {
+            var requestCount = Interlocked.Read(ref counters.RequestCount);
+            if (requestCount == 0)
+                continue;
+
+            var requestBytes = Interlocked.Read(ref counters.RequestBytes);
+            snapshot.BrokerProduceRequests.Add(new ProducerBrokerRequestDiagnostic
+            {
+                BrokerId = brokerId,
+                RequestCount = requestCount,
+                RequestsPerSecond = produceRequestElapsedSeconds > 0
+                    ? requestCount / produceRequestElapsedSeconds
+                    : 0,
+                AverageRequestBytes = requestBytes / (double)requestCount
+            });
+        }
+
         var capturedAtUtc = snapshot.CapturedAtUtc;
         foreach (var (brokerId, budget) in _brokerUnackedBudgets)
             snapshot.BrokerBudgets.Add(CreateBrokerBudgetDiagnostic(brokerId, budget, capturedAtUtc, includeHistograms: true));
@@ -4827,7 +4847,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void RecordProduceRequest(int coalesceWidth)
+    internal void RecordProduceRequest(int brokerId, int coalesceWidth, int requestBytes)
     {
         var widthCounts = _coalesceWidthCounts;
         if (widthCounts is null)
@@ -4835,6 +4855,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         Interlocked.Increment(ref _produceRequestCount);
         Interlocked.Increment(ref widthCounts[Math.Min(coalesceWidth, MaxTrackedCoalesceWidth + 1)]);
+        var counters = _brokerProduceRequestCounters!.GetOrAdd(
+            brokerId,
+            static _ => new ProducerRequestDiagnosticCounters());
+        Interlocked.Increment(ref counters.RequestCount);
+        Interlocked.Add(ref counters.RequestBytes, requestBytes);
     }
 
     internal void ResetProduceRequestDiagnostics()
@@ -4846,7 +4871,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Interlocked.Exchange(ref _produceRequestCount, 0);
         for (var width = 1; width < widthCounts.Length; width++)
             Interlocked.Exchange(ref widthCounts[width], 0);
+        foreach (var counters in _brokerProduceRequestCounters!.Values)
+        {
+            Interlocked.Exchange(ref counters.RequestCount, 0);
+            Interlocked.Exchange(ref counters.RequestBytes, 0);
+        }
         Volatile.Write(ref _produceRequestDiagnosticsStartedAt, Stopwatch.GetTimestamp());
+    }
+
+    private sealed class ProducerRequestDiagnosticCounters
+    {
+        public long RequestCount;
+        public long RequestBytes;
     }
 
     internal void RecordConnectionScaleEvent(

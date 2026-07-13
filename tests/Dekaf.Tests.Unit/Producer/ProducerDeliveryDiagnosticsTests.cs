@@ -8,15 +8,15 @@ public sealed class ProducerDeliveryDiagnosticsTests
     private static ProducerOptions CreateOptions(
         bool enableDeliveryDiagnostics = false,
         int deliveryLatencyTargetMs = 0) => new()
-    {
-        BootstrapServers = ["localhost:9092"],
-        ClientId = "diagnostics-test",
-        BufferMemory = ulong.MaxValue,
-        BatchSize = 60,
-        LingerMs = 10_000,
-        EnableDeliveryDiagnostics = enableDeliveryDiagnostics,
-        DeliveryLatencyTargetMs = deliveryLatencyTargetMs
-    };
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "diagnostics-test",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 60,
+            LingerMs = 10_000,
+            EnableDeliveryDiagnostics = enableDeliveryDiagnostics,
+            DeliveryLatencyTargetMs = deliveryLatencyTargetMs
+        };
 
     [Test]
     public async Task SnapshotDeliveryDiagnostics_DefaultDisabled_ReturnsDisabledSnapshot()
@@ -95,17 +95,24 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await using var accumulator = new RecordAccumulator(
             CreateOptions(enableDeliveryDiagnostics: true));
 
-        accumulator.RecordProduceRequest(coalesceWidth: 1);
-        accumulator.RecordProduceRequest(coalesceWidth: 2);
-        accumulator.RecordProduceRequest(coalesceWidth: 2);
-        accumulator.RecordProduceRequest(coalesceWidth: 65);
-        accumulator.RecordProduceRequest(coalesceWidth: 100);
+        accumulator.RecordProduceRequest(brokerId: 1, coalesceWidth: 1, requestBytes: 100);
+        accumulator.RecordProduceRequest(brokerId: 1, coalesceWidth: 2, requestBytes: 300);
+        accumulator.RecordProduceRequest(brokerId: 2, coalesceWidth: 2, requestBytes: 1_000);
+        accumulator.RecordProduceRequest(brokerId: 2, coalesceWidth: 65, requestBytes: 1_000);
+        accumulator.RecordProduceRequest(brokerId: 2, coalesceWidth: 100, requestBytes: 1_000);
 
         var snapshot = accumulator.GetDeliveryDiagnosticsSnapshot();
 
         await Assert.That(snapshot.ProduceRequestCount).IsEqualTo(5);
         await Assert.That(snapshot.ProduceRequestElapsedSeconds).IsGreaterThanOrEqualTo(0);
         await Assert.That(snapshot.ProduceRequestsPerSecond).IsGreaterThanOrEqualTo(0);
+        var broker1 = snapshot.BrokerProduceRequests.Single(diagnostic => diagnostic.BrokerId == 1);
+        var broker2 = snapshot.BrokerProduceRequests.Single(diagnostic => diagnostic.BrokerId == 2);
+        await Assert.That(broker1.RequestCount).IsEqualTo(2);
+        await Assert.That(broker1.RequestsPerSecond).IsGreaterThanOrEqualTo(0);
+        await Assert.That(broker1.AverageRequestBytes).IsEqualTo(200);
+        await Assert.That(broker2.RequestCount).IsEqualTo(3);
+        await Assert.That(broker2.AverageRequestBytes).IsEqualTo(1_000);
         await Assert.That(snapshot.CoalesceWidthHistogram.Single(bucket => bucket.MinimumWidth == 1).RequestCount)
             .IsEqualTo(1);
         await Assert.That(snapshot.CoalesceWidthHistogram.Single(bucket => bucket.MinimumWidth == 2).RequestCount)
@@ -120,17 +127,19 @@ public sealed class ProducerDeliveryDiagnosticsTests
     {
         await using var accumulator = new RecordAccumulator(
             CreateOptions(enableDeliveryDiagnostics: true));
-        accumulator.RecordProduceRequest(coalesceWidth: 4);
+        accumulator.RecordProduceRequest(brokerId: 1, coalesceWidth: 4, requestBytes: 400);
 
         accumulator.ResetProduceRequestDiagnostics();
         var reset = accumulator.GetDeliveryDiagnosticsSnapshot();
-        accumulator.RecordProduceRequest(coalesceWidth: 3);
+        accumulator.RecordProduceRequest(brokerId: 1, coalesceWidth: 3, requestBytes: 300);
         var afterRequest = accumulator.GetDeliveryDiagnosticsSnapshot();
 
         await Assert.That(reset.ProduceRequestCount).IsEqualTo(0);
         await Assert.That(reset.CoalesceWidthHistogram).IsEmpty();
+        await Assert.That(reset.BrokerProduceRequests).IsEmpty();
         await Assert.That(afterRequest.ProduceRequestCount).IsEqualTo(1);
         await Assert.That(afterRequest.CoalesceWidthHistogram.Single().MinimumWidth).IsEqualTo(3);
+        await Assert.That(afterRequest.BrokerProduceRequests.Single().AverageRequestBytes).IsEqualTo(300);
     }
 
     [Test]
@@ -138,11 +147,12 @@ public sealed class ProducerDeliveryDiagnosticsTests
     {
         await using var accumulator = new RecordAccumulator(CreateOptions());
 
-        accumulator.RecordProduceRequest(coalesceWidth: 2);
+        accumulator.RecordProduceRequest(brokerId: 1, coalesceWidth: 2, requestBytes: 200);
         var snapshot = accumulator.GetDeliveryDiagnosticsSnapshot();
 
         await Assert.That(snapshot.ProduceRequestCount).IsEqualTo(0);
         await Assert.That(snapshot.CoalesceWidthHistogram).IsEmpty();
+        await Assert.That(snapshot.BrokerProduceRequests).IsEmpty();
     }
 
     [Test]

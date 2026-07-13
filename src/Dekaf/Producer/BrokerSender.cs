@@ -113,6 +113,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // dispatch must not implicitly add the wider throughput-oriented coalescing delay.
     private const int WaveCoalesceQuietMicroseconds = 1000;
     private const int WaveCoalesceMaxMicroseconds = 2000;
+    private const int WaveCoalesceLingerDivisor = 5;
     private const int ZeroLingerWaveCoalesceQuietMicroseconds = 75;
     private const int ZeroLingerWaveCoalesceMaxMicroseconds = 500;
 
@@ -1066,9 +1067,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Sum individually framed batch sizes, matching RecordAccumulator.Drain's
         // conservative request budget across batches from separate drain passes.
         var coalescedRequestBudgetUsed = 0L;
-        var waveCoalesceBounds = SelectWaveCoalesceBounds(
-            _options.LingerMs,
-            _options.DeliveryLatencyTargetMs);
+        var waveCoalesceBounds = SelectWaveCoalesceBounds(_options.LingerMs);
         var waveCoalesceMaxTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.MaximumMicroseconds);
         var waveCoalesceQuietTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.QuietMicroseconds);
         var waveCoalesceArmed = true;
@@ -1349,7 +1348,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && coalescedCount < maxCoalesce
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
-                    && waveCoalesceGate.ShouldSpin()
+                    && waveCoalesceGate.ShouldSpin(Stopwatch.GetTimestamp())
                     && ShouldMicroLinger(
                         coalescedBatches,
                         coalescedCount,
@@ -1400,7 +1399,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                     }
 
-                    waveCoalesceGate.OnSpinCompleted(coalescedCount > coalescedCountBeforeSpin);
+                    waveCoalesceGate.OnSpinCompleted(
+                        coalescedCount > coalescedCountBeforeSpin,
+                        Stopwatch.GetTimestamp());
                 }
 
                 // ── 6. Send or wait ──
@@ -1759,7 +1760,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (sentThisIteration)
                 {
                     waveCoalesceArmed = true;
-                    waveCoalesceGate.OnSent();
                 }
 
                 // ── 7. Compute timeout and wait ──
@@ -2232,22 +2232,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }
 
-    internal static (int QuietMicroseconds, int MaximumMicroseconds) SelectWaveCoalesceBounds(
-        int lingerMs,
-        int deliveryLatencyTargetMs)
+    internal static (int QuietMicroseconds, int MaximumMicroseconds) SelectWaveCoalesceBounds(int lingerMs)
     {
-        (int QuietMicroseconds, int MaximumMicroseconds) bounds = lingerMs == 0
-            ? (ZeroLingerWaveCoalesceQuietMicroseconds, ZeroLingerWaveCoalesceMaxMicroseconds)
-            : (WaveCoalesceQuietMicroseconds, WaveCoalesceMaxMicroseconds);
-        if (deliveryLatencyTargetMs <= 0)
-            return bounds;
+        if (lingerMs == 0)
+            return (ZeroLingerWaveCoalesceQuietMicroseconds, ZeroLingerWaveCoalesceMaxMicroseconds);
 
-        var targetMicroseconds = (long)deliveryLatencyTargetMs * 1_000;
-        var quietCap = Math.Max(1, targetMicroseconds / 20);
-        var maximumCap = Math.Max(quietCap, targetMicroseconds / 10);
-        return (
-            (int)Math.Min(bounds.QuietMicroseconds, quietCap),
-            (int)Math.Min(bounds.MaximumMicroseconds, maximumCap));
+        var lingerMicroseconds = (long)lingerMs * 1_000;
+        var quietMicroseconds = Math.Clamp(
+            lingerMicroseconds / WaveCoalesceLingerDivisor,
+            1,
+            WaveCoalesceQuietMicroseconds);
+        var maximumMicroseconds = Math.Clamp(
+            lingerMicroseconds * 2 / WaveCoalesceLingerDivisor,
+            quietMicroseconds,
+            WaveCoalesceMaxMicroseconds);
+        return ((int)quietMicroseconds, (int)maximumMicroseconds);
     }
 
     private static long MicrosecondsToStopwatchTicks(long microseconds) =>
@@ -3454,7 +3453,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 // Build coalesced ProduceRequest (reuses pre-allocated scratch structures)
                 var request = scratch.Build(batches, generations, count);
-                _accumulator.RecordProduceRequest(count);
+                _accumulator.RecordProduceRequest(_brokerId, count, request.RequestBodySizeHint);
 
                 // Handle Acks.None (fire-and-forget)
                 if (_options.Acks == Acks.None)

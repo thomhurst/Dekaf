@@ -30,6 +30,7 @@ internal static class MarkdownReporter
 
             GenerateThroughputTable(sb, title, groupResults);
             GenerateConnectionScaleTimeline(sb, groupResults, label);
+            GenerateProducerRequestDiagnostics(sb, groupResults, label);
             GenerateConsumerFetchTimeline(sb, groupResults, label);
             GenerateLatencyOutlierTimeline(sb, groupResults, label);
 
@@ -219,6 +220,37 @@ internal static class MarkdownReporter
         }
 
         return sampled;
+    }
+
+    private static void GenerateProducerRequestDiagnostics(
+        StringBuilder sb,
+        List<StressTestResult> results,
+        string label)
+    {
+        var rows = results
+            .SelectMany(result => (result.ProducerDeliveryDiagnostics?.BrokerProduceRequests ?? [])
+                .Select(diagnostic => (Result: result, Diagnostic: diagnostic)))
+            .OrderBy(row => row.Result.Client)
+            .ThenBy(row => row.Diagnostic.BrokerId)
+            .ToList();
+        if (rows.Count == 0)
+            return;
+
+        sb.AppendLine($"## Producer Request Diagnostics - {label}");
+        sb.AppendLine();
+        sb.AppendLine("| Client | Broker | Requests | Requests/s | Avg bytes/request |");
+        sb.AppendLine("|--------|-------:|---------:|-----------:|------------------:|");
+        foreach (var row in rows)
+        {
+            sb.AppendLine(
+                $"| {row.Result.Client} | {row.Diagnostic.BrokerId} | " +
+                $"{row.Diagnostic.RequestCount:N0} | {row.Diagnostic.RequestsPerSecond:F2} | " +
+                $"{FormatDiagnosticBytes(row.Diagnostic.AverageRequestBytes)} |");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("*Average bytes/request is Kafka ProduceRequest body bytes; smaller requests at higher request rates indicate batching fragmentation.*");
+        sb.AppendLine();
     }
 
     private static void GenerateConsumerFetchTimeline(
