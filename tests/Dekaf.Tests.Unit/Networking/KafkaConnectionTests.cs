@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -340,6 +341,64 @@ public sealed class KafkaConnectionTests
         {
             releasePublish.TrySetResult();
             KafkaConnection.PipelinedResponseBeforePublishTestHook = null;
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task PipelinedResponse_ContinuationRunsInlineInCompletionFrame(
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+
+            var response = await ((IKafkaPipelinedWriteCompletionConnection)connection)
+                .SendPipelinedAfterWriteAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                    new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                    apiVersion: 3,
+                    cancellationToken);
+            var requestFrame = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));
+            var completion = new TaskCompletionSource<ApiVersionsResponse>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var ranInCompletionFrame = false;
+            response.UnsafeOnCompleted(() =>
+            {
+                ranInCompletionFrame = new StackTrace().GetFrames().Any(
+                    static frame => frame.GetMethod()?.Name == "CompletePendingResponse"
+                        && frame.GetMethod()?.DeclaringType?.Name.StartsWith(
+                            "PooledPipelinedResponse",
+                            StringComparison.Ordinal) == true);
+
+                try
+                {
+                    completion.TrySetResult(response.GetResult());
+                }
+                catch (Exception exception)
+                {
+                    completion.TrySetException(exception);
+                }
+            });
+
+            await serverClient.GetStream().WriteAsync(
+                BuildApiVersionsV3ResponseFrame(correlationId),
+                cancellationToken);
+            var parsed = await completion.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(ranInCompletionFrame).IsTrue();
+            await Assert.That(parsed.ErrorCode).IsEqualTo(ErrorCode.None);
+        }
+        finally
+        {
             listener.Stop();
         }
     }
