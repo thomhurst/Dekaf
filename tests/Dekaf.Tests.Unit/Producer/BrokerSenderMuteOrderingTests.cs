@@ -651,16 +651,16 @@ public sealed class BrokerSenderMuteOrderingTests
     }
 
     [Test]
-    // Mock response continuations intentionally run on the ThreadPool. Isolate this timing-sensitive
-    // integration of the sender state machine so unrelated concurrency tests cannot starve its wakeups.
+    // Complete mock responses inline so this ordering test does not depend on ThreadPool
+    // availability to publish the sender wakeup. The acknowledgement source remains
+    // asynchronous below, preventing test continuation reentrancy on the sender thread.
     [NotInParallel]
     [Timeout(30_000)]
     public async Task NonIdempotentProducer_MultipleInFlight_PipelinesSamePartitionBatches(
         CancellationToken ct)
     {
         var responses = Enumerable.Range(0, 2)
-            .Select(_ => new TaskCompletionSource<ProduceResponse>(
-                TaskCreationOptions.RunContinuationsAsynchronously))
+            .Select(_ => new TaskCompletionSource<ProduceResponse>())
             .ToArray();
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(responses);
         var (pool, _) = CreateMockConnection(responseQueue);
