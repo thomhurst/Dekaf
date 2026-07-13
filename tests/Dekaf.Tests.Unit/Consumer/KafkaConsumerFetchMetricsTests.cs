@@ -11,10 +11,10 @@ using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-[NotInParallel]
 public sealed class KafkaConsumerFetchMetricsTests
 {
     [Test]
+    [NotInParallel("MeterListener")]
     public async Task RecordFetchDuration_WhenDisabled_DoesNotCreateBrokerTags()
     {
         await using var consumer = CreateConsumer();
@@ -25,10 +25,12 @@ public sealed class KafkaConsumerFetchMetricsTests
     }
 
     [Test]
+    [NotInParallel("MeterListener")]
     public async Task RecordFetchDuration_WhenEnabled_ReusesBrokerTags()
     {
+        var expectedBrokerId = BitConverter.ToInt32(Guid.NewGuid().ToByteArray());
         double? duration = null;
-        string? brokerId = null;
+        int? brokerId = null;
 
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
@@ -41,10 +43,12 @@ public sealed class KafkaConsumerFetchMetricsTests
         };
         listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
         {
-            if (instrument.Name == "messaging.consumer.fetch.duration")
+            if (instrument.Name == "messaging.consumer.fetch.duration" &&
+                GetTag(tags, DekafDiagnostics.MessagingKafkaBrokerId) is int metricBrokerId &&
+                metricBrokerId == expectedBrokerId)
             {
                 duration = measurement;
-                brokerId = GetTag(tags, DekafDiagnostics.MessagingKafkaBrokerId);
+                brokerId = metricBrokerId;
             }
         });
         listener.Start();
@@ -53,11 +57,11 @@ public sealed class KafkaConsumerFetchMetricsTests
 
         await using var consumer = CreateConsumer();
 
-        InvokeRecordFetchDuration(consumer, brokerId: 7);
-        InvokeRecordFetchDuration(consumer, brokerId: 7);
+        InvokeRecordFetchDuration(consumer, expectedBrokerId);
+        InvokeRecordFetchDuration(consumer, expectedBrokerId);
 
         await Assert.That(duration).IsNotNull();
-        await Assert.That(brokerId).IsEqualTo("7");
+        await Assert.That(brokerId).IsEqualTo(expectedBrokerId);
         await Assert.That(GetFetchDurationMetricTagsCache(consumer).Count).IsEqualTo(1);
     }
 
@@ -100,12 +104,12 @@ public sealed class KafkaConsumerFetchMetricsTests
         return (ConcurrentDictionary<int, TagList>)field.GetValue(consumer)!;
     }
 
-    private static string? GetTag(ReadOnlySpan<KeyValuePair<string, object?>> tags, string key)
+    private static object? GetTag(ReadOnlySpan<KeyValuePair<string, object?>> tags, string key)
     {
         foreach (var tag in tags)
         {
             if (tag.Key == key)
-                return tag.Value?.ToString();
+                return tag.Value;
         }
 
         return null;

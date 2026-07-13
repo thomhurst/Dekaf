@@ -7,11 +7,11 @@ using Dekaf.Consumer;
 using Dekaf.Diagnostics;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
+using Dekaf.Tests.Unit.Producer;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-[NotInParallel]
 public sealed class ConsumeOneFastPathTests
 {
     private const string Topic = "test-topic";
@@ -347,8 +347,10 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
+    [NotInParallel("MeterListener")]
     public async Task ConsumeOneAsync_EmitsFetchMetricsAsDeltas()
     {
+        var topic = $"metrics-test-{Guid.NewGuid():N}";
         var messagesReceived = new List<long>();
         var bytesReceived = new List<long>();
         using var listener = new MeterListener();
@@ -361,8 +363,11 @@ public sealed class ConsumeOneFastPathTests
                 meterListener.EnableMeasurementEvents(instrument);
             }
         };
-        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
+            if (AccumulatorTestHelpers.GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                return;
+
             if (instrument.Name == "messaging.client.consumed.messages")
                 messagesReceived.Add(measurement);
             else if (instrument.Name == "messaging.client.consumed.bytes")
@@ -370,7 +375,7 @@ public sealed class ConsumeOneFastPathTests
         });
         listener.Start();
 
-        var fetch = PendingFetchData.Create(Topic, Partition,
+        var fetch = PendingFetchData.Create(topic, Partition,
         [
             CreateBatch(40,
                 CreateRecord(0, "a", "one"),
