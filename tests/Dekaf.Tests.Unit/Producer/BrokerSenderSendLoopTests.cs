@@ -128,6 +128,18 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    public async Task SelectWaveCoalesceBounds_ZeroLingerRetainsLowLatencyBounds()
+    {
+        var zeroLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 0);
+        var configuredLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 5);
+
+        await Assert.That(zeroLinger.QuietMicroseconds).IsEqualTo(75);
+        await Assert.That(zeroLinger.MaximumMicroseconds).IsEqualTo(500);
+        await Assert.That(configuredLinger.QuietMicroseconds).IsEqualTo(1_000);
+        await Assert.That(configuredLinger.MaximumMicroseconds).IsEqualTo(2_000);
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task SendLoop_WaveCoalesce_RearmsAfterIdleWaitAtDefaultLinger(
         CancellationToken cancellationToken)
@@ -196,6 +208,75 @@ public sealed class BrokerSenderSendLoopTests
         }
         finally
         {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_WaveCoalesce_RearmsWhileResponseIsInFlight(
+        CancellationToken cancellationToken)
+    {
+        var firstResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
+            [firstResponse, secondResponse]);
+        var (pool, connection) = CreateMockConnection(responses);
+        var options = CreateOptions(
+            acks: Acks.All,
+            maxInFlight: 5,
+            enableIdempotence: false,
+            lingerMs: 0,
+            enableDeliveryDiagnostics: true);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var injectSibling = 0;
+        BrokerSender? sender = null;
+        sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            onWaveCoalesceStarted: () =>
+            {
+                if (Volatile.Read(ref injectSibling) != 0)
+                    sender!.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
+            });
+
+        try
+        {
+            sender.EnqueueBulk(
+            [
+                CreateTestBatch(valueTaskSourcePool, "test-topic", 0),
+                CreateTestBatch(valueTaskSourcePool, "test-topic", 1)
+            ]);
+            await WaitUntilAsync(
+                () => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 1,
+                cancellationToken);
+
+            Volatile.Write(ref injectSibling, 1);
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await WaitUntilAsync(
+                () => Volatile.Read(ref connection.SendPipelinedAfterWriteCalls) == 2,
+                cancellationToken);
+
+            await Assert.That(firstResponse.Task.IsCompleted).IsFalse();
+            var diagnostic = accumulator.GetDeliveryDiagnosticsSnapshot();
+            await Assert.That(diagnostic.CoalesceWidthHistogram
+                    .Single(bucket => bucket.MinimumWidth == 2).RequestCount)
+                .IsEqualTo(2);
+
+            firstResponse.SetResult(CreateSuccessResponseForPartitions("test-topic", 2));
+            secondResponse.SetResult(CreateSuccessResponseForPartitions("test-topic", 2));
+        }
+        finally
+        {
+            firstResponse.TrySetResult(CreateSuccessResponseForPartitions("test-topic", 2));
+            secondResponse.TrySetResult(CreateSuccessResponseForPartitions("test-topic", 2));
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();

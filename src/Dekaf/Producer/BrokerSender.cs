@@ -109,10 +109,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // A request wave often reaches the sender over hundreds of microseconds. Waiting for one
     // short quiet period coalesces that wave without paying the full configured linger, while
     // the hard cap prevents a continuously busy producer from postponing dispatch forever.
-    private const int WaveCoalesceQuietMicroseconds = 75;
-    private const int WaveCoalesceMaxMicroseconds = 500;
-    private static readonly long WaveCoalesceMaxTicks =
-        MicrosecondsToStopwatchTicks(WaveCoalesceMaxMicroseconds);
+    // Zero-linger producers retain the historical sub-millisecond bounds: asking for immediate
+    // dispatch must not implicitly add the wider throughput-oriented coalescing delay.
+    private const int WaveCoalesceQuietMicroseconds = 1000;
+    private const int WaveCoalesceMaxMicroseconds = 2000;
+    private const int ZeroLingerWaveCoalesceQuietMicroseconds = 75;
+    private const int ZeroLingerWaveCoalesceMaxMicroseconds = 500;
 
     /// <summary>
     /// Maximum batches coalesced into one send-loop pass. The in-flight limit can be very
@@ -1064,8 +1066,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Sum individually framed batch sizes, matching RecordAccumulator.Drain's
         // conservative request budget across batches from separate drain passes.
         var coalescedRequestBudgetUsed = 0L;
-        var waveCoalesceMaxTicks = WaveCoalesceMaxTicks;
-        var waveCoalesceQuietTicks = MicrosecondsToStopwatchTicks(WaveCoalesceQuietMicroseconds);
+        var waveCoalesceBounds = SelectWaveCoalesceBounds(_options.LingerMs);
+        var waveCoalesceMaxTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.MaximumMicroseconds);
+        var waveCoalesceQuietTicks = MicrosecondsToStopwatchTicks(waveCoalesceBounds.QuietMicroseconds);
         var waveCoalesceArmed = true;
 
         // Pre-allocate reusable response lookup dictionary to avoid per-response allocation.
@@ -1343,7 +1346,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     && coalescedCount < maxCoalesce
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
-                    && Volatile.Read(ref _totalPendingResponseCount) == 0
                     && ShouldMicroLinger(
                         coalescedBatches,
                         coalescedCount,
@@ -1358,10 +1360,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                            && coalescedPartitions.Count < _knownPartitions.Count
                            && Stopwatch.GetTimestamp() < quietDeadline)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (!eventReader.TryRead(out var evt))
                         {
-                            // Fixed CPU spin never escalates to Sleep(1), so the deadline
-                            // remains a real sub-millisecond hard cap.
+                            // Fixed CPU spin never escalates to Sleep(1), so it preserves
+                            // the configured microsecond deadline.
                             global::System.Threading.Thread.SpinWait(32);
                             continue;
                         }
@@ -1742,6 +1745,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // No batches were coalesced at all — nothing to clear.
                     coalescedCount = 0;
                 }
+
+                // Keep forming request waves while the pipeline is busy. Without rearming here,
+                // only the first request after an idle period can coalesce adjacent partitions.
+                if (sentThisIteration)
+                    waveCoalesceArmed = true;
 
                 // ── 7. Compute timeout and wait ──
                 if (transactionEnrollmentReady)
@@ -2212,6 +2220,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var batch = coalescedBatches[0];
         return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }
+
+    internal static (int QuietMicroseconds, int MaximumMicroseconds) SelectWaveCoalesceBounds(
+        int lingerMs) => lingerMs == 0
+            ? (ZeroLingerWaveCoalesceQuietMicroseconds, ZeroLingerWaveCoalesceMaxMicroseconds)
+            : (WaveCoalesceQuietMicroseconds, WaveCoalesceMaxMicroseconds);
 
     private static long MicrosecondsToStopwatchTicks(long microseconds) =>
         Math.Max(1, microseconds * Stopwatch.Frequency / 1_000_000);
