@@ -1,7 +1,7 @@
 """Shared utilities for stress test result reporting."""
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from math import isfinite
 from statistics import median
 
@@ -20,6 +20,7 @@ SCENARIO_TITLES = {
 }
 
 LATENCY_RATIO_THRESHOLD = 2.0
+MAX_TIMELINE_ROWS = 100
 
 
 def group_by_scenario(results):
@@ -506,6 +507,95 @@ def format_producer_request_diagnostics(results, title):
     return lines
 
 
+def _sample_evenly(rows, maximum_rows):
+    if len(rows) <= maximum_rows:
+        return rows
+
+    return [
+        rows[round(index * (len(rows) - 1) / (maximum_rows - 1))]
+        for index in range(maximum_rows)
+    ]
+
+
+def format_consumer_fetch_timeline(results, title):
+    """Correlate consumer fetch diagnostics with throughput and connection reaps."""
+    rows = [
+        (result, sample)
+        for result in results
+        for sample in (result.get('consumerFetchDiagnostics') or {}).get('samples') or []
+    ]
+    if not rows:
+        return []
+
+    rows.sort(key=lambda row: row[1].get('capturedAtUtc', ''))
+    displayed_rows = _sample_evenly(rows, MAX_TIMELINE_ROWS)
+    omitted_rows = len(rows) - len(displayed_rows)
+    lines = [
+        f"## Consumer Fetch Timeline - {title}",
+        "",
+        "| Client | Interval end UTC | Fetch req/s | Bytes/fetch | Avg fetch RTT | Queues (pending / buffer / total) | Prefetched | Connection reaps | Nearest throughput |",
+        "|--------|------------------|------------:|------------:|--------------:|----------------------------------:|-----------:|-----------------:|-------------------:|",
+    ]
+
+    for result, sample in displayed_rows:
+        diagnostics = result.get('consumerFetchDiagnostics') or {}
+        captured_at = _parse_timestamp(sample.get('capturedAtUtc'))
+        timestamped_throughput = [
+            (throughput, timestamp)
+            for throughput in (result.get('throughput') or {}).get('intervalSamples') or []
+            if (timestamp := _parse_timestamp(throughput.get('capturedAtUtc'))) is not None
+        ]
+        nearest = min(
+            timestamped_throughput,
+            key=lambda item: abs((item[1] - captured_at).total_seconds()),
+            default=(None, None),
+        )[0] if captured_at is not None else None
+        throughput_text = '-'
+        if nearest is not None:
+            throughput_text = (
+                f"{nearest.get('elapsedSeconds', 0):.0f}s / "
+                f"{nearest.get('messagesPerSecond', 0):,.0f} msg/s"
+            )
+
+        interval_start = (
+            captured_at - timedelta(seconds=sample.get('intervalSeconds', 0))
+            if captured_at is not None else None
+        )
+        reaps = sum(
+            1
+            for reap in diagnostics.get('connectionReapEvents') or []
+            if interval_start is not None
+            and (occurred_at := _parse_timestamp(reap.get('occurredAtUtc'))) is not None
+            and interval_start < occurred_at <= captured_at
+        )
+        reap_text = '-' if reaps == 0 else f"{reaps} reap{'s' if reaps != 1 else ''}"
+        interval_end_text = (
+            captured_at.strftime('%H:%M:%S')
+            if captured_at is not None else sample.get('capturedAtUtc', '-')
+        )
+
+        lines.append(
+            f"| {result.get('client', 'Unknown')} | {interval_end_text} | "
+            f"{sample.get('fetchRequestsPerSecond', 0):.2f} | {format_bytes(sample.get('bytesPerFetch'))} | "
+            f"{sample.get('averageFetchRttMs', 0):.2f}ms | "
+            f"{sample.get('pendingFetchDepth', 0)} / {sample.get('prefetchBufferDepth', 0)} / "
+            f"{sample.get('prefetchDepth', 0)} | {format_bytes(sample.get('prefetchedBytes'))} | "
+            f"{reap_text} | {throughput_text} |"
+        )
+
+    if omitted_rows > 0:
+        lines.append(
+            f"*{omitted_rows:,} fetch sample(s) omitted; rows sampled across the full timeline.*"
+        )
+
+    lines.extend([
+        "",
+        "*Bytes/fetch is consumed message payload bytes divided by completed fetch requests for the interval; queue depths are point-in-time samples.*",
+        "",
+    ])
+    return lines
+
+
 def format_latency_outlier_timeline(results, title):
     """Correlate sampled delivery stalls with scaling, throughput, and GC."""
     rows = [
@@ -794,6 +884,7 @@ def generate_scenario_tables(results, include_ratio=False, include_callout=False
             output.extend(format_throughput_table(scenario_results, f"{title} Throughput", include_ratio=include_ratio))
             output.extend(format_connection_scale_timeline(scenario_results, title))
             output.extend(format_producer_request_diagnostics(scenario_results, title))
+            output.extend(format_consumer_fetch_timeline(scenario_results, title))
             output.extend(format_latency_outlier_timeline(scenario_results, title))
             output.extend(format_transaction_verification(scenario_results))
             output.extend(format_roundtrip_validation_table(scenario_results))

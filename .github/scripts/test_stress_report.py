@@ -1,6 +1,7 @@
 import unittest
 
 from stress_report import (
+    format_consumer_fetch_timeline,
     format_roundtrip_validation_table,
     format_connection_scale_timeline,
     format_producer_request_diagnostics,
@@ -51,6 +52,42 @@ class StressReportTests(unittest.TestCase):
 
         self.assertIn("Producer Request Diagnostics - Producer", report)
         self.assertIn("| Dekaf | 1 | 2,500 | 500.00 | 256.00 KB |", report)
+    def test_consumer_fetch_timeline_surfaces_published_diagnostics(self):
+        value = stress_result("Dekaf", effective_rate=2500)
+        value["scenario"] = "consumer"
+        value["throughput"]["intervalSamples"] = [{
+            "capturedAtUtc": "2026-07-13T10:01:00+00:00",
+            "elapsedSeconds": 60,
+            "messagesPerSecond": 2500,
+        }]
+        value["consumerFetchDiagnostics"] = {
+            "samples": [{
+                "capturedAtUtc": "2026-07-13T10:01:00+00:00",
+                "intervalSeconds": 60,
+                "fetchRequestsPerSecond": 2,
+                "bytesPerFetch": 524288,
+                "averageFetchRttMs": 7.5,
+                "pendingFetchDepth": 2,
+                "prefetchBufferDepth": 3,
+                "prefetchDepth": 5,
+                "prefetchedBytes": 8388608,
+            }],
+            "connectionReapEvents": [{
+                "occurredAtUtc": "2026-07-13T10:00:55+00:00",
+            }],
+        }
+
+        report = "\n".join(format_consumer_fetch_timeline([value], "Consumer"))
+        published_report = "\n".join(generate_scenario_tables([value]))
+
+        self.assertIn("Consumer Fetch Timeline - Consumer", report)
+        self.assertIn("512.00 KB", report)
+        self.assertIn("7.50ms", report)
+        self.assertIn("2 / 3 / 5", report)
+        self.assertIn("8.00 MB", report)
+        self.assertIn("1 reap", report)
+        self.assertIn("60s / 2,500 msg/s", report)
+        self.assertIn("Consumer Fetch Timeline - Consumer", published_report)
 
     def test_connection_scale_timeline_correlates_nearest_throughput_sample(self):
         value = stress_result("Dekaf", effective_rate=1400)
