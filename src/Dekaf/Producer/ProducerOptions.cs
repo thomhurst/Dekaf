@@ -139,7 +139,8 @@ public sealed class ProducerOptions
     internal bool IsAutoTuned { get; init; }
 
     /// <summary>
-    /// Soft target, in milliseconds, for per-broker producer queueing latency (append to ack).
+    /// Soft target, in milliseconds, for controllable per-broker producer queueing latency
+    /// (batch seal to socket send). Configured linger and broker round-trip time are excluded.
     /// Bounds the bytes each broker may hold unacknowledged to
     /// <c>target × measured ack throughput</c>, with a measured round-trip lower guard so
     /// throughput is never window-limited. When a broker exceeds its budget, message admission

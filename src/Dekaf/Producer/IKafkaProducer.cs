@@ -286,6 +286,8 @@ internal sealed class ProducerBrokerBudgetDiagnostic
     public required long MinRttMicros { get; init; }
     public required long MaxRateBytesPerSec { get; init; }
     public required long AdmissionBlockCount { get; init; }
+    /// <summary>Controllable seal-to-send queue-latency EWMA. Name retained for diagnostic
+    /// output compatibility.</summary>
     public required long DeliveryLatencyEwmaMicros { get; init; }
     public required double LatencyBudgetScale { get; init; }
 

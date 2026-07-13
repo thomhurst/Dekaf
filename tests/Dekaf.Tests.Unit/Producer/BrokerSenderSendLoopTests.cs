@@ -27,6 +27,50 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class BrokerSenderSendLoopTests
 {
+    [Test]
+    public async Task DeliveryLatencyTimestamp_HighThroughputLinger_UsesSealNotCreation()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            LingerMs = 100,
+            DeliveryLatencyTargetMs = 10
+        };
+        var partitionBatch = new PartitionBatch(new TopicPartition("test-topic", 0), options);
+        var simulatedCreationTimestamp = Stopwatch.GetTimestamp() - Stopwatch.Frequency / 10;
+        typeof(PartitionBatch)
+            .GetField("_createdStopwatchTimestamp", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(partitionBatch, simulatedCreationTimestamp);
+        var appendResult = partitionBatch.TryAppendFromSpans(
+            timestamp: 0,
+            keyData: ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            valueData: [1],
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            estimatedSize: 1);
+        var readyBatch = partitionBatch.Complete()!;
+
+        try
+        {
+            var deliveryTimestamp = BrokerSender.GetOldestBatchSealTimestamp([readyBatch], 1);
+
+            await Assert.That(appendResult.Success).IsTrue();
+            await Assert.That(readyBatch.StopwatchCreatedTicks).IsEqualTo(simulatedCreationTimestamp);
+            await Assert.That(deliveryTimestamp).IsEqualTo(readyBatch.StopwatchSealedTicks);
+            await Assert.That(deliveryTimestamp - readyBatch.StopwatchCreatedTicks)
+                .IsGreaterThanOrEqualTo(Stopwatch.Frequency / 20);
+        }
+        finally
+        {
+            readyBatch.TrySetMemoryReleased();
+            readyBatch.Fail(new InvalidOperationException("test cleanup"));
+        }
+    }
+
     private sealed class TrackingPipelinedResponseSource : IPipelinedResponseSource<ProduceResponse>
     {
         public int AbandonCalls;
@@ -130,13 +174,18 @@ public sealed class BrokerSenderSendLoopTests
     [Test]
     public async Task SelectWaveCoalesceBounds_ZeroLingerRetainsLowLatencyBounds()
     {
-        var zeroLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 0);
-        var configuredLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 5);
+        var zeroLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 0, deliveryLatencyTargetMs: 10);
+        var configuredLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 5, deliveryLatencyTargetMs: 10);
+        var oneMillisecondTarget = BrokerSender.SelectWaveCoalesceBounds(
+            lingerMs: 5,
+            deliveryLatencyTargetMs: 1);
 
         await Assert.That(zeroLinger.QuietMicroseconds).IsEqualTo(75);
         await Assert.That(zeroLinger.MaximumMicroseconds).IsEqualTo(500);
-        await Assert.That(configuredLinger.QuietMicroseconds).IsEqualTo(1_000);
-        await Assert.That(configuredLinger.MaximumMicroseconds).IsEqualTo(2_000);
+        await Assert.That(configuredLinger.QuietMicroseconds).IsEqualTo(500);
+        await Assert.That(configuredLinger.MaximumMicroseconds).IsEqualTo(1_000);
+        await Assert.That(oneMillisecondTarget.QuietMicroseconds).IsEqualTo(50);
+        await Assert.That(oneMillisecondTarget.MaximumMicroseconds).IsEqualTo(100);
     }
 
     [Test]

@@ -4472,10 +4472,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var cap = _options.UnackedByteBudgetCapOverride
             ?? BrokerUnackedByteBudget.ComputeCap(_options.BatchSize, _options.ConnectionsPerBroker);
-        // Floor keeps the pipe full (≥ 2 batches, ≥ 1MiB BDP headroom) but must not exceed a
-        // deliberately tiny test cap, or the gate could never bind in unit tests.
-        var floor = Math.Min(Math.Max(2L * Math.Max(1, _options.BatchSize), 1L << 20), cap);
-        return new BrokerUnackedByteBudget(_options.DeliveryLatencyTargetMs / 1000.0, floor, cap);
+        // Cold start uses the cap. After the first drain sample, target × rate and the
+        // minimum-RTT BDP guard provide time-derived floors; a fixed batch-byte floor makes
+        // standing latency grow as per-broker drain rate falls under fan-out.
+        return new BrokerUnackedByteBudget(
+            _options.DeliveryLatencyTargetMs / 1000.0,
+            floorBytes: 1,
+            initialCapBytes: cap);
     }
 
     /// <summary>
@@ -6362,7 +6365,8 @@ internal sealed class PartitionBatch
                 _callbacks,
                 _callbackCount,
                 _arrayReuseQueue,
-                _recordCount);
+                _recordCount,
+                _createdStopwatchTimestamp);
 
             _completedBatch = readyBatch;
 
@@ -6976,14 +6980,20 @@ internal sealed class ReadyBatch
     internal long RetryNotBefore { get; set; }
 
     /// <summary>
-    /// Stopwatch timestamp when this batch was initialized. Used for absolute delivery deadline
-    /// computation in ProcessCompletedResponses (prevents infinite retries with relative deadlines).
+    /// Stopwatch timestamp when the accumulator batch was created. Used for absolute delivery
+    /// deadline computation in ProcessCompletedResponses (prevents infinite retries with relative
+    /// deadlines and includes configured linger time).
     /// </summary>
     internal long StopwatchCreatedTicks { get; private set; }
 
     /// <summary>
-    /// Age of this batch in milliseconds since creation (or since last reenqueue).
-    /// Used by Ready() to determine if linger time has expired.
+    /// Stopwatch timestamp when the accumulator batch was sealed into this ready batch. Producer
+    /// queue-latency control starts here so configured linger is not mistaken for admission delay.
+    /// </summary>
+    internal long StopwatchSealedTicks { get; private set; }
+
+    /// <summary>
+    /// Age of this ready batch in milliseconds since sealing (or since last reenqueue).
     /// </summary>
     internal int AgeMs => (int)((Stopwatch.GetTimestamp() - _createdTimestamp) * 1000 / Stopwatch.Frequency);
     private long _createdTimestamp;
@@ -7124,7 +7134,8 @@ internal sealed class ReadyBatch
         Action<RecordMetadata, Exception?>?[]? callbacks = null,
         int callbackCount = 0,
         BatchArrayReuseQueue? arrayReuseQueue = null,
-        int recordCount = 0)
+        int recordCount = 0,
+        long createdStopwatchTimestamp = 0)
     {
         // The generation increment must happen BEFORE the lifecycle flags are cleared.
         // Stale-reference holders validate liveness by reading _returnedToPool first and
@@ -7165,8 +7176,11 @@ internal sealed class ReadyBatch
         _callbacks = callbacks;
         _callbackCount = callbackCount;
         _arrayReuseQueue = arrayReuseQueue;
-        StopwatchCreatedTicks = Stopwatch.GetTimestamp();
-        _createdTimestamp = StopwatchCreatedTicks;
+        StopwatchSealedTicks = Stopwatch.GetTimestamp();
+        StopwatchCreatedTicks = createdStopwatchTimestamp > 0
+            ? createdStopwatchTimestamp
+            : StopwatchSealedTicks;
+        _createdTimestamp = StopwatchSealedTicks;
     }
 
     /// <summary>
