@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 
@@ -8,7 +9,7 @@ namespace Dekaf.Networking;
 /// <summary>
 /// Reads length-prefixed Kafka response frames directly from the connection's read source
 /// (the raw <see cref="Socket"/> for plain TCP, the <c>SslStream</c> for TLS) into pooled
-/// pooled response storage.
+/// response storage.
 /// <para/>
 /// <b>Why not a Pipe?</b> The previous receive path pumped socket bytes into a
 /// <c>System.IO.Pipelines.Pipe</c> and then copied every frame out of the pipe's segments
@@ -131,24 +132,12 @@ internal sealed class ResponseFrameReader : IDisposable
             }
         }
 
-        // Modern targets receive the remainder directly into pooled storage. The
-        // netstandard2.0 native path uses the bounded receive buffer for compatibility.
+        // Receive the remainder directly into pooled storage. ReadSourceAsync handles
+        // the netstandard2.0 TLS compatibility case without affecting plain sockets.
         while (_frameFilled < _frameSize)
         {
-#if NETSTANDARD2_0
-            // The netstandard2.0 compatibility read path only supports array-backed
-            // Memory<byte>. Stage native destinations through the bounded receive buffer.
-            var remaining = _frameSize - _frameFilled;
-            var destination = _nativeFrame is not null
-                ? _buffer[..Math.Min(_buffer.Length, remaining)]
-                : FrameMemory.Slice(_frameFilled, remaining);
-            var read = await ReadSourceAsync(destination).ConfigureAwait(false);
-            if (_nativeFrame is not null && read > 0)
-                destination.Span[..read].CopyTo(FrameMemory.Span.Slice(_frameFilled));
-#else
             var read = await ReadSourceAsync(FrameMemory.Slice(_frameFilled, _frameSize - _frameFilled))
                 .ConfigureAwait(false);
-#endif
             if (read == 0)
             {
                 // EOF mid-frame: discard the partial frame; the caller fails pending requests.
@@ -177,6 +166,20 @@ internal sealed class ResponseFrameReader : IDisposable
         Volatile.Write(ref _readInFlight, true);
         try
         {
+#if NETSTANDARD2_0
+            // Polyfill's Stream.ReadAsync(Memory<byte>) drops data when Memory is backed by
+            // a MemoryManager instead of an array. TLS on the netstandard asset therefore
+            // reads through the existing small receive buffer before copying into native
+            // frame storage. Plain sockets and modern target frameworks remain direct-fill.
+            if (_stream is not null && _nativeFrame is not null)
+            {
+                Debug.Assert(BufferedByteCount == 0);
+                var intermediate = _buffer[..Math.Min(_buffer.Length, destination.Length)];
+                read = await _stream.ReadAsync(intermediate).ConfigureAwait(false);
+                intermediate.Span[..read].CopyTo(destination.Span);
+            }
+            else
+#endif
             read = _stream is not null
                 ? await _stream.ReadAsync(destination).ConfigureAwait(false)
                 : await _socket!.ReceiveAsync(destination, SocketFlags.None).ConfigureAwait(false);

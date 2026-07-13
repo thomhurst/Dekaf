@@ -1,4 +1,6 @@
 using System.Buffers.Binary;
+using System.Net;
+using System.Net.Sockets;
 using Dekaf.Errors;
 using Dekaf.Networking;
 
@@ -92,6 +94,35 @@ public sealed class ResponseFrameReaderTests
 
         await Assert.That(result.Buffer.UsesNativeMemory).IsTrue();
         await Assert.That(result.CorrelationId).IsEqualTo(12);
+        await AssertPayloadAsync(result, ResponseBufferPool.NativeMemoryThresholdBytes);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task ReadFrameAsync_LargeSocketFrame_UsesNativePooledMemory(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var endpoint = (IPEndPoint)listener.LocalEndpoint;
+        using var client = new TcpClient();
+        var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+        await client.ConnectAsync(endpoint.Address, endpoint.Port, cancellationToken);
+        using var server = await acceptTask;
+        using var memoryPool = new PipeMemoryPool();
+        using var reader = new ResponseFrameReader(
+            client.Client,
+            stream: null,
+            receiveBufferSize: 4096,
+            ResponseBufferPool.Default,
+            memoryPool);
+        var frame = BuildFrame(correlationId: 13, payloadSize: ResponseBufferPool.NativeMemoryThresholdBytes);
+
+        await server.GetStream().WriteAsync(frame, cancellationToken);
+        var result = await reader.ReadFrameAsync();
+
+        await Assert.That(result.Buffer.UsesNativeMemory).IsTrue();
+        await Assert.That(result.CorrelationId).IsEqualTo(13);
         await AssertPayloadAsync(result, ResponseBufferPool.NativeMemoryThresholdBytes);
     }
 

@@ -154,6 +154,21 @@ public class ResponseBufferPoolTests
     }
 
     [Test]
+    public async Task NativeBuffer_SlicedMemoryCopyPreservesOffset()
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var native = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        native.GetSpan().Clear();
+        var source = new byte[] { 10, 20, 30, 40 };
+
+        source.AsMemory().CopyTo(native.Memory.Slice(4092, source.Length));
+
+        await Assert.That(native.GetSpan()[4091]).IsEqualTo((byte)0);
+        await Assert.That(native.GetSpan().Slice(4092, source.Length).ToArray()).IsEquivalentTo(source);
+        native.Return();
+    }
+
+    [Test]
     public async Task PooledResponseBuffer_ReturnsToCorrectPool()
     {
         var pool = ResponseBufferPool.Create(20 * 1024 * 1024);

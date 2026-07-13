@@ -3557,6 +3557,9 @@ internal sealed class ResponseBufferPool
 
     private static int RoundUpToPowerOfTwo(int value)
     {
+        if (value > 1 << 30)
+            return value;
+
         var rounded = (uint)(value - 1);
         rounded |= rounded >> 1;
         rounded |= rounded >> 2;
@@ -3564,7 +3567,7 @@ internal sealed class ResponseBufferPool
         rounded |= rounded >> 8;
         rounded |= rounded >> 16;
         rounded++;
-        return rounded <= int.MaxValue ? (int)rounded : value;
+        return (int)rounded;
     }
 
     private sealed class NativeBufferBucket(int capacity, int maxRetained)
