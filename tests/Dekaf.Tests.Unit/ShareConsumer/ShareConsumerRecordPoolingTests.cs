@@ -16,9 +16,6 @@ public sealed class ShareConsumerRecordPoolingTests
     [NotInParallel]
     public async Task ParsePartitionRecords_DeserializerThrows_ReturnsBatchToPool()
     {
-        var expectedBatch = RecordBatch.RentFromPool();
-        expectedBatch.ReturnToPool();
-
         var buffer = new ArrayBufferWriter<byte>();
         using var source = new RecordBatch
         {
@@ -50,6 +47,8 @@ public sealed class ShareConsumerRecordPoolingTests
             "ParsePartitionRecords",
             BindingFlags.Instance | BindingFlags.NonPublic)!;
         TargetInvocationException? thrown = null;
+        RecordBatch.BeginTrackingPoolReturnsForCurrentThread();
+        int returnedBatchCount;
         try
         {
             method.Invoke(consumer,
@@ -77,11 +76,12 @@ public sealed class ShareConsumerRecordPoolingTests
         {
             thrown = exception;
         }
+        finally
+        {
+            returnedBatchCount = RecordBatch.EndTrackingPoolReturnsForCurrentThread();
+        }
 
         await Assert.That(thrown?.InnerException).IsTypeOf<InvalidOperationException>();
-
-        var returnedBatch = RecordBatch.RentFromPool();
-        await Assert.That(returnedBatch).IsSameReferenceAs(expectedBatch);
-        returnedBatch.ReturnToPool();
+        await Assert.That(returnedBatchCount).IsEqualTo(1);
     }
 }

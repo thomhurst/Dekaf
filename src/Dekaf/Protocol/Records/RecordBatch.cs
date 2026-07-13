@@ -799,10 +799,37 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     // its lifetime spanning producer and consumer pipelines, contributing to Gen1 pressure.
     // Reuses ObjectPool<T> for zero-alloc CAS-based pooling with miss tracking and exception safety.
     private static readonly RecordBatchPool s_pool = new();
+    private static int s_trackedReturnThreadId;
+    private static int s_trackedReturnCount;
 
     internal static int MaxPoolSizeValue => s_pool.MaxPoolSize;
 
     internal static void RatchetPoolSize(int newSize) => s_pool.RatchetMaxPoolSize(newSize);
+
+    /// <summary>
+    /// Starts an opt-in return counter scoped to the current thread. Intended for deterministic
+    /// failure-path tests where global pool ordering is unobservable under concurrent returns.
+    /// </summary>
+    internal static void BeginTrackingPoolReturnsForCurrentThread()
+    {
+        if (Interlocked.CompareExchange(ref s_trackedReturnThreadId, -1, 0) != 0)
+            throw new InvalidOperationException("A RecordBatch pool return tracker is already active.");
+
+        Volatile.Write(ref s_trackedReturnCount, 0);
+        Volatile.Write(ref s_trackedReturnThreadId, Environment.CurrentManagedThreadId);
+    }
+
+    /// <summary>Stops the current-thread return counter and returns its observed count.</summary>
+    internal static int EndTrackingPoolReturnsForCurrentThread()
+    {
+        var currentThreadId = Environment.CurrentManagedThreadId;
+        if (Interlocked.CompareExchange(ref s_trackedReturnThreadId, -1, currentThreadId) != currentThreadId)
+            throw new InvalidOperationException("RecordBatch pool return tracking must end on its starting thread.");
+
+        var count = Interlocked.Exchange(ref s_trackedReturnCount, 0);
+        Volatile.Write(ref s_trackedReturnThreadId, 0);
+        return count;
+    }
 
     private sealed class RecordBatchPool : ObjectPool<RecordBatch>
     {
@@ -873,6 +900,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             return;
 
         s_pool.Return(this);
+        var trackedThreadId = Volatile.Read(ref s_trackedReturnThreadId);
+        if (trackedThreadId != 0 && trackedThreadId == Environment.CurrentManagedThreadId)
+            Interlocked.Increment(ref s_trackedReturnCount);
     }
 
     /// <summary>
