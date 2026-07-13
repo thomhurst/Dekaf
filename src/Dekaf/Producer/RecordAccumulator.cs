@@ -1342,6 +1342,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly List<PendingAppend> _pendingAppendScan = [];
     private readonly List<PendingAppend> _drainablePendingAppends = [];
     private int _draining; // CAS guard for DrainPendingAppends
+    private long _nextPendingAdmissionRecheckTickCount;
+    private long _pendingAppendDrainEntryCount;
 
     /// <summary>
     /// Per-partition state matching Java's Deque&lt;ProducerBatch&gt; design.
@@ -1983,12 +1985,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal bool DrainPendingAppends()
     {
         if (_pendingAppends.IsEmpty)
+        {
+            Volatile.Write(ref _nextPendingAdmissionRecheckTickCount, 0);
             return true;
+        }
 
         // Only one thread drains at a time — others return immediately.
         if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
             return false;
 
+        Interlocked.Increment(ref _pendingAppendDrainEntryCount);
         var ownsDrainGuard = true;
         try
         {
@@ -2004,6 +2010,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     _pendingAppendScan.Clear();
                     _drainablePendingAppends.Clear();
                     _blockedPendingPartitionRecheckTimes.Clear();
+                    var nextAdmissionRecheckAt = long.MaxValue;
 
                     var remainingToInspect = _pendingAppends.Count;
                     while (remainingToInspect-- > 0 && _pendingAppends.TryDequeue(out var candidate))
@@ -2045,6 +2052,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                   + Math.Max(1, admissionRecheckDelayMs);
                             _pendingAppends.Enqueue(candidate);
                             candidate.ScheduleAdmissionRecheck(recheckAt);
+                            if (recheckAt != 0)
+                                nextAdmissionRecheckAt = Math.Min(nextAdmissionRecheckAt, recheckAt);
                             _blockedPendingPartitionRecheckTimes.Add(
                                 topicPartition,
                                 recheckAt);
@@ -2061,6 +2070,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         _drainablePendingAppends.Add(candidate);
                     }
 
+                    Volatile.Write(
+                        ref _nextPendingAdmissionRecheckTickCount,
+                        nextAdmissionRecheckAt == long.MaxValue ? 0 : nextAdmissionRecheckAt);
                     _pendingAppendScan.Clear();
                     madeProgress = _drainablePendingAppends.Count > 0;
                 }
@@ -2960,8 +2972,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
 
+        bool wasQueueEmpty;
         lock (_pendingAppendQueueLock)
+        {
+            wasQueueEmpty = _pendingAppends.IsEmpty;
             _pendingAppends.Enqueue(op);
+        }
 
         // Close TOCTOU window: if DisposeAsync ran between the _disposed check above and the
         // Enqueue, this op would sit in the queue until its timer fires. Fail it promptly.
@@ -2977,8 +2993,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Try immediate serve — memory may have been freed between TryReserveMemory and now
-        DrainPendingAppends();
+        // Close the memory-release TOCTOU window for the first queued operation. Later
+        // appends join the same wake-driven drain instead of rescanning the growing queue.
+        if (wasQueueEmpty)
+        {
+            DrainPendingAppends();
+        }
+        else
+        {
+            var admissionRecheckAt = Volatile.Read(
+                ref _nextPendingAdmissionRecheckTickCount);
+            if (admissionRecheckAt != 0)
+                op.ScheduleAdmissionRecheck(admissionRecheckAt);
+        }
 
         return new ValueTask<bool>(op, op.Version);
     }
@@ -4023,6 +4050,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal long BufferPressureEvents => Volatile.Read(ref _bufferPressureEvents);
 
     internal int PendingAppendCountForTest => _pendingAppends.Count;
+
+    internal long PendingAppendDrainEntryCountForTest =>
+        Volatile.Read(ref _pendingAppendDrainEntryCount);
 
     /// <summary>
     /// Gets the current buffer utilization as a ratio (0.0 to 1.0+).

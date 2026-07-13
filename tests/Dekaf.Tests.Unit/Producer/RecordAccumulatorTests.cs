@@ -3572,6 +3572,38 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task AppendFromSpansAsync_QueuedBurstScansPendingQueueOnce()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var tasks = new Task<bool>[32];
+
+        await Assert.That(accumulator.TryReserveMemoryForTest(4096)).IsTrue();
+        for (var i = 0; i < tasks.Length; i++)
+        {
+            tasks[i] = accumulator.AppendFromSpansAsync(
+                "test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                ReadOnlySpan<byte>.Empty, valueIsNull: true,
+                null, 0, null, CancellationToken.None).AsTask();
+        }
+
+        await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(tasks.Length);
+        await Assert.That(accumulator.PendingAppendDrainEntryCountForTest).IsEqualTo(1)
+            .Because("one blocked burst must not rescan its growing pending queue per message");
+
+        await accumulator.DisposeAsync();
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Expected: disposal completes every deliberately blocked append.
+        }
+    }
+
+    [Test]
     public async Task AppendFromSpansAsync_ReopenedMemory_PreservesPendingAppendFifo()
     {
         var options = new ProducerOptions
@@ -3616,9 +3648,9 @@ public class RecordAccumulatorTests
 
             await Assert.That(pendingAppendTask.IsCompleted).IsFalse();
 
-            // Free memory without draining. The next append must join behind the queued
-            // operation; its immediate drain serves the older append before completing.
-            SetBufferedBytesForTest(accumulator, 3000);
+            // A release wakes one queue drain. The next append must not overtake the older
+            // operation that the wake just served.
+            accumulator.ReleaseMemory(fillSize);
 
             var hotResult = await accumulator.AppendFromSpansAsync(
                 topicPartition.Topic, topicPartition.Partition,
