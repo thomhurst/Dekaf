@@ -415,6 +415,7 @@ internal static class ProducerContainerPools
 
 internal static class PooledCompletionSource
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool TrySetResult(
         PooledValueTaskSource<RecordMetadata>? source,
         RecordMetadata metadata)
@@ -422,6 +423,32 @@ internal static class PooledCompletionSource
         if (source is null)
             return false;
 
+        return source.RunContinuationsAsynchronously
+            ? TrySetResultAsynchronous(source, metadata)
+            : TrySetResultInline(source, metadata);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetResultAsynchronous(
+        PooledValueTaskSource<RecordMetadata> source,
+        RecordMetadata metadata)
+    {
+        try
+        {
+            return source.TrySetResult(metadata);
+        }
+        catch
+        {
+            RecordCompletionSourceFault();
+            return false;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetResultInline(
+        PooledValueTaskSource<RecordMetadata> source,
+        RecordMetadata metadata)
+    {
         try
         {
             return source.TrySetResult(metadata);
@@ -435,6 +462,7 @@ internal static class PooledCompletionSource
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool TrySetException(
         PooledValueTaskSource<RecordMetadata>? source,
         Exception exception)
@@ -442,6 +470,32 @@ internal static class PooledCompletionSource
         if (source is null)
             return false;
 
+        return source.RunContinuationsAsynchronously
+            ? TrySetExceptionAsynchronous(source, exception)
+            : TrySetExceptionInline(source, exception);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetExceptionAsynchronous(
+        PooledValueTaskSource<RecordMetadata> source,
+        Exception exception)
+    {
+        try
+        {
+            return source.TrySetException(exception);
+        }
+        catch
+        {
+            RecordCompletionSourceFault();
+            return false;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetExceptionInline(
+        PooledValueTaskSource<RecordMetadata> source,
+        Exception exception)
+    {
         try
         {
             return source.TrySetException(exception);
@@ -453,6 +507,7 @@ internal static class PooledCompletionSource
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool TrySetCanceled(
         PooledValueTaskSource<RecordMetadata>? source,
         CancellationToken cancellationToken)
@@ -460,6 +515,32 @@ internal static class PooledCompletionSource
         if (source is null)
             return false;
 
+        return source.RunContinuationsAsynchronously
+            ? TrySetCanceledAsynchronous(source, cancellationToken)
+            : TrySetCanceledInline(source, cancellationToken);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetCanceledAsynchronous(
+        PooledValueTaskSource<RecordMetadata> source,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return source.TrySetCanceled(cancellationToken);
+        }
+        catch
+        {
+            RecordCompletionSourceFault();
+            return false;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TrySetCanceledInline(
+        PooledValueTaskSource<RecordMetadata> source,
+        CancellationToken cancellationToken)
+    {
         try
         {
             return source.TrySetCanceled(cancellationToken);
@@ -478,6 +559,9 @@ internal static class PooledCompletionSource
         ProducerDebugCounters.RecordInlineContinuationException();
         Diagnostics.DekafMetrics.InlineContinuationExceptions.Add(1);
     }
+
+    private static void RecordCompletionSourceFault() =>
+        Diagnostics.DekafMetrics.CompletionSourceFaults.Add(1);
 }
 
 /// <summary>

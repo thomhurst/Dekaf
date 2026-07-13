@@ -26,6 +26,7 @@ public sealed class DekafMetricInstrumentTests
         DekafMetrics.ProduceErrors.Add(0);
         DekafMetrics.Retries.Add(0);
         DekafMetrics.InlineContinuationExceptions.Add(0);
+        DekafMetrics.CompletionSourceFaults.Add(0);
         DekafMetrics.MessagesReceived.Add(0);
         DekafMetrics.BytesReceived.Add(0);
         DekafMetrics.RebalanceDuration.Record(0);
@@ -37,6 +38,7 @@ public sealed class DekafMetricInstrumentTests
         await Assert.That(instrumentNames).Contains("messaging.client.sent.errors");
         await Assert.That(instrumentNames).Contains("messaging.client.sent.retries");
         await Assert.That(instrumentNames).Contains("dekaf.producer.inline_continuation.exceptions");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.completion_source.faults");
         await Assert.That(instrumentNames).Contains("messaging.client.consumed.messages");
         await Assert.That(instrumentNames).Contains("messaging.client.consumed.bytes");
         await Assert.That(instrumentNames).Contains("messaging.consumer.rebalance.duration");

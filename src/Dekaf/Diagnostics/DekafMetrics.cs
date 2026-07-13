@@ -46,6 +46,12 @@ internal static class DekafMetrics
             unit: "{exception}",
             description: "Exceptions isolated from inline transactional produce continuations.");
 
+    internal static readonly Counter<long> CompletionSourceFaults =
+        DekafDiagnostics.Meter.CreateCounter<long>(
+            "dekaf.producer.completion_source.faults",
+            unit: "{fault}",
+            description: "Producer completion-source faults isolated while completing messages.");
+
     // Consumer metrics
     internal static readonly Counter<long> MessagesReceived =
         DekafDiagnostics.Meter.CreateCounter<long>(

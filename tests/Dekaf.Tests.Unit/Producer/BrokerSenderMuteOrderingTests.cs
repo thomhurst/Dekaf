@@ -1199,7 +1199,8 @@ public sealed class BrokerSenderMuteOrderingTests
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
         var ackOrder = new List<(int partition, long offset)>();
-        var allAcknowledged = new TaskCompletionSource();
+        var allAcknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         var sender = CreateSender(pool, options, accumulator, (tp, offset, _, _, ex) =>
         {
@@ -1270,6 +1271,7 @@ public sealed class BrokerSenderMuteOrderingTests
     /// p1 succeeds → batch C (p1) proceeds immediately, batch D (p0) blocked.
     /// </summary>
     [Test]
+    [NotInParallel]
     [Timeout(30_000)]
     public async Task RetriableError_OnOnePartition_DoesNotBlockOtherPartitions(CancellationToken ct)
     {
@@ -1295,7 +1297,8 @@ public sealed class BrokerSenderMuteOrderingTests
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
         var ackPartitions = new List<(int partition, long offset)>();
-        var allAcknowledged = new TaskCompletionSource();
+        var allAcknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         var sender = CreateSender(pool, options, accumulator, (tp, offset, _, _, ex) =>
         {
@@ -1389,7 +1392,8 @@ public sealed class BrokerSenderMuteOrderingTests
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
         var ackPartitions = new List<(int partition, long offset)>();
-        var allAcknowledged = new TaskCompletionSource();
+        var allAcknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         var sender = CreateSender(pool, options, accumulator, (tp, offset, _, _, ex) =>
         {
@@ -1476,7 +1480,8 @@ public sealed class BrokerSenderMuteOrderingTests
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
         var ackOffsets = new List<long>();
-        var allAcknowledged = new TaskCompletionSource();
+        var allAcknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
         {
@@ -1561,7 +1566,8 @@ public sealed class BrokerSenderMuteOrderingTests
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
         var ackOffsets = new List<long>();
-        var allAcknowledged = new TaskCompletionSource();
+        var allAcknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
         {
@@ -1624,6 +1630,7 @@ public sealed class BrokerSenderMuteOrderingTests
     /// next send includes A retry(p0) + C(p1) coalesced → both succeed.
     /// </summary>
     [Test]
+    [NotInParallel]
     [Timeout(30_000)]
     public async Task MutedPartitionHeldBack_UnmutedPartitionProceed(CancellationToken ct)
     {
@@ -1649,7 +1656,10 @@ public sealed class BrokerSenderMuteOrderingTests
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
         var ackList = new List<(int partition, long offset)>();
-        var allAcknowledged = new TaskCompletionSource();
+        // The final acknowledgement runs on the sender thread. Do not resume the test
+        // inline there: its finally block disposes and joins that same sender loop.
+        var allAcknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         var sender = CreateSender(pool, options, accumulator, (tp, offset, _, _, ex) =>
         {
@@ -1874,7 +1884,8 @@ public sealed class BrokerSenderMuteOrderingTests
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
         var ackList = new List<(int partition, long offset)>();
-        var allAcknowledged = new TaskCompletionSource();
+        var allAcknowledged = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         var sender = CreateSender(pool, options, accumulator, (tp, offset, _, _, ex) =>
         {
