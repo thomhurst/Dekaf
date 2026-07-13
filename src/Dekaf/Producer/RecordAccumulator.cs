@@ -1124,8 +1124,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly AsyncAutoResetSignal _wakeupSignal = new();
 
     /// <summary>
-    /// Signals the linger loop when an unsealed batch is created or gains its first awaiter.
-    /// This keeps the 1 ms linger cadence armed only while batches need it.
+    /// Arms the periodic linger cadence when the first unsealed batch becomes active.
     /// </summary>
     private readonly AsyncAutoResetSignal _lingerWakeupSignal = new();
 
@@ -2593,10 +2592,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         bool signalLingerLoop = true)
     {
         if (Interlocked.Exchange(ref pd.LingerQueued, 1) == 0)
+        {
             _lingerPartitions.Enqueue(topicPartition);
-
-        if (signalLingerLoop)
-            _lingerWakeupSignal.Signal();
+            if (signalLingerLoop)
+                _lingerWakeupSignal.Signal();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
