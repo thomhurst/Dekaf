@@ -4731,7 +4731,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var capturedAtUtc = snapshot.CapturedAtUtc;
         foreach (var (brokerId, budget) in _brokerUnackedBudgets)
-            snapshot.BrokerBudgets.Add(CreateBrokerBudgetDiagnostic(brokerId, budget, capturedAtUtc));
+            snapshot.BrokerBudgets.Add(CreateBrokerBudgetDiagnostic(brokerId, budget, capturedAtUtc, includeHistograms: true));
 
         lock (_deliveryDiagnosticsLock)
         {
@@ -4833,7 +4833,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (_brokerBudgetSamples.Count >= MaxBrokerBudgetDiagnosticSamples)
                     _brokerBudgetSamples.RemoveAt(0);
 
-                _brokerBudgetSamples.Add(CreateBrokerBudgetDiagnostic(brokerId, budget, capturedAtUtc));
+                _brokerBudgetSamples.Add(CreateBrokerBudgetDiagnostic(brokerId, budget, capturedAtUtc, includeHistograms: false));
             }
         }
     }
@@ -4841,7 +4841,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private static ProducerBrokerBudgetDiagnostic CreateBrokerBudgetDiagnostic(
         int brokerId,
         BrokerUnackedByteBudget budget,
-        DateTimeOffset capturedAtUtc) => new()
+        DateTimeOffset capturedAtUtc,
+        bool includeHistograms) => new()
     {
         CapturedAtUtc = capturedAtUtc,
         BrokerId = brokerId,
@@ -4849,7 +4850,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         UnackedBytes = budget.UnackedBytes,
         MinRttMicros = budget.MinimumRttMicros,
         MaxRateBytesPerSec = budget.MaxRateBytesPerSecond,
-        AdmissionBlockCount = budget.AdmissionBlockEvents
+        AdmissionBlockCount = budget.AdmissionBlockEvents,
+        RequestSizeLog2Histogram = includeHistograms ? budget.CopyRequestSizeHistogram() : null,
+        RequestRttMicrosLog2Histogram = includeHistograms ? budget.CopyRequestRttMicrosHistogram() : null
     };
 
     /// <summary>

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace Dekaf.Producer;
@@ -12,16 +13,41 @@ namespace Dekaf.Producer;
 /// <c>target × measured drain rate</c> caps the latency. The RTT safety floor uses a
 /// periodically refreshed minimum RTT so standing queue delay cannot inflate its horizon.
 /// <para>
+/// Drain rate is measured per acknowledged request, BBR-style: each request snapshots the
+/// cumulative delivered-bytes counter at send time, and its rate sample is the delivered
+/// delta over the larger of the request's own sojourn and the interval since the delivery
+/// clock at send (sojourn only for app-limited sends, where the pipe was empty and the
+/// preceding interval is idle time). The denominator is therefore never smaller than one
+/// real round trip, so response-pass timing (hot polling, clustered completions,
+/// processing stalls) cannot manufacture inflated samples.
+/// </para>
+/// <para>
 /// Ownership contract: <see cref="Charge"/>/<see cref="Release"/>/<see cref="IsOverBudget"/>/
 /// <see cref="IsOverBudgetAt"/>/<see cref="RecordAdmissionBlock"/>/
-/// <see cref="ObserveWrittenUnackedBytes"/> are cross-thread (producer appenders, terminal batch
-/// paths, and parallel connection sends). <see cref="OnAcked"/> and <see cref="SetCap"/> are
-/// single-writer — only the owning broker's send loop calls them — so the remaining estimator
-/// state needs no synchronization; the computed budget is published with a volatile write.
+/// <see cref="ObserveWrittenUnackedBytes"/>/<see cref="SnapshotDelivery"/> are cross-thread
+/// (producer appenders, terminal batch paths, and parallel connection sends).
+/// <see cref="OnAcked"/> and <see cref="SetCap"/> are single-writer — only the owning broker's
+/// send loop calls them — so the remaining estimator state needs no synchronization; the
+/// computed budget is published with a volatile write. <see cref="SnapshotDelivery"/> performs
+/// two independent volatile reads racing the single writer; both fields are monotonic, so a
+/// torn pair only skews one rate sample marginally and the windowed max filters it.
 /// </para>
 /// </summary>
 internal sealed class BrokerUnackedByteBudget
 {
+    /// <summary>
+    /// Per-send token minted by <see cref="SnapshotDelivery"/>: the delivery clock (cumulative
+    /// delivered bytes and the timestamp of the most recent delivery), the pre-write send
+    /// timestamp, and whether the broker pipe was empty at send. Carried opaquely on the
+    /// in-flight request and redeemed by <see cref="OnAcked"/> when the response arrives, so
+    /// the values that must be captured together cannot drift apart at call sites.
+    /// </summary>
+    internal readonly record struct DeliverySnapshot(
+        long DeliveredBytes,
+        long DeliveredTimestamp,
+        long SendTimestamp,
+        bool AppLimited);
+
     /// <summary>
     /// Budget ceiling in batches per connection. Sized so a ~1 GB/s drain with ~30 ms ack
     /// round-trips keeps the pipe full at the 1 MB default batch size (~32 MB BDP). Shared
@@ -34,6 +60,25 @@ internal sealed class BrokerUnackedByteBudget
     private const double WindowBucketSeconds = 0.100;
     private const double OccupancySafetyMultiplier = 1.5;
     private const double ProbeGrowthThreshold = 1.01;
+
+    /// <summary>
+    /// Bounds the occupancy floor to this multiple of the rate-derived budget once a drain
+    /// estimate exists. Occupancy is itself admission-bounded by the budget, so an uncapped
+    /// <c>1.5 × occupancy</c> floor is a positive feedback loop that ratchets the budget to
+    /// its cap. With the bound, the iteration's fixed point is this multiple of the rate
+    /// budget (1.5 × target = 15 ms standing latency at the 10 ms default) instead of the cap.
+    /// Genuine wire demand beyond the estimate recovers via capacity probes within 8 RTTs.
+    /// </summary>
+    private const double OccupancyFloorHeadroom = 1.5;
+
+    /// <summary>
+    /// Log2 histogram buckets for per-request diagnostics. Request sizes shift by
+    /// <see cref="RequestSizeHistogramShift"/> (bucket 0 = under 512 B, bucket 15 = 8 MB and
+    /// above); RTT buckets are unshifted microseconds (bucket 0 = under 2 µs, bucket 15 =
+    /// 32 ms and above).
+    /// </summary>
+    private const int HistogramBucketCount = 16;
+    private const int RequestSizeHistogramShift = 8;
 
     /// <summary>
     /// Delivery-rate and written-occupancy maxima cover two seconds in 100ms buckets.
@@ -75,6 +120,11 @@ internal sealed class BrokerUnackedByteBudget
     private long _minimumRttMicros;
     private long _maxRateBytesPerSecond;
     private long _pendingWrittenUnackedPeakBytes;
+    // BBR delivery clock: cumulative acked bytes ("delivered") and the timestamp of the most
+    // recent delivery ("delivered_mstamp"). Written only by OnAcked (single writer); snapshot
+    // via volatile reads by parallel connection sends at send time.
+    private long _totalDeliveredBytes;
+    private long _lastDeliveredTimestamp;
 
     // Single-writer state (owning send loop only; constructor runs before the loop starts).
     private readonly long _floorBytes;
@@ -82,10 +132,14 @@ internal sealed class BrokerUnackedByteBudget
     private long _capBytes;
     private readonly double[] _rateBucketMaxValues = new double[WindowBucketCount];
     private readonly long[] _occupancyBucketMaxValues = new long[WindowBucketCount];
+    // Per-request diagnostics: log2 histograms of acked request sizes and RTTs. Incremented
+    // only by the owning send loop; snapshot copies use per-element volatile reads, so
+    // readers may observe slightly stale counts (acceptable for diagnostics).
+    private readonly long[] _requestSizeLog2Histogram = new long[HistogramBucketCount];
+    private readonly long[] _requestRttMicrosLog2Histogram = new long[HistogramBucketCount];
     private long _currentWindowBucket = long.MinValue;
     private double _windowMaxRate;
     private long _windowMaxOccupancyBytes;
-    private long _lastAckTimestamp;
     private double _minRttSeconds;
     private double _minRttProbeMinimumSeconds;
     private bool _hasMinRttSample;
@@ -131,6 +185,38 @@ internal sealed class BrokerUnackedByteBudget
     internal long MinimumRttMicros => Volatile.Read(ref _minimumRttMicros);
 
     internal long MaxRateBytesPerSecond => Volatile.Read(ref _maxRateBytesPerSecond);
+
+    /// <summary>
+    /// Cross-thread: parallel connection sends mint the per-request delivery token immediately
+    /// before the socket write (so <paramref name="sendTimestamp"/> can never postdate the
+    /// response's arrival), feeding it back to <see cref="OnAcked"/> on the response. Two
+    /// independent volatile reads — tearing is benign because both fields are monotonic and a
+    /// skewed pair only shifts one rate sample marginally.
+    /// </summary>
+    /// <param name="sendTimestamp">Stopwatch timestamp taken just before the socket write.</param>
+    /// <param name="appLimited">True when the broker pipe was empty at send time.</param>
+    internal DeliverySnapshot SnapshotDelivery(long sendTimestamp, bool appLimited)
+        => new(
+            Volatile.Read(ref _totalDeliveredBytes),
+            Volatile.Read(ref _lastDeliveredTimestamp),
+            sendTimestamp,
+            appLimited);
+
+    /// <summary>Diagnostics: log2 histogram of acked request payload sizes (see
+    /// <see cref="HistogramBucketCount"/> for bucket semantics).</summary>
+    internal long[] CopyRequestSizeHistogram() => CopyHistogram(_requestSizeLog2Histogram);
+
+    /// <summary>Diagnostics: log2 histogram of acked request round-trip times in microseconds.</summary>
+    internal long[] CopyRequestRttMicrosHistogram() => CopyHistogram(_requestRttMicrosLog2Histogram);
+
+    private static long[] CopyHistogram(long[] source)
+    {
+        var copy = new long[source.Length];
+        for (var i = 0; i < source.Length; i++)
+            copy[i] = Volatile.Read(ref source[i]);
+
+        return copy;
+    }
 
     // Volatile.Read (a plain acquire load) rather than Interlocked.Read: this runs per
     // message from every appender thread, and a locked read would take the cache line
@@ -243,12 +329,19 @@ internal sealed class BrokerUnackedByteBudget
     }
 
     /// <summary>
-    /// Feeds successfully acknowledged requests from one response pass into the drain
-    /// estimate, then republishes the budget. Called only from the owning send loop after
-    /// a response pass completes successfully-acked requests. O(1), allocation-free.
+    /// Feeds one successfully acknowledged request into the drain estimate, then republishes
+    /// the budget. Called only from the owning send loop, once per acked request. O(1),
+    /// allocation-free.
     /// </summary>
-    public void OnAcked(long ackedBytes, long rttTicks, long nowTicks)
+    /// <param name="ackedBytes">Encoded payload bytes of the acknowledged request.</param>
+    /// <param name="sendSnapshot">Token minted via <see cref="SnapshotDelivery"/> just before
+    /// the request's socket write, so <c>nowTicks - SendTimestamp</c> is never smaller than
+    /// the true round trip. For app-limited sends the interval since the last delivery is
+    /// idle time, not drain time, and the sample falls back to the request's own sojourn.</param>
+    /// <param name="nowTicks">Response observation timestamp.</param>
+    public void OnAcked(long ackedBytes, DeliverySnapshot sendSnapshot, long nowTicks)
     {
+        var rttTicks = nowTicks - sendSnapshot.SendTimestamp;
         if (ackedBytes <= 0 || rttTicks <= 0)
             return;
 
@@ -256,17 +349,24 @@ internal sealed class BrokerUnackedByteBudget
         UpdateMinRtt(rttSeconds, nowTicks);
         Volatile.Write(ref _minimumRttMicros, (long)(_minRttSeconds * 1_000_000));
 
-        var requestStartTimestamp = nowTicks - rttTicks;
-        var rateIntervalStartTimestamp = _lastAckTimestamp == 0
-            ? requestStartTimestamp
-            : Math.Max(_lastAckTimestamp, requestStartTimestamp);
-        _lastAckTimestamp = nowTicks;
+        RecordRequestHistograms(ackedBytes, rttSeconds);
+
+        // BBR delivery-rate sample: delivered-counter delta over the larger of the request's
+        // own sojourn and the ack-axis interval (time since the delivery clock at send). The
+        // sojourn bounds the denominator below by one real round trip, so clustered response
+        // passes cannot inflate the sample; the ack axis spreads a processing-stall backlog
+        // over the wall time the deliveries actually took.
+        var totalDelivered = _totalDeliveredBytes + ackedBytes;
+        Volatile.Write(ref _totalDeliveredBytes, totalDelivered);
+        var deliveredDelta = totalDelivered - sendSnapshot.DeliveredBytes;
+
+        var intervalTicks = rttTicks;
+        if (!sendSnapshot.AppLimited && sendSnapshot.DeliveredTimestamp != 0)
+            intervalTicks = Math.Max(intervalTicks, nowTicks - sendSnapshot.DeliveredTimestamp);
+        Volatile.Write(ref _lastDeliveredTimestamp, nowTicks);
 
         AdvanceWindow(nowTicks);
-        var intervalTicks = nowTicks - rateIntervalStartTimestamp;
-        var bytesPerSecond = intervalTicks > 0
-            ? ackedBytes * (double)Stopwatch.Frequency / intervalTicks
-            : 0;
+        var bytesPerSecond = deliveredDelta * (double)Stopwatch.Frequency / intervalTicks;
         if (bytesPerSecond > 0)
         {
             AddRateSample(bytesPerSecond);
@@ -277,9 +377,23 @@ internal sealed class BrokerUnackedByteBudget
         if (writtenUnackedPeak > 0)
             AddOccupancySample(writtenUnackedPeak);
 
-        UpdateCapacityProbe(bytesPerSecond, requestStartTimestamp, rttTicks, nowTicks);
+        UpdateCapacityProbe(bytesPerSecond, sendSnapshot.SendTimestamp, rttTicks, nowTicks);
 
         RecomputeBudget();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void RecordRequestHistograms(long ackedBytes, double rttSeconds)
+    {
+        var sizeBucket = Math.Clamp(
+            BitOperations.Log2((ulong)ackedBytes | 1) - RequestSizeHistogramShift,
+            0,
+            HistogramBucketCount - 1);
+        _requestSizeLog2Histogram[sizeBucket]++;
+
+        var rttMicros = (ulong)(rttSeconds * 1_000_000);
+        var rttBucket = Math.Min(BitOperations.Log2(rttMicros | 1), HistogramBucketCount - 1);
+        _requestRttMicrosLog2Histogram[rttBucket]++;
     }
 
     private void UpdateMinRtt(double rttSeconds, long nowTicks)
@@ -404,7 +518,7 @@ internal sealed class BrokerUnackedByteBudget
 
     private void UpdateCapacityProbe(
         double bytesPerSecond,
-        long requestStartTimestamp,
+        long sendTimestamp,
         long rttTicks,
         long nowTicks)
     {
@@ -421,10 +535,10 @@ internal sealed class BrokerUnackedByteBudget
                 return;
             }
 
-            // A response can confirm the probe only when its oldest request was created
-            // after the larger budget was published. If observed rate grows, retain the
-            // probe and require another wholly-probed sample at the new level.
-            if (requestStartTimestamp < _capacityProbeStartTimestamp)
+            // A response can confirm the probe only when its request was sent after the
+            // larger budget was published. If observed rate grows, retain the probe and
+            // require another wholly-probed sample at the new level.
+            if (sendTimestamp < _capacityProbeStartTimestamp)
                 return;
 
             if (bytesPerSecond > _capacityProbeBaselineRate * ProbeGrowthThreshold)
@@ -521,6 +635,7 @@ internal sealed class BrokerUnackedByteBudget
         double minRttSeconds)
     {
         long budget;
+        double rateBudgetBytes = 0;
         if (_windowMaxRate == 0)
         {
             // Cold start: no drain estimate yet — keep today's semantics (cap) so short-lived
@@ -532,7 +647,8 @@ internal sealed class BrokerUnackedByteBudget
             var horizonSeconds = _hasMinRttSample && !minRttProbeActive
                 ? Math.Max(_targetSeconds, RttSafetyMultiplier * minRttSeconds)
                 : _targetSeconds;
-            var estimatedBytes = _windowMaxRate * horizonSeconds;
+            rateBudgetBytes = _windowMaxRate * horizonSeconds;
+            var estimatedBytes = rateBudgetBytes;
             if (capacityProbeActive && !minRttProbeActive)
                 estimatedBytes *= ProbeBudgetMultiplier;
 
@@ -542,6 +658,17 @@ internal sealed class BrokerUnackedByteBudget
         if (!minRttProbeActive)
         {
             var occupancyFloor = (long)(_windowMaxOccupancyBytes * OccupancySafetyMultiplier);
+            if (rateBudgetBytes > 0)
+            {
+                // The floor exists so a lagging estimator cannot strangle a pipe that is
+                // demonstrably fuller (#1911). Once a drain estimate exists, genuine extra
+                // demand shows up in the delivered-rate samples within one round trip, so the
+                // occupancy proxy may exceed the rate budget by a bounded headroom only —
+                // otherwise occupancy (itself admission-bounded by the budget) ratchets the
+                // budget to its cap and the latency target is never enforced.
+                occupancyFloor = Math.Min(occupancyFloor, (long)(OccupancyFloorHeadroom * rateBudgetBytes));
+            }
+
             budget = Math.Max(budget, occupancyFloor);
         }
 

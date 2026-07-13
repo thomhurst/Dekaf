@@ -286,6 +286,20 @@ internal sealed class ProducerBrokerBudgetDiagnostic
     public required long MinRttMicros { get; init; }
     public required long MaxRateBytesPerSec { get; init; }
     public required long AdmissionBlockCount { get; init; }
+
+    /// <summary>
+    /// Log2 histogram of acked produce-request payload sizes; bucket semantics are defined
+    /// by <see cref="BrokerUnackedByteBudget.CopyRequestSizeHistogram"/>. Populated only on
+    /// live snapshots, not periodic samples, to keep the sample ring compact.
+    /// </summary>
+    public long[]? RequestSizeLog2Histogram { get; init; }
+
+    /// <summary>
+    /// Log2 histogram of acked produce-request round trips in microseconds; bucket semantics
+    /// are defined by <see cref="BrokerUnackedByteBudget.CopyRequestRttMicrosHistogram"/>.
+    /// Populated only on live snapshots.
+    /// </summary>
+    public long[]? RequestRttMicrosLog2Histogram { get; init; }
 }
 
 internal sealed class ProducerConnectionScaleDiagnostic
