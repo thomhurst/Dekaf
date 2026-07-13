@@ -5,10 +5,12 @@ using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
+using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 using Dekaf.Security;
 
 namespace Dekaf.Tests.Unit.Networking;
@@ -105,6 +107,162 @@ public sealed class KafkaConnectionTests
         var capacity = KafkaConnection.GetPreSerializeInitialCapacity<ProduceResponse>(request);
 
         await Assert.That(capacity).IsEqualTo(1_048_704);
+    }
+
+    [Test]
+    [Arguments(CompressionType.None)]
+    [Arguments(CompressionType.Gzip)]
+    public async Task SingleBatchProduceSegments_MatchContiguousSerialization(CompressionType compression)
+    {
+        var recordBytes = "arena-backed-records"u8.ToArray();
+        var batch = new RecordBatch
+        {
+            BaseOffset = 17,
+            PartitionLeaderEpoch = 3,
+            LastOffsetDelta = 0,
+            BaseTimestamp = 1234,
+            MaxTimestamp = 1234,
+            ProducerId = 42,
+            ProducerEpoch = 2,
+            BaseSequence = 7,
+            Records = [new Record { IsKeyNull = true, Value = "value"u8.ToArray() }]
+        };
+        batch.SetPreEncodedRecords(recordBytes);
+        batch.PreCompress(compression, null);
+        var encodedRecordsBackingArray = batch.PreCompressedRecords ?? recordBytes;
+
+        var partition = new ProduceRequestPartitionData
+        {
+            Index = 5,
+            Records = [batch],
+            Compression = compression
+        };
+        var topic = new ProduceRequestTopicData { Name = "segment-topic" };
+        topic.SetPartitionDataScratch([partition], 0, 1);
+        var request = new ProduceRequest
+        {
+            TransactionalId = "tx-id",
+            Acks = -1,
+            TimeoutMs = 30_000
+        };
+        request.SetTopicDataScratch([topic], 1);
+
+        const short apiVersion = 12;
+        const int correlationId = 123;
+        var headerVersion = KafkaMessageMetadata<ProduceRequest, ProduceResponse>
+            .GetRequestHeaderVersion(apiVersion);
+        var expectedBody = new ArrayBufferWriter<byte>();
+        var expectedWriter = new KafkaProtocolWriter(expectedBody);
+        new RequestHeader
+        {
+            ApiKey = ApiKey.Produce,
+            ApiVersion = apiVersion,
+            CorrelationId = correlationId,
+            ClientId = "segment-client",
+            HeaderVersion = headerVersion
+        }.Write(ref expectedWriter);
+        request.Write(ref expectedWriter, apiVersion);
+        var expected = new byte[sizeof(int) + expectedWriter.BytesWritten];
+        BinaryPrimitives.WriteInt32BigEndian(expected, expectedWriter.BytesWritten);
+        expectedBody.WrittenSpan.CopyTo(expected.AsSpan(sizeof(int)));
+
+        var connection = new KafkaConnection("localhost", 9092, "segment-client");
+        var segmented = connection.TryPreSerializeSingleBatchProduceRequest(
+            request,
+            correlationId,
+            apiVersion,
+            headerVersion,
+            out var metadataArray,
+            out var prefixLength,
+            out var encodedRecords,
+            out var suffixOffset,
+            out var suffixLength);
+
+        await Assert.That(segmented).IsTrue();
+        try
+        {
+            var actual = new byte[prefixLength + encodedRecords.Count + suffixLength];
+            metadataArray.AsSpan(0, prefixLength).CopyTo(actual);
+            encodedRecords.AsSpan().CopyTo(actual.AsSpan(prefixLength));
+            metadataArray.AsSpan(suffixOffset, suffixLength)
+                .CopyTo(actual.AsSpan(prefixLength + encodedRecords.Count));
+
+            await Assert.That(actual).IsEquivalentTo(expected);
+            await Assert.That(encodedRecords.Array).IsSameReferenceAs(encodedRecordsBackingArray);
+        }
+        finally
+        {
+            DekafPools.SerializationBuffers.Return(metadataArray, clearArray: false);
+            batch.ReturnPreCompressedBuffer();
+        }
+    }
+
+    [Test]
+    public async Task ConsumeSentSegments_PartialSend_AdvancesAcrossSegmentBoundary()
+    {
+        var first = new byte[3];
+        var second = new byte[4];
+        var third = new byte[2];
+        var segments = new List<ArraySegment<byte>>
+        {
+            new(first),
+            new(second),
+            new(third)
+        };
+
+        KafkaConnection.ConsumeSentSegments(segments, 5);
+
+        await Assert.That(segments.Count).IsEqualTo(2);
+        await Assert.That(segments[0].Array).IsSameReferenceAs(second);
+        await Assert.That(segments[0].Offset).IsEqualTo(2);
+        await Assert.That(segments[0].Count).IsEqualTo(2);
+        await Assert.That(segments[1].Array).IsSameReferenceAs(third);
+
+        KafkaConnection.ConsumeSentSegments(segments, 4);
+
+        await Assert.That(segments).IsEmpty();
+    }
+
+    [Test]
+    public async Task SingleBatchProduceSegments_UnpreparedCompressedBatch_FallsBack()
+    {
+        var batch = new RecordBatch
+        {
+            Records = [new Record { IsKeyNull = true, Value = "value"u8.ToArray() }]
+        };
+        var request = new ProduceRequest
+        {
+            TopicData =
+            [
+                new ProduceRequestTopicData
+                {
+                    Name = "fallback-topic",
+                    PartitionData =
+                    [
+                        new ProduceRequestPartitionData
+                        {
+                            Records = [batch],
+                            Compression = CompressionType.Gzip
+                        }
+                    ]
+                }
+            ]
+        };
+        var connection = new KafkaConnection("localhost", 9092);
+
+        var segmented = connection.TryPreSerializeSingleBatchProduceRequest(
+            request,
+            correlationId: 1,
+            apiVersion: 12,
+            headerVersion: 2,
+            out var metadataArray,
+            out _,
+            out _,
+            out _,
+            out _);
+
+        await Assert.That(segmented).IsFalse();
+        await Assert.That(metadataArray).IsNull();
     }
 
     [Test]
@@ -683,6 +841,80 @@ public sealed class KafkaConnectionTests
 
             await Assert.That(frame.Length).IsGreaterThan(8);
             await Assert.That(correlationId).IsGreaterThan(0);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task SendFireAndForgetAsync_SingleBatchProduce_WritesValidSegmentedFrame(
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+
+            var batch = new RecordBatch
+            {
+                BaseOffset = 9,
+                LastOffsetDelta = 0,
+                BaseTimestamp = 4567,
+                MaxTimestamp = 4567,
+                Records = [new Record { IsKeyNull = true, Value = "value"u8.ToArray() }]
+            };
+            batch.SetPreEncodedRecords("borrowed-record-data"u8.ToArray());
+            var request = new ProduceRequest
+            {
+                Acks = 0,
+                TimeoutMs = 30_000,
+                TopicData =
+                [
+                    new ProduceRequestTopicData
+                    {
+                        Name = "socket-topic",
+                        PartitionData =
+                        [
+                            new ProduceRequestPartitionData
+                            {
+                                Index = 2,
+                                Records = [batch]
+                            }
+                        ]
+                    }
+                ]
+            };
+
+            const short apiVersion = 12;
+            await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+                request,
+                apiVersion,
+                cancellationToken);
+
+            var actual = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(actual.AsSpan(4));
+            var expectedBuffer = new ArrayBufferWriter<byte>();
+            var expectedWriter = new KafkaProtocolWriter(expectedBuffer);
+            new RequestHeader
+            {
+                ApiKey = ApiKey.Produce,
+                ApiVersion = apiVersion,
+                CorrelationId = correlationId,
+                HeaderVersion = KafkaMessageMetadata<ProduceRequest, ProduceResponse>
+                    .GetRequestHeaderVersion(apiVersion)
+            }.Write(ref expectedWriter);
+            request.Write(ref expectedWriter, apiVersion);
+
+            await Assert.That(actual).IsEquivalentTo(expectedBuffer.WrittenSpan.ToArray());
         }
         finally
         {

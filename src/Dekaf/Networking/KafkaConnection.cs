@@ -16,6 +16,7 @@ using Dekaf.Internal;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Dekaf.Telemetry;
@@ -134,6 +135,7 @@ public sealed partial class KafkaConnection :
     private readonly CancellationTokenSourcePool _timeoutCtsPool;
     private readonly ClientTelemetryMetricCollector? _telemetryMetricCollector;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private SocketScatterGatherSender? _scatterGatherSender;
 
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
@@ -1319,6 +1321,49 @@ public sealed partial class KafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
+        if (!_isTls
+            && _socket is not null
+            && request is ProduceRequest produceRequest
+            && TryPreSerializeSingleBatchProduceRequest(
+                produceRequest,
+                correlationId,
+                apiVersion,
+                headerVersion,
+                out var metadataArray,
+                out var prefixLength,
+                out var encodedRecords,
+                out var suffixOffset,
+                out var suffixLength))
+        {
+            try
+            {
+                await SemaphoreHelper.AcquireOrThrowDisposedAsync(
+                        _writeLock,
+                        nameof(KafkaConnection),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                DekafPools.SerializationBuffers.Return(metadataArray, clearArray: false);
+                throw;
+            }
+
+            var segmentedWriteTask = WriteSegmentedFrameHoldingLockAsync(
+                metadataArray,
+                prefixLength,
+                encodedRecords,
+                suffixOffset,
+                suffixLength);
+            await AwaitBorrowedFrameWriteAsync(
+                    segmentedWriteTask,
+                    correlationId,
+                    callerOwnsTimeout,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
         var clearSerializedArray = KafkaMessageMetadata<TRequest, TResponse>.ApiKey == ApiKey.SaslAuthenticate;
         try
@@ -1338,6 +1383,162 @@ public sealed partial class KafkaConnection :
         // socket write mid-frame (see AwaitFrameWriteAsync).
         var writeTask = WriteFrameHoldingLockAsync(serializedArray, serializedLength, clearSerializedArray);
         await AwaitFrameWriteAsync(writeTask, correlationId, callerOwnsTimeout, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal bool TryPreSerializeSingleBatchProduceRequest(
+        ProduceRequest request,
+        int correlationId,
+        short apiVersion,
+        short headerVersion,
+        out byte[] metadataArray,
+        out int prefixLength,
+        out ArraySegment<byte> encodedRecords,
+        out int suffixOffset,
+        out int suffixLength)
+    {
+        metadataArray = null!;
+        prefixLength = 0;
+        encodedRecords = default;
+        suffixOffset = 0;
+        suffixLength = 0;
+
+        if (!request.TryGetSingleBatch(out var topic, out var partition, out var batch))
+            return false;
+
+        if (!batch.CanWriteSegmented(partition.Compression))
+            return false;
+
+        using var metadataWriter = new RentedBufferWriter(
+            DefaultPreSerializeInitialCapacity,
+            MessageSizePrefixLength);
+        var writer = new KafkaProtocolWriter(metadataWriter);
+        var header = new RequestHeader
+        {
+            ApiKey = ApiKey.Produce,
+            ApiVersion = apiVersion,
+            CorrelationId = correlationId,
+            ClientId = _clientId,
+            HeaderVersion = headerVersion
+        };
+
+        header.Write(ref writer);
+        var headerLength = writer.BytesWritten;
+
+        writer.WriteCompactNullableString(request.TransactionalId);
+        writer.WriteInt16(request.Acks);
+        writer.WriteInt32(request.TimeoutMs);
+        writer.WriteUnsignedVarInt(2); // one topic, compact count is item count + 1
+        writer.WriteCompactString(topic.Name);
+        writer.WriteUnsignedVarInt(2); // one partition
+        writer.WriteInt32(partition.Index);
+
+        var encodedBatchSize = batch.GetEncodedSize(partition.Compression);
+        writer.WriteUnsignedVarInt(checked(encodedBatchSize + 1));
+        if (!batch.TryWriteSegmentedHeader(
+                metadataWriter,
+                partition.Compression,
+                out var encodedRecordsMemory)
+            || !MemoryMarshal.TryGetArray(encodedRecordsMemory, out encodedRecords))
+        {
+            encodedRecords = default;
+            return false;
+        }
+
+        var segmentedBatchSize = RecordBatch.TotalBatchHeaderSize + encodedRecords.Count;
+        if (encodedBatchSize != segmentedBatchSize)
+        {
+            throw new KafkaException(
+                ErrorCode.CorruptMessage,
+                $"PRODUCE segmented framing mismatch for partition {partition.Index}: " +
+                $"declared batch length {encodedBatchSize} but segmented header and records total " +
+                $"{segmentedBatchSize} bytes.");
+        }
+
+        writer.AddBytesWritten(encodedBatchSize);
+        prefixLength = metadataWriter.WrittenCount;
+        writer.WriteEmptyTaggedFields(); // partition
+        writer.WriteEmptyTaggedFields(); // topic
+        writer.WriteEmptyTaggedFields(); // request
+        suffixOffset = prefixLength;
+        suffixLength = metadataWriter.WrittenCount - prefixLength;
+
+        var bodyLength = writer.BytesWritten - headerLength;
+        if (request.RequestBodySizeHint > 0 && bodyLength != request.RequestBodySizeHint)
+        {
+            throw new KafkaException(
+                ErrorCode.CorruptMessage,
+                $"PRODUCE segmented body mismatch: size hint {request.RequestBodySizeHint} but serialized {bodyLength} bytes.");
+        }
+
+        var totalLength = checked(metadataWriter.WrittenCount + encodedRecords.Count);
+        (metadataArray, _) = metadataWriter.DetachBuffer();
+        BinaryPrimitives.WriteInt32BigEndian(metadataArray, totalLength - MessageSizePrefixLength);
+        return true;
+    }
+
+    private async Task WriteSegmentedFrameHoldingLockAsync(
+        byte[] metadataArray,
+        int prefixLength,
+        ArraySegment<byte> encodedRecords,
+        int suffixOffset,
+        int suffixLength)
+    {
+        try
+        {
+            var socket = _socket ?? throw new InvalidOperationException("Not connected");
+            if (_stream is null)
+                throw new InvalidOperationException("Not connected");
+
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(KafkaConnection));
+
+            var sender = _scatterGatherSender ??= new SocketScatterGatherSender();
+            var sendSegments = sender.Segments;
+            sendSegments.Add(new ArraySegment<byte>(metadataArray, 0, prefixLength));
+            if (encodedRecords.Count > 0)
+                sendSegments.Add(encodedRecords);
+            if (suffixLength > 0)
+                sendSegments.Add(new ArraySegment<byte>(metadataArray, suffixOffset, suffixLength));
+
+            while (sendSegments.Count > 0)
+            {
+                var bytesSent = await sender.SendAsync(socket).ConfigureAwait(false);
+                if (bytesSent <= 0)
+                    throw new IOException("Socket closed while writing a Kafka request frame.");
+
+                ConsumeSentSegments(sendSegments, bytesSent);
+            }
+        }
+        catch
+        {
+            AbortAfterWriteFailure();
+            throw;
+        }
+        finally
+        {
+            _scatterGatherSender?.Segments.Clear();
+            DekafPools.SerializationBuffers.Return(metadataArray, clearArray: false);
+            SemaphoreHelper.ReleaseSafely(_writeLock);
+        }
+    }
+
+    internal static void ConsumeSentSegments(List<ArraySegment<byte>> segments, int bytesSent)
+    {
+        while (bytesSent > 0)
+        {
+            var segment = segments[0];
+            if (bytesSent < segment.Count)
+            {
+                segments[0] = new ArraySegment<byte>(
+                    segment.Array!,
+                    segment.Offset + bytesSent,
+                    segment.Count - bytesSent);
+                return;
+            }
+
+            bytesSent -= segment.Count;
+            segments.RemoveAt(0);
+        }
     }
 
     /// <summary>
@@ -1386,10 +1587,35 @@ public sealed partial class KafkaConnection :
     /// write one further request timeout to finish before forcibly aborting the connection to
     /// unblock a socket write stuck on a dead broker.
     /// </summary>
-    private async ValueTask AwaitFrameWriteAsync(
+    private ValueTask AwaitFrameWriteAsync(
         Task writeTask,
         int correlationId,
         bool callerOwnsTimeout,
+        CancellationToken cancellationToken)
+        => AwaitFrameWriteCoreAsync(
+            writeTask,
+            correlationId,
+            callerOwnsTimeout,
+            payloadIsBorrowed: false,
+            cancellationToken);
+
+    private ValueTask AwaitBorrowedFrameWriteAsync(
+        Task writeTask,
+        int correlationId,
+        bool callerOwnsTimeout,
+        CancellationToken cancellationToken)
+        => AwaitFrameWriteCoreAsync(
+            writeTask,
+            correlationId,
+            callerOwnsTimeout,
+            payloadIsBorrowed: true,
+            cancellationToken);
+
+    private async ValueTask AwaitFrameWriteCoreAsync(
+        Task writeTask,
+        int correlationId,
+        bool callerOwnsTimeout,
+        bool payloadIsBorrowed,
         CancellationToken cancellationToken)
     {
 #if DEBUG
@@ -1410,7 +1636,11 @@ public sealed partial class KafkaConnection :
             // Any OperationCanceledException here means the caller's timeout elapsed.
             catch (OperationCanceledException)
             {
-                AbandonFrameWrite(writeTask, correlationId);
+                if (payloadIsBorrowed)
+                    await AbortAndObserveFrameWriteAsync(writeTask).ConfigureAwait(false);
+                else
+                    AbandonFrameWrite(writeTask, correlationId);
+
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
@@ -1426,18 +1656,45 @@ public sealed partial class KafkaConnection :
             }
             catch (OperationCanceledException)
             {
-                AbandonFrameWrite(writeTask, correlationId);
+                if (payloadIsBorrowed)
+                    await AbortAndObserveFrameWriteAsync(writeTask).ConfigureAwait(false);
+                else
+                    AbandonFrameWrite(writeTask, correlationId);
+
                 throw new OperationCanceledException(cancellationToken);
             }
             catch (TimeoutException)
             {
-                AbandonFrameWrite(writeTask, correlationId);
+                if (payloadIsBorrowed)
+                    await AbortAndObserveFrameWriteAsync(writeTask).ConfigureAwait(false);
+                else
+                    AbandonFrameWrite(writeTask, correlationId);
+
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
                     ErrorCode.RequestTimedOut,
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
             }
+        }
+    }
+
+    /// <summary>
+    /// Borrowed producer buffers cannot outlive their caller. Abort a stalled socket write and
+    /// observe its completion before the caller can release or recycle the batch resources.
+    /// </summary>
+    private async Task AbortAndObserveFrameWriteAsync(Task writeTask)
+    {
+        if (!writeTask.IsCompleted)
+            AbortAfterWriteFailure();
+
+        try
+        {
+            await writeTask.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The timeout/cancellation remains the caller-visible failure.
         }
     }
 
@@ -3021,6 +3278,79 @@ public sealed partial class KafkaConnection :
         }
     }
 
+    private sealed class SocketScatterGatherSender : IValueTaskSource<int>, IDisposable
+    {
+        private readonly SocketAsyncEventArgs _eventArgs = new();
+        private ManualResetValueTaskSourceCore<int> _core = new()
+        {
+            RunContinuationsAsynchronously = true
+        };
+
+        public SocketScatterGatherSender()
+        {
+            _eventArgs.Completed += CompleteSend;
+        }
+
+        public List<ArraySegment<byte>> Segments { get; } = new(3);
+
+        public ValueTask<int> SendAsync(Socket socket)
+        {
+            Debug.Assert(_eventArgs.BufferList is null, "Scatter/gather sender reused before completion");
+            _core.Reset();
+            _eventArgs.BufferList = Segments;
+            _eventArgs.SocketFlags = SocketFlags.None;
+
+            try
+            {
+                if (socket.SendAsync(_eventArgs))
+                    return new ValueTask<int>(this, _core.Version);
+
+                var bytesTransferred = GetSynchronousResult();
+                _eventArgs.BufferList = null;
+                return new ValueTask<int>(bytesTransferred);
+            }
+            catch
+            {
+                _eventArgs.BufferList = null;
+                throw;
+            }
+        }
+
+        private int GetSynchronousResult()
+        {
+            if (_eventArgs.SocketError != SocketError.Success)
+                throw new SocketException((int)_eventArgs.SocketError);
+
+            return _eventArgs.BytesTransferred;
+        }
+
+        private void CompleteSend(object? sender, SocketAsyncEventArgs eventArgs)
+        {
+            eventArgs.BufferList = null;
+            if (eventArgs.SocketError == SocketError.Success)
+                _core.SetResult(eventArgs.BytesTransferred);
+            else
+                _core.SetException(new SocketException((int)eventArgs.SocketError));
+        }
+
+        public int GetResult(short token) => _core.GetResult(token);
+
+        public ValueTaskSourceStatus GetStatus(short token) => _core.GetStatus(token);
+
+        public void OnCompleted(
+            Action<object?> continuation,
+            object? state,
+            short token,
+            ValueTaskSourceOnCompletedFlags flags)
+            => _core.OnCompleted(continuation, state, token, flags);
+
+        public void Dispose()
+        {
+            _eventArgs.Completed -= CompleteSend;
+            _eventArgs.Dispose();
+        }
+    }
+
     public ValueTask DisposeAsync()
         => new(EnsureDisposeStarted());
 
@@ -3114,8 +3444,18 @@ public sealed partial class KafkaConnection :
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();
         _connectLock.Dispose();
-        // Do not dispose _writeLock here. A frame write may still be unwinding after
-        // stream/socket disposal unblocks it; its finally block must release the lock.
+        await _writeLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            _scatterGatherSender?.Dispose();
+        }
+        finally
+        {
+            SemaphoreHelper.ReleaseSafely(_writeLock);
+        }
+
+        // Do not dispose _writeLock here. Writers queued before disposal must still acquire it,
+        // observe the disposed connection, and release it from their finally blocks.
         _timeoutCtsPool.Clear();
         _ownedTokenProvider?.Dispose();
 

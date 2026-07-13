@@ -58,6 +58,37 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
         _topicDataScratchCount = 0;
     }
 
+    internal bool TryGetSingleBatch(
+        out ProduceRequestTopicData topic,
+        out ProduceRequestPartitionData partition,
+        out RecordBatch batch)
+    {
+        topic = null!;
+        partition = null!;
+        batch = null!;
+
+        if (_topicDataScratch is { } topicDataScratch)
+        {
+            if (_topicDataScratchCount != 1)
+                return false;
+
+            topic = topicDataScratch[0];
+        }
+        else
+        {
+            if (TopicData.Count != 1)
+                return false;
+
+            topic = TopicData[0];
+        }
+
+        if (!topic.TryGetSinglePartition(out partition) || partition.Records.Count != 1)
+            return false;
+
+        batch = partition.Records[0];
+        return true;
+    }
+
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteCompactNullableString(TransactionalId);
@@ -114,6 +145,25 @@ public sealed class ProduceRequestTopicData
         _partitionDataScratch = null;
         _partitionDataScratchStart = 0;
         _partitionDataScratchCount = 0;
+    }
+
+    internal bool TryGetSinglePartition(out ProduceRequestPartitionData partition)
+    {
+        partition = null!;
+        if (_partitionDataScratch is { } partitionDataScratch)
+        {
+            if (_partitionDataScratchCount != 1)
+                return false;
+
+            partition = partitionDataScratch[_partitionDataScratchStart];
+            return true;
+        }
+
+        if (PartitionData.Count != 1)
+            return false;
+
+        partition = PartitionData[0];
+        return true;
     }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
