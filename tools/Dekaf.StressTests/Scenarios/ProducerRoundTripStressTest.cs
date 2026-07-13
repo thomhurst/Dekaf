@@ -83,45 +83,48 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         await using var sampler = StressTestHelpers.StartSampler(throughput, cancellationToken);
         var produceTimer = Stopwatch.StartNew();
 
-        using var watchdog = options.ProgressWatchdog.Track(
-            throughput,
-            Client,
-            Name,
-            () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options));
-        using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
-
-        Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Dekaf...");
-        for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
+        using (options.ProgressWatchdog.Track(
+                   throughput,
+                   Client,
+                   Name,
+                   () => StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options)))
+        using (var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
         {
-            if (RoundTripScenarioHelpers.TryRecordProduceTimeout(
-                    produceTimeout.IsCancellationRequested,
-                    throughput,
-                    client: "Dekaf",
-                    ordinal: ordinal,
-                    cancellationToken: cancellationToken))
+            produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
+
+            Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Dekaf...");
+            for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
             {
-                break;
+                if (RoundTripScenarioHelpers.TryRecordProduceTimeout(
+                        produceTimeout.IsCancellationRequested,
+                        throughput,
+                        client: "Dekaf",
+                        ordinal: ordinal,
+                        cancellationToken: cancellationToken))
+                {
+                    break;
+                }
+
+                var message = factory.Create(ordinal % options.Partitions);
+                try
+                {
+                    await producer.FireAsync(options.Topic, message.Key, message.Value).ConfigureAwait(false);
+                    throughput.RecordMessage(message.Value.Length);
+                }
+                catch (Exception ex)
+                {
+                    throughput.RecordError(ex, "Round-trip produce", ordinal);
+                }
+
+                if ((ordinal + 1) % 50_000 == 0)
+                {
+                    Console.WriteLine($"  Produced {ordinal + 1:N0} / {options.RoundTripMessages:N0}");
+                }
             }
 
-            var message = factory.Create(ordinal % options.Partitions);
-            try
-            {
-                await producer.FireAsync(options.Topic, message.Key, message.Value).ConfigureAwait(false);
-                throughput.RecordMessage(message.Value.Length);
-            }
-            catch (Exception ex)
-            {
-                throughput.RecordError(ex, "Round-trip produce", ordinal);
-            }
-
-            if ((ordinal + 1) % 50_000 == 0)
-            {
-                Console.WriteLine($"  Produced {ordinal + 1:N0} / {options.RoundTripMessages:N0}");
-            }
+            await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
         }
 
-        await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
         produceTimer.Stop();
         var producerDiagnostics = StressTestHelpers.CaptureProducerDeliveryDiagnostics(producer, options);
         await sampler.StopAsync().ConfigureAwait(false);
