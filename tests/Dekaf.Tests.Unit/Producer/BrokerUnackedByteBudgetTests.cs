@@ -1524,6 +1524,33 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task BackToBackAppLimitedSend_ContinuesRollingRateEpoch()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 200_000_000);
+
+        var firstSend = budget.SnapshotDelivery(T0, appLimited: true);
+        budget.OnAcked(1_000, firstSend, T0 + Seconds(0.0005));
+
+        var hotSend = budget.SnapshotDelivery(T0 + Seconds(0.0006), appLimited: true);
+        await Assert.That(hotSend.AppLimited).IsTrue();
+        await Assert.That(hotSend.RateAppLimited).IsFalse()
+            .Because("an immediate post-ack send is a serialized loaded rate cycle");
+        await Assert.That(hotSend.DeliveryEpochDeliveredBytes).IsEqualTo(0);
+        await Assert.That(hotSend.DeliveryEpochFirstSendTimestamp).IsEqualTo(T0);
+        budget.OnAcked(1_000, hotSend, T0 + Seconds(0.0011));
+
+        var idleSend = budget.SnapshotDelivery(T0 + Seconds(0.004), appLimited: true);
+        await Assert.That(idleSend.RateAppLimited).IsTrue();
+        await Assert.That(idleSend.DeliveryEpochDeliveredBytes).IsEqualTo(2_000);
+        await Assert.That(idleSend.DeliveryEpochFirstSendTimestamp)
+            .IsEqualTo(T0 + Seconds(0.004))
+            .Because("a real empty-pipe gap starts a fresh rate epoch");
+    }
+
+    [Test]
     public async Task LoadedDeliveryEpoch_RejectsSubTwoMillisecondSpikeThenMeasuresCumulativeRate()
     {
         var budget = new BrokerUnackedByteBudget(
@@ -1684,7 +1711,7 @@ public sealed class BrokerUnackedByteBudgetTests
             budget.OnAcked(
                 1,
                 new BrokerUnackedByteBudget.DeliverySnapshot(
-                    i, 0, i, 0, now - 1, true, 0, 0),
+                    i, 0, i, 0, now - 1, true, true, 0, 0),
                 now);
         }
 

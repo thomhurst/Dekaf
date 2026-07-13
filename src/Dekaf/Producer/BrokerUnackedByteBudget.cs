@@ -47,9 +47,9 @@ internal sealed class BrokerUnackedByteBudget
     /// <summary>
     /// Per-send token minted by <see cref="SnapshotDelivery"/>: the current delivery clock,
     /// the loaded delivery epoch's delivered-byte and first-send anchors, the pre-write send
-    /// timestamp, and whether the broker pipe was empty at send. Carried opaquely on the
-    /// in-flight request and redeemed by <see cref="OnAcked"/> when the response arrives, so
-    /// the values that must be captured together cannot drift apart at call sites.
+    /// timestamp, whether the broker pipe was empty, and whether the rate epoch was app-limited
+    /// at send. Carried opaquely on the in-flight request and redeemed by <see cref="OnAcked"/>
+    /// when the response arrives, so values captured together cannot drift apart at call sites.
     /// </summary>
     internal readonly record struct DeliverySnapshot(
         long DeliveredBytes,
@@ -58,6 +58,7 @@ internal sealed class BrokerUnackedByteBudget
         long DeliveryEpochFirstSendTimestamp,
         long SendTimestamp,
         bool AppLimited,
+        bool RateAppLimited,
         long OldestBatchTimestamp,
         long UnackedBytesAtSend);
 
@@ -317,9 +318,10 @@ internal sealed class BrokerUnackedByteBudget
     /// Cross-thread: parallel connection sends mint the per-request delivery token immediately
     /// before the socket write (so <paramref name="sendTimestamp"/> can never postdate the
     /// response's arrival), feeding it back to <see cref="OnAcked"/> on the response. Delivery
-    /// epoch changes at app-limited boundaries are CAS-published so parallel sends cannot
-    /// regress the delivered-byte marker; loaded sends reuse the published epoch. The
-    /// independent last-delivery timestamp may only conservatively widen a sample.
+    /// epoch changes at rate-app-limited boundaries are CAS-published so parallel sends cannot
+    /// regress the delivered-byte marker; loaded and immediately post-delivery sends reuse the
+    /// published epoch. The independent last-delivery timestamp may only conservatively widen
+    /// a sample.
     /// </summary>
     /// <param name="sendTimestamp">Stopwatch timestamp taken just before the socket write.</param>
     /// <param name="appLimited">True when the broker pipe was empty at send time.</param>
@@ -330,25 +332,36 @@ internal sealed class BrokerUnackedByteBudget
         bool appLimited,
         long oldestBatchTimestamp = 0)
     {
+        var deliveredTimestamp = Volatile.Read(ref _lastDeliveredTimestamp);
+        var deliveryGapTicks = sendTimestamp - deliveredTimestamp;
+        // An empty pipe sent immediately after an ack is a serialized loaded rate cycle, not
+        // idle application time. Negative gaps can arise from concurrent delivery publication
+        // and cannot prove that ordering, so they remain rate-app-limited.
+        var continuesSerializedRateCycle = appLimited
+            && deliveredTimestamp != 0
+            && deliveryGapTicks >= 0
+            && deliveryGapTicks < MinimumLoadedRateSampleTicks;
+        var rateAppLimited = appLimited && !continuesSerializedRateCycle;
         var deliveryEpochFirstSendTimestamp = CaptureDeliveryEpoch(
             sendTimestamp,
-            appLimited,
+            rateAppLimited,
             out var deliveryEpochDeliveredBytes,
             out var deliveredBytes);
         return new DeliverySnapshot(
             deliveredBytes,
-            Volatile.Read(ref _lastDeliveredTimestamp),
+            deliveredTimestamp,
             deliveryEpochDeliveredBytes,
             deliveryEpochFirstSendTimestamp,
             sendTimestamp,
             appLimited,
+            rateAppLimited,
             oldestBatchTimestamp,
             Volatile.Read(ref _unackedBytes));
     }
 
     private long CaptureDeliveryEpoch(
         long sendTimestamp,
-        bool appLimited,
+        bool rateAppLimited,
         out long deliveryEpochDeliveredBytes,
         out long deliveredBytes)
     {
@@ -370,10 +383,10 @@ internal sealed class BrokerUnackedByteBudget
             }
 
             // A loaded pipe keeps a bounded rolling epoch across acknowledgements. Reset at
-            // app-limited boundaries or after 100ms: the lower bound prevents serialized
+            // rate-app-limited boundaries or after 100ms: the lower bound prevents serialized
             // requestBytes / ownRTT spikes; the upper bound preserves capacity adaptation.
             var epochFirstSendTimestamp = Volatile.Read(ref _sendEpochFirstTimestamp);
-            if (!appLimited
+            if (!rateAppLimited
                 && epochDeliveredBytes != NoDeliveryEpoch
                 && sendTimestamp - epochFirstSendTimestamp < MaximumLoadedDeliveryEpochTicks)
             {
@@ -569,7 +582,8 @@ internal sealed class BrokerUnackedByteBudget
             && deliveryIdleTicks >= WindowDurationTicks;
         var loadedServingSample = !sendSnapshot.AppLimited
             || (sendSnapshot.DeliveredTimestamp != 0 && !sustainedIdle);
-        var loadedRateSample = !sendSnapshot.AppLimited;
+        var loadedRateEpoch = !sendSnapshot.RateAppLimited;
+        var retainLoadedRateSample = !sendSnapshot.AppLimited;
         if (sustainedIdle)
             _hasLoadedServingSample = false;
         else if (loadedServingSample)
@@ -648,9 +662,9 @@ internal sealed class BrokerUnackedByteBudget
         var deliveryEpochBytesPerSecond = deliveryEpochDelta * (double)Stopwatch.Frequency
             / deliveryEpochIntervalTicks;
         if (deliveryEpochBytesPerSecond > 0
-            && (!loadedRateSample || deliveryEpochIntervalTicks >= MinimumLoadedRateSampleTicks))
+            && (!loadedRateEpoch || deliveryEpochIntervalTicks >= MinimumLoadedRateSampleTicks))
         {
-            AddRateSample(deliveryEpochBytesPerSecond, loadedRateSample, sustainedIdle);
+            AddRateSample(deliveryEpochBytesPerSecond, retainLoadedRateSample, sustainedIdle);
             Volatile.Write(ref _maxRateBytesPerSecond, (long)GetEffectiveMaxRate());
         }
 
