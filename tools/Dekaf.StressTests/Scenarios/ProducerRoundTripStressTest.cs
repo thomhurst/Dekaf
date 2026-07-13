@@ -43,7 +43,10 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
             .WithBufferMemory(StressTestHelpers.ProducerBufferMemoryBytes)
-            .WithConnectionsPerBroker(options.ConnectionsPerBroker);
+            .WithConnectionsPerBroker(options.ConnectionsPerBroker)
+            // Confluent uses exactly the configured connection count. Keep this comparison
+            // fixed too so adaptive scale events cannot change ordering or the test profile.
+            .WithoutAdaptiveConnections();
 
         _ = options.Compression switch
         {

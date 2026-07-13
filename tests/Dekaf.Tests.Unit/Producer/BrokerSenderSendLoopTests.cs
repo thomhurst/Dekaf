@@ -126,13 +126,97 @@ public sealed class BrokerSenderSendLoopTests
             .IsTrue();
     }
 
+    [Test]
+    public async Task GetWaveCoalesceMaxTicks_UsesLingerBoundAndHardCap()
+    {
+        await Assert.That(BrokerSender.GetWaveCoalesceMaxTicks(0)).IsEqualTo(0);
+        await Assert.That(BrokerSender.GetWaveCoalesceMaxTicks(1)).IsEqualTo(
+            Math.Max(1, 500L * Stopwatch.Frequency / 1_000_000));
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_WaveCoalesce_RearmsAfterIdleWait(
+        CancellationToken cancellationToken)
+    {
+        var connection = new TestKafkaConnection
+        {
+            SendProduceFireAndForgetWithCallerTimeout = () => ValueTask.CompletedTask
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var options = CreateOptions(
+            acks: Acks.None,
+            enableIdempotence: false,
+            lingerMs: 1,
+            enableDeliveryDiagnostics: true);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var injectSibling = 0;
+        BrokerSender? sender = null;
+        sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            onWaveCoalesceStarted: () =>
+            {
+                if (Volatile.Read(ref injectSibling) != 0)
+                    sender!.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
+            });
+
+        try
+        {
+            // Prime both known partitions in one request. The next single-partition event
+            // must enter the wave-coalesce path rather than being fully drained already.
+            sender.EnqueueBulk(
+            [
+                CreateTestBatch(valueTaskSourcePool, "test-topic", 0),
+                CreateTestBatch(valueTaskSourcePool, "test-topic", 1)
+            ]);
+            await WaitUntilAsync(
+                () => accumulator.GetDeliveryDiagnosticsSnapshot()
+                    .ProduceRequestCount == 1,
+                cancellationToken);
+
+            Volatile.Write(ref injectSibling, 1);
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await WaitUntilAsync(
+                () => accumulator.GetDeliveryDiagnosticsSnapshot()
+                    .ProduceRequestCount == 2,
+                cancellationToken);
+
+            // The sender is fully idle again. Waiting for this event must re-arm the wave.
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
+            await WaitUntilAsync(
+                () => accumulator.GetDeliveryDiagnosticsSnapshot()
+                    .ProduceRequestCount == 3,
+                cancellationToken);
+
+            var diagnostic = accumulator.GetDeliveryDiagnosticsSnapshot();
+            await Assert.That(connection.SendFireAndForgetWithCallerTimeoutCalls).IsEqualTo(3);
+            await Assert.That(diagnostic.CoalesceWidthHistogram
+                    .Single(bucket => bucket.MinimumWidth == 2).RequestCount)
+                .IsEqualTo(3);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 100, int retryBackoffMaxMs = 1000,
         int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000,
         int connectionsPerBroker = 1, bool enableAdaptiveConnections = true,
         bool enableIdempotence = true, int batchSize = 1_048_576,
         long? unackedByteBudgetCapOverride = null, long? scaleCooldownMsOverride = null,
-        string? transactionalId = null) => new()
+        string? transactionalId = null, int lingerMs = 0,
+        bool enableDeliveryDiagnostics = false) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
@@ -145,7 +229,8 @@ public sealed class BrokerSenderSendLoopTests
             RetryBackoffMaxMs = retryBackoffMaxMs,
             RequestTimeoutMs = requestTimeoutMs,
             BatchSize = batchSize,
-            LingerMs = 0,
+            LingerMs = lingerMs,
+            EnableDeliveryDiagnostics = enableDeliveryDiagnostics,
             UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride,
             ScaleCooldownMsOverride = scaleCooldownMsOverride,
             TransactionalId = transactionalId
@@ -358,6 +443,7 @@ public sealed class BrokerSenderSendLoopTests
         Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
         Action? onBlockedBucketRequeued = null,
         Action? onPipelinedResponseAcquired = null,
+        Action? onWaveCoalesceStarted = null,
         BrokerUnackedByteBudget? unackedBudget = null,
         int produceApiVersion = 9,
         bool isTransactional = false,
@@ -386,7 +472,8 @@ public sealed class BrokerSenderSendLoopTests
             onBlockedBucketRequeued: onBlockedBucketRequeued,
             unackedBudget: unackedBudget,
             usesTransactionV2: () => usesTransactionV2,
-            onPipelinedResponseAcquired: onPipelinedResponseAcquired);
+            onPipelinedResponseAcquired: onPipelinedResponseAcquired,
+            onWaveCoalesceStarted: onWaveCoalesceStarted);
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {

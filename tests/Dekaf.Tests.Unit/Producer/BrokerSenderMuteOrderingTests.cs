@@ -225,7 +225,8 @@ public sealed class BrokerSenderMuteOrderingTests
         MetadataManager? metadataManager = null,
         Action<ReadyBatch, int>? rerouteBatch = null,
         ILogger? logger = null,
-        int brokerId = 1) =>
+        int brokerId = 1,
+        Func<long>? getTimestamp = null) =>
         new(
             brokerId, pool,
             metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
@@ -240,7 +241,8 @@ public sealed class BrokerSenderMuteOrderingTests
             getCurrentEpoch: null,
             rerouteBatch: rerouteBatch,
             onAcknowledgement: onAcknowledgement,
-            logger: logger);
+            logger: logger,
+            getTimestamp: getTimestamp);
 
     private static object CreateCarryOver()
     {
@@ -494,14 +496,16 @@ public sealed class BrokerSenderMuteOrderingTests
         var (pool, connection) = CreateMockConnection(responseQueue);
         pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(connection);
         var options = CreateOptions(maxInFlight: 2, enableIdempotence: false,
-            deliveryTimeoutMs: 1, requestTimeoutMs: 1, connectionsPerBroker: 2);
+            deliveryTimeoutMs: 1, requestTimeoutMs: 10_000, connectionsPerBroker: 2);
         var accumulator = new RecordAccumulator(options);
         await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
         metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
         var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        var testTimestamp = Stopwatch.GetTimestamp();
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, metadataManager,
-            logger: sendLogger);
+            logger: sendLogger,
+            getTimestamp: () => Volatile.Read(ref testTimestamp));
         var getConnection = typeof(BrokerSender).GetMethod(
             "GetConnectionForPartition", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var topicPartition = new TopicPartition("test-topic", 3);
@@ -511,15 +515,29 @@ public sealed class BrokerSenderMuteOrderingTests
         {
             sender.Enqueue(batch);
             await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+            await WaitForDiagAsync(batch, 'W', TimeSpan.FromSeconds(5), ct);
             metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 1));
             typeof(BrokerSender).GetMethod(
                     "RefreshPartitionRouting", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .Invoke(sender, null);
 
+            var migratingCount = (int)typeof(BrokerSender).GetMethod(
+                    "GetMigratingPartitionCount", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, null)!;
+            await Assert.That(migratingCount).IsEqualTo(1);
+
             await Task.Delay(20, ct);
+            Volatile.Write(
+                ref testTimestamp,
+                Stopwatch.GetTimestamp() + (20 * Stopwatch.Frequency));
             typeof(BrokerSender).GetMethod(
                     "HandleTimedOutRequests", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .Invoke(sender, [CreateCarryOver(), ct]);
+
+            migratingCount = (int)typeof(BrokerSender).GetMethod(
+                    "GetMigratingPartitionCount", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(sender, null)!;
+            await Assert.That(migratingCount).IsEqualTo(0);
 
             await Assert.That((int)getConnection.Invoke(sender, [topicPartition])!).IsEqualTo(1)
                 .Because("timeout removal leaves no old request that can justify a migration fence");
