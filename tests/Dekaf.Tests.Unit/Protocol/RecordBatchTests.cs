@@ -1247,6 +1247,7 @@ public class RecordBatchTests
         var firstReader = new KafkaProtocolReader(buffer.WrittenMemory);
         var first = RecordBatch.Read(ref firstReader);
         var pending = PendingFetchData.Create("topic", 0, [first]);
+        var pendingGeneration = pending.HeaderGeneration;
 
         RecordBatch.BeginTrackingPoolReturnsForCurrentThread();
         int initialReturnCount;
@@ -1270,7 +1271,7 @@ public class RecordBatchTests
         int staleReturnCount;
         try
         {
-            pending.Dispose();
+            first.DisposeAndReturnConsumerBatch(pending, pendingGeneration);
         }
         finally
         {
