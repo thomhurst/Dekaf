@@ -2249,6 +2249,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         return batch.RecordCount != 1 || batch.CompletionSourcesCount != 1;
     }
 
+    /// <summary>
+    /// True when a response can be matched directly to its only batch without populating
+    /// the reusable topic-partition lookup.
+    /// </summary>
+    internal static bool IsDirectSingleBatchResponse(
+        int batchCount,
+        int responseTopicCount,
+        int responsePartitionCount,
+        TopicPartition expected,
+        string responseTopic,
+        int responsePartition)
+        => batchCount == 1
+            && responseTopicCount == 1
+            && responsePartitionCount == 1
+            && expected.Topic == responseTopic
+            && expected.Partition == responsePartition;
+
     internal static (int QuietMicroseconds, int MaximumMicroseconds) SelectWaveCoalesceBounds(int lingerMs)
     {
         if (lingerMs == 0)
@@ -2722,18 +2739,39 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var response = task.GetResult();
                 ObserveBrokerThrottle(response.ThrottleTimeMs);
                 var allPartitionsSucceeded = true;
+                ProduceResponsePartitionData? directResponse = null;
                 // Reuse caller-provided dictionary to avoid per-response allocation.
                 // The dictionary is cleared after use in ProcessResponseBatches.
                 var responseLookup = reusableResponseLookup;
-                for (var t = 0; t < response.TopicCount; t++)
+                if (count == 1
+                    && batches[0] is { } directBatch
+                    && response.TopicCount == 1
+                    && response.Responses[0].PartitionCount == 1
+                    && IsDirectSingleBatchResponse(
+                        count,
+                        response.TopicCount,
+                        response.Responses[0].PartitionCount,
+                        directBatch.TopicPartition,
+                        response.Responses[0].Name,
+                        response.Responses[0].PartitionResponses[0].Index))
                 {
-                    ref var topicResp = ref response.Responses[t];
-                    for (var p = 0; p < topicResp.PartitionCount; p++)
+                    var partitionResponse = response.Responses[0].PartitionResponses[0];
+                    directResponse = partitionResponse;
+                    allPartitionsSucceeded = partitionResponse.ErrorCode == ErrorCode.None;
+                }
+                else
+                {
+                    for (var t = 0; t < response.TopicCount; t++)
                     {
-                        if (topicResp.PartitionResponses[p].ErrorCode != ErrorCode.None)
-                            allPartitionsSucceeded = false;
-                        responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
-                        responseLookup[(topicResp.Name, topicResp.PartitionResponses[p].Index)] = topicResp.PartitionResponses[p];
+                        ref var topicResp = ref response.Responses[t];
+                        for (var p = 0; p < topicResp.PartitionCount; p++)
+                        {
+                            if (topicResp.PartitionResponses[p].ErrorCode != ErrorCode.None)
+                                allPartitionsSucceeded = false;
+                            responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
+                            responseLookup[(topicResp.Name, topicResp.PartitionResponses[p].Index)] =
+                                topicResp.PartitionResponses[p];
+                        }
                     }
                 }
 
@@ -2759,13 +2797,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         Enumerable.Range(0, count)
                             .Where(idx => batches[idx] is not null)
                             .Select(idx => $"{batches[idx].TopicPartition.Topic}-{batches[idx].TopicPartition.Partition}"));
-                    var respKeys = responseLookup is not null
-                        ? string.Join(", ", responseLookup.Keys.Select(k => $"{k.Topic}-{k.Partition}"))
-                        : "(empty)";
-                    LogProduceResponseProcessed(_instanceId, _brokerId, task.Id, count, batchKeys, responseLookup?.Count ?? 0, respKeys);
+                    var respKeys = directResponse is not null
+                        ? $"{batches[0].TopicPartition.Topic}-{directResponse.Value.Index}"
+                        : responseLookup is not null
+                            ? string.Join(", ", responseLookup.Keys.Select(k => $"{k.Topic}-{k.Partition}"))
+                            : "(empty)";
+                    LogProduceResponseProcessed(_instanceId, _brokerId, task.Id, count, batchKeys,
+                        directResponse is not null ? 1 : responseLookup?.Count ?? 0, respKeys);
                 }
 
-                ProcessResponseBatches(pending, responseLookup, response.NodeEndpoints,
+                ProcessResponseBatches(pending, directResponse, responseLookup, response.NodeEndpoints,
                     carryOver, cancellationToken, task.Id);
 
                 // Clear for reuse on next response (avoids per-response dictionary allocation)
@@ -2822,6 +2863,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void ProcessResponseBatches(
         PendingResponse pending,
+        ProduceResponsePartitionData? directResponse,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup,
         IReadOnlyList<NodeEndpoint> nodeEndpoints,
         PartitionCarryOver carryOver,
@@ -2857,8 +2899,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // This is safe because partitionResponse is only consumed when foundResponse is true,
                 // in which case TryGetValue has populated it with the real response data.
                 var partitionResponse = default(ProduceResponsePartitionData);
-                var foundResponse = responseLookup is not null
-                    && responseLookup.TryGetValue((expectedTopic, expectedPartition), out partitionResponse);
+                var foundResponse = false;
+                if (directResponse is { } direct)
+                {
+                    partitionResponse = direct;
+                    foundResponse = true;
+                }
+                else if (responseLookup is not null)
+                    foundResponse = responseLookup.TryGetValue(
+                        (expectedTopic, expectedPartition),
+                        out partitionResponse);
 
                 if (!foundResponse)
                 {
