@@ -628,6 +628,29 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task MinimumRttProbe_CompletionAck_DoesNotLowerServingRttEwma()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SetField(budget, "_hasMinRttSample", true);
+        SetField(budget, "_minRttSeconds", 0.005);
+        SetField(budget, "_servingRttEwmaSeconds", 0.100);
+        SetField(budget, "_minRttProbeUntilTimestamp", T0);
+        SetField(budget, "_minRttProbeMinimumSeconds", 0.005);
+
+        budget.OnAcked(
+            1_000,
+            budget.SnapshotDelivery(T0 - Seconds(0.005), appLimited: false),
+            T0);
+
+        await Assert.That(GetField<long>(budget, "_minRttProbeUntilTimestamp")).IsEqualTo(0);
+        await Assert.That(GetField<double>(budget, "_servingRttEwmaSeconds")).IsEqualTo(0.100)
+            .Because("the ack that completes a queue-draining probe is still a probe RTT sample");
+    }
+
+    [Test]
     public async Task SetCap_DoesNotConsumeAdmissionPressureBeforeAckPass()
     {
         var budget = new BrokerUnackedByteBudget(

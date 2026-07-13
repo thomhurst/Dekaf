@@ -392,8 +392,11 @@ internal sealed class BrokerUnackedByteBudget
             && deliveryIdleTicks >= WindowDurationTicks;
         var loadedSample = !sendSnapshot.AppLimited
             || (sendSnapshot.DeliveredTimestamp != 0 && !sustainedIdle);
+        // The deadline ack may establish the first loaded serving estimate (depth-one traffic),
+        // but must not drag an existing estimate toward the queue-drained probe RTT.
         var minRttProbeActive = _minRttProbeUntilTimestamp != 0
-            && nowTicks < _minRttProbeUntilTimestamp;
+            && (nowTicks < _minRttProbeUntilTimestamp
+                || (nowTicks == _minRttProbeUntilTimestamp && _servingRttEwmaSeconds > 0));
         UpdateMinRtt(rttSeconds, nowTicks);
         if (loadedSample && !minRttProbeActive)
         {
