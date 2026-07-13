@@ -10,6 +10,7 @@ internal sealed class StressTestResult
 {
     internal const double SteadyStatePeakThreshold = 0.85;
     internal const double SlopePercentPerMinuteThreshold = -1.0;
+    private const double IntraRunTrendWindowSeconds = 60.0;
 
     public required string Scenario { get; init; }
     public required string Client { get; set; }
@@ -174,11 +175,16 @@ internal sealed class StressTestResult
         if (IsMessageBounded || Throughput.ElapsedSeconds <= 0)
             return false;
 
-        var samples = Throughput.MessagesPerSecondSamples
+        var rawSamples = Throughput.MessagesPerSecondSamples
             .Where(sample => double.IsFinite(sample) && sample >= 0)
             .ToArray();
-        if (samples.Length < 3)
+        if (rawSamples.Length < 3)
             return false;
+
+        var sampledElapsedSeconds = Throughput.SampledElapsedSeconds > 0
+            ? Throughput.SampledElapsedSeconds
+            : Throughput.ElapsedSeconds;
+        var samples = AggregateTrendWindows(rawSamples, sampledElapsedSeconds);
 
         var thirdCount = Math.Max(1, samples.Length / 3);
         var firstThirdTotal = 0.0;
@@ -207,9 +213,6 @@ internal sealed class StressTestResult
             denominator += centeredIndex * centeredIndex;
         }
 
-        var sampledElapsedSeconds = Throughput.SampledElapsedSeconds > 0
-            ? Throughput.SampledElapsedSeconds
-            : Throughput.ElapsedSeconds;
         var sampleMinutes = sampledElapsedSeconds / samples.Length / 60.0;
         var slopePerSample = numerator / denominator;
         metrics = new IntraRunThroughputMetrics(
@@ -217,6 +220,27 @@ internal sealed class StressTestResult
             (lastThirdAverage - firstThirdAverage) / firstThirdAverage * 100.0,
             slopePerSample / sampleMinutes / firstThirdAverage * 100.0);
         return true;
+    }
+
+    private static double[] AggregateTrendWindows(double[] samples, double sampledElapsedSeconds)
+    {
+        var windowCount = (int)Math.Floor(sampledElapsedSeconds / IntraRunTrendWindowSeconds);
+        if (windowCount < 3 || samples.Length < windowCount)
+            return samples;
+
+        var windows = new double[windowCount];
+        for (var window = 0; window < windowCount; window++)
+        {
+            var start = window * samples.Length / windowCount;
+            var end = (window + 1) * samples.Length / windowCount;
+            var total = 0.0;
+            for (var sample = start; sample < end; sample++)
+                total += samples[sample];
+
+            windows[window] = total / (end - start);
+        }
+
+        return windows;
     }
 
     private static double GetPercentile(double[] samples, double percentile)

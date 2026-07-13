@@ -54,6 +54,55 @@ public sealed class IntraRunThroughputReportingTests
     }
 
     [Test]
+    public async Task LongRunMetrics_AggregateMinuteWindowsBeforePeakGate()
+    {
+        var samples = Enumerable.Range(0, 15 * 60)
+            .Select(index => index % 2 == 0 ? 2_000.0 : 0.0)
+            .ToList();
+        var result = CreateResult(samples, elapsedSeconds: 900, sampledElapsedSeconds: 900);
+
+        await Assert.That(result.SteadyStatePeakRatio).IsEqualTo(1.0);
+        await Assert.That(result.SteadyStatePeakThresholdBreached).IsFalse();
+    }
+
+    [Test]
+    public async Task LongRunMetrics_SustainedMinuteScaleDropStillBreaches()
+    {
+        double[] minuteAverages =
+        [
+            1012, 1033, 1073, 1119, 1051,
+            836, 769, 719, 961, 796,
+            876, 930, 884, 930, 900
+        ];
+        var samples = minuteAverages
+            .SelectMany(average => Enumerable.Repeat(average, 60))
+            .ToList();
+        var result = CreateResult(samples, elapsedSeconds: 900, sampledElapsedSeconds: 900);
+
+        await Assert.That(result.SteadyStatePeakRatio!.Value).IsLessThan(0.85);
+        await Assert.That(result.SteadyStatePeakThresholdBreached).IsTrue();
+    }
+
+    [Test]
+    public async Task LongRunMetrics_RecoveredMinuteProfileDoesNotBreach()
+    {
+        double[] minuteAverages =
+        [
+            427_506, 463_841, 477_631, 499_414, 496_505,
+            406_229, 290_625, 358_655, 388_820, 412_635,
+            443_887, 488_668, 464_850, 471_754, 506_938
+        ];
+        var samples = minuteAverages
+            .SelectMany(average => Enumerable.Repeat(average, 60))
+            .ToList();
+        var result = CreateResult(samples, elapsedSeconds: 900, sampledElapsedSeconds: 900);
+
+        await Assert.That(result.SteadyStatePeakRatio!.Value).IsGreaterThan(0.85);
+        await Assert.That(result.SteadyStatePeakThresholdBreached).IsFalse();
+        await Assert.That(result.ThroughputSlopeThresholdBreached).IsFalse();
+    }
+
+    [Test]
     [Arguments("message-bounded")]
     [Arguments("zero-elapsed")]
     [Arguments("too-few-samples")]
