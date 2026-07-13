@@ -150,7 +150,9 @@ internal sealed class BrokerUnackedByteBudget
     private long _nextProbeTimestamp;
     private long _capacityProbeStartTimestamp;
     private long _capacityProbeDeadlineTimestamp;
+    private long _capacityProbeEvaluationDeadlineTimestamp;
     private double _capacityProbeBaselineRate;
+    private double _capacityProbePeakRate;
     private bool _capacityProbeActive;
 
     public BrokerUnackedByteBudget(double targetSeconds, long floorBytes, long initialCapBytes)
@@ -535,16 +537,29 @@ internal sealed class BrokerUnackedByteBudget
                 return;
             }
 
-            // A response can confirm the probe only when its request was sent after the
-            // larger budget was published. If observed rate grows, retain the probe and
-            // require another wholly-probed sample at the new level.
+            // A response can contribute only when its request was sent after the larger
+            // budget was published. Collect a full RTT of wholly-probed responses before
+            // judging growth: response ordering across connection lanes can otherwise let
+            // one small request cancel the probe before the added budget reaches the wire.
             if (sendTimestamp < _capacityProbeStartTimestamp)
                 return;
 
-            if (bytesPerSecond > _capacityProbeBaselineRate * ProbeGrowthThreshold)
+            _capacityProbePeakRate = Math.Max(_capacityProbePeakRate, bytesPerSecond);
+            if (_capacityProbeEvaluationDeadlineTimestamp == 0)
             {
-                _capacityProbeBaselineRate = bytesPerSecond;
+                _capacityProbeEvaluationDeadlineTimestamp = nowTicks + rttTicks;
+                return;
+            }
+
+            if (nowTicks < _capacityProbeEvaluationDeadlineTimestamp)
+                return;
+
+            if (_capacityProbePeakRate > _capacityProbeBaselineRate * ProbeGrowthThreshold)
+            {
+                _capacityProbeBaselineRate = _capacityProbePeakRate;
                 _capacityProbeStartTimestamp = nowTicks;
+                _capacityProbePeakRate = 0;
+                _capacityProbeEvaluationDeadlineTimestamp = 0;
                 Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeIntervalTicks);
             }
             else
@@ -563,6 +578,8 @@ internal sealed class BrokerUnackedByteBudget
         {
             _capacityProbeStartTimestamp = nowTicks;
             _capacityProbeBaselineRate = _windowMaxRate;
+            _capacityProbePeakRate = 0;
+            _capacityProbeEvaluationDeadlineTimestamp = 0;
             Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeIntervalTicks);
             Volatile.Write(ref _capacityProbeActive, true);
         }
@@ -574,6 +591,8 @@ internal sealed class BrokerUnackedByteBudget
 
     private void DeactivateCapacityProbe()
     {
+        _capacityProbePeakRate = 0;
+        _capacityProbeEvaluationDeadlineTimestamp = 0;
         Volatile.Write(ref _capacityProbeActive, false);
         Volatile.Write(ref _capacityProbeDeadlineTimestamp, 0);
     }
