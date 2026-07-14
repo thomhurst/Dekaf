@@ -1593,11 +1593,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// fails before the offset is stored, the message is redelivered after restart or rebalance.
     /// </remarks>
     public ConsumerBuilder<TKey, TValue> WithAtLeastOnceProcessing()
-    {
-        _offsetCommitMode = OffsetCommitMode.Auto;
-        _enableAutoOffsetStore = false;
-        return this;
-    }
+        => WithOffsetCommitMode(OffsetCommitMode.Auto).WithAutoOffsetStore(false);
 
     /// <summary>
     /// Controls whether consumed offsets are stored automatically for background auto-commit.
