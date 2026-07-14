@@ -216,6 +216,27 @@ public class LazyRecordListTests
     }
 
     [Test]
+    public async Task LazyRecordList_ExhaustedMalformedTail_ReducesCountToParseableRecords()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+            new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() }
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        var bytes = new byte[buffer.WrittenCount + 5];
+        buffer.WrittenSpan.CopyTo(bytes);
+        bytes.AsSpan(buffer.WrittenCount).Fill(0x80);
+        using var lazyList = LazyRecordList.Create(bytes, count: 5);
+
+        await Assert.That(lazyList.ToArray()).Count().IsEqualTo(2);
+    }
+
+    [Test]
     public async Task LazyRecordList_LongTruncatedTail_ReducesCountToParseableRecords()
     {
         var records = new[]

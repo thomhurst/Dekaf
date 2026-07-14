@@ -173,6 +173,41 @@ public class RecordBatchTests
         await Assert.That(truncated.Records.Count).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task PendingFetchData_ExhaustedMalformedTail_CapsRecordCount()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+            new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() },
+            new Record { OffsetDelta = 2, Value = "value-2"u8.ToArray() }
+        };
+        using var original = new RecordBatch { Records = records };
+        var buffer = new ArrayBufferWriter<byte>();
+        original.Write(buffer);
+
+        var firstTwoBuffer = new ArrayBufferWriter<byte>();
+        var firstTwoWriter = new KafkaProtocolWriter(firstTwoBuffer);
+        records[0].Write(ref firstTwoWriter);
+        records[1].Write(ref firstTwoWriter);
+
+        var malformedOffset = RecordBatch.TotalBatchHeaderSize + firstTwoBuffer.WrittenCount;
+        var bytes = buffer.WrittenSpan[..(malformedOffset + 5)].ToArray();
+        bytes.AsSpan(malformedOffset, 5).Fill(0x80);
+        BinaryPrimitives.WriteInt32BigEndian(
+            bytes.AsSpan(sizeof(long)),
+            bytes.Length - sizeof(long) - sizeof(int));
+        BinaryPrimitives.WriteInt32BigEndian(
+            bytes.AsSpan(RecordBatch.TotalBatchHeaderSize - sizeof(int)),
+            5);
+        var truncated = ReadBatch(bytes, checkCrcs: false);
+        using var pending = PendingFetchData.Create("topic", 7, [truncated]);
+
+        pending.EagerParseAll();
+
+        await Assert.That(truncated.Records.Count).IsEqualTo(2);
+    }
+
     private static RecordBatch ReadWrittenBatch(RecordBatch batch)
     {
         var buffer = new ArrayBufferWriter<byte>();

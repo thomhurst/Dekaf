@@ -539,6 +539,15 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     internal const int MaxReasonableLazyRecordCount = 1_000_000;
 
+    internal static bool IsTruncatedRecordTail(
+        Exception exception,
+        long remaining,
+        int parsedCount,
+        int declaredCount) =>
+        exception is InsufficientDataException ||
+        exception is MalformedProtocolDataException &&
+        (remaining == 0 || parsedCount == declaredCount - 1);
+
     private void EnsureLazyRecordsParsedUpTo(int index)
     {
         if (_parsedRecords is null)
@@ -573,9 +582,11 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
                 _parsedRecordCount++;
                 _nextRecordParseOffset = readerStartOffset + (int)reader.Consumed;
             }
-            catch (Exception ex) when (
-                ex is InsufficientDataException ||
-                ex is MalformedProtocolDataException && _parsedRecordCount == _recordCount - 1)
+            catch (Exception ex) when (IsTruncatedRecordTail(
+                ex,
+                reader.Remaining,
+                _parsedRecordCount,
+                _recordCount))
             {
                 Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedRecordCount} of {_recordCount} records parsed successfully.");
                 _recordCount = _parsedRecordCount;
@@ -1658,9 +1669,11 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 _parsedRecords[_parsedCount++] = record;
                 _nextParseOffset = readerStartOffset + (int)reader.Consumed;
             }
-            catch (Exception ex) when (
-                ex is InsufficientDataException ||
-                ex is MalformedProtocolDataException && _parsedCount == _count - 1)
+            catch (Exception ex) when (RecordBatch.IsTruncatedRecordTail(
+                ex,
+                reader.Remaining,
+                _parsedCount,
+                _count))
             {
                 // The raw record data ended before the declared record count. Cap the count to
                 // the successfully parsed records. A failure with bytes remaining is interior
