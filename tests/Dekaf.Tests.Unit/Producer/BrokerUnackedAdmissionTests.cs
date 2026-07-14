@@ -451,6 +451,37 @@ public sealed class BrokerUnackedAdmissionTests
     }
 
     [Test]
+    public async Task Appends_ReuseCachedLeaderBudget_UntilRoutingBoundary()
+    {
+        var options = CreateOptions(capOverride: null, batchSize: 16_384);
+        var resolveCount = 0;
+        var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: (_, _) =>
+            {
+                Interlocked.Increment(ref resolveCount);
+                return LeaderNodeId;
+            });
+
+        try
+        {
+            for (var i = 0; i < 10; i++)
+            {
+                var appended = await accumulator.AppendAsync(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    PooledMemory.Null, PooledMemory.Null, null, 0, null, null, CancellationToken.None);
+                await Assert.That(appended).IsTrue();
+            }
+
+            await Assert.That(resolveCount).IsEqualTo(1);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task LeaderChange_ChargesSubsequentSeals_ToNewBrokerBudget()
     {
         var options = CreateOptions(capOverride: null);
