@@ -3168,7 +3168,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// </summary>
     private void ApplyConsumedPosition(TopicPartition partition, long nextOffset, int leaderEpoch)
     {
-        RecordConsumedPosition(partition, nextOffset, leaderEpoch);
+        _positions[partition] = nextOffset;
+        SetLastConsumedLeaderEpoch(partition, leaderEpoch);
+        if (_options.EnableAutoOffsetStore)
+            StoreOffsetCore(partition, nextOffset, leaderEpoch);
 
         if (!_prefetchEnabled)
         {
@@ -3412,14 +3415,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             ClearStoredOffset(partition);
         }
-    }
-
-    private void RecordConsumedPosition(TopicPartition partition, long position, int leaderEpoch)
-    {
-        _positions[partition] = position;
-        SetLastConsumedLeaderEpoch(partition, leaderEpoch);
-        if (_options.EnableAutoOffsetStore)
-            StoreOffsetCore(partition, position, leaderEpoch);
     }
 
     private void StoreOffsetCore(TopicPartition partition, long offset, int leaderEpoch)
@@ -4039,23 +4034,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
-        await CommitPendingOffsetsAsync(flushActiveConsumedPosition: true, cancellationToken)
-            .ConfigureAwait(false);
+        // Explicit commit: the caller vouches for everything yielded so far, including
+        // a record still being processed.
+        FlushActiveConsumedPosition();
+        await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<bool> CommitPendingOffsetsAsync(
-        bool flushActiveConsumedPosition,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// Close-scope commit: stages offsets already proven processed but not yet flushed
+    /// (e.g. mid-fetch ConsumeOne usage) without vouching for the in-doubt last yielded
+    /// record the way an explicit <see cref="CommitAsync(CancellationToken)"/> does — the
+    /// consumer may be closing precisely because that record's processing failed.
+    /// The background auto-commit loop uses a third, narrower scope: already-staged
+    /// offsets only, via <see cref="CommitStoredOffsetsAsync"/> directly.
+    /// </summary>
+    private async ValueTask<bool> CommitProvenOffsetsAsync(CancellationToken cancellationToken)
     {
-        if (flushActiveConsumedPosition)
+        if (_pendingFetches.Count > 0)
         {
-            FlushActiveConsumedPosition();
-        }
-        else if (_pendingFetches.Count > 0)
-        {
-            // Close path: stage offsets already proven processed but not yet flushed
-            // (e.g. mid-fetch ConsumeOne usage) without vouching for the in-doubt last
-            // yielded record the way an explicit CommitAsync does.
             FlushConsumedPositions(_pendingFetches.Peek());
         }
 
@@ -7212,14 +7208,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 try
                 {
-                    // flushActiveConsumedPosition: false — close must not stage the last
-                    // yielded record: its processing is unproven (the consumer may be closing
-                    // because that processing failed). Proven offsets were already flushed by
-                    // the consume paths; committing only those preserves at-least-once.
-                    // Callers that processed everything and want a clean handoff should call
-                    // CommitAsync() before CloseAsync().
-                    if (await CommitPendingOffsetsAsync(flushActiveConsumedPosition: false, cancellationToken)
-                        .ConfigureAwait(false))
+                    // Close commits proven offsets only — never the in-doubt last yielded
+                    // record. Callers that processed everything and want a clean handoff
+                    // should call CommitAsync() before CloseAsync().
+                    if (await CommitProvenOffsetsAsync(cancellationToken).ConfigureAwait(false))
                     {
                         LogCommittedPendingOffsets();
                     }

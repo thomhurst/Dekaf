@@ -523,7 +523,7 @@ public sealed class ConsumerDirtyCommitTests
         int leaderEpoch)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
-            "RecordConsumedPosition",
+            "ApplyConsumedPosition",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
 
         method.Invoke(consumer, [partition, position, leaderEpoch]);
