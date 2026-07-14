@@ -601,53 +601,79 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private bool TryConsumeOne(out ConsumeResult<TKey, TValue> result)
     {
-        InMemoryRecord? selected = null;
-        TopicPartition selectedPartition = default;
-
-        lock (_gate)
+        var previousRecordProven = false;
+        while (true)
         {
-            // A new consume call proves the previously delivered record was processed
-            // (poll contract) — stage it before delivering the next one.
-            ProveInDoubtRecordUnderLock();
+            InMemoryRecord? selected = null;
+            TopicPartition selectedPartition = default;
+            long selectedPosition = -1;
 
-            foreach (var partition in GetCurrentAssignmentUnderLock().OrderBy(item => item.Topic, StringComparer.Ordinal).ThenBy(item => item.Partition))
+            lock (_gate)
             {
-                if (_paused.Contains(partition))
-                    continue;
+                if (!previousRecordProven)
+                {
+                    // A new consume call proves the previously delivered record was processed
+                    // (poll contract) — stage it before selecting the next one.
+                    ProveInDoubtRecordUnderLock();
+                    previousRecordProven = true;
+                }
 
-                if (!_positions.TryGetValue(partition, out var position))
-                    continue;
+                foreach (var partition in GetCurrentAssignmentUnderLock().OrderBy(item => item.Topic, StringComparer.Ordinal).ThenBy(item => item.Partition))
+                {
+                    if (_paused.Contains(partition))
+                        continue;
 
-                if (!_cluster.TryRead(partition, position, out var record))
-                    continue;
+                    if (!_positions.TryGetValue(partition, out var position))
+                        continue;
 
-                selected = record;
-                selectedPartition = partition;
-                _positions[partition] = record.Offset + 1;
+                    if (!_cluster.TryRead(partition, position, out var record))
+                        continue;
+
+                    selected = record;
+                    selectedPartition = partition;
+                    selectedPosition = position;
+                    break;
+                }
+            }
+
+            if (selected is null)
+            {
+                result = default;
+                return false;
+            }
+
+            // Run user deserializers before advancing any delivery or commit state. A failure
+            // leaves the selected offset untouched so the next consume retries the record.
+            var selectedResult = ToConsumeResult(selectedPartition, selected);
+
+            lock (_gate)
+            {
+                // Assignment/seek or another consumer call may have changed the position while
+                // user code deserialized. Retry selection instead of publishing a stale result.
+                if (!_positions.TryGetValue(selectedPartition, out var currentPosition)
+                    || currentPosition != selectedPosition)
+                {
+                    continue;
+                }
+
+                _positions[selectedPartition] = selected.Offset + 1;
                 if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
                 {
                     if (_options.EnableAutoOffsetStore)
-                        _storedOffsets[partition] = record.Offset + 1;
+                        _storedOffsets[selectedPartition] = selected.Offset + 1;
                     if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
                         CommitStoredOffsets();
                 }
                 else
                 {
-                    _inDoubtPartition = partition;
-                    _inDoubtNextOffset = record.Offset + 1;
+                    _inDoubtPartition = selectedPartition;
+                    _inDoubtNextOffset = selected.Offset + 1;
                 }
-                break;
             }
-        }
 
-        if (selected is null)
-        {
-            result = default;
-            return false;
+            result = selectedResult;
+            return true;
         }
-
-        result = ToConsumeResult(selectedPartition, selected);
-        return true;
     }
 
     /// <summary>

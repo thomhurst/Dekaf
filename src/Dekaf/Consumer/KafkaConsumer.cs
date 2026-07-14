@@ -2390,7 +2390,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             ReportAdaptiveProcessingComplete(processingDuration);
         }
 
-        if (disposePending || pending.IsExhausted || !IsCurrentlyAssigned(pending.TopicPartition))
+        // Keep a fully-enumerated but unproven batch queued when the caller breaks the outer
+        // stream. A following explicit CommitAsync can then vouch for that clean handoff.
+        if (disposePending
+            || (pending.IsExhausted && yieldedBatchProcessed)
+            || !IsCurrentlyAssigned(pending.TopicPartition))
         {
             DequeuePendingFetch().Dispose();
         }

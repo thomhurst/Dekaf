@@ -531,6 +531,42 @@ public sealed class OffsetStoreTimingTests
         await Assert.That(batches.Current.First().Offset).IsEqualTo(21L);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ConsumeBatch_FullyEnumeratedBreakThenCommit_VouchesForBatch(bool raw)
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        if (raw)
+        {
+            await foreach (var batch in consumer.ConsumeRawBatchAsync(CancellationToken.None))
+            {
+                foreach (var _ in batch) { }
+                break;
+            }
+        }
+        else
+        {
+            await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
+            {
+                foreach (var _ in batch) { }
+                break;
+            }
+        }
+
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(22L);
+    }
+
     // --- ConsumeOneAsync ---
 
     [Test]
@@ -782,6 +818,35 @@ public sealed class OffsetStoreTimingTests
         var replay = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
 
         await Assert.That(first!.Value.Offset).IsEqualTo(0L);
+        await Assert.That(replay!.Value.Offset).IsEqualTo(0L);
+        var offsets = await admin.ListConsumerGroupOffsetsAsync("workers");
+        await Assert.That(offsets.ContainsKey(partition)).IsFalse();
+    }
+
+    [Test]
+    public async Task InMemoryConsumer_DeserializerFailure_RedeliversWithoutCommitting()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            new FailOnceDeserializer("two"),
+            new InMemoryConsumerOptions
+            {
+                GroupId = "workers",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("jobs", 0);
+
+        await producer.ProduceAsync("jobs", "a", "two");
+        consumer.Assign(partition);
+
+        await Assert.That(async () => await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1)))
+            .Throws<InvalidOperationException>();
+        var replay = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
         await Assert.That(replay!.Value.Offset).IsEqualTo(0L);
         var offsets = await admin.ListConsumerGroupOffsetsAsync("workers");
         await Assert.That(offsets.ContainsKey(partition)).IsFalse();
