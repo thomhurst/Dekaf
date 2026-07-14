@@ -26,6 +26,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly HashSet<TopicPartition> _paused = [];
     private readonly Dictionary<TopicPartition, long> _positions = [];
     private readonly Dictionary<TopicPartition, long> _storedOffsets = [];
+    private readonly string? _groupId;
     private readonly string? _memberId;
     private string? _subscriptionPattern;
     private bool _disposed;
@@ -68,7 +69,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _keyDeserializer = keyDeserializer ?? throw new ArgumentNullException(nameof(keyDeserializer));
         _valueDeserializer = valueDeserializer ?? throw new ArgumentNullException(nameof(valueDeserializer));
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _memberId = options.GroupId is null ? null : options.MemberId ?? Guid.NewGuid().ToString("N");
+        // Match KafkaConsumer, which treats an empty GroupId as "no consumer group"
+        // (no coordinator, no commits). Normalizing here keeps every group-dependent
+        // code path in this class consistent with production behavior.
+        _groupId = string.IsNullOrEmpty(options.GroupId) ? null : options.GroupId;
+        _memberId = _groupId is null ? null : options.MemberId ?? Guid.NewGuid().ToString("N");
     }
 
     public IReadOnlySet<string> Subscription
@@ -109,11 +114,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     public string? MemberId => _memberId;
 
-    public ConsumerGroupMetadata? ConsumerGroupMetadata => _options.GroupId is null || _memberId is null
+    public ConsumerGroupMetadata? ConsumerGroupMetadata => _groupId is null || _memberId is null
         ? null
         : new ConsumerGroupMetadata
         {
-            GroupId = _options.GroupId,
+            GroupId = _groupId,
             GenerationId = 1,
             MemberId = _memberId
         };
@@ -128,7 +133,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     bool IConsumerCommitModeSource.EnableAutoOffsetStore => _options.EnableAutoOffsetStore;
 
-    bool IConsumerCommitModeSource.HasConsumerGroup => !string.IsNullOrEmpty(_options.GroupId);
+    bool IConsumerCommitModeSource.HasConsumerGroup => _groupId is not null;
 
 #if !NET10_0_OR_GREATER
     IReadOnlyCollection<string> IKafkaConsumer<TKey, TValue>.Subscription => Subscription;
@@ -196,7 +201,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         if (string.IsNullOrWhiteSpace(pattern))
             throw new ArgumentException("Subscription pattern must be specified.", nameof(pattern));
 
-        if (string.IsNullOrWhiteSpace(_options.GroupId))
+        if (string.IsNullOrWhiteSpace(_groupId))
             throw new InvalidOperationException("Server-side regex subscriptions require a consumer group ID.");
 
         ThrowIfDisposed();
@@ -334,8 +339,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        if (_options.GroupId is not null)
-            _cluster.CommitOffsets(_options.GroupId, offsets);
+        if (_groupId is not null)
+            _cluster.CommitOffsets(_groupId, offsets);
 
         return ValueTask.CompletedTask;
     }
@@ -395,9 +400,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
 
-        var offset = _options.GroupId is null
+        var offset = _groupId is null
             ? null
-            : _cluster.GetCommittedOffset(_options.GroupId, partition);
+            : _cluster.GetCommittedOffset(_groupId, partition);
 
         return ValueTask.FromResult(offset);
     }
@@ -654,8 +659,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private long GetStartOffset(TopicPartition partition)
     {
-        if (_options.GroupId is not null &&
-            _cluster.GetCommittedOffset(_options.GroupId, partition) is { } committed)
+        if (_groupId is not null &&
+            _cluster.GetCommittedOffset(_groupId, partition) is { } committed)
         {
             return committed;
         }
@@ -688,7 +693,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private void CommitOffsetsFrom(Dictionary<TopicPartition, long> positions)
     {
-        if (_options.GroupId is null)
+        if (_groupId is null)
             return;
 
         var assignment = GetCurrentAssignmentUnderLock();
@@ -701,32 +706,32 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             .ToArray();
 
         if (offsets.Length > 0)
-            _cluster.CommitOffsets(_options.GroupId, offsets);
+            _cluster.CommitOffsets(_groupId, offsets);
     }
 
     private IReadOnlySet<TopicPartition> GetCurrentAssignmentUnderLock()
     {
-        if (_options.GroupId is null || _memberId is null)
+        if (_groupId is null || _memberId is null)
             return _assignment;
 
-        var owned = _cluster.GetConsumerGroupAssignment(_options.GroupId, _memberId);
+        var owned = _cluster.GetConsumerGroupAssignment(_groupId, _memberId);
         return owned.Where(_assignment.Contains).ToHashSet();
     }
 
     private void RegisterConsumerGroupMemberUnderLock()
     {
-        if (_options.GroupId is null || _memberId is null)
+        if (_groupId is null || _memberId is null)
             return;
 
-        _cluster.RegisterConsumerGroupMember(_options.GroupId, _memberId, _assignment);
+        _cluster.RegisterConsumerGroupMember(_groupId, _memberId, _assignment);
     }
 
     private void UnregisterConsumerGroupMemberUnderLock()
     {
-        if (_options.GroupId is null || _memberId is null)
+        if (_groupId is null || _memberId is null)
             return;
 
-        _cluster.UnregisterConsumerGroupMember(_options.GroupId, _memberId);
+        _cluster.UnregisterConsumerGroupMember(_groupId, _memberId);
     }
 
     private void ThrowIfDisposed()
