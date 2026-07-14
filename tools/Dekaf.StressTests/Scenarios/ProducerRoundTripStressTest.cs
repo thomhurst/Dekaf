@@ -29,6 +29,10 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
             .WithClientId("stress-roundtrip-consumer-dekaf")
             .WithGroupId($"stress-roundtrip-dekaf-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            // The Confluent round-trip consumer runs EnableAutoCommit=false. Match it:
+            // with Auto mode the background loop would send OffsetCommit RPCs every 5s
+            // during a latency-measured scenario that Confluent's side never pays.
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .BuildAsync(cancellationToken);
 
         var builder = Kafka.CreateProducer<string, byte[]>()
