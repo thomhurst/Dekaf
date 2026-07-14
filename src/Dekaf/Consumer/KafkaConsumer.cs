@@ -1391,6 +1391,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     bool IConsumerCommitModeSource.EnableAutoOffsetStore => _options.EnableAutoOffsetStore;
 
+    bool IConsumerCommitModeSource.HasConsumerGroup => !string.IsNullOrEmpty(_options.GroupId);
+
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {

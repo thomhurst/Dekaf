@@ -211,7 +211,12 @@ public static class PartitionedConsumerExtensions
         if (!options.IsRuntimeManagedCommitPolicy)
             return;
 
-        if (consumer is IConsumerCommitModeSource { OffsetCommitMode: OffsetCommitMode.Auto, EnableAutoOffsetStore: true })
+        if (consumer is IConsumerCommitModeSource
+            {
+                OffsetCommitMode: OffsetCommitMode.Auto,
+                EnableAutoOffsetStore: true,
+                HasConsumerGroup: true
+            })
         {
             throw new InvalidOperationException(
                 $"Partitioned processing with {nameof(PartitionCommitPolicy)}.{options.CommitPolicy} is incompatible " +
@@ -233,14 +238,17 @@ internal interface IConsumerLoggerFactorySource
 /// <summary>
 /// Exposes a consumer's offset-commit configuration so partitioned processing can reject
 /// consumers whose background auto-commit would bypass processed-offset tracking. Only the
-/// combination of <see cref="OffsetCommitMode.Auto"/> and automatic offset store is dangerous:
-/// with the store disabled, nothing is staged for the background loop to commit.
+/// combination of a consumer group, <see cref="OffsetCommitMode.Auto"/>, and automatic offset
+/// store is dangerous: without a group there is no coordinator to commit through, and with the
+/// store disabled nothing is staged for the background loop to commit.
 /// </summary>
 internal interface IConsumerCommitModeSource
 {
     OffsetCommitMode OffsetCommitMode { get; }
 
     bool EnableAutoOffsetStore { get; }
+
+    bool HasConsumerGroup { get; }
 }
 
 /// <summary>

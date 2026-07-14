@@ -1046,6 +1046,28 @@ public sealed class PartitionedConsumerRuntimeTests
         await StopRuntimeAsync(cts, runTask);
     }
 
+    [Test]
+    public async Task RunPartitionedAsync_AutoCommitConsumerWithoutGroup_DoesNotThrow()
+    {
+        var consumer = new TestConsumer
+        {
+            OffsetCommitMode = OffsetCommitMode.Auto,
+            EnableAutoOffsetStore = true,
+            HasConsumerGroup = false
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            static (_, _) => ValueTask.CompletedTask,
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically
+            },
+            cts.Token).AsTask();
+
+        await StopRuntimeAsync(cts, runTask);
+    }
+
     private static async ValueTask StopRuntimeAsync(
         CancellationTokenSource cancellationTokenSource,
         Task runTask)
@@ -1213,6 +1235,8 @@ public sealed class PartitionedConsumerRuntimeTests
         public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Manual;
 
         public bool EnableAutoOffsetStore { get; init; } = true;
+
+        public bool HasConsumerGroup { get; init; } = true;
 
 #if !NET10_0_OR_GREATER
         IReadOnlyCollection<string> IKafkaConsumer<string, string>.Subscription => Subscription;
