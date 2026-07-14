@@ -41,6 +41,45 @@ public static class ConsumerExtensions
     }
 
     /// <summary>
+    /// Filters consumed messages and invokes an asynchronous callback for each filtered message.
+    /// </summary>
+    /// <typeparam name="TKey">Key type.</typeparam>
+    /// <typeparam name="TValue">Value type.</typeparam>
+    /// <param name="source">The source async enumerable of consume results.</param>
+    /// <param name="predicate">The filter predicate.</param>
+    /// <param name="onFiltered">The callback invoked for messages that do not match the predicate.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>An async enumerable of consume results that match the predicate.</returns>
+    /// <remarks>
+    /// The callback completes before the next source message is requested. This allows manual-commit
+    /// consumers to park a filtered message on a retry or dead-letter topic before processing and
+    /// committing later offsets. This method does not suspend periodic auto-commit; use
+    /// <see cref="OffsetCommitMode.Manual"/> when the callback must complete before any commit can
+    /// advance past the filtered message. Callback failures stop enumeration.
+    /// </remarks>
+    public static async IAsyncEnumerable<ConsumeResult<TKey, TValue>> Where<TKey, TValue>(
+        this IAsyncEnumerable<ConsumeResult<TKey, TValue>> source,
+        Func<ConsumeResult<TKey, TValue>, bool> predicate,
+        Func<ConsumeResult<TKey, TValue>, ValueTask> onFiltered,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(predicate);
+        ArgumentNullException.ThrowIfNull(onFiltered);
+
+        await foreach (var item in source.WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            if (predicate(item))
+            {
+                yield return item;
+                continue;
+            }
+
+            await onFiltered(item).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Projects each consume result into a new form.
     /// </summary>
     /// <typeparam name="TKey">Key type.</typeparam>

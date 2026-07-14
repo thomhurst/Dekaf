@@ -59,6 +59,89 @@ public sealed class ConsumerExtensionsTests
         });
     }
 
+    [Test]
+    public async Task Where_WithFilteredCallback_InvokesCallbackOnlyForRejectedItems()
+    {
+        var source = CreateResults(("topic", 0, 0), ("topic", 0, 1), ("topic", 0, 2));
+        var filteredOffsets = new List<long>();
+        var yieldedOffsets = new List<long>();
+
+        await foreach (var item in source.Where(
+            result => result.Offset % 2 == 0,
+            result =>
+            {
+                filteredOffsets.Add(result.Offset);
+                return ValueTask.CompletedTask;
+            }))
+        {
+            yieldedOffsets.Add(item.Offset);
+        }
+
+        await Assert.That(yieldedOffsets).IsEquivalentTo([0L, 2L]);
+        await Assert.That(filteredOffsets).IsEquivalentTo([1L]);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task Where_WithFilteredCallback_AwaitsBeforeRequestingNextItem(
+        CancellationToken cancellationToken)
+    {
+        var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCallback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sourceAdvanced = false;
+        var source = CreateObservedResults(() => sourceAdvanced = true);
+
+        var enumeration = Task.Run(async () =>
+        {
+            await foreach (var _ in source.Where(
+                _ => false,
+                async _ =>
+                {
+                    callbackStarted.TrySetResult();
+                    await releaseCallback.Task;
+                },
+                cancellationToken))
+            {
+            }
+        }, cancellationToken);
+
+        await callbackStarted.Task.WaitAsync(cancellationToken);
+        await Assert.That(sourceAdvanced).IsFalse();
+
+        releaseCallback.TrySetResult();
+        await enumeration.WaitAsync(cancellationToken);
+
+        await Assert.That(sourceAdvanced).IsTrue();
+    }
+
+    [Test]
+    public async Task Where_WithFilteredCallback_PropagatesCallbackFailure()
+    {
+        var source = CreateResults(("topic", 0, 0));
+        var failure = new InvalidOperationException("parking failed");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await foreach (var _ in source.Where(
+                _ => false,
+                _ => ValueTask.FromException(failure)))
+            {
+            }
+        });
+    }
+
+    [Test]
+    public async Task Where_NullFilteredCallback_ThrowsArgumentNullException()
+    {
+        var source = CreateResults(("topic", 0, 0));
+        Func<ConsumeResult<string, string>, ValueTask> onFiltered = null!;
+
+        await Assert.ThrowsAsync<ArgumentNullException>(async () =>
+        {
+            await foreach (var _ in source.Where(_ => true, onFiltered)) { }
+        });
+    }
+
     #endregion
 
     #region Select
@@ -314,25 +397,35 @@ public sealed class ConsumerExtensionsTests
         params (string Topic, int Partition, long Offset)[] items)
     {
         foreach (var (topic, partition, offset) in items)
-        {
-            yield return new ConsumeResult<string, string>(
-                topic: topic,
-                partition: partition,
-                offset: offset,
-                keyData: default,
-                isKeyNull: true,
-                valueData: default,
-                isValueNull: true,
-                headers: null,
-                timestampMs: 0,
-                timestampType: TimestampType.NotAvailable,
-                leaderEpoch: null,
-                keyDeserializer: null,
-                valueDeserializer: null);
-        }
+            yield return CreateResult(topic, partition, offset);
 
         await Task.CompletedTask; // Ensure truly async
     }
+
+    private static async IAsyncEnumerable<ConsumeResult<string, string>> CreateObservedResults(
+        Action beforeSecondItem)
+    {
+        yield return CreateResult("topic", 0, 0);
+        beforeSecondItem();
+        yield return CreateResult("topic", 0, 1);
+        await Task.CompletedTask;
+    }
+
+    private static ConsumeResult<string, string> CreateResult(string topic, int partition, long offset) =>
+        new(
+            topic: topic,
+            partition: partition,
+            offset: offset,
+            keyData: default,
+            isKeyNull: true,
+            valueData: default,
+            isValueNull: true,
+            headers: null,
+            timestampMs: 0,
+            timestampType: TimestampType.NotAvailable,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: null);
 
     #endregion
 }
