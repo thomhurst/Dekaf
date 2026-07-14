@@ -24,7 +24,7 @@ namespace Dekaf.Producer;
 /// epoch; loaded sends retain its delivered-byte and first-send anchors across acknowledgements
 /// for a bounded rolling interval. The sample is cumulative delivered bytes over the full epoch
 /// elapsed time, bounded below by the request sojourn and delivery clock. Loaded samples shorter
-/// than 2ms are ignored because host scheduling resolution can dominate them. A separate
+/// than 20ms are ignored because host scheduling and burst quantization can dominate them. A separate
 /// per-request rate remains available to the capacity probe, which needs each probe admission's
 /// immediate response. These axes prevent serialized send/ack cycles, hot polling, clustered
 /// completions, and processing stalls from manufacturing inflated sustainable-rate samples.
@@ -188,8 +188,10 @@ internal sealed class BrokerUnackedByteBudget
     /// growth; requiring a flat RTT distinguishes real headroom from added queueing.</summary>
     private const double ProbeRttGrowthTolerance = 1.25;
     private static readonly long MaxProbeIntervalTicks = Stopwatch.Frequency;
-    // Shorter loaded epochs are dominated by timer and scheduler quantization on common hosts.
-    private static readonly long MinimumLoadedRateSampleTicks = Math.Max(1, Stopwatch.Frequency / 500);
+    // An empty pipe refilled within this gap is a serialized loaded cycle, not application idle.
+    private static readonly long MaximumSerializedRateCycleGapTicks = Math.Max(1, Stopwatch.Frequency / 500);
+    // Shorter loaded epochs are dominated by timer, scheduler, and burst quantization on common hosts.
+    private static readonly long MinimumLoadedRateSampleTicks = Math.Max(1, Stopwatch.Frequency / 50);
     // Bound smoothing so a continuously loaded producer still tracks capacity changes promptly.
     private static readonly long MaximumLoadedDeliveryEpochTicks = Math.Max(1, Stopwatch.Frequency / 10);
     private const long NoDeliveryEpoch = -1;
@@ -340,7 +342,7 @@ internal sealed class BrokerUnackedByteBudget
         var continuesSerializedRateCycle = appLimited
             && deliveredTimestamp != 0
             && deliveryGapTicks >= 0
-            && deliveryGapTicks < MinimumLoadedRateSampleTicks;
+            && deliveryGapTicks < MaximumSerializedRateCycleGapTicks;
         var rateAppLimited = appLimited && !continuesSerializedRateCycle;
         var deliveryEpochFirstSendTimestamp = CaptureDeliveryEpoch(
             sendTimestamp,
