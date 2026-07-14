@@ -1022,13 +1022,20 @@ public sealed class PartitionedConsumerRuntimeTests
     }
 
     [Test]
-    [Arguments(OffsetCommitMode.Auto, PartitionCommitPolicy.UserManaged)]
-    [Arguments(OffsetCommitMode.Manual, PartitionCommitPolicy.CommitCompletedOnRevoke)]
+    [Arguments(OffsetCommitMode.Auto, true, PartitionCommitPolicy.UserManaged)]
+    [Arguments(OffsetCommitMode.Auto, false, PartitionCommitPolicy.CommitCompletedOnRevoke)]
+    [Arguments(OffsetCommitMode.Auto, false, PartitionCommitPolicy.CommitCompletedPeriodically)]
+    [Arguments(OffsetCommitMode.Manual, true, PartitionCommitPolicy.CommitCompletedOnRevoke)]
     public async Task RunPartitionedAsync_AllowedCommitModeCombination_DoesNotThrow(
         OffsetCommitMode offsetCommitMode,
+        bool enableAutoOffsetStore,
         PartitionCommitPolicy commitPolicy)
     {
-        var consumer = new TestConsumer { OffsetCommitMode = offsetCommitMode };
+        var consumer = new TestConsumer
+        {
+            OffsetCommitMode = offsetCommitMode,
+            EnableAutoOffsetStore = enableAutoOffsetStore
+        };
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var runTask = consumer.RunPartitionedAsync(
@@ -1204,6 +1211,8 @@ public sealed class PartitionedConsumerRuntimeTests
         public ILoggerFactory? LoggerFactory { get; init; }
 
         public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Manual;
+
+        public bool EnableAutoOffsetStore { get; init; } = true;
 
 #if !NET10_0_OR_GREATER
         IReadOnlyCollection<string> IKafkaConsumer<string, string>.Subscription => Subscription;

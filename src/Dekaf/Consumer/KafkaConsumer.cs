@@ -1389,6 +1389,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     OffsetCommitMode IConsumerCommitModeSource.OffsetCommitMode => _options.OffsetCommitMode;
 
+    bool IConsumerCommitModeSource.EnableAutoOffsetStore => _options.EnableAutoOffsetStore;
+
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {

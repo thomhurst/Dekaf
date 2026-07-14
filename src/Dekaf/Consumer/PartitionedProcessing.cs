@@ -211,15 +211,15 @@ public static class PartitionedConsumerExtensions
         if (!options.IsRuntimeManagedCommitPolicy)
             return;
 
-        if (consumer is IConsumerCommitModeSource { OffsetCommitMode: OffsetCommitMode.Auto })
+        if (consumer is IConsumerCommitModeSource { OffsetCommitMode: OffsetCommitMode.Auto, EnableAutoOffsetStore: true })
         {
             throw new InvalidOperationException(
-                $"Partitioned processing with {nameof(PartitionCommitPolicy)}.{options.CommitPolicy} requires " +
-                $"{nameof(OffsetCommitMode)}.{nameof(OffsetCommitMode.Manual)}, but the consumer uses " +
-                $"{nameof(OffsetCommitMode)}.{nameof(OffsetCommitMode.Auto)}. Auto-commit commits consumed positions " +
-                "in the background regardless of MarkProcessed, so a failed handler would not prevent its message " +
-                "from being committed. Configure the consumer with WithOffsetCommitMode(OffsetCommitMode.Manual), " +
-                $"or use {nameof(PartitionCommitPolicy)}.{nameof(PartitionCommitPolicy.UserManaged)} if you accept " +
+                $"Partitioned processing with {nameof(PartitionCommitPolicy)}.{options.CommitPolicy} is incompatible " +
+                $"with the consumer's {nameof(OffsetCommitMode)}.{nameof(OffsetCommitMode.Auto)} + automatic offset " +
+                "store: consumed positions are staged and committed in the background regardless of MarkProcessed, " +
+                "so a failed handler would not prevent its message from being committed. Configure the consumer with " +
+                "WithOffsetCommitMode(OffsetCommitMode.Manual) or WithAutoOffsetStore(false), or use " +
+                $"{nameof(PartitionCommitPolicy)}.{nameof(PartitionCommitPolicy.UserManaged)} if you accept " +
                 "auto-commit semantics.");
         }
     }
@@ -231,12 +231,16 @@ internal interface IConsumerLoggerFactorySource
 }
 
 /// <summary>
-/// Exposes the configured <see cref="OffsetCommitMode"/> of a consumer so partitioned processing
-/// can reject auto-commit consumers whose background commits would bypass processed-offset tracking.
+/// Exposes a consumer's offset-commit configuration so partitioned processing can reject
+/// consumers whose background auto-commit would bypass processed-offset tracking. Only the
+/// combination of <see cref="OffsetCommitMode.Auto"/> and automatic offset store is dangerous:
+/// with the store disabled, nothing is staged for the background loop to commit.
 /// </summary>
 internal interface IConsumerCommitModeSource
 {
     OffsetCommitMode OffsetCommitMode { get; }
+
+    bool EnableAutoOffsetStore { get; }
 }
 
 /// <summary>

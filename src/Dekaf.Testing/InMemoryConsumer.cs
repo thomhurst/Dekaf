@@ -13,7 +13,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     IKafkaConsumer<TKey, TValue>,
     IConsumerPositions,
     IConsumerPartitions,
-    IConsumerOffsets
+    IConsumerOffsets,
+    IConsumerCommitModeSource
 {
     private readonly object _gate = new();
     private readonly InMemoryKafkaCluster _cluster;
@@ -122,6 +123,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     public IConsumerPartitions Partitions => this;
 
     public IConsumerOffsets Offsets => this;
+
+    OffsetCommitMode IConsumerCommitModeSource.OffsetCommitMode => _options.OffsetCommitMode;
+
+    bool IConsumerCommitModeSource.EnableAutoOffsetStore => _options.EnableAutoOffsetStore;
 
 #if !NET10_0_OR_GREATER
     IReadOnlyCollection<string> IKafkaConsumer<TKey, TValue>.Subscription => Subscription;

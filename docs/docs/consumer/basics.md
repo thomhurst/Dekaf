@@ -255,9 +255,10 @@ string? memberId = consumer.MemberId;
 
 ## Complete Example
 
-This example processes orders with at-least-once semantics: auto offset store is disabled, and
-offsets are stored only after processing succeeds, so a failed order is redelivered instead of
-being silently committed away. Background auto-commit still handles the actual commits.
+This example processes orders with at-least-once semantics: auto offset store is disabled,
+offsets are stored only after processing succeeds, and a processing failure stops the consumer
+instead of skipping the order — so the failed order is redelivered on restart rather than being
+silently committed away. Background auto-commit still handles the actual commits.
 
 ```csharp
 using Dekaf;
@@ -303,10 +304,11 @@ public class OrderConsumer : BackgroundService
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed to process order {OrderId}", message.Key);
-                    // Offset not stored: the order is redelivered after the consumer
-                    // restarts or the partition is reassigned. Continuing here still
-                    // processes later messages, but their stored offsets will also
-                    // re-cover this one — dead-letter the failure if you continue.
+                    // Offset not stored: rethrow so the host restarts the consumer and
+                    // the order is redelivered. Do NOT swallow and continue — storing
+                    // any later offset would commit past this one and lose it. If you
+                    // must keep consuming, dead-letter the failed order first.
+                    throw;
                 }
             }
         }
