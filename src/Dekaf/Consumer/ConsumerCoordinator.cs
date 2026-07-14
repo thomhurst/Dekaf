@@ -34,6 +34,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // Heartbeats can revoke and reassign a partition between poll-loop snapshots.
     // Signal before publication to defeat assignment ABA (A -> B -> A with the same final set).
     private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoking;
+    // Runs after assignment publication but before user revoke callbacks and the next heartbeat.
+    // KafkaConsumer uses this window to commit revoked offsets before acknowledging ownership changes.
+    private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>?
+        _onPartitionsRevokedAsync;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
     // Assignment publication and revocation history form one snapshot. Rebalance callbacks
     // run only after this lock is released so user code cannot extend its critical section.
@@ -104,7 +108,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             logger,
             getConnectionCount,
             onPartitionsRevoked,
-            onPartitionsRevoking: null)
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: null)
     {
     }
 
@@ -115,7 +120,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ILogger<ConsumerCoordinator>? logger,
         Func<int>? getConnectionCount,
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked,
-        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking)
+        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking,
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? onPartitionsRevokedAsync = null)
     {
         _options = options;
         _connectionPool = connectionPool;
@@ -123,6 +129,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _rebalanceListener = options.RebalanceListener;
         _onPartitionsRevoked = onPartitionsRevoked;
         _onPartitionsRevoking = onPartitionsRevoking;
+        _onPartitionsRevokedAsync = onPartitionsRevokedAsync;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConsumerCoordinator>.Instance;
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
@@ -1033,12 +1040,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (!result.AssignmentChanged)
             return;
 
-        if (result.Revoked is { Count: > 0 })
+        if (result.Revoked is { Count: > 0 } revoked)
+        {
+            if (_onPartitionsRevokedAsync is not null)
+                await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+
             await InvokeRebalanceListenersAsync(
                 "OnPartitionsRevoked",
-                result.Revoked,
+                revoked,
                 static (listener, partitions, token) => listener.OnPartitionsRevokedAsync(partitions, token),
                 cancellationToken).ConfigureAwait(false);
+        }
 
         if (result.Assigned is { Count: > 0 })
             await InvokeRebalanceListenersAsync(

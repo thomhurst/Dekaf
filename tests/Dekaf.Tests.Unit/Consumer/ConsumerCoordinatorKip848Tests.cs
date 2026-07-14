@@ -1788,6 +1788,84 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task ConsumerProtocol_RevocationHook_CompletesBeforeUserListener(
+        CancellationToken cancellationToken)
+    {
+        SetupFindCoordinator();
+
+        var callCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref callCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = count,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = count == 1
+                        ? CreateAssignment(TestTopicId, 0, 1)
+                        : CreateAssignment(TestTopicId, 1)
+                });
+            });
+
+        var hookStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHook = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var listenerCallCount = 0;
+        var listener = Substitute.For<IRebalanceListener>();
+        listener.OnPartitionsRevokedAsync(
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref listenerCallCount);
+                return ValueTask.CompletedTask;
+            });
+
+        async ValueTask OnPartitionsRevokedAsync(
+            IReadOnlyList<TopicPartition> _partitions,
+            CancellationToken _cancellationToken)
+        {
+            hookStarted.TrySetResult();
+            await releaseHook.Task;
+        }
+
+        var options = CreateConsumerProtocolOptions(
+            rebalanceListener: listener,
+            heartbeatIntervalMs: 60_000);
+        await using var coordinator = new ConsumerCoordinator(
+            options,
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: OnPartitionsRevokedAsync);
+        var topics = new HashSet<string> { "test-topic" };
+
+        await coordinator.EnsureActiveGroupAsync(topics, cancellationToken);
+        await coordinator.StopHeartbeatAsync();
+
+        coordinator.RequestRejoin();
+        var rejoin = coordinator.EnsureActiveGroupAsync(topics, cancellationToken).AsTask();
+        await hookStarted.Task.WaitAsync(cancellationToken);
+
+        await Assert.That(Volatile.Read(ref listenerCallCount)).IsEqualTo(0);
+
+        releaseHook.TrySetResult();
+        await rejoin;
+        await coordinator.StopHeartbeatAsync();
+
+        await Assert.That(Volatile.Read(ref listenerCallCount)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_AssignmentVersion_IncrementsWhenResetClearsAssignment()
     {
         SetupFindCoordinator();
