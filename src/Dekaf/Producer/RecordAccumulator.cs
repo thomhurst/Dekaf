@@ -1382,6 +1382,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         public int SlowPathAppendCount;
 
+        /// <summary>
+        /// Broker budget used by the append admission gate. Refreshed at batch seal/routing
+        /// boundaries and whenever the cached budget reports pressure.
+        /// </summary>
+        public BrokerUnackedByteBudget? AdmissionBudget;
+        public int AdmissionBudgetInitialized;
+
         /// <summary>Number of batches in the deque.</summary>
         public int Count => _count;
 
@@ -2910,7 +2917,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             releaseMemoryOnFailure: false);
                         if (sealedBatchToEnqueue is not null)
                         {
-                            sealedBatchToEnqueue.UnackedBudget = ResolveUnackedBudget(
+                            sealedBatchToEnqueue.UnackedBudget = ResolveAndCacheUnackedBudget(
+                                pd,
                                 topic,
                                 partition);
                         }
@@ -3111,6 +3119,40 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int partitionCount,
         bool returnHeadersOnFailure)
     {
+        // Headerless records dominate every producer mode. When the current batch has room,
+        // encode and commit under one partition-lock acquisition instead of publishing
+        // AppendInProgress and reacquiring the lock after encoding. Rotation and header paths
+        // retain the two-phase protocol.
+        if (headers is null && headerCount == 0)
+        {
+            var appendCommitted = false;
+            try
+            {
+                if (TryAppendFromSpansToCurrentBatchFast(
+                    topic,
+                    partition,
+                    timestamp,
+                    keyData,
+                    keyIsNull,
+                    valueData,
+                    valueIsNull,
+                    completionSource,
+                    callback,
+                    recordSize,
+                    partitionCount,
+                    out appendCommitted))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                if (!appendCommitted)
+                    ReleaseMemory(recordSize);
+                throw;
+            }
+        }
+
         var topicPartition = new TopicPartition(topic, partition);
         var pd = GetOrCreateDeque(topic, partition);
         ReadyBatch? sealedBatchToEnqueue = null;
@@ -3394,7 +3436,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             releaseMemoryOnFailure: false);
                         if (sealedBatchToEnqueue is not null)
                         {
-                            sealedBatchToEnqueue.UnackedBudget = ResolveUnackedBudget(
+                            sealedBatchToEnqueue.UnackedBudget = ResolveAndCacheUnackedBudget(
+                                pd,
                                 topic,
                                 partition);
                         }
@@ -3607,6 +3650,80 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return AppendFromSpansAfterReservationCore(topic, partition, timestamp, keyData, keyIsNull,
             valueData, valueIsNull, headers, headerCount, completionSource: null, callback,
             recordSize, partitionCount, returnHeadersOnFailure: true);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryAppendFromSpansToCurrentBatchFast(
+        string topic,
+        int partition,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
+        Action<RecordMetadata, Exception?>? callback,
+        int recordSize,
+        int partitionCount,
+        out bool appendCommitted)
+    {
+        appendCommitted = false;
+        var pd = GetOrCreateDeque(topic, partition);
+        PartitionBatch? batchToComplete = null;
+        int actualBytesAdded;
+
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+
+            if (Volatile.Read(ref _disposed) != 0
+                || pd.RotationInProgress
+                || pd.AppendInProgress
+                || pd.CurrentBatch is not { } currentBatch)
+            {
+                return false;
+            }
+
+            var result = currentBatch.TryAppendFromSpans(
+                timestamp,
+                keyData,
+                keyIsNull,
+                valueData,
+                valueIsNull,
+                headers: null,
+                headerCount: 0,
+                completionSource,
+                callback,
+                estimatedSize: recordSize);
+
+            if (!result.Success)
+                return false;
+
+            appendCommitted = true;
+            actualBytesAdded = result.ActualSizeAdded;
+            ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
+
+            if (result.FirstCompletionSourceInBatch)
+                Interlocked.Increment(ref _pendingAwaitedProduceCount);
+
+            if (ShouldSealAppendedBatch(currentBatch))
+            {
+                batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
+            }
+        }
+
+        NotifyRecordAppended(topic, partition, actualBytesAdded, partitionCount);
+        if (batchToComplete is not null)
+        {
+            var readyBatch = CompleteDetachedBatchAndEnqueue(pd, batchToComplete);
+            if (readyBatch is not null)
+                StartPreSerialization(readyBatch);
+        }
+        else if (completionSource is not null)
+        {
+            QueueLingerPartition(pd, new TopicPartition(topic, partition));
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -3835,7 +3952,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (readyBatch is not null)
         {
-            readyBatch.UnackedBudget = ResolveUnackedBudget(
+            readyBatch.UnackedBudget = ResolveAndCacheUnackedBudget(
+                pd,
                 readyBatch.TopicPartition.Topic,
                 readyBatch.TopicPartition.Partition);
         }
@@ -4668,6 +4786,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (GetBrokerUnackedBudget(brokerId) is not { } newBudget)
             return;
 
+        if (_partitionDeques.TryGetValue(batch.TopicPartition, out var partitionDeque))
+        {
+            Volatile.Write(ref partitionDeque.AdmissionBudget, newBudget);
+            Volatile.Write(ref partitionDeque.AdmissionBudgetInitialized, 1);
+        }
+
         var lockTaken = false;
         try
         {
@@ -4732,7 +4856,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var partitionDeque = GetOrCreateDeque(topic, partition);
         if (_unackedBudgetEnabled
-            && IsBrokerAdmissionBlocked(topic, partition, recordBlockEvent: true))
+            && IsBrokerAdmissionBlocked(
+                partitionDeque,
+                topic,
+                partition,
+                recordBlockEvent: true))
             return false;
 
         return Volatile.Read(ref partitionDeque.SlowPathAppendCount) == 0
@@ -4747,11 +4875,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// because the operation already recorded one when it was first gated.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool IsBrokerAdmissionBlocked(string topic, int partition, bool recordBlockEvent)
-        => IsBrokerAdmissionBlocked(topic, partition, recordBlockEvent, out _);
+    private bool IsBrokerAdmissionBlocked(
+        PartitionDeque partitionDeque,
+        string topic,
+        int partition,
+        bool recordBlockEvent)
+        => IsBrokerAdmissionBlocked(
+            partitionDeque,
+            topic,
+            partition,
+            recordBlockEvent,
+            out _);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsBrokerAdmissionBlocked(
+        PartitionDeque partitionDeque,
         string topic,
         int partition,
         bool recordBlockEvent,
@@ -4761,14 +4899,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!_unackedBudgetEnabled)
             return false;
 
-        var leaderId = _resolveLeaderId!(topic, partition);
-        var currentBudget = leaderId >= 0 ? GetBrokerUnackedBudget(leaderId) : null;
-        if (leaderId < 0
-            || currentBudget is null
-            || !currentBudget.IsOverBudget())
+        var currentBudget = GetCachedAdmissionBudget(partitionDeque, topic, partition);
+        if (currentBudget is null || !currentBudget.IsOverBudget())
         {
             return false;
         }
+
+        // A leader may have changed since this partition last sealed or routed a batch.
+        // Resolve again before actually blocking so a stale, pressured old leader never
+        // causes false backpressure. This lookup is confined to the already-cold path.
+        currentBudget = ResolveAndCacheUnackedBudget(partitionDeque, topic, partition);
+        if (currentBudget is null || !currentBudget.IsOverBudget())
+            return false;
 
         var nowTicks = Stopwatch.GetTimestamp();
         if (!currentBudget.IsOverBudgetAt(nowTicks))
@@ -4787,7 +4929,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         out long recheckAt)
     {
         recheckAt = 0;
+        var partitionDeque = GetOrCreateDeque(topic, partition);
         if (!IsBrokerAdmissionBlocked(
+                partitionDeque,
                 topic,
                 partition,
                 recordBlockEvent: false,
@@ -4803,6 +4947,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private BrokerUnackedByteBudget? GetCachedAdmissionBudget(
+        PartitionDeque partitionDeque,
+        string topic,
+        int partition)
+    {
+        if (Volatile.Read(ref partitionDeque.AdmissionBudgetInitialized) == 0)
+            return ResolveAndCacheUnackedBudget(partitionDeque, topic, partition);
+
+        return Volatile.Read(ref partitionDeque.AdmissionBudget);
+    }
+
+    private BrokerUnackedByteBudget? ResolveAndCacheUnackedBudget(
+        PartitionDeque partitionDeque,
+        string topic,
+        int partition)
+    {
+        var budget = ResolveUnackedBudget(topic, partition);
+        Volatile.Write(ref partitionDeque.AdmissionBudget, budget);
+        Volatile.Write(ref partitionDeque.AdmissionBudgetInitialized, 1);
+        return budget;
     }
 
     private BrokerUnackedByteBudget? ResolveUnackedBudget(string topic, int partition)
