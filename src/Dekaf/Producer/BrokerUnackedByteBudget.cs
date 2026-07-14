@@ -20,13 +20,16 @@ namespace Dekaf.Producer;
 /// each budget raise lengthens the RTT that justifies the next raise until the budget rides
 /// its cap (the 3-broker acks=all latency ratchet, #2009).
 /// <para>
-/// Drain rate is measured per acknowledged request, BBR-style: each request snapshots the
-/// cumulative delivered-bytes counter at send time, and its rate sample is the delivered
-/// delta over the larger of the request's own sojourn and the interval since the delivery
-/// clock at send (sojourn only for app-limited sends, where the pipe was empty and the
-/// preceding interval is idle time). The denominator is therefore never smaller than one
-/// real round trip, so response-pass timing (hot polling, clustered completions,
-/// processing stalls) cannot manufacture inflated samples.
+/// Sustainable drain rate is measured over a delivery epoch. An app-limited send starts the
+/// epoch; loaded sends retain its delivered-byte and first-send anchors across acknowledgements
+/// for a rolling interval bounded at 250ms. The sample is cumulative delivered bytes over the
+/// full epoch elapsed time, bounded below by the request sojourn and delivery clock. Samples
+/// shorter than 100ms are ignored because host scheduling and burst quantization can dominate
+/// them. A short truly app-limited sample may seed an empty estimator, but cannot replace an
+/// established sustainable rate. A separate per-request rate remains available to the capacity
+/// probe, which needs each probe admission's
+/// immediate response. These axes prevent serialized send/ack cycles, hot polling, clustered
+/// completions, and processing stalls from manufacturing inflated sustainable-rate samples.
 /// </para>
 /// <para>
 /// Ownership contract: <see cref="Charge"/>/<see cref="Release"/>/<see cref="IsOverBudget"/>/
@@ -44,18 +47,20 @@ namespace Dekaf.Producer;
 internal sealed class BrokerUnackedByteBudget
 {
     /// <summary>
-    /// Per-send token minted by <see cref="SnapshotDelivery"/>: the delivery clock (cumulative
-    /// delivered bytes and the timestamp of the most recent delivery), the pre-write send
-    /// timestamp, and whether the broker pipe was empty at send. Carried opaquely on the
-    /// in-flight request and redeemed by <see cref="OnAcked"/> when the response arrives, so
-    /// the values that must be captured together cannot drift apart at call sites.
+    /// Per-send token minted by <see cref="SnapshotDelivery"/>: the current delivery clock,
+    /// the loaded delivery epoch's delivered-byte and first-send anchors, the pre-write send
+    /// timestamp, whether the broker pipe was empty, and whether the rate epoch was app-limited
+    /// at send. Carried opaquely on the in-flight request and redeemed by <see cref="OnAcked"/>
+    /// when the response arrives, so values captured together cannot drift apart at call sites.
     /// </summary>
     internal readonly record struct DeliverySnapshot(
         long DeliveredBytes,
         long DeliveredTimestamp,
+        long DeliveryEpochDeliveredBytes,
         long DeliveryEpochFirstSendTimestamp,
         long SendTimestamp,
         bool AppLimited,
+        bool RateAppLimited,
         long OldestBatchTimestamp,
         long UnackedBytesAtSend);
 
@@ -156,10 +161,6 @@ internal sealed class BrokerUnackedByteBudget
     /// enough slack for replication service-time variance without the ratchet.</summary>
     private const double ServingRttClampMultiplier = 2.0;
 
-    /// <summary>Standing unacked bytes at this multiple of the freshly computed budget prove
-    /// the previous budget over-admitted; decay smoothing then yields to the recompute.</summary>
-    private const long StandingQueueDecayBypassMultiplier = 2;
-
     /// <summary>Lower bound on queue-corrected RTT samples as a fraction of the raw round
     /// trip, so an overestimated drain rate cannot collapse the corrected service estimate
     /// (and with it the RTT floor) toward zero.</summary>
@@ -185,6 +186,14 @@ internal sealed class BrokerUnackedByteBudget
     /// growth; requiring a flat RTT distinguishes real headroom from added queueing.</summary>
     private const double ProbeRttGrowthTolerance = 1.25;
     private static readonly long MaxProbeIntervalTicks = Stopwatch.Frequency;
+    // An empty pipe refilled within this gap is a serialized loaded cycle, not application idle.
+    private static readonly long MaximumSerializedRateCycleGapTicks = Math.Max(1, Stopwatch.Frequency / 500);
+    // Shorter loaded epochs are dominated by timer, scheduler, and burst quantization on common hosts.
+    private static readonly long MinimumSustainableRateSampleTicks = Math.Max(
+        1,
+        Stopwatch.Frequency / 10);
+    // Bound smoothing so a continuously loaded producer still tracks capacity changes promptly.
+    private static readonly long MaximumLoadedDeliveryEpochTicks = Math.Max(1, Stopwatch.Frequency / 4);
     private const long NoDeliveryEpoch = -1;
     private const long DeliveryEpochUpdating = -2;
 
@@ -228,6 +237,7 @@ internal sealed class BrokerUnackedByteBudget
     private double _minRttSeconds;
     private double _servingRttEwmaSeconds;
     private double _rawServingRttEwmaSeconds;
+    private bool _hasLoadedServingSample;
     private double _sealToAckEwmaSeconds;
     private double _minRttProbeMinimumSeconds;
     private bool _hasMinRttSample;
@@ -310,8 +320,10 @@ internal sealed class BrokerUnackedByteBudget
     /// Cross-thread: parallel connection sends mint the per-request delivery token immediately
     /// before the socket write (so <paramref name="sendTimestamp"/> can never postdate the
     /// response's arrival), feeding it back to <see cref="OnAcked"/> on the response. Delivery
-    /// epoch changes are CAS-published so parallel sends cannot regress the delivered-byte
-    /// marker; the independent last-delivery timestamp may only conservatively widen a sample.
+    /// epoch changes at rate-app-limited boundaries are CAS-published so parallel sends cannot
+    /// regress the delivered-byte marker; loaded and immediately post-delivery sends reuse the
+    /// published epoch. The independent last-delivery timestamp may only conservatively widen
+    /// a sample.
     /// </summary>
     /// <param name="sendTimestamp">Stopwatch timestamp taken just before the socket write.</param>
     /// <param name="appLimited">True when the broker pipe was empty at send time.</param>
@@ -322,33 +334,75 @@ internal sealed class BrokerUnackedByteBudget
         bool appLimited,
         long oldestBatchTimestamp = 0)
     {
+        var deliveredTimestamp = Volatile.Read(ref _lastDeliveredTimestamp);
+        var deliveryGapTicks = sendTimestamp - deliveredTimestamp;
+        // An empty pipe sent immediately after an ack is a serialized loaded rate cycle, not
+        // idle application time. Negative gaps can arise from concurrent delivery publication
+        // and cannot prove that ordering, so they remain rate-app-limited.
+        var continuesSerializedRateCycle = appLimited
+            && deliveredTimestamp != 0
+            && deliveryGapTicks >= 0
+            && deliveryGapTicks < MaximumSerializedRateCycleGapTicks;
+        var rateAppLimited = appLimited && !continuesSerializedRateCycle;
         var deliveryEpochFirstSendTimestamp = CaptureDeliveryEpoch(
             sendTimestamp,
+            rateAppLimited,
+            out var deliveryEpochDeliveredBytes,
             out var deliveredBytes);
         return new DeliverySnapshot(
             deliveredBytes,
-            Volatile.Read(ref _lastDeliveredTimestamp),
+            deliveredTimestamp,
+            deliveryEpochDeliveredBytes,
             deliveryEpochFirstSendTimestamp,
             sendTimestamp,
             appLimited,
+            rateAppLimited,
             oldestBatchTimestamp,
             Volatile.Read(ref _unackedBytes));
     }
 
-    private long CaptureDeliveryEpoch(long sendTimestamp, out long deliveredBytes)
+    private long CaptureDeliveryEpoch(
+        long sendTimestamp,
+        bool rateAppLimited,
+        out long deliveryEpochDeliveredBytes,
+        out long deliveredBytes)
     {
         var spinner = new SpinWait();
         while (true)
         {
             deliveredBytes = Volatile.Read(ref _totalDeliveredBytes);
             var epochDeliveredBytes = Volatile.Read(ref _sendEpochDeliveredBytes);
-            if (epochDeliveredBytes == deliveredBytes)
-                return Volatile.Read(ref _sendEpochFirstTimestamp);
-
             if (epochDeliveredBytes == DeliveryEpochUpdating)
             {
                 spinner.SpinOnce();
                 continue;
+            }
+
+            // The timestamp and delivered marker form one publication. Re-read the marker
+            // after the timestamp so a reader spanning another publisher's two writes retries
+            // instead of pairing an old byte anchor with a new time anchor.
+            var epochFirstSendTimestamp = Volatile.Read(ref _sendEpochFirstTimestamp);
+            if (Volatile.Read(ref _sendEpochDeliveredBytes) != epochDeliveredBytes)
+            {
+                spinner.SpinOnce();
+                continue;
+            }
+
+            if (epochDeliveredBytes == deliveredBytes)
+            {
+                deliveryEpochDeliveredBytes = epochDeliveredBytes;
+                return epochFirstSendTimestamp;
+            }
+
+            // A loaded pipe keeps a bounded rolling epoch across acknowledgements. Reset at
+            // rate-app-limited boundaries or after 250ms: the lower bound prevents serialized
+            // requestBytes / ownRTT spikes; the upper bound preserves capacity adaptation.
+            if (!rateAppLimited
+                && epochDeliveredBytes != NoDeliveryEpoch
+                && sendTimestamp - epochFirstSendTimestamp < MaximumLoadedDeliveryEpochTicks)
+            {
+                deliveryEpochDeliveredBytes = epochDeliveredBytes;
+                return epochFirstSendTimestamp;
             }
 
             if (Interlocked.CompareExchange(
@@ -360,7 +414,11 @@ internal sealed class BrokerUnackedByteBudget
                 continue;
             }
 
-            return PublishDeliveryEpoch(sendTimestamp, epochDeliveredBytes, out deliveredBytes);
+            return PublishDeliveryEpoch(
+                sendTimestamp,
+                epochDeliveredBytes,
+                out deliveryEpochDeliveredBytes,
+                out deliveredBytes);
         }
     }
 
@@ -368,6 +426,7 @@ internal sealed class BrokerUnackedByteBudget
     private long PublishDeliveryEpoch(
         long sendTimestamp,
         long previousEpochDeliveredBytes,
+        out long deliveryEpochDeliveredBytes,
         out long deliveredBytes)
     {
         // The loop-top delivery read can predate a newer epoch value observed by the
@@ -379,6 +438,7 @@ internal sealed class BrokerUnackedByteBudget
             Volatile.Write(ref _sendEpochFirstTimestamp, sendTimestamp);
 
         Volatile.Write(ref _sendEpochDeliveredBytes, deliveredBytes);
+        deliveryEpochDeliveredBytes = deliveredBytes;
         return Volatile.Read(ref _sendEpochFirstTimestamp);
     }
 
@@ -531,8 +591,17 @@ internal sealed class BrokerUnackedByteBudget
         var sustainedIdle = sendSnapshot.AppLimited
             && sendSnapshot.DeliveredTimestamp != 0
             && deliveryIdleTicks >= WindowDurationTicks;
-        var loadedSample = !sendSnapshot.AppLimited
+        var loadedServingSample = !sendSnapshot.AppLimited
             || (sendSnapshot.DeliveredTimestamp != 0 && !sustainedIdle);
+        var retainLoadedRateSample = !sendSnapshot.AppLimited;
+        if (sustainedIdle)
+        {
+            _hasLoadedServingSample = false;
+            _lastNormalBudgetBytes = _capBytes;
+            _lastBudgetUpdateTimestamp = nowTicks;
+        }
+        else if (loadedServingSample)
+            _hasLoadedServingSample = true;
         // The deadline ack may establish the first loaded serving estimate (depth-one traffic),
         // but must not drag an existing estimate toward the queue-drained probe RTT.
         var minRttProbeActive = _minRttProbeUntilTimestamp != 0
@@ -553,7 +622,7 @@ internal sealed class BrokerUnackedByteBudget
             rttSeconds,
             nowTicks,
             naturalMinRttSample: sendSnapshot.AppLimited && !sustainedIdle);
-        if (loadedSample && !minRttProbeActive)
+        if (loadedServingSample && !minRttProbeActive)
         {
             _servingRttEwmaSeconds = _servingRttEwmaSeconds == 0
                 ? serviceRttSeconds
@@ -575,36 +644,49 @@ internal sealed class BrokerUnackedByteBudget
 
         RecordRequestHistograms(ackedBytes, rttSeconds);
 
-        // BBR delivery-rate sample: delivered-counter delta over the larger of the request's
-        // own sojourn and the ack-axis interval (time since the delivery clock at send). The
-        // sojourn bounds the denominator below by one real round trip, so clustered response
-        // passes cannot inflate the sample; the ack axis spreads a processing-stall backlog
-        // over the wall time the deliveries actually took.
+        // Keep two delivery-rate axes. The request axis attributes immediate delivery credit
+        // to one capacity probe. The epoch axis estimates sustainable rate from all delivery
+        // since the pipe last became loaded, including the first send's RTT; loaded sends keep
+        // that anchor across intervening acknowledgements. Thus a serialized request cannot
+        // claim requestBytes / ownRTT as broker capacity on every fast response.
         var totalDelivered = _totalDeliveredBytes + ackedBytes;
         Volatile.Write(ref _totalDeliveredBytes, totalDelivered);
         var deliveredDelta = totalDelivered - sendSnapshot.DeliveredBytes;
+        var deliveryEpochDelta = totalDelivered - sendSnapshot.DeliveryEpochDeliveredBytes;
 
-        var intervalTicks = rttTicks;
+        var requestIntervalTicks = rttTicks;
+        if (!sendSnapshot.AppLimited && sendSnapshot.DeliveredTimestamp != 0)
+        {
+            requestIntervalTicks = Math.Max(
+                requestIntervalTicks,
+                nowTicks - sendSnapshot.DeliveredTimestamp);
+        }
+
+        var deliveryEpochIntervalTicks = requestIntervalTicks;
         if (sendSnapshot.DeliveryEpochFirstSendTimestamp > 0)
         {
-            intervalTicks = Math.Max(
-                intervalTicks,
-                sendSnapshot.SendTimestamp - sendSnapshot.DeliveryEpochFirstSendTimestamp);
+            deliveryEpochIntervalTicks = Math.Max(
+                deliveryEpochIntervalTicks,
+                nowTicks - sendSnapshot.DeliveryEpochFirstSendTimestamp);
         }
-        if (!sendSnapshot.AppLimited && sendSnapshot.DeliveredTimestamp != 0)
-            intervalTicks = Math.Max(intervalTicks, nowTicks - sendSnapshot.DeliveredTimestamp);
         Volatile.Write(ref _lastDeliveredTimestamp, nowTicks);
 
         AdvanceWindow(nowTicks);
-        var bytesPerSecond = deliveredDelta * (double)Stopwatch.Frequency / intervalTicks;
-        if (bytesPerSecond > 0)
+        var requestBytesPerSecond = deliveredDelta * (double)Stopwatch.Frequency / requestIntervalTicks;
+        var deliveryEpochBytesPerSecond = deliveryEpochDelta * (double)Stopwatch.Frequency
+            / deliveryEpochIntervalTicks;
+        var bootstrapsEmptyEstimator = sendSnapshot.RateAppLimited
+            && GetEffectiveMaxRate() == 0;
+        if (deliveryEpochBytesPerSecond > 0
+            && (deliveryEpochIntervalTicks >= MinimumSustainableRateSampleTicks
+                || bootstrapsEmptyEstimator))
         {
-            AddRateSample(bytesPerSecond, loadedSample, sustainedIdle);
+            AddRateSample(deliveryEpochBytesPerSecond, retainLoadedRateSample, sustainedIdle);
             Volatile.Write(ref _maxRateBytesPerSecond, (long)GetEffectiveMaxRate());
         }
 
         UpdateCapacityProbe(
-            bytesPerSecond,
+            requestBytesPerSecond,
             sendSnapshot.OldestBatchTimestamp != 0
                 ? sendSnapshot.OldestBatchTimestamp
                 : sendSnapshot.SendTimestamp,
@@ -1126,14 +1208,10 @@ internal sealed class BrokerUnackedByteBudget
         var elapsedSeconds = _lastBudgetUpdateTimestamp == 0
             ? 0
             : Math.Max(0, (double)(nowTicks - _lastBudgetUpdateTimestamp) / Stopwatch.Frequency);
-        // _unackedBytes shares a contended cache line with every appender's Interlocked.Add;
-        // only pay for the read when a downward move can consult the queue bypass.
-        var unackedBytes = computedBudget < _lastNormalBudgetBytes ? UnackedBytes : 0;
         var budget = BoundBudgetDecay(
             _lastNormalBudgetBytes,
             computedBudget,
-            elapsedSeconds,
-            unackedBytes);
+            elapsedSeconds);
         budget = Math.Min(budget, _capBytes);
         _lastNormalBudgetBytes = budget;
         _lastBudgetUpdateTimestamp = nowTicks;
@@ -1143,15 +1221,9 @@ internal sealed class BrokerUnackedByteBudget
     internal static long BoundBudgetDecay(
         long previousBudget,
         long computedBudget,
-        double elapsedSeconds,
-        long unackedBytes)
+        double elapsedSeconds)
     {
         if (computedBudget >= previousBudget)
-            return computedBudget;
-
-        // Bytes at a multiple of the fresh budget prove the old budget over-admitted;
-        // smoothing would otherwise preserve the standing queue for minutes at 10%/s.
-        if (unackedBytes >= StandingQueueDecayBypassMultiplier * computedBudget)
             return computedBudget;
 
         var decayFraction = Math.Min(
@@ -1181,7 +1253,7 @@ internal sealed class BrokerUnackedByteBudget
             // The serving EWMA and the minimum RTT are queue-corrected at sample intake
             // (see OnAcked), so neither re-inflates from queueing this budget admitted;
             // the clamp below is a residual guard for correction error.
-            var loadAwareRttSeconds = _retainedLoadedMaxRate > 0
+            var loadAwareRttSeconds = _hasLoadedServingSample
                 ? Math.Max(
                     minRttSeconds,
                     Math.Min(_servingRttEwmaSeconds, ServingRttClampMultiplier * minRttSeconds))
