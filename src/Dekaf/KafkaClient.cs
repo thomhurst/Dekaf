@@ -96,6 +96,7 @@ public sealed class KafkaClientBuilder
     private int _connectionsPerBroker = 1;
     private int _maxInFlightRequestsPerConnection = 5;
     private int _maxConnectionsPerBroker = ProducerOptions.DefaultMaxConnectionsPerBroker;
+    private bool _isMaxConnectionsPerBrokerConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
@@ -369,6 +370,8 @@ public sealed class KafkaClientBuilder
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
         _connectionsPerBroker = connectionsPerBroker;
+        if (!_isMaxConnectionsPerBrokerConfigured)
+            _maxConnectionsPerBroker = Math.Max(_maxConnectionsPerBroker, connectionsPerBroker);
         return this;
     }
 
@@ -384,6 +387,7 @@ public sealed class KafkaClientBuilder
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConnectionsPerBroker, 1);
         _maxConnectionsPerBroker = maxConnectionsPerBroker;
+        _isMaxConnectionsPerBrokerConfigured = true;
         return this;
     }
 
