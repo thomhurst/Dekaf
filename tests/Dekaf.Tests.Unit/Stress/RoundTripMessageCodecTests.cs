@@ -291,18 +291,10 @@ public class RoundTripMessageCodecTests
         }
     }
 
-    [Test]
-    public async Task ConfluentDeliveryReportFailure_CountsAsDeliveryError()
-    {
-        var throughput = new ThroughputTracker();
-
-        ConfluentProducerRoundTripStressTest.RecordDeliveryReportError(
-            throughput,
-            new ConfluentKafka.Error(ConfluentKafka.ErrorCode.Local_MsgTimedOut));
-
-        await Assert.That(throughput.DeliveryErrorCount).IsEqualTo(1);
-        await Assert.That(throughput.ErrorCount).IsEqualTo(0);
-    }
+    // The Confluent round-trip producer no longer attaches a per-message delivery-report
+    // handler (fairness: librdkafka would invoke the managed delegate for every message,
+    // work the Dekaf error-only listener never does). Loss is caught by the consume-side
+    // completion tracker + CRC validation instead, so there is no handler left to test.
 
     [Test]
     [NotInParallel("MeterListener")]

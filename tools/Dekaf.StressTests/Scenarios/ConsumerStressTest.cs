@@ -50,11 +50,11 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         using var gcStats = new GcStats();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
-        // Dekaf-only diagnostics active inside the measured window (per-fetch MeterListener +
-        // 1-minute snapshot sampler). Accepted overhead: it slightly inflates Dekaf's own
-        // CPU/msg and alloc/msg vs Confluent (works against Dekaf, never for it) and the
-        // fetch-path visibility has repeatedly been what made stress regressions diagnosable.
-        using var consumerDiagnostics = new ConsumerFetchDiagnosticsTracker(options.Topic);
+        // Dekaf-only diagnostics (per-fetch MeterListener + 1-minute snapshot sampler) are
+        // opt-in via --consumer-fetch-diagnostics: enabled they slightly inflate Dekaf's own
+        // CPU/msg and alloc/msg vs Confluent, so measurement runs keep them off and debug
+        // runs turn them on when fetch-path visibility is needed to diagnose a regression.
+        using var consumerDiagnostics = new ConsumerFetchDiagnosticsTracker(options.Topic, enabled: options.EnableConsumerFetchDiagnostics);
         consumerDiagnostics.Start(StressTestHelpers.CaptureConsumerDiagnostics(consumer)!);
 
         Console.WriteLine($"  Running Dekaf consumer stress test for {options.DurationMinutes} minutes...");

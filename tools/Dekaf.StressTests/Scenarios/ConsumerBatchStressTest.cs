@@ -54,7 +54,7 @@ internal sealed class ConsumerBatchStressTest : IStressTestScenario
         using var gcStats = new GcStats();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
-        using var consumerDiagnostics = new ConsumerFetchDiagnosticsTracker(options.Topic);
+        using var consumerDiagnostics = new ConsumerFetchDiagnosticsTracker(options.Topic, enabled: options.EnableConsumerFetchDiagnostics);
         consumerDiagnostics.Start(StressTestHelpers.CaptureConsumerDiagnostics(consumer)!);
 
         Console.WriteLine($"  Running Dekaf consumer-batch stress test for {options.DurationMinutes} minutes...");

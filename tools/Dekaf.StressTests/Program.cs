@@ -24,6 +24,7 @@ namespace Dekaf.StressTests;
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
 ///   --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
+///   --consumer-fetch-diagnostics  Capture Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead)
 ///   --roundtrip-messages &lt;count&gt;  Bounded message count for producer-roundtrip (default: 250000)
 ///   report --input &lt;path&gt;   Generate report from existing results
 ///   fault [options]          Run fault-injection correctness suite
@@ -127,6 +128,7 @@ public static class Program
             Console.WriteLine($"Resource sample interval: {options.ResourceSampleIntervalSeconds:N0} seconds");
         }
         Console.WriteLine($"Producer delivery diagnostics: {(options.EnableProducerDeliveryDiagnostics ? "enabled" : "disabled")}");
+        Console.WriteLine($"Consumer fetch diagnostics: {(options.EnableConsumerFetchDiagnostics ? "enabled (adds Dekaf-only overhead)" : "disabled")}");
         Console.WriteLine($"Dekaf client logs: {StressClientLogging.MinimumLevel}+ " +
             $"(set {StressClientLogging.LogLevelEnvironmentVariable}=Debug for verbose diagnostics)");
         Console.WriteLine($"Progress watchdog: stacks at {ProgressWatchdog.DefaultCaptureAfter.TotalSeconds:F0}s; " +
@@ -229,6 +231,7 @@ public static class Program
             ConnectionsPerBroker = connectionsPerBroker,
             RoundTripMessages = options.RoundTripMessages,
             EnableProducerDeliveryDiagnostics = options.EnableProducerDeliveryDiagnostics,
+            EnableConsumerFetchDiagnostics = options.EnableConsumerFetchDiagnostics,
             ProgressWatchdog = progressWatchdog,
             SoakMessagesPerSecond = options.SoakMessagesPerSecond,
             ResourceSampleIntervalSeconds = options.ResourceSampleIntervalSeconds,
@@ -915,6 +918,9 @@ public static class Program
                 case "--producer-delivery-diagnostics":
                     options.EnableProducerDeliveryDiagnostics = true;
                     break;
+                case "--consumer-fetch-diagnostics":
+                    options.EnableConsumerFetchDiagnostics = true;
+                    break;
                 case "--fault-profile":
                     options.FaultProfile = args[++i].ToLowerInvariant();
                     break;
@@ -1025,6 +1031,7 @@ public static class Program
               --connections-per-broker <n>  TCP connections per broker (default: 1, pass 3 for multi-connection comparison)
               --seed-messages <count> Messages pre-seeded into the consumer topic (default: 2000000)
               --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
+              --consumer-fetch-diagnostics  Capture Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead)
               --soak-messages-per-second <n>   Mixed soak target rate (default: 5000)
               --resource-sample-seconds <n>    Soak resource sample interval (default: 60)
               --soak-warmup-minutes <n>        Samples excluded before trend analysis (default: 60)
@@ -1081,6 +1088,7 @@ public static class Program
         public int SeedMessages { get; set; } = 2_000_000;
         public int RoundTripMessages { get; set; } = 250_000;
         public bool EnableProducerDeliveryDiagnostics { get; set; }
+        public bool EnableConsumerFetchDiagnostics { get; set; }
         public string FaultProfile { get; set; } = "all";
         public int FaultDurationSeconds { get; set; } = 5;
         public int MessagesBeforeFault { get; set; } = 2_000;

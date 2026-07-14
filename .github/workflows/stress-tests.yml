@@ -17,6 +17,10 @@ on:
         description: 'Bounded message count for round-trip correctness scenario'
         required: false
         default: '250000'
+      consumer_fetch_diagnostics:
+        description: 'Enable Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead to the measured window)'
+        required: false
+        default: 'false'
 
 concurrency:
   group: stress-tests
@@ -251,6 +255,12 @@ jobs:
           trap 'kill $DISK_MONITOR_PID 2>/dev/null || true' EXIT
 
           cd tools/Dekaf.StressTests
+          # Consumer fetch diagnostics are opt-in: they add Dekaf-only overhead inside the
+          # measured window, so measurement runs keep them off and debug dispatches enable them.
+          EXTRA_ARGS=""
+          if [ "${{ github.event.inputs.consumer_fetch_diagnostics }}" = "true" ]; then
+            EXTRA_ARGS="--consumer-fetch-diagnostics"
+          fi
           # Client pinned to its own cores: whichever client pushes more through the
           # same cores is genuinely faster, instead of both saturating the broker.
           paired_samples=${{ matrix.paired_samples || 1 }}
@@ -274,6 +284,7 @@ jobs:
               --brokers ${{ matrix.brokers }} \
               --connections-per-broker 1 \
               --producer-delivery-diagnostics \
+              ${EXTRA_ARGS} \
               --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
               --output ./results
           done
@@ -288,6 +299,7 @@ jobs:
               --brokers ${{ matrix.brokers }} \
               --connections-per-broker 3 \
               --producer-delivery-diagnostics \
+              ${EXTRA_ARGS} \
               --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
               --output ./results
           fi
