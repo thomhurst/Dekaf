@@ -183,6 +183,30 @@ public sealed class OffsetStoreTimingTests
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(100L);
     }
 
+    [Test]
+    public async Task IncrementalUnassign_AfterConsume_CommitAsyncDoesNotResurrectRevokedPartition()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        // Yield offset 20: the active snapshot now holds position 21.
+        await Assert.That(await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None)).IsNotNull();
+
+        consumer.IncrementalUnassign([tp]);
+        await consumer.CommitAsync(CancellationToken.None);
+
+        // Partition removal cleared all per-partition state; the stale snapshot must not
+        // bring the revoked partition's position or staged offset back to life.
+        await Assert.That(GetPositions(consumer).ContainsKey(tp)).IsFalse();
+        await Assert.That(GetDirtyStoredOffsets(consumer).ContainsKey(tp)).IsFalse();
+    }
+
     // --- ConsumeBatchAsync ---
 
     [Test]
