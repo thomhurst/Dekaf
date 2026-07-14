@@ -24,6 +24,10 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     private const int ChurnCycles = 2;
     private const int JointPhaseMessagesPerMember = 3;
     private const int RecoveryPhaseMessages = 3;
+    private const int DynamicChurnRebalanceCount = ChurnCycles * 2;
+    private const int MaxAutoChurnDuplicates =
+        PartitionCount * MessagesPerPartition * DynamicChurnRebalanceCount;
+    private const int MaxAutoCrashDuplicates = PartitionCount * MessagesPerPartition;
     private const int StaticRestartProgressMessages = 3;
     private const int MaxStaticRestartDuplicates = PartitionCount * CommitInterval * 3;
     private const int GroupConfigVerificationAttempts = 10;
@@ -51,6 +55,20 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         {
             await RunChurnScenarioAsync(assignor, cancellationToken);
         }
+    }
+
+    [Test]
+    [Timeout(600_000)]
+    [Arguments("uniform")]
+    [Arguments("range")]
+    public async Task DynamicMembers_AutoCommitChurn_PreservesSequencesAndCommittedProgress(
+        string assignor,
+        CancellationToken cancellationToken)
+    {
+        await RunChurnScenarioAsync(
+            assignor,
+            cancellationToken,
+            OffsetCommitMode.Auto);
     }
 
     [Test]
@@ -300,6 +318,20 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
     [Test]
     [Timeout(600_000)]
+    [Arguments("uniform")]
+    [Arguments("range")]
+    public async Task AbruptMemberLoss_AutoCommitAfterSessionExpiry_PreservesSequencesAndCommittedProgress(
+        string assignor,
+        CancellationToken cancellationToken)
+    {
+        await RunAbruptMemberLossScenarioAsync(
+            assignor,
+            cancellationToken,
+            OffsetCommitMode.Auto);
+    }
+
+    [Test]
+    [Timeout(600_000)]
     public async Task MaxPollIntervalEvictsStalledMemberWithoutAdvancingItsCommits(
         CancellationToken cancellationToken)
     {
@@ -363,7 +395,10 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         await AssertCommittedOffsetsAsync(groupId, oracle, cancellationToken);
     }
 
-    private async Task RunChurnScenarioAsync(string assignor, CancellationToken cancellationToken)
+    private async Task RunChurnScenarioAsync(
+        string assignor,
+        CancellationToken cancellationToken,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual)
     {
         var protocol = assignor switch
         {
@@ -372,7 +407,12 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             _ => throw new ArgumentOutOfRangeException(nameof(assignor), assignor, "Unknown KIP-848 assignor")
         };
 
-        await RunChurnScenarioAsync($"kip848-{assignor}", protocol, protocol, cancellationToken);
+        await RunChurnScenarioAsync(
+            $"kip848-{assignor}",
+            protocol,
+            protocol,
+            cancellationToken,
+            offsetCommitMode: offsetCommitMode);
     }
 
     private async Task RunChurnScenarioAsync(
@@ -380,7 +420,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         MemberProtocol anchorProtocol,
         MemberProtocol transientProtocol,
         CancellationToken cancellationToken,
-        bool stopAnchorAfterJointPhase = false)
+        bool stopAnchorAfterJointPhase = false,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual)
     {
         var (topic, groupId, oracle) = await CreateScenarioAsync(
             $"rebalance-chaos-{scenarioName}",
@@ -397,7 +438,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             $"{scenarioName}-anchor",
             anchorProtocol,
             oracle,
-            cancellationToken);
+            cancellationToken,
+            offsetCommitMode);
 
         anchor.Allow(1);
         await anchor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
@@ -412,7 +454,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 $"{scenarioName}-transient-{cycle}",
                 transientProtocol,
                 oracle,
-                cancellationToken);
+                cancellationToken,
+                offsetCommitMode);
 
             transient.Allow(1);
             await transient.WaitForAnyAssignmentAsync(cancellationToken);
@@ -446,7 +489,12 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                 transient.Allow(RecoveryPhaseMessages);
                 await transient.WaitForObservedCountAsync(downgradeRecoveryTarget, cancellationToken);
 
-                await CompleteScenarioAsync(transient, groupId, oracle, cancellationToken);
+                await CompleteScenarioAsync(
+                    transient,
+                    groupId,
+                    oracle,
+                    offsetCommitMode,
+                    cancellationToken);
                 return;
             }
 
@@ -462,21 +510,34 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             await anchor.WaitForObservedCountAsync(recoveryTarget, cancellationToken);
         }
 
-        await CompleteScenarioAsync(anchor, groupId, oracle, cancellationToken);
+        await CompleteScenarioAsync(
+            anchor,
+            groupId,
+            oracle,
+            offsetCommitMode,
+            cancellationToken);
     }
 
     private async Task CompleteScenarioAsync(
         IConsumerMember survivor,
         string groupId,
         SequenceOracle oracle,
+        OffsetCommitMode offsetCommitMode,
         CancellationToken cancellationToken)
     {
         survivor.Allow(PartitionCount * MessagesPerPartition * 2);
         await oracle.WaitForAllSequencesAsync(cancellationToken);
-        await oracle.WaitForFinalCommitsAsync(cancellationToken);
+        if (offsetCommitMode == OffsetCommitMode.Manual)
+            await oracle.WaitForFinalCommitsAsync(cancellationToken);
         await survivor.StopAsync();
+        if (offsetCommitMode == OffsetCommitMode.Auto)
+            await WaitForFinalBrokerCommitsAsync(groupId, oracle, cancellationToken);
 
-        await AssertCompletedScenarioAsync(groupId, oracle, maximumDuplicateCount: null, cancellationToken);
+        await AssertCompletedScenarioAsync(
+            groupId,
+            oracle,
+            offsetCommitMode == OffsetCommitMode.Auto ? MaxAutoChurnDuplicates : null,
+            cancellationToken);
     }
 
     private async Task<(string Topic, string GroupId, SequenceOracle Oracle)> CreateScenarioAsync(
@@ -529,7 +590,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
 
     private async Task RunAbruptMemberLossScenarioAsync(
         string assignor,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: PartitionCount);
         var groupId = $"rebalance-crash-{assignor}-{Guid.NewGuid():N}";
@@ -550,7 +612,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             $"{assignor}-survivor",
             assignor,
             oracle,
-            cancellationToken);
+            cancellationToken,
+            offsetCommitMode: offsetCommitMode);
 
         survivor.Allow(1);
         await survivor.WaitForAssignmentCountAsync(PartitionCount, cancellationToken);
@@ -562,7 +625,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             topic,
             groupId,
             crashedClientId,
-            assignor);
+            assignor,
+            offsetCommitMode);
         var crashedObservation = await crashedMember.WaitUntilReadyAsync(
             CrashClientReadyTimeout,
             cancellationToken);
@@ -591,6 +655,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             groupId,
             topic,
             crashedObservation,
+            offsetCommitMode,
             cancellationToken);
 
         var survivorJointTarget = survivor.ObservedCount + JointPhaseMessagesPerMember;
@@ -659,7 +724,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         var remainingPermits = PartitionCount * MessagesPerPartition * 2;
         survivor.Allow(remainingPermits);
         await oracle.WaitForAllSequencesAsync(cancellationToken);
-        await oracle.WaitForFinalCommitsAsync(cancellationToken);
+        if (offsetCommitMode == OffsetCommitMode.Manual)
+            await oracle.WaitForFinalCommitsAsync(cancellationToken);
 
         await Assert.That(oracle.WasDuplicatedAfterCrash(
                 crashedObservation.Partition,
@@ -668,8 +734,12 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             .Because("the crashed member's last uncommitted record must be replayed after session expiry");
 
         await survivor.StopAsync();
+        if (offsetCommitMode == OffsetCommitMode.Auto)
+            await WaitForFinalBrokerCommitsAsync(groupId, oracle, cancellationToken);
 
         await Assert.That(oracle.UniqueCount).IsEqualTo(PartitionCount * MessagesPerPartition);
+        if (offsetCommitMode == OffsetCommitMode.Auto)
+            await Assert.That(oracle.DuplicateCount).IsLessThanOrEqualTo(MaxAutoCrashDuplicates);
         var violations = oracle.Violations;
         await Assert.That(violations).IsEmpty()
             .Because(string.Join(Environment.NewLine, violations));
@@ -717,10 +787,16 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         string clientId,
         MemberProtocol protocol,
         SequenceOracle oracle,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual)
     {
         if (protocol == MemberProtocol.ClassicEagerRange)
+        {
+            if (offsetCommitMode != OffsetCommitMode.Manual)
+                throw new NotSupportedException("Auto-commit chaos coverage uses Dekaf KIP-848 members.");
+
             return CreateClassicMember(topic, groupId, clientId, oracle, cancellationToken);
+        }
 
         return await CreateDekafMemberAsync(
             topic,
@@ -728,7 +804,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             clientId,
             GetRemoteAssignor(protocol),
             oracle,
-            cancellationToken);
+            cancellationToken,
+            offsetCommitMode: offsetCommitMode);
     }
 
     private async Task<DekafConsumerMember> CreateDekafMemberAsync(
@@ -739,7 +816,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         SequenceOracle oracle,
         CancellationToken cancellationToken,
         string? groupInstanceId = null,
-        TimeSpan? maxPollInterval = null)
+        TimeSpan? maxPollInterval = null,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual)
     {
         var assignments = new AssignmentTracker();
         var builder = Kafka.CreateConsumer<string, string>()
@@ -748,11 +826,13 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             .WithGroupId(groupId)
             .WithGroupRemoteAssignor(assignor)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithMaxPollRecords(1)
             .WithQueuedMinMessages(1)
             .WithRebalanceListener(assignments)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
+
+        if (offsetCommitMode == OffsetCommitMode.Manual)
+            builder.WithOffsetCommitMode(OffsetCommitMode.Manual);
 
         if (groupInstanceId is not null)
             builder.WithGroupInstanceId(groupInstanceId);
@@ -763,7 +843,13 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         var consumer = await builder.BuildAsync(cancellationToken);
 
         consumer.Subscribe(topic);
-        return new DekafConsumerMember(clientId, consumer, assignments, oracle, cancellationToken);
+        return new DekafConsumerMember(
+            clientId,
+            consumer,
+            assignments,
+            oracle,
+            offsetCommitMode,
+            cancellationToken);
     }
 
     private IConsumerMember CreateClassicMember(
@@ -830,6 +916,38 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         }
     }
 
+    private async Task WaitForFinalBrokerCommitsAsync(
+        string groupId,
+        SequenceOracle oracle,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeoutSource.Token);
+
+        try
+        {
+            while (!oracle.AllPartitionsCommitted)
+            {
+                await AssertCommittedOffsetsAsync(groupId, oracle, linkedSource.Token);
+                if (!oracle.AllPartitionsCommitted)
+                    await Task.Delay(100, linkedSource.Token);
+            }
+        }
+        catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested)
+        {
+            var progress = string.Join(
+                ", ",
+                Enumerable.Range(0, PartitionCount).Select(partition =>
+                {
+                    var (committed, processed) = oracle.GetProgressBounds(partition);
+                    return $"p{partition} committed={committed} processed={processed}";
+                }));
+            throw new TimeoutException($"Final auto commits did not settle: {progress}");
+        }
+    }
+
     private static async Task<long[]> CaptureAndAssertCommittedOffsetsAsync(
         IAdminClient admin,
         string groupId,
@@ -872,19 +990,27 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         string groupId,
         string topic,
         ConsumerGroupCrashObservation observation,
+        OffsetCommitMode offsetCommitMode,
         CancellationToken cancellationToken)
     {
+        await Assert.That(observation.Offset)
+            .IsEqualTo(observation.CommittedOffset + 1)
+            .Because("the crash record must immediately follow the child's first observed record");
+
         var committedOffsets = await admin.ListConsumerGroupOffsetsAsync(groupId, cancellationToken);
         var committedExclusive = committedOffsets.GetValueOrDefault(
             new TopicPartition(topic, observation.Partition),
             0);
-
-        await Assert.That(observation.Offset)
-            .IsEqualTo(observation.CommittedOffset + 1)
-            .Because("the child must commit one record immediately before its crash record");
         await Assert.That(committedExclusive)
-            .IsEqualTo(observation.Offset)
-            .Because("the crash record must be the first offset after the child's durable commit");
+            .IsLessThanOrEqualTo(observation.Offset)
+            .Because("the child's crash record must remain uncommitted before force termination");
+
+        if (offsetCommitMode == OffsetCommitMode.Manual)
+        {
+            await Assert.That(committedExclusive)
+                .IsEqualTo(observation.Offset)
+                .Because("manual mode must durably commit the record immediately before the crash record");
+        }
     }
 
     private static async Task AssertGroupMemberPresenceAsync(
@@ -1136,16 +1262,19 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
     private sealed class DekafConsumerMember : ConsumerMemberBase
     {
         private readonly IKafkaConsumer<string, string> _consumer;
+        private readonly bool _explicitlyCommit;
 
         public DekafConsumerMember(
             string clientId,
             IKafkaConsumer<string, string> consumer,
             AssignmentTracker assignments,
             SequenceOracle oracle,
+            OffsetCommitMode offsetCommitMode,
             CancellationToken cancellationToken)
             : base("Consumer", clientId, assignments, oracle, cancellationToken)
         {
             _consumer = consumer;
+            _explicitlyCommit = offsetCommitMode == OffsetCommitMode.Manual;
             StartRunTask();
         }
 
@@ -1175,7 +1304,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                         result.Offset,
                         result.Value);
                     Oracle.Record(ClientId, record);
-                    await Oracle.CommitIfNeededAsync(record, TryCommitAsync, StoppingToken);
+                    if (_explicitlyCommit)
+                        await Oracle.CommitIfNeededAsync(record, TryCommitAsync, StoppingToken);
                     IncrementObserved();
                 }
             }
@@ -1401,6 +1531,23 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         public string Topic => _topic;
 
         public bool IsComplete => UniqueCount == _partitions.Length * _messagesPerPartition;
+
+        public bool AllPartitionsCommitted
+        {
+            get
+            {
+                foreach (var state in _partitions)
+                {
+                    lock (state.Gate)
+                    {
+                        if (state.CommittedExclusive < _messagesPerPartition)
+                            return false;
+                    }
+                }
+
+                return true;
+            }
+        }
 
         public string[] Violations
         {
