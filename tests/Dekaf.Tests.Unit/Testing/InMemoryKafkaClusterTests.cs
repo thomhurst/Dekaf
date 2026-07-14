@@ -55,6 +55,67 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task Consumer_EmptyGroupId_BehavesAsNoGroup()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders", partitionCount: 1);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+
+        await Assert.That(consumer.ConsumerGroupMetadata).IsNull();
+        await Assert.That(consumer.MemberId).IsNull();
+        await Assert.That(((IConsumerCommitModeSource)consumer).HasConsumerGroup).IsFalse();
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_EmptyGroupIdWithAutoCommitDefaults_DoesNotThrow()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders", partitionCount: 1);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = "" });
+        consumer.Subscribe("orders");
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        try
+        {
+            await consumer.RunPartitionedAsync(
+                static (_, _) => ValueTask.CompletedTask,
+                new PartitionedProcessingOptions(),
+                cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected: guard passed (no group), run exited via the cancelled token.
+        }
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_GroupWithAutoCommitDefaults_Throws()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("orders", partitionCount: 1);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions { GroupId = "workers" });
+        consumer.Subscribe("orders");
+
+        await Assert.That(async () => await consumer.RunPartitionedAsync(
+                static (_, _) => ValueTask.CompletedTask,
+                new PartitionedProcessingOptions(),
+                CancellationToken.None))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task Consumer_ManualCommit_PersistsGroupOffsets()
     {
         var cluster = new InMemoryKafkaCluster();
