@@ -15,7 +15,7 @@
     <ProjectReference Include="..\..\src\Dekaf.Extensions.Hosting\Dekaf.Extensions.Hosting.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.OpenTelemetry\Dekaf.OpenTelemetry.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Testing\Dekaf.Testing.csproj" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
   </ItemGroup>
 
 </Project>
