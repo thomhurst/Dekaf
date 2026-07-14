@@ -191,6 +191,157 @@ public class LazyRecordListTests
     }
 
     [Test]
+    public async Task LazyRecordList_InteriorMalformedVarint_Throws()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+            new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() },
+            new Record { OffsetDelta = 2, Value = "value-2"u8.ToArray() }
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        var firstRecordBuffer = new ArrayBufferWriter<byte>();
+        var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
+        records[0].Write(ref firstRecordWriter);
+
+        var bytes = buffer.WrittenSpan.ToArray();
+        bytes.AsSpan(firstRecordBuffer.WrittenCount, 6).Fill(0x80);
+        using var lazyList = LazyRecordList.Create(bytes, count: records.Length);
+
+        await Assert.That(() => lazyList.ToArray()).Throws<MalformedProtocolDataException>();
+    }
+
+    [Test]
+    public async Task LazyRecordList_InteriorOversizedRecordLength_Throws()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+            new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() },
+            new Record { OffsetDelta = 2, Value = "value-2"u8.ToArray() }
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        var firstRecordBuffer = new ArrayBufferWriter<byte>();
+        var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
+        records[0].Write(ref firstRecordWriter);
+
+        var bytes = buffer.WrittenSpan.ToArray();
+        bytes[firstRecordBuffer.WrittenCount] = 0x7E; // Zig-zag encoded length 63.
+        using var lazyList = LazyRecordList.Create(bytes, count: records.Length);
+
+        await Assert.That(() => lazyList.ToArray()).Throws<MalformedProtocolDataException>();
+    }
+
+    [Test]
+    public async Task LazyRecordList_InteriorValueLengthCannotConsumeFollowingRecord()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = new byte[] { 0x01 } },
+            new Record { OffsetDelta = 1, Value = new byte[] { 0x02 } },
+            new Record { OffsetDelta = 2, Value = new byte[] { 0x03 } }
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        var firstRecordBuffer = new ArrayBufferWriter<byte>();
+        var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
+        records[0].Write(ref firstRecordWriter);
+
+        var bytes = buffer.WrittenSpan.ToArray();
+        // One-byte length, attributes, timestamp delta, offset delta, then key length.
+        var secondValueLengthOffset = firstRecordBuffer.WrittenCount + 5;
+        bytes[secondValueLengthOffset] = 0x0E; // Zig-zag encoded length 7.
+        using var lazyList = LazyRecordList.Create(bytes, count: records.Length);
+
+        await Assert.That(() => lazyList.ToArray()).Throws<MalformedProtocolDataException>();
+    }
+
+    [Test]
+    public async Task LazyRecordList_TruncatedPayloadEndingInRecordLikeBytes_ReducesCount()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = new byte[] { 0x01 } },
+            new Record { OffsetDelta = 1, Value = new byte[] { 0x02 } },
+            new Record { OffsetDelta = 2, Value = new byte[] { 0x03 } }
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        var firstRecordBuffer = new ArrayBufferWriter<byte>();
+        var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
+        records[0].Write(ref firstRecordWriter);
+
+        var bytes = buffer.WrittenSpan.ToArray();
+        var secondRecordOffset = firstRecordBuffer.WrittenCount;
+        // The oversized lengths make every remaining byte part of the truncated second
+        // record. Its payload ends with bytes that also encode a complete third record.
+        bytes[secondRecordOffset] = 0x7E; // Zig-zag encoded record body length 63.
+        bytes[secondRecordOffset + 5] = 0x7E; // Zig-zag encoded value length 63.
+        using var lazyList = LazyRecordList.Create(bytes, count: records.Length);
+
+        await Assert.That(lazyList.ToArray()).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task LazyRecordList_ShortMalformedTail_ReducesCountToParseableRecords()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+            new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() }
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        var bytes = new byte[buffer.WrittenCount + 6];
+        buffer.WrittenSpan.CopyTo(bytes);
+        bytes.AsSpan(buffer.WrittenCount, 5).Fill(0x80);
+        using var lazyList = LazyRecordList.Create(bytes, count: 5);
+
+        await Assert.That(lazyList.ToArray()).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task LazyRecordList_LongTruncatedTail_ReducesCountToParseableRecords()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+            new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() },
+            new Record { OffsetDelta = 2, Value = new byte[100] }
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        var firstTwoBuffer = new ArrayBufferWriter<byte>();
+        var firstTwoWriter = new KafkaProtocolWriter(firstTwoBuffer);
+        records[0].Write(ref firstTwoWriter);
+        records[1].Write(ref firstTwoWriter);
+        var truncatedData = buffer.WrittenMemory[..(firstTwoBuffer.WrittenCount + 40)];
+        using var lazyList = LazyRecordList.Create(truncatedData, count: 5);
+
+        await Assert.That(lazyList.ToArray()).Count().IsEqualTo(2);
+    }
+
+    [Test]
     public async Task LazyRecordList_CompletelyTruncated_ReducesCountToZero()
     {
         // Arrange: provide just 1 byte of data but claim 5 records

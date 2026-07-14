@@ -539,6 +539,26 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     internal const int MaxReasonableLazyRecordCount = 1_000_000;
 
+    internal static bool IsTruncatedRecordTail(
+        Exception exception,
+        ReadOnlyMemory<byte> availableRecordData,
+        int parsedCount,
+        int declaredCount)
+    {
+        if (exception is InsufficientDataException)
+        {
+            // An incomplete record body has no trusted boundary: opaque key, value, or
+            // header bytes can look like a valid record. Preserve tail-truncation behavior
+            // rather than infer an interior record from payload contents.
+            return true;
+        }
+
+        // Issue #2065 intentionally excludes corruption in the final declared record.
+        return exception is MalformedProtocolDataException &&
+               (availableRecordData.Length < Record.MinimumEncodedSize ||
+                parsedCount == declaredCount - 1);
+    }
+
     private void EnsureLazyRecordsParsedUpTo(int index)
     {
         if (_parsedRecords is null)
@@ -567,13 +587,19 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
                 _parsedRecordsOffset = 0;
             }
 
+            var availableRecordData = _rawRecordData.Slice(
+                readerStartOffset + (int)reader.Consumed);
             try
             {
                 _parsedRecords[_parsedRecordsOffset + _parsedRecordCount] = Record.Read(ref reader);
                 _parsedRecordCount++;
                 _nextRecordParseOffset = readerStartOffset + (int)reader.Consumed;
             }
-            catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
+            catch (Exception ex) when (IsTruncatedRecordTail(
+                ex,
+                availableRecordData,
+                _parsedRecordCount,
+                _recordCount))
             {
                 Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedRecordCount} of {_recordCount} records parsed successfully.");
                 _recordCount = _parsedRecordCount;
@@ -1650,19 +1676,22 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 _parsedRecords = newArray;
             }
 
+            var availableRecordData = _rawData.Slice(
+                readerStartOffset + (int)reader.Consumed);
             try
             {
                 var record = Record.Read(ref reader);
                 _parsedRecords[_parsedCount++] = record;
                 _nextParseOffset = readerStartOffset + (int)reader.Consumed;
             }
-            catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
+            catch (Exception ex) when (RecordBatch.IsTruncatedRecordTail(
+                ex,
+                availableRecordData,
+                _parsedCount,
+                _count))
             {
-                // Truncated fetch response or malformed varint — no more complete records
-                // can be parsed. Cap the count to what we've successfully parsed so far to
-                // prevent further attempts. This mirrors the partial batch handling in
-                // FetchResponse. MalformedProtocolDataException covers malformed variable-length
-                // integers that throw "Malformed variable-length integer".
+                // The raw record data ended before the declared record count. Cap the count to
+                // the successfully parsed records. Unambiguous interior corruption propagates.
                 Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedCount} of {_count} records parsed successfully.");
                 _count = _parsedCount;
                 break;

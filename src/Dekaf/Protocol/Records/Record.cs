@@ -13,6 +13,9 @@ namespace Dekaf.Protocol.Records;
 /// </summary>
 public readonly record struct Record
 {
+    // Length varint plus six mandatory one-byte body fields.
+    internal const int MinimumEncodedSize = 7;
+
     // Even empty headers need two wire bytes. This limit already represents at least
     // 512 KiB of header metadata while bounding pooled-array amplification and parse work.
     internal const int MaxReasonableHeaderCount = 256 * 1024;
@@ -124,7 +127,36 @@ public readonly record struct Record
         if (length < 0)
             throw new MalformedProtocolDataException($"Invalid record length {length}");
 
-        var bodyStart = reader.Consumed;
+        var availableBodyBytes = reader.Remaining;
+        var bodyReader = reader;
+        var bodyStart = bodyReader.Consumed;
+        if (length <= availableBodyBytes)
+        {
+            bodyReader = new KafkaProtocolReader(reader.GetRemainingSequence().Slice(0, length));
+            bodyStart = 0;
+            reader.Skip(length);
+        }
+
+        try
+        {
+            return ReadBody(ref bodyReader, length, bodyStart);
+        }
+        catch (RecordBodyLengthMismatchException ex)
+        {
+            throw new MalformedProtocolDataException(ex.Message, ex);
+        }
+        catch (InsufficientDataException ex) when (length <= availableBodyBytes)
+        {
+            throw new MalformedProtocolDataException("Record body cannot be parsed within its declared length", ex);
+        }
+        catch (MalformedProtocolDataException) when (length > availableBodyBytes)
+        {
+            throw new InsufficientDataException();
+        }
+    }
+
+    private static Record ReadBody(ref KafkaProtocolReader reader, int length, long bodyStart)
+    {
         var attributes = (byte)reader.ReadInt8();
         var timestampDelta = reader.ReadVarLong();
         var offsetDelta = reader.ReadVarInt();
@@ -141,7 +173,6 @@ public readonly record struct Record
         ValidateHeaderCount(headerCount, length, reader.Consumed - bodyStart, reader.Remaining);
 
         Header[]? headers = null;
-
         if (headerCount > 0)
         {
             // Rent from ArrayPool to avoid per-record allocation.
@@ -151,15 +182,19 @@ public readonly record struct Record
             try
             {
                 for (var i = 0; i < headerCount; i++)
-                {
                     headers[i] = Header.Read(ref reader);
-                }
+
+                ValidateBodyLength(length, reader.Consumed - bodyStart);
             }
             catch
             {
                 ArrayPool<Header>.Shared.Return(headers, clearArray: true);
                 throw;
             }
+        }
+        else
+        {
+            ValidateBodyLength(length, reader.Consumed - bodyStart);
         }
 
         return new Record
@@ -176,6 +211,15 @@ public readonly record struct Record
             HeaderCount = headerCount
         };
     }
+
+    private static void ValidateBodyLength(int declaredLength, long consumedLength)
+    {
+        if (consumedLength != declaredLength)
+            throw new RecordBodyLengthMismatchException(
+                $"Record body length mismatch: declared {declaredLength}, consumed {consumedLength}");
+    }
+
+    private sealed class RecordBodyLengthMismatchException(string message) : Exception(message);
 
     private static void ValidateHeaderCount(int headerCount, int recordBodyLength, long bodyBytesRead, long readerRemaining)
     {
