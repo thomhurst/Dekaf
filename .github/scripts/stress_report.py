@@ -613,6 +613,66 @@ def format_consumer_fetch_timeline(results, title):
     return lines
 
 
+def format_producer_budget_timeline(results, title):
+    """Correlate producer budget/rate/probe state with throughput intervals."""
+    rows = []
+    for result in results:
+        diagnostics = result.get('producerDeliveryDiagnostics') or {}
+        for sample in diagnostics.get('brokerBudgetSamples') or []:
+            rows.append((result, sample))
+    if not rows:
+        return []
+
+    rows.sort(key=lambda row: row[1].get('capturedAtUtc', ''))
+    displayed_rows = _sample_evenly(rows, MAX_TIMELINE_ROWS)
+    omitted_rows = len(rows) - len(displayed_rows)
+    lines = [
+        f"## Producer Budget Timeline - {title}",
+        "",
+        "| Client | Sample UTC | Broker | Budget / unacked | Max rate | Probe success/failure | Admission blocks | Nearest throughput sample |",
+        "|--------|------------|-------:|------------------|---------:|----------------------:|-----------------:|---------------------------|",
+    ]
+    for result, sample in displayed_rows:
+        sample_time = _parse_timestamp(sample.get('capturedAtUtc'))
+        intervals = result.get('throughput', {}).get('intervalSamples') or []
+        timestamped_intervals = [
+            (interval, _parse_timestamp(interval.get('capturedAtUtc')))
+            for interval in intervals
+        ]
+        timestamped_intervals = [
+            (interval, captured_at)
+            for interval, captured_at in timestamped_intervals
+            if captured_at is not None
+        ]
+        nearest = min(
+            timestamped_intervals,
+            key=lambda item: abs((item[1] - sample_time).total_seconds()),
+            default=(None, None),
+        )[0] if sample_time is not None else None
+        throughput = '-'
+        if nearest is not None:
+            throughput = (
+                f"{nearest.get('elapsedSeconds', 0):.1f}s / "
+                f"{nearest.get('messagesPerSecond', 0):,.0f} msg/s"
+            )
+        lines.append(
+            f"| {result.get('client', 'Unknown')} | {sample.get('capturedAtUtc', '-')} | "
+            f"{sample.get('brokerId', '-')} | "
+            f"{sample.get('budgetBytes', 0) / 1_048_576:.1f} MiB / "
+            f"{sample.get('unackedBytes', 0) / 1_048_576:.1f} MiB | "
+            f"{sample.get('maxRateBytesPerSec', 0) / 1_000_000:.1f} MB/s | "
+            f"{sample.get('capacityProbeSuccessCount', 0):,}/"
+            f"{sample.get('capacityProbeFailureCount', 0):,} | "
+            f"{sample.get('admissionBlockCount', 0):,} | {throughput} |"
+        )
+    if omitted_rows > 0:
+        lines.append(
+            f"*{omitted_rows:,} budget sample(s) omitted; rows sampled across the full timeline.*"
+        )
+    lines.append("")
+    return lines
+
+
 def format_latency_outlier_timeline(results, title):
     """Correlate sampled delivery stalls with scaling, throughput, and GC."""
     rows = [
@@ -902,6 +962,7 @@ def generate_scenario_tables(results, include_ratio=False, include_callout=False
             output.extend(format_connection_scale_timeline(scenario_results, title))
             output.extend(format_producer_request_diagnostics(scenario_results, title))
             output.extend(format_consumer_fetch_timeline(scenario_results, title))
+            output.extend(format_producer_budget_timeline(scenario_results, title))
             output.extend(format_latency_outlier_timeline(scenario_results, title))
             output.extend(format_transaction_verification(scenario_results))
             output.extend(format_roundtrip_validation_table(scenario_results))

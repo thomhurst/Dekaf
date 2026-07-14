@@ -1858,6 +1858,100 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task FlushAsync_WaitsForSealedPipelineBeforePublishingFinalPartialBatch()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 30,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+        ReadyBatch? sealedBatch = null;
+        ReadyBatch? finalBatch = null;
+
+        try
+        {
+            var firstCompletion = pool.Rent();
+            var secondCompletion = pool.Rent();
+            var firstCompletionTask = firstCompletion.Task;
+            var secondCompletionTask = secondCompletion.Task;
+            var value = new byte[16];
+
+            await Assert.That(accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                firstCompletion)).IsTrue();
+
+            await Assert.That(accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                secondCompletion)).IsTrue();
+
+            await Assert.That(accumulator.TryDrainBatch(out sealedBatch)).IsTrue();
+
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
+
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+            await Assert.That(accumulator.TryDrainBatch(out _)).IsFalse()
+                .Because("the final partial batch must remain unpublished while an older batch is in flight");
+
+            sealedBatch!.CompleteSend(baseOffset: 10, DateTimeOffset.UtcNow);
+            accumulator.OnBatchExitsPipeline(sealedBatch);
+            accumulator.ReturnReadyBatch(sealedBatch);
+            sealedBatch = null;
+
+            await TestWait.UntilAsync(
+                () => accumulator.TryDrainBatch(out finalBatch),
+                TimeSpan.FromSeconds(5));
+
+            finalBatch!.CompleteSend(baseOffset: 11, DateTimeOffset.UtcNow);
+            accumulator.OnBatchExitsPipeline(finalBatch);
+            accumulator.ReturnReadyBatch(finalBatch);
+            finalBatch = null;
+
+            await flushTask.WaitAsync(TimeSpan.FromSeconds(5));
+            _ = await firstCompletionTask;
+            _ = await secondCompletionTask;
+        }
+        finally
+        {
+            if (sealedBatch is not null)
+            {
+                accumulator.OnBatchExitsPipeline(sealedBatch);
+                accumulator.ReturnReadyBatch(sealedBatch);
+            }
+
+            if (finalBatch is not null)
+            {
+                accumulator.OnBatchExitsPipeline(finalBatch);
+                accumulator.ReturnReadyBatch(finalBatch);
+            }
+
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task ReadyBatch_Cleanup_CalledTwice_OnlyExecutesOnce()
     {
         // This test verifies that Cleanup() uses an interlocked guard to ensure
@@ -3572,6 +3666,83 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task AppendFromSpansAsync_QueuedBurstScansPendingQueueOnce()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var tasks = new Task<bool>[32];
+
+        await Assert.That(accumulator.TryReserveMemoryForTest(4096)).IsTrue();
+        for (var i = 0; i < tasks.Length; i++)
+        {
+            tasks[i] = accumulator.AppendFromSpansAsync(
+                "test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                ReadOnlySpan<byte>.Empty, valueIsNull: true,
+                null, 0, null, CancellationToken.None).AsTask();
+        }
+
+        await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(tasks.Length);
+        await Assert.That(accumulator.PendingAppendDrainEntryCountForTest).IsEqualTo(1)
+            .Because("one blocked burst must not rescan its growing pending queue per message");
+
+        await accumulator.DisposeAsync();
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Expected: disposal completes every deliberately blocked append.
+        }
+    }
+
+    [Test]
+    public async Task AppendFromSpansAsync_CancellationStormRescansOnlyAtHead()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var cancellationSources = Enumerable.Range(0, 32)
+            .Select(_ => new CancellationTokenSource())
+            .ToArray();
+        var tasks = new Task<bool>[cancellationSources.Length];
+
+        await Assert.That(accumulator.TryReserveMemoryForTest(4096)).IsTrue();
+        for (var i = 0; i < tasks.Length; i++)
+        {
+            tasks[i] = accumulator.AppendFromSpansAsync(
+                "test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty, keyIsNull: true,
+                ReadOnlySpan<byte>.Empty, valueIsNull: true,
+                null, 0, null, cancellationSources[i].Token).AsTask();
+        }
+
+        for (var i = cancellationSources.Length - 1; i > 0; i--)
+            cancellationSources[i].Cancel();
+
+        await Assert.That(accumulator.PendingAppendDrainEntryCountForTest).IsEqualTo(1)
+            .Because("tail cancellations cannot unblock the FIFO head");
+
+        cancellationSources[0].Cancel();
+
+        await Assert.That(accumulator.PendingAppendDrainEntryCountForTest).IsEqualTo(2)
+            .Because("the head cancellation coalesces the completed burst into one scan");
+        await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected: every deliberately blocked append was cancelled.
+        }
+
+        foreach (var cancellationSource in cancellationSources)
+            cancellationSource.Dispose();
+    }
+
+    [Test]
     public async Task AppendFromSpansAsync_ReopenedMemory_PreservesPendingAppendFifo()
     {
         var options = new ProducerOptions
@@ -3616,9 +3787,9 @@ public class RecordAccumulatorTests
 
             await Assert.That(pendingAppendTask.IsCompleted).IsFalse();
 
-            // Free memory without draining. The next append must join behind the queued
-            // operation; its immediate drain serves the older append before completing.
-            SetBufferedBytesForTest(accumulator, 3000);
+            // A release wakes one queue drain. The next append must not overtake the older
+            // operation that the wake just served.
+            accumulator.ReleaseMemory(fillSize);
 
             var hotResult = await accumulator.AppendFromSpansAsync(
                 topicPartition.Topic, topicPartition.Partition,

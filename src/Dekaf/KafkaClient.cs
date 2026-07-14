@@ -2,9 +2,11 @@ namespace Dekaf;
 
 using System.Net.Security;
 using Admin;
+using Dekaf.Consumer;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
+using Dekaf.Producer;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
@@ -94,7 +96,9 @@ public sealed class KafkaClientBuilder
     private int _socketReceiveBufferBytes;
     private int _connectionsPerBroker = 1;
     private int _maxInFlightRequestsPerConnection = 5;
-    private int _maxConnectionsPerBroker = 10;
+    private int _maxConnectionsPerBroker = ConsumerOptions.DefaultMaxConnectionsPerBroker;
+    private int _producerMaxConnectionsPerBroker = ProducerOptions.DefaultMaxConnectionsPerBroker;
+    private bool _isMaxConnectionsPerBrokerConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
@@ -368,6 +372,11 @@ public sealed class KafkaClientBuilder
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
         _connectionsPerBroker = connectionsPerBroker;
+        if (!_isMaxConnectionsPerBrokerConfigured)
+        {
+            _maxConnectionsPerBroker = Math.Max(_maxConnectionsPerBroker, connectionsPerBroker);
+            _producerMaxConnectionsPerBroker = Math.Max(_producerMaxConnectionsPerBroker, connectionsPerBroker);
+        }
         return this;
     }
 
@@ -383,6 +392,8 @@ public sealed class KafkaClientBuilder
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConnectionsPerBroker, 1);
         _maxConnectionsPerBroker = maxConnectionsPerBroker;
+        _producerMaxConnectionsPerBroker = maxConnectionsPerBroker;
+        _isMaxConnectionsPerBrokerConfigured = true;
         return this;
     }
 
@@ -480,6 +491,7 @@ public sealed class KafkaClientBuilder
             ConnectionsPerBroker = _connectionsPerBroker,
             MaxInFlightRequestsPerConnection = _maxInFlightRequestsPerConnection,
             MaxConnectionsPerBroker = _maxConnectionsPerBroker,
+            ProducerMaxConnectionsPerBroker = _producerMaxConnectionsPerBroker,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             MetadataMaxAge = _metadataMaxAge,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
@@ -520,6 +532,7 @@ internal sealed class KafkaClientOptions
     public int ConnectionsPerBroker { get; init; }
     public int MaxInFlightRequestsPerConnection { get; init; }
     public int MaxConnectionsPerBroker { get; init; }
+    public int ProducerMaxConnectionsPerBroker { get; init; }
     public int ConnectionsMaxIdleMs { get; init; }
     public TimeSpan? MetadataMaxAge { get; init; }
     public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; }
@@ -542,7 +555,8 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         IDekafMemoryBudget memoryBudget,
         ILoggerFactory? loggerFactory,
         int connectionsPerBroker,
-        int maxConnectionsPerBroker)
+        int maxConnectionsPerBroker,
+        int producerMaxConnectionsPerBroker)
     {
         BootstrapServers = bootstrapServers;
         ConnectionPool = connectionPool;
@@ -551,6 +565,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         LoggerFactory = loggerFactory;
         ConnectionsPerBroker = connectionsPerBroker;
         MaxConnectionsPerBroker = maxConnectionsPerBroker;
+        ProducerMaxConnectionsPerBroker = producerMaxConnectionsPerBroker;
     }
 
     public IReadOnlyList<string> BootstrapServers { get; }
@@ -560,6 +575,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
     public ILoggerFactory? LoggerFactory { get; }
     public int ConnectionsPerBroker { get; }
     public int MaxConnectionsPerBroker { get; }
+    public int ProducerMaxConnectionsPerBroker { get; }
 
     public static KafkaClientInfrastructure Create(KafkaClientOptions options)
     {
@@ -625,7 +641,8 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             new ClientMemoryBudget(options.MemoryBudgetBytes),
             options.LoggerFactory,
             options.ConnectionsPerBroker,
-            options.MaxConnectionsPerBroker);
+            options.MaxConnectionsPerBroker,
+            options.ProducerMaxConnectionsPerBroker);
     }
 
     public async ValueTask DisposeAsync()

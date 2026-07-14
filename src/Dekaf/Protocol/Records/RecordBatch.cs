@@ -1097,6 +1097,63 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         }
     }
 
+    internal bool TryWriteSegmentedHeader(
+        IBufferWriter<byte> output,
+        CompressionType compression,
+        out ReadOnlyMemory<byte> encodedRecords)
+    {
+        uint encodedRecordsCrc;
+        CompressionType effectiveCompression;
+        if (PreCompressedRecords is { } preCompressedRecords)
+        {
+            encodedRecords = preCompressedRecords.AsMemory(0, PreCompressedLength);
+            encodedRecordsCrc = PreCompressedRecordsCrc;
+            effectiveCompression = PreCompressedType;
+        }
+        else if (compression == CompressionType.None && _hasPreEncodedRecords)
+        {
+            encodedRecords = _preEncodedRecords;
+            encodedRecordsCrc = _preEncodedRecordsCrc;
+            effectiveCompression = CompressionType.None;
+        }
+        else
+        {
+            encodedRecords = default;
+            return false;
+        }
+
+        var writer = new KafkaProtocolWriter(output);
+        writer.WriteInt64(BaseOffset);
+        writer.WriteInt32(BatchHeaderSize + encodedRecords.Length);
+        writer.WriteInt32(PartitionLeaderEpoch);
+        writer.WriteUInt8(Magic);
+
+        var crcAndContentSpan = output.GetSpan(sizeof(uint) + CrcContentFixedSize);
+        var contentSpan = crcAndContentSpan[sizeof(uint)..];
+        var attributes = (short)Attributes;
+        if (effectiveCompression != CompressionType.None)
+            attributes = (short)((attributes & ~0x07) | (int)effectiveCompression);
+
+        BinaryPrimitives.WriteInt16BigEndian(contentSpan, attributes);
+        BinaryPrimitives.WriteInt32BigEndian(contentSpan[2..], LastOffsetDelta);
+        BinaryPrimitives.WriteInt64BigEndian(contentSpan[6..], BaseTimestamp);
+        BinaryPrimitives.WriteInt64BigEndian(contentSpan[14..], MaxTimestamp);
+        BinaryPrimitives.WriteInt64BigEndian(contentSpan[22..], ProducerId);
+        BinaryPrimitives.WriteInt16BigEndian(contentSpan[30..], ProducerEpoch);
+        BinaryPrimitives.WriteInt32BigEndian(contentSpan[32..], BaseSequence);
+        BinaryPrimitives.WriteInt32BigEndian(contentSpan[36..], Records.Count);
+
+        var headerCrc = Crc32C.Compute(contentSpan[..CrcContentFixedSize]);
+        var crc = Crc32C.Combine(headerCrc, encodedRecordsCrc, encodedRecords.Length);
+        BinaryPrimitives.WriteInt32BigEndian(crcAndContentSpan, (int)crc);
+        output.Advance(sizeof(uint) + CrcContentFixedSize);
+        return true;
+    }
+
+    internal bool CanWriteSegmented(CompressionType compression)
+        => PreCompressedRecords is not null
+            || (compression == CompressionType.None && _hasPreEncodedRecords);
+
     internal int GetEncodedSize(CompressionType compression = CompressionType.None)
     {
         var recordsLength = GetEncodedRecordsLength(compression);
@@ -1727,12 +1784,15 @@ internal static class Crc32C
 {
     private const int TableSize = 256;
     private const int SliceCount = 8;
+    private const int PositiveIntBitCount = 31;
 #if !NETSTANDARD2_0
     private const int HardwareParallelChunkSize = 512;
     private const int HardwareParallelBlockSize = HardwareParallelChunkSize * 3;
 #endif
 
     private static readonly uint[] Table = GenerateTable();
+    // Element n applies 2^n zero bytes to a CRC, so arbitrary lengths compose from set bits.
+    private static readonly uint[][] ByteShiftPowerOperators = CreateByteShiftPowerOperators();
 #if !NETSTANDARD2_0
     private static readonly uint[] HardwareShiftChunk = CreateShiftOperator(HardwareParallelChunkSize);
     private static readonly uint[] HardwareShiftTwoChunks = CreateShiftOperator(HardwareParallelChunkSize * 2);
@@ -2022,10 +2082,24 @@ internal static class Crc32C
 
         for (var bit = 0; bit < 32; bit++)
         {
-            shift[bit] = ShiftCrc32C(1u << bit, byteCount);
+            shift[bit] = ShiftCrc32CSlow(1u << bit, byteCount);
         }
 
         return shift;
+    }
+
+    private static uint[][] CreateByteShiftPowerOperators()
+    {
+        var operators = new uint[PositiveIntBitCount][];
+        operators[0] = CreateShiftOperator(1);
+        for (var bit = 1; bit < operators.Length; bit++)
+        {
+            var next = new uint[32];
+            SquareMatrix(next, operators[bit - 1]);
+            operators[bit] = next;
+        }
+
+        return operators;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2049,6 +2123,28 @@ internal static class Crc32C
     }
 
     private static uint ShiftCrc32C(uint crc, int byteCount)
+    {
+        if (byteCount <= 0)
+        {
+            return crc;
+        }
+
+        var bit = 0;
+        while (byteCount != 0)
+        {
+            if ((byteCount & 1) != 0)
+            {
+                crc = ShiftCrc32C(crc, ByteShiftPowerOperators[bit]);
+            }
+
+            byteCount >>= 1;
+            bit++;
+        }
+
+        return crc;
+    }
+
+    private static uint ShiftCrc32CSlow(uint crc, int byteCount)
     {
         if (byteCount <= 0)
         {

@@ -15,6 +15,7 @@ namespace Dekaf.Producer;
 /// </summary>
 public sealed class ProducerOptions
 {
+    internal const int DefaultMaxConnectionsPerBroker = 3;
     internal const int IdempotentMaxInFlightRequestsPerConnection = 5;
     internal const int NonIdempotentDefaultMaxInFlightRequestsPerConnection = 100;
     internal const int MaxAllowedMaxInFlightRequestsPerConnection = 1_000_000;
@@ -579,7 +580,7 @@ public sealed class ProducerOptions
     /// <summary>
     /// Maximum connections per broker when adaptive scaling is enabled.
     /// The producer will not scale beyond this limit regardless of buffer pressure.
-    /// Must be at least 1. Default: 10.
+    /// Must be at least 1. Default: 3.
     /// </summary>
     public int MaxConnectionsPerBroker
     {
@@ -591,7 +592,7 @@ public sealed class ProducerOptions
         }
     }
 
-    private readonly int _maxConnectionsPerBroker = 10;
+    private readonly int _maxConnectionsPerBroker = DefaultMaxConnectionsPerBroker;
 
     /// <summary>
     /// Test-only override for the adaptive-scaling cooldown window (milliseconds).

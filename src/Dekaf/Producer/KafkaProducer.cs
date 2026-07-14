@@ -61,6 +61,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly CancellationTokenSource _senderCts;
     private readonly Task _senderTask;
     private readonly Task _lingerTask;
+    private readonly PeriodicTimer _lingerTimer;
     private readonly ConcurrentDictionary<Task, byte> _partitionEnrollmentTasks = new();
 
     // Per-broker sender threads: each broker gets a dedicated BrokerSender with its own
@@ -421,6 +422,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         GcConfigurationCheck.WarnIfWorkstationGc(_logger);
 
         _senderCts = new CancellationTokenSource();
+        _lingerTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(1));
         _senderTask = Task.Factory.StartNew(
             () => SenderLoopAsync(_senderCts.Token),
             CancellationToken.None,
@@ -3277,6 +3279,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var lastOrphanSweepTicks = Stopwatch.GetTimestamp();
 
         _accumulator.RegisterLingerWakeupShutdownToken(cancellationToken);
+        using var cancellationRegistration = cancellationToken.UnsafeRegister(
+            static state => ((PeriodicTimer)state!).Dispose(),
+            _lingerTimer);
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -3287,11 +3292,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 var orphanWaitMs = ticksUntilOrphanSweep <= 0
                     ? 0
                     : Math.Max(1, (int)Math.Ceiling(ticksUntilOrphanSweep * 1000.0 / Stopwatch.Frequency));
-                var waitMs = _accumulator.HasPendingLingerBatches && orphanWaitMs > 0
-                    ? 1
-                    : orphanWaitMs;
 
-                await _accumulator.WaitForLingerWakeupAsync(waitMs).ConfigureAwait(false);
+                if (_accumulator.HasPendingLingerBatches)
+                {
+                    BeforeActiveLingerTimerWaitForTest?.Invoke();
+                    if (!await _lingerTimer.WaitForNextTickAsync(CancellationToken.None).ConfigureAwait(false))
+                        break;
+                }
+                else
+                {
+                    await _accumulator.WaitForLingerWakeupAsync(orphanWaitMs).ConfigureAwait(false);
+                }
+
                 await _accumulator.ExpireLingerAsync(cancellationToken).ConfigureAwait(false);
 
                 // Periodic orphan sweep: fail in-flight batches that exceeded delivery timeout.
@@ -3312,6 +3324,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
         }
     }
+
+    internal Action? BeforeActiveLingerTimerWaitForTest;
 
     /// <inheritdoc />
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -4191,6 +4205,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         _senderCts.Dispose();
+        _lingerTimer.Dispose();
         _transactionLock.Dispose();
         _initLock.Dispose();
 

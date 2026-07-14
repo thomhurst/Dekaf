@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Net.Security;
 using Dekaf.Metadata;
 using Dekaf.Networking;
+using Dekaf.Consumer;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Builder;
@@ -29,6 +30,54 @@ public sealed class KafkaClientBuilderTests
 
         await Assert.That(ReferenceEquals(producerMetadata, consumerMetadata)).IsTrue();
         await Assert.That(ReferenceEquals(producerMetadata, adminMetadata)).IsTrue();
+    }
+
+    [Test]
+    public async Task RootClient_CreatedProducer_UsesDefaultAdaptiveMaximumOf3()
+    {
+        await using var client = Kafka.Connect("localhost:9092");
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var options = GetField<ProducerOptions>(producer, "_options");
+
+        await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task RootClient_CreatedConsumer_UsesDefaultAdaptiveMaximumOf4()
+    {
+        await using var client = Kafka.Connect("localhost:9092");
+        await using var consumer = client.CreateConsumer<string, string>().Build();
+
+        var options = GetField<ConsumerOptions>(consumer, "_options");
+
+        await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task RootClient_InitialWidthAboveImplicitMaximum_ExpandsMaximum()
+    {
+        await using var client = Kafka.Connect()
+            .WithBootstrapServers("localhost:9092")
+            .WithConnectionsPerBroker(5)
+            .Build();
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var options = GetField<ProducerOptions>(producer, "_options");
+
+        await Assert.That(options.ConnectionsPerBroker).IsEqualTo(5);
+        await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task RootClient_InitialWidthAboveExplicitMaximum_ThrowsOnBuild()
+    {
+        await Assert.That(() => Kafka.Connect()
+                .WithBootstrapServers("localhost:9092")
+                .WithMaxConnectionsPerBroker(3)
+                .WithConnectionsPerBroker(5)
+                .Build())
+            .Throws<InvalidOperationException>();
     }
 
     [Test]

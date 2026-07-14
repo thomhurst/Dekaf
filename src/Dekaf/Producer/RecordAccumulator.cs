@@ -1124,8 +1124,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly AsyncAutoResetSignal _wakeupSignal = new();
 
     /// <summary>
-    /// Signals the linger loop when an unsealed batch is created or gains its first awaiter.
-    /// This keeps the 1 ms linger cadence armed only while batches need it.
+    /// Arms the periodic linger cadence when the first unsealed batch becomes active.
     /// </summary>
     private readonly AsyncAutoResetSignal _lingerWakeupSignal = new();
 
@@ -1184,7 +1183,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private long _oldestBatchCreatedTicks = long.MaxValue;
 
     // Track whether there are unsealed batches containing awaited produces (ProduceAsync).
-    // These need micro-linger checks regardless of LingerMs, so ExpireLingerAsync drains the
+    // These need short-linger checks regardless of LingerMs, so ExpireLingerAsync drains the
     // active linger queue when this counter is non-zero. Count is per batch, not per message.
     private int _pendingAwaitedProduceCount;
 
@@ -1343,6 +1342,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly List<PendingAppend> _pendingAppendScan = [];
     private readonly List<PendingAppend> _drainablePendingAppends = [];
     private int _draining; // CAS guard for DrainPendingAppends
+    private long _pendingAppendDrainEntryCount;
 
     /// <summary>
     /// Per-partition state matching Java's Deque&lt;ProducerBatch&gt; design.
@@ -1990,6 +1990,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
             return false;
 
+        Interlocked.Increment(ref _pendingAppendDrainEntryCount);
         var ownsDrainGuard = true;
         try
         {
@@ -2033,17 +2034,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             continue;
                         }
 
-                        var admissionBlocked = IsBrokerAdmissionBlocked(
-                            candidate.Topic,
-                            candidate.Partition,
-                            recordBlockEvent: false,
-                            out var admissionRecheckDelayMs);
-                        if (admissionBlocked)
+                        if (TryGetAdmissionRecheckAt(
+                                candidate.Topic,
+                                candidate.Partition,
+                                out var recheckAt))
                         {
-                            var recheckAt = admissionRecheckDelayMs == Timeout.Infinite
-                                ? 0
-                                : Dekaf.MonotonicClock.GetMilliseconds()
-                                  + Math.Max(1, admissionRecheckDelayMs);
                             _pendingAppends.Enqueue(candidate);
                             candidate.ScheduleAdmissionRecheck(recheckAt);
                             _blockedPendingPartitionRecheckTimes.Add(
@@ -2132,6 +2127,25 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 Volatile.Write(ref _draining, 0);
             }
         }
+    }
+
+    /// <summary>
+    /// Rescans after a failed append only when it occupied the FIFO head. Tail failures
+    /// cannot unblock another operation; suppressing their scans coalesces a timeout or
+    /// cancellation storm into the single scan triggered by the head.
+    /// </summary>
+    internal void DrainPendingAppendsIfHead(PendingAppend completed)
+    {
+        lock (_pendingAppendQueueLock)
+        {
+            if (!_pendingAppends.TryPeek(out var head)
+                || !ReferenceEquals(head, completed))
+            {
+                return;
+            }
+        }
+
+        DrainPendingAppends();
     }
 
     /// <summary>
@@ -2593,10 +2607,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         bool signalLingerLoop = true)
     {
         if (Interlocked.Exchange(ref pd.LingerQueued, 1) == 0)
+        {
             _lingerPartitions.Enqueue(topicPartition);
-
-        if (signalLingerLoop)
-            _lingerWakeupSignal.Signal();
+            if (signalLingerLoop)
+                _lingerWakeupSignal.Signal();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2960,8 +2975,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             completionSource, callback, recordSize, startTicks, deadline,
             this, _pendingAppendPool, cancellationToken);
 
+        bool wasQueueEmpty;
         lock (_pendingAppendQueueLock)
+        {
+            wasQueueEmpty = _pendingAppends.IsEmpty;
             _pendingAppends.Enqueue(op);
+        }
 
         // Close TOCTOU window: if DisposeAsync ran between the _disposed check above and the
         // Enqueue, this op would sit in the queue until its timer fires. Fail it promptly.
@@ -2977,8 +2996,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Try immediate serve — memory may have been freed between TryReserveMemory and now
-        DrainPendingAppends();
+        // Close the memory-release TOCTOU window for the first queued operation. Later
+        // admission-blocked appends arm their own broker deadline without rescanning the
+        // queue; memory-blocked appends rely on ReleaseMemory's unconditional drain.
+        if (wasQueueEmpty)
+        {
+            DrainPendingAppends();
+        }
+        else
+        {
+            if (TryGetAdmissionRecheckAt(topic, partition, out var recheckAt))
+                op.ScheduleAdmissionRecheck(recheckAt);
+        }
 
         return new ValueTask<bool>(op, op.Version);
     }
@@ -4024,6 +4053,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal int PendingAppendCountForTest => _pendingAppends.Count;
 
+    internal long PendingAppendDrainEntryCountForTest =>
+        Volatile.Read(ref _pendingAppendDrainEntryCount);
+
     /// <summary>
     /// Gets the current buffer utilization as a ratio (0.0 to 1.0+).
     /// Used by adaptive connection scaling to confirm buffer is actually full.
@@ -4328,7 +4360,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Fast path 2: if the oldest batch hasn't reached linger time yet AND there are no
         // pending awaited produces, skip active queue checks. Awaited produces (ProduceAsync)
-        // use a micro-linger (min(1ms, LingerMs/10)) so they need more frequent checks.
+        // use a short linger (min(2ms, LingerMs/2)) so they need more frequent checks.
         if (Volatile.Read(ref _pendingAwaitedProduceCount) == 0)
         {
             var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
@@ -4686,7 +4718,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return new BrokerUnackedByteBudget(
             _options.DeliveryLatencyTargetMs / 1000.0,
             floorBytes: 1,
-            initialCapBytes: cap);
+            initialCapBytes: cap,
+            lingerSeconds: _options.LingerMs / 1000.0);
     }
 
     /// <summary>
@@ -4744,6 +4777,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         recheckDelayMilliseconds = currentBudget.GetAdmissionRecheckDelayMilliseconds(nowTicks);
         if (recordBlockEvent)
             currentBudget.RecordAdmissionBlock();
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryGetAdmissionRecheckAt(
+        string topic,
+        int partition,
+        out long recheckAt)
+    {
+        recheckAt = 0;
+        if (!IsBrokerAdmissionBlocked(
+                topic,
+                partition,
+                recordBlockEvent: false,
+                out var recheckDelayMilliseconds))
+        {
+            return false;
+        }
+
+        if (recheckDelayMilliseconds != Timeout.Infinite)
+        {
+            recheckAt = Dekaf.MonotonicClock.GetMilliseconds()
+                + Math.Max(1, recheckDelayMilliseconds);
+        }
+
         return true;
     }
 
@@ -5109,6 +5167,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         MinRttMicros = budget.MinimumRttMicros,
         MaxRateBytesPerSec = budget.MaxRateBytesPerSecond,
         AdmissionBlockCount = budget.AdmissionBlockEvents,
+        CapacityProbeSuccessCount = budget.CapacityProbeSuccessCount,
+        CapacityProbeFailureCount = budget.CapacityProbeFailureCount,
         DeliveryLatencyEwmaMicros = budget.DeliveryLatencyEwmaMicros,
         LatencyBudgetScale = budget.LatencyBudgetScale,
         RequestSizeLog2Histogram = includeHistograms ? budget.CopyRequestSizeHistogram() : null,
@@ -5491,6 +5551,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         LogFlushStarted(0, inFlightCount);
 
         ProducerDebugCounters.RecordFlushCall();
+
+        // A final partial batch must not enter the sender behind older sealed batches that
+        // are still queued or carried over. Under a deep admission budget, publishing the
+        // partial batch into that active pipeline can let it overtake one or more full
+        // same-partition batches during the flush boundary. Drain the existing pipeline
+        // first, then seal the current batches into a fresh ordered wave.
+        if (inFlightCount > 0)
+            await WaitForAllBatchesCompleteAsync(cancellationToken).ConfigureAwait(false);
+
         await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
 
         // Wait for all in-flight batches to complete using counter-based tracking
@@ -5911,6 +5980,9 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
 /// </summary>
 internal sealed class PartitionBatch
 {
+    private const double AwaitedLingerFraction = 0.5;
+    private const double MaximumAwaitedLingerMilliseconds = 2.0;
+
     private TopicPartition _topicPartition;
     private int _partitionCount;
     private ProducerOptions _options;
@@ -6523,8 +6595,8 @@ internal sealed class PartitionBatch
     /// The worst case of a stale read is harmless - we'll catch it on the next check.
     ///
     /// Smart batching strategy:
-    /// - If there are completion sources waiting (awaited produces), use a micro-linger
-    ///   of min(1ms, LingerMs/10) to let co-temporal messages batch together
+    /// - If there are completion sources waiting (awaited produces), use a short linger
+    ///   of min(2ms, LingerMs/2) to let co-temporal messages batch together
     /// - When LingerMs == 0, awaited produces still flush immediately
     /// - Fire-and-forget messages wait for full linger time
     /// This balances low latency for awaited produces with efficient batching.
@@ -6540,13 +6612,22 @@ internal sealed class PartitionBatch
 
         var elapsedMs = Stopwatch.GetElapsedTime(_createdStopwatchTimestamp, nowStopwatchTimestamp).TotalMilliseconds;
 
-        // Awaited produces: use micro-linger instead of immediate flush.
-        // When LingerMs > 0 (default is 5), wait min(1ms, LingerMs/10) to let co-temporal messages batch.
+        // Awaited produces: use a short linger instead of immediate flush. A sub-millisecond
+        // threshold seals on the first 1 ms timer tick, making request size depend on host timer
+        // coalescing. Waiting min(2ms, LingerMs/2) keeps batching stable across timer granularity.
         // When LingerMs == 0, flush immediately.
         // Fire-and-forget messages (Send) don't add completion sources, so they
         // still benefit from full linger time batching.
         if (Volatile.Read(ref _completionSourceCount) > 0)
-            return lingerMs == 0 || elapsedMs >= Math.Min(1.0, lingerMs / 10.0);
+        {
+            if (lingerMs == 0)
+                return true;
+
+            var awaitedLingerMilliseconds = Math.Min(
+                MaximumAwaitedLingerMilliseconds,
+                lingerMs * AwaitedLingerFraction);
+            return elapsedMs >= awaitedLingerMilliseconds;
+        }
 
         return elapsedMs >= lingerMs;
     }

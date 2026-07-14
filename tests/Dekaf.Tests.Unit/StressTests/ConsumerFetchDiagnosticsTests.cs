@@ -9,7 +9,7 @@ namespace Dekaf.Tests.Unit.StressTests;
 public sealed class ConsumerFetchDiagnosticsTests
 {
     [Test]
-    [NotInParallel("MeterListener")]
+    [NotInParallel]
     public async Task Listener_CollectsFetchDurationAndTopicBytes()
     {
         var startedAt = new DateTimeOffset(2026, 7, 13, 10, 0, 0, TimeSpan.Zero);
