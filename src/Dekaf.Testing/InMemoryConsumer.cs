@@ -250,7 +250,16 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             var result = await ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
             if (result.HasValue)
+            {
                 yield return result.Value;
+
+                // Resuming after the yield proves that the caller processed this record.
+                // Do this before the loop observes cancellation, matching KafkaConsumer.
+                lock (_gate)
+                {
+                    ProveInDoubtRecordUnderLock();
+                }
+            }
         }
     }
 

@@ -764,6 +764,34 @@ public sealed class OffsetStoreTimingTests
     }
 
     [Test]
+    public async Task InMemoryConsumer_ConsumeAsync_CancellationProvesProcessedRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "workers",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("jobs", 0);
+        using var cts = new CancellationTokenSource();
+
+        await producer.ProduceAsync("jobs", "a", "one");
+        consumer.Subscribe("jobs");
+
+        await foreach (var _ in consumer.ConsumeAsync(cts.Token))
+            cts.Cancel();
+
+        await consumer.CloseAsync();
+        var offsets = await admin.ListConsumerGroupOffsetsAsync("workers");
+
+        await Assert.That(offsets[partition]).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task InMemoryConsumer_CommitAsync_VouchesForInDoubtRecord()
     {
         var cluster = new InMemoryKafkaCluster();
