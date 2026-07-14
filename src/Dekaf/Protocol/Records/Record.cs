@@ -128,10 +128,18 @@ public readonly record struct Record
             throw new MalformedProtocolDataException($"Invalid record length {length}");
 
         var availableBodyBytes = reader.Remaining;
-        var bodyStart = reader.Consumed;
+        var bodyReader = reader;
+        var bodyStart = bodyReader.Consumed;
+        if (length <= availableBodyBytes)
+        {
+            bodyReader = new KafkaProtocolReader(reader.GetRemainingSequence().Slice(0, length));
+            bodyStart = 0;
+            reader.Skip(length);
+        }
+
         try
         {
-            return ReadBody(ref reader, length, bodyStart);
+            return ReadBody(ref bodyReader, length, bodyStart);
         }
         catch (RecordBodyLengthMismatchException ex)
         {

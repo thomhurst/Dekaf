@@ -541,12 +541,12 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     internal static bool IsTruncatedRecordTail(
         Exception exception,
-        long remaining,
+        long availableRecordBytes,
         int parsedCount,
         int declaredCount) =>
         exception is InsufficientDataException ||
         exception is MalformedProtocolDataException &&
-        (remaining < Record.MinimumEncodedSize || parsedCount == declaredCount - 1);
+        (availableRecordBytes < Record.MinimumEncodedSize || parsedCount == declaredCount - 1);
 
     private void EnsureLazyRecordsParsedUpTo(int index)
     {
@@ -576,6 +576,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
                 _parsedRecordsOffset = 0;
             }
 
+            var availableRecordBytes = reader.Remaining;
             try
             {
                 _parsedRecords[_parsedRecordsOffset + _parsedRecordCount] = Record.Read(ref reader);
@@ -584,7 +585,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             }
             catch (Exception ex) when (IsTruncatedRecordTail(
                 ex,
-                reader.Remaining,
+                availableRecordBytes,
                 _parsedRecordCount,
                 _recordCount))
             {
@@ -1663,6 +1664,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 _parsedRecords = newArray;
             }
 
+            var availableRecordBytes = reader.Remaining;
             try
             {
                 var record = Record.Read(ref reader);
@@ -1671,7 +1673,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
             }
             catch (Exception ex) when (RecordBatch.IsTruncatedRecordTail(
                 ex,
-                reader.Remaining,
+                availableRecordBytes,
                 _parsedCount,
                 _count))
             {
