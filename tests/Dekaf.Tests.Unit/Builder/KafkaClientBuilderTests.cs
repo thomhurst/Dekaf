@@ -32,6 +32,17 @@ public sealed class KafkaClientBuilderTests
     }
 
     [Test]
+    public async Task RootClient_CreatedProducer_UsesDefaultAdaptiveMaximumOf3()
+    {
+        await using var client = Kafka.Connect("localhost:9092");
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var options = GetField<ProducerOptions>(producer, "_options");
+
+        await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task RootClient_CreatedProducer_DisposeDoesNotDisposeSharedPool()
     {
         var client = Kafka.Connect("localhost:9092");

@@ -146,6 +146,13 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task MaxConnectionsPerBroker_DefaultsTo_3()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task Partitioner_DefaultsTo_Default()
     {
         var options = CreateOptions();

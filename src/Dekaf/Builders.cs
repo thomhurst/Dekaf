@@ -88,7 +88,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private IRetryPolicy? _retryPolicy;
     private bool _enableAdaptiveConnections = true;
-    private int _maxConnectionsPerBroker = 10;
+    private int _maxConnectionsPerBroker = ProducerOptions.DefaultMaxConnectionsPerBroker;
+    private bool _isMaxConnectionsPerBrokerConfigured;
     private bool _enableDeliveryDiagnostics;
     private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
@@ -103,6 +104,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _loggerFactory = clientInfrastructure.LoggerFactory;
         _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
         _maxConnectionsPerBroker = clientInfrastructure.MaxConnectionsPerBroker;
+        _isMaxConnectionsPerBrokerConfigured = true;
     }
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -279,13 +281,15 @@ public sealed class ProducerBuilder<TKey, TValue>
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(connectionsPerBroker, 32);
         _connectionsPerBroker = connectionsPerBroker;
+        if (!_isMaxConnectionsPerBrokerConfigured)
+            _maxConnectionsPerBroker = Math.Max(_maxConnectionsPerBroker, connectionsPerBroker);
         return this;
     }
 
     /// <summary>
     /// Configures the maximum connections for adaptive connection scaling.
     /// Adaptive scaling is enabled by default — this method only needs to be called
-    /// to change the maximum from the default of 10.
+    /// to change the maximum from the default of 3.
     /// <para>
     /// When sustained backpressure is detected, the producer will automatically add connections
     /// per broker (up to <paramref name="maxConnections"/>) to increase drain throughput.
@@ -297,13 +301,15 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// are removed after sustained low utilization.
     /// </para>
     /// </summary>
-    /// <param name="maxConnections">Maximum connections per broker. Default: 10.</param>
-    public ProducerBuilder<TKey, TValue> WithAdaptiveConnections(int maxConnections = 10)
+    /// <param name="maxConnections">Maximum connections per broker. Default: 3.</param>
+    public ProducerBuilder<TKey, TValue> WithAdaptiveConnections(
+        int maxConnections = ProducerOptions.DefaultMaxConnectionsPerBroker)
     {
         ThrowIfClientOwnedConnectionSettings();
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
         _enableAdaptiveConnections = true;
         _maxConnectionsPerBroker = maxConnections;
+        _isMaxConnectionsPerBrokerConfigured = true;
         return this;
     }
 
