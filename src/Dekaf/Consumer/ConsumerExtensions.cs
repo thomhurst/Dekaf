@@ -16,6 +16,13 @@ public static class ConsumerExtensions
     /// <param name="predicate">The filter predicate.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>An async enumerable of consume results that match the predicate.</returns>
+    /// <remarks>
+    /// Use this only to permanently ignore messages. Filtered messages are already consumed, so
+    /// any commit that follows (including the default periodic auto-commit) advances past them
+    /// and they are never redelivered to the consumer group. Skipped messages are dropped, not
+    /// held back — do not use a stateful or time-based predicate to defer processing; pause
+    /// consumption or park messages on a retry topic instead.
+    /// </remarks>
     public static async IAsyncEnumerable<ConsumeResult<TKey, TValue>> Where<TKey, TValue>(
         this IAsyncEnumerable<ConsumeResult<TKey, TValue>> source,
         Func<ConsumeResult<TKey, TValue>, bool> predicate,
@@ -139,6 +146,11 @@ public static class ConsumerExtensions
     /// <param name="predicate">The predicate to check for each result.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>An async enumerable of consume results after the predicate is satisfied.</returns>
+    /// <remarks>
+    /// The skipped prefix is consumed and dropped; once a commit advances past it the skip is
+    /// permanent for the consumer group. To start from a known position without discarding
+    /// messages, seek to the desired offset instead.
+    /// </remarks>
     public static async IAsyncEnumerable<ConsumeResult<TKey, TValue>> SkipWhile<TKey, TValue>(
         this IAsyncEnumerable<ConsumeResult<TKey, TValue>> source,
         Func<ConsumeResult<TKey, TValue>, bool> predicate,
@@ -169,6 +181,11 @@ public static class ConsumerExtensions
     /// <param name="predicate">The predicate to check for each result.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>An async enumerable of consume results while the predicate is satisfied.</returns>
+    /// <remarks>
+    /// The first message that fails the predicate is consumed but never yielded, and its offset
+    /// may be committed like any skipped message — a restarted consumer resumes after it. Do not
+    /// rely on the boundary message being redelivered.
+    /// </remarks>
     public static async IAsyncEnumerable<ConsumeResult<TKey, TValue>> TakeWhile<TKey, TValue>(
         this IAsyncEnumerable<ConsumeResult<TKey, TValue>> source,
         Func<ConsumeResult<TKey, TValue>, bool> predicate,
