@@ -304,10 +304,13 @@ public class OrderConsumer : BackgroundService
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed to process order {OrderId}", message.Key);
-                    // Offset not stored: rethrow so the host restarts the consumer and
-                    // the order is redelivered. Do NOT swallow and continue — storing
-                    // any later offset would commit past this one and lose it. If you
-                    // must keep consuming, dead-letter the failed order first.
+                    // Offset not stored: rethrow so the failure isn't silently
+                    // swallowed. By default this stops the host process; pair it
+                    // with a process supervisor (systemd, Kubernetes, container
+                    // restart policy) so the service restarts and the order is
+                    // redelivered. Do NOT swallow and continue — storing any later
+                    // offset would commit past this one and lose it. If you must
+                    // keep consuming, dead-letter the failed order first.
                     throw;
                 }
             }

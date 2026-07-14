@@ -128,7 +128,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     bool IConsumerCommitModeSource.EnableAutoOffsetStore => _options.EnableAutoOffsetStore;
 
-    bool IConsumerCommitModeSource.HasConsumerGroup => _options.GroupId is not null;
+    bool IConsumerCommitModeSource.HasConsumerGroup => !string.IsNullOrEmpty(_options.GroupId);
 
 #if !NET10_0_OR_GREATER
     IReadOnlyCollection<string> IKafkaConsumer<TKey, TValue>.Subscription => Subscription;
