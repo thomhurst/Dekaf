@@ -5,6 +5,7 @@ using Admin;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
+using Dekaf.Producer;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
@@ -94,7 +95,7 @@ public sealed class KafkaClientBuilder
     private int _socketReceiveBufferBytes;
     private int _connectionsPerBroker = 1;
     private int _maxInFlightRequestsPerConnection = 5;
-    private int _maxConnectionsPerBroker = 10;
+    private int _maxConnectionsPerBroker = ProducerOptions.DefaultMaxConnectionsPerBroker;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;

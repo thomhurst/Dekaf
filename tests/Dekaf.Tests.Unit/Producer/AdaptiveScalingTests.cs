@@ -24,6 +24,12 @@ public class AdaptiveScalingTests
         });
     }
 
+    private static int GetConfiguredMaximumConnections(object builder) =>
+        (int)builder.GetType()
+            .GetField("_maxConnectionsPerBroker", System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(builder)!;
+
     private static async ValueTask AppendOneRecordAsync(RecordAccumulator accumulator)
     {
         var pooledKey = new PooledMemory(null, 0, isNull: true);
@@ -219,6 +225,37 @@ public class AdaptiveScalingTests
     #endregion
 
     #region Builder Validation Tests
+
+    [Test]
+    public async Task WithAdaptiveConnections_DefaultsMaximumTo_3()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithAdaptiveConnections();
+
+        await Assert.That(GetConfiguredMaximumConnections(builder)).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task WithConnectionsPerBroker_AboveImplicitMaximum_ExpandsMaximum()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithConnectionsPerBroker(5);
+
+        await Assert.That(GetConfiguredMaximumConnections(builder)).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task WithAdaptiveConnections_BeforeLargerInitialWidth_ThrowsOnBuild()
+    {
+        await Assert.That(() =>
+        {
+            Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers("localhost:9092")
+                .WithAdaptiveConnections()
+                .WithConnectionsPerBroker(5)
+                .Build();
+        }).Throws<InvalidOperationException>();
+    }
 
     [Test]
     public async Task WithAdaptiveConnections_MaxLessThanConnectionsPerBroker_ThrowsOnBuild()
