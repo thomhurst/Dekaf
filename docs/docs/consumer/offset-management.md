@@ -47,7 +47,45 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 **Cons:** Messages might be committed before processing completes
 
 :::caution
-If your application crashes after committing but before processing, messages may be lost. Use this mode only when occasional message loss is acceptable (logs, metrics, etc.).
+In auto mode a message's offset is staged for commit as soon as it is *consumed*, not when it is
+successfully processed. Loss does not require a crash: if your handler throws and you catch the
+exception and keep consuming, the failed message's offset is still committed on the next
+auto-commit tick (every 5 seconds by default), on rebalance, and on graceful shutdown — the
+message is gone. Use this mode as-is only when occasional message loss is acceptable (logs,
+metrics, etc.), or pair it with manual offset store (below).
+:::
+
+### Auto-Commit with Manual Offset Store
+
+The middle ground between the two modes: keep background auto-commit, but only let it commit
+offsets you have explicitly marked as processed. This gives at-least-once semantics without a
+commit round-trip in your processing loop.
+
+```csharp
+using Dekaf;
+
+var consumer = await Kafka.CreateConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("my-group")
+    .WithAutoOffsetStore(false)  // Auto-commit only commits explicitly stored offsets
+    .BuildAsync();
+
+await foreach (var msg in consumer.ConsumeAsync(ct))
+{
+    await ProcessMessageAsync(msg);  // Process first
+    consumer.StoreOffset(msg);       // Then mark as safe to commit (no network call)
+}
+```
+
+`StoreOffset` is a cheap in-memory operation; the background auto-commit loop batches the actual
+network commits. If processing throws before `StoreOffset`, the message's offset is never staged
+and it will be redelivered.
+
+:::caution
+Offsets are positions, not per-message acknowledgements. Storing a later offset also commits
+everything before it — if you skip a failed message and keep storing later offsets, the failed
+message is still lost. To preserve it, stop consuming the partition, or route the failure to a
+dead-letter topic before moving on.
 :::
 
 ### Manual Mode
@@ -222,7 +260,8 @@ follow the configured auto-offset-reset policy.
 
 | Mode | Semantics | Risk |
 |------|-----------|------|
-| Auto | At-most-once | May lose messages on crash |
+| Auto (defaults) | At-most-once | Loses messages whose processing failed — no crash required |
+| Auto + `WithAutoOffsetStore(false)` + `StoreOffset` after process | At-least-once | May reprocess on crash |
 | Manual (commit after process) | At-least-once | May reprocess on crash |
 | Manual + External storage | Exactly-once | Most complex |
 
@@ -246,7 +285,7 @@ await dbTransaction.CommitAsync();
 
 ## Best Practices
 
-1. **Use Manual mode** for most applications - it gives you control over when offsets are committed
+1. **Make commits reflect completed processing** for most applications - either Manual mode, or auto-commit with `WithAutoOffsetStore(false)` + `StoreOffset` after each successfully processed message
 
 2. **Batch your commits** - committing after every message is slow
 

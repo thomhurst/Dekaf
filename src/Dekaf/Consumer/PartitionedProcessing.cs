@@ -31,6 +31,7 @@ public static class PartitionedConsumerExtensions
         options ??= new PartitionedProcessingOptions();
         options.Validate();
         options.ValidatePartitionProcessor();
+        ThrowIfAutoCommitUnderminesProcessedTracking(consumer, options);
 
         var logger = consumer is IConsumerLoggerFactorySource loggerSource
             ? loggerSource.LoggerFactory?.CreateLogger<PartitionedConsumerRuntime<TKey, TValue>>()
@@ -57,6 +58,7 @@ public static class PartitionedConsumerExtensions
 
         options ??= new PartitionedProcessingOptions();
         options.Validate();
+        ThrowIfAutoCommitUnderminesProcessedTracking(consumer, options);
 
         var logger = consumer is IConsumerLoggerFactorySource loggerSource
             ? loggerSource.LoggerFactory?.CreateLogger<PartitionedConsumerRuntime<TKey, TValue>>()
@@ -83,6 +85,7 @@ public static class PartitionedConsumerExtensions
 
         options ??= new PartitionedProcessingOptions();
         options.Validate();
+        ThrowIfAutoCommitUnderminesProcessedTracking(consumer, options);
 
         var logger = consumer is IConsumerLoggerFactorySource loggerSource
             ? loggerSource.LoggerFactory?.CreateLogger<PartitionedConsumerRuntime<TKey, TValue>>()
@@ -200,11 +203,40 @@ public static class PartitionedConsumerExtensions
 
         return dispatcher.RunAsync(cancellationToken);
     }
+
+    private static void ThrowIfAutoCommitUnderminesProcessedTracking<TKey, TValue>(
+        IKafkaConsumer<TKey, TValue> consumer,
+        PartitionedProcessingOptions options)
+    {
+        if (!options.IsRuntimeManagedCommitPolicy)
+            return;
+
+        if (consumer is IConsumerCommitModeSource { OffsetCommitMode: OffsetCommitMode.Auto })
+        {
+            throw new InvalidOperationException(
+                $"Partitioned processing with {nameof(PartitionCommitPolicy)}.{options.CommitPolicy} requires " +
+                $"{nameof(OffsetCommitMode)}.{nameof(OffsetCommitMode.Manual)}, but the consumer uses " +
+                $"{nameof(OffsetCommitMode)}.{nameof(OffsetCommitMode.Auto)}. Auto-commit commits consumed positions " +
+                "in the background regardless of MarkProcessed, so a failed handler would not prevent its message " +
+                "from being committed. Configure the consumer with WithOffsetCommitMode(OffsetCommitMode.Manual), " +
+                $"or use {nameof(PartitionCommitPolicy)}.{nameof(PartitionCommitPolicy.UserManaged)} if you accept " +
+                "auto-commit semantics.");
+        }
+    }
 }
 
 internal interface IConsumerLoggerFactorySource
 {
     ILoggerFactory? LoggerFactory { get; }
+}
+
+/// <summary>
+/// Exposes the configured <see cref="OffsetCommitMode"/> of a consumer so partitioned processing
+/// can reject auto-commit consumers whose background commits would bypass processed-offset tracking.
+/// </summary>
+internal interface IConsumerCommitModeSource
+{
+    OffsetCommitMode OffsetCommitMode { get; }
 }
 
 /// <summary>
@@ -426,6 +458,13 @@ public sealed class PartitionedProcessingOptions
     /// Gets the interval for periodic completed-offset commits.
     /// </summary>
     public TimeSpan CommitInterval { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// True when the runtime itself commits completed offsets based on MarkProcessed tracking.
+    /// </summary>
+    internal bool IsRuntimeManagedCommitPolicy => CommitPolicy
+        is PartitionCommitPolicy.CommitCompletedOnRevoke
+        or PartitionCommitPolicy.CommitCompletedPeriodically;
 
     internal void Validate()
     {
@@ -1268,11 +1307,7 @@ internal sealed class PartitionedConsumerRuntime<TKey, TValue>
             await _consumer.CommitAsync([offset.Value], cancellationToken).ConfigureAwait(false);
     }
 
-    private bool ShouldCommitOnPartitionStop()
-    {
-        return _options.CommitPolicy is PartitionCommitPolicy.CommitCompletedOnRevoke
-            or PartitionCommitPolicy.CommitCompletedPeriodically;
-    }
+    private bool ShouldCommitOnPartitionStop() => _options.IsRuntimeManagedCommitPolicy;
 
     private int RecordIgnoreRestartFailure(TopicPartition partition)
     {

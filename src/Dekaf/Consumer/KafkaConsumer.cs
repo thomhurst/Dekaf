@@ -703,6 +703,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
     IConsumerLoggerFactorySource,
+    IConsumerCommitModeSource,
     DeadLetter.IRawRecordAccessor,
     IBudgetedInstance
 {
@@ -1385,6 +1386,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     ILoggerFactory? IConsumerLoggerFactorySource.LoggerFactory => _loggerFactory;
+
+    OffsetCommitMode IConsumerCommitModeSource.OffsetCommitMode => _options.OffsetCommitMode;
 
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
