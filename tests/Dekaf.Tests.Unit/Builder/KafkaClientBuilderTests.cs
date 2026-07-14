@@ -43,6 +43,32 @@ public sealed class KafkaClientBuilderTests
     }
 
     [Test]
+    public async Task RootClient_InitialWidthAboveImplicitMaximum_ExpandsMaximum()
+    {
+        await using var client = Kafka.Connect()
+            .WithBootstrapServers("localhost:9092")
+            .WithConnectionsPerBroker(5)
+            .Build();
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var options = GetField<ProducerOptions>(producer, "_options");
+
+        await Assert.That(options.ConnectionsPerBroker).IsEqualTo(5);
+        await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task RootClient_InitialWidthAboveExplicitMaximum_ThrowsOnBuild()
+    {
+        await Assert.That(() => Kafka.Connect()
+                .WithBootstrapServers("localhost:9092")
+                .WithMaxConnectionsPerBroker(3)
+                .WithConnectionsPerBroker(5)
+                .Build())
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task RootClient_CreatedProducer_DisposeDoesNotDisposeSharedPool()
     {
         var client = Kafka.Connect("localhost:9092");
