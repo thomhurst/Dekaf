@@ -6995,6 +6995,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             LogAutoCommitFailed(ex);

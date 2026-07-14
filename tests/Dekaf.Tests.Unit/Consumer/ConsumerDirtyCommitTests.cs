@@ -221,6 +221,30 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task AutoCommitCycle_WhenCommitIsCancelled_PropagatesWithoutRetry()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        using var cancellation = new CancellationTokenSource();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false,
+            onOffsetCommit: token =>
+            {
+                cancellation.Cancel();
+                token.ThrowIfCancellationRequested();
+            });
+        consumer.StoreOffset(CreateConsumeResult(offset: 41, leaderEpoch: 7));
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+
+        await Assert.That(async () => await RunAutoCommitCycleAsync(consumer, cancellation.Token))
+            .ThrowsExactly<OperationCanceledException>();
+
+        await Assert.That(requests).Count().IsEqualTo(1);
+    }
+
+    [Test]
     public async Task CloseAsync_WhenCommitFailsTwice_RetriesThirdTime()
     {
         var requests = new List<OffsetCommitRequest>();
@@ -348,18 +372,21 @@ public sealed class ConsumerDirtyCommitTests
         List<OffsetCommitRequest> requests,
         ErrorCode responseError,
         OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
-        bool enableAutoOffsetStore = true)
+        bool enableAutoOffsetStore = true,
+        Action<CancellationToken>? onOffsetCommit = null)
         => CreateConsumer(
             requests,
             new Queue<ErrorCode>([responseError]),
             offsetCommitMode,
-            enableAutoOffsetStore);
+            enableAutoOffsetStore,
+            onOffsetCommit);
 
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
         Queue<ErrorCode> responseErrors,
         OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
-        bool enableAutoOffsetStore = true)
+        bool enableAutoOffsetStore = true,
+        Action<CancellationToken>? onOffsetCommit = null)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -394,6 +421,7 @@ public sealed class ConsumerDirtyCommitTests
             {
                 var request = call.Arg<OffsetCommitRequest>()!;
                 requests.Add(CloneRequest(request));
+                onOffsetCommit?.Invoke(call.Arg<CancellationToken>());
 
                 var error = responseErrors.Count == 0 ? ErrorCode.None : responseErrors.Dequeue();
                 return ValueTask.FromResult(CreateResponse(request, error));
@@ -456,13 +484,15 @@ public sealed class ConsumerDirtyCommitTests
         stateField.SetValue(coordinator, state);
     }
 
-    private static async Task RunAutoCommitCycleAsync(KafkaConsumer<string, string> consumer)
+    private static async Task RunAutoCommitCycleAsync(
+        KafkaConsumer<string, string> consumer,
+        CancellationToken cancellationToken = default)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "TryAutoCommitAsync",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
 
-        await (Task)method.Invoke(consumer, [CancellationToken.None])!;
+        await (Task)method.Invoke(consumer, [cancellationToken])!;
     }
 
     private static void ApplySeek(
