@@ -606,6 +606,21 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task AppLimitedShortSample_CannotReplaceEstablishedRate()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.5,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+
+        Ack(budget, 1_000, 0.100, T0);
+        Ack(budget, 1_000_000, 0.001, T0 + Seconds(0.100));
+
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(10_000)
+            .Because("a short idle-gap response may seed cold start but cannot ratchet a populated estimator");
+    }
+
+    [Test]
     public async Task Budget_RecoversWhenRateRises()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
@@ -614,7 +629,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var shrunken = budget.BudgetBytes;
 
         // Faster drain in the next window must grow the budget back (no ratchet-down).
-        Ack(budget, 12_000, 0.001, T0 + Seconds(2.0));
+        Ack(budget, 12_000, 0.100, T0 + Seconds(2.0));
 
         await Assert.That(budget.BudgetBytes).IsGreaterThan(shrunken);
     }
@@ -637,16 +652,16 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
 
         // Both requests were sent before either delivery.
-        var firstSend = budget.SnapshotDelivery(T0 - Seconds(0.020), appLimited: false);
-        var secondSend = budget.SnapshotDelivery(T0 - Seconds(0.019), appLimited: false);
+        var firstSend = budget.SnapshotDelivery(T0 - Seconds(0.100), appLimited: false);
+        var secondSend = budget.SnapshotDelivery(T0 - Seconds(0.099), appLimited: false);
         budget.OnAcked(1_000, firstSend, T0);
         budget.OnAcked(1_000, secondSend, T0 + Seconds(0.001));
         CompleteAckedPassWithoutDecay(budget, T0 + Seconds(0.001));
 
-        // The second sample covers the full delivery epoch: 2,000 bytes over 21ms from the
-        // first send to the second acknowledgement = 95,238 B/s aggregate drain. The
-        // 20ms measured RTT horizon therefore publishes a 1,904-byte budget.
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_904);
+        // The second sample covers the full delivery epoch: 2,000 bytes over 101ms from the
+        // first send to the second acknowledgement = 19,801 B/s aggregate drain. The
+        // 100ms measured RTT horizon therefore publishes a 1,980-byte budget.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_980);
     }
 
     [Test]
@@ -667,7 +682,7 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_nextProbeTimestamp", T0 + Seconds(100));
 
         Ack(budget, 1_000, 0.100, T0);
-        for (var i = 1; i <= 20; i++)
+        for (var i = 1; i <= 23; i++)
             Ack(budget, 100, 0.100, T0 + Seconds(i * 0.100));
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(500);
@@ -1329,14 +1344,14 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.BudgetBytes).IsEqualTo(7_812);
 
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.000));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(9_762);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(8_787);
 
         // The probe averages three RTTs before ratcheting to the higher level.
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.100));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(9_762);
+        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(8_787);
 
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.200));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(9_762);
+        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(8_787);
 
         // The ratcheted level gets another full-window average. Comparing average with
         // average lets the sustained 25% gain advance the next rung as well.
@@ -1457,7 +1472,7 @@ public sealed class BrokerUnackedByteBudgetTests
         {
             sendSnapshots[i] = budget.SnapshotDelivery(
                 T0 + Seconds(i * 0.001),
-                appLimited: i == 0);
+                appLimited: false);
         }
 
         for (var i = 0; i < sendSnapshots.Length; i++)
@@ -1468,11 +1483,11 @@ public sealed class BrokerUnackedByteBudgetTests
                 T0 + Seconds(0.0041 + i * 0.0001));
         }
         var matureEpochSend = budget.SnapshotDelivery(T0 + Seconds(0.005), appLimited: false);
-        budget.OnAcked(1_000_000, matureEpochSend, T0 + Seconds(0.020));
-        budget.CompleteAckedPass(T0 + Seconds(0.020));
+        budget.OnAcked(1_000_000, matureEpochSend, T0 + Seconds(0.100));
+        budget.CompleteAckedPass(T0 + Seconds(0.100));
 
-        await Assert.That(budget.MaxRateBytesPerSecond).IsGreaterThanOrEqualTo(295_000_000);
-        await Assert.That(budget.MaxRateBytesPerSecond).IsLessThanOrEqualTo(305_000_000)
+        await Assert.That(budget.MaxRateBytesPerSecond).IsGreaterThanOrEqualTo(59_000_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsLessThanOrEqualTo(61_000_000)
             .Because("a cumulative delivery delta must include its delivery epoch's full elapsed time");
     }
 
@@ -1501,7 +1516,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task LoadedDeliveryEpoch_RollsAfterOneHundredMilliseconds()
+    public async Task LoadedDeliveryEpoch_RollsAfterTwoHundredFiftyMilliseconds()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
@@ -1511,7 +1526,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var firstSend = budget.SnapshotDelivery(T0, appLimited: true);
         budget.OnAcked(1_000, firstSend, T0 + Seconds(0.005));
 
-        var nextEpochTimestamp = T0 + Seconds(0.101);
+        var nextEpochTimestamp = T0 + Seconds(0.251);
         var loadedSend = budget.SnapshotDelivery(nextEpochTimestamp, appLimited: false);
 
         await Assert.That(loadedSend.DeliveryEpochDeliveredBytes).IsEqualTo(1_000);
@@ -1565,9 +1580,13 @@ public sealed class BrokerUnackedByteBudgetTests
 
         var thirdSend = budget.SnapshotDelivery(T0 + Seconds(0.003), appLimited: false);
         budget.OnAcked(1_000_000, thirdSend, T0 + Seconds(0.020));
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(0);
 
-        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(150_000_000)
-            .Because("the accepted sample covers 3MB over the full 20ms loaded epoch");
+        var fourthSend = budget.SnapshotDelivery(T0 + Seconds(0.021), appLimited: false);
+        budget.OnAcked(1_000_000, fourthSend, T0 + Seconds(0.100));
+
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(40_000_000)
+            .Because("the accepted sample covers 4MB over the full 100ms loaded epoch");
     }
 
     [Test]

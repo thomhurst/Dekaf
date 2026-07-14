@@ -22,10 +22,12 @@ namespace Dekaf.Producer;
 /// <para>
 /// Sustainable drain rate is measured over a delivery epoch. An app-limited send starts the
 /// epoch; loaded sends retain its delivered-byte and first-send anchors across acknowledgements
-/// for a bounded rolling interval. The sample is cumulative delivered bytes over the full epoch
-/// elapsed time, bounded below by the request sojourn and delivery clock. Loaded samples shorter
-/// than 20ms are ignored because host scheduling and burst quantization can dominate them. A separate
-/// per-request rate remains available to the capacity probe, which needs each probe admission's
+/// for a rolling interval bounded at 250ms. The sample is cumulative delivered bytes over the
+/// full epoch elapsed time, bounded below by the request sojourn and delivery clock. Samples
+/// shorter than 100ms are ignored because host scheduling and burst quantization can dominate
+/// them. A short truly app-limited sample may seed an empty estimator, but cannot replace an
+/// established sustainable rate. A separate per-request rate remains available to the capacity
+/// probe, which needs each probe admission's
 /// immediate response. These axes prevent serialized send/ack cycles, hot polling, clustered
 /// completions, and processing stalls from manufacturing inflated sustainable-rate samples.
 /// </para>
@@ -187,9 +189,11 @@ internal sealed class BrokerUnackedByteBudget
     // An empty pipe refilled within this gap is a serialized loaded cycle, not application idle.
     private static readonly long MaximumSerializedRateCycleGapTicks = Math.Max(1, Stopwatch.Frequency / 500);
     // Shorter loaded epochs are dominated by timer, scheduler, and burst quantization on common hosts.
-    private static readonly long MinimumLoadedRateSampleTicks = Math.Max(1, Stopwatch.Frequency / 50);
+    private static readonly long MinimumSustainableRateSampleTicks = Math.Max(
+        1,
+        Stopwatch.Frequency / 10);
     // Bound smoothing so a continuously loaded producer still tracks capacity changes promptly.
-    private static readonly long MaximumLoadedDeliveryEpochTicks = Math.Max(1, Stopwatch.Frequency / 10);
+    private static readonly long MaximumLoadedDeliveryEpochTicks = Math.Max(1, Stopwatch.Frequency / 4);
     private const long NoDeliveryEpoch = -1;
     private const long DeliveryEpochUpdating = -2;
 
@@ -391,7 +395,7 @@ internal sealed class BrokerUnackedByteBudget
             }
 
             // A loaded pipe keeps a bounded rolling epoch across acknowledgements. Reset at
-            // rate-app-limited boundaries or after 100ms: the lower bound prevents serialized
+            // rate-app-limited boundaries or after 250ms: the lower bound prevents serialized
             // requestBytes / ownRTT spikes; the upper bound preserves capacity adaptation.
             if (!rateAppLimited
                 && epochDeliveredBytes != NoDeliveryEpoch
@@ -589,7 +593,6 @@ internal sealed class BrokerUnackedByteBudget
             && deliveryIdleTicks >= WindowDurationTicks;
         var loadedServingSample = !sendSnapshot.AppLimited
             || (sendSnapshot.DeliveredTimestamp != 0 && !sustainedIdle);
-        var loadedRateEpoch = !sendSnapshot.RateAppLimited;
         var retainLoadedRateSample = !sendSnapshot.AppLimited;
         if (sustainedIdle)
         {
@@ -672,8 +675,11 @@ internal sealed class BrokerUnackedByteBudget
         var requestBytesPerSecond = deliveredDelta * (double)Stopwatch.Frequency / requestIntervalTicks;
         var deliveryEpochBytesPerSecond = deliveryEpochDelta * (double)Stopwatch.Frequency
             / deliveryEpochIntervalTicks;
+        var bootstrapsEmptyEstimator = sendSnapshot.RateAppLimited
+            && GetEffectiveMaxRate() == 0;
         if (deliveryEpochBytesPerSecond > 0
-            && (!loadedRateEpoch || deliveryEpochIntervalTicks >= MinimumLoadedRateSampleTicks))
+            && (deliveryEpochIntervalTicks >= MinimumSustainableRateSampleTicks
+                || bootstrapsEmptyEstimator))
         {
             AddRateSample(deliveryEpochBytesPerSecond, retainLoadedRateSample, sustainedIdle);
             Volatile.Write(ref _maxRateBytesPerSecond, (long)GetEffectiveMaxRate());
