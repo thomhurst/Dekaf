@@ -361,6 +361,80 @@ class StressTrendTests(unittest.TestCase):
         self.assertEqual("stable", ratio["status"])
         self.assertFalse(should_fail)
 
+    def test_order_balanced_samples_use_their_matching_same_run_control(self):
+        samples = [
+            result(
+                messages_per_second=2000.0,
+                pairedClientOrder="dekaf-first",
+                pairedSampleCount=2,
+            ),
+            result(
+                client="Confluent",
+                messages_per_second=1000.0,
+                pairedClientOrder="dekaf-first",
+                pairedSampleCount=2,
+            ),
+            result(
+                client="Confluent",
+                messages_per_second=2000.0,
+                pairedClientOrder="confluent-first",
+                pairedSampleCount=2,
+            ),
+            result(
+                messages_per_second=3000.0,
+                pairedClientOrder="confluent-first",
+                pairedSampleCount=2,
+            ),
+        ]
+
+        evaluations, updated, _ = evaluate_and_update(
+            {"version": 1, "runs": []},
+            samples,
+            "2026-07-01T02:00:00Z",
+        )
+
+        ratios = sorted(
+            item["current"]
+            for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+        )
+        self.assertEqual([1.5, 2.0], ratios)
+        self.assertEqual(
+            [
+                "dekaf-first",
+                "dekaf-first",
+                "confluent-first",
+                "confluent-first",
+            ],
+            [
+                item["pairedClientOrder"]
+                for item in updated["runs"][-1]["results"]
+            ],
+        )
+        self.assertEqual(
+            [2, 2, 2, 2],
+            [
+                item["pairedSampleCount"]
+                for item in updated["runs"][-1]["results"]
+            ],
+        )
+
+    def test_single_sample_order_does_not_split_existing_trend_history(self):
+        evaluations, _, _ = evaluate_and_update(
+            {"version": 1, "runs": [history_run(i) for i in range(1, 4)]},
+            [result(
+                messages_per_second=1000.0,
+                pairedClientOrder="dekaf-first",
+                pairedSampleCount=1,
+            )],
+            "2026-07-01T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(3, throughput["baselineCount"])
+
     def test_paired_dekaf_regression_fails_when_control_ratio_also_regresses(self):
         runs = [paired_history_run(i) for i in range(1, 4)]
         runs.append(paired_history_run(

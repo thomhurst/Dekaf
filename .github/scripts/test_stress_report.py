@@ -10,6 +10,7 @@ from stress_report import (
     generate_scenario_tables,
     intra_run_throughput,
     paired_latency_thresholds,
+    results_with_run_metadata,
 )
 
 
@@ -38,6 +39,20 @@ def stress_result(client, effective_rate, median_rate=None, is_message_bounded=F
 
 
 class StressReportTests(unittest.TestCase):
+    def test_result_envelope_propagates_paired_sample_metadata(self):
+        envelope = {
+            "pairedClientOrder": "dekaf-first",
+            "pairedSampleIndex": 1,
+            "pairedSampleCount": 2,
+            "results": [stress_result("Dekaf", effective_rate=1400)],
+        }
+
+        results = results_with_run_metadata(envelope)
+
+        self.assertEqual("dekaf-first", results[0]["pairedClientOrder"])
+        self.assertEqual(1, results[0]["pairedSampleIndex"])
+        self.assertEqual(2, results[0]["pairedSampleCount"])
+
     def test_producer_request_diagnostics_surface_per_broker_fragmentation(self):
         value = stress_result("Dekaf", effective_rate=1400)
         value["producerDeliveryDiagnostics"] = {
@@ -367,6 +382,86 @@ class StressReportTests(unittest.TestCase):
 
         self.assertTrue(rows[0].startswith("| Dekaf"))
         self.assertIn("| 2.00x |", rows[0])
+
+    def test_throughput_table_aggregates_order_balanced_samples(self):
+        dekaf_first = stress_result("Dekaf", effective_rate=1_440_000)
+        dekaf_first["pairedClientOrder"] = "dekaf-first"
+        confluent_second = stress_result("Confluent", effective_rate=1_000_000)
+        confluent_second["pairedClientOrder"] = "dekaf-first"
+        confluent_first = stress_result("Confluent", effective_rate=1_210_000)
+        confluent_first["pairedClientOrder"] = "confluent-first"
+        dekaf_second = stress_result("Dekaf", effective_rate=1_690_000)
+        dekaf_second["pairedClientOrder"] = "confluent-first"
+        samples = [dekaf_first, confluent_second, confluent_first, dekaf_second]
+        for sample in samples:
+            sample["scenario"] = "producer"
+
+        report = "\n".join(format_throughput_table(
+            samples,
+            "Producer Throughput",
+            include_ratio=True,
+        ))
+
+        self.assertIn("### Order-Balanced Aggregate", report)
+        self.assertIn("| Dekaf | 2 | 1,560,000 |", report)
+        self.assertIn("| Confluent | 2 | 1,100,000 |", report)
+        self.assertIn("| 1.42x |", report)
+        self.assertIn("Dekaf (dekaf-first)", report)
+        self.assertIn("Dekaf (confluent-first)", report)
+        self.assertIn("both `dekaf-first` and `confluent-first`", report)
+
+        docs_report = "\n".join(generate_scenario_tables(
+            samples,
+            include_callout=True,
+        ))
+        self.assertIn("### Order-Balanced Aggregate", docs_report)
+        self.assertIn("Dekaf is 1.42x faster", docs_report)
+
+    def test_throughput_table_suppresses_aggregate_when_any_sample_is_zero(self):
+        samples = []
+        for client, order, rate in (
+            ("Dekaf", "dekaf-first", 0),
+            ("Confluent", "dekaf-first", 1_000_000),
+            ("Dekaf", "confluent-first", 1_500_000),
+            ("Confluent", "confluent-first", 1_100_000),
+        ):
+            sample = stress_result(client, effective_rate=rate)
+            sample["pairedClientOrder"] = order
+            samples.append(sample)
+
+        report = "\n".join(format_throughput_table(
+            samples,
+            "Producer Throughput",
+            include_ratio=True,
+        ))
+
+        self.assertNotIn("### Order-Balanced Aggregate", report)
+        self.assertIn("| Dekaf (dekaf-first) |", report)
+
+    def test_throughput_table_suppresses_ratios_when_control_aggregate_is_invalid(self):
+        samples = []
+        for client, order, rate in (
+            ("Dekaf", "dekaf-first", 1_400_000),
+            ("Confluent", "dekaf-first", 0),
+            ("Dekaf", "confluent-first", 1_500_000),
+            ("Confluent", "confluent-first", 1_100_000),
+        ):
+            sample = stress_result(client, effective_rate=rate)
+            sample["pairedClientOrder"] = order
+            samples.append(sample)
+
+        lines = format_throughput_table(
+            samples,
+            "Producer Throughput",
+            include_ratio=True,
+        )
+        raw_rows = [
+            line for line in lines
+            if line.startswith("| Dekaf (") or line.startswith("| Confluent (")
+        ]
+
+        self.assertNotIn("### Order-Balanced Aggregate", "\n".join(lines))
+        self.assertTrue(all(row.endswith("| - |") for row in raw_rows))
 
     def test_consumer_table_reports_seed_batch_size(self):
         result = stress_result("Dekaf", effective_rate=2000)

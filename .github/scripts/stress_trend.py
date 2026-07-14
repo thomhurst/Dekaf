@@ -10,6 +10,7 @@ from stress_report import (
     cpu_micros_per_message,
     effective_rate,
     intra_run_throughput,
+    paired_order_identity,
     paired_latency_thresholds,
 )
 
@@ -29,6 +30,8 @@ _IDENTITY_FIELDS = (
     "consumerSeedBatchSizeBytes",
     "consumerConnectionsPerBroker",
     "roundTripMessages",
+    "pairedClientOrder",
+    "pairedSampleCount",
 )
 
 _METRICS = {
@@ -89,6 +92,7 @@ def _identity(result):
         _consumer_seed_batch_size(result),
         _consumer_connections_per_broker(result),
         _roundtrip_messages(result),
+        paired_order_identity(result),
     )
 
 
@@ -109,6 +113,7 @@ def _pair_identity(result):
         result.get("messageSizeBytes"),
         _consumer_seed_batch_size(result),
         _roundtrip_messages(result),
+        paired_order_identity(result),
     )
 
 

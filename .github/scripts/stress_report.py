@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from datetime import datetime, timedelta
-from math import isfinite
+from math import exp, isfinite, log
 from statistics import median
 
 SCENARIO_TITLES = {
@@ -21,6 +21,27 @@ SCENARIO_TITLES = {
 
 LATENCY_RATIO_THRESHOLD = 2.0
 MAX_TIMELINE_ROWS = 100
+
+
+def results_with_run_metadata(data):
+    """Flatten a result envelope while retaining run-level pairing metadata."""
+    raw_results = data.get('results') if isinstance(data, dict) else None
+    if not isinstance(raw_results, list):
+        return [data]
+
+    metadata_fields = (
+        'pairedClientOrder',
+        'pairedSampleIndex',
+        'pairedSampleCount',
+    )
+    results = []
+    for raw_result in raw_results:
+        result = dict(raw_result)
+        for field in metadata_fields:
+            if field in data and field not in result:
+                result[field] = data[field]
+        results.append(result)
+    return results
 
 
 def group_by_scenario(results):
@@ -294,7 +315,16 @@ def _latency_identity(result):
         result.get('messageSizeBytes'),
         _latency_consumer_seed_batch_size(result),
         _latency_roundtrip_messages(result),
+        paired_order_identity(result),
     )
+
+
+def paired_order_identity(result):
+    """Use client order as an identity dimension only for repeated paired samples."""
+    sample_count = result.get('pairedSampleCount')
+    if isinstance(sample_count, int) and sample_count > 1:
+        return result.get('pairedClientOrder')
+    return None
 
 
 def _latency_consumer_seed_batch_size(result):
@@ -327,6 +357,92 @@ def comparison_rate(result):
     return rate if rate is not None else effective_rate(result)
 
 
+def geometric_mean(values):
+    """Geometric mean for positive finite benchmark samples."""
+    samples = list(values)
+    if not samples or any(
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not isfinite(value)
+        or value <= 0
+        for value in samples
+    ):
+        return None
+    return exp(sum(log(value) for value in samples) / len(samples))
+
+
+def client_sample_groups(results):
+    """Group exact client variants while preserving their published display names."""
+    groups = {}
+    for result in results:
+        client = str(result.get('client', 'Unknown'))
+        key = client.casefold()
+        if key not in groups:
+            groups[key] = {'client': client, 'results': []}
+        groups[key]['results'].append(result)
+    return groups
+
+
+def aggregate_client_rate(results):
+    """Aggregate repeated comparison samples without overweighting either run order."""
+    return geometric_mean([comparison_rate(result) for result in results])
+
+
+def format_order_balanced_aggregate(results):
+    """Summarize repeated same-VM samples when both paired client orders are present."""
+    groups = client_sample_groups(results)
+    dekaf = groups.get('dekaf')
+    confluent = groups.get('confluent')
+    if not dekaf or not confluent:
+        return []
+
+    required_orders = {'dekaf-first', 'confluent-first'}
+    if any(
+        not required_orders.issubset({
+            str(result.get('pairedClientOrder', '')).casefold()
+            for result in group['results']
+        })
+        for group in (dekaf, confluent)
+    ):
+        return []
+
+    dekaf_aggregate = aggregate_client_rate(dekaf['results'])
+    confluent_aggregate = aggregate_client_rate(confluent['results'])
+    if dekaf_aggregate is None or confluent_aggregate is None:
+        return []
+
+    lines = [
+        "### Order-Balanced Aggregate",
+        "",
+        "| Client | Samples | Geomean comparison msg/s | Sample range | Median CPU μs/msg | Comparison Ratio |",
+        "|--------|--------:|--------------------------:|--------------|------------------:|-----------------:|",
+    ]
+    for group, aggregate_rate in (
+        (dekaf, dekaf_aggregate),
+        (confluent, confluent_aggregate),
+    ):
+        samples = group['results']
+        rates = [comparison_rate(result) for result in samples]
+        cpu_samples = [
+            value for result in samples
+            if (value := cpu_micros_per_message(result)) is not None
+        ]
+        cpu = f"{median(cpu_samples):.2f}" if cpu_samples else '-'
+        ratio = aggregate_rate / confluent_aggregate
+        lines.append(
+            f"| {group['client']} | {len(samples)} | {aggregate_rate:,.0f} | "
+            f"{min(rates):,.0f}–{max(rates):,.0f} | {cpu} | {ratio:.2f}x |"
+        )
+
+    lines.extend([
+        "",
+        "*The aggregate uses the geometric mean across balanced same-VM samples run in "
+        "both `dekaf-first` and `confluent-first` order. Raw ordered samples remain below.*",
+        "",
+    ])
+    return lines
+
+
 def allocated_per_message(result):
     """Heap allocation per application message, or None when unavailable."""
     serialized = result.get('allocatedBytesPerMessage')
@@ -343,11 +459,15 @@ def allocated_per_message(result):
 
 def find_confluent_baseline(results):
     """Find Confluent throughput as a baseline for ratio calculations."""
-    for r in results:
-        if r.get('client', '').lower() == 'confluent':
-            rate = comparison_rate(r)
-            if rate > 0:
-                return rate
+    confluent_results = [
+        result for result in results
+        if result.get('client', '').lower() == 'confluent'
+    ]
+    if confluent_results:
+        rate = aggregate_client_rate(confluent_results)
+        if rate is not None:
+            return rate
+        return None
     return min((comparison_rate(r) or 1 for r in results), default=1)
 
 
@@ -373,6 +493,8 @@ def format_throughput_table(results, title, include_ratio=False):
     lines.append(f"## {title} ({workload})")
     lines.append("")
 
+    lines.extend(format_order_balanced_aggregate(results))
+
     if include_ratio:
         lines.append("| Client | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores | Comparison Ratio |")
         lines.append("|--------|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|------------------|")
@@ -382,9 +504,17 @@ def format_throughput_table(results, title, include_ratio=False):
 
     baseline = find_confluent_baseline(results) if include_ratio else 0
     sorted_results = sorted(results, key=throughput_sort_key)
+    client_counts = {
+        key: len(group['results'])
+        for key, group in client_sample_groups(results).items()
+    }
 
     for r in sorted_results:
         client = r.get('client', 'Unknown')
+        if client_counts.get(str(client).casefold(), 0) > 1:
+            order = r.get('pairedClientOrder')
+            if order:
+                client = f"{client} ({order})"
         throughput = r.get('throughput', {})
         msg_sec = effective_rate(r)
         mb_sec = effective_mb_rate(r)
@@ -399,8 +529,9 @@ def format_throughput_table(results, title, include_ratio=False):
         cpu_us_per_msg, cpu_us_per_request, cores_used = format_cpu_columns(r)
 
         if include_ratio:
-            ratio = comparison_rate(r) / baseline if baseline > 0 else 1.0
-            lines.append(f"| {client} | {cpu_us_per_msg} | {cpu_us_per_request} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} | {ratio:.2f}x |")
+            ratio = comparison_rate(r) / baseline if _positive_finite_number(baseline) else None
+            ratio_text = f"{ratio:.2f}x" if ratio is not None else '-'
+            lines.append(f"| {client} | {cpu_us_per_msg} | {cpu_us_per_request} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} | {ratio_text} |")
         else:
             lines.append(f"| {client} | {cpu_us_per_msg} | {cpu_us_per_request} | {msg_sec:,.0f} | {median_msg_sec} | {drift} | {slope} | {mb_sec:.2f} | {accepted} | {errors} | {cores_used} |")
 
@@ -785,21 +916,30 @@ def _parse_timestamp(value):
 
 def format_comparison_callout(results, title):
     """Generate Docusaurus admonition comparing Dekaf vs Confluent throughput."""
-    dekaf = next((r for r in results if r.get('client', '').lower() == 'dekaf'), None)
-    confluent = next((r for r in results if r.get('client', '').lower() == 'confluent'), None)
+    groups = client_sample_groups(results)
+    dekaf = groups.get('dekaf')
+    confluent = groups.get('confluent')
 
     if not (dekaf and confluent):
         return []
 
-    dekaf_rate = comparison_rate(dekaf)
-    confluent_rate = comparison_rate(confluent)
-    if confluent_rate <= 0:
+    dekaf_rate = aggregate_client_rate(dekaf['results'])
+    confluent_rate = aggregate_client_rate(confluent['results'])
+    if dekaf_rate is None or confluent_rate is None or confluent_rate <= 0:
         return []
 
     lines = []
     throughput_ratio = dekaf_rate / confluent_rate
-    dekaf_cpu = cpu_micros_per_message(dekaf)
-    confluent_cpu = cpu_micros_per_message(confluent)
+    dekaf_cpu_samples = [
+        value for result in dekaf['results']
+        if (value := cpu_micros_per_message(result)) is not None
+    ]
+    confluent_cpu_samples = [
+        value for result in confluent['results']
+        if (value := cpu_micros_per_message(result)) is not None
+    ]
+    dekaf_cpu = median(dekaf_cpu_samples) if dekaf_cpu_samples else None
+    confluent_cpu = median(confluent_cpu_samples) if confluent_cpu_samples else None
     label = title.lower()
 
     if dekaf_cpu is not None and confluent_cpu is not None and dekaf_cpu > 0 and confluent_cpu > 0:
