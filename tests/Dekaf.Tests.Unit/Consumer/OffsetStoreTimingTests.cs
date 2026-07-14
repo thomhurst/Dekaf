@@ -444,6 +444,43 @@ public sealed class OffsetStoreTimingTests
         }).Throws<InvalidOperationException>();
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ConsumeBatch_OnDeliveryWithAutoStoreDisabled_DoesNotStage(bool raw)
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(
+            OffsetCommitMode.Auto, OffsetStoreTiming.OnDelivery, enableAutoOffsetStore: false, fetch);
+
+        await Assert.That(async () =>
+        {
+            if (raw)
+            {
+                await foreach (var batch in consumer.ConsumeRawBatchAsync(CancellationToken.None))
+                {
+                    foreach (var _ in batch)
+                        throw new InvalidOperationException("stop during batch processing");
+                }
+            }
+            else
+            {
+                await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
+                {
+                    foreach (var _ in batch)
+                        throw new InvalidOperationException("stop during batch processing");
+                }
+            }
+        }).Throws<InvalidOperationException>();
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)).IsEmpty();
+    }
+
     // --- ConsumeOneAsync ---
 
     [Test]
@@ -711,18 +748,28 @@ public sealed class OffsetStoreTimingTests
         OffsetCommitMode offsetCommitMode,
         OffsetStoreTiming offsetStoreTiming,
         params PendingFetchData[] fetches)
-        => CreateInitializedConsumer(offsetCommitMode, offsetStoreTiming, Serializers.String, fetches);
+        => CreateInitializedConsumer(offsetCommitMode, offsetStoreTiming, Serializers.String, true, fetches);
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumer(
+        OffsetCommitMode offsetCommitMode,
+        OffsetStoreTiming offsetStoreTiming,
+        bool enableAutoOffsetStore,
+        params PendingFetchData[] fetches)
+        => CreateInitializedConsumer(
+            offsetCommitMode, offsetStoreTiming, Serializers.String, enableAutoOffsetStore, fetches);
 
     private static KafkaConsumer<string, string> CreateInitializedConsumer(
         OffsetCommitMode offsetCommitMode,
         IDeserializer<string> valueDeserializer,
         params PendingFetchData[] fetches)
-        => CreateInitializedConsumer(offsetCommitMode, OffsetStoreTiming.AfterProcessing, valueDeserializer, fetches);
+        => CreateInitializedConsumer(
+            offsetCommitMode, OffsetStoreTiming.AfterProcessing, valueDeserializer, true, fetches);
 
     private static KafkaConsumer<string, string> CreateInitializedConsumer(
         OffsetCommitMode offsetCommitMode,
         OffsetStoreTiming offsetStoreTiming,
         IDeserializer<string> valueDeserializer,
+        bool enableAutoOffsetStore,
         params PendingFetchData[] fetches)
     {
         var consumer = new KafkaConsumer<string, string>(
@@ -731,6 +778,7 @@ public sealed class OffsetStoreTimingTests
                 BootstrapServers = ["localhost:9092"],
                 OffsetCommitMode = offsetCommitMode,
                 OffsetStoreTiming = offsetStoreTiming,
+                EnableAutoOffsetStore = enableAutoOffsetStore,
                 QueuedMinMessages = 1,
                 FetchMaxWaitMs = 200
             },

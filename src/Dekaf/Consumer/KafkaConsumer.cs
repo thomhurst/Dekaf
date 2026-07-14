@@ -961,7 +961,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     // CancellationTokenSource pool to avoid allocations in hot paths
     private readonly CancellationTokenSourcePool _ctsPool;
-    private readonly Action<TopicPartition, long, int> _storeOffsetOnDelivery;
+    private readonly Action<TopicPartition, long, int>? _storeOffsetOnDelivery;
 
     // Cached metric tags per topic to avoid per-message TagList allocation
     // Plain Dictionary is safe: only accessed from the single ConsumeAsync loop thread
@@ -1181,7 +1181,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             consumerSizes.ParsedRecordSlabsPerBucket);
         RatchetRecordWrapperPools(partitionCount: 64);
         _ctsPool = new CancellationTokenSourcePool(consumerSizes.CancellationTokenSources);
-        _storeOffsetOnDelivery = StoreOffsetCore;
+        _storeOffsetOnDelivery = options.EnableAutoOffsetStore
+                                 && options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery
+            ? StoreOffsetCore
+            : null;
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
 
         GcConfigurationCheck.WarnIfWorkstationGc(_logger);
@@ -2179,7 +2182,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             _batchIterationEpoch,
                             batchIterationVersion,
                             CanContinueBatchIteration),
-                        EagerOffsetStore ? _storeOffsetOnDelivery : null,
+                        _storeOffsetOnDelivery,
                         _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
@@ -2326,7 +2329,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             _batchIterationEpoch,
                             batchIterationVersion,
                             CanContinueBatchIteration),
-                        EagerOffsetStore ? _storeOffsetOnDelivery : null,
+                        _storeOffsetOnDelivery,
                         _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
