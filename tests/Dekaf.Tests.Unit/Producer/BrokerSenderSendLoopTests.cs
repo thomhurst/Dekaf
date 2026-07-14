@@ -302,6 +302,83 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_UnexpectedExit_TerminatesEverySurvivingDelivery(
+        CancellationToken cancellationToken)
+    {
+        var connection = new TestKafkaConnection
+        {
+            SendProduceFireAndForgetWithCallerTimeout = () => ValueTask.CompletedTask
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var options = CreateOptions(
+            acks: Acks.None,
+            enableIdempotence: false,
+            lingerMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var injectedFailure = new InvalidOperationException("injected send-loop failure");
+        var allRerouted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reroutedCount = 0;
+        var crashEnabled = 0;
+        ReadyBatch? queuedDuringCrash = null;
+        BrokerSender? sender = null;
+        sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            rerouteBatch: (batch, _) =>
+            {
+                batch.Fail(injectedFailure);
+                if (Interlocked.Increment(ref reroutedCount) == 2)
+                    allRerouted.TrySetResult();
+            },
+            onWaveCoalesceStarted: () =>
+            {
+                if (Interlocked.Exchange(ref crashEnabled, 0) == 0)
+                    return;
+
+                sender!.Enqueue(queuedDuringCrash!);
+                throw injectedFailure;
+            });
+
+        try
+        {
+            var primeFirst = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 0);
+            var primeSecond = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 1);
+            sender.EnqueueBulk([primeFirst.Batch, primeSecond.Batch]);
+            await Task.WhenAll(primeFirst.Delivery, primeSecond.Delivery).WaitAsync(cancellationToken);
+
+            var coalesced = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 0);
+            var queued = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 1);
+            queuedDuringCrash = queued.Batch;
+            Volatile.Write(ref crashEnabled, 1);
+
+            sender.Enqueue(coalesced.Batch);
+            await allRerouted.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(sender.IsAlive).IsFalse();
+            await Assert.That(Volatile.Read(ref reroutedCount)).IsEqualTo(2);
+            await Assert.That(async () => await coalesced.Delivery.WaitAsync(cancellationToken))
+                .ThrowsExactly<InvalidOperationException>()
+                .WithMessage(injectedFailure.Message);
+            await Assert.That(async () => await queued.Delivery.WaitAsync(cancellationToken))
+                .ThrowsExactly<InvalidOperationException>()
+                .WithMessage(injectedFailure.Message);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task SendLoop_WaveCoalesce_RearmsWhileResponseIsInFlight(
         CancellationToken cancellationToken)
@@ -483,6 +560,26 @@ public sealed class BrokerSenderSendLoopTests
         }
 
         return batch;
+    }
+
+    private static (ReadyBatch Batch, Task<RecordMetadata> Delivery) CreateTestBatchWithDelivery(
+        ValueTaskSourcePool<RecordMetadata> pool,
+        string topic,
+        int partition)
+    {
+        var batch = new ReadyBatch();
+        var source = pool.Rent();
+        var delivery = source.Task.AsTask();
+        var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(1);
+        sources[0] = source;
+        batch.Initialize(
+            new TopicPartition(topic, partition),
+            new RecordBatch { Records = Array.Empty<Record>() },
+            sources,
+            completionSourcesCount: 1,
+            dataSize: 100);
+        batch.TrySetMemoryReleased();
+        return (batch, delivery);
     }
 
     /// <summary>

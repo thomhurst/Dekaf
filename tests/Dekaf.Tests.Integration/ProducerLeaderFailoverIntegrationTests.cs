@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
@@ -83,6 +84,67 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         }
     }
 
+    [Test]
+    [Timeout(240_000)]
+    public async Task Producer_NonIdempotent_BrokerRestart_DoesNotLoseAcknowledgedRecords(
+        CancellationToken cancellationToken)
+    {
+        var topic = await kafka.CreateReplicatedTopicAsync().ConfigureAwait(false);
+        var leaderBrokerId = await kafka.GetPartitionLeaderIdAsync(topic, cancellationToken)
+            .ConfigureAwait(false);
+        int? stoppedBrokerId = null;
+        var productionPaused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumeProduction = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgedValues = new List<string>(MessageCount);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId($"non-idempotent-restart-producer-{Guid.NewGuid():N}")
+            .WithAcks(Acks.All)
+            .WithIdempotence(false)
+            .WithRequestTimeout(TimeSpan.FromSeconds(5))
+            .WithDeliveryTimeout(TimeSpan.FromSeconds(45))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        try
+        {
+            var production = ProduceAcrossRestartAsync(
+                producer,
+                topic,
+                acknowledgedValues,
+                productionPaused,
+                resumeProduction.Task,
+                cancellationToken);
+            await productionPaused.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            stoppedBrokerId = leaderBrokerId;
+            await kafka.StopBrokerAsync(leaderBrokerId, cancellationToken).ConfigureAwait(false);
+            resumeProduction.TrySetResult();
+            _ = await kafka.WaitForPartitionLeaderChangeAsync(topic, leaderBrokerId, cancellationToken)
+                .ConfigureAwait(false);
+
+            await production.ConfigureAwait(false);
+            await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            await Assert.That(acknowledgedValues).Count().IsGreaterThanOrEqualTo(InitialMessageCount);
+            await Assert.That(acknowledgedValues.Select(int.Parse)).Contains(value => value >= InitialMessageCount);
+            await AssertAcknowledgedBrokerRecordsAsync(topic, acknowledgedValues, cancellationToken)
+                .ConfigureAwait(false);
+
+            await kafka.StartBrokerAsync(leaderBrokerId, cancellationToken).ConfigureAwait(false);
+            await kafka.WaitForInSyncReplicasAsync(topic, 3, cancellationToken).ConfigureAwait(false);
+            stoppedBrokerId = null;
+        }
+        finally
+        {
+            resumeProduction.TrySetResult();
+            if (stoppedBrokerId is { } brokerId)
+                await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
     private static async Task ProduceRangeAsync(
         IKafkaProducer<string, string> producer,
         string topic,
@@ -101,6 +163,41 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
                 Value = value.ToString()
             }, cancellationToken).ConfigureAwait(false);
             acknowledgements.Add(metadata);
+        }
+    }
+
+    private static async Task ProduceAcrossRestartAsync(
+        IKafkaProducer<string, string> producer,
+        string topic,
+        List<string> acknowledgedValues,
+        TaskCompletionSource productionPaused,
+        Task resumeProduction,
+        CancellationToken cancellationToken)
+    {
+        for (var value = 0; value < MessageCount; value++)
+        {
+            if (value == InitialMessageCount)
+            {
+                productionPaused.TrySetResult();
+                await resumeProduction.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var payload = value.ToString();
+            try
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = 0,
+                    Key = payload,
+                    Value = payload
+                }, cancellationToken).ConfigureAwait(false);
+                acknowledgedValues.Add(payload);
+            }
+            catch (ProduceException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Delivery failures are allowed; losing a successfully acknowledged record is not.
+            }
         }
     }
 
@@ -154,6 +251,35 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         {
             throw new InvalidOperationException(
                 $"Unexpected duplicate record at offset {extra.Value.Offset}: {extra.Value.Value}.");
+        }
+    }
+
+    private async Task AssertAcknowledgedBrokerRecordsAsync(
+        string topic,
+        IReadOnlyCollection<string> acknowledgedValues,
+        CancellationToken cancellationToken)
+    {
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId($"non-idempotent-restart-oracle-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync(cancellationToken)
+            .ConfigureAwait(false);
+        consumer.Assign(new TopicPartition(topic, 0));
+
+        var missing = acknowledgedValues.ToHashSet(StringComparer.Ordinal);
+        while (missing.Count > 0)
+        {
+            var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), cancellationToken)
+                .ConfigureAwait(false);
+            if (consumed is null)
+            {
+                throw new InvalidOperationException(
+                    $"Timed out with {missing.Count} acknowledged record(s) absent: " +
+                    string.Join(", ", missing.Order(StringComparer.Ordinal).Take(10)));
+            }
+
+            missing.Remove(consumed.Value.Value);
         }
     }
 }
