@@ -539,6 +539,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     internal const int MaxReasonableLazyRecordCount = 1_000_000;
 
+    internal static bool IsTruncatedRecordTail(long remaining, int parsedCount, int declaredCount) =>
+        parsedCount == declaredCount - 1 || remaining < Record.MinimumEncodedSize;
+
     private void EnsureLazyRecordsParsedUpTo(int index)
     {
         if (_parsedRecords is null)
@@ -573,7 +576,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
                 _parsedRecordCount++;
                 _nextRecordParseOffset = readerStartOffset + (int)reader.Consumed;
             }
-            catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
+            catch (Exception ex) when (
+                ex is InsufficientDataException or MalformedProtocolDataException &&
+                IsTruncatedRecordTail(reader.Remaining, _parsedRecordCount, _recordCount))
             {
                 Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedRecordCount} of {_recordCount} records parsed successfully.");
                 _recordCount = _parsedRecordCount;
@@ -1656,13 +1661,13 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 _parsedRecords[_parsedCount++] = record;
                 _nextParseOffset = readerStartOffset + (int)reader.Consumed;
             }
-            catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
+            catch (Exception ex) when (
+                ex is InsufficientDataException or MalformedProtocolDataException &&
+                RecordBatch.IsTruncatedRecordTail(reader.Remaining, _parsedCount, _count))
             {
-                // Truncated fetch response or malformed varint — no more complete records
-                // can be parsed. Cap the count to what we've successfully parsed so far to
-                // prevent further attempts. This mirrors the partial batch handling in
-                // FetchResponse. MalformedProtocolDataException covers malformed variable-length
-                // integers that throw "Malformed variable-length integer".
+                // The raw record data ended before the declared record count. Cap the count to
+                // the successfully parsed records. A failure with bytes remaining is interior
+                // corruption and must propagate rather than silently dropping later records.
                 Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedCount} of {_count} records parsed successfully.");
                 _count = _parsedCount;
                 break;

@@ -370,13 +370,21 @@ internal sealed class PendingFetchData : IDisposable
 
         AttachParsedRecordSlab(_batches);
 
-        for (var i = 0; i < _batches.Count; i++)
+        try
         {
-            var batch = _batches[i];
-            batch.EnsureAllRecordsParsed();
-            if (batch.Records is Protocol.Records.LazyRecordList lazyList)
-                lazyList.EnsureAllParsed();
+            for (var i = 0; i < _batches.Count; i++)
+            {
+                var batch = _batches[i];
+                batch.EnsureAllRecordsParsed();
+                if (batch.Records is Protocol.Records.LazyRecordList lazyList)
+                    lazyList.EnsureAllParsed();
+            }
         }
+        catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
+        {
+            throw new ConsumeException($"Failed to parse record batch for {Topic}-{PartitionIndex}.", ex);
+        }
+
         _eagerParsed = true;
     }
 

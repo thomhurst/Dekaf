@@ -191,6 +191,31 @@ public class LazyRecordListTests
     }
 
     [Test]
+    public async Task LazyRecordList_InteriorMalformedVarint_Throws()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+            new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() },
+            new Record { OffsetDelta = 2, Value = "value-2"u8.ToArray() }
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        var firstRecordBuffer = new ArrayBufferWriter<byte>();
+        var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
+        records[0].Write(ref firstRecordWriter);
+
+        var bytes = buffer.WrittenSpan.ToArray();
+        bytes.AsSpan(firstRecordBuffer.WrittenCount, 6).Fill(0x80);
+        using var lazyList = LazyRecordList.Create(bytes, count: records.Length);
+
+        await Assert.That(() => lazyList.ToArray()).Throws<MalformedProtocolDataException>();
+    }
+
+    [Test]
     public async Task LazyRecordList_CompletelyTruncated_ReducesCountToZero()
     {
         // Arrange: provide just 1 byte of data but claim 5 records

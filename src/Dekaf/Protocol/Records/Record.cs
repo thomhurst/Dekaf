@@ -13,6 +13,9 @@ namespace Dekaf.Protocol.Records;
 /// </summary>
 public readonly record struct Record
 {
+    // Length prefix plus the six required one-byte record-body fields.
+    internal const int MinimumEncodedSize = 7;
+
     // Even empty headers need two wire bytes. This limit already represents at least
     // 512 KiB of header metadata while bounding pooled-array amplification and parse work.
     internal const int MaxReasonableHeaderCount = 256 * 1024;
