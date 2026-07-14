@@ -481,6 +481,56 @@ public sealed class OffsetStoreTimingTests
         await Assert.That(GetDirtyStoredOffsets(consumer)).IsEmpty();
     }
 
+    [Test]
+    public async Task ConsumeBatchAsync_DeserializerFailure_RewindsForRedelivery()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"),
+                CreateRecord(2, "c", "three"))
+        ]);
+        var deserializer = new FailOnceDeserializer("two");
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, deserializer, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+        await using var batches = consumer.ConsumeBatchAsync(CancellationToken.None).GetAsyncEnumerator();
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        using (var records = batches.Current.GetEnumerator())
+        {
+            await Assert.That(records.MoveNext()).IsTrue();
+            await Assert.That(records.Current.Offset).IsEqualTo(20L);
+            var threw = false;
+            try
+            {
+                records.MoveNext();
+            }
+            catch (InvalidOperationException)
+            {
+                threw = true;
+            }
+
+            await Assert.That(threw).IsTrue();
+            await Assert.That(records.MoveNext()).IsFalse();
+        }
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)).IsEmpty();
+        await Assert.That(GetPositions(consumer)[tp]).IsEqualTo(21L);
+        await Assert.That(GetFetchPositions(consumer)[tp]).IsEqualTo(21L);
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+
+        InjectPendingFetch(consumer, PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(21,
+                CreateRecord(0, "b", "two"),
+                CreateRecord(1, "c", "three"))
+        ]));
+
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(batches.Current.First().Offset).IsEqualTo(21L);
+    }
+
     // --- ConsumeOneAsync ---
 
     [Test]

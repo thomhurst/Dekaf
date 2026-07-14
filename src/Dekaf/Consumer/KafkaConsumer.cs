@@ -962,6 +962,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // CancellationTokenSource pool to avoid allocations in hot paths
     private readonly CancellationTokenSourcePool _ctsPool;
     private readonly Action<TopicPartition, long, int>? _storeOffsetOnDelivery;
+    private readonly Action<PendingFetchData, long> _rewindBatchAfterDeliveryFailure;
 
     // Cached metric tags per topic to avoid per-message TagList allocation
     // Plain Dictionary is safe: only accessed from the single ConsumeAsync loop thread
@@ -1185,6 +1186,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                  && options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery
             ? StoreOffsetCore
             : null;
+        _rewindBatchAfterDeliveryFailure = RewindAfterDeliveryFailure;
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
 
         GcConfigurationCheck.WarnIfWorkstationGc(_logger);
@@ -2183,7 +2185,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             batchIterationVersion,
                             CanContinueBatchIteration),
                         _storeOffsetOnDelivery,
-                        _options.MaxPollRecords);
+                        _options.MaxPollRecords,
+                        _rewindBatchAfterDeliveryFailure);
                     batchYielded = true;
                     yield return batch;
                     // Resumption = the caller requested the next batch, proving this one was

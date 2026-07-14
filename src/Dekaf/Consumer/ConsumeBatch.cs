@@ -117,6 +117,7 @@ namespace Dekaf.Consumer
         private readonly IDeserializer<TValue>? _valueDeserializer;
         private readonly BatchIterationGuard _iterationGuard;
         private readonly Action<TopicPartition, long, int>? _storeOffsetOnDelivery;
+        private readonly Action<PendingFetchData, long>? _rewindAfterDeliveryFailure;
         private readonly int _maxRecords;
         private long _count;
 
@@ -125,7 +126,8 @@ namespace Dekaf.Consumer
             IDeserializer<TValue>? valueDeserializer,
             BatchIterationGuard iterationGuard = default,
             Action<TopicPartition, long, int>? storeOffsetOnDelivery = null,
-            int maxRecords = int.MaxValue)
+            int maxRecords = int.MaxValue,
+            Action<PendingFetchData, long>? rewindAfterDeliveryFailure = null)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
@@ -134,6 +136,7 @@ namespace Dekaf.Consumer
             _iterationGuard = iterationGuard;
             _storeOffsetOnDelivery = storeOffsetOnDelivery;
             _maxRecords = maxRecords;
+            _rewindAfterDeliveryFailure = rewindAfterDeliveryFailure;
         }
 
         /// <summary>
@@ -183,7 +186,7 @@ namespace Dekaf.Consumer
         public struct Enumerator : IEnumerator<ConsumeResult<TKey, TValue>>
         {
             private readonly ConsumeBatch<TKey, TValue> _batch;
-            private readonly bool _canContinue;
+            private bool _canContinue;
             private int _observedVersion;
             private int _recordsYielded;
 
@@ -239,22 +242,31 @@ namespace Dekaf.Consumer
                 int messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
                                    (record.IsValueNull ? 0 : record.Value.Length);
 
-                Current = new ConsumeResult<TKey, TValue>(
-                    topic: pending.Topic,
-                    partition: pending.PartitionIndex,
-                    offset: offset,
-                    keyData: record.Key,
-                    isKeyNull: record.IsKeyNull,
-                    valueData: record.Value,
-                    isValueNull: record.IsValueNull,
-                    pooledHeaders: record.Headers,
-                    pooledHeaderCount: record.HeaderCount,
-                    headerOwner: pending,
-                    timestampMs: timestampMs,
-                    timestampType: timestampType,
-                    leaderEpoch: pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
-                    keyDeserializer: _batch._keyDeserializer,
-                    valueDeserializer: _batch._valueDeserializer);
+                try
+                {
+                    Current = new ConsumeResult<TKey, TValue>(
+                        topic: pending.Topic,
+                        partition: pending.PartitionIndex,
+                        offset: offset,
+                        keyData: record.Key,
+                        isKeyNull: record.IsKeyNull,
+                        valueData: record.Value,
+                        isValueNull: record.IsValueNull,
+                        pooledHeaders: record.Headers,
+                        pooledHeaderCount: record.HeaderCount,
+                        headerOwner: pending,
+                        timestampMs: timestampMs,
+                        timestampType: timestampType,
+                        leaderEpoch: pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
+                        keyDeserializer: _batch._keyDeserializer,
+                        valueDeserializer: _batch._valueDeserializer);
+                }
+                catch
+                {
+                    _canContinue = false;
+                    _batch._rewindAfterDeliveryFailure?.Invoke(pending, offset);
+                    throw;
+                }
 
                 if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))
                     return false;
