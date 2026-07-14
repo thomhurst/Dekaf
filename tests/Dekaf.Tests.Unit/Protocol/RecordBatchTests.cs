@@ -216,6 +216,45 @@ public class RecordBatchTests
     }
 
     [Test]
+    public async Task PendingFetchData_InteriorShortReadWithCompleteSuffix_ThrowsConsumeException()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = new byte[] { 0x01 } },
+            new Record { OffsetDelta = 1, Value = new byte[] { 0x02 } },
+            new Record { OffsetDelta = 2, Value = new byte[] { 0x03 } }
+        };
+        using var original = new RecordBatch { Records = records };
+        var buffer = new ArrayBufferWriter<byte>();
+        original.Write(buffer);
+
+        var firstRecordBuffer = new ArrayBufferWriter<byte>();
+        var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
+        records[0].Write(ref firstRecordWriter);
+
+        var bytes = buffer.WrittenSpan.ToArray();
+        var secondRecordOffset = RecordBatch.TotalBatchHeaderSize + firstRecordBuffer.WrittenCount;
+        bytes[secondRecordOffset] = 0x7E;
+        bytes[secondRecordOffset + 5] = 0x7E;
+        var corrupt = ReadBatch(bytes, checkCrcs: false);
+        using var pending = PendingFetchData.Create("topic", 7, [corrupt]);
+
+        ConsumeException? exception = null;
+        try
+        {
+            pending.EagerParseAll();
+        }
+        catch (ConsumeException caught)
+        {
+            exception = caught;
+        }
+
+        await Assert.That(exception).IsNotNull();
+        await Assert.That(exception!.IsRetriable).IsFalse();
+        await Assert.That(exception.InnerException).IsTypeOf<InsufficientDataException>();
+    }
+
+    [Test]
     public async Task PendingFetchData_LongTruncatedTail_CapsRecordCount()
     {
         var records = new[]

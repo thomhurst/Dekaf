@@ -268,6 +268,33 @@ public class LazyRecordListTests
     }
 
     [Test]
+    public async Task LazyRecordList_InteriorShortReadWithCompleteSuffix_Throws()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = new byte[] { 0x01 } },
+            new Record { OffsetDelta = 1, Value = new byte[] { 0x02 } },
+            new Record { OffsetDelta = 2, Value = new byte[] { 0x03 } }
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        var firstRecordBuffer = new ArrayBufferWriter<byte>();
+        var firstRecordWriter = new KafkaProtocolWriter(firstRecordBuffer);
+        records[0].Write(ref firstRecordWriter);
+
+        var bytes = buffer.WrittenSpan.ToArray();
+        var secondRecordOffset = firstRecordBuffer.WrittenCount;
+        bytes[secondRecordOffset] = 0x7E; // Zig-zag encoded record body length 63.
+        bytes[secondRecordOffset + 5] = 0x7E; // Zig-zag encoded value length 63.
+        using var lazyList = LazyRecordList.Create(bytes, count: records.Length);
+
+        await Assert.That(() => lazyList.ToArray()).Throws<InsufficientDataException>();
+    }
+
+    [Test]
     public async Task LazyRecordList_ShortMalformedTail_ReducesCountToParseableRecords()
     {
         var records = new[]

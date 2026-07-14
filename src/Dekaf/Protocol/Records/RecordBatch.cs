@@ -541,12 +541,77 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     internal static bool IsTruncatedRecordTail(
         Exception exception,
-        long availableRecordBytes,
+        ReadOnlyMemory<byte> availableRecordData,
         int parsedCount,
-        int declaredCount) =>
-        exception is InsufficientDataException ||
-        exception is MalformedProtocolDataException &&
-        (availableRecordBytes < Record.MinimumEncodedSize || parsedCount == declaredCount - 1);
+        int declaredCount)
+    {
+        if (exception is InsufficientDataException)
+        {
+            // A valid framed suffix proves bytes after the failed record belong to another
+            // record, so the short read is interior corruption rather than end truncation.
+            return parsedCount == declaredCount - 1 ||
+                   !HasCompleteRecordSuffix(availableRecordData);
+        }
+
+        // Issue #2065 intentionally excludes corruption in the final declared record.
+        return exception is MalformedProtocolDataException &&
+               (availableRecordData.Length < Record.MinimumEncodedSize ||
+                parsedCount == declaredCount - 1);
+    }
+
+    private static bool HasCompleteRecordSuffix(ReadOnlyMemory<byte> data)
+    {
+        for (var offset = 1; offset <= data.Length - Record.MinimumEncodedSize; offset++)
+        {
+            var suffix = data[offset..];
+            if (!TryReadRecordLength(suffix.Span, out var bodyLength, out var prefixLength) ||
+                bodyLength < Record.MinimumEncodedSize - 1 ||
+                bodyLength != suffix.Length - prefixLength)
+            {
+                continue;
+            }
+
+            var reader = new KafkaProtocolReader(suffix);
+            try
+            {
+                var record = Record.Read(ref reader);
+                if (record.Headers is not null)
+                    ArrayPool<Header>.Shared.Return(record.Headers, clearArray: true);
+
+                if (reader.Remaining == 0)
+                    return true;
+            }
+            catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
+            {
+                // This byte offset does not begin a complete record; continue scanning.
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryReadRecordLength(
+        ReadOnlySpan<byte> data,
+        out int length,
+        out int prefixLength)
+    {
+        uint encoded = 0;
+        for (var index = 0; index < 5 && index < data.Length; index++)
+        {
+            var current = data[index];
+            encoded |= (uint)(current & 0x7F) << (index * 7);
+            if ((current & 0x80) == 0)
+            {
+                length = (int)(encoded >> 1) ^ -(int)(encoded & 1);
+                prefixLength = index + 1;
+                return true;
+            }
+        }
+
+        length = 0;
+        prefixLength = 0;
+        return false;
+    }
 
     private void EnsureLazyRecordsParsedUpTo(int index)
     {
@@ -576,7 +641,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
                 _parsedRecordsOffset = 0;
             }
 
-            var availableRecordBytes = reader.Remaining;
+            var availableRecordData = _rawRecordData.Slice(
+                readerStartOffset + (int)reader.Consumed);
             try
             {
                 _parsedRecords[_parsedRecordsOffset + _parsedRecordCount] = Record.Read(ref reader);
@@ -585,7 +651,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             }
             catch (Exception ex) when (IsTruncatedRecordTail(
                 ex,
-                availableRecordBytes,
+                availableRecordData,
                 _parsedRecordCount,
                 _recordCount))
             {
@@ -1664,7 +1730,8 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 _parsedRecords = newArray;
             }
 
-            var availableRecordBytes = reader.Remaining;
+            var availableRecordData = _rawData.Slice(
+                readerStartOffset + (int)reader.Consumed);
             try
             {
                 var record = Record.Read(ref reader);
@@ -1673,7 +1740,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
             }
             catch (Exception ex) when (RecordBatch.IsTruncatedRecordTail(
                 ex,
-                availableRecordBytes,
+                availableRecordData,
                 _parsedCount,
                 _count))
             {
