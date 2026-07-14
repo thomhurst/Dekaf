@@ -119,7 +119,11 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
                 productionPaused,
                 resumeProduction.Task,
                 productionCancellation.Token);
-            await productionPaused.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var pauseOrProduction = await Task.WhenAny(productionPaused.Task, production)
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (ReferenceEquals(pauseOrProduction, production))
+                await production.ConfigureAwait(false);
 
             stoppedBrokerId = leaderBrokerId;
             await kafka.StopBrokerAsync(leaderBrokerId, cancellationToken).ConfigureAwait(false);
