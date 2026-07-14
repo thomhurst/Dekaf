@@ -92,7 +92,7 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         var topic = await kafka.CreateReplicatedTopicAsync().ConfigureAwait(false);
         var leaderBrokerId = await kafka.GetPartitionLeaderIdAsync(topic, cancellationToken)
             .ConfigureAwait(false);
-        int? stoppedBrokerId = null;
+        var brokerStopped = false;
         var productionPaused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var resumeProduction = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var acknowledgedValues = new List<string>(MessageCount);
@@ -125,8 +125,8 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             if (ReferenceEquals(pauseOrProduction, production))
                 await production.ConfigureAwait(false);
 
-            stoppedBrokerId = leaderBrokerId;
             await kafka.StopBrokerAsync(leaderBrokerId, cancellationToken).ConfigureAwait(false);
+            brokerStopped = true;
             resumeProduction.TrySetResult();
             _ = await kafka.WaitForPartitionLeaderChangeAsync(topic, leaderBrokerId, cancellationToken)
                 .ConfigureAwait(false);
@@ -135,13 +135,14 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
 
             await Assert.That(acknowledgedValues).Count().IsGreaterThanOrEqualTo(InitialMessageCount);
-            await Assert.That(acknowledgedValues.Select(int.Parse)).Contains(value => value >= InitialMessageCount);
+            await Assert.That(acknowledgedValues.Count(value => int.Parse(value) >= InitialMessageCount))
+                .IsGreaterThanOrEqualTo(FailoverMessageCount);
             await AssertAcknowledgedBrokerRecordsAsync(topic, acknowledgedValues, cancellationToken)
                 .ConfigureAwait(false);
 
             await kafka.StartBrokerAsync(leaderBrokerId, cancellationToken).ConfigureAwait(false);
             await kafka.WaitForInSyncReplicasAsync(topic, 3, cancellationToken).ConfigureAwait(false);
-            stoppedBrokerId = null;
+            brokerStopped = false;
         }
         finally
         {
@@ -149,8 +150,8 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             productionCancellation.Cancel();
             try
             {
-                if (stoppedBrokerId is { } brokerId)
-                    await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+                if (brokerStopped)
+                    await kafka.StartBrokerAsync(leaderBrokerId, CancellationToken.None).ConfigureAwait(false);
             }
             finally
             {
