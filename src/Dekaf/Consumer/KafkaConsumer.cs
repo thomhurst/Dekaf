@@ -161,6 +161,15 @@ internal sealed class PendingFetchData : IDisposable
     private long _emittedMessageCount;
     private long _emittedBytesConsumed;
 
+    /// <summary>
+    /// Records with offsets below this value are skipped when iteration starts.
+    /// The broker returns whole record batches, so a fetch positioned mid-batch
+    /// (e.g. resuming from a committed offset that falls inside a batch) receives
+    /// leading records below the requested offset; yielding them would re-deliver
+    /// records the application already consumed. -1 disables skipping.
+    /// </summary>
+    private long _skipRecordsBelowOffset = -1;
+
     private PendingFetchData() { }
 
     /// <summary>
@@ -169,7 +178,8 @@ internal sealed class PendingFetchData : IDisposable
     public static PendingFetchData Create(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches,
         IReadOnlyList<AbortedTransaction>? abortedTransactions = null,
         IPooledMemory? memoryOwner = null,
-        string? activityName = null)
+        string? activityName = null,
+        long skipRecordsBelowOffset = -1)
     {
         var instance = Rent();
         instance.Topic = topic;
@@ -178,6 +188,7 @@ internal sealed class PendingFetchData : IDisposable
         instance.TopicPartition = new TopicPartition(topic, partitionIndex);
         instance._batches = batches;
         instance._memoryOwner = memoryOwner;
+        instance._skipRecordsBelowOffset = skipRecordsBelowOffset;
 
         for (var i = 0; i < batches.Count; i++)
             batches[i].AttachConsumerPoolOwner(instance, instance.HeaderGeneration);
@@ -418,7 +429,10 @@ internal sealed class PendingFetchData : IDisposable
         {
             _batchIndex = 0;
             _recordIndex = 0;
-            return HasCurrentRecordOrMarkExhausted();
+            if (!HasCurrentRecordOrMarkExhausted())
+                return false;
+
+            return _skipRecordsBelowOffset < 0 || SkipRecordsBelowStartOffset();
         }
 
         // Try next record in current batch (uses cached count to avoid Records property access)
@@ -459,6 +473,30 @@ internal sealed class PendingFetchData : IDisposable
 
         IsExhausted = true;
         return false;
+    }
+
+    /// <summary>
+    /// Advances past leading records below the requested fetch offset. Only the first
+    /// batch of a fetch can straddle the requested offset (batch base offsets increase
+    /// monotonically), so this one-time loop is bounded by a single batch in practice
+    /// and adds no per-record cost to steady-state iteration.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool SkipRecordsBelowStartOffset()
+    {
+        while (CurrentBaseOffset + CurrentRecord.OffsetDelta < _skipRecordsBelowOffset)
+        {
+            _recordIndex++;
+            if (_recordIndex < _currentRecordsCount)
+                continue;
+
+            _batchIndex++;
+            _recordIndex = 0;
+            if (!HasCurrentRecordOrMarkExhausted())
+                return false;
+        }
+
+        return true;
     }
 
     private bool HasCurrentRecord()
@@ -593,6 +631,7 @@ internal sealed class PendingFetchData : IDisposable
         IsExhausted = false;
         _emittedMessageCount = 0;
         _emittedBytesConsumed = 0;
+        _skipRecordsBelowOffset = -1;
         PartitionIndex = 0;
         TopicPartition = default;
         Topic = null!;
@@ -1873,8 +1912,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             }
 
                             TrackConsumedPosition(pending, offset, messageBytes);
-                            // Position dictionaries are flushed once per fetch; auto-commit reads
-                            // the published active snapshot without touching the pending queue.
+                            // Committable state advances only at fetch-boundary flushes; see
+                            // AutoCommitLoopAsync for the offset-safety contract this preserves.
 
                             // Store raw byte references for DLQ lazy capture (zero-copy — just memory slices)
                             if (rawTrackingEnabled)
@@ -2971,7 +3010,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 partitionResponse.PartitionIndex,
                                 records,
                                 partitionResponse.AbortedTransactions,
-                                activityName: activityName);
+                                activityName: activityName,
+                                skipRecordsBelowOffset: _fetchPositions.GetValueOrDefault(tp, -1));
 
                             // Collect for later - we'll assign memory owner to the last one
                             pendingItems.Add(pending);
@@ -3097,6 +3137,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return true;
     }
 
+    /// <summary>
+    /// Records the yielded record in the pending fetch and, in auto-commit mode, publishes
+    /// the next position to the active consumed snapshot. The snapshot is read only by
+    /// <see cref="CommitAsync(CancellationToken)"/>, close, and <see cref="GetPosition"/> —
+    /// never by the background auto-commit loop — so publishing before the record is
+    /// yielded cannot make it committable early.
+    /// </summary>
     private void TrackConsumedPosition(PendingFetchData pending, long offset, int messageBytes)
     {
         pending.TrackConsumed(offset, messageBytes);
@@ -6073,7 +6120,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             partitionResponse.PartitionIndex,
                             records,
                             partitionResponse.AbortedTransactions,
-                            activityName: activityName));
+                            activityName: activityName,
+                            skipRecordsBelowOffset: _fetchPositions.GetValueOrDefault(tp, -1)));
                     }
                     else
                     {
@@ -6904,6 +6952,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         oldCts?.Dispose();
     }
 
+    /// <summary>
+    /// Background auto-commit timer loop. Offset-safety contract: this loop commits only
+    /// stored offsets (<see cref="CommitStoredOffsetsAsync"/>), which are populated at
+    /// fetch-boundary position flushes — i.e. only for records the caller has already
+    /// iterated past. It never reads the active consumed snapshot, so a record that has
+    /// been yielded but not yet processed (or prefetched but not yet yielded) can never be
+    /// committed by this loop. Commits are skipped unless the coordinator is Stable, which
+    /// prevents committing with a stale generation mid-rebalance. On failure it retries
+    /// once after 200ms, then waits for the next interval.
+    /// </summary>
     private async Task AutoCommitLoopAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
