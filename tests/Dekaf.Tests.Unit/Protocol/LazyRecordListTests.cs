@@ -216,6 +216,30 @@ public class LazyRecordListTests
     }
 
     [Test]
+    public async Task LazyRecordList_LongTruncatedTail_ReducesCountToParseableRecords()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+            new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() },
+            new Record { OffsetDelta = 2, Value = new byte[100] }
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        foreach (var record in records)
+            record.Write(ref writer);
+
+        var firstTwoBuffer = new ArrayBufferWriter<byte>();
+        var firstTwoWriter = new KafkaProtocolWriter(firstTwoBuffer);
+        records[0].Write(ref firstTwoWriter);
+        records[1].Write(ref firstTwoWriter);
+        var truncatedData = buffer.WrittenMemory[..(firstTwoBuffer.WrittenCount + 40)];
+        using var lazyList = LazyRecordList.Create(truncatedData, count: 5);
+
+        await Assert.That(lazyList.ToArray()).Count().IsEqualTo(2);
+    }
+
+    [Test]
     public async Task LazyRecordList_CompletelyTruncated_ReducesCountToZero()
     {
         // Arrange: provide just 1 byte of data but claim 5 records

@@ -139,6 +139,40 @@ public class RecordBatchTests
         await Assert.That(exception.InnerException).IsTypeOf<MalformedProtocolDataException>();
     }
 
+    [Test]
+    public async Task PendingFetchData_LongTruncatedTail_CapsRecordCount()
+    {
+        var records = new[]
+        {
+            new Record { OffsetDelta = 0, Value = "value-0"u8.ToArray() },
+            new Record { OffsetDelta = 1, Value = "value-1"u8.ToArray() },
+            new Record { OffsetDelta = 2, Value = new byte[100] }
+        };
+        using var original = new RecordBatch { Records = records };
+        var buffer = new ArrayBufferWriter<byte>();
+        original.Write(buffer);
+
+        var firstTwoBuffer = new ArrayBufferWriter<byte>();
+        var firstTwoWriter = new KafkaProtocolWriter(firstTwoBuffer);
+        records[0].Write(ref firstTwoWriter);
+        records[1].Write(ref firstTwoWriter);
+
+        var truncatedLength = RecordBatch.TotalBatchHeaderSize + firstTwoBuffer.WrittenCount + 40;
+        var bytes = buffer.WrittenSpan[..truncatedLength].ToArray();
+        BinaryPrimitives.WriteInt32BigEndian(
+            bytes.AsSpan(sizeof(long)),
+            bytes.Length - sizeof(long) - sizeof(int));
+        BinaryPrimitives.WriteInt32BigEndian(
+            bytes.AsSpan(RecordBatch.TotalBatchHeaderSize - sizeof(int)),
+            5);
+        var truncated = ReadBatch(bytes, checkCrcs: false);
+        using var pending = PendingFetchData.Create("topic", 7, [truncated]);
+
+        pending.EagerParseAll();
+
+        await Assert.That(truncated.Records.Count).IsEqualTo(2);
+    }
+
     private static RecordBatch ReadWrittenBatch(RecordBatch batch)
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -1624,7 +1658,7 @@ public class RecordBatchTests
     }
 
     [Test]
-    public async Task Record_Read_TruncatedHeaderAfterRent_ThrowsInsufficientData()
+    public async Task Record_Read_TruncatedHeaderAfterRent_ThrowsMalformedProtocolData()
     {
         var body = new ArrayBufferWriter<byte>();
         var bodyWriter = new KafkaProtocolWriter(body);
@@ -1645,11 +1679,12 @@ public class RecordBatchTests
         try
         {
             Record.Read(ref reader);
-            throw new InvalidOperationException("Expected InsufficientDataException was not thrown");
+            throw new InvalidOperationException("Expected MalformedProtocolDataException was not thrown");
         }
-        catch (InsufficientDataException)
+        catch (MalformedProtocolDataException ex)
         {
             // Expected: the rented Header[] is returned before the exception escapes.
+            await Assert.That(ex.InnerException).IsTypeOf<InsufficientDataException>();
         }
     }
 
