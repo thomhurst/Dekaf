@@ -60,10 +60,13 @@ public sealed class OffsetCommitSafetyTests(KafkaTestContainer kafka) : KafkaInt
             await consumer.CloseAsync();
         }
 
-        // Everything was consumed, so close-commit must land exactly at the log end:
-        // lower would lose the final commit, higher would skip messages on restart.
+        // The loop broke while holding the final record (offset messageCount - 1), so it
+        // is unproven and close-commit lands exactly one below the log end: higher would
+        // skip messages on restart, lower would lose proven progress. The final record is
+        // redelivered on restart — at-least-once, never a loss. (Call CommitAsync() before
+        // close for an exact handoff.)
         var finalOffsets = await admin.ListConsumerGroupOffsetsAsync(groupId);
-        await Assert.That(finalOffsets[partition]).IsEqualTo(messageCount);
+        await Assert.That(finalOffsets[partition]).IsEqualTo(messageCount - 1);
     }
 
     [Test]

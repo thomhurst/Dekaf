@@ -326,14 +326,15 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         consumer2.Subscribe(topic);
 
-        // Try to consume - should get nothing since all offsets were committed
+        // At-least-once: the 5th record (offset 4) was consumed but the loop broke while
+        // holding it, so it is unproven and redelivered. Everything before it is committed.
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(5), cts2.Token);
 
-        // Either null (no messages) or offset >= 5 (already committed)
+        // Either null (no messages) or offset >= 4 (proven prefix committed)
         if (result.HasValue)
         {
-            await Assert.That(result.Value.Offset).IsGreaterThanOrEqualTo(5);
+            await Assert.That(result.Value.Offset).IsGreaterThanOrEqualTo(4);
         }
     }
 

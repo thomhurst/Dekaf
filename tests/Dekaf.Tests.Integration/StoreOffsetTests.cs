@@ -375,6 +375,9 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
             // Poll for auto-commit to propagate instead of using a fixed delay.
             // On slow CI runners, 500ms may not be enough for the commit round-trip.
+            // At-least-once: the 3rd record (offset 2) was consumed but the loop broke
+            // while holding it, so it is unproven — auto-commit covers offsets 0-1 and
+            // the committed offset lands at 2.
             var tp = new TopicPartition(topic, 0);
             using var commitCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             long? committedOffset = null;
@@ -383,7 +386,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 try
                 {
                     var committed = await consumer1.GetCommittedOffsetAsync(tp).ConfigureAwait(false);
-                    if (committed >= 3)
+                    if (committed >= 2)
                     {
                         committedOffset = committed;
                         break;
@@ -400,7 +403,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
             // Ensure the polling loop did not exit due to timeout — auto-commit must have propagated.
             await Assert.That(committedOffset).IsNotNull();
-            await Assert.That(committedOffset!.Value).IsGreaterThanOrEqualTo(3);
+            await Assert.That(committedOffset!.Value).IsGreaterThanOrEqualTo(2);
         }
 
         // Second consumer: should start after the auto-committed offset
@@ -420,12 +423,11 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(10), cts2.Token).ConfigureAwait(false);
 
-        // If we got a message, it should be from offset 3 or later (after auto-committed offset)
-        // If the topic is empty (all consumed and committed), result may be null
+        // If we got a message, it should be offset 2 (the unproven in-doubt record,
+        // redelivered) or later. If the topic is fully committed, result may be null.
         if (result.HasValue)
         {
-            // Assert - auto-commit should have committed the consumed offsets, so we start at 3+
-            await Assert.That(result.Value.Offset).IsGreaterThanOrEqualTo(3);
+            await Assert.That(result.Value.Offset).IsGreaterThanOrEqualTo(2);
         }
         else
         {
@@ -449,7 +451,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             }
 
             await Assert.That(committedValue).IsNotNull();
-            await Assert.That(committedValue!.Value).IsGreaterThanOrEqualTo(3);
+            await Assert.That(committedValue!.Value).IsGreaterThanOrEqualTo(2);
         }
     }
 
