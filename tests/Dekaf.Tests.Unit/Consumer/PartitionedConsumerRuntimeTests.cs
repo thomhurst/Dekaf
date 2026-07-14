@@ -993,6 +993,81 @@ public sealed class PartitionedConsumerRuntimeTests
         ]);
     }
 
+    [Test]
+    [Arguments(PartitionCommitPolicy.CommitCompletedOnRevoke)]
+    [Arguments(PartitionCommitPolicy.CommitCompletedPeriodically)]
+    public async Task RunPartitionedAsync_AutoCommitConsumerWithRuntimeManagedPolicy_Throws(
+        PartitionCommitPolicy commitPolicy)
+    {
+        var consumer = new TestConsumer { OffsetCommitMode = OffsetCommitMode.Auto };
+        var options = new PartitionedProcessingOptions { CommitPolicy = commitPolicy };
+
+        await Assert.That(async () => await consumer.RunPartitionedAsync(
+                static (_, _) => ValueTask.CompletedTask,
+                options,
+                CancellationToken.None))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(async () => await consumer.RunPartitionedAsync(
+                static (PartitionRecordProcessorContext<string, string> _, ConsumeResult<string, string> _, CancellationToken _) => ValueTask.CompletedTask,
+                options,
+                CancellationToken.None))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(async () => await consumer.RunPartitionedBatchesAsync(
+                static (_, _, _) => ValueTask.CompletedTask,
+                options,
+                CancellationToken.None))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    [Arguments(OffsetCommitMode.Auto, true, PartitionCommitPolicy.UserManaged)]
+    [Arguments(OffsetCommitMode.Auto, false, PartitionCommitPolicy.CommitCompletedOnRevoke)]
+    [Arguments(OffsetCommitMode.Auto, false, PartitionCommitPolicy.CommitCompletedPeriodically)]
+    [Arguments(OffsetCommitMode.Manual, true, PartitionCommitPolicy.CommitCompletedOnRevoke)]
+    public async Task RunPartitionedAsync_AllowedCommitModeCombination_DoesNotThrow(
+        OffsetCommitMode offsetCommitMode,
+        bool enableAutoOffsetStore,
+        PartitionCommitPolicy commitPolicy)
+    {
+        var consumer = new TestConsumer
+        {
+            OffsetCommitMode = offsetCommitMode,
+            EnableAutoOffsetStore = enableAutoOffsetStore
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            static (_, _) => ValueTask.CompletedTask,
+            new PartitionedProcessingOptions { CommitPolicy = commitPolicy },
+            cts.Token).AsTask();
+
+        await StopRuntimeAsync(cts, runTask);
+    }
+
+    [Test]
+    public async Task RunPartitionedAsync_AutoCommitConsumerWithoutGroup_DoesNotThrow()
+    {
+        var consumer = new TestConsumer
+        {
+            OffsetCommitMode = OffsetCommitMode.Auto,
+            EnableAutoOffsetStore = true,
+            HasConsumerGroup = false
+        };
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = consumer.RunPartitionedAsync(
+            static (_, _) => ValueTask.CompletedTask,
+            new PartitionedProcessingOptions
+            {
+                CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically
+            },
+            cts.Token).AsTask();
+
+        await StopRuntimeAsync(cts, runTask);
+    }
+
     private static async ValueTask StopRuntimeAsync(
         CancellationTokenSource cancellationTokenSource,
         Task runTask)
@@ -1091,7 +1166,8 @@ public sealed class PartitionedConsumerRuntimeTests
         IConsumerPartitions,
         IConsumerOffsets,
         IConsumerRebalanceEventSource,
-        IConsumerLoggerFactorySource
+        IConsumerLoggerFactorySource,
+        IConsumerCommitModeSource
     {
         private readonly object _gate = new();
         private readonly Queue<ConsumeResult<string, string>> _records = [];
@@ -1155,6 +1231,12 @@ public sealed class PartitionedConsumerRuntimeTests
         public TaskCompletionSource? ReleaseCommit { get; init; }
 
         public ILoggerFactory? LoggerFactory { get; init; }
+
+        public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Manual;
+
+        public bool EnableAutoOffsetStore { get; init; } = true;
+
+        public bool HasConsumerGroup { get; init; } = true;
 
 #if !NET10_0_OR_GREATER
         IReadOnlyCollection<string> IKafkaConsumer<string, string>.Subscription => Subscription;

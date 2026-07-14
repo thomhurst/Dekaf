@@ -190,10 +190,24 @@ offset.
 Runtime-managed revoke and shutdown commits may batch completed offsets for
 multiple partitions into one `CommitAsync` call.
 
-If the consumer uses auto commit mode, use `PartitionCommitPolicy.UserManaged`
-and understand that auto commit can commit consumed positions before partition
-processing finishes. For at-least-once partitioned processing, prefer
-`OffsetCommitMode.Manual`.
+Auto commit mode with automatic offset store (`OffsetCommitMode.Auto` +
+`EnableAutoOffsetStore = true`, the consumer defaults) stages and commits consumed
+positions in the background regardless of `MarkProcessed`, which would silently
+void the runtime's at-least-once tracking. `RunPartitionedAsync` therefore throws
+`InvalidOperationException` when the consumer uses that combination together with
+a runtime-managed commit policy (`CommitCompletedOnRevoke` or
+`CommitCompletedPeriodically`). For at-least-once partitioned processing, configure
+the consumer with `OffsetCommitMode.Manual`, or with `WithAutoOffsetStore(false)` —
+with the automatic store disabled, the background loop has nothing of its own to
+commit, so only the runtime's `MarkProcessed`-tracked commits advance offsets. The
+combination of auto commit and `PartitionCommitPolicy.UserManaged` also remains
+allowed for applications that accept auto-commit semantics.
+
+This check inspects the commit configuration of Dekaf's own consumer
+implementations (`KafkaConsumer` and the testing `InMemoryConsumer`). A custom
+`IKafkaConsumer` implementation or a wrapper around a Dekaf consumer is not
+inspected and will not fail fast — if you wrap a consumer, ensure the underlying
+configuration follows the rules above.
 
 Transactions remain user-managed. If a processor writes transactionally, send
 the processed offsets to that transaction and do not also let the partitioned
