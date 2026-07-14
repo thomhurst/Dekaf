@@ -25,6 +25,7 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
     internal const string GroupIdVariable = "DEKAF_CONSUMER_GROUP_CRASH_GROUP_ID";
     internal const string ClientIdVariable = "DEKAF_CONSUMER_GROUP_CRASH_CLIENT_ID";
     internal const string AssignorVariable = "DEKAF_CONSUMER_GROUP_CRASH_ASSIGNOR";
+    internal const string OffsetCommitModeVariable = "DEKAF_CONSUMER_GROUP_CRASH_OFFSET_COMMIT_MODE";
     internal const string ReadyPipeVariable = "DEKAF_CONSUMER_GROUP_CRASH_READY_PIPE";
     private const int MaximumDiagnosticCharacters = 16_384;
 
@@ -47,7 +48,8 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
         string topic,
         string groupId,
         string clientId,
-        string assignor)
+        string assignor,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual)
     {
         var pipeName = $"dekaf-consumer-group-crash-{Guid.NewGuid():N}";
         var readyPipe = new NamedPipeServerStream(
@@ -64,6 +66,7 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
                 groupId,
                 clientId,
                 assignor,
+                offsetCommitMode,
                 pipeName)
         };
         var diagnostics = new BoundedProcessDiagnostics(MaximumDiagnosticCharacters);
@@ -238,6 +241,7 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
         string groupId,
         string clientId,
         string assignor,
+        OffsetCommitMode offsetCommitMode,
         string pipeName)
     {
         var processPath = Environment.ProcessPath
@@ -269,6 +273,7 @@ internal sealed class ConsumerGroupCrashClientProcess : IAsyncDisposable
         startInfo.Environment[GroupIdVariable] = groupId;
         startInfo.Environment[ClientIdVariable] = clientId;
         startInfo.Environment[AssignorVariable] = assignor;
+        startInfo.Environment[OffsetCommitModeVariable] = offsetCommitMode.ToString();
         startInfo.Environment[ReadyPipeVariable] = pipeName;
         return startInfo;
     }
@@ -298,19 +303,24 @@ public sealed class ConsumerGroupCrashClient
         var groupId = GetRequiredEnvironmentVariable(ConsumerGroupCrashClientProcess.GroupIdVariable);
         var clientId = GetRequiredEnvironmentVariable(ConsumerGroupCrashClientProcess.ClientIdVariable);
         var assignor = GetRequiredEnvironmentVariable(ConsumerGroupCrashClientProcess.AssignorVariable);
+        var offsetCommitMode = Enum.Parse<OffsetCommitMode>(GetRequiredEnvironmentVariable(
+            ConsumerGroupCrashClientProcess.OffsetCommitModeVariable));
         var pipeName = GetRequiredEnvironmentVariable(ConsumerGroupCrashClientProcess.ReadyPipeVariable);
 
-        await using var consumer = await Kafka.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId(clientId)
             .WithGroupId(groupId)
             .WithGroupRemoteAssignor(assignor)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithMaxPollRecords(1)
             .WithQueuedMinMessages(1)
-            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory());
+
+        if (offsetCommitMode == OffsetCommitMode.Manual)
+            builder.WithOffsetCommitMode(OffsetCommitMode.Manual);
+
+        await using var consumer = await builder.BuildAsync();
 
         consumer.Subscribe(topic);
         using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(90));
@@ -328,9 +338,13 @@ public sealed class ConsumerGroupCrashClient
         if (otherPartitions.Length > 0)
             consumer.Pause(otherPartitions);
 
-        await consumer.CommitAsync(
-            [new TopicPartitionOffset(topic, committedResult.Partition, committedResult.Offset + 1)],
-            timeoutSource.Token);
+        var committedExclusive = committedResult.Offset + 1;
+        if (offsetCommitMode == OffsetCommitMode.Manual)
+        {
+            await consumer.CommitAsync(
+                [new TopicPartitionOffset(topic, committedResult.Partition, committedExclusive)],
+                timeoutSource.Token);
+        }
 
         ConsumeResult<string, string> crashResult;
         do
