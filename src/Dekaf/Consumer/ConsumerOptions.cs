@@ -33,6 +33,8 @@ public enum OffsetCommitMode
 /// </summary>
 public sealed class ConsumerOptions
 {
+    internal const int DefaultMaxConnectionsPerBroker = 4;
+
     /// <summary>
     /// Bootstrap servers (host:port,host:port).
     /// </summary>
@@ -419,7 +421,7 @@ public sealed class ConsumerOptions
         }
     }
 
-    private readonly int _maxConnectionsPerBroker = 4;
+    private readonly int _maxConnectionsPerBroker = DefaultMaxConnectionsPerBroker;
 
     /// <summary>
     /// Whether to enable adaptive fetch sizing based on consumer throughput.

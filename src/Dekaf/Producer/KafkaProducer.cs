@@ -3295,6 +3295,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
                 if (_accumulator.HasPendingLingerBatches)
                 {
+                    BeforeActiveLingerTimerWaitForTest?.Invoke();
                     if (!await _lingerTimer.WaitForNextTickAsync(CancellationToken.None).ConfigureAwait(false))
                         break;
                 }
@@ -3323,6 +3324,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
         }
     }
+
+    internal Action? BeforeActiveLingerTimerWaitForTest;
 
     /// <inheritdoc />
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)

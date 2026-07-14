@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Net.Security;
 using Dekaf.Metadata;
 using Dekaf.Networking;
+using Dekaf.Consumer;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Builder;
@@ -40,6 +41,17 @@ public sealed class KafkaClientBuilderTests
         var options = GetField<ProducerOptions>(producer, "_options");
 
         await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task RootClient_CreatedConsumer_UsesDefaultAdaptiveMaximumOf4()
+    {
+        await using var client = Kafka.Connect("localhost:9092");
+        await using var consumer = client.CreateConsumer<string, string>().Build();
+
+        var options = GetField<ConsumerOptions>(consumer, "_options");
+
+        await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(4);
     }
 
     [Test]

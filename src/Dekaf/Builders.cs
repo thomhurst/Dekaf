@@ -103,7 +103,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _bootstrapServers = clientInfrastructure.BootstrapServers;
         _loggerFactory = clientInfrastructure.LoggerFactory;
         _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
-        _maxConnectionsPerBroker = clientInfrastructure.MaxConnectionsPerBroker;
+        _maxConnectionsPerBroker = clientInfrastructure.ProducerMaxConnectionsPerBroker;
         _isMaxConnectionsPerBrokerConfigured = true;
     }
 
@@ -1424,7 +1424,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _prefetchPipelineDepth = 3;
     private int _connectionsPerBroker = 2;
     private bool _enableAdaptiveConnections = true;
-    private int _maxConnectionsPerBroker = 4;
+    private int _maxConnectionsPerBroker = ConsumerOptions.DefaultMaxConnectionsPerBroker;
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
