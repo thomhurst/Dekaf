@@ -268,7 +268,7 @@ public class LazyRecordListTests
     }
 
     [Test]
-    public async Task LazyRecordList_InteriorShortReadWithCompleteSuffix_Throws()
+    public async Task LazyRecordList_TruncatedPayloadEndingInRecordLikeBytes_ReducesCount()
     {
         var records = new[]
         {
@@ -287,11 +287,13 @@ public class LazyRecordListTests
 
         var bytes = buffer.WrittenSpan.ToArray();
         var secondRecordOffset = firstRecordBuffer.WrittenCount;
+        // The oversized lengths make every remaining byte part of the truncated second
+        // record. Its payload ends with bytes that also encode a complete third record.
         bytes[secondRecordOffset] = 0x7E; // Zig-zag encoded record body length 63.
         bytes[secondRecordOffset + 5] = 0x7E; // Zig-zag encoded value length 63.
         using var lazyList = LazyRecordList.Create(bytes, count: records.Length);
 
-        await Assert.That(() => lazyList.ToArray()).Throws<InsufficientDataException>();
+        await Assert.That(lazyList.ToArray()).Count().IsEqualTo(1);
     }
 
     [Test]

@@ -547,70 +547,16 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     {
         if (exception is InsufficientDataException)
         {
-            // A valid framed suffix proves bytes after the failed record belong to another
-            // record, so the short read is interior corruption rather than end truncation.
-            return parsedCount == declaredCount - 1 ||
-                   !HasCompleteRecordSuffix(availableRecordData);
+            // An incomplete record body has no trusted boundary: opaque key, value, or
+            // header bytes can look like a valid record. Preserve tail-truncation behavior
+            // rather than infer an interior record from payload contents.
+            return true;
         }
 
         // Issue #2065 intentionally excludes corruption in the final declared record.
         return exception is MalformedProtocolDataException &&
                (availableRecordData.Length < Record.MinimumEncodedSize ||
                 parsedCount == declaredCount - 1);
-    }
-
-    private static bool HasCompleteRecordSuffix(ReadOnlyMemory<byte> data)
-    {
-        for (var offset = 1; offset <= data.Length - Record.MinimumEncodedSize; offset++)
-        {
-            var suffix = data[offset..];
-            if (!TryReadRecordLength(suffix.Span, out var bodyLength, out var prefixLength) ||
-                bodyLength < Record.MinimumEncodedSize - 1 ||
-                bodyLength != suffix.Length - prefixLength)
-            {
-                continue;
-            }
-
-            var reader = new KafkaProtocolReader(suffix);
-            try
-            {
-                var record = Record.Read(ref reader);
-                if (record.Headers is not null)
-                    ArrayPool<Header>.Shared.Return(record.Headers, clearArray: true);
-
-                if (reader.Remaining == 0)
-                    return true;
-            }
-            catch (Exception ex) when (ex is InsufficientDataException or MalformedProtocolDataException)
-            {
-                // This byte offset does not begin a complete record; continue scanning.
-            }
-        }
-
-        return false;
-    }
-
-    private static bool TryReadRecordLength(
-        ReadOnlySpan<byte> data,
-        out int length,
-        out int prefixLength)
-    {
-        uint encoded = 0;
-        for (var index = 0; index < 5 && index < data.Length; index++)
-        {
-            var current = data[index];
-            encoded |= (uint)(current & 0x7F) << (index * 7);
-            if ((current & 0x80) == 0)
-            {
-                length = (int)(encoded >> 1) ^ -(int)(encoded & 1);
-                prefixLength = index + 1;
-                return true;
-            }
-        }
-
-        length = 0;
-        prefixLength = 0;
-        return false;
     }
 
     private void EnsureLazyRecordsParsedUpTo(int index)
@@ -1745,8 +1691,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
                 _count))
             {
                 // The raw record data ended before the declared record count. Cap the count to
-                // the successfully parsed records. A failure with bytes remaining is interior
-                // corruption and must propagate rather than silently dropping later records.
+                // the successfully parsed records. Unambiguous interior corruption propagates.
                 Trace.WriteLine($"Dekaf: Record parsing error ({ex.GetType().Name}) — {_parsedCount} of {_count} records parsed successfully.");
                 _count = _parsedCount;
                 break;

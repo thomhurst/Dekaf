@@ -216,7 +216,7 @@ public class RecordBatchTests
     }
 
     [Test]
-    public async Task PendingFetchData_InteriorShortReadWithCompleteSuffix_ThrowsConsumeException()
+    public async Task PendingFetchData_TruncatedPayloadEndingInRecordLikeBytes_CapsRecordCount()
     {
         var records = new[]
         {
@@ -234,24 +234,16 @@ public class RecordBatchTests
 
         var bytes = buffer.WrittenSpan.ToArray();
         var secondRecordOffset = RecordBatch.TotalBatchHeaderSize + firstRecordBuffer.WrittenCount;
+        // The oversized lengths make every remaining byte part of the truncated second
+        // record. Its payload ends with bytes that also encode a complete third record.
         bytes[secondRecordOffset] = 0x7E;
         bytes[secondRecordOffset + 5] = 0x7E;
         var corrupt = ReadBatch(bytes, checkCrcs: false);
         using var pending = PendingFetchData.Create("topic", 7, [corrupt]);
 
-        ConsumeException? exception = null;
-        try
-        {
-            pending.EagerParseAll();
-        }
-        catch (ConsumeException caught)
-        {
-            exception = caught;
-        }
+        pending.EagerParseAll();
 
-        await Assert.That(exception).IsNotNull();
-        await Assert.That(exception!.IsRetriable).IsFalse();
-        await Assert.That(exception.InnerException).IsTypeOf<InsufficientDataException>();
+        await Assert.That(corrupt.Records.Count).IsEqualTo(1);
     }
 
     [Test]
