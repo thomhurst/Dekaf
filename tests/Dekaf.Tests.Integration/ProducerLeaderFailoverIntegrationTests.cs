@@ -194,7 +194,9 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
                 }, cancellationToken).ConfigureAwait(false);
                 acknowledgedValues.Add(payload);
             }
-            catch (ProduceException) when (!cancellationToken.IsCancellationRequested)
+            catch (KafkaException exception) when (
+                !cancellationToken.IsCancellationRequested &&
+                exception is (ProduceException or KafkaTimeoutException))
             {
                 // Delivery failures are allowed; losing a successfully acknowledged record is not.
             }
