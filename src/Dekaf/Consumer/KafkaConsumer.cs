@@ -3370,6 +3370,33 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ClearActiveConsumedPosition(partition, position, version);
     }
 
+    private void ClearActiveConsumedPosition(TopicPartition partition)
+    {
+        if (!TryReadActiveConsumedPosition(
+                out var activePartition,
+                out var activePosition,
+                out _,
+                out var version)
+            || !activePartition.Equals(partition))
+        {
+            return;
+        }
+
+        ClearActiveConsumedPosition(activePartition, activePosition, version);
+    }
+
+    private void ClearActiveConsumedPosition()
+    {
+        if (TryReadActiveConsumedPosition(
+                out var partition,
+                out var position,
+                out _,
+                out var version))
+        {
+            ClearActiveConsumedPosition(partition, position, version);
+        }
+    }
+
     private void ClearActiveConsumedPosition(TopicPartition partition, long position, int version)
     {
         if (Interlocked.CompareExchange(ref _activeConsumedPositionVersion, version + 1, version) != version)
@@ -4284,6 +4311,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var hadPaused = false;
         foreach (var partition in partitions)
         {
+            ClearActiveConsumedPosition(partition);
             _positions.TryRemove(partition, out _);
             ClearStoredOffset(partition);
             _fetchPositions.TryRemove(partition, out _);
@@ -4326,6 +4354,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void ClearFetchBuffer()
     {
+        ClearActiveConsumedPosition();
         _stuckFetchPositionTracker.Clear();
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
@@ -4364,7 +4393,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             return;
 
         foreach (var partition in removeSet)
+        {
+            ClearActiveConsumedPosition(partition);
             _stuckFetchPositionTracker.Reset(partition);
+        }
 
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
@@ -4590,7 +4622,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Clearing the pending fetch bypasses its normal position flush. Discard the
             // matching auto-commit snapshot so a later commit/position read cannot restore
             // the pre-divergence leader epoch after the reset below clears it.
-            ClearActiveConsumedPosition(partition, resumeOffset);
+            ClearActiveConsumedPosition(partition);
             // The diverging epoch is the last common epoch, not the new leader epoch.
             // Reusing it would make every subsequent fetch report the same divergence.
             ClearLastConsumedLeaderEpoch(partition);

@@ -160,6 +160,29 @@ public sealed class OffsetStoreTimingTests
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(22L);
     }
 
+    [Test]
+    public async Task CommitAsync_AfterSeek_DoesNotRestoreInDoubtRecord()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        await Assert.That(await consumer.ConsumeOneAsync(
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None)).IsNotNull();
+
+        consumer.Seek(new TopicPartitionOffset(Topic, Partition, 100));
+        await consumer.CommitAsync(CancellationToken.None);
+
+        await Assert.That(GetPositions(consumer)[tp]).IsEqualTo(100L);
+        await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(100L);
+    }
+
     // --- ConsumeBatchAsync ---
 
     [Test]
