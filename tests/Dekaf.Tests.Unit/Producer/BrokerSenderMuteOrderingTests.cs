@@ -652,8 +652,9 @@ public sealed class BrokerSenderMuteOrderingTests
 
     [Test]
     // Complete mock responses inline so this ordering test does not depend on ThreadPool
-    // availability to publish the sender wakeup. The acknowledgement source remains
-    // asynchronous below, preventing test continuation reentrancy on the sender thread.
+    // availability to publish the sender wakeup. Wait synchronously for the dedicated sender
+    // thread to acknowledge both responses so full-suite ThreadPool starvation cannot delay the
+    // test continuation past its timeout.
     [NotInParallel]
     [Timeout(30_000)]
     public async Task NonIdempotentProducer_MultipleInFlight_PipelinesSamePartitionBatches(
@@ -669,8 +670,7 @@ public sealed class BrokerSenderMuteOrderingTests
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
         var sendLogger = new PipelinedSendLogger(expectedSends: 2);
         var acknowledgedOffsets = new List<long>();
-        var allAcknowledged = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var allAcknowledged = new ManualResetEventSlim();
         var sender = CreateSender(
             pool,
             options,
@@ -684,7 +684,7 @@ public sealed class BrokerSenderMuteOrderingTests
                 {
                     acknowledgedOffsets.Add(offset);
                     if (acknowledgedOffsets.Count == 2)
-                        allAcknowledged.TrySetResult();
+                        allAcknowledged.Set();
                 }
             },
             logger: sendLogger);
@@ -706,7 +706,7 @@ public sealed class BrokerSenderMuteOrderingTests
             responses[0].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 100));
             responses[1].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 101));
 
-            await allAcknowledged.Task.WaitAsync(ct);
+            allAcknowledged.Wait(ct);
             await Assert.That(acknowledgedOffsets).IsEquivalentTo([100L, 101L]);
         }
         finally
