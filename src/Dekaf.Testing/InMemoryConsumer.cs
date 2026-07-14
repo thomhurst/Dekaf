@@ -26,6 +26,11 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly HashSet<TopicPartition> _paused = [];
     private readonly Dictionary<TopicPartition, long> _positions = [];
     private readonly Dictionary<TopicPartition, long> _storedOffsets = [];
+    // In-doubt record under OffsetStoreTiming.AfterProcessing: delivered but not yet proven
+    // processed. Staged for commit only when the next consume call or an explicit commit
+    // proves it; an unwind (or close) leaves it unstaged so it is redelivered.
+    private TopicPartition _inDoubtPartition;
+    private long _inDoubtNextOffset = -1;
     private readonly string? _groupId;
     private readonly string? _memberId;
     private string? _subscriptionPattern;
@@ -233,6 +238,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _paused.Clear();
             _positions.Clear();
             _storedOffsets.Clear();
+            _inDoubtNextOffset = -1;
             UnregisterConsumerGroupMemberUnderLock();
         }
     }
@@ -326,7 +332,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         ThrowIfDisposed();
 
         lock (_gate)
+        {
+            // Explicit commit: the caller vouches for everything delivered so far,
+            // including the in-doubt record still being processed.
+            ProveInDoubtRecordUnderLock();
             CommitStoredOffsets();
+        }
 
         return ValueTask.CompletedTask;
     }
@@ -422,6 +433,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         lock (_gate)
         {
             var partition = new TopicPartition(offset.Topic, offset.Partition);
+            DiscardInDoubtRecordUnderLock(partition);
             _positions[partition] = offset.Offset;
             if (_options.EnableAutoOffsetStore)
                 _storedOffsets[partition] = offset.Offset;
@@ -438,6 +450,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             foreach (var partition in SelectTargetPartitions(partitions))
             {
                 var position = _cluster.GetWatermarks(partition).Low;
+                DiscardInDoubtRecordUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
                     _storedOffsets[partition] = position;
@@ -455,6 +468,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             foreach (var partition in SelectTargetPartitions(partitions))
             {
                 var position = _cluster.GetWatermarks(partition).High;
+                DiscardInDoubtRecordUnderLock(partition);
                 _positions[partition] = position;
                 if (_options.EnableAutoOffsetStore)
                     _storedOffsets[partition] = position;
@@ -486,6 +500,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _paused.Clear();
             _positions.Clear();
             _storedOffsets.Clear();
+            _inDoubtNextOffset = -1;
             UnregisterConsumerGroupMemberUnderLock();
         }
     }
@@ -522,6 +537,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 _paused.Remove(partition);
                 _positions.Remove(partition);
                 _storedOffsets.Remove(partition);
+                DiscardInDoubtRecordUnderLock(partition);
             }
 
             RegisterConsumerGroupMemberUnderLock();
@@ -589,6 +605,10 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         lock (_gate)
         {
+            // A new consume call proves the previously delivered record was processed
+            // (poll contract) — stage it before delivering the next one.
+            ProveInDoubtRecordUnderLock();
+
             foreach (var partition in GetCurrentAssignmentUnderLock().OrderBy(item => item.Topic, StringComparer.Ordinal).ThenBy(item => item.Partition))
             {
                 if (_paused.Contains(partition))
@@ -603,10 +623,18 @@ public sealed class InMemoryConsumer<TKey, TValue> :
                 selected = record;
                 selectedPartition = partition;
                 _positions[partition] = record.Offset + 1;
-                if (_options.EnableAutoOffsetStore)
-                    _storedOffsets[partition] = record.Offset + 1;
-                if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
-                    CommitStoredOffsets();
+                if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
+                {
+                    if (_options.EnableAutoOffsetStore)
+                        _storedOffsets[partition] = record.Offset + 1;
+                    if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+                        CommitStoredOffsets();
+                }
+                else
+                {
+                    _inDoubtPartition = partition;
+                    _inDoubtNextOffset = record.Offset + 1;
+                }
                 break;
             }
         }
@@ -619,6 +647,30 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
         result = ToConsumeResult(selectedPartition, selected);
         return true;
+    }
+
+    /// <summary>
+    /// Stages (and under Auto mode commits) the in-doubt record's offset. Called when the
+    /// application demonstrably moved past it: a subsequent consume call or explicit commit.
+    /// </summary>
+    private void ProveInDoubtRecordUnderLock()
+    {
+        if (_inDoubtNextOffset < 0)
+            return;
+
+        if (_options.EnableAutoOffsetStore)
+            _storedOffsets[_inDoubtPartition] = _inDoubtNextOffset;
+
+        _inDoubtNextOffset = -1;
+
+        if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+            CommitStoredOffsets();
+    }
+
+    private void DiscardInDoubtRecordUnderLock(TopicPartition partition)
+    {
+        if (_inDoubtNextOffset >= 0 && _inDoubtPartition.Equals(partition))
+            _inDoubtNextOffset = -1;
     }
 
     private ConsumeResult<TKey, TValue> ToConsumeResult(TopicPartition topicPartition, InMemoryRecord record)

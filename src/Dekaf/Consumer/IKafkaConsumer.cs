@@ -181,7 +181,9 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
 /// preserve commit-safety validation performed by processing extensions such as
 /// <c>RunPartitionedAsync</c>.
 /// A grouped consumer using <see cref="OffsetCommitMode.Auto"/> with automatic offset storage
-/// enabled can commit messages before application processing completes.
+/// enabled stages offsets based on consume-loop progress; when records are handed to
+/// out-of-band workers (as partitioned processing does), that progress no longer proves
+/// processing, so offsets could be committed before processing completes.
 /// </remarks>
 public interface IConsumerCommitConfiguration
 {

@@ -1,5 +1,5 @@
 ---
-sidebar_position: 2
+sidebar_position: 3
 ---
 
 # Offset Management
@@ -43,23 +43,26 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 }
 ```
 
-**Pros:** Simple, no extra code needed
-**Cons:** Messages might be committed before processing completes
+**Pros:** Simple, no extra code needed — and safe by default
+**Cons:** Duplicates are possible after failures; processing must be idempotent
 
-:::caution
-In auto mode a message's offset is staged for commit as soon as it is *consumed*, not when it is
-successfully processed. Loss does not require a crash: if your handler throws and you catch the
-exception and keep consuming, the failed message's offset is still committed on the next
-auto-commit tick (every 5 seconds by default), on rebalance, and on graceful shutdown — the
-message is gone. Use this mode as-is only when occasional message loss is acceptable (logs,
-metrics, etc.), or pair it with manual offset store (below).
+:::info Dekaf's auto-commit default is at-least-once
+Unlike Confluent.Kafka, a message's offset only becomes committable once your loop has
+demonstrably moved past it — by requesting the next message. If your handler throws and the
+exception exits the loop, the failed message is **not** committed and is redelivered after a
+restart or rebalance. See [Delivery Semantics](delivery-semantics.md) for the full contract,
+including the two caveats (catch-and-continue counts as processed; `break` leaves the last
+message uncommitted unless you `CommitAsync()`).
+Prefer stating the intent explicitly with `WithAtLeastOnceProcessing()`. For Confluent-style
+at-most-once staging, use `WithAtMostOnceProcessing()`.
 :::
 
 ### Auto-Commit with Manual Offset Store
 
-The middle ground between the two modes: keep background auto-commit, but only let it commit
-offsets you have explicitly marked as processed. This gives at-least-once semantics without a
-commit round-trip in your processing loop.
+Keep background auto-commit, but only let it commit offsets you have explicitly marked as
+processed. This is the strict form of at-least-once: unlike the default, it survives
+catch-and-continue, because acknowledgment is your explicit `StoreOffset` call rather than
+loop progress.
 
 ```csharp
 using Dekaf;
@@ -67,7 +70,7 @@ using Dekaf;
 var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
-    .WithAtLeastOnceProcessing() // Auto-commit only commits explicitly stored offsets
+    .WithAutoOffsetStore(false) // Auto-commit only commits explicitly stored offsets
     .BuildAsync();
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
@@ -79,10 +82,7 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 
 `StoreOffset` is a cheap in-memory operation; the background auto-commit loop batches the actual
 network commits. If processing throws before `StoreOffset`, the message's offset is never staged
-and it will be redelivered.
-
-`WithAtLeastOnceProcessing()` is intent-level shorthand for
-`WithOffsetCommitMode(OffsetCommitMode.Auto).WithAutoOffsetStore(false)`.
+and it will be redelivered — even if you catch the exception and keep consuming.
 
 :::caution
 Offsets are positions, not per-message acknowledgements. Storing a later offset also commits
@@ -267,10 +267,15 @@ follow the configured auto-offset-reset policy.
 
 ## Delivery Semantics
 
+The full contract — including exactly when an offset becomes committable and how Dekaf compares
+to the Java and Confluent clients — lives on the
+[Delivery Semantics](delivery-semantics.md) page. Summary:
+
 | Mode | Semantics | Risk |
 |------|-----------|------|
-| Auto (defaults) | At-most-once | Loses messages whose processing failed — no crash required |
-| `WithAtLeastOnceProcessing()` + `StoreOffset` after process | At-least-once | May reprocess on crash |
+| Auto (defaults, = `WithAtLeastOnceProcessing()`) | At-least-once | May reprocess after failures; swallowed exceptions still commit |
+| `WithAutoOffsetStore(false)` + `StoreOffset` after process | At-least-once (strict) | May reprocess on crash |
+| `WithAtMostOnceProcessing()` | At-most-once | Loses messages whose processing failed |
 | Manual (commit after process) | At-least-once | May reprocess on crash |
 | Manual + External storage | Exactly-once | Most complex |
 
@@ -294,7 +299,7 @@ await dbTransaction.CommitAsync();
 
 ## Best Practices
 
-1. **Make commits reflect completed processing** for most applications - either Manual mode, or `WithAtLeastOnceProcessing()` + `StoreOffset` after each successfully processed message
+1. **Make commits reflect completed processing** - the default already does this for sequential loops; add `WithAutoOffsetStore(false)` + `StoreOffset` after each successfully processed message when you catch exceptions and keep consuming, or use Manual mode
 
 2. **Batch your commits** - committing after every message is slow
 

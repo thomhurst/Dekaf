@@ -147,6 +147,27 @@ internal sealed class PendingFetchData : IDisposable
     public int LastYieldedLeaderEpoch { get; private set; } = -1;
 
     /// <summary>
+    /// Highest yielded offset the application has demonstrably moved past — set when the
+    /// caller requests the next record/batch after a yield. Offsets at or below this value
+    /// are safe to stage for auto-commit (at-least-once); the gap between
+    /// <see cref="ProvenOffset"/> and <see cref="LastYieldedOffset"/> is the in-doubt record
+    /// whose processing may have failed, and must not be staged on unwind.
+    /// </summary>
+    public long ProvenOffset { get; private set; } = -1;
+    public int ProvenLeaderEpoch { get; private set; } = -1;
+
+    /// <summary>
+    /// Marks everything yielded so far as processed. Called on the consume paths at the
+    /// point the application requests more data (next MoveNextAsync/ConsumeOne call),
+    /// which proves the previously yielded record or batch was handled.
+    /// </summary>
+    public void MarkYieldedProcessed()
+    {
+        ProvenOffset = LastYieldedOffset;
+        ProvenLeaderEpoch = LastYieldedLeaderEpoch;
+    }
+
+    /// <summary>
     /// Tracks total bytes consumed in this pending fetch.
     /// </summary>
     public long TotalBytesConsumed { get; private set; }
@@ -626,6 +647,8 @@ internal sealed class PendingFetchData : IDisposable
         CurrentTimestampType = default;
         LastYieldedOffset = -1;
         LastYieldedLeaderEpoch = -1;
+        ProvenOffset = -1;
+        ProvenLeaderEpoch = -1;
         TotalBytesConsumed = 0;
         MessageCount = 0;
         IsExhausted = false;
@@ -1954,6 +1977,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
                             break;
 
+                        // Reaching this line means the caller requested the next record, which
+                        // proves the record yielded above was processed. Enumerator disposal
+                        // (loop-body exception, break) resumes directly into finally blocks and
+                        // never executes this, leaving the in-doubt record unproven.
+                        pending.MarkYieldedProcessed();
+
                         if (--recordsUntilPollRefresh == 0)
                         {
                             await RecordPollAsync(cancellationToken).ConfigureAwait(false);
@@ -2123,6 +2152,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 PendingFetchData pending = _pendingFetches.Peek();
                 int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                 var batchYielded = false;
+                var resumedAfterYield = false;
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
 
@@ -2144,6 +2174,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
+                    // Resumption = the caller requested the next batch, proving this one was
+                    // processed. Enumerator disposal skips straight to the finally block.
+                    resumedAfterYield = true;
                     await RecordPollAsync(cancellationToken).ConfigureAwait(false);
                 }
                 finally
@@ -2153,7 +2186,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         pendingFetchesVersion,
                         metricsEnabled,
                         batchProcessingStarted,
-                        disposePending: !batchYielded);
+                        disposePending: !batchYielded,
+                        yieldedBatchProcessed: resumedAfterYield);
                 }
             }
 
@@ -2266,6 +2300,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 PendingFetchData pending = _pendingFetches.Peek();
                 int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                 var batchYielded = false;
+                var resumedAfterYield = false;
                 long? batchProcessingStarted = _adaptiveFetchSizer is not null
                     ? Stopwatch.GetTimestamp() : null;
 
@@ -2285,6 +2320,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         _options.MaxPollRecords);
                     batchYielded = true;
                     yield return batch;
+                    // Resumption = the caller requested the next batch, proving this one was
+                    // processed. Enumerator disposal skips straight to the finally block.
+                    resumedAfterYield = true;
                     await RecordPollAsync(cancellationToken).ConfigureAwait(false);
                 }
                 finally
@@ -2294,7 +2332,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         pendingFetchesVersion,
                         metricsEnabled,
                         batchProcessingStarted,
-                        disposePending: !batchYielded);
+                        disposePending: !batchYielded,
+                        yieldedBatchProcessed: resumedAfterYield);
                 }
             }
 
@@ -2312,13 +2351,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int pendingFetchesVersion,
         bool metricsEnabled,
         long? batchProcessingStarted,
-        bool disposePending)
+        bool disposePending,
+        bool yieldedBatchProcessed)
     {
         if (Volatile.Read(ref _pendingFetchesVersion) != pendingFetchesVersion)
             return;
 
         if (_pendingFetches.Count == 0 || !ReferenceEquals(_pendingFetches.Peek(), pending))
             return;
+
+        if (yieldedBatchProcessed)
+            pending.MarkYieldedProcessed();
 
         FlushConsumedPositions(pending);
 
@@ -3078,11 +3121,51 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (!TryGetConsumedPosition(pending, out var tp, out var nextOffset, out var leaderEpoch))
             return false;
 
-        ApplyConsumedPosition(tp, nextOffset, leaderEpoch);
-        ClearActiveConsumedPosition(tp, nextOffset);
+        // Positions always advance past everything yielded (delivery semantics), but the
+        // committable stored offset advances only past records the application has
+        // demonstrably processed (ProvenOffset — see MarkYieldedProcessed). On an unwind
+        // the in-doubt record between ProvenOffset and LastYieldedOffset is therefore
+        // never staged, which is what makes the default at-least-once. In OnDelivery
+        // mode every yielded offset was already staged at delivery, so staging the full
+        // yielded range here is idempotent.
+        _positions[tp] = nextOffset;
+        SetLastConsumedLeaderEpoch(tp, leaderEpoch);
+
+        var stagedFullYieldedRange = true;
+        if (_options.EnableAutoOffsetStore)
+        {
+            if (EagerOffsetStore)
+            {
+                StoreOffsetCore(tp, nextOffset, leaderEpoch);
+            }
+            else
+            {
+                if (pending.ProvenOffset >= 0)
+                    StoreOffsetCore(tp, pending.ProvenOffset + 1, pending.ProvenLeaderEpoch);
+                stagedFullYieldedRange = pending.ProvenOffset + 1 >= nextOffset;
+            }
+        }
+
+        if (!_prefetchEnabled)
+        {
+            _fetchPositions[tp] = nextOffset;
+        }
+
+        // Keep the active snapshot alive while an in-doubt record remains unstaged so a
+        // later explicit CommitAsync can still vouch for it (break → CommitAsync → close).
+        if (stagedFullYieldedRange)
+            ClearActiveConsumedPosition(tp, nextOffset);
+
         return true;
     }
 
+    private bool EagerOffsetStore => _options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery;
+
+    /// <summary>
+    /// Full-staging position apply used by explicit-commit paths (<see cref="CommitAsync(CancellationToken)"/>):
+    /// stages everything yielded, including a record the application may still be holding.
+    /// An explicit commit is the caller vouching for everything delivered so far.
+    /// </summary>
     private void ApplyConsumedPosition(TopicPartition partition, long nextOffset, int leaderEpoch)
     {
         RecordConsumedPosition(partition, nextOffset, leaderEpoch);
@@ -3108,7 +3191,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_pendingFetches.Count == 0)
             return false;
 
-        return FlushConsumedPositions(_pendingFetches.Peek());
+        // Explicit commit: the caller vouches for everything yielded so far, including a
+        // record still being processed. Mark it proven so the flush stages it.
+        var pending = _pendingFetches.Peek();
+        pending.MarkYieldedProcessed();
+        return FlushConsumedPositions(pending);
     }
 
     private bool TryGetActiveConsumedPosition(TopicPartition partition, out long position, out int leaderEpoch)
@@ -3147,9 +3234,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// <summary>
     /// Records the yielded record in the pending fetch and, in auto-commit mode, publishes
     /// the next position to the active consumed snapshot. The snapshot is read only by
-    /// <see cref="CommitAsync(CancellationToken)"/>, close, and <see cref="GetPosition"/> —
+    /// <see cref="CommitAsync(CancellationToken)"/> and <see cref="GetPosition"/> —
     /// never by the background auto-commit loop — so publishing before the record is
-    /// yielded cannot make it committable early.
+    /// yielded cannot make it committable early. Under <see cref="OffsetStoreTiming.OnDelivery"/>
+    /// the offset additionally becomes committable here, by design (at-most-once).
     /// </summary>
     private void TrackConsumedPosition(PendingFetchData pending, long offset, int messageBytes)
     {
@@ -3158,6 +3246,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
         {
             PublishActiveConsumedPosition(pending.TopicPartition, offset + 1, pending.LastYieldedLeaderEpoch);
+        }
+
+        // OnDelivery (at-most-once) staging: the offset becomes committable the moment the
+        // record is handed out, before processing. Opt-in via WithAtMostOnceProcessing —
+        // costs per-message dictionary writes that the default fetch-boundary flush avoids.
+        if (_options.EnableAutoOffsetStore && EagerOffsetStore)
+        {
+            StoreOffsetCore(pending.TopicPartition, offset + 1, pending.LastYieldedLeaderEpoch);
         }
     }
 
@@ -3822,6 +3918,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var hasInterceptors = _interceptors is not null;
         var rawTrackingEnabled = _rawRecordTrackingEnabled;
 
+        // A new consume call proves the record returned by the previous call was processed
+        // (poll contract), so everything yielded from the head fetch becomes committable.
+        if (_pendingFetches.Count > 0)
+            _pendingFetches.Peek().MarkYieldedProcessed();
+
         while (_pendingFetches.Count > 0)
         {
             if (ClearFetchBufferForPendingCoordinatorRevocations())
@@ -3950,6 +4051,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             FlushActiveConsumedPosition();
         }
+        else if (_pendingFetches.Count > 0)
+        {
+            // Close path: stage offsets already proven processed but not yet flushed
+            // (e.g. mid-fetch ConsumeOne usage) without vouching for the in-doubt last
+            // yielded record the way an explicit CommitAsync does.
+            FlushConsumedPositions(_pendingFetches.Peek());
+        }
 
         return await CommitStoredOffsetsAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -4075,7 +4183,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         if (TryGetActiveConsumedPosition(partition, out var activePosition, out var leaderEpoch))
         {
-            RecordConsumedPosition(partition, activePosition, leaderEpoch);
+            // Materialize the snapshot into _positions for consistency, but do NOT stage it
+            // for commit: the position includes the record currently being processed, and a
+            // read-only query must not make an unproven record committable.
+            _positions[partition] = activePosition;
+            SetLastConsumedLeaderEpoch(partition, leaderEpoch);
             return activePosition;
         }
 
@@ -7100,7 +7212,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 try
                 {
-                    if (await CommitPendingOffsetsAsync(flushActiveConsumedPosition: true, cancellationToken)
+                    // flushActiveConsumedPosition: false — close must not stage the last
+                    // yielded record: its processing is unproven (the consumer may be closing
+                    // because that processing failed). Proven offsets were already flushed by
+                    // the consume paths; committing only those preserves at-least-once.
+                    // Callers that processed everything and want a clean handoff should call
+                    // CommitAsync() before CloseAsync().
+                    if (await CommitPendingOffsetsAsync(flushActiveConsumedPosition: false, cancellationToken)
                         .ConfigureAwait(false))
                     {
                         LogCommittedPendingOffsets();
