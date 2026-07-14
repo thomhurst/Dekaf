@@ -42,3 +42,19 @@ public class Crc32CBenchmarks
     public uint Software()
         => Crc32C.ComputeSoftware(_data);
 }
+
+/// <summary>
+/// Benchmarks the CRC combination used to join a record-batch header checksum with its
+/// precomputed encoded-record checksum.
+/// </summary>
+[MemoryDiagnoser]
+[ShortRunJob]
+public class Crc32CCombineBenchmarks
+{
+    [Params(40, 512, 4_096, 65_536, 850_000, 1_048_576)]
+    public int SuffixSize { get; set; }
+
+    [Benchmark]
+    public uint Combine()
+        => Crc32C.Combine(0xA1B2C3D4u, 0x10203040u, SuffixSize);
+}
