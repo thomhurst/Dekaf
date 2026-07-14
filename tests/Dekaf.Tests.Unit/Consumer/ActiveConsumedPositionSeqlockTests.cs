@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Serialization;
@@ -68,13 +69,14 @@ public sealed class ActiveConsumedPositionSeqlockTests
         // Every published tuple is fully derivable from its position, so any reader
         // observing a (topic, partition, epoch) that does not match its position has
         // seen a torn mix of two writes.
-        const long requiredSuccessfulReads = 1_001;
+        const long requiredDistinctPositions = 1_001;
         using var workersStop = new CancellationTokenSource();
-        var requiredReadsObserved = new TaskCompletionSource(
+        var requiredPositionsObserved = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var observedPositions = new ConcurrentDictionary<long, byte>();
         var violations = new List<string>();
         var violationLock = new object();
-        long successfulReads = 0;
+        long distinctPositionCount = 0;
 
         void RecordViolation(string message)
         {
@@ -92,8 +94,11 @@ public sealed class ActiveConsumedPositionSeqlockTests
                 if (!tryRead(out var partition, out var position, out var leaderEpoch, out _))
                     continue;
 
-                if (Interlocked.Increment(ref successfulReads) == requiredSuccessfulReads)
-                    requiredReadsObserved.TrySetResult();
+                if (observedPositions.TryAdd(position, 0)
+                    && Interlocked.Increment(ref distinctPositionCount) == requiredDistinctPositions)
+                {
+                    requiredPositionsObserved.TrySetResult();
+                }
 
                 var expected = ExpectedTupleFor(position);
                 if (partition != expected.Partition || leaderEpoch != expected.LeaderEpoch)
@@ -126,7 +131,11 @@ public sealed class ActiveConsumedPositionSeqlockTests
 
         try
         {
-            await requiredReadsObserved.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await requiredPositionsObserved.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch (TimeoutException)
+        {
+            // Assertions below report torn tuples first, then insufficient progress.
         }
         finally
         {
@@ -135,8 +144,9 @@ public sealed class ActiveConsumedPositionSeqlockTests
         }
 
         await Assert.That(violations).IsEmpty();
-        // The readers must have actually observed published values for the test to mean anything.
-        await Assert.That(Interlocked.Read(ref successfulReads)).IsGreaterThanOrEqualTo(requiredSuccessfulReads);
+        // Distinct positions guarantee the readers crossed same-partition and full-write transitions.
+        await Assert.That(Interlocked.Read(ref distinctPositionCount))
+            .IsGreaterThanOrEqualTo(requiredDistinctPositions);
     }
 
     /// <summary>
