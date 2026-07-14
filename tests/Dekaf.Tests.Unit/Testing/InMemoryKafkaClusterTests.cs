@@ -73,7 +73,7 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
-    public async Task RunPartitionedAsync_EmptyGroupIdWithAutoCommitDefaults_DoesNotThrow()
+    public async Task RunPartitionedAsync_EmptyGroupIdWithAutoCommitDefaults_PassesCommitModeGuard()
     {
         var cluster = new InMemoryKafkaCluster();
         cluster.CreateTopic("orders", partitionCount: 1);
@@ -82,20 +82,15 @@ public sealed class InMemoryKafkaClusterTests
             new InMemoryConsumerOptions { GroupId = "" });
         consumer.Subscribe("orders");
 
-        using var cts = new CancellationTokenSource();
-        await cts.CancelAsync();
-
-        try
-        {
-            await consumer.RunPartitionedAsync(
+        // An empty GroupId means no group to auto-commit through, so the commit-mode
+        // guard must not fire. The run then fails on the in-memory consumer's missing
+        // batch-fetch support — proof execution got past the guard (a guard regression
+        // would surface InvalidOperationException here instead).
+        await Assert.That(async () => await consumer.RunPartitionedAsync(
                 static (_, _) => ValueTask.CompletedTask,
                 new PartitionedProcessingOptions(),
-                cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected: guard passed (no group), run exited via the cancelled token.
-        }
+                CancellationToken.None))
+            .Throws<NotSupportedException>();
     }
 
     [Test]
