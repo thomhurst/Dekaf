@@ -217,6 +217,108 @@ public sealed class OffsetStoreTimingTests
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(22L);
     }
 
+    [Test]
+    public async Task ConsumeBatchAsync_CommitAsyncInAutoMode_VouchesForIteratedRecords()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        await Assert.That(async () =>
+        {
+            await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
+            {
+                foreach (var _ in batch) { }
+                await consumer.CommitAsync(CancellationToken.None);
+                throw new InvalidOperationException("stop after explicit handoff");
+            }
+        }).Throws<InvalidOperationException>();
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(22L);
+    }
+
+    [Test]
+    public async Task ConsumeRawBatchAsync_CommitAsyncInAutoMode_VouchesForIteratedRecords()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        await Assert.That(async () =>
+        {
+            await foreach (var batch in consumer.ConsumeRawBatchAsync(CancellationToken.None))
+            {
+                foreach (var _ in batch) { }
+                await consumer.CommitAsync(CancellationToken.None);
+                throw new InvalidOperationException("stop after explicit handoff");
+            }
+        }).Throws<InvalidOperationException>();
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(22L);
+    }
+
+    [Test]
+    public async Task ConsumeBatchAsync_OnDelivery_StagesEachIteratedRecordImmediately()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(
+            OffsetCommitMode.Auto, OffsetStoreTiming.OnDelivery, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        await Assert.That(async () =>
+        {
+            await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
+            {
+                foreach (var _ in batch)
+                {
+                    await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
+                    throw new InvalidOperationException("stop during batch processing");
+                }
+            }
+        }).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task ConsumeRawBatchAsync_OnDelivery_StagesEachIteratedRecordImmediately()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(
+            OffsetCommitMode.Auto, OffsetStoreTiming.OnDelivery, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        await Assert.That(async () =>
+        {
+            await foreach (var batch in consumer.ConsumeRawBatchAsync(CancellationToken.None))
+            {
+                foreach (var _ in batch)
+                {
+                    await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
+                    throw new InvalidOperationException("stop during batch processing");
+                }
+            }
+        }).Throws<InvalidOperationException>();
+    }
+
     // --- ConsumeOneAsync ---
 
     [Test]
@@ -415,6 +517,34 @@ public sealed class OffsetStoreTimingTests
 
         await Assert.That(offsetsAfterFirst.ContainsKey(partition)).IsFalse();
         await Assert.That(offsetsAfterSecond[partition]).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task InMemoryConsumer_ReassignmentDiscardsInDoubtRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "workers",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("jobs", 0);
+
+        await producer.ProduceAsync("jobs", "a", "one");
+        consumer.Assign(partition);
+
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        consumer.Assign(partition);
+        var replay = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(first!.Value.Offset).IsEqualTo(0L);
+        await Assert.That(replay!.Value.Offset).IsEqualTo(0L);
+        var offsets = await admin.ListConsumerGroupOffsetsAsync("workers");
+        await Assert.That(offsets.ContainsKey(partition)).IsFalse();
     }
 
     // --- Harness ---

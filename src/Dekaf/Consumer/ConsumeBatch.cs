@@ -116,6 +116,7 @@ namespace Dekaf.Consumer
         private readonly IDeserializer<TKey>? _keyDeserializer;
         private readonly IDeserializer<TValue>? _valueDeserializer;
         private readonly BatchIterationGuard _iterationGuard;
+        private readonly Action<TopicPartition, long, int>? _storeOffsetOnDelivery;
         private readonly int _maxRecords;
         private long _count;
 
@@ -123,6 +124,7 @@ namespace Dekaf.Consumer
             IDeserializer<TKey>? keyDeserializer,
             IDeserializer<TValue>? valueDeserializer,
             BatchIterationGuard iterationGuard = default,
+            Action<TopicPartition, long, int>? storeOffsetOnDelivery = null,
             int maxRecords = int.MaxValue)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
@@ -130,6 +132,7 @@ namespace Dekaf.Consumer
             _keyDeserializer = keyDeserializer;
             _valueDeserializer = valueDeserializer;
             _iterationGuard = iterationGuard;
+            _storeOffsetOnDelivery = storeOffsetOnDelivery;
             _maxRecords = maxRecords;
         }
 
@@ -257,6 +260,10 @@ namespace Dekaf.Consumer
                     return false;
 
                 pending.TrackConsumed(offset, messageBytes);
+                _batch._storeOffsetOnDelivery?.Invoke(
+                    pending.TopicPartition,
+                    offset + 1,
+                    pending.LastYieldedLeaderEpoch);
                 _recordsYielded++;
                 _batch._count++;
 

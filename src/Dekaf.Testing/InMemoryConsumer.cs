@@ -701,6 +701,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         _paused.Clear();
         _positions.Clear();
         _storedOffsets.Clear();
+        _inDoubtNextOffset = -1;
 
         foreach (var (partition, position) in nextPositions)
         {

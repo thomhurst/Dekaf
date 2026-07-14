@@ -208,9 +208,11 @@ and `PartitionCommitPolicy.UserManaged` also remains allowed for applications
 that accept auto-commit semantics.
 
 This check inspects the commit configuration of Dekaf's own consumer
-implementations (`KafkaConsumer` and the testing `InMemoryConsumer`). A custom
-`IKafkaConsumer` implementation or a wrapper around a Dekaf consumer is not
-inspected and will not fail fast — if you wrap a consumer, ensure the underlying
+implementations (`KafkaConsumer` and the testing `InMemoryConsumer`). Custom
+implementations and wrappers can opt into the same guard by implementing
+`IConsumerCommitConfiguration` and forwarding `OffsetCommitMode`,
+`EnableAutoOffsetStore`, and `HasConsumerGroup`. Types that do not implement that
+interface cannot be inspected and will not fail fast, so ensure their underlying
 configuration follows the rules above.
 
 Transactions remain user-managed. If a processor writes transactionally, send

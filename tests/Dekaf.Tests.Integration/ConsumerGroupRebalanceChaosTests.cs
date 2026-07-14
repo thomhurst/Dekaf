@@ -529,6 +529,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         await oracle.WaitForAllSequencesAsync(cancellationToken);
         if (offsetCommitMode == OffsetCommitMode.Manual)
             await oracle.WaitForFinalCommitsAsync(cancellationToken);
+        else
+            await survivor.CommitDeliveredAsync(cancellationToken);
         await survivor.StopAsync();
         if (offsetCommitMode == OffsetCommitMode.Auto)
             await WaitForFinalBrokerCommitsAsync(groupId, oracle, cancellationToken);
@@ -726,6 +728,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         await oracle.WaitForAllSequencesAsync(cancellationToken);
         if (offsetCommitMode == OffsetCommitMode.Manual)
             await oracle.WaitForFinalCommitsAsync(cancellationToken);
+        else
+            await survivor.CommitDeliveredAsync(cancellationToken);
 
         await Assert.That(oracle.WasDuplicatedAfterCrash(
                 crashedObservation.Partition,
@@ -1083,6 +1087,7 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         Task WaitForPartitionAssignedAsync(TopicPartition partition, CancellationToken cancellationToken);
         Task WaitForPartitionUnassignedAsync(TopicPartition partition, CancellationToken cancellationToken);
         Task WaitForObservedCountAsync(int count, CancellationToken cancellationToken);
+        Task CommitDeliveredAsync(CancellationToken cancellationToken);
         Task StopAsync();
     }
 
@@ -1120,6 +1125,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         public int ObservedCount => _observed.Value;
 
         public int MaxAssignmentCount => _assignments.MaxAssignmentCount;
+
+        public virtual Task CommitDeliveredAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
         public void Allow(int count) => _permits.Release(count);
 
@@ -1315,6 +1322,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         }
 
         protected override ValueTask DisposeConsumerAsync() => _consumer.DisposeAsync();
+
+        public override async Task CommitDeliveredAsync(CancellationToken cancellationToken) =>
+            await _consumer.CommitAsync(cancellationToken);
 
         public ValueTask CommitAsync(
             TopicPartitionOffset offset,

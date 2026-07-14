@@ -863,6 +863,7 @@ internal static class DekafOptionsBinding
         builder.WithOffsetCommitMode(options.OffsetCommitMode);
         builder.WithAutoCommitInterval(TimeSpan.FromMilliseconds(options.AutoCommitIntervalMs));
         builder.WithAutoOffsetStore(options.EnableAutoOffsetStore);
+        builder.WithOffsetStoreTiming(options.OffsetStoreTiming);
         if (options.AutoOffsetReset == AutoOffsetReset.ByDuration)
             builder.WithAutoOffsetResetByDuration(options.AutoOffsetResetDuration ?? TimeSpan.Zero);
         else
@@ -1220,6 +1221,8 @@ internal static class DekafConfigurationBinding
             builder.WithAutoCommitInterval(TimeSpan.FromMilliseconds(autoCommitIntervalMs));
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.EnableAutoOffsetStore), out var enableAutoOffsetStore))
             builder.WithAutoOffsetStore(enableAutoOffsetStore);
+        if (TryGetValue<OffsetStoreTiming>(configuration, nameof(ConsumerOptions.OffsetStoreTiming), out var offsetStoreTiming))
+            builder.WithOffsetStoreTiming(offsetStoreTiming);
         if (TryGetAutoOffsetReset(configuration, out var autoOffsetReset, out var autoOffsetResetDuration))
         {
             if (autoOffsetReset == AutoOffsetReset.ByDuration)
