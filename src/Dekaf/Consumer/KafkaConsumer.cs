@@ -5087,7 +5087,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 BeforeCoordinatorAssignmentSnapshotForTest?.Invoke();
                 var (coordinatorAssignment, coordinatorAssignmentVersion, coordinatorRevocations) =
-                    coordinator.GetAssignmentSnapshotAndDrainRevocations();
+                    await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(cancellationToken)
+                        .ConfigureAwait(false);
                 if (coordinatorRevocations is not null)
                 {
                     unacknowledgedCoordinatorRevocations = (coordinator, coordinatorRevocations);

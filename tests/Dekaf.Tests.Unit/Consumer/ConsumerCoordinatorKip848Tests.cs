@@ -1578,7 +1578,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
         await Assert.That(commitRequestCount).IsEqualTo(0);
 
-        var (_, assignmentVersion, _) = coordinator.GetAssignmentSnapshotAndDrainRevocations();
+        var (_, assignmentVersion, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+            CancellationToken.None);
         coordinator.AcknowledgeAssignmentSync(assignmentVersion);
         await coordinator.CommitOffsetsAsync(
             [new TopicPartitionOffset("test-topic", 0, 1)],
@@ -1632,7 +1633,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             "_maxPollExpiredAtPollVersion",
             GetCoordinatorLongField(coordinator, "_pollVersion"));
 
-        var (_, assignmentVersion, _) = coordinator.GetAssignmentSnapshotAndDrainRevocations();
+        var (_, assignmentVersion, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+            CancellationToken.None);
         coordinator.AcknowledgeAssignmentSync(assignmentVersion);
 
         var exception = await Assert.That(async () =>

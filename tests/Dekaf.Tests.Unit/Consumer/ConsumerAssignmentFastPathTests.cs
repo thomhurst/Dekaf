@@ -536,6 +536,74 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task EnsureAssignmentAsync_RevocationCommitPending_WaitsForCommit(
+        CancellationToken testTimeout)
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.OffsetCommit,
+            OffsetCommitRequest.LowestSupportedVersion,
+            OffsetCommitRequest.HighestSupportedVersion);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetch(connection);
+        var commitStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCommit = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        OffsetCommitRequest? commitRequest = null;
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => BlockOffsetCommitAsync(
+                call.ArgAt<OffsetCommitRequest>(0),
+                call.ArgAt<CancellationToken>(2)));
+
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            offsetCommitMode: OffsetCommitMode.Auto);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(testTimeout);
+        var coordinator = GetCoordinator(consumer);
+        var revokedPartition = new TopicPartition("test-topic", 0);
+        var assignedPartition = new TopicPartition("test-topic", 1);
+        consumer.StoreOffset(new TopicPartitionOffset(revokedPartition.Topic, revokedPartition.Partition, 10));
+
+        var revokedResult = ProcessCoordinatorAssignment(coordinator, CreateAssignment(1));
+        var listenerTask = FireConsumerProtocolRebalanceListenersAsync(
+            coordinator,
+            revokedResult,
+            testTimeout).AsTask();
+        await commitStarted.Task.WaitAsync(testTimeout);
+        var assignmentTask = consumer.EnsureAssignmentAsync(testTimeout).AsTask();
+
+        await Assert.That(assignmentTask.IsCompleted).IsFalse();
+        await Assert.That(consumer.Assignment).Contains(revokedPartition);
+
+        releaseCommit.TrySetResult(true);
+        await listenerTask;
+        await assignmentTask;
+
+        await Assert.That(commitRequest).IsNotNull();
+        await Assert.That(consumer.Assignment).DoesNotContain(revokedPartition);
+        await Assert.That(consumer.Assignment).Contains(assignedPartition);
+
+        async ValueTask<OffsetCommitResponse> BlockOffsetCommitAsync(
+            OffsetCommitRequest request,
+            CancellationToken cancellationToken)
+        {
+            commitRequest = request;
+            commitStarted.TrySetResult(true);
+            await releaseCommit.Task.WaitAsync(cancellationToken);
+            return new OffsetCommitResponse { Topics = [] };
+        }
+    }
+
+    [Test]
     public async Task CoordinatorRevocationFetchClear_ConcurrentQueueAndDrain_KeepsPendingFlagConsistent()
     {
         await using var consumer = CreateConsumer();
@@ -903,14 +971,15 @@ public sealed class ConsumerAssignmentFastPathTests
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
         int queuedMinMessages = 1,
-        int maxPollIntervalMs = 300_000)
+        int maxPollIntervalMs = 300_000,
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual)
     {
         return new KafkaConsumer<string, string>(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
                 GroupId = "group-a",
-                OffsetCommitMode = OffsetCommitMode.Manual,
+                OffsetCommitMode = offsetCommitMode,
                 QueuedMinMessages = queuedMinMessages,
                 MaxPollIntervalMs = maxPollIntervalMs
             },
@@ -1526,7 +1595,7 @@ public sealed class ConsumerAssignmentFastPathTests
         field.SetValue(consumer, -1);
     }
 
-    private static void ProcessCoordinatorAssignment(
+    private static object ProcessCoordinatorAssignment(
         ConsumerCoordinator coordinator,
         ConsumerGroupHeartbeatAssignment assignment)
     {
@@ -1535,7 +1604,22 @@ public sealed class ConsumerAssignmentFastPathTests
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("ProcessConsumerGroupAssignment method not found.");
 
-        method.Invoke(coordinator, [assignment]);
+        return method.Invoke(coordinator, [assignment])
+            ?? throw new InvalidOperationException("ProcessConsumerGroupAssignment returned null.");
+    }
+
+    private static ValueTask FireConsumerProtocolRebalanceListenersAsync(
+        ConsumerCoordinator coordinator,
+        object result,
+        CancellationToken cancellationToken)
+    {
+        var method = typeof(ConsumerCoordinator).GetMethod(
+            "FireConsumerProtocolRebalanceListenersAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("FireConsumerProtocolRebalanceListenersAsync method not found.");
+
+        return (ValueTask)(method.Invoke(coordinator, [result, cancellationToken])
+            ?? throw new InvalidOperationException("FireConsumerProtocolRebalanceListenersAsync returned null."));
     }
 
     private static PendingFetchData CreateFetch(int partition, long baseOffset, string value)
