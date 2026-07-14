@@ -96,6 +96,8 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         var productionPaused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var resumeProduction = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var acknowledgedValues = new List<string>(MessageCount);
+        using var productionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task? production = null;
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -110,13 +112,13 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
 
         try
         {
-            var production = ProduceAcrossRestartAsync(
+            production = ProduceAcrossRestartAsync(
                 producer,
                 topic,
                 acknowledgedValues,
                 productionPaused,
                 resumeProduction.Task,
-                cancellationToken);
+                productionCancellation.Token);
             await productionPaused.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             stoppedBrokerId = leaderBrokerId;
@@ -140,8 +142,27 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         finally
         {
             resumeProduction.TrySetResult();
-            if (stoppedBrokerId is { } brokerId)
-                await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+            productionCancellation.Cancel();
+            try
+            {
+                if (stoppedBrokerId is { } brokerId)
+                    await kafka.StartBrokerAsync(brokerId, CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (production is not null)
+                {
+                    try
+                    {
+                        await production.ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // The primary test path observes production failures. On an earlier
+                        // failure, cancellation and this await prevent an abandoned faulted task.
+                    }
+                }
+            }
         }
     }
 
@@ -196,7 +217,7 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
             }
             catch (KafkaException exception) when (
                 !cancellationToken.IsCancellationRequested &&
-                exception is (ProduceException or KafkaTimeoutException))
+                (exception is KafkaTimeoutException || exception.IsRetriable))
             {
                 // Delivery failures are allowed; losing a successfully acknowledged record is not.
             }
