@@ -291,6 +291,9 @@ public static class Program
         }
 
         var runCompletedAt = DateTime.UtcNow;
+        var pairedClientOrder = options.Client.Equals("all", StringComparison.OrdinalIgnoreCase)
+            ? NormalizePairedClientOrder(Environment.GetEnvironmentVariable("STRESS_CLIENT_ORDER"))
+            : null;
 
         var allResults = new StressTestResults
         {
@@ -298,6 +301,13 @@ public static class Program
             RunCompletedAtUtc = runCompletedAt,
             MachineName = Environment.MachineName,
             ProcessorCount = Environment.ProcessorCount,
+            PairedClientOrder = pairedClientOrder,
+            PairedSampleIndex = pairedClientOrder is not null
+                ? ReadPositiveEnvironmentInteger("STRESS_PAIRED_SAMPLE_INDEX")
+                : null,
+            PairedSampleCount = pairedClientOrder is not null
+                ? ReadPositiveEnvironmentInteger("STRESS_PAIRED_SAMPLE_COUNT")
+                : null,
             Results = results
         };
 
@@ -329,6 +339,17 @@ public static class Program
         failed |= CheckForResourceTrendFailures(results);
         return failed ? 1 : 0;
     }
+
+    private static string? NormalizePairedClientOrder(string? clientOrder)
+    {
+        var normalized = clientOrder?.ToLowerInvariant();
+        return normalized is "dekaf-first" or "confluent-first" ? normalized : null;
+    }
+
+    private static int? ReadPositiveEnvironmentInteger(string variableName) =>
+        int.TryParse(Environment.GetEnvironmentVariable(variableName), out var value) && value > 0
+            ? value
+            : null;
 
     private static bool CheckForResourceTrendFailures(List<StressTestResult> results)
     {

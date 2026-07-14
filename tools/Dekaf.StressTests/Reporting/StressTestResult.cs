@@ -330,6 +330,9 @@ internal sealed class StressTestResults
     public required DateTime RunCompletedAtUtc { get; init; }
     public required string MachineName { get; init; }
     public required int ProcessorCount { get; init; }
+    public string? PairedClientOrder { get; init; }
+    public int? PairedSampleIndex { get; init; }
+    public int? PairedSampleCount { get; init; }
     public required List<StressTestResult> Results { get; init; }
 
     private static readonly JsonSerializerOptions JsonOptions = new()

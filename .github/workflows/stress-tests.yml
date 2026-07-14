@@ -28,7 +28,8 @@ env:
 
 jobs:
   # Run each scenario in parallel. Comparable clients run sequentially inside the
-  # same job/VM so published ratios share hardware and noisy-neighbor conditions.
+  # same job/VM so published ratios share hardware and noisy-neighbor conditions;
+  # 1-broker producer acceptance lanes repeat in both client orders.
   stress-test:
     strategy:
       fail-fast: false
@@ -37,9 +38,12 @@ jobs:
           - scenario: producer
             client: all
             brokers: 1
+            paired_samples: 2
             run_3conn: true
             artifact_suffix: -with-3conn
-            timeout_minutes: 105
+            # At a 30-minute dispatch this runs four paired client durations plus
+            # one 3-connection duration; leave setup/publish headroom as well.
+            timeout_minutes: 180
             name: Producer (Paired)
           - scenario: producer
             client: all
@@ -51,9 +55,11 @@ jobs:
           - scenario: producer-idempotent
             client: all
             brokers: 1
+            paired_samples: 2
             run_3conn: true
             artifact_suffix: -with-3conn
-            timeout_minutes: 105
+            # Same five measured durations as the fire-and-forget lane.
+            timeout_minutes: 180
             name: Producer Idempotent (Paired)
           - scenario: producer-idempotent
             client: all
@@ -65,9 +71,11 @@ jobs:
           - scenario: producer-acks-all
             client: all
             brokers: 1
+            paired_samples: 2
             run_3conn: false
             artifact_suffix: ""
-            timeout_minutes: 80
+            # Four measured durations need 120 minutes at a 30-minute dispatch.
+            timeout_minutes: 150
             name: Producer Acks All (Paired)
           - scenario: producer-acks-all
             client: all
@@ -245,25 +253,30 @@ jobs:
           cd tools/Dekaf.StressTests
           # Client pinned to its own cores: whichever client pushes more through the
           # same cores is genuinely faster, instead of both saturating the broker.
-          if (( ${{ github.run_number }} % 2 == 0 )); then
-            export STRESS_CLIENT_ORDER=confluent-first
-          else
-            export STRESS_CLIENT_ORDER=dekaf-first
-          fi
-          echo "Client order: ${STRESS_CLIENT_ORDER}"
+          paired_samples=${{ matrix.paired_samples || 1 }}
+          for sample in $(seq 1 "${paired_samples}"); do
+            if (( (${{ github.run_number }} + sample - 1) % 2 == 0 )); then
+              export STRESS_CLIENT_ORDER=confluent-first
+            else
+              export STRESS_CLIENT_ORDER=dekaf-first
+            fi
+            export STRESS_PAIRED_SAMPLE_INDEX=${sample}
+            export STRESS_PAIRED_SAMPLE_COUNT=${paired_samples}
+            echo "Paired sample ${sample}/${paired_samples}; client order: ${STRESS_CLIENT_ORDER}"
 
-          # Delivery diagnostics are always on in CI so a message-loss failure ships the
-          # in-flight batch dump needed to debug it, instead of "Not captured".
-          taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- \
-            --duration ${{ github.event.inputs.duration_minutes || '15' }} \
-            --message-size ${{ github.event.inputs.message_size || '1000' }} \
-            --scenario ${{ matrix.scenario }} \
-            --client ${{ matrix.client }} \
-            --brokers ${{ matrix.brokers }} \
-            --connections-per-broker 1 \
-            --producer-delivery-diagnostics \
-            --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
-            --output ./results
+            # Delivery diagnostics are always on in CI so a message-loss failure ships the
+            # in-flight batch dump needed to debug it, instead of "Not captured".
+            taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- \
+              --duration ${{ github.event.inputs.duration_minutes || '15' }} \
+              --message-size ${{ github.event.inputs.message_size || '1000' }} \
+              --scenario ${{ matrix.scenario }} \
+              --client ${{ matrix.client }} \
+              --brokers ${{ matrix.brokers }} \
+              --connections-per-broker 1 \
+              --producer-delivery-diagnostics \
+              --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
+              --output ./results
+          done
 
           if [ "${{ matrix.run_3conn }}" = "true" ]; then
             echo "Running Dekaf 3-connection variant on the same VM"
@@ -373,7 +386,7 @@ jobs:
           import os
           import glob
           from datetime import datetime
-          from stress_report import generate_scenario_tables, format_gc_table
+          from stress_report import generate_scenario_tables, format_gc_table, results_with_run_metadata
 
           # Parse only result envelopes; watchdog diagnostics are separate JSON artifacts.
           json_files = glob.glob("all-results/**/stress-test-results*.json", recursive=True)
@@ -399,7 +412,7 @@ jobs:
                   # Handle both single result and wrapped results format
                   if 'results' in data:
                       # Wrapped format from StressTestResults
-                      all_results.extend(data['results'])
+                      all_results.extend(results_with_run_metadata(data))
                       if run_started is None or data.get('runStartedAtUtc', '') < run_started:
                           run_started = data.get('runStartedAtUtc')
                       if run_completed is None or data.get('runCompletedAtUtc', '') > run_completed:
@@ -514,7 +527,7 @@ jobs:
           import os
           import glob
           from datetime import datetime
-          from stress_report import generate_scenario_tables, format_gc_table
+          from stress_report import generate_scenario_tables, format_gc_table, results_with_run_metadata
 
           output = []
           output.append("---")
@@ -545,7 +558,7 @@ jobs:
                   with open(latest_file) as f:
                       data = json.load(f)
 
-                  results = data.get('results', [])
+                  results = results_with_run_metadata(data)
 
                   output.extend(generate_scenario_tables(results, include_callout=True))
                   output.extend(format_gc_table(results, title="Memory & GC Statistics"))
@@ -571,7 +584,7 @@ jobs:
           output.append("- **RAM-backed Broker Logs**: Kafka log dirs are mounted on tmpfs so disk I/O never caps broker ingestion")
           output.append("- **Delivered Throughput**: producer tables report broker-confirmed throughput, measured as the end-offset delta across all partitions — not the client-side append rate, which can run far ahead of what the broker ever accepts")
           output.append("- **Median Interval Throughput**: table order and comparison ratios use median sampled client-side msg/s when available, which is less sensitive to short late-run stalls than the whole-run mean")
-          output.append("- **Same-VM Pairing**: comparable Dekaf and Confluent scenarios run sequentially inside one job/VM, with client order alternating by workflow run number to reduce order bias")
+          output.append("- **Same-VM Pairing**: comparable Dekaf and Confluent scenarios run sequentially inside one job/VM; 1-broker producer acceptance lanes run twice in opposite client orders and publish a geometric-mean aggregate, while other lanes alternate order by workflow run number")
           output.append("- **Backpressure Parity**: both producers are bounded to the same 512 MB local buffer (Dekaf BufferMemory, librdkafka queue.buffering.max) and block on a full buffer, so neither client can absorb an unbounded backlog into RAM")
           output.append("- **Consumer Loop Replay**: Consumer tests re-read a pre-seeded topic (seek to beginning when drained) instead of racing a live feeder, so the consumer itself is measured; table headings report the 16KB seed batch size because it amplifies per-batch costs relative to well-batched workloads")
           output.append("- **Delivery Latency Sampling**: 1 in 1000 produced messages is awaited end-to-end to record true broker round-trip latency")
