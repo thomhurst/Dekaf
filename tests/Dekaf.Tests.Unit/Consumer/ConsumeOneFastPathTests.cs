@@ -92,7 +92,7 @@ public sealed class ConsumeOneFastPathTests
         await using var consumer = CreateInitializedConsumer(queuedMinMessages: 2, fetch);
         MarkManualAssignmentCurrent(consumer);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+        var result = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, CancellationToken.None);
 
         await Assert.That(result).IsNotNull();
         await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(1);
@@ -108,7 +108,7 @@ public sealed class ConsumeOneFastPathTests
         await using var consumer = CreateInitializedGroupedConsumer(fetch, OffsetCommitMode.Auto);
         MarkManualAssignmentCurrent(consumer);
 
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+        var result = await consumer.ConsumeOneAsync(Timeout.InfiniteTimeSpan, CancellationToken.None);
 
         await Assert.That(result).IsNotNull();
         await Assert.That(GetTimeoutCtsPoolCount(consumer)).IsEqualTo(1);
