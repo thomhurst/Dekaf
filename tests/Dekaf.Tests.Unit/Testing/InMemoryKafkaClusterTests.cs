@@ -85,9 +85,15 @@ public sealed class InMemoryKafkaClusterTests
         // An empty GroupId means no group to auto-commit through, so the commit-mode
         // guard must not fire. The run then fails on the in-memory consumer's missing
         // batch-fetch support — proof execution got past the guard (a guard regression
-        // would surface InvalidOperationException here instead).
+        // would surface InvalidOperationException here instead). The processor drains
+        // its stream rather than returning immediately so the lane exits cleanly and
+        // cannot fault first with its own InvalidOperationException.
         await Assert.That(async () => await consumer.RunPartitionedAsync(
-                static (_, _) => ValueTask.CompletedTask,
+                static async (context, token) =>
+                {
+                    await foreach (var message in context.Messages.WithCancellation(token))
+                        context.MarkProcessed(message);
+                },
                 new PartitionedProcessingOptions(),
                 CancellationToken.None))
             .Throws<NotSupportedException>();
