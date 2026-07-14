@@ -68,8 +68,10 @@ public sealed class ActiveConsumedPositionSeqlockTests
         // Every published tuple is fully derivable from its position, so any reader
         // observing a (topic, partition, epoch) that does not match its position has
         // seen a torn mix of two writes.
-        const long iterations = 300_000;
-        using var readersStop = new CancellationTokenSource();
+        const long requiredSuccessfulReads = 1_001;
+        using var workersStop = new CancellationTokenSource();
+        var requiredReadsObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var violations = new List<string>();
         var violationLock = new object();
         long successfulReads = 0;
@@ -85,12 +87,13 @@ public sealed class ActiveConsumedPositionSeqlockTests
 
         var readers = Enumerable.Range(0, 2).Select(_ => Task.Run(() =>
         {
-            while (!readersStop.IsCancellationRequested)
+            while (!workersStop.IsCancellationRequested)
             {
                 if (!tryRead(out var partition, out var position, out var leaderEpoch, out _))
                     continue;
 
-                Interlocked.Increment(ref successfulReads);
+                if (Interlocked.Increment(ref successfulReads) == requiredSuccessfulReads)
+                    requiredReadsObserved.TrySetResult();
 
                 var expected = ExpectedTupleFor(position);
                 if (partition != expected.Partition || leaderEpoch != expected.LeaderEpoch)
@@ -104,7 +107,7 @@ public sealed class ActiveConsumedPositionSeqlockTests
 
         var clearer = Task.Run(() =>
         {
-            while (!readersStop.IsCancellationRequested)
+            while (!workersStop.IsCancellationRequested)
             {
                 if (tryRead(out var partition, out var position, out _, out _))
                     clear(partition, position);
@@ -112,18 +115,28 @@ public sealed class ActiveConsumedPositionSeqlockTests
         });
 
         // Single publisher mirrors production: only the consume thread publishes.
-        for (long position = 1; position <= iterations; position++)
+        var publisher = Task.Run(() =>
         {
-            var tuple = ExpectedTupleFor(position);
-            publish(tuple.Partition, position, tuple.LeaderEpoch);
-        }
+            for (long position = 1; !workersStop.IsCancellationRequested; position++)
+            {
+                var tuple = ExpectedTupleFor(position);
+                publish(tuple.Partition, position, tuple.LeaderEpoch);
+            }
+        });
 
-        readersStop.Cancel();
-        await Task.WhenAll([.. readers, clearer]);
+        try
+        {
+            await requiredReadsObserved.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            workersStop.Cancel();
+            await Task.WhenAll([publisher, .. readers, clearer]);
+        }
 
         await Assert.That(violations).IsEmpty();
         // The readers must have actually observed published values for the test to mean anything.
-        await Assert.That(Interlocked.Read(ref successfulReads)).IsGreaterThan(1_000);
+        await Assert.That(Interlocked.Read(ref successfulReads)).IsGreaterThanOrEqualTo(requiredSuccessfulReads);
     }
 
     /// <summary>
