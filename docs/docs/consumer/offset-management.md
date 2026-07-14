@@ -100,6 +100,12 @@ This is useful when you need to:
 - Implement custom batching logic
 - Coordinate commits with external systems
 
+:::caution
+
+Skipping by committing past a message is permanent for the consumer group — it will never be redelivered. If the message should be processed *eventually*, park it on a retry or dead-letter topic before committing, or pause the partition instead. See [Filtering Skips Messages Permanently](./linq-extensions.md#filtering-skips-messages-permanently).
+
+:::
+
 ## Commit Strategies
 
 ### Commit After Each Message

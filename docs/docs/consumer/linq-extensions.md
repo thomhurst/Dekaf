@@ -14,6 +14,37 @@ All extensions are in the `Dekaf.Consumer` namespace:
 using Dekaf.Consumer;
 ```
 
+## Filtering Skips Messages Permanently
+
+:::warning Filtered messages are gone once you commit past them
+
+The filtering operators (`Where`, `SkipWhile`, `TakeWhile`) run **after** the consumer has already consumed the message and advanced its position. Kafka commits are watermarks, not per-message acknowledgements: committing offset N tells the broker that *everything* below N is done (see [Understanding Offsets](./offset-management.md#understanding-offsets)). There is no way to commit a later message while "keeping" an earlier skipped one.
+
+That means once any commit advances past a skipped message — the periodic auto-commit (the default `OffsetCommitMode.Auto`), `CommitAsync()`, or committing a stored/specific offset for a later message — the skipped message will **never be redelivered** to your consumer group.
+
+Use these operators only when you want to **permanently ignore** some messages on a topic (tombstones, other tenants' keys, irrelevant event types). For a deterministic predicate this is exactly right: redelivering a skipped message would just get it filtered again.
+
+Do **not** use them to *defer* messages you intend to process later:
+
+```csharp
+// ❌ DATA LOSS - messages skipped while unhealthy are dropped forever
+await foreach (var msg in consumer.ConsumeAsync(ct)
+    .Where(_ => downstream.IsHealthy))
+{
+    await ProcessAsync(msg);
+    consumer.StoreOffset(msg);
+    await consumer.CommitAsync(); // commits past every skipped message
+}
+```
+
+If you need to defer instead of drop:
+
+- **Pause consumption** while you can't process — no messages are consumed, so no offsets advance. See [Pausing and Resuming](./basics.md#pausing-and-resuming).
+- **Park unprocessable messages** on a retry or dead-letter topic (and await delivery) *before* committing, then continue.
+- **Use manual commit mode** and only commit offsets where everything below them is truly handled.
+
+:::
+
 ## Where - Filtering Messages
 
 Filter messages based on a predicate:
@@ -33,6 +64,8 @@ await foreach (var msg in consumer.ConsumeAsync(ct)
     // Partition 0 messages containing "important"
 }
 ```
+
+Filtered-out messages are skipped permanently (see [warning above](#filtering-skips-messages-permanently)). Keep predicates deterministic: a message should be filtered because of *what it is*, not because of *when it arrived* or the current state of your application.
 
 ## Select - Transforming Messages
 
@@ -108,6 +141,12 @@ await foreach (var msg in consumer.ConsumeAsync(ct)
 }
 ```
 
+:::caution
+
+The first message that fails the predicate (the `"STOP"` message above) is consumed but never yielded to your loop, and its offset can be committed like any [skipped message](#filtering-skips-messages-permanently) — a restarted consumer resumes *after* it. Don't rely on seeing that boundary message again.
+
+:::
+
 ## SkipWhile - Skipping Initial Messages
 
 Skip messages until a condition becomes false:
@@ -121,6 +160,12 @@ await foreach (var msg in consumer.ConsumeAsync(ct)
     await ProcessAsync(msg);
 }
 ```
+
+:::caution
+
+Everything skipped before the marker is [dropped permanently once committed past](#filtering-skips-messages-permanently). To start from a known position without consuming and discarding messages, prefer [`Seek`](./offset-management.md#seeking-to-offsets).
+
+:::
 
 ## Batch - Grouping Messages
 
@@ -311,3 +356,5 @@ await foreach (var value in consumer.ConsumeAsync(ct)
 
 await AnalyzeSampleAsync(sample);
 ```
+
+Sampling deliberately discards the other 99% of messages. Run it under a dedicated consumer group ID so its committed offsets don't advance past messages a real processing group still needs.
