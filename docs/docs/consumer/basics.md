@@ -255,7 +255,7 @@ string? memberId = consumer.MemberId;
 
 ## Complete Example
 
-This example processes orders with at-least-once semantics: auto offset store is disabled,
+This example processes orders with at-least-once semantics: automatic offset storage is disabled,
 offsets are stored only after processing succeeds, and a processing failure stops the consumer
 instead of skipping the order — so the failed order is redelivered on restart rather than being
 silently committed away. Background auto-commit still handles the actual commits.
@@ -278,7 +278,7 @@ public class OrderConsumer : BackgroundService
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("order-processor")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithAutoOffsetStore(false)  // Only commit offsets we explicitly store
+            .WithAtLeastOnceProcessing() // Only commit offsets we explicitly store
             .SubscribeTo("orders")
             .BuildAsync();
 

@@ -177,6 +177,37 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithAtLeastOnceProcessing_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+
+        var result = builder.WithAtLeastOnceProcessing();
+
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithAtLeastOnceProcessing_ConfiguresCommitIntent()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithAutoOffsetStore()
+            .WithAtLeastOnceProcessing()
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        var commitConfiguration = (IConsumerCommitConfiguration)consumer;
+
+        await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
+        await Assert.That(options.EnableAutoOffsetStore).IsFalse();
+        await Assert.That(commitConfiguration.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
+        await Assert.That(commitConfiguration.EnableAutoOffsetStore).IsFalse();
+        await Assert.That(commitConfiguration.HasConsumerGroup).IsTrue();
+    }
+
+    [Test]
     public async Task WithAutoOffsetReset_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();

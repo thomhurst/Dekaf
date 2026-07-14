@@ -1583,9 +1583,27 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Configures background offset commits that include only messages explicitly marked as processed.
+    /// </summary>
+    /// <returns>The builder instance for method chaining.</returns>
+    /// <remarks>
+    /// Sets <see cref="OffsetCommitMode.Auto"/> and disables automatic offset storage. After each
+    /// message is processed successfully, call
+    /// <see cref="IKafkaConsumer{TKey,TValue}.StoreOffset(ConsumeResult{TKey,TValue})"/>. If processing
+    /// fails before the offset is stored, the message is redelivered after restart or rebalance.
+    /// </remarks>
+    public ConsumerBuilder<TKey, TValue> WithAtLeastOnceProcessing()
+    {
+        _offsetCommitMode = OffsetCommitMode.Auto;
+        _enableAutoOffsetStore = false;
+        return this;
+    }
+
+    /// <summary>
     /// Controls whether consumed offsets are stored automatically for background auto-commit.
     /// Disable this and call <see cref="IKafkaConsumer{TKey,TValue}.StoreOffset(ConsumeResult{TKey,TValue})"/>
     /// after processing succeeds to get Confluent-style manual offset store with auto-commit.
+    /// <see cref="WithAtLeastOnceProcessing"/> configures that combination directly.
     /// </summary>
     public ConsumerBuilder<TKey, TValue> WithAutoOffsetStore(bool enabled = true)
     {

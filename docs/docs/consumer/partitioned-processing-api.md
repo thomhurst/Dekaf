@@ -197,7 +197,7 @@ void the runtime's at-least-once tracking. `RunPartitionedAsync` therefore throw
 `InvalidOperationException` when the consumer uses that combination together with
 a runtime-managed commit policy (`CommitCompletedOnRevoke` or
 `CommitCompletedPeriodically`). For at-least-once partitioned processing, configure
-the consumer with `OffsetCommitMode.Manual`, or with `WithAutoOffsetStore(false)` —
+the consumer with `OffsetCommitMode.Manual`, or with `WithAtLeastOnceProcessing()` —
 with the automatic store disabled, the background loop has nothing of its own to
 commit, so only the runtime's `MarkProcessed`-tracked commits advance offsets. The
 combination of auto commit and `PartitionCommitPolicy.UserManaged` also remains

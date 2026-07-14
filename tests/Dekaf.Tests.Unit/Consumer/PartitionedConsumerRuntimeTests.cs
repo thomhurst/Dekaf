@@ -1167,7 +1167,7 @@ public sealed class PartitionedConsumerRuntimeTests
         IConsumerOffsets,
         IConsumerRebalanceEventSource,
         IConsumerLoggerFactorySource,
-        IConsumerCommitModeSource
+        IConsumerCommitConfiguration
     {
         private readonly object _gate = new();
         private readonly Queue<ConsumeResult<string, string>> _records = [];

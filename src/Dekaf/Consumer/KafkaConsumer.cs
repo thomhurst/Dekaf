@@ -742,7 +742,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     IConsumerOffsets,
     IConsumerRebalanceEventSource,
     IConsumerLoggerFactorySource,
-    IConsumerCommitModeSource,
+    IConsumerCommitConfiguration,
     DeadLetter.IRawRecordAccessor,
     IBudgetedInstance
 {
@@ -1426,11 +1426,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     ILoggerFactory? IConsumerLoggerFactorySource.LoggerFactory => _loggerFactory;
 
-    OffsetCommitMode IConsumerCommitModeSource.OffsetCommitMode => _options.OffsetCommitMode;
+    OffsetCommitMode IConsumerCommitConfiguration.OffsetCommitMode => _options.OffsetCommitMode;
 
-    bool IConsumerCommitModeSource.EnableAutoOffsetStore => _options.EnableAutoOffsetStore;
+    bool IConsumerCommitConfiguration.EnableAutoOffsetStore => _options.EnableAutoOffsetStore;
 
-    bool IConsumerCommitModeSource.HasConsumerGroup => !string.IsNullOrEmpty(_options.GroupId);
+    bool IConsumerCommitConfiguration.HasConsumerGroup => !string.IsNullOrEmpty(_options.GroupId);
 
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)

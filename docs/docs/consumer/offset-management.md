@@ -67,7 +67,7 @@ using Dekaf;
 var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
-    .WithAutoOffsetStore(false)  // Auto-commit only commits explicitly stored offsets
+    .WithAtLeastOnceProcessing() // Auto-commit only commits explicitly stored offsets
     .BuildAsync();
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
@@ -80,6 +80,9 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 `StoreOffset` is a cheap in-memory operation; the background auto-commit loop batches the actual
 network commits. If processing throws before `StoreOffset`, the message's offset is never staged
 and it will be redelivered.
+
+`WithAtLeastOnceProcessing()` is intent-level shorthand for
+`WithOffsetCommitMode(OffsetCommitMode.Auto).WithAutoOffsetStore(false)`.
 
 :::caution
 Offsets are positions, not per-message acknowledgements. Storing a later offset also commits
@@ -267,7 +270,7 @@ follow the configured auto-offset-reset policy.
 | Mode | Semantics | Risk |
 |------|-----------|------|
 | Auto (defaults) | At-most-once | Loses messages whose processing failed — no crash required |
-| Auto + `WithAutoOffsetStore(false)` + `StoreOffset` after process | At-least-once | May reprocess on crash |
+| `WithAtLeastOnceProcessing()` + `StoreOffset` after process | At-least-once | May reprocess on crash |
 | Manual (commit after process) | At-least-once | May reprocess on crash |
 | Manual + External storage | Exactly-once | Most complex |
 
@@ -291,7 +294,7 @@ await dbTransaction.CommitAsync();
 
 ## Best Practices
 
-1. **Make commits reflect completed processing** for most applications - either Manual mode, or auto-commit with `WithAutoOffsetStore(false)` + `StoreOffset` after each successfully processed message
+1. **Make commits reflect completed processing** for most applications - either Manual mode, or `WithAtLeastOnceProcessing()` + `StoreOffset` after each successfully processed message
 
 2. **Batch your commits** - committing after every message is slow
 
