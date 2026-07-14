@@ -69,6 +69,11 @@ public class ProducerCancellationTests
         var accumulator = GetField<RecordAccumulator>(producer, "_accumulator");
         var senderCts = GetField<CancellationTokenSource>(producer, "_senderCts");
         var lingerTask = GetField<Task>(producer, "_lingerTask");
+        var activeLingerWaitEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        SetField(
+            producer,
+            "BeforeActiveLingerTimerWaitForTest",
+            (Action)(() => activeLingerWaitEntered.TrySetResult(true)));
 
         try
         {
@@ -86,8 +91,7 @@ public class ProducerCancellationTests
                 CancellationToken.None);
             await Assert.That(accumulator.HasPendingLingerBatches).IsTrue();
 
-            // Let the linger loop consume the wakeup and enter its periodic active cadence.
-            await Task.Delay(20);
+            await activeLingerWaitEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
             senderCts.Cancel();
 
             await lingerTask.WaitAsync(TimeSpan.FromSeconds(5));
@@ -336,4 +340,9 @@ public class ProducerCancellationTests
         => (T)instance.GetType()
             .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(instance)!;
+
+    private static void SetField<T>(object instance, string name, T value)
+        => instance.GetType()
+            .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(instance, value);
 }
