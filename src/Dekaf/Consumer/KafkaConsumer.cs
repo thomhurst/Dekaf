@@ -6976,27 +6976,38 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             try
             {
                 await Task.Delay(_options.AutoCommitIntervalMs, cancellationToken).ConfigureAwait(false);
-
-                // Only commit if coordinator is stable (fully joined)
-                if (_coordinator is null || _coordinator.State != CoordinatorState.Stable)
-                    continue;
-
-                await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
+                await TryAutoCommitAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
             }
-            catch (Exception ex)
+        }
+    }
+
+    private async Task TryAutoCommitAsync(CancellationToken cancellationToken)
+    {
+        // Only commit if coordinator is stable (fully joined)
+        if (_coordinator is null || _coordinator.State != CoordinatorState.Stable)
+            return;
+
+        try
+        {
+            await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogAutoCommitFailed(ex);
+            try
             {
-                LogAutoCommitFailed(ex);
-                try
-                {
-                    await Task.Delay(200, cancellationToken).ConfigureAwait(false);
-                    await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
-                }
-                catch { /* Best effort — will retry on next interval */ }
+                await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
             }
+            catch { /* Best effort — will retry on next interval */ }
         }
     }
 

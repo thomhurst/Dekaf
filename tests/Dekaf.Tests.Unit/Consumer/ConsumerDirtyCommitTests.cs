@@ -157,6 +157,124 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task AutoCommitCycle_WhenCommitFails_RetriesOnce()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var responseErrors = new Queue<ErrorCode>([ErrorCode.InvalidCommitOffsetSize, ErrorCode.None]);
+        await using var consumer = CreateConsumer(
+            requests,
+            responseErrors,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false);
+        consumer.StoreOffset(CreateConsumeResult(offset: 41, leaderEpoch: 7));
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(requests).Count().IsEqualTo(2);
+        await Assert.That(requests.SelectMany(GetCommittedOffsets).ToArray()).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 42, leaderEpoch: 7),
+            new TopicPartitionOffset("topic-a", 0, 42, leaderEpoch: 7)
+        ]);
+    }
+
+    [Test]
+    public async Task AutoCommitCycle_WhenBothAttemptsFail_NextCycleRetries()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var responseErrors = new Queue<ErrorCode>(
+            [ErrorCode.InvalidCommitOffsetSize, ErrorCode.InvalidCommitOffsetSize, ErrorCode.None]);
+        await using var consumer = CreateConsumer(
+            requests,
+            responseErrors,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false);
+        consumer.StoreOffset(CreateConsumeResult(offset: 41, leaderEpoch: 7));
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+
+        await RunAutoCommitCycleAsync(consumer);
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(requests).Count().IsEqualTo(3);
+        await Assert.That(GetCommittedOffsets(requests[^1])).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 42, leaderEpoch: 7)
+        ]);
+    }
+
+    [Test]
+    public async Task AutoCommitCycle_WhenCoordinatorIsNotStable_SkipsCommit()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false);
+        consumer.StoreOffset(CreateConsumeResult(offset: 41, leaderEpoch: 7));
+        SetCoordinatorState(consumer, CoordinatorState.Joining);
+
+        await RunAutoCommitCycleAsync(consumer);
+
+        await Assert.That(requests).IsEmpty();
+    }
+
+    [Test]
+    public async Task AutoCommitCycle_WhenCommitIsCancelled_PropagatesWithoutRetry()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        using var cancellation = new CancellationTokenSource();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false,
+            onOffsetCommit: token =>
+            {
+                cancellation.Cancel();
+                token.ThrowIfCancellationRequested();
+            });
+        consumer.StoreOffset(CreateConsumeResult(offset: 41, leaderEpoch: 7));
+        SetCoordinatorState(consumer, CoordinatorState.Stable);
+
+        await Assert.That(async () => await RunAutoCommitCycleAsync(consumer, cancellation.Token))
+            .ThrowsExactly<OperationCanceledException>();
+
+        await Assert.That(requests).Count().IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CloseAsync_WhenCommitFailsTwice_RetriesThirdTime()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var responseErrors = new Queue<ErrorCode>(
+            [ErrorCode.InvalidCommitOffsetSize, ErrorCode.InvalidCommitOffsetSize, ErrorCode.None]);
+        var consumer = CreateConsumer(
+            requests,
+            responseErrors,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false);
+
+        try
+        {
+            consumer.StoreOffset(CreateConsumeResult(offset: 41, leaderEpoch: 7));
+
+            await consumer.CloseAsync(CancellationToken.None);
+
+            await Assert.That(requests).Count().IsEqualTo(3);
+            await Assert.That(GetCommittedOffsets(requests[^1])).IsEquivalentTo(
+            [
+                new TopicPartitionOffset("topic-a", 0, 42, leaderEpoch: 7)
+            ]);
+        }
+        finally
+        {
+            await consumer.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task AutoCommit_WhenAutoOffsetStoreDisabled_DoesNotCommitConsumedPosition()
     {
         var requests = new List<OffsetCommitRequest>();
@@ -254,18 +372,21 @@ public sealed class ConsumerDirtyCommitTests
         List<OffsetCommitRequest> requests,
         ErrorCode responseError,
         OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
-        bool enableAutoOffsetStore = true)
+        bool enableAutoOffsetStore = true,
+        Action<CancellationToken>? onOffsetCommit = null)
         => CreateConsumer(
             requests,
             new Queue<ErrorCode>([responseError]),
             offsetCommitMode,
-            enableAutoOffsetStore);
+            enableAutoOffsetStore,
+            onOffsetCommit);
 
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
         Queue<ErrorCode> responseErrors,
         OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
-        bool enableAutoOffsetStore = true)
+        bool enableAutoOffsetStore = true,
+        Action<CancellationToken>? onOffsetCommit = null)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -300,6 +421,7 @@ public sealed class ConsumerDirtyCommitTests
             {
                 var request = call.Arg<OffsetCommitRequest>()!;
                 requests.Add(CloneRequest(request));
+                onOffsetCommit?.Invoke(call.Arg<CancellationToken>());
 
                 var error = responseErrors.Count == 0 ? ErrorCode.None : responseErrors.Dequeue();
                 return ValueTask.FromResult(CreateResponse(request, error));
@@ -345,6 +467,32 @@ public sealed class ConsumerDirtyCommitTests
             BindingFlags.NonPublic | BindingFlags.Instance)!;
 
         method.Invoke(consumer, [partition, position, dirty]);
+    }
+
+    private static void SetCoordinatorState(
+        KafkaConsumer<string, string> consumer,
+        CoordinatorState state)
+    {
+        var coordinatorField = typeof(KafkaConsumer<string, string>).GetField(
+            "_coordinator",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var coordinator = (ConsumerCoordinator)coordinatorField.GetValue(consumer)!;
+        var stateField = typeof(ConsumerCoordinator).GetField(
+            "_state",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        stateField.SetValue(coordinator, state);
+    }
+
+    private static async Task RunAutoCommitCycleAsync(
+        KafkaConsumer<string, string> consumer,
+        CancellationToken cancellationToken = default)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "TryAutoCommitAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await (Task)method.Invoke(consumer, [cancellationToken])!;
     }
 
     private static void ApplySeek(
