@@ -216,7 +216,7 @@ public class LazyRecordListTests
     }
 
     [Test]
-    public async Task LazyRecordList_ExhaustedMalformedTail_ReducesCountToParseableRecords()
+    public async Task LazyRecordList_ShortMalformedTail_ReducesCountToParseableRecords()
     {
         var records = new[]
         {
@@ -228,9 +228,9 @@ public class LazyRecordListTests
         foreach (var record in records)
             record.Write(ref writer);
 
-        var bytes = new byte[buffer.WrittenCount + 5];
+        var bytes = new byte[buffer.WrittenCount + 6];
         buffer.WrittenSpan.CopyTo(bytes);
-        bytes.AsSpan(buffer.WrittenCount).Fill(0x80);
+        bytes.AsSpan(buffer.WrittenCount, 5).Fill(0x80);
         using var lazyList = LazyRecordList.Create(bytes, count: 5);
 
         await Assert.That(lazyList.ToArray()).Count().IsEqualTo(2);

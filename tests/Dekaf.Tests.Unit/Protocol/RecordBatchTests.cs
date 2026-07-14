@@ -174,7 +174,7 @@ public class RecordBatchTests
     }
 
     [Test]
-    public async Task PendingFetchData_ExhaustedMalformedTail_CapsRecordCount()
+    public async Task PendingFetchData_ShortMalformedTail_CapsRecordCount()
     {
         var records = new[]
         {
@@ -192,7 +192,7 @@ public class RecordBatchTests
         records[1].Write(ref firstTwoWriter);
 
         var malformedOffset = RecordBatch.TotalBatchHeaderSize + firstTwoBuffer.WrittenCount;
-        var bytes = buffer.WrittenSpan[..(malformedOffset + 5)].ToArray();
+        var bytes = buffer.WrittenSpan[..(malformedOffset + 6)].ToArray();
         bytes.AsSpan(malformedOffset, 5).Fill(0x80);
         BinaryPrimitives.WriteInt32BigEndian(
             bytes.AsSpan(sizeof(long)),

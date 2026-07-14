@@ -546,7 +546,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         int declaredCount) =>
         exception is InsufficientDataException ||
         exception is MalformedProtocolDataException &&
-        (remaining == 0 || parsedCount == declaredCount - 1);
+        (remaining < Record.MinimumEncodedSize || parsedCount == declaredCount - 1);
 
     private void EnsureLazyRecordsParsedUpTo(int index)
     {
