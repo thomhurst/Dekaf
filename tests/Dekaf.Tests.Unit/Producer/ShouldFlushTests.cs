@@ -5,9 +5,9 @@ using Dekaf.Producer;
 namespace Dekaf.Tests.Unit.Producer;
 
 /// <summary>
-/// Tests for PartitionBatch.ShouldFlush() micro-linger behavior.
-/// When LingerMs > 0, awaited produces (with completion sources) use a micro-linger
-/// of min(1ms, LingerMs/10) instead of flushing immediately.
+/// Tests for PartitionBatch.ShouldFlush() short-linger behavior.
+/// When LingerMs > 0, awaited produces (with completion sources) use a short linger
+/// of min(2ms, LingerMs/2) instead of flushing immediately.
 /// When LingerMs == 0, awaited produces flush immediately.
 /// </summary>
 public class ShouldFlushTests
@@ -100,7 +100,26 @@ public class ShouldFlushTests
         await Assert.That(result).IsTrue();
     }
 
-    // --- LingerMs = 5: micro-linger = 0.5ms ---
+    // --- LingerMs = 1: short linger uses half the configured linger ---
+
+    [Test]
+    [Arguments(0.4, false)]
+    [Arguments(0.5, true)]
+    public async Task LingerMs1_WithCompletionSources_UsesHalfLinger(
+        double ageMilliseconds,
+        bool expected)
+    {
+        var batch = CreateBatch();
+
+        SetRecordCount(batch, 1);
+        SetCompletionSourceCount(batch, 1);
+        var now = SetCreatedAtMillisecondsAgo(batch, ageMilliseconds);
+
+        var result = InvokeShouldFlush(batch, now, lingerMs: 1);
+        await Assert.That(result).IsEqualTo(expected);
+    }
+
+    // --- LingerMs = 5: short linger caps at 2ms ---
 
     [Test]
     public async Task LingerMs5_WithCompletionSources_Age0ms_DoesNotFlush()
@@ -109,61 +128,61 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        var now = SetCreatedAtMillisecondsAgo(batch, 0); // Age = 0ms, micro-linger = 0.5ms
+        var now = SetCreatedAtMillisecondsAgo(batch, 0); // Age = 0ms, short linger = 2ms
 
         var result = InvokeShouldFlush(batch, now, lingerMs: 5);
         await Assert.That(result).IsFalse();
     }
 
     [Test]
-    public async Task LingerMs5_WithCompletionSources_AgeAtMicroLinger_Flushes()
+    public async Task LingerMs5_WithCompletionSources_Age19ms_DoesNotFlush()
     {
         var batch = CreateBatch();
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        var now = SetCreatedAtMillisecondsAgo(batch, 0.5); // Age = 0.5ms = micro-linger threshold
+        var now = SetCreatedAtMillisecondsAgo(batch, 1.9); // Age = 1.9ms < 2ms short linger
+
+        var result = InvokeShouldFlush(batch, now, lingerMs: 5);
+        await Assert.That(result).IsFalse();
+    }
+
+    [Test]
+    public async Task LingerMs5_WithCompletionSources_Age2ms_Flushes()
+    {
+        var batch = CreateBatch();
+
+        SetRecordCount(batch, 1);
+        SetCompletionSourceCount(batch, 1);
+        var now = SetCreatedAtMillisecondsAgo(batch, 2.0); // Age = 2ms = capped short linger
 
         var result = InvokeShouldFlush(batch, now, lingerMs: 5);
         await Assert.That(result).IsTrue();
     }
 
+    // --- LingerMs = 20: short linger caps at 2ms ---
+
     [Test]
-    public async Task LingerMs5_WithCompletionSources_Age1ms_Flushes()
+    public async Task LingerMs20_WithCompletionSources_Age19ms_DoesNotFlush()
     {
         var batch = CreateBatch();
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        var now = SetCreatedAtMillisecondsAgo(batch, 1.0); // Age = 1ms, well past 0.5ms micro-linger
-
-        var result = InvokeShouldFlush(batch, now, lingerMs: 5);
-        await Assert.That(result).IsTrue();
-    }
-
-    // --- LingerMs = 20: micro-linger = min(1ms, 20/10) = 1ms (capped) ---
-
-    [Test]
-    public async Task LingerMs20_WithCompletionSources_Age09ms_DoesNotFlush()
-    {
-        var batch = CreateBatch();
-
-        SetRecordCount(batch, 1);
-        SetCompletionSourceCount(batch, 1);
-        var now = SetCreatedAtMillisecondsAgo(batch, 0.9); // Age = 0.9ms, micro-linger = 1ms
+        var now = SetCreatedAtMillisecondsAgo(batch, 1.9); // Age = 1.9ms < 2ms short linger
 
         var result = InvokeShouldFlush(batch, now, lingerMs: 20);
         await Assert.That(result).IsFalse();
     }
 
     [Test]
-    public async Task LingerMs20_WithCompletionSources_Age1ms_Flushes()
+    public async Task LingerMs20_WithCompletionSources_Age2ms_Flushes()
     {
         var batch = CreateBatch();
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        var now = SetCreatedAtMillisecondsAgo(batch, 1.0); // Age = 1ms = capped micro-linger
+        var now = SetCreatedAtMillisecondsAgo(batch, 2.0); // Age = 2ms = capped short linger
 
         var result = InvokeShouldFlush(batch, now, lingerMs: 20);
         await Assert.That(result).IsTrue();
@@ -212,29 +231,29 @@ public class ShouldFlushTests
         await Assert.That(result).IsFalse();
     }
 
-    // --- Large LingerMs: micro-linger caps at 1ms ---
+    // --- Large LingerMs: short linger caps at 2ms ---
 
     [Test]
-    public async Task LingerMs100_WithCompletionSources_Age09ms_DoesNotFlush()
+    public async Task LingerMs100_WithCompletionSources_Age19ms_DoesNotFlush()
     {
         var batch = CreateBatch();
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        var now = SetCreatedAtMillisecondsAgo(batch, 0.9); // micro-linger = min(1ms, 100/10) = 1ms
+        var now = SetCreatedAtMillisecondsAgo(batch, 1.9); // Age = 1.9ms < 2ms short linger
 
         var result = InvokeShouldFlush(batch, now, lingerMs: 100);
         await Assert.That(result).IsFalse();
     }
 
     [Test]
-    public async Task LingerMs100_WithCompletionSources_Age1ms_Flushes()
+    public async Task LingerMs100_WithCompletionSources_Age2ms_Flushes()
     {
         var batch = CreateBatch();
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        var now = SetCreatedAtMillisecondsAgo(batch, 1.0); // Age = 1ms = capped micro-linger
+        var now = SetCreatedAtMillisecondsAgo(batch, 2.0); // Age = 2ms = capped short linger
 
         var result = InvokeShouldFlush(batch, now, lingerMs: 100);
         await Assert.That(result).IsTrue();
