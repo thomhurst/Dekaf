@@ -245,7 +245,10 @@ public static class Program
 
         if (options.ConnectionsPerBroker == 1)
         {
-            // Baseline pass: single connection for fair comparison with Confluent.
+            // Baseline pass: single connection for fair comparison with Confluent. The
+            // Dekaf producer scenarios also pin WithoutAdaptiveConnections() so this stays
+            // true under backpressure; the multi-connection pass below measures the
+            // parallel-connection advantage separately and labels it "Dekaf (Nconn)".
             foreach (var scenario in scenarios)
             {
                 Console.WriteLine();

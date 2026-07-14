@@ -34,6 +34,14 @@ internal static class ConfluentStressTestHelpers
     // is single-message (consumer.Consume) either way. CRC validation is aligned implicitly:
     // ForHighThroughput() sets CheckCrcs=false, matching librdkafka's check.crcs default (false),
     // so neither client re-validates CRC32C on fetch.
+    //
+    // Known unmatchable asymmetry, disclosed rather than hidden: ForHighThroughput() gives the
+    // Dekaf consumer 3 connections per broker (2 usable fetch paths + 1 coordination), while
+    // librdkafka uses a single fetch connection per broker and exposes no knob to add more. The
+    // JSON results record this as ConsumerConnectionsPerBroker (3 vs 1) and the markdown report
+    // carries a caveat line. Dekaf's deserialization path is otherwise identical to Confluent's:
+    // the scenarios deliberately do NOT enable WithCachedStringValues(), which would let Dekaf
+    // skip per-message UTF-8 decode entirely on the identical-value seed data.
 
     /// <summary>Dekaf <c>_fetchMinBytes</c> — fetch.min.bytes.</summary>
     internal const int FetchMinBytes = 1024;

@@ -68,6 +68,13 @@ internal static class MarkdownReporter
         {
             sb.AppendLine("*Confluent.Kafka uses native librdkafka; .NET GC allocation counters exclude unmanaged allocations.*");
             sb.AppendLine();
+
+            if (results.Results.Any(r => r.Scenario.Equals("consumer", StringComparison.OrdinalIgnoreCase)
+                    && !r.Client.Equals("Confluent", StringComparison.OrdinalIgnoreCase)))
+            {
+                sb.AppendLine("*Consumer scenarios: Dekaf's ForHighThroughput preset uses 3 connections per broker (2 fetch paths); librdkafka has a single fetch connection and no knob to match. Recorded as ConsumerConnectionsPerBroker in the JSON results.*");
+                sb.AppendLine();
+            }
         }
 
         return sb.ToString();

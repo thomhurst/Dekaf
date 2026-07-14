@@ -334,9 +334,10 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
         using var produceTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
 
-        Action<ConfluentKafka.DeliveryReport<string, byte[]>> deliveryHandler = report =>
-            RecordDeliveryReportError(throughput, report.Error);
-
+        // No per-message delivery handler: librdkafka would invoke the managed delegate for
+        // every message, CPU the Dekaf side (error-only MeterListener) never pays — the same
+        // skew the acks-all scenario avoids (see ConfluentStressTestHelpers). Lost messages
+        // still fail the run via the consume-side completion tracker + CRC validation.
         Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Confluent.Kafka...");
         for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
         {
@@ -361,7 +362,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
                         Key = message.Key,
                         Value = message.Value
                     },
-                    deliveryHandler,
+                    deliveryHandler: null,
                     produceTimeout.Token);
                 throughput.RecordMessage(message.Value.Length);
             }
@@ -430,19 +431,6 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
                 validation.ConsumedMessages,
                 consumeTimer.Elapsed),
             producerDeliveryDiagnostics: null);
-    }
-
-    internal static void RecordDeliveryReportError(ThroughputTracker throughput, ConfluentKafka.Error error)
-    {
-        if (!error.IsError)
-        {
-            return;
-        }
-
-        throughput.RecordDeliveryError(
-            "Confluent.Kafka.Error",
-            error.ToString(),
-            "Round-trip delivery report");
     }
 
     private static bool ConsumeAndValidate(
