@@ -12,7 +12,6 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class BrokerUnackedByteBudgetTests
 {
-    private const long BudgetDecayBypassBytes = 1L << 40;
     private static readonly long Frequency = Stopwatch.Frequency;
 
     /// <summary>An arbitrary positive anchor: tick 0 means "no window anchored yet".</summary>
@@ -62,15 +61,8 @@ public sealed class BrokerUnackedByteBudgetTests
         BrokerUnackedByteBudget budget,
         long nowTicks)
     {
-        budget.Charge(BudgetDecayBypassBytes);
-        try
-        {
-            budget.CompleteAckedPass(nowTicks);
-        }
-        finally
-        {
-            budget.Release(BudgetDecayBypassBytes);
-        }
+        SetField(budget, "_lastNormalBudgetBytes", 0L);
+        budget.CompleteAckedPass(nowTicks);
     }
 
     private static void SetCapWithoutDecay(
@@ -78,15 +70,8 @@ public sealed class BrokerUnackedByteBudgetTests
         long capBytes,
         long nowTicks)
     {
-        budget.Charge(BudgetDecayBypassBytes);
-        try
-        {
-            budget.SetCap(capBytes, nowTicks);
-        }
-        finally
-        {
-            budget.Release(BudgetDecayBypassBytes);
-        }
+        SetField(budget, "_lastNormalBudgetBytes", 0L);
+        budget.SetCap(capBytes, nowTicks);
     }
 
     /// <summary>
@@ -954,8 +939,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = BrokerUnackedByteBudget.BoundBudgetDecay(
             previousBudget: 100_000,
             computedBudget: 10_000,
-            elapsedSeconds: 1.0,
-            unackedBytes: 0);
+            elapsedSeconds: 1.0);
 
         await Assert.That(budget).IsEqualTo(90_000);
     }
@@ -966,32 +950,41 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = BrokerUnackedByteBudget.BoundBudgetDecay(
             previousBudget: 100_000,
             computedBudget: 10_000,
-            elapsedSeconds: 0,
-            unackedBytes: 0);
+            elapsedSeconds: 0);
 
         await Assert.That(budget).IsEqualTo(100_000)
             .Because("the first estimator sample has no elapsed decay interval");
     }
 
     [Test]
-    public async Task BudgetDecay_YieldsWhenStandingQueueProvesOverAdmission()
+    public async Task BudgetDecay_StandingQueueCannotBypassTimeBound()
     {
-        // Admission blocks constantly under saturation, so blocks alone cannot gate the
-        // hysteresis. Standing bytes at twice the fresh budget prove the old budget
-        // over-admitted; the recompute must land immediately instead of at 10%/s.
-        var standingQueue = BrokerUnackedByteBudget.BoundBudgetDecay(
+        var budget = BrokerUnackedByteBudget.BoundBudgetDecay(
             previousBudget: 100_000,
             computedBudget: 10_000,
-            elapsedSeconds: 1.0,
-            unackedBytes: 20_000);
-        var modestOccupancy = BrokerUnackedByteBudget.BoundBudgetDecay(
-            previousBudget: 100_000,
-            computedBudget: 10_000,
-            elapsedSeconds: 1.0,
-            unackedBytes: 19_999);
+            elapsedSeconds: 1.0);
 
-        await Assert.That(standingQueue).IsEqualTo(10_000);
-        await Assert.That(modestOccupancy).IsEqualTo(90_000);
+        await Assert.That(budget).IsEqualTo(90_000)
+            .Because("standing occupancy must not collapse the budget faster than elapsed time permits");
+    }
+
+    [Test]
+    public async Task BudgetDecay_SustainedIdleRestoresColdStartBudget()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        var firstSend = budget.SnapshotDelivery(T0 - Seconds(0.001), appLimited: true);
+        budget.OnAcked(1, firstSend, T0);
+        SetField(budget, "_lastNormalBudgetBytes", 10_000L);
+        SetField(budget, "_budgetBytes", 10_000L);
+
+        var idleSend = budget.SnapshotDelivery(T0 + Seconds(3.0), appLimited: true);
+        budget.OnAcked(1, idleSend, T0 + Seconds(3.001));
+        budget.CompleteAckedPass(T0 + Seconds(3.001));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000_000);
     }
 
     [Test]

@@ -159,10 +159,6 @@ internal sealed class BrokerUnackedByteBudget
     /// enough slack for replication service-time variance without the ratchet.</summary>
     private const double ServingRttClampMultiplier = 2.0;
 
-    /// <summary>Standing unacked bytes at this multiple of the freshly computed budget prove
-    /// the previous budget over-admitted; decay smoothing then yields to the recompute.</summary>
-    private const long StandingQueueDecayBypassMultiplier = 2;
-
     /// <summary>Lower bound on queue-corrected RTT samples as a fraction of the raw round
     /// trip, so an overestimated drain rate cannot collapse the corrected service estimate
     /// (and with it the RTT floor) toward zero.</summary>
@@ -596,7 +592,11 @@ internal sealed class BrokerUnackedByteBudget
         var loadedRateEpoch = !sendSnapshot.RateAppLimited;
         var retainLoadedRateSample = !sendSnapshot.AppLimited;
         if (sustainedIdle)
+        {
             _hasLoadedServingSample = false;
+            _lastNormalBudgetBytes = _capBytes;
+            _lastBudgetUpdateTimestamp = nowTicks;
+        }
         else if (loadedServingSample)
             _hasLoadedServingSample = true;
         // The deadline ack may establish the first loaded serving estimate (depth-one traffic),
@@ -1202,14 +1202,10 @@ internal sealed class BrokerUnackedByteBudget
         var elapsedSeconds = _lastBudgetUpdateTimestamp == 0
             ? 0
             : Math.Max(0, (double)(nowTicks - _lastBudgetUpdateTimestamp) / Stopwatch.Frequency);
-        // _unackedBytes shares a contended cache line with every appender's Interlocked.Add;
-        // only pay for the read when a downward move can consult the queue bypass.
-        var unackedBytes = computedBudget < _lastNormalBudgetBytes ? UnackedBytes : 0;
         var budget = BoundBudgetDecay(
             _lastNormalBudgetBytes,
             computedBudget,
-            elapsedSeconds,
-            unackedBytes);
+            elapsedSeconds);
         budget = Math.Min(budget, _capBytes);
         _lastNormalBudgetBytes = budget;
         _lastBudgetUpdateTimestamp = nowTicks;
@@ -1219,15 +1215,9 @@ internal sealed class BrokerUnackedByteBudget
     internal static long BoundBudgetDecay(
         long previousBudget,
         long computedBudget,
-        double elapsedSeconds,
-        long unackedBytes)
+        double elapsedSeconds)
     {
         if (computedBudget >= previousBudget)
-            return computedBudget;
-
-        // Bytes at a multiple of the fresh budget prove the old budget over-admitted;
-        // smoothing would otherwise preserve the standing queue for minutes at 10%/s.
-        if (unackedBytes >= StandingQueueDecayBypassMultiplier * computedBudget)
             return computedBudget;
 
         var decayFraction = Math.Min(
