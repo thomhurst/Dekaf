@@ -203,6 +203,12 @@ commit, so only the runtime's `MarkProcessed`-tracked commits advance offsets. T
 combination of auto commit and `PartitionCommitPolicy.UserManaged` also remains
 allowed for applications that accept auto-commit semantics.
 
+This check inspects the commit configuration of Dekaf's own consumer
+implementations (`KafkaConsumer` and the testing `InMemoryConsumer`). A custom
+`IKafkaConsumer` implementation or a wrapper around a Dekaf consumer is not
+inspected and will not fail fast — if you wrap a consumer, ensure the underlying
+configuration follows the rules above.
+
 Transactions remain user-managed. If a processor writes transactionally, send
 the processed offsets to that transaction and do not also let the partitioned
 runtime commit them outside the transaction.
