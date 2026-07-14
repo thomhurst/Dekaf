@@ -312,6 +312,99 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task Revoke_AutoCommit_CommitsOnlyRevokedDirtyOffsets()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false);
+        var revoked = new TopicPartition("topic-a", 0);
+        var retained = new TopicPartition("topic-a", 1);
+        consumer.StoreOffset(new TopicPartitionOffset(revoked.Topic, revoked.Partition, 10));
+        consumer.StoreOffset(new TopicPartitionOffset(retained.Topic, retained.Partition, 20));
+
+        await CommitRevokedOffsetsAsync(consumer, [revoked]);
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(requests).Count().IsEqualTo(2);
+        await Assert.That(GetCommittedOffsets(requests[0])).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 10)
+        ]);
+        await Assert.That(GetCommittedOffsets(requests[1])).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 1, 20)
+        ]);
+    }
+
+    [Test]
+    public async Task Revoke_ManualCommit_DoesNotCommitStoredOffsets()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Manual,
+            enableAutoOffsetStore: false);
+        var revoked = new TopicPartition("topic-a", 0);
+        consumer.StoreOffset(new TopicPartitionOffset(revoked.Topic, revoked.Partition, 10));
+
+        await CommitRevokedOffsetsAsync(consumer, [revoked]);
+
+        await Assert.That(requests).IsEmpty();
+    }
+
+    [Test]
+    public async Task Revoke_WhenCommitFails_PreservesOffsetAndContinues()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var responseErrors = new Queue<ErrorCode>([ErrorCode.InvalidCommitOffsetSize, ErrorCode.None]);
+        await using var consumer = CreateConsumer(
+            requests,
+            responseErrors,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false);
+        var revoked = new TopicPartition("topic-a", 0);
+        consumer.StoreOffset(new TopicPartitionOffset(revoked.Topic, revoked.Partition, 10));
+
+        await CommitRevokedOffsetsAsync(consumer, [revoked]);
+        await CommitStoredOffsetsAsync(consumer);
+
+        await Assert.That(requests).Count().IsEqualTo(2);
+        await Assert.That(GetCommittedOffsets(requests[1])).IsEquivalentTo(
+        [
+            new TopicPartitionOffset("topic-a", 0, 10)
+        ]);
+    }
+
+    [Test]
+    [Timeout(5_000)]
+    public async Task Revoke_WhenCommitExceedsRebalanceTimeout_Continues(
+        CancellationToken cancellationToken)
+    {
+        var requests = new List<OffsetCommitRequest>();
+        var commitAttempt = 0;
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            OffsetCommitMode.Auto,
+            enableAutoOffsetStore: false,
+            rebalanceTimeoutMs: 25,
+            onOffsetCommitAsync: token => Interlocked.Increment(ref commitAttempt) == 1
+                ? new ValueTask(Task.Delay(Timeout.InfiniteTimeSpan, token))
+                : ValueTask.CompletedTask);
+        var revoked = new TopicPartition("topic-a", 0);
+        consumer.StoreOffset(new TopicPartitionOffset(revoked.Topic, revoked.Partition, 10));
+
+        await CommitRevokedOffsetsAsync(consumer, [revoked]);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        await Assert.That(requests).Count().IsEqualTo(1);
+    }
+
+    [Test]
     public async Task CommitAsync_WhenAutoOffsetStoreDisabled_CommitsOnlyStoredOffset()
     {
         var requests = new List<OffsetCommitRequest>();
@@ -373,20 +466,26 @@ public sealed class ConsumerDirtyCommitTests
         ErrorCode responseError,
         OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
         bool enableAutoOffsetStore = true,
-        Action<CancellationToken>? onOffsetCommit = null)
+        Action<CancellationToken>? onOffsetCommit = null,
+        int rebalanceTimeoutMs = 60_000,
+        Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null)
         => CreateConsumer(
             requests,
             new Queue<ErrorCode>([responseError]),
             offsetCommitMode,
             enableAutoOffsetStore,
-            onOffsetCommit);
+            onOffsetCommit,
+            rebalanceTimeoutMs,
+            onOffsetCommitAsync);
 
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
         Queue<ErrorCode> responseErrors,
         OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
         bool enableAutoOffsetStore = true,
-        Action<CancellationToken>? onOffsetCommit = null)
+        Action<CancellationToken>? onOffsetCommit = null,
+        int rebalanceTimeoutMs = 60_000,
+        Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -421,10 +520,13 @@ public sealed class ConsumerDirtyCommitTests
             {
                 var request = call.Arg<OffsetCommitRequest>()!;
                 requests.Add(CloneRequest(request));
-                onOffsetCommit?.Invoke(call.Arg<CancellationToken>());
+                var token = call.Arg<CancellationToken>();
+                onOffsetCommit?.Invoke(token);
 
                 var error = responseErrors.Count == 0 ? ErrorCode.None : responseErrors.Dequeue();
-                return ValueTask.FromResult(CreateResponse(request, error));
+                return onOffsetCommitAsync is null
+                    ? ValueTask.FromResult(CreateResponse(request, error))
+                    : CompleteOffsetCommitAsync(request, error, onOffsetCommitAsync(token));
             });
 
         var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
@@ -448,7 +550,8 @@ public sealed class ConsumerDirtyCommitTests
                 BootstrapServers = ["localhost:9092"],
                 GroupId = "group-a",
                 OffsetCommitMode = offsetCommitMode,
-                EnableAutoOffsetStore = enableAutoOffsetStore
+                EnableAutoOffsetStore = enableAutoOffsetStore,
+                RebalanceTimeoutMs = rebalanceTimeoutMs
             },
             Serializers.String,
             Serializers.String,
@@ -533,7 +636,10 @@ public sealed class ConsumerDirtyCommitTests
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "CommitStoredOffsetsAsync",
-            BindingFlags.NonPublic | BindingFlags.Instance)!;
+            BindingFlags.NonPublic | BindingFlags.Instance,
+            binder: null,
+            types: [typeof(CancellationToken)],
+            modifiers: null)!;
 
         var commit = method.Invoke(consumer, [CancellationToken.None])!;
         if (commit is ValueTask valueTask)
@@ -549,6 +655,17 @@ public sealed class ConsumerDirtyCommitTests
         }
 
         throw new InvalidOperationException($"Unexpected CommitStoredOffsetsAsync return type: {commit.GetType()}.");
+    }
+
+    private static async Task CommitRevokedOffsetsAsync(
+        KafkaConsumer<string, string> consumer,
+        IReadOnlyList<TopicPartition> partitions)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CommitRevokedOffsetsAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await (ValueTask)method.Invoke(consumer, [partitions, CancellationToken.None])!;
     }
 
     private static ConsumeResult<string, string> CreateConsumeResult(long offset, int leaderEpoch)
@@ -612,6 +729,15 @@ public sealed class ConsumerDirtyCommitTests
                 })
                 .ToArray()
         };
+    }
+
+    private static async ValueTask<OffsetCommitResponse> CompleteOffsetCommitAsync(
+        OffsetCommitRequest request,
+        ErrorCode error,
+        ValueTask beforeCommit)
+    {
+        await beforeCommit;
+        return CreateResponse(request, error);
     }
 
     private static TopicPartitionOffset[] GetCommittedOffsets(OffsetCommitRequest request)

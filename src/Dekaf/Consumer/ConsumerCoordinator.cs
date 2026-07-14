@@ -34,7 +34,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // Heartbeats can revoke and reassign a partition between poll-loop snapshots.
     // Signal before publication to defeat assignment ABA (A -> B -> A with the same final set).
     private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoking;
+    // Runs after assignment publication but before user revoke callbacks and the next heartbeat.
+    // Assignment snapshots wait for this hook so KafkaConsumer cannot discard dirty revoked offsets first.
+    private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>?
+        _onPartitionsRevokedAsync;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
+    private Task _pendingRevocationCommit = Task.CompletedTask;
     // Assignment publication and revocation history form one snapshot. Rebalance callbacks
     // run only after this lock is released so user code cannot extend its critical section.
     private readonly Lock _assignmentStateLock = new();
@@ -104,7 +109,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             logger,
             getConnectionCount,
             onPartitionsRevoked,
-            onPartitionsRevoking: null)
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: null)
     {
     }
 
@@ -115,7 +121,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ILogger<ConsumerCoordinator>? logger,
         Func<int>? getConnectionCount,
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked,
-        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking)
+        Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking,
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? onPartitionsRevokedAsync = null)
     {
         _options = options;
         _connectionPool = connectionPool;
@@ -123,6 +130,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _rebalanceListener = options.RebalanceListener;
         _onPartitionsRevoked = onPartitionsRevoked;
         _onPartitionsRevoking = onPartitionsRevoking;
+        _onPartitionsRevokedAsync = onPartitionsRevokedAsync;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConsumerCoordinator>.Instance;
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
@@ -216,18 +224,28 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             && Stopwatch.GetTimestamp() - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks;
     }
 
-    internal (TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)
-        GetAssignmentSnapshotAndDrainRevocations()
+    internal async ValueTask<(TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)>
+        GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken cancellationToken)
     {
-        lock (_assignmentStateLock)
+        while (true)
         {
-            HashSet<TopicPartition>? revoked = null;
-            while (_revokedPartitionsSinceLastSync.TryDequeue(out var partition))
+            Task pendingRevocationCommit;
+            lock (_assignmentStateLock)
             {
-                (revoked ??= []).Add(partition);
+                pendingRevocationCommit = _pendingRevocationCommit;
+                if (pendingRevocationCommit.IsCompleted)
+                {
+                    HashSet<TopicPartition>? revoked = null;
+                    while (_revokedPartitionsSinceLastSync.TryDequeue(out var partition))
+                    {
+                        (revoked ??= []).Add(partition);
+                    }
+
+                    return (_assignedPartitions, Volatile.Read(ref _assignmentVersion), revoked);
+                }
             }
 
-            return (_assignedPartitions, Volatile.Read(ref _assignmentVersion), revoked);
+            await pendingRevocationCommit.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -970,7 +988,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly record struct ConsumerHeartbeatResult(
         bool AssignmentChanged,
         IReadOnlyList<TopicPartition>? Revoked,
-        IReadOnlyList<TopicPartition>? Assigned);
+        IReadOnlyList<TopicPartition>? Assigned,
+        TaskCompletionSource<bool>? RevocationCommitCompletion = null);
 
     /// <summary>
     /// Resets member identity and assignment to the pre-join state.
@@ -1013,16 +1032,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         ConsumerHeartbeatResult result,
         CancellationToken cancellationToken)
     {
-        await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var rebalanceListenerLockHeld = false;
         try
         {
+            await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            rebalanceListenerLockHeld = true;
             await FireConsumerProtocolRebalanceListenersCoreAsync(
                 result,
                 cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            _rebalanceListenerLock.Release();
+            CompleteRevocationCommit(result);
+            if (rebalanceListenerLockHeld)
+                _rebalanceListenerLock.Release();
         }
     }
 
@@ -1033,12 +1056,24 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (!result.AssignmentChanged)
             return;
 
-        if (result.Revoked is { Count: > 0 })
+        if (result.Revoked is { Count: > 0 } revoked)
+        {
+            try
+            {
+                if (_onPartitionsRevokedAsync is not null)
+                    await _onPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                CompleteRevocationCommit(result);
+            }
+
             await InvokeRebalanceListenersAsync(
                 "OnPartitionsRevoked",
-                result.Revoked,
+                revoked,
                 static (listener, partitions, token) => listener.OnPartitionsRevokedAsync(partitions, token),
                 cancellationToken).ConfigureAwait(false);
+        }
 
         if (result.Assigned is { Count: > 0 })
             await InvokeRebalanceListenersAsync(
@@ -1047,6 +1082,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 static (listener, partitions, token) => listener.OnPartitionsAssignedAsync(partitions, token),
                 cancellationToken).ConfigureAwait(false);
     }
+
+    private static void CompleteRevocationCommit(ConsumerHeartbeatResult result)
+        => result.RevocationCommitCompletion?.TrySetResult(true);
 
     /// <summary>
     /// Sends a ConsumerGroupHeartbeat request and processes the response.
@@ -1148,9 +1186,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         var rebalanceListenerLockHeld = false;
+        ConsumerHeartbeatResult result = default;
         try
         {
-            ConsumerHeartbeatResult result;
             using (assignmentProcessing)
             {
                 await _rebalanceListenerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -1186,6 +1224,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
         finally
         {
+            CompleteRevocationCommit(result);
             if (rebalanceListenerLockHeld)
                 _rebalanceListenerLock.Release();
         }
@@ -1399,6 +1438,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
+        TaskCompletionSource<bool>? revocationCommitCompletion = null;
+        if (revoked is { Count: > 0 }
+            && _options.OffsetCommitMode == OffsetCommitMode.Auto
+            && _onPartitionsRevokedAsync is not null)
+        {
+            revocationCommitCompletion = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
         if (changed)
         {
             NotifyRevoking(revoked);
@@ -1410,6 +1458,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 if (revoked is not null)
                     EnqueueRevokedPartitions(revoked);
+                if (revocationCommitCompletion is not null)
+                    _pendingRevocationCommit = revocationCommitCompletion.Task;
             }
 
             if (revoked is not null)
@@ -1418,7 +1468,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
         }
 
-        return new ConsumerHeartbeatResult(changed, revoked, assigned);
+        return new ConsumerHeartbeatResult(changed, revoked, assigned, revocationCommitCompletion);
     }
 
     private void NotifyRevoking(IReadOnlyList<TopicPartition>? revoked)

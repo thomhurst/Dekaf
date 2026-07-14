@@ -1219,7 +1219,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     ? () => Volatile.Read(ref _appliedConnectionCount)
                     : null,
                 onPartitionsRevoked: null,
-                onPartitionsRevoking: QueueCoordinatorRevokedPartitionsForFetchClear);
+                onPartitionsRevoking: QueueCoordinatorRevokedPartitionsForFetchClear,
+                onPartitionsRevokedAsync: CommitRevokedOffsetsAsync);
         }
 
         _prefetchBuffer = new MpscFetchBuffer(CalculatePrefetchBufferCapacity(options));
@@ -3955,7 +3956,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             .ConfigureAwait(false);
     }
 
-    private async ValueTask<bool> CommitStoredOffsetsAsync(CancellationToken cancellationToken)
+    private ValueTask<bool> CommitStoredOffsetsAsync(CancellationToken cancellationToken) =>
+        CommitStoredOffsetsAsync(partitions: null, cancellationToken);
+
+    private async ValueTask<bool> CommitStoredOffsetsAsync(
+        TopicPartitionSet? partitions,
+        CancellationToken cancellationToken)
     {
         if (_coordinator is null)
             return false;
@@ -3966,7 +3972,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             // Commit only offsets that changed since the last successful commit.
             // Snapshot the concurrent dictionary to avoid race conditions during enumeration
-            var dirtyOffsetsSnapshot = _dirtyStoredOffsets.ToArray();
+            var dirtyOffsetsSnapshot = partitions is null
+                ? _dirtyStoredOffsets.ToArray()
+                : _dirtyStoredOffsets.Where(kvp => partitions.Contains(kvp.Key)).ToArray();
             offsetCount = dirtyOffsetsSnapshot.Length;
             if (offsetCount == 0)
                 return false;
@@ -4009,6 +4017,36 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return true;
+    }
+
+    private async ValueTask CommitRevokedOffsetsAsync(
+        IReadOnlyList<TopicPartition> partitions,
+        CancellationToken cancellationToken)
+    {
+        if (_options.OffsetCommitMode != OffsetCommitMode.Auto)
+            return;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(_options.RebalanceTimeoutMs);
+
+        try
+        {
+            var revoked = partitions.ToHashSet();
+            if (await CommitStoredOffsetsAsync(revoked, timeout.Token).ConfigureAwait(false))
+                LogCommittedRevokedOffsets();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            LogCommitRevokedOffsetsTimedOut(_options.RebalanceTimeoutMs);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogCommitRevokedOffsetsFailed(ex);
+        }
     }
 
     public async ValueTask CommitAsync(IEnumerable<TopicPartitionOffset> offsets, CancellationToken cancellationToken = default)
@@ -5049,7 +5087,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 BeforeCoordinatorAssignmentSnapshotForTest?.Invoke();
                 var (coordinatorAssignment, coordinatorAssignmentVersion, coordinatorRevocations) =
-                    coordinator.GetAssignmentSnapshotAndDrainRevocations();
+                    await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(cancellationToken)
+                        .ConfigureAwait(false);
                 if (coordinatorRevocations is not null)
                 {
                     unacknowledgedCoordinatorRevocations = (coordinator, coordinatorRevocations);
@@ -7566,6 +7605,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Auto-commit failed, retrying once")]
     private partial void LogAutoCommitFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Committed stored offsets before partition revocation")]
+    private partial void LogCommittedRevokedOffsets();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Commit of revoked offsets timed out after {TimeoutMs}ms; continuing rebalance")]
+    private partial void LogCommitRevokedOffsetsTimedOut(int timeoutMs);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to commit revoked offsets; continuing rebalance")]
+    private partial void LogCommitRevokedOffsetsFailed(Exception exception);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Closing consumer gracefully")]
     private partial void LogClosingConsumer();
