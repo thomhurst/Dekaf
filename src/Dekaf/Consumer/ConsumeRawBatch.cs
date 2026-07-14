@@ -106,7 +106,7 @@ namespace Dekaf.Consumer
         public struct Enumerator : IEnumerator<ConsumeRawRecord>
         {
             private readonly ConsumeRawBatch _batch;
-            private readonly bool _canContinue;
+            private bool _canContinue;
             private int _observedVersion;
             private int _recordsYielded;
 
@@ -143,11 +143,13 @@ namespace Dekaf.Consumer
                 if (_recordsYielded >= _batch._maxRecords)
                 {
                     pending.TryBufferNext();
+                    _canContinue = false;
                     return false;
                 }
 
                 if (!pending.MoveNext())
                 {
+                    _canContinue = false;
                     return false;
                 }
 

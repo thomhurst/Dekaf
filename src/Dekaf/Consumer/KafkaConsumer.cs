@@ -2162,6 +2162,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (ClearFetchBufferForPendingCoordinatorRevocations())
                     continue;
 
+                if (TryDiscardExhaustedPendingFetch())
+                    continue;
+
                 PendingFetchData pending = _pendingFetches.Peek();
                 int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                 var batchYielded = false;
@@ -2312,6 +2315,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (ClearFetchBufferForPendingCoordinatorRevocations())
                     continue;
 
+                if (TryDiscardExhaustedPendingFetch())
+                    continue;
+
                 PendingFetchData pending = _pendingFetches.Peek();
                 int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                 var batchYielded = false;
@@ -2396,8 +2402,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             || (pending.IsExhausted && yieldedBatchProcessed)
             || !IsCurrentlyAssigned(pending.TopicPartition))
         {
-            DequeuePendingFetch().Dispose();
+            DisposeQueuedFetch(DequeuePendingFetch());
         }
+    }
+
+    private bool TryDiscardExhaustedPendingFetch()
+    {
+        if (_pendingFetches.Count == 0 || !_pendingFetches.Peek().IsExhausted)
+            return false;
+
+        DisposeQueuedFetch(DequeuePendingFetch());
+        return true;
     }
 
     private void StartPrefetch()
@@ -3205,6 +3220,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             if (TryReadActiveConsumedPosition(out var partition, out var nextOffset, out var leaderEpoch, out var version))
             {
+                if (_pendingFetches.Count > 0)
+                {
+                    var activePending = _pendingFetches.Peek();
+                    if (activePending.TopicPartition.Equals(partition)
+                        && activePending.LastYieldedOffset + 1 == nextOffset
+                        && activePending.LastYieldedLeaderEpoch == leaderEpoch)
+                    {
+                        activePending.MarkYieldedProcessed();
+                    }
+                }
+
                 ApplyConsumedPosition(partition, nextOffset, leaderEpoch);
                 ClearActiveConsumedPosition(partition, nextOffset, version);
                 return true;
@@ -3218,7 +3244,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // record still being processed. Mark it proven so the flush stages it.
         var pending = _pendingFetches.Peek();
         pending.MarkYieldedProcessed();
-        return FlushConsumedPositions(pending);
+        var flushed = FlushConsumedPositions(pending);
+
+        if (pending.IsExhausted
+            && _pendingFetches.Count > 0
+            && ReferenceEquals(_pendingFetches.Peek(), pending))
+        {
+            DisposeQueuedFetch(DequeuePendingFetch());
+        }
+
+        return flushed;
     }
 
     private bool TryGetActiveConsumedPosition(TopicPartition partition, out long position, out int leaderEpoch)

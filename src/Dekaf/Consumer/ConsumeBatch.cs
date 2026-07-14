@@ -224,11 +224,13 @@ namespace Dekaf.Consumer
                 if (_recordsYielded >= _batch._maxRecords)
                 {
                     pending.TryBufferNext();
+                    _canContinue = false;
                     return false;
                 }
 
                 if (!pending.MoveNext())
                 {
+                    _canContinue = false;
                     return false;
                 }
 

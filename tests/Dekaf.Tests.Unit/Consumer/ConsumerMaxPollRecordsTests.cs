@@ -61,7 +61,7 @@ public sealed class ConsumerMaxPollRecordsTests
     }
 
     [Test]
-    public async Task ConsumeBatchAsync_ExactMaxPollRecordsMultiple_RemovesExhaustedFetch()
+    public async Task ConsumeBatchAsync_ExactMaxPollRecordsMultiple_RetainsExhaustedFetchUntilCommit()
     {
         await using var consumer = CreateConsumerWithPendingFetches(
             maxPollRecords: 2,
@@ -78,6 +78,10 @@ public sealed class ConsumerMaxPollRecordsTests
             .IsEquivalentTo([2L, 3L]);
 
         await enumerator.DisposeAsync();
+
+        await Assert.That(GetPendingFetches(consumer).Count).IsEqualTo(1);
+
+        await consumer.CommitAsync(CancellationToken.None);
 
         await Assert.That(GetPendingFetches(consumer).Count).IsEqualTo(0);
     }

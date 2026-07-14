@@ -565,6 +565,54 @@ public sealed class OffsetStoreTimingTests
         await consumer.CommitAsync(CancellationToken.None);
 
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(22L);
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task ConsumeBatch_NewStreamSkipsRetainedExhaustedFetch(bool raw)
+    {
+        var firstFetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20, CreateRecord(0, "a", "one"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, firstFetch);
+
+        if (raw)
+        {
+            await foreach (var batch in consumer.ConsumeRawBatchAsync(CancellationToken.None))
+            {
+                foreach (var _ in batch) { }
+                break;
+            }
+        }
+        else
+        {
+            await foreach (var batch in consumer.ConsumeBatchAsync(CancellationToken.None))
+            {
+                foreach (var _ in batch) { }
+                break;
+            }
+        }
+
+        GetPendingFetches(consumer).Enqueue(PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(30, CreateRecord(0, "b", "two"))
+        ]));
+
+        if (raw)
+        {
+            await using var batches = consumer.ConsumeRawBatchAsync(CancellationToken.None).GetAsyncEnumerator();
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.Select(record => record.Offset).ToArray()).IsEquivalentTo([30L]);
+        }
+        else
+        {
+            await using var batches = consumer.ConsumeBatchAsync(CancellationToken.None).GetAsyncEnumerator();
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.Select(record => record.Offset).ToArray()).IsEquivalentTo([30L]);
+        }
     }
 
     // --- ConsumeOneAsync ---
@@ -629,6 +677,33 @@ public sealed class OffsetStoreTimingTests
         await consumer.CommitAsync(CancellationToken.None);
 
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
+    }
+
+    [Test]
+    public async Task CommitAsync_ThenClose_DoesNotRegressActiveConsumedOffset()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateGroupedCommitCapturingConsumer(requests);
+        InjectPendingFetch(consumer, PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]));
+        await using (var records = consumer.ConsumeAsync(CancellationToken.None).GetAsyncEnumerator())
+        {
+            await Assert.That(await records.MoveNextAsync()).IsTrue();
+            await Assert.That(await records.MoveNextAsync()).IsTrue();
+        }
+
+        await consumer.CommitAsync(CancellationToken.None);
+        await consumer.CloseAsync();
+
+        await Assert.That(requests.Count).IsEqualTo(2);
+        await Assert.That(requests.SelectMany(request => request.Topics)
+            .SelectMany(topic => topic.Partitions)
+            .Select(partition => partition.CommittedOffset))
+            .IsEquivalentTo([22L, 22L]);
     }
 
     // --- Close path ---
