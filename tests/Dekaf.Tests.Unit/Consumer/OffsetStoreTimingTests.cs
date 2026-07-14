@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -77,6 +78,83 @@ public sealed class OffsetStoreTimingTests
         // failing record 22 stays uncommitted and is redelivered after restart.
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(22L);
         await Assert.That(GetPositions(consumer)[tp]).IsEqualTo(23L);
+    }
+
+    [Test]
+    public async Task ConsumeOne_DeserializerFailure_RewindsForRedelivery()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"),
+                CreateRecord(2, "c", "three"))
+        ]);
+        var deserializer = new FailOnceDeserializer("two");
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, deserializer, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        await Assert.That(TryConsumeOneFromPendingFetches(consumer, out var first)).IsTrue();
+        await Assert.That(first.Offset).IsEqualTo(20L);
+        await Assert.That(() => TryConsumeOneFromPendingFetches(consumer, out _))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
+        await Assert.That(GetPositions(consumer)[tp]).IsEqualTo(21L);
+        await Assert.That(GetFetchPositions(consumer)[tp]).IsEqualTo(21L);
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+
+        InjectPendingFetch(consumer, PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(21,
+                CreateRecord(0, "b", "two"),
+                CreateRecord(1, "c", "three"))
+        ]));
+
+        await Assert.That(TryConsumeOneFromPendingFetches(consumer, out var replay)).IsTrue();
+        await Assert.That(replay.Offset).IsEqualTo(21L);
+    }
+
+    [Test]
+    public async Task ConsumeAsync_DeserializerFailure_RewindsForRedelivery()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"),
+                CreateRecord(2, "c", "three"))
+        ]);
+        var deserializer = new FailOnceDeserializer("two");
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, deserializer, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        await Assert.That(async () =>
+        {
+            await foreach (var result in consumer.ConsumeAsync(CancellationToken.None))
+                await Assert.That(result.Offset).IsEqualTo(20L);
+        }).Throws<InvalidOperationException>();
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
+        await Assert.That(GetPositions(consumer)[tp]).IsEqualTo(21L);
+        await Assert.That(GetFetchPositions(consumer)[tp]).IsEqualTo(21L);
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+
+        InjectPendingFetch(consumer, PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(21,
+                CreateRecord(0, "b", "two"),
+                CreateRecord(1, "c", "three"))
+        ]));
+
+        long? replayOffset = null;
+        await foreach (var result in consumer.ConsumeAsync(CancellationToken.None))
+        {
+            replayOffset = result.Offset;
+            break;
+        }
+
+        await Assert.That(replayOffset).IsEqualTo(21L);
     }
 
     [Test]
@@ -594,6 +672,34 @@ public sealed class OffsetStoreTimingTests
         await Assert.That(offsets.ContainsKey(partition)).IsFalse();
     }
 
+    [Test]
+    public async Task InMemoryConsumer_IncrementalReassignmentDiscardsInDoubtRecord()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var consumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "workers",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        var admin = new InMemoryAdminClient(cluster);
+        var partition = new TopicPartition("jobs", 0);
+
+        await producer.ProduceAsync("jobs", "a", "one");
+        consumer.Assign(partition);
+
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+        consumer.IncrementalAssign([new TopicPartitionOffset(partition.Topic, partition.Partition, 0)]);
+        var replay = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
+
+        await Assert.That(first!.Value.Offset).IsEqualTo(0L);
+        await Assert.That(replay!.Value.Offset).IsEqualTo(0L);
+        var offsets = await admin.ListConsumerGroupOffsetsAsync("workers");
+        await Assert.That(offsets.ContainsKey(partition)).IsFalse();
+    }
+
     // --- Harness ---
 
     private static KafkaConsumer<string, string> CreateInitializedConsumer(
@@ -604,6 +710,19 @@ public sealed class OffsetStoreTimingTests
     private static KafkaConsumer<string, string> CreateInitializedConsumer(
         OffsetCommitMode offsetCommitMode,
         OffsetStoreTiming offsetStoreTiming,
+        params PendingFetchData[] fetches)
+        => CreateInitializedConsumer(offsetCommitMode, offsetStoreTiming, Serializers.String, fetches);
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumer(
+        OffsetCommitMode offsetCommitMode,
+        IDeserializer<string> valueDeserializer,
+        params PendingFetchData[] fetches)
+        => CreateInitializedConsumer(offsetCommitMode, OffsetStoreTiming.AfterProcessing, valueDeserializer, fetches);
+
+    private static KafkaConsumer<string, string> CreateInitializedConsumer(
+        OffsetCommitMode offsetCommitMode,
+        OffsetStoreTiming offsetStoreTiming,
+        IDeserializer<string> valueDeserializer,
         params PendingFetchData[] fetches)
     {
         var consumer = new KafkaConsumer<string, string>(
@@ -616,7 +735,7 @@ public sealed class OffsetStoreTimingTests
                 FetchMaxWaitMs = 200
             },
             Serializers.String,
-            Serializers.String,
+            valueDeserializer,
             loggerFactory: null);
 
         SetInitialized(consumer);
@@ -754,11 +873,38 @@ public sealed class OffsetStoreTimingTests
             ?? throw new InvalidOperationException("TryConsumeOneFromPendingFetches method not found.");
 
         object?[] args = [null];
-        var consumed = (bool)method.Invoke(consumer, args)!;
+        bool consumed;
+        try
+        {
+            consumed = (bool)method.Invoke(consumer, args)!;
+        }
+        catch (TargetInvocationException exception) when (exception.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(exception.InnerException).Throw();
+            throw;
+        }
+
         result = args[0] is ConsumeResult<string, string> consumeResult
             ? consumeResult
             : default;
         return consumed;
+    }
+
+    private sealed class FailOnceDeserializer(string rejectedValue) : IDeserializer<string>
+    {
+        private bool _failed;
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            var value = Encoding.UTF8.GetString(data.Span);
+            if (!_failed && value == rejectedValue)
+            {
+                _failed = true;
+                throw new InvalidOperationException("deserialization failed");
+            }
+
+            return value;
+        }
     }
 
     private static FieldInfo GetField(string fieldName)

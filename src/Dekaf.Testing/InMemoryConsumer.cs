@@ -516,6 +516,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             {
                 var partition = new TopicPartition(offset.Topic, offset.Partition);
                 var position = offset.Offset >= 0 ? offset.Offset : GetStartOffset(partition);
+                DiscardInDoubtRecordUnderLock(partition);
                 _assignment.Add(partition);
                 _positions[partition] = position;
             }

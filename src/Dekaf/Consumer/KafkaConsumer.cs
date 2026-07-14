@@ -1868,6 +1868,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         // does not kill the consumer permanently. The yield must be outside
                         // the try block (CS1626), so we build the result first then yield below.
                         var readingProtocolData = true;
+                        var offset = -1L;
                         try
                         {
                             if (!pending.MoveNext())
@@ -1882,7 +1883,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             // Use cached batch properties (updated once per batch transition
                             // in MoveNext) to avoid per-message property access overhead on
                             // RecordBatch (Volatile.Read + disposed check per access).
-                            var offset = pending.CurrentBaseOffset + record.OffsetDelta;
+                            offset = pending.CurrentBaseOffset + record.OffsetDelta;
                             var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
 
                             // Use batch-level cached timestamp type (computed once per batch
@@ -1954,7 +1955,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 _currentRawValue = record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value;
                             }
                         }
-                        catch (OperationCanceledException)
+                        catch (OperationCanceledException) when (readingProtocolData)
                         {
                             throw;
                         }
@@ -1968,6 +1969,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             previousActivity = null;
                             LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                             break;
+                        }
+                        catch (Exception) when (!readingProtocolData)
+                        {
+                            RewindAfterDeliveryFailure(pending, offset);
+                            throw;
                         }
 
                         yield return nextResult;
@@ -3966,13 +3972,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 while (true)
                 {
                     var readingProtocolData = true;
+                    var offset = -1L;
                     try
                     {
                         if (!pending.MoveNext())
                             break;
 
                         var record = pending.CurrentRecord;
-                        var offset = pending.CurrentBaseOffset + record.OffsetDelta;
+                        offset = pending.CurrentBaseOffset + record.OffsetDelta;
                         var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
                         var timestampType = pending.CurrentTimestampType;
                         var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
@@ -4029,7 +4036,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         return true;
                     }
-                    catch (OperationCanceledException)
+                    catch (OperationCanceledException) when (readingProtocolData)
                     {
                         throw;
                     }
@@ -4038,6 +4045,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     {
                         LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                         break;
+                    }
+                    catch (Exception) when (!readingProtocolData)
+                    {
+                        RewindAfterDeliveryFailure(pending, offset);
+                        throw;
                     }
                 }
             }
@@ -4061,6 +4073,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Discards records following a deserializer or consume-interceptor failure and resumes
+    /// the partition at the failed record. Otherwise a later consume could prove a higher
+    /// offset from the same fetch and commit past the record that was never delivered.
+    /// </summary>
+    private void RewindAfterDeliveryFailure(PendingFetchData pending, long failedOffset)
+    {
+        var partition = pending.TopicPartition;
+
+        // Keep fetch invalidation and the replacement position atomic with background
+        // prefetch publication, matching Seek's ordering guarantee.
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            // Preserve the successfully processed prefix before disposing this fetch.
+            FlushConsumedPositions(pending);
+            ClearFetchBufferForPartitions([partition]);
+            _positions[partition] = failedOffset;
+            _fetchPositions[partition] = failedOffset;
+            _eofEmitted.TryRemove(partition, out _);
+        }
     }
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
