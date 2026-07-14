@@ -67,6 +67,34 @@ await foreach (var msg in consumer.ConsumeAsync(ct)
 
 Filtered-out messages are skipped permanently (see [warning above](#filtering-skips-messages-permanently)). Keep predicates deterministic: a message should be filtered because of *what it is*, not because of *when it arrived* or the current state of your application.
 
+### Handling Filtered Messages Before Continuing
+
+`Where` has an overload that awaits an `onFiltered` callback before requesting the next message. Use it to record, inspect, or park rejected messages:
+
+```csharp
+// Build this consumer with OffsetCommitMode.Manual.
+await foreach (var msg in consumer.ConsumeAsync(ct).Where(
+    CanProcess,
+    async filtered =>
+    {
+        await ParkOnRetryTopicAsync(filtered, ct);
+    },
+    ct))
+{
+    await ProcessAsync(msg);
+    consumer.StoreOffset(msg);
+    await consumer.CommitAsync(ct);
+}
+```
+
+The callback must complete before enumeration continues, and a callback failure stops enumeration. This prevents a later manually committed offset from passing a rejected message before it has been parked.
+
+:::warning Manual commit is required for crash-safe parking
+
+The callback cannot suspend a consumer's background periodic auto-commit. If a rejected message must be parked durably before **any** commit advances past it, configure `OffsetCommitMode.Manual` and commit only after every earlier message has been processed or parked.
+
+:::
+
 ## Select - Transforming Messages
 
 Project messages to a different type:
