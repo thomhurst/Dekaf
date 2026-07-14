@@ -530,10 +530,8 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         if (offsetCommitMode == OffsetCommitMode.Manual)
             await oracle.WaitForFinalCommitsAsync(cancellationToken);
         else
-            await survivor.CommitDeliveredAsync(cancellationToken);
-        await survivor.StopAsync();
-        if (offsetCommitMode == OffsetCommitMode.Auto)
             await WaitForFinalBrokerCommitsAsync(groupId, oracle, cancellationToken);
+        await survivor.StopAsync();
 
         await AssertCompletedScenarioAsync(
             groupId,
@@ -728,8 +726,6 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         await oracle.WaitForAllSequencesAsync(cancellationToken);
         if (offsetCommitMode == OffsetCommitMode.Manual)
             await oracle.WaitForFinalCommitsAsync(cancellationToken);
-        else
-            await survivor.CommitDeliveredAsync(cancellationToken);
 
         await Assert.That(oracle.WasDuplicatedAfterCrash(
                 crashedObservation.Partition,
@@ -737,9 +733,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             .IsTrue()
             .Because("the crashed member's last uncommitted record must be replayed after session expiry");
 
-        await survivor.StopAsync();
         if (offsetCommitMode == OffsetCommitMode.Auto)
             await WaitForFinalBrokerCommitsAsync(groupId, oracle, cancellationToken);
+        await survivor.StopAsync();
 
         await Assert.That(oracle.UniqueCount).IsEqualTo(PartitionCount * MessagesPerPartition);
         if (offsetCommitMode == OffsetCommitMode.Auto)
@@ -1087,7 +1083,6 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         Task WaitForPartitionAssignedAsync(TopicPartition partition, CancellationToken cancellationToken);
         Task WaitForPartitionUnassignedAsync(TopicPartition partition, CancellationToken cancellationToken);
         Task WaitForObservedCountAsync(int count, CancellationToken cancellationToken);
-        Task CommitDeliveredAsync(CancellationToken cancellationToken);
         Task StopAsync();
     }
 
@@ -1125,8 +1120,6 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         public int ObservedCount => _observed.Value;
 
         public int MaxAssignmentCount => _assignments.MaxAssignmentCount;
-
-        public virtual Task CommitDeliveredAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
         public void Allow(int count) => _permits.Release(count);
 
@@ -1293,7 +1286,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     .ConsumeAsync(StoppingToken)
                     .GetAsyncEnumerator(StoppingToken);
 
-                while (!Oracle.IsComplete)
+                // Auto mode must pull again after the final yield to prove it processed,
+                // and may need to redeliver an unproven tail from a departed member.
+                while (!_explicitlyCommit || !Oracle.IsComplete)
                 {
                     await Permits.WaitAsync(StoppingToken);
                     if (!await enumerator.MoveNextAsync())
@@ -1322,9 +1317,6 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         }
 
         protected override ValueTask DisposeConsumerAsync() => _consumer.DisposeAsync();
-
-        public override async Task CommitDeliveredAsync(CancellationToken cancellationToken) =>
-            await _consumer.CommitAsync(cancellationToken);
 
         public ValueTask CommitAsync(
             TopicPartitionOffset offset,
