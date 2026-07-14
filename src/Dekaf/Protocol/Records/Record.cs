@@ -126,17 +126,24 @@ public readonly record struct Record
         var length = reader.ReadVarInt();
         if (length < 0)
             throw new MalformedProtocolDataException($"Invalid record length {length}");
-        if (length > reader.Remaining)
-            throw new InsufficientDataException();
 
+        var availableBodyBytes = reader.Remaining;
         var bodyStart = reader.Consumed;
         try
         {
             return ReadBody(ref reader, length, bodyStart);
         }
-        catch (InsufficientDataException ex)
+        catch (RecordBodyLengthMismatchException ex)
+        {
+            throw new MalformedProtocolDataException(ex.Message, ex);
+        }
+        catch (InsufficientDataException ex) when (length <= availableBodyBytes)
         {
             throw new MalformedProtocolDataException("Record body cannot be parsed within its declared length", ex);
+        }
+        catch (MalformedProtocolDataException) when (length > availableBodyBytes)
+        {
+            throw new InsufficientDataException();
         }
     }
 
@@ -200,9 +207,11 @@ public readonly record struct Record
     private static void ValidateBodyLength(int declaredLength, long consumedLength)
     {
         if (consumedLength != declaredLength)
-            throw new MalformedProtocolDataException(
+            throw new RecordBodyLengthMismatchException(
                 $"Record body length mismatch: declared {declaredLength}, consumed {consumedLength}");
     }
+
+    private sealed class RecordBodyLengthMismatchException(string message) : Exception(message);
 
     private static void ValidateHeaderCount(int headerCount, int recordBodyLength, long bodyBytesRead, long readerRemaining)
     {
