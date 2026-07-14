@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
@@ -83,6 +84,93 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         }
     }
 
+    [Test]
+    [Timeout(240_000)]
+    public async Task Producer_NonIdempotent_BrokerRestart_DoesNotLoseAcknowledgedRecords(
+        CancellationToken cancellationToken)
+    {
+        var topic = await kafka.CreateReplicatedTopicAsync().ConfigureAwait(false);
+        var leaderBrokerId = await kafka.GetPartitionLeaderIdAsync(topic, cancellationToken)
+            .ConfigureAwait(false);
+        var brokerStopped = false;
+        var productionPaused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumeProduction = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acknowledgedValues = new List<string>(MessageCount);
+        using var productionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task? production = null;
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId($"non-idempotent-restart-producer-{Guid.NewGuid():N}")
+            .WithAcks(Acks.All)
+            .WithIdempotence(false)
+            .WithRequestTimeout(TimeSpan.FromSeconds(5))
+            .WithDeliveryTimeout(TimeSpan.FromSeconds(45))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        try
+        {
+            production = ProduceAcrossRestartAsync(
+                producer,
+                topic,
+                acknowledgedValues,
+                productionPaused,
+                resumeProduction.Task,
+                productionCancellation.Token);
+            var pauseOrProduction = await Task.WhenAny(productionPaused.Task, production)
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (ReferenceEquals(pauseOrProduction, production))
+                await production.ConfigureAwait(false);
+
+            await kafka.StopBrokerAsync(leaderBrokerId, cancellationToken).ConfigureAwait(false);
+            brokerStopped = true;
+            resumeProduction.TrySetResult();
+            _ = await kafka.WaitForPartitionLeaderChangeAsync(topic, leaderBrokerId, cancellationToken)
+                .ConfigureAwait(false);
+
+            await production.ConfigureAwait(false);
+            await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            await Assert.That(acknowledgedValues).Count().IsGreaterThanOrEqualTo(InitialMessageCount);
+            await Assert.That(acknowledgedValues.Count(value => int.Parse(value) >= InitialMessageCount))
+                .IsGreaterThanOrEqualTo(FailoverMessageCount);
+            await AssertAcknowledgedBrokerRecordsAsync(topic, acknowledgedValues, cancellationToken)
+                .ConfigureAwait(false);
+
+            await kafka.StartBrokerAsync(leaderBrokerId, cancellationToken).ConfigureAwait(false);
+            await kafka.WaitForInSyncReplicasAsync(topic, 3, cancellationToken).ConfigureAwait(false);
+            brokerStopped = false;
+        }
+        finally
+        {
+            resumeProduction.TrySetResult();
+            productionCancellation.Cancel();
+            try
+            {
+                if (brokerStopped)
+                    await kafka.StartBrokerAsync(leaderBrokerId, CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (production is not null)
+                {
+                    try
+                    {
+                        await production.ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // The primary test path observes production failures. On an earlier
+                        // failure, cancellation and this await prevent an abandoned faulted task.
+                    }
+                }
+            }
+        }
+    }
+
     private static async Task ProduceRangeAsync(
         IKafkaProducer<string, string> producer,
         string topic,
@@ -101,6 +189,43 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
                 Value = value.ToString()
             }, cancellationToken).ConfigureAwait(false);
             acknowledgements.Add(metadata);
+        }
+    }
+
+    private static async Task ProduceAcrossRestartAsync(
+        IKafkaProducer<string, string> producer,
+        string topic,
+        List<string> acknowledgedValues,
+        TaskCompletionSource productionPaused,
+        Task resumeProduction,
+        CancellationToken cancellationToken)
+    {
+        for (var value = 0; value < MessageCount; value++)
+        {
+            if (value == InitialMessageCount)
+            {
+                productionPaused.TrySetResult();
+                await resumeProduction.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var payload = value.ToString();
+            try
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = 0,
+                    Key = payload,
+                    Value = payload
+                }, cancellationToken).ConfigureAwait(false);
+                acknowledgedValues.Add(payload);
+            }
+            catch (KafkaException exception) when (
+                !cancellationToken.IsCancellationRequested &&
+                (exception is KafkaTimeoutException || exception.IsRetriable))
+            {
+                // Delivery failures are allowed; losing a successfully acknowledged record is not.
+            }
         }
     }
 
@@ -154,6 +279,35 @@ public sealed class ProducerLeaderFailoverIntegrationTests(RackAwareKafkaContain
         {
             throw new InvalidOperationException(
                 $"Unexpected duplicate record at offset {extra.Value.Offset}: {extra.Value.Value}.");
+        }
+    }
+
+    private async Task AssertAcknowledgedBrokerRecordsAsync(
+        string topic,
+        IReadOnlyCollection<string> acknowledgedValues,
+        CancellationToken cancellationToken)
+    {
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId($"non-idempotent-restart-oracle-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync(cancellationToken)
+            .ConfigureAwait(false);
+        consumer.Assign(new TopicPartition(topic, 0));
+
+        var missing = acknowledgedValues.ToHashSet(StringComparer.Ordinal);
+        while (missing.Count > 0)
+        {
+            var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10), cancellationToken)
+                .ConfigureAwait(false);
+            if (consumed is null)
+            {
+                throw new InvalidOperationException(
+                    $"Timed out with {missing.Count} acknowledged record(s) absent: " +
+                    string.Join(", ", missing.Order(StringComparer.Ordinal).Take(10)));
+            }
+
+            missing.Remove(consumed.Value.Value);
         }
     }
 }
