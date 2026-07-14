@@ -5551,6 +5551,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         LogFlushStarted(0, inFlightCount);
 
         ProducerDebugCounters.RecordFlushCall();
+
+        // A final partial batch must not enter the sender behind older sealed batches that
+        // are still queued or carried over. Under a deep admission budget, publishing the
+        // partial batch into that active pipeline can let it overtake one or more full
+        // same-partition batches during the flush boundary. Drain the existing pipeline
+        // first, then seal the current batches into a fresh ordered wave.
+        if (inFlightCount > 0)
+            await WaitForAllBatchesCompleteAsync(cancellationToken).ConfigureAwait(false);
+
         await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
 
         // Wait for all in-flight batches to complete using counter-based tracking

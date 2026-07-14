@@ -1858,6 +1858,100 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task FlushAsync_WaitsForSealedPipelineBeforePublishingFinalPartialBatch()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 30,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+        ReadyBatch? sealedBatch = null;
+        ReadyBatch? finalBatch = null;
+
+        try
+        {
+            var firstCompletion = pool.Rent();
+            var secondCompletion = pool.Rent();
+            var firstCompletionTask = firstCompletion.Task;
+            var secondCompletionTask = secondCompletion.Task;
+            var value = new byte[16];
+
+            await Assert.That(accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                firstCompletion)).IsTrue();
+
+            await Assert.That(accumulator.TryAppendFromSpansWithCompletion(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                secondCompletion)).IsTrue();
+
+            await Assert.That(accumulator.TryDrainBatch(out sealedBatch)).IsTrue();
+
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
+
+            await Assert.That(flushTask.IsCompleted).IsFalse();
+            await Assert.That(accumulator.TryDrainBatch(out _)).IsFalse()
+                .Because("the final partial batch must remain unpublished while an older batch is in flight");
+
+            sealedBatch!.CompleteSend(baseOffset: 10, DateTimeOffset.UtcNow);
+            accumulator.OnBatchExitsPipeline(sealedBatch);
+            accumulator.ReturnReadyBatch(sealedBatch);
+            sealedBatch = null;
+
+            await TestWait.UntilAsync(
+                () => accumulator.TryDrainBatch(out finalBatch),
+                TimeSpan.FromSeconds(5));
+
+            finalBatch!.CompleteSend(baseOffset: 11, DateTimeOffset.UtcNow);
+            accumulator.OnBatchExitsPipeline(finalBatch);
+            accumulator.ReturnReadyBatch(finalBatch);
+            finalBatch = null;
+
+            await flushTask.WaitAsync(TimeSpan.FromSeconds(5));
+            _ = await firstCompletionTask;
+            _ = await secondCompletionTask;
+        }
+        finally
+        {
+            if (sealedBatch is not null)
+            {
+                accumulator.OnBatchExitsPipeline(sealedBatch);
+                accumulator.ReturnReadyBatch(sealedBatch);
+            }
+
+            if (finalBatch is not null)
+            {
+                accumulator.OnBatchExitsPipeline(finalBatch);
+                accumulator.ReturnReadyBatch(finalBatch);
+            }
+
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task ReadyBatch_Cleanup_CalledTwice_OnlyExecutesOnce()
     {
         // This test verifies that Cleanup() uses an interlocked guard to ensure
