@@ -300,7 +300,6 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
                     .WithLoggerFactory(StressClientLogging.LoggerFactory)
                     .WithBootstrapServers(bootstrapServers)
                     .WithClientId("kafka-ready-check")
-                    .WithAcks(Producer.Acks.Leader)
                     .BuildAsync();
 
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
