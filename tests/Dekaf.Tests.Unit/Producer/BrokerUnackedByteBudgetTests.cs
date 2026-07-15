@@ -1082,6 +1082,24 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task PeriodicProbe_RejectsLowElasticityRateGainEvenWhenLatencyIsFlat()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.5,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SeedCapacityProbeEvaluation(budget, 10_000, 0, 20_800);
+
+        Ack(budget, 1_040, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
+
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
+        await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(1);
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(4.0).Within(0.000_001)
+            .Because("4% more rate does not justify 25% more standing flight");
+    }
+
+    [Test]
     public async Task PeriodicProbe_PersistsRateGainWhenSealToAckEfficiencyImproves()
     {
         var budget = new BrokerUnackedByteBudget(

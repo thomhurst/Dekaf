@@ -102,7 +102,6 @@ internal sealed class BrokerUnackedByteBudget
     // minute and create a self-reinforcing rate/budget decay loop.
     private const double LoadedRateHalfLifeSeconds = 600.0;
     private const double OccupancySafetyMultiplier = 1.5;
-    private const double ProbeGrowthThreshold = 1.01;
     private const double DeliveryLatencyEwmaWeight = 0.125;
     private const double RequestSizeEwmaWeight = 0.125;
     private const double ServingRttEwmaWeight = 0.125;
@@ -203,6 +202,12 @@ internal sealed class BrokerUnackedByteBudget
     // least three wholly-probed RTTs to average before accepting or rejecting growth.
     private const int ProbeEvaluationRtts = 3;
     private const double ProbeBudgetMultiplier = 1.25;
+    /// <summary>Minimum fraction of added standing flight that must convert into delivered-rate
+    /// growth. A 25% budget treatment therefore needs at least 5% more rate. This preserves
+    /// useful capacity discovery while rejecting small scheduler/response-clustering wins.</summary>
+    private const double MinimumProbeThroughputElasticity = 0.20;
+    private const double ProbeGrowthThreshold =
+        1.0 + (ProbeBudgetMultiplier - 1.0) * MinimumProbeThroughputElasticity;
     /// <summary>Only probe when standing demand fills at least this fraction of the gate;
     /// enlarging a more-open gate cannot reveal additional delivery capacity.</summary>
     private const double CapacityProbeDemandFraction = 0.5;
