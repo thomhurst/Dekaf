@@ -3834,20 +3834,39 @@ internal sealed class ResponseBufferPool
     /// that don't have consumer-specific configuration.
     /// </summary>
     private const int DefaultMaxArraysPerBucket = 4;
-    internal static readonly ResponseBufferPool Default = new(DefaultMaxArrayLength, DefaultMaxArraysPerBucket);
+#if !NETSTANDARD2_0
+    private const long NativeMemoryPressureRefreshMilliseconds = 1_000;
+#endif
+    internal static readonly ResponseBufferPool Default = new(
+        DefaultMaxArrayLength,
+        DefaultMaxArraysPerBucket,
+        monitorNativeMemoryPressure: true);
     private static readonly ConcurrentDictionary<(int MaxArrayLength, int MaxArraysPerBucket), ResponseBufferPool>
         s_sharedPools = new();
     private readonly ConcurrentDictionary<int, NativeBufferBucket> _nativeBuckets = new();
+    private int _retainedNativeBufferCount;
+    private int _highNativeMemoryPressure;
+#if !NETSTANDARD2_0
+    private long _nextNativeMemoryPressureRefresh;
+    private readonly bool _monitorNativeMemoryPressure;
+#endif
 
     internal ArrayPool<byte> Pool { get; }
     internal int MaxArrayLength { get; }
     internal int MaxArraysPerBucket { get; }
+    internal int RetainedNativeBufferCount => Volatile.Read(ref _retainedNativeBufferCount);
 
-    internal ResponseBufferPool(int maxArrayLength, int maxArraysPerBucket = DefaultMaxArraysPerBucket)
+    internal ResponseBufferPool(
+        int maxArrayLength,
+        int maxArraysPerBucket = DefaultMaxArraysPerBucket,
+        bool monitorNativeMemoryPressure = false)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxArraysPerBucket);
         MaxArrayLength = maxArrayLength;
         MaxArraysPerBucket = maxArraysPerBucket;
+#if !NETSTANDARD2_0
+        _monitorNativeMemoryPressure = monitorNativeMemoryPressure;
+#endif
         Pool = ArrayPool<byte>.Create(
             maxArrayLength: maxArrayLength,
             maxArraysPerBucket: maxArraysPerBucket);
@@ -3869,7 +3888,8 @@ internal sealed class ResponseBufferPool
                 (maxArrayLength, maxArraysPerBucket),
                 static configuration => new ResponseBufferPool(
                     configuration.MaxArrayLength,
-                    configuration.MaxArraysPerBucket));
+                    configuration.MaxArraysPerBucket,
+                    monitorNativeMemoryPressure: true));
     }
 
     internal static int ComputeMaxArrayLength(int fetchMaxBytes)
@@ -3894,19 +3914,89 @@ internal sealed class ResponseBufferPool
         var capacity = RoundUpToPowerOfTwo(minimumLength);
         var bucket = _nativeBuckets.GetOrAdd(
             capacity,
-            static (size, retention) => new NativeBufferBucket(size, retention),
-            MaxArraysPerBucket);
-        return NativeResponseBuffer.Rent(this, bucket.Rent(), capacity);
+            static _ => new NativeBufferBucket());
+        if (bucket.TryRent(out var pointer))
+        {
+            Interlocked.Decrement(ref _retainedNativeBufferCount);
+            return NativeResponseBuffer.Rent(this, pointer, capacity);
+        }
+
+        return NativeResponseBuffer.Rent(this, Marshal.AllocHGlobal(capacity), capacity);
     }
 
     internal void ReturnNative(IntPtr pointer, int capacity)
     {
+#if !NETSTANDARD2_0
+        RefreshNativeMemoryPressure();
+#endif
+        if (Volatile.Read(ref _highNativeMemoryPressure) != 0)
+        {
+            Marshal.FreeHGlobal(pointer);
+            return;
+        }
+
+        if (Interlocked.Increment(ref _retainedNativeBufferCount) > MaxArraysPerBucket)
+        {
+            Interlocked.Decrement(ref _retainedNativeBufferCount);
+            Marshal.FreeHGlobal(pointer);
+            return;
+        }
+
         var bucket = _nativeBuckets.GetOrAdd(
             capacity,
-            static (size, retention) => new NativeBufferBucket(size, retention),
-            MaxArraysPerBucket);
+            static _ => new NativeBufferBucket());
         bucket.Return(pointer);
+
+        // Pressure can begin after the first check but before this buffer is published.
+        if (Volatile.Read(ref _highNativeMemoryPressure) != 0)
+            TrimNativeBuffers();
     }
+
+    internal int TrimNativeBuffers()
+    {
+        var released = 0;
+        foreach (var bucket in _nativeBuckets.Values)
+            released += bucket.Trim();
+
+        if (released > 0)
+            Interlocked.Add(ref _retainedNativeBufferCount, -released);
+        return released;
+    }
+
+    internal static bool IsHighMemoryLoad(long memoryLoadBytes, long highMemoryLoadThresholdBytes)
+        => highMemoryLoadThresholdBytes > 0 && memoryLoadBytes >= highMemoryLoadThresholdBytes;
+
+    internal void UpdateNativeMemoryPressure(long memoryLoadBytes, long highMemoryLoadThresholdBytes)
+    {
+        var isHigh = IsHighMemoryLoad(memoryLoadBytes, highMemoryLoadThresholdBytes);
+        var wasHigh = Interlocked.Exchange(ref _highNativeMemoryPressure, isHigh ? 1 : 0) != 0;
+        if (isHigh && !wasHigh)
+            TrimNativeBuffers();
+    }
+
+#if !NETSTANDARD2_0
+    private void RefreshNativeMemoryPressure()
+    {
+        if (!_monitorNativeMemoryPressure)
+            return;
+
+        var now = Environment.TickCount64;
+        var nextRefresh = Volatile.Read(ref _nextNativeMemoryPressureRefresh);
+        if (now < nextRefresh
+            || Interlocked.CompareExchange(
+                ref _nextNativeMemoryPressureRefresh,
+                now + NativeMemoryPressureRefreshMilliseconds,
+                nextRefresh) != nextRefresh)
+        {
+            return;
+        }
+
+        var memoryInfo = GC.GetGCMemoryInfo();
+        UpdateNativeMemoryPressure(
+            memoryInfo.MemoryLoadBytes,
+            memoryInfo.HighMemoryLoadThresholdBytes);
+    }
+#endif
 
     private static int RoundUpToPowerOfTwo(int value)
     {
@@ -3923,32 +4013,24 @@ internal sealed class ResponseBufferPool
         return (int)rounded;
     }
 
-    private sealed class NativeBufferBucket(int capacity, int maxRetained)
+    private sealed class NativeBufferBucket
     {
         private readonly ConcurrentStack<IntPtr> _buffers = new();
-        private int _retained;
 
-        internal IntPtr Rent()
+        internal bool TryRent(out IntPtr pointer) => _buffers.TryPop(out pointer);
+
+        internal void Return(IntPtr pointer) => _buffers.Push(pointer);
+
+        internal int Trim()
         {
-            if (_buffers.TryPop(out var pointer))
+            var released = 0;
+            while (_buffers.TryPop(out var pointer))
             {
-                Interlocked.Decrement(ref _retained);
-                return pointer;
+                Marshal.FreeHGlobal(pointer);
+                released++;
             }
 
-            return Marshal.AllocHGlobal(capacity);
-        }
-
-        internal void Return(IntPtr pointer)
-        {
-            if (Interlocked.Increment(ref _retained) <= maxRetained)
-            {
-                _buffers.Push(pointer);
-                return;
-            }
-
-            Interlocked.Decrement(ref _retained);
-            Marshal.FreeHGlobal(pointer);
+            return released;
         }
     }
 }

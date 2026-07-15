@@ -135,6 +135,72 @@ public class ResponseBufferPoolTests
     }
 
     [Test]
+    public async Task NativePool_BoundsRetentionAcrossSizeBuckets()
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var first = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var second = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes * 2);
+
+        first.Return();
+        second.Return();
+
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(1)
+            .Because("the pipeline working-set allowance is global, not per size bucket");
+    }
+
+    [Test]
+    public async Task NativePool_TrimReleasesAllDormantBuffers()
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 4);
+        var first = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        var second = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes * 2);
+        first.Return();
+        second.Return();
+
+        var released = pool.TrimNativeBuffers();
+
+        await Assert.That(released).IsEqualTo(2);
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(89, 90, false)]
+    [Arguments(90, 90, true)]
+    [Arguments(91, 90, true)]
+    [Arguments(1, 0, false)]
+    public async Task NativePool_HighMemoryLoadUsesRuntimeThreshold(
+        long memoryLoadBytes,
+        long highMemoryLoadThresholdBytes,
+        bool expected)
+    {
+        await Assert.That(ResponseBufferPool.IsHighMemoryLoad(
+                memoryLoadBytes,
+                highMemoryLoadThresholdBytes))
+            .IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task NativePool_MemoryPressureTrimsAndSuspendsRetention()
+    {
+        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 2);
+        var dormant = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        dormant.Return();
+
+        pool.UpdateNativeMemoryPressure(memoryLoadBytes: 90, highMemoryLoadThresholdBytes: 90);
+
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(0);
+        var underPressure = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        underPressure.Return();
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(0);
+
+        pool.UpdateNativeMemoryPressure(memoryLoadBytes: 89, highMemoryLoadThresholdBytes: 90);
+        var recovered = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
+        recovered.Return();
+        await Assert.That(pool.RetainedNativeBufferCount).IsEqualTo(1);
+        pool.TrimNativeBuffers();
+    }
+
+    [Test]
     public async Task NativeBuffer_TransferOwnershipReturnsBufferOnce()
     {
         var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
