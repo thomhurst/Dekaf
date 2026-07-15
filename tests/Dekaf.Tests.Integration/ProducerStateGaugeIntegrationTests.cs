@@ -20,6 +20,7 @@ public sealed class ProducerStateGaugeIntegrationTests(KafkaTestContainer kafka)
         "dekaf.producer.broker.min_rtt",
         "dekaf.producer.broker.max_delivery_rate",
         "dekaf.producer.broker.queue_latency_ewma",
+        "dekaf.producer.broker.seal_to_ack_latency_ewma",
         "dekaf.producer.broker.admission_blocks",
         "dekaf.producer.broker.capacity_probe.successes",
         "dekaf.producer.broker.capacity_probe.failures",

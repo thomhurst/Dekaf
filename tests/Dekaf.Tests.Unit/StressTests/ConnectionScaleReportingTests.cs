@@ -310,7 +310,8 @@ public sealed class ConnectionScaleReportingTests
                         LatencyBudgetScale = 1.0,
                         CapacityProbeSuccessCount = 3,
                         CapacityProbeFailureCount = 2,
-                        ProvenPipelineRequestQuanta = 5.0
+                        ProvenPipelineRequestQuanta = 5.0,
+                        SealToAckLatencyEwmaMicros = 4_250
                     }
                 ]
             }
@@ -339,7 +340,8 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(markdown).Contains("750.0 MB/s");
         await Assert.That(markdown).Contains("3/2");
         await Assert.That(markdown).Contains("Proven request depth");
-        await Assert.That(markdown).Contains("| 5.00 | 750.0 MB/s |");
+        await Assert.That(markdown).Contains("Seal-to-ack EWMA");
+        await Assert.That(markdown).Contains("| 5.00 | 4.25 ms | 750.0 MB/s |");
         await Assert.That(markdown).Contains("Producer Budget Probe Events - Fire-and-Forget");
         await Assert.That(markdown).Contains("min-rtt");
         await Assert.That(markdown).Contains("Producer Admission Block Durations - Fire-and-Forget");

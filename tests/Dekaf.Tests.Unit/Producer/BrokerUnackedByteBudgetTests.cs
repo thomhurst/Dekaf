@@ -82,6 +82,22 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, (long)(bytesPerSecond * rttSeconds), rttSeconds, T0);
     }
 
+    private static void SeedCapacityProbeEvaluation(
+        BrokerUnackedByteBudget budget,
+        double baselineRate,
+        double baselineSealToAckSeconds,
+        double accumulatedRate)
+    {
+        SetField(budget, "_capacityProbeBaselineRate", baselineRate);
+        SetField(budget, "_capacityProbePreProbeSealToAckSeconds", baselineSealToAckSeconds);
+        SetField(budget, "_capacityProbeStartTimestamp", T0);
+        SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(1.0));
+        SetField(budget, "_capacityProbeEvaluationDeadlineTimestamp", T0 + Seconds(0.200));
+        SetField(budget, "_capacityProbeRateSum", accumulatedRate);
+        SetField(budget, "_capacityProbeRateSampleCount", 2);
+        SetField(budget, "_capacityProbeActive", true);
+    }
+
     [Test]
     public async Task Budget_BeforeFirstRateSample_EqualsCap()
     {
@@ -981,6 +997,73 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task PeriodicProbe_RejectsRateGainThatCostsSealToAckEfficiency()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.5,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SeedCapacityProbeEvaluation(budget, 10_000, 0.100, 42_000);
+
+        var now = T0 + Seconds(0.300);
+        var snapshot = budget.SnapshotDelivery(
+            sendTimestamp: now - Seconds(0.100),
+            appLimited: false,
+            oldestBatchTimestamp: now - Seconds(0.250));
+        Ack(budget, 1_200, 0.100, now, snapshot);
+
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
+        await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(1);
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(4.0).Within(0.000_001)
+            .Because("a throughput gain that buys proportionally more seal-to-ack latency is queue, not capacity");
+    }
+
+    [Test]
+    public async Task PeriodicProbe_PersistsRateGainWhenSealToAckEfficiencyImproves()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.5,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SeedCapacityProbeEvaluation(budget, 10_000, 0.100, 42_000);
+
+        var now = T0 + Seconds(0.300);
+        var snapshot = budget.SnapshotDelivery(
+            sendTimestamp: now - Seconds(0.100),
+            appLimited: false,
+            oldestBatchTimestamp: now - Seconds(0.150));
+        Ack(budget, 1_200, 0.100, now, snapshot);
+
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(1);
+        await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(5.0).Within(0.000_001)
+            .Because("higher delivery rate with better rate-to-latency efficiency is usable capacity");
+    }
+
+    [Test]
+    public async Task PeriodicProbe_RejectsDeliveryLatencyAboveConfiguredTarget()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.200,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SeedCapacityProbeEvaluation(budget, 10_000, 0, 78_000);
+
+        var now = T0 + Seconds(0.300);
+        var snapshot = budget.SnapshotDelivery(
+            sendTimestamp: now - Seconds(0.250),
+            appLimited: false,
+            oldestBatchTimestamp: now - Seconds(0.250));
+        Ack(budget, 600, 0.250, now, snapshot);
+
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
+        await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(1)
+            .Because("rate growth cannot persist a rung whose complete delivery latency exceeds the target");
+    }
+
+    [Test]
     public async Task PeriodicProbe_SuccessPersistsProvenRequestDepthAfterProbeEnds()
     {
         var budget = new BrokerUnackedByteBudget(
@@ -1050,7 +1133,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task ProvenRequestDepth_IsSeededAndBoundedByConnectionWidth()
+    public async Task ProvenRequestDepth_IsSeededByConnectionWidthAndBoundedByWireCap()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
@@ -1065,9 +1148,10 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.SetCap(32_000_000, T0, connectionCount: 1);
 
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
-            .IsEqualTo(6.0)
-            .Because("one connection needs two proven quanta above the four-request acknowledgement floor");
+            .IsEqualTo(32.0)
+            .Because("latency-aware probe evidence, not a width heuristic, bounds persistence below the wire cap");
 
+        SetField(budget, "_provenPipelineRequestQuanta", 4.0);
         budget.SetCap(96_000_000, T0, connectionCount: 3);
 
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
@@ -1078,12 +1162,12 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.SetCap(96_000_000, T0, connectionCount: 3);
 
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
-            .IsEqualTo(30.0)
-            .Because("three connections need more aggregate proof than the old 24-request limit");
+            .IsEqualTo(96.0)
+            .Because("three connections retain at most their full aggregate wire depth");
     }
 
     [Test]
-    public async Task PeriodicProbe_ProvenRequestDepthStopsAtWidthAwareLimit()
+    public async Task PeriodicProbe_ProofIsNotStoppedByWidthHeuristic()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
@@ -1102,8 +1186,8 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 1_200, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
 
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
-            .IsEqualTo(6.0)
-            .Because("single-connection proof must stop below the latency-pinning eight-request depth");
+            .IsEqualTo(7.5)
+            .Because("the measured delivery signal, not a fixed single-connection ceiling, must stop proof growth");
     }
 
     [Test]
@@ -1596,7 +1680,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task PeriodicProbe_RatchetsUntilWidthAwareProofLimit()
+    public async Task PeriodicProbe_RatchetsWhileRateAndRttProveCapacity()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
         budget.Charge(5_000);
@@ -1633,8 +1717,8 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(2);
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
-            .IsEqualTo(6.0).Within(0.000_001)
-            .Because("flat-RTT gains persist until the single-connection latency bound is reached");
+            .IsEqualTo(6.25).Within(0.000_001)
+            .Because("two sustained 25% gains persist when no delivery-latency sample is available");
     }
 
     [Test]

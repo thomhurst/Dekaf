@@ -118,13 +118,6 @@ internal sealed class BrokerUnackedByteBudget
     /// the delivery-latency target with queueing delay.</summary>
     private const int MinimumPipelineRequestQuanta = 4;
 
-    /// <summary>Additional persistent request headroom contributed by each active connection.
-    /// The aggregate proof ceiling is <c>connectionCount × (4 + 2 × connectionCount)</c>:
-    /// one connection stops at six requests before median latency pins at the target, while
-    /// wider senders can feed their independent acknowledgement clocks. The latency horizon
-    /// and byte cap still bound actual standing flight.</summary>
-    private const int PersistedPipelineHeadroomRequestQuantaPerConnection = 2;
-
     /// <summary>
     /// The scale shrinks only while written-unacked occupancy demonstrates at least this
     /// fraction of the budget on the wire. Seal-to-send backlog with an underfilled wire
@@ -219,6 +212,10 @@ internal sealed class BrokerUnackedByteBudget
     /// when queue is added, so a rate-only acceptance test converts every probe into budget
     /// growth; requiring a flat RTT distinguishes real headroom from added queueing.</summary>
     private const double ProbeRttGrowthTolerance = 1.25;
+    /// <summary>Allowed noise when comparing rate growth with seal-to-ack latency growth.
+    /// A useful probe improves or preserves delivered bytes per second per second of latency;
+    /// a rung whose latency grows materially faster than its rate only added standing queue.</summary>
+    private const double ProbeSealToAckEfficiencyTolerance = 1.10;
     private static readonly long MaxProbeIntervalTicks = Stopwatch.Frequency;
     // An empty pipe refilled within this gap is a serialized loaded cycle, not application idle.
     private static readonly long MaximumSerializedRateCycleGapTicks = Math.Max(1, Stopwatch.Frequency / 500);
@@ -278,8 +275,9 @@ internal sealed class BrokerUnackedByteBudget
     private double _rawServingRttEwmaSeconds;
     private double _requestSizeEwmaBytes;
     // Capacity probes raise this per-connection request-depth floor only after proving that
-    // larger flight increases delivery rate without inflating RTT. It survives an individual
-    // probe ending, but remains below the full wire ceiling. Sustained idle resets path evidence.
+    // larger flight increases delivery rate without inflating RTT or seal-to-ack latency. It
+    // survives an individual probe ending, but remains within the full wire ceiling. Sustained
+    // idle resets path evidence.
     private double _provenPipelineRequestQuanta;
     private int _connectionCount;
     private bool _hasLoadedServingSample;
@@ -299,7 +297,10 @@ internal sealed class BrokerUnackedByteBudget
     private double _capacityProbeRateSum;
     private double _capacityProbeRttSumSeconds;
     private double _capacityProbePreProbeRttSeconds;
+    private double _capacityProbeSealToAckSumSeconds;
+    private double _capacityProbePreProbeSealToAckSeconds;
     private int _capacityProbeRateSampleCount;
+    private int _capacityProbeSealToAckSampleCount;
     private bool _capacityProbeActive;
     private long _capacityProbeSuccessCount;
     private long _capacityProbeFailureCount;
@@ -374,6 +375,9 @@ internal sealed class BrokerUnackedByteBudget
     /// retains its original name for compatibility.</summary>
     internal long DeliveryLatencyEwmaMicros =>
         (long)(Volatile.Read(ref _deliveryLatencyEwmaSeconds) * 1_000_000);
+
+    internal long SealToAckLatencyEwmaMicros =>
+        (long)(Volatile.Read(ref _sealToAckEwmaSeconds) * 1_000_000);
 
     internal double LatencyBudgetScale => Volatile.Read(ref _latencyBudgetScale);
 
@@ -799,7 +803,7 @@ internal sealed class BrokerUnackedByteBudget
                 ServingRttEwmaWeight);
         }
         Volatile.Write(ref _minimumRttMicros, (long)(_minRttSeconds * 1_000_000));
-        UpdateDeliveryLatency(
+        var sealToAckSeconds = UpdateDeliveryLatency(
             sendSnapshot.OldestBatchTimestamp,
             sendSnapshot.SendTimestamp,
             nowTicks);
@@ -858,6 +862,7 @@ internal sealed class BrokerUnackedByteBudget
                 : sendSnapshot.SendTimestamp,
             rttTicks,
             rttSeconds,
+            sealToAckSeconds,
             nowTicks);
     }
 
@@ -881,13 +886,13 @@ internal sealed class BrokerUnackedByteBudget
             RecordAdmissionAvailable(nowTicks);
     }
 
-    private void UpdateDeliveryLatency(
+    private double UpdateDeliveryLatency(
         long oldestBatchTimestamp,
         long sendTimestamp,
         long nowTicks)
     {
-        if (oldestBatchTimestamp <= 0 || oldestBatchTimestamp >= sendTimestamp)
-            return;
+        if (oldestBatchTimestamp <= 0 || oldestBatchTimestamp > sendTimestamp)
+            return 0;
 
         var sampleSeconds = (double)(sendTimestamp - oldestBatchTimestamp) / Stopwatch.Frequency;
         var latencyEstimate = UpdateEwma(
@@ -903,25 +908,26 @@ internal sealed class BrokerUnackedByteBudget
         // setpoint that suppressed fan-out (#1988). What remains — sender backlog plus
         // broker-side queueing — is exactly the delay the budget controls (#2008, #2009).
         var sealToAckSeconds = (double)(nowTicks - oldestBatchTimestamp) / Stopwatch.Frequency;
-        _sealToAckEwmaSeconds = UpdateEwma(
+        var sealToAckEstimate = UpdateEwma(
             _sealToAckEwmaSeconds,
             sealToAckSeconds,
             DeliveryLatencyEwmaWeight);
+        Volatile.Write(ref _sealToAckEwmaSeconds, sealToAckEstimate);
 
         if (_nextLatencyControlTimestamp == 0)
         {
             UpdateAdmissionPressure();
             _nextLatencyControlTimestamp = nowTicks + LatencyControlIntervalTicks;
-            return;
+            return sealToAckSeconds;
         }
 
         if (nowTicks < _nextLatencyControlTimestamp)
-            return;
+            return sealToAckSeconds;
 
         UpdateAdmissionPressure();
 
         var baseRttSeconds = _hasMinRttSample ? _minRttSeconds : 0;
-        var brokerQueueSeconds = _sealToAckEwmaSeconds - baseRttSeconds;
+        var brokerQueueSeconds = sealToAckEstimate - baseRttSeconds;
         var controlLatencySeconds = Math.Max(latencyEstimate, brokerQueueSeconds);
         var targetRatio = _targetSeconds / controlLatencySeconds;
         double adjustment;
@@ -962,6 +968,7 @@ internal sealed class BrokerUnackedByteBudget
             MinimumLatencyBudgetScale,
             1.0));
         _nextLatencyControlTimestamp = nowTicks + LatencyControlIntervalTicks;
+        return sealToAckSeconds;
     }
 
     private void UpdateAdmissionPressure()
@@ -1198,6 +1205,7 @@ internal sealed class BrokerUnackedByteBudget
         long admissionTimestamp,
         long rttTicks,
         double rttSeconds,
+        double sealToAckSeconds,
         long nowTicks)
     {
         var probeIntervalTicks = GetProbeIntervalTicks(rttTicks);
@@ -1228,6 +1236,11 @@ internal sealed class BrokerUnackedByteBudget
             _capacityProbeRateSum += bytesPerSecond;
             _capacityProbeRttSumSeconds += rttSeconds;
             _capacityProbeRateSampleCount++;
+            if (sealToAckSeconds > 0)
+            {
+                _capacityProbeSealToAckSumSeconds += sealToAckSeconds;
+                _capacityProbeSealToAckSampleCount++;
+            }
             if (_capacityProbeEvaluationDeadlineTimestamp == 0)
             {
                 _capacityProbeEvaluationDeadlineTimestamp = nowTicks + evaluationWindowTicks;
@@ -1240,22 +1253,29 @@ internal sealed class BrokerUnackedByteBudget
             if (nowTicks < _capacityProbeEvaluationDeadlineTimestamp)
                 return;
 
-            // Real headroom shows as rate-up with a flat round trip. A saturated broker also
-            // shows rate-not-down when the probe adds queue, so a rate-only test would accept
-            // every probe under load and ratchet the budget into standing latency. The rate
-            // gate stays primary; the RTT guard (raw-domain baseline vs raw probe samples,
-            // <= 0 only when reflection-seeded in tests) catches the queue-dominated regime
-            // where round trips inflate well past the tolerance.
+            // Real headroom raises rate without buying proportionally more delivery latency.
+            // A saturated broker can keep raw request RTT flat while the sender backlog grows,
+            // so rate plus RTT alone ratchets persistent proof into standing latency. Compare
+            // complete seal-to-ack growth with rate growth as well; <= 0 baselines only occur
+            // when old callers or reflection-seeded tests cannot supply a batch timestamp.
             var averageRate = _capacityProbeRateSum / _capacityProbeRateSampleCount;
             var averageRttSeconds = _capacityProbeRttSumSeconds / _capacityProbeRateSampleCount;
             var rttHeld = _capacityProbePreProbeRttSeconds <= 0
                 || averageRttSeconds <= _capacityProbePreProbeRttSeconds * ProbeRttGrowthTolerance;
-            if (rttHeld && averageRate > _capacityProbeBaselineRate * ProbeGrowthThreshold)
+            if (rttHeld
+                && averageRate > _capacityProbeBaselineRate * ProbeGrowthThreshold
+                && CapacityProbePreservedSealToAckEfficiency(averageRate))
             {
                 // Compare like with like across rungs. A single clustered-response peak is not
                 // a sustainable baseline and would make the next average-rate rung unwinnable.
                 _capacityProbeBaselineRate = averageRate;
                 _capacityProbePreProbeRttSeconds = averageRttSeconds;
+                if (_capacityProbeSealToAckSampleCount > 0)
+                {
+                    _capacityProbePreProbeSealToAckSeconds =
+                        _capacityProbeSealToAckSumSeconds
+                        / _capacityProbeSealToAckSampleCount;
+                }
                 Volatile.Write(
                     ref _provenPipelineRequestQuanta,
                     Math.Min(
@@ -1293,6 +1313,7 @@ internal sealed class BrokerUnackedByteBudget
             _capacityProbePreProbeRttSeconds = _rawServingRttEwmaSeconds > 0
                 ? _rawServingRttEwmaSeconds
                 : rttSeconds;
+            _capacityProbePreProbeSealToAckSeconds = _sealToAckEwmaSeconds;
             ResetCapacityProbeSamples();
             Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeDurationTicks);
             Volatile.Write(ref _capacityProbeActive, true);
@@ -1326,8 +1347,29 @@ internal sealed class BrokerUnackedByteBudget
     {
         _capacityProbeRateSum = 0;
         _capacityProbeRttSumSeconds = 0;
+        _capacityProbeSealToAckSumSeconds = 0;
         _capacityProbeRateSampleCount = 0;
+        _capacityProbeSealToAckSampleCount = 0;
         _capacityProbeEvaluationDeadlineTimestamp = 0;
+    }
+
+    private bool CapacityProbePreservedSealToAckEfficiency(double averageRate)
+    {
+        if (_capacityProbeSealToAckSampleCount == 0)
+            return true;
+
+        var averageSealToAckSeconds = _capacityProbeSealToAckSumSeconds
+            / _capacityProbeSealToAckSampleCount;
+        if (averageSealToAckSeconds > _targetSeconds)
+            return false;
+
+        if (_capacityProbePreProbeSealToAckSeconds <= 0 || _capacityProbeBaselineRate <= 0)
+            return true;
+
+        var rateGrowth = averageRate / _capacityProbeBaselineRate;
+        var sealToAckGrowth = averageSealToAckSeconds
+            / _capacityProbePreProbeSealToAckSeconds;
+        return sealToAckGrowth <= rateGrowth * ProbeSealToAckEfficiencyTolerance;
     }
 
     private double GetMinimumPipelineRequestQuanta()
@@ -1337,12 +1379,10 @@ internal sealed class BrokerUnackedByteBudget
     {
         var connectionCount = _connectionCount;
         var minimum = MinimumPipelineRequestQuanta * connectionCount;
-        var requestQuantaPerConnection = MinimumPipelineRequestQuanta
-            + PersistedPipelineHeadroomRequestQuantaPerConnection * connectionCount;
-        var persistentLimit = requestQuantaPerConnection * connectionCount;
+        var wireLimit = (double)CapBatchMultiplier * connectionCount;
         return _requestSizeEwmaBytes > 0
-            ? Math.Max(minimum, Math.Min(persistentLimit, _capBytes / _requestSizeEwmaBytes))
-            : persistentLimit;
+            ? Math.Max(minimum, Math.Min(wireLimit, _capBytes / _requestSizeEwmaBytes))
+            : wireLimit;
     }
 
     private void DeactivateCapacityProbe(long nowTicks)

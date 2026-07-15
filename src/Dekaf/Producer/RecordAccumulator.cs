@@ -5480,6 +5480,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             CapacityProbeFailureCount = budget.CapacityProbeFailureCount,
             ProvenPipelineRequestQuanta = budget.ProvenPipelineRequestQuanta,
             DeliveryLatencyEwmaMicros = budget.DeliveryLatencyEwmaMicros,
+            SealToAckLatencyEwmaMicros = budget.SealToAckLatencyEwmaMicros,
             LatencyBudgetScale = budget.LatencyBudgetScale,
             RequestSizeLog2Histogram = includeHistograms ? budget.CopyRequestSizeHistogram() : null,
             RequestRttMicrosLog2Histogram = includeHistograms ? budget.CopyRequestRttMicrosHistogram() : null,

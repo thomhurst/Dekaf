@@ -189,6 +189,11 @@ internal static class DekafMetrics
         "Seal-to-send queue latency EWMA per broker.",
         static budget => budget.DeliveryLatencyEwmaMicros);
 
+    internal static readonly ObservableGauge<long> ProducerBrokerSealToAckLatencyEwma = BudgetGauge(
+        "dekaf.producer.broker.seal_to_ack_latency_ewma", "us",
+        "Complete seal-to-ack delivery latency EWMA per broker.",
+        static budget => budget.SealToAckLatencyEwmaMicros);
+
     internal static readonly ObservableGauge<double> ProducerBrokerLatencyBudgetScale =
         DekafDiagnostics.Meter.CreateObservableGauge(
             "dekaf.producer.broker.latency_budget_scale",

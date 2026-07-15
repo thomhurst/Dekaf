@@ -54,6 +54,7 @@ public sealed class DekafMetricInstrumentTests
         await Assert.That(instrumentNames).Contains("dekaf.producer.broker.min_rtt");
         await Assert.That(instrumentNames).Contains("dekaf.producer.broker.max_delivery_rate");
         await Assert.That(instrumentNames).Contains("dekaf.producer.broker.queue_latency_ewma");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.seal_to_ack_latency_ewma");
         await Assert.That(instrumentNames).Contains("dekaf.producer.broker.latency_budget_scale");
         await Assert.That(instrumentNames).Contains("dekaf.producer.broker.admission_blocks");
         await Assert.That(instrumentNames).Contains("dekaf.producer.broker.capacity_probe.successes");

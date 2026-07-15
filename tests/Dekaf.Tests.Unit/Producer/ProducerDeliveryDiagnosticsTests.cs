@@ -192,7 +192,10 @@ public sealed class ProducerDeliveryDiagnosticsTests
         var ackTimestamp = Stopwatch.GetTimestamp();
         budget.OnAcked(
             1_000,
-            budget.SnapshotDelivery(ackTimestamp - Stopwatch.Frequency / 1_000, appLimited: true),
+            budget.SnapshotDelivery(
+                ackTimestamp - Stopwatch.Frequency / 1_000,
+                appLimited: true,
+                oldestBatchTimestamp: ackTimestamp - Stopwatch.Frequency * 2 / 1_000),
             ackTimestamp);
         budget.CompleteAckedPass(ackTimestamp);
 
@@ -210,6 +213,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(current.CapacityProbeSuccessCount).IsEqualTo(0);
         await Assert.That(current.CapacityProbeFailureCount).IsEqualTo(0);
         await Assert.That(current.ProvenPipelineRequestQuanta).IsEqualTo(4.0);
+        await Assert.That(current.SealToAckLatencyEwmaMicros).IsEqualTo(2_000).Within(10);
         await Assert.That(current.RequestSizeLog2Histogram).IsNotNull();
         await Assert.That(current.RequestSizeLog2Histogram!.Sum()).IsEqualTo(1);
         await Assert.That(current.RequestRttMicrosLog2Histogram).IsNotNull();
@@ -225,6 +229,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(sample.CapacityProbeSuccessCount).IsEqualTo(0);
         await Assert.That(sample.CapacityProbeFailureCount).IsEqualTo(0);
         await Assert.That(sample.ProvenPipelineRequestQuanta).IsEqualTo(4.0);
+        await Assert.That(sample.SealToAckLatencyEwmaMicros).IsEqualTo(2_000).Within(10);
         await Assert.That(sample.CapturedAtUtc).IsLessThanOrEqualTo(snapshot.CapturedAtUtc);
         await Assert.That(sample.RequestSizeLog2Histogram).IsNull()
             .Because("periodic samples omit histograms to keep the 4096-entry ring compact");

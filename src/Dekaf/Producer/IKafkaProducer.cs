@@ -317,6 +317,9 @@ internal sealed class ProducerBrokerBudgetDiagnostic
     /// <summary>Controllable seal-to-send queue-latency EWMA. Name retained for diagnostic
     /// output compatibility.</summary>
     public required long DeliveryLatencyEwmaMicros { get; init; }
+    // Optional for backward compatibility with persisted stress results captured before
+    // capacity probes used the complete seal-to-ack latency signal.
+    public long SealToAckLatencyEwmaMicros { get; init; }
     public required double LatencyBudgetScale { get; init; }
 
     /// <summary>
