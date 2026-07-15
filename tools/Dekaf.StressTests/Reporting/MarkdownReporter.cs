@@ -346,8 +346,15 @@ internal static class MarkdownReporter
     {
         var rows = results
             .SelectMany(result => (result.ProducerDeliveryDiagnostics?.BrokerBudgets ?? [])
-                .SelectMany(budget => (budget.AdmissionBlockMicrosLog2Histogram ?? [])
-                    .Select((count, bucket) => (Result: result, Budget: budget, Count: count, Bucket: bucket))))
+                .Select(budget => (
+                    Budget: budget,
+                    Histogram: budget.AdmissionBlockMicrosLog2Histogram ?? []))
+                .SelectMany(row => row.Histogram.Select((count, bucket) => (
+                    Result: result,
+                    row.Budget,
+                    Count: count,
+                    Bucket: bucket,
+                    TopBucket: row.Histogram.Length - 1))))
             .Where(row => row.Count > 0)
             .ToList();
         if (rows.Count == 0)
@@ -360,7 +367,7 @@ internal static class MarkdownReporter
         foreach (var row in rows)
         {
             var lowerMicros = 1L << row.Bucket;
-            var upperMicros = row.Bucket == BrokerUnackedByteBudget.AdmissionBlockHistogramBucketCount - 1
+            var upperMicros = row.Bucket == row.TopBucket
                 ? (long?)null
                 : 1L << (row.Bucket + 1);
             var bucket = upperMicros is { } upper

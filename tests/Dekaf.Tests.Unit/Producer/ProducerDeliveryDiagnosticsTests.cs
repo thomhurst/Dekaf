@@ -188,7 +188,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
         budget.Charge(600);
         var blockStartedAt = Stopwatch.GetTimestamp();
         budget.RecordAdmissionBlock(blockStartedAt);
-        budget.RecordAdmissionAvailable(blockStartedAt + Stopwatch.Frequency * 8 / 1_000);
+        budget.CompleteAckedPass(blockStartedAt + Stopwatch.Frequency * 8 / 1_000);
         var ackTimestamp = Stopwatch.GetTimestamp();
         budget.OnAcked(
             1_000,
@@ -226,6 +226,22 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(sample.CapturedAtUtc).IsLessThanOrEqualTo(snapshot.CapturedAtUtc);
         await Assert.That(sample.RequestSizeLog2Histogram).IsNull()
             .Because("periodic samples omit histograms to keep the 4096-entry ring compact");
+        await Assert.That(sample.AdmissionBlockMicrosLog2Histogram).IsNull();
+    }
+
+    [Test]
+    public async Task BrokerBudgetPeriodicSample_CapturesOpenAdmissionBlockDuration()
+    {
+        await using var accumulator = new RecordAccumulator(
+            CreateOptions(enableDeliveryDiagnostics: true, deliveryLatencyTargetMs: 10),
+            resolveLeaderId: static (_, _) => 7);
+        var budget = accumulator.GetBrokerUnackedBudget(7)!;
+        budget.RecordAdmissionBlock(Stopwatch.GetTimestamp() - Stopwatch.Frequency / 1_000);
+
+        accumulator.RecordBrokerBudgetDiagnosticSample();
+        var sample = accumulator.GetDeliveryDiagnosticsSnapshot().BrokerBudgetSamples.Single();
+
+        await Assert.That(sample.CurrentAdmissionBlockMicros).IsGreaterThan(0);
         await Assert.That(sample.AdmissionBlockMicrosLog2Histogram).IsNull();
     }
 

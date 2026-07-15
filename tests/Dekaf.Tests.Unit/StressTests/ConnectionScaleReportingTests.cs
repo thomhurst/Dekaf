@@ -277,8 +277,22 @@ public sealed class ConnectionScaleReportingTests
                         AdmissionBlockMicrosLog2Histogram =
                         [
                             0, 0, 0, 0, 0, 0, 0, 0,
-                            0, 0, 0, 0, 3
+                            0, 0, 0, 0, 3, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0
                         ]
+                    },
+                    new ProducerBrokerBudgetDiagnostic
+                    {
+                        CapturedAtUtc = startedAt.AddMinutes(15),
+                        BrokerId = 2,
+                        BudgetBytes = 1,
+                        UnackedBytes = 0,
+                        MinRttMicros = 1,
+                        MaxRateBytesPerSec = 1,
+                        AdmissionBlockCount = 1,
+                        DeliveryLatencyEwmaMicros = 1,
+                        LatencyBudgetScale = 1,
+                        AdmissionBlockMicrosLog2Histogram = [0, 0, 0, 1]
                     }
                 ],
                 BrokerBudgetSamples =
@@ -327,6 +341,7 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(markdown).Contains("min-rtt");
         await Assert.That(markdown).Contains("Producer Admission Block Durations - Fire-and-Forget");
         await Assert.That(markdown).Contains("4.096–8.192ms");
+        await Assert.That(markdown).Contains("≥0.008ms");
         await Assert.That(markdown).Contains("Delivery Latency Outliers - Fire-and-Forget");
         await Assert.That(markdown).Contains("42");
         await Assert.That(markdown).Contains("Probe overlap is temporal correlation only");

@@ -492,8 +492,6 @@ internal sealed class BrokerUnackedByteBudget
             ? CopyHistogram(histogram)
             : [];
 
-    internal bool HasAdmissionBlockDiagnostics => _admissionBlockMicrosLog2Histogram is not null;
-
     internal BrokerBudgetProbeEvent[] CopyProbeEvents()
     {
         if (_minRttProbeEvents is null)
@@ -503,13 +501,27 @@ internal sealed class BrokerUnackedByteBudget
             return [.. _minRttProbeEvents, .. _capacityProbeEvents!];
     }
 
-    internal void ResetDiagnostics()
+    internal void ResetDiagnostics(long nowTicks = 0)
     {
         if (_admissionBlockMicrosLog2Histogram is { } histogram)
         {
             for (var i = 0; i < histogram.Length; i++)
                 Interlocked.Exchange(ref histogram[i], 0);
-            Volatile.Write(ref _admissionBlockedSinceTimestamp, 0);
+
+            if (nowTicks == 0)
+                nowTicks = Stopwatch.GetTimestamp();
+            while (true)
+            {
+                var startedAt = Volatile.Read(ref _admissionBlockedSinceTimestamp);
+                if (startedAt == 0
+                    || Interlocked.CompareExchange(
+                        ref _admissionBlockedSinceTimestamp,
+                        nowTicks,
+                        startedAt) == startedAt)
+                {
+                    break;
+                }
+            }
         }
 
         if (_minRttProbeEvents is not null)
@@ -627,7 +639,7 @@ internal sealed class BrokerUnackedByteBudget
         _ = Interlocked.CompareExchange(ref _admissionBlockedSinceTimestamp, nowTicks, 0);
     }
 
-    internal void RecordAdmissionAvailable(long nowTicks)
+    private void RecordAdmissionAvailable(long nowTicks)
     {
         var histogram = _admissionBlockMicrosLog2Histogram;
         if (histogram is null)

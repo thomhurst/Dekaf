@@ -1867,7 +1867,7 @@ public sealed class BrokerUnackedByteBudgetTests
 
         budget.RecordAdmissionBlock(T0);
         budget.RecordAdmissionBlock(T0 + Seconds(0.002));
-        budget.RecordAdmissionAvailable(T0 + Seconds(0.008));
+        budget.CompleteAckedPass(T0 + Seconds(0.008));
 
         var histogram = budget.CopyAdmissionBlockMicrosHistogram();
 
@@ -1886,10 +1886,32 @@ public sealed class BrokerUnackedByteBudgetTests
             initialCapBytes: 3_200);
         SetField(budget, "_admissionBlockedSinceTimestamp", T0);
 
-        budget.RecordAdmissionAvailable(T0 + Seconds(0.008));
+        budget.CompleteAckedPass(T0 + Seconds(0.008));
 
-        await Assert.That(budget.HasAdmissionBlockDiagnostics).IsFalse();
+        await Assert.That(budget.CopyAdmissionBlockMicrosHistogram()).IsEmpty();
         await Assert.That(GetField<long>(budget, "_admissionBlockedSinceTimestamp")).IsEqualTo(T0);
+    }
+
+    [Test]
+    public async Task AdmissionBlockDiagnostics_ResetPreservesOpenEpisodeFromBoundary()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 3_200,
+            enableDiagnostics: true);
+
+        budget.RecordAdmissionBlock(T0);
+        budget.ResetDiagnostics(T0 + Seconds(0.005));
+
+        await Assert.That(budget.GetCurrentAdmissionBlockDurationMicros(T0 + Seconds(0.013)))
+            .IsEqualTo(8_000).Within(1);
+
+        budget.CompleteAckedPass(T0 + Seconds(0.013));
+        var histogram = budget.CopyAdmissionBlockMicrosHistogram();
+
+        await Assert.That(histogram.Sum()).IsEqualTo(1);
+        await Assert.That(histogram[12]).IsEqualTo(1);
     }
 
     [Test]

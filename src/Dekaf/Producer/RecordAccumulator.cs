@@ -4902,29 +4902,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var currentBudget = GetCachedAdmissionBudget(partitionDeque, topic, partition);
         if (currentBudget is null || !currentBudget.IsOverBudget())
-        {
-            if (currentBudget?.HasAdmissionBlockDiagnostics == true)
-                currentBudget.RecordAdmissionAvailable(Stopwatch.GetTimestamp());
             return false;
-        }
 
         // A leader may have changed since this partition last sealed or routed a batch.
         // Resolve again before actually blocking so a stale, pressured old leader never
         // causes false backpressure. This lookup is confined to the already-cold path.
         currentBudget = ResolveAndCacheUnackedBudget(partitionDeque, topic, partition);
         if (currentBudget is null || !currentBudget.IsOverBudget())
-        {
-            if (currentBudget?.HasAdmissionBlockDiagnostics == true)
-                currentBudget.RecordAdmissionAvailable(Stopwatch.GetTimestamp());
             return false;
-        }
 
         var nowTicks = Stopwatch.GetTimestamp();
         if (!currentBudget.IsOverBudgetAt(nowTicks))
-        {
-            currentBudget.RecordAdmissionAvailable(nowTicks);
             return false;
-        }
 
         recheckDelayMilliseconds = currentBudget.GetAdmissionRecheckDelayMilliseconds(nowTicks);
         if (recordBlockEvent)
@@ -5375,9 +5364,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             AdmissionBlockMicrosLog2Histogram = includeHistograms
             ? budget.CopyAdmissionBlockMicrosHistogram()
             : null,
-            CurrentAdmissionBlockMicros = includeHistograms
-            ? budget.GetCurrentAdmissionBlockDurationMicros(Stopwatch.GetTimestamp())
-            : 0
+            CurrentAdmissionBlockMicros = budget.GetCurrentAdmissionBlockDurationMicros(
+                Stopwatch.GetTimestamp())
         };
 
     /// <summary>
