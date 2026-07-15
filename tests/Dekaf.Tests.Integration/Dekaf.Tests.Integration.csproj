@@ -24,16 +24,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Apache.Avro" Version="1.12.1" />
-    <PackageReference Include="Confluent.Kafka" Version="2.15.0" />
-    <PackageReference Include="Google.Protobuf" Version="3.35.1" />
-    <PackageReference Include="Grpc.Tools" Version="2.82.0" PrivateAssets="All" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
-    <PackageReference Include="TUnit" Version="1.60.0" />
-    <PackageReference Include="TUnit.Logging.Microsoft" Version="1.60.0" />
-    <PackageReference Include="Testcontainers.Kafka" Version="4.13.0" />
-    <PackageReference Include="Testcontainers.Toxiproxy" Version="4.13.0" />
-    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="2.3.2" />
+    <PackageReference Include="Apache.Avro" />
+    <PackageReference Include="Confluent.Kafka" />
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="TUnit" />
+    <PackageReference Include="TUnit.Logging.Microsoft" />
+    <PackageReference Include="Testcontainers.Kafka" />
+    <PackageReference Include="Testcontainers.Toxiproxy" />
+    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
   </ItemGroup>
 
   <ItemGroup>

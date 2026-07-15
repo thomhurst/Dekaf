@@ -41,8 +41,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
-    <PackageReference Include="NSubstitute" Version="6.0.0" />
-    <PackageReference Include="TUnit" Version="1.60.0" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="TUnit" />
   </ItemGroup>
 
 </Project>

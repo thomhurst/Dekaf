@@ -4,11 +4,10 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
-    <DekafPackageVersion Condition="'$(DekafPackageVersion)' == ''">1.4.0</DekafPackageVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Dekaf" Version="$(DekafPackageVersion)" />
+    <PackageReference Include="Dekaf" />
   </ItemGroup>
 
 </Project>

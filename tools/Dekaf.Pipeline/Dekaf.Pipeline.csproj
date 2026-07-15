@@ -11,15 +11,15 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="GitVersion.MsBuild" Version="6.8.2">
+    <PackageReference Include="GitVersion.MsBuild">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="ModularPipelines" Version="3.2.8" />
-    <PackageReference Include="ModularPipelines.Git" Version="3.2.8" />
-    <PackageReference Include="ModularPipelines.DotNet" Version="3.2.8" />
-    <PackageReference Include="ModularPipelines.GitHub" Version="3.2.8" />
-    <PackageReference Include="System.CommandLine" Version="2.0.10" />
+    <PackageReference Include="ModularPipelines" />
+    <PackageReference Include="ModularPipelines.Git" />
+    <PackageReference Include="ModularPipelines.DotNet" />
+    <PackageReference Include="ModularPipelines.GitHub" />
+    <PackageReference Include="System.CommandLine" />
   </ItemGroup>
 
 </Project>

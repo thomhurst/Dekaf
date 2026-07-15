@@ -24,7 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
-    <PackageReference Include="TUnit" Version="1.60.0" />
+    <PackageReference Include="TUnit" />
   </ItemGroup>
 
 </Project>
