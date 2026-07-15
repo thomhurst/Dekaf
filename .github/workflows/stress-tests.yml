@@ -17,6 +17,10 @@ on:
         description: 'Bounded message count for round-trip correctness scenario'
         required: false
         default: '250000'
+      roundtrip_steady_seconds:
+        description: 'Measured producer duration for steady-state round-trip scenario'
+        required: false
+        default: '60'
       consumer_fetch_diagnostics:
         description: 'Enable Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead to the measured window)'
         required: false
@@ -102,6 +106,15 @@ jobs:
             artifact_suffix: ""
             timeout_minutes: 90
             name: Producer → Consumer Round-Trip (Paired)
+          - scenario: producer-roundtrip-steady
+            client: all
+            brokers: 1
+            run_3conn: false
+            artifact_suffix: ""
+            message_size: 128
+            roundtrip_steady_seconds: 60
+            timeout_minutes: 90
+            name: Producer → Consumer Round-Trip Steady State (Paired)
           - scenario: consumer
             client: all
             brokers: 1
@@ -278,7 +291,7 @@ jobs:
             # in-flight batch dump needed to debug it, instead of "Not captured".
             taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- \
               --duration ${{ github.event.inputs.duration_minutes || '15' }} \
-              --message-size ${{ github.event.inputs.message_size || '1000' }} \
+              --message-size ${{ matrix.message_size || github.event.inputs.message_size || '1000' }} \
               --scenario ${{ matrix.scenario }} \
               --client ${{ matrix.client }} \
               --brokers ${{ matrix.brokers }} \
@@ -286,6 +299,7 @@ jobs:
               --producer-delivery-diagnostics \
               ${EXTRA_ARGS} \
               --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
+              --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
               --output ./results
           done
 
@@ -293,7 +307,7 @@ jobs:
             echo "Running Dekaf 3-connection variant on the same VM"
             taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- \
               --duration ${{ github.event.inputs.duration_minutes || '15' }} \
-              --message-size ${{ github.event.inputs.message_size || '1000' }} \
+              --message-size ${{ matrix.message_size || github.event.inputs.message_size || '1000' }} \
               --scenario ${{ matrix.scenario }} \
               --client dekaf \
               --brokers ${{ matrix.brokers }} \
@@ -301,6 +315,7 @@ jobs:
               --producer-delivery-diagnostics \
               ${EXTRA_ARGS} \
               --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
+              --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
               --output ./results
           fi
 

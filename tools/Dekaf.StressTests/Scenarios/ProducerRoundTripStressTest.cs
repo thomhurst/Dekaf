@@ -12,7 +12,11 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal sealed class ProducerRoundTripStressTest : IStressTestScenario
 {
-    public string Name => "producer-roundtrip";
+    private readonly bool _steadyState;
+
+    public ProducerRoundTripStressTest(bool steadyState = false) => _steadyState = steadyState;
+
+    public string Name => _steadyState ? "producer-roundtrip-steady" : "producer-roundtrip";
     public string Client => "Dekaf";
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
@@ -96,8 +100,14 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         {
             produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
 
-            Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Dekaf...");
-            for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
+            Console.WriteLine(RoundTripScenarioHelpers.GetProduceDescription(options, _steadyState, "Dekaf"));
+            for (var ordinal = 0;
+                 !RoundTripScenarioHelpers.HasReachedProduceLimit(
+                     options,
+                     _steadyState,
+                     ordinal,
+                     produceTimer.Elapsed);
+                 ordinal++)
             {
                 if (RoundTripScenarioHelpers.TryRecordProduceTimeout(
                         produceTimeout.IsCancellationRequested,
@@ -122,7 +132,11 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
 
                 if ((ordinal + 1) % 50_000 == 0)
                 {
-                    Console.WriteLine($"  Produced {ordinal + 1:N0} / {options.RoundTripMessages:N0}");
+                    RoundTripScenarioHelpers.LogProduceProgress(
+                        options,
+                        _steadyState,
+                        ordinal + 1,
+                        produceTimer.Elapsed);
                 }
             }
 
@@ -195,7 +209,8 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
                 produceTimer.Elapsed,
                 validation.ConsumedMessages,
                 consumeTimer.Elapsed),
-            producerDiagnostics);
+            producerDiagnostics,
+            isMessageBounded: !_steadyState);
     }
 
     internal static DekafDeliveryErrorListener CreateDeliveryErrorListener(
@@ -265,7 +280,11 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
 
 internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 {
-    public string Name => "producer-roundtrip";
+    private readonly bool _steadyState;
+
+    public ConfluentProducerRoundTripStressTest(bool steadyState = false) => _steadyState = steadyState;
+
+    public string Name => _steadyState ? "producer-roundtrip-steady" : "producer-roundtrip";
     public string Client => "Confluent";
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
@@ -338,8 +357,14 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
         // every message, CPU the Dekaf side (error-only MeterListener) never pays — the same
         // skew the acks-all scenario avoids (see ConfluentStressTestHelpers). Lost messages
         // still fail the run via the consume-side completion tracker + CRC validation.
-        Console.WriteLine($"  Producing {options.RoundTripMessages:N0} sequenced messages with Confluent.Kafka...");
-        for (var ordinal = 0; ordinal < options.RoundTripMessages; ordinal++)
+        Console.WriteLine(RoundTripScenarioHelpers.GetProduceDescription(options, _steadyState, "Confluent.Kafka"));
+        for (var ordinal = 0;
+             !RoundTripScenarioHelpers.HasReachedProduceLimit(
+                 options,
+                 _steadyState,
+                 ordinal,
+                 produceTimer.Elapsed);
+             ordinal++)
         {
             if (RoundTripScenarioHelpers.TryRecordProduceTimeout(
                     produceTimeout.IsCancellationRequested,
@@ -383,7 +408,11 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 
             if ((ordinal + 1) % 50_000 == 0)
             {
-                Console.WriteLine($"  Produced {ordinal + 1:N0} / {options.RoundTripMessages:N0}");
+                RoundTripScenarioHelpers.LogProduceProgress(
+                    options,
+                    _steadyState,
+                    ordinal + 1,
+                    produceTimer.Elapsed);
                 await Task.Yield();
             }
         }
@@ -430,7 +459,8 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
                 produceTimer.Elapsed,
                 validation.ConsumedMessages,
                 consumeTimer.Elapsed),
-            producerDeliveryDiagnostics: null);
+            producerDeliveryDiagnostics: null,
+            isMessageBounded: !_steadyState);
     }
 
     private static bool ConsumeAndValidate(
@@ -492,7 +522,39 @@ internal static class RoundTripScenarioHelpers
     public static void ValidateOptions(StressTestOptions options)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.RoundTripMessages, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.RoundTripSteadySeconds, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MessageSizeBytes, RoundTripMessageCodec.MinimumPayloadSize);
+    }
+
+    public static bool HasReachedProduceLimit(
+        StressTestOptions options,
+        bool steadyState,
+        long messagesProduced,
+        TimeSpan elapsed) =>
+        steadyState
+            ? elapsed >= TimeSpan.FromSeconds(options.RoundTripSteadySeconds)
+            : messagesProduced >= options.RoundTripMessages;
+
+    public static string GetProduceDescription(StressTestOptions options, bool steadyState, string client) =>
+        steadyState
+            ? $"  Producing sequenced messages with {client} for {options.RoundTripSteadySeconds:N0}s..."
+            : $"  Producing {options.RoundTripMessages:N0} sequenced messages with {client}...";
+
+    public static void LogProduceProgress(
+        StressTestOptions options,
+        bool steadyState,
+        long messagesProduced,
+        TimeSpan elapsed)
+    {
+        if (steadyState)
+        {
+            Console.WriteLine(
+                $"  Produced {messagesProduced:N0}; elapsed {elapsed.TotalSeconds:N1}s / " +
+                $"{options.RoundTripSteadySeconds:N0}s");
+            return;
+        }
+
+        Console.WriteLine($"  Produced {messagesProduced:N0} / {options.RoundTripMessages:N0}");
     }
 
     public static TimeSpan GetTimeout(StressTestOptions options) =>
@@ -599,7 +661,8 @@ internal static class RoundTripScenarioHelpers
         long delivered,
         RoundTripValidationSnapshot validation,
         RoundTripPhaseSnapshot phases,
-        ProducerDeliveryDiagnosticsSnapshot? producerDeliveryDiagnostics) =>
+        ProducerDeliveryDiagnosticsSnapshot? producerDeliveryDiagnostics,
+        bool isMessageBounded = true) =>
         new()
         {
             Scenario = scenario,
@@ -614,9 +677,10 @@ internal static class RoundTripScenarioHelpers
             Latency = null,
             GcStats = gcStats.ToSnapshot(),
             CpuTimeSeconds = throughput.CpuTimeSeconds,
-            IsMessageBounded = true,
+            IsMessageBounded = isMessageBounded,
             RoundTripValidation = validation,
             RoundTripPhases = phases,
+            RoundTripSteadySeconds = isMessageBounded ? null : options.RoundTripSteadySeconds,
             ProducerDeliveryDiagnostics = producerDeliveryDiagnostics
         };
 

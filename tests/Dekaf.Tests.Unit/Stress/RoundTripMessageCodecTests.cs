@@ -14,6 +14,54 @@ namespace Dekaf.Tests.Unit.Stress;
 public class RoundTripMessageCodecTests
 {
     [Test]
+    public async Task ScenarioRegistry_SeparatesColdStartAndSteadyStateRoundTrips()
+    {
+        var scenarios = Dekaf.StressTests.Program.CreateAllScenarios()
+            .Where(scenario => scenario.Name.StartsWith("producer-roundtrip", StringComparison.Ordinal))
+            .Select(scenario => (scenario.Name, scenario.Client))
+            .ToArray();
+
+        await Assert.That(scenarios).IsEquivalentTo(new[]
+        {
+            ("producer-roundtrip", "Dekaf"),
+            ("producer-roundtrip", "Confluent"),
+            ("producer-roundtrip-steady", "Dekaf"),
+            ("producer-roundtrip-steady", "Confluent")
+        });
+    }
+
+    [Test]
+    [Arguments(false, 249_999, 0, false)]
+    [Arguments(false, 250_000, 0, true)]
+    [Arguments(true, 1, 59_999, false)]
+    [Arguments(true, 1, 60_000, true)]
+    public async Task ProduceLimit_UsesMessageCountForColdStartAndDurationForSteadyState(
+        bool steadyState,
+        int messagesProduced,
+        int elapsedMilliseconds,
+        bool expected)
+    {
+        var options = new StressTestOptions
+        {
+            BootstrapServers = "unused",
+            Topic = "unused",
+            DurationMinutes = 15,
+            MessageSizeBytes = 128,
+            RoundTripMessages = 250_000,
+            RoundTripSteadySeconds = 60,
+            ProgressWatchdog = null!
+        };
+
+        var reached = RoundTripScenarioHelpers.HasReachedProduceLimit(
+            options,
+            steadyState,
+            messagesProduced,
+            TimeSpan.FromMilliseconds(elapsedMilliseconds));
+
+        await Assert.That(reached).IsEqualTo(expected);
+    }
+
+    [Test]
     public async Task ExpectedPartition_MatchesJavaMurmur2Vector()
     {
         await Assert.That(RoundTripMessageCodec.GetExpectedPartition("user-123", partitionCount: 10))

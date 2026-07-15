@@ -96,7 +96,6 @@ internal static class MarkdownReporter
     private static void GenerateThroughputTable(StringBuilder sb, string title, List<StressTestResult> results)
     {
         var messageSizes = results.Select(r => r.MessageSizeBytes).Distinct().ToList();
-        var durationMinutes = results.Select(r => r.DurationMinutes).Distinct().FirstOrDefault();
         var clientWidth = GetClientColumnWidth(results);
 
         foreach (var messageSize in messageSizes)
@@ -108,7 +107,12 @@ internal static class MarkdownReporter
             }
 
             var messageSizeKb = messageSize >= 1024 ? $"{messageSize / 1024.0:F1}KB" : $"{messageSize}B";
-            sb.AppendLine($"## {title} ({durationMinutes} minutes, {messageSizeKb} messages)");
+            var measurementWindow = sizeResults.Select(r => r.RoundTripSteadySeconds).FirstOrDefault() is { } seconds
+                ? $"{seconds}s measured producer window"
+                : sizeResults.All(r => r.IsMessageBounded)
+                    ? "message-bounded"
+                    : $"{sizeResults[0].DurationMinutes} minutes";
+            sb.AppendLine($"## {title} ({measurementWindow}, {messageSizeKb} messages)");
             sb.AppendLine();
             sb.AppendLine($"| {"Client".PadRight(clientWidth)} | CPU μs/msg | CPU μs/request | Messages/sec | Median msg/s | Drift | Slope %/min | MB/sec | Accepted msg/s | Errors | Standing cores | Comparison Ratio |");
             sb.AppendLine($"|{new string('-', clientWidth + 2)}|------------|----------------|--------------|--------------|-------|-------------|--------|----------------|--------|----------------|------------------|");
@@ -621,6 +625,7 @@ internal static class MarkdownReporter
         "producer-async-idempotent" => "Producer (Async, Idempotent) Throughput",
         "producer-transactional" => "Producer (Transactional EOS) Throughput",
         "producer-roundtrip" => "Producer → Consumer Round-Trip Throughput",
+        "producer-roundtrip-steady" => "Producer → Consumer Round-Trip Steady-State Throughput",
         "consumer" => "Consumer Throughput",
         "consumer-batch" => "Consumer (Batch) Throughput",
         "consumer-raw" => "Consumer (Raw Bytes) Throughput",
@@ -638,6 +643,7 @@ internal static class MarkdownReporter
         "producer-async-idempotent" => "Async (Idempotent)",
         "producer-transactional" => "Transactional EOS",
         "producer-roundtrip" => "Producer → Consumer Round-Trip",
+        "producer-roundtrip-steady" => "Producer → Consumer Round-Trip Steady State",
         "consumer" => "Consumer",
         "consumer-batch" => "Consumer (Batch)",
         "consumer-raw" => "Consumer (Raw Bytes)",
