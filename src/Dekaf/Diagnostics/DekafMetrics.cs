@@ -262,13 +262,27 @@ internal static class DekafMetrics
         => DekafDiagnostics.Meter.CreateObservableGauge(
             name, () => ObserveProducers(source => source.SenderValues(selector)), unit, description);
 
+    // A source that throws (e.g. producer mid-disposal) is skipped rather than
+    // aborting the scrape for every other registered producer — the same
+    // isolation ObserveAllConsumerLag applies. Selectors are lazy iterators, so
+    // each source is materialized inside the guard to also cover enumeration.
     private static IEnumerable<Measurement<T>> ObserveProducers<T>(
         Func<ProducerStateSource, IEnumerable<Measurement<T>>> selector)
         where T : struct
     {
         foreach (var (source, _) in ProducerStateSources)
         {
-            foreach (var measurement in selector(source))
+            Measurement<T>[] measurements;
+            try
+            {
+                measurements = selector(source).ToArray();
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var measurement in measurements)
             {
                 yield return measurement;
             }
@@ -280,7 +294,17 @@ internal static class DekafMetrics
     {
         foreach (var (source, _) in ProducerStateSources)
         {
-            yield return selector(source);
+            Measurement<long> measurement;
+            try
+            {
+                measurement = selector(source);
+            }
+            catch
+            {
+                continue;
+            }
+
+            yield return measurement;
         }
     }
 }
