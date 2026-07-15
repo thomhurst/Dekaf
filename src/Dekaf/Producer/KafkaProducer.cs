@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Internal;
 using Dekaf.Metadata;
@@ -67,6 +68,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     // channel and send loop. The per-broker in-flight semaphore enables pipelining across
     // different partitions. Ordering relies on broker idempotent producer support.
     private readonly ConcurrentDictionary<int, BrokerSender> _brokerSenders = new();
+
+    // Bridges internal controller state (buffer memory, broker budgets, connection
+    // scaling) to the "Dekaf" meter's observable gauges. Pull-based: costs nothing
+    // unless a metrics listener polls.
+    private readonly ProducerStateSource _stateSource;
 
 
     // Explicit initialization: users must call InitializeAsync() or use BuildAsync() before producing.
@@ -433,6 +439,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             TaskScheduler.Default).Unwrap();
         _accumulator.StartAppendWorkers(_senderCts.Token);
 
+        _stateSource = new ProducerStateSource(options.ClientId, _accumulator, _brokerSenders);
+        DekafMetrics.RegisterProducerState(_stateSource);
     }
 
     private static CompressionCodecRegistry CreateCompressionCodecRegistry(ProducerOptions options)
@@ -4011,6 +4019,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+
+        DekafMetrics.UnregisterProducerState(_stateSource);
 
         if (_options.IsAutoTuned)
             _memoryBudget.UnregisterProducer(this);

@@ -77,7 +77,7 @@ on:
         required: false
         default: '60:30:healthy,330:30:pre-collapse,420:30:collapse,600:30:degraded'
       profile_counters:
-        description: 'Collect one-second System.Runtime counters across the measured phase'
+        description: 'Collect one-second System.Runtime + Dekaf meter counters across the measured phase'
         required: false
         type: boolean
         default: true
@@ -261,6 +261,11 @@ jobs:
         run: |
           dotnet tool install --global dotnet-counters --version 9.0.661903
           dotnet tool install --global dotnet-trace --version 9.0.661903
+          if [ "${{ github.event.inputs.profile_mode }}" = "gc" ]; then
+            # gc dispatches also capture per-window heap dumps (PROFILE_GCDUMP below);
+            # other modes never run gcdump, so skip the install cost.
+            dotnet tool install --global dotnet-gcdump --version 9.0.661903
+          fi
 
       - name: Build Stress Tests
         run: dotnet build tools/Dekaf.StressTests --configuration Release
@@ -353,9 +358,12 @@ jobs:
           cd tools/Dekaf.StressTests
           # Consumer fetch diagnostics are opt-in: they add Dekaf-only overhead inside the
           # measured window, so measurement runs keep them off and debug dispatches enable them.
-          EXTRA_ARGS=""
+          # An array so multi-token additions stay separate argv entries: appending a
+          # space-separated string as one quoted element would reach the client as a
+          # single unparseable argument.
+          EXTRA_ARGS=()
           if [ "${{ github.event.inputs.consumer_fetch_diagnostics }}" = "true" ]; then
-            EXTRA_ARGS="--consumer-fetch-diagnostics"
+            EXTRA_ARGS+=(--consumer-fetch-diagnostics)
           fi
           # Client pinned to its own cores: whichever client pushes more through the
           # same cores is genuinely faster, instead of both saturating the broker.
@@ -384,9 +392,7 @@ jobs:
               --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }}
               --output ./results
             )
-            if [ -n "$EXTRA_ARGS" ]; then
-              STRESS_ARGS+=("$EXTRA_ARGS")
-            fi
+            STRESS_ARGS+=("${EXTRA_ARGS[@]}")
 
             if [ "$PROFILE_MODE" != "off" ]; then
               # The stress process retains the normal client-core isolation. Attach
@@ -397,6 +403,7 @@ jobs:
               TRACE_WINDOWS="${{ github.event.inputs.profile_windows }}" \
               PROFILE_COUNTERS="${{ github.event.inputs.profile_counters }}" \
               PROFILE_STACKS="${{ github.event.inputs.profile_stacks }}" \
+              PROFILE_GCDUMP="$([ "$PROFILE_MODE" = "gc" ] && echo true || echo false)" \
               STRESS_CPUSET="$CLIENT_CPUS" \
               PROFILER_CPUSET="5" \
               bash ../../tools/profile-stress-test.sh "${STRESS_ARGS[@]}"
@@ -415,7 +422,7 @@ jobs:
               --brokers ${{ matrix.brokers }} \
               --connections-per-broker 3 \
               --producer-delivery-diagnostics \
-              ${EXTRA_ARGS} \
+              "${EXTRA_ARGS[@]}" \
               --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
               --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
               --output ./results

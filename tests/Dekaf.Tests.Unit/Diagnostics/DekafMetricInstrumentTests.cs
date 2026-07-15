@@ -44,5 +44,22 @@ public sealed class DekafMetricInstrumentTests
         await Assert.That(instrumentNames).Contains("messaging.consumer.rebalance.duration");
         await Assert.That(instrumentNames).Contains("messaging.consumer.fetch.duration");
         await Assert.That(instrumentNames).Contains("messaging.consumer.lag");
+
+        // Producer internal-state gauges (observable — published by listening alone)
+        await Assert.That(instrumentNames).Contains("dekaf.producer.buffer.used_bytes");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.buffer.limit_bytes");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.buffer.pressure_events");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.budget_bytes");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.unacked_bytes");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.min_rtt");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.max_delivery_rate");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.queue_latency_ewma");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.latency_budget_scale");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.admission_blocks");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.capacity_probe.successes");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.capacity_probe.failures");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.connections");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.in_flight_bytes");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.broker.in_flight_requests");
     }
 }

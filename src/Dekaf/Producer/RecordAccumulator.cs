@@ -1098,6 +1098,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <see cref="_unackedBudgetEnabled"/> is true.
     /// </summary>
     private readonly ConcurrentDictionary<int, BrokerUnackedByteBudget> _brokerUnackedBudgets = new();
+
+    // Enumerated by the producer state gauges (DekafMetrics) from the metric-collection
+    // thread; ConcurrentDictionary enumeration is lock-free and safe concurrently.
+    internal IEnumerable<KeyValuePair<int, BrokerUnackedByteBudget>> BrokerUnackedBudgets => _brokerUnackedBudgets;
     private readonly Func<string, int, int>? _resolveLeaderId;
     private readonly bool _unackedBudgetEnabled;
 
@@ -5456,6 +5460,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
     }
 
+    // Keep this stat set in sync with the per-broker budget gauges in
+    // DekafMetrics — both export the same BrokerUnackedByteBudget accessors.
     private static ProducerBrokerBudgetDiagnostic CreateBrokerBudgetDiagnostic(
         int brokerId,
         BrokerUnackedByteBudget budget,

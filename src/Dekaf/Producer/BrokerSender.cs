@@ -608,6 +608,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly long _maxInFlightBytesPerConnection;
     private readonly long[] _pendingResponseBytesByConnection;
 
+    // Diagnostic accessors for the producer state gauges (DekafMetrics), read from
+    // the metric-collection thread. _connectionCount is send-loop-owned with plain
+    // writes, so the gauge observes an eventually-consistent value — fine at 1 Hz.
+    internal int CurrentConnectionCount => Volatile.Read(ref _connectionCount);
+    internal int InFlightRequestCount => Volatile.Read(ref _totalPendingResponseCount);
+    internal long InFlightBytes => Interlocked.Read(ref _totalPendingResponseBytes);
+
     // Per-broker unacked-byte admission budget (owned by the accumulator, shared with the
     // producer's admission gate). This send loop is the single writer of its drain-rate
     // and minimum-RTT estimates (OnAcked) and cap (SetCap); null when the bound is disabled.
