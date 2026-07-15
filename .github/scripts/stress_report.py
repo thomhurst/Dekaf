@@ -845,9 +845,11 @@ def format_admission_block_histogram(results, title):
     for result in results:
         diagnostics = result.get('producerDeliveryDiagnostics') or {}
         for budget in diagnostics.get('brokerBudgets') or []:
-            for bucket, count in enumerate(budget.get('admissionBlockMicrosLog2Histogram') or []):
+            histogram = budget.get('admissionBlockMicrosLog2Histogram') or []
+            top_bucket = len(histogram) - 1
+            for bucket, count in enumerate(histogram):
                 if count:
-                    rows.append((result, budget, bucket, count))
+                    rows.append((result, budget, bucket, top_bucket, count))
     if not rows:
         return []
 
@@ -857,11 +859,11 @@ def format_admission_block_histogram(results, title):
         "| Client | Broker | Duration bucket | Episodes |",
         "|--------|-------:|-----------------|---------:|",
     ]
-    for result, budget, bucket, count in rows:
+    for result, budget, bucket, top_bucket, count in rows:
         lower_micros = 1 << bucket
         duration = (
             f"≥{lower_micros / 1000:.3f}ms"
-            if bucket == 23
+            if bucket == top_bucket
             else f"{lower_micros / 1000:.3f}–{(1 << (bucket + 1)) / 1000:.3f}ms"
         )
         lines.append(

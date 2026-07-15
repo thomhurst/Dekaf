@@ -180,7 +180,7 @@ class StressReportTests(unittest.TestCase):
             }],
             "brokerBudgets": [{
                 "brokerId": 2,
-                "admissionBlockMicrosLog2Histogram": [0] * 12 + [3],
+                "admissionBlockMicrosLog2Histogram": [0] * 12 + [3] + [0] * 11,
             }],
         }
 
@@ -255,6 +255,20 @@ class StressReportTests(unittest.TestCase):
 
         self.assertIn("Probe overlap is temporal correlation only", report)
         self.assertIn("2:min-rtt/succeeded", report)
+
+    def test_admission_block_histogram_derives_top_bucket_from_data(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["producerDeliveryDiagnostics"] = {
+            "brokerBudgets": [{
+                "brokerId": 2,
+                "admissionBlockMicrosLog2Histogram": [0, 0, 0, 3],
+            }],
+        }
+
+        report = "\n".join(format_admission_block_histogram([value], "Producer"))
+
+        self.assertIn("≥0.008ms", report)
+        self.assertNotIn("0.008–0.016ms", report)
 
     def test_paired_latency_thresholds_flag_high_p99(self):
         confluent = stress_result("Confluent", effective_rate=1000)

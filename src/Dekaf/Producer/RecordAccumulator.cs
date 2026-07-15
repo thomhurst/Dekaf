@@ -4928,7 +4928,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         recheckDelayMilliseconds = currentBudget.GetAdmissionRecheckDelayMilliseconds(nowTicks);
         if (recordBlockEvent)
-            currentBudget.RecordAdmissionBlock();
+            currentBudget.RecordAdmissionBlock(nowTicks);
         return true;
     }
 
