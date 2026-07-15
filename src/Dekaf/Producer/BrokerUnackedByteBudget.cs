@@ -4,6 +4,27 @@ using System.Runtime.CompilerServices;
 
 namespace Dekaf.Producer;
 
+internal enum BrokerBudgetProbeType
+{
+    MinimumRtt,
+    Capacity
+}
+
+internal enum BrokerBudgetProbeOutcome
+{
+    Started,
+    Succeeded,
+    Failed
+}
+
+internal readonly record struct BrokerBudgetProbeEvent(
+    BrokerBudgetProbeType ProbeType,
+    BrokerBudgetProbeOutcome Outcome,
+    DateTimeOffset OccurredAtUtc,
+    long DurationMilliseconds,
+    long BudgetBytes,
+    long UnackedBytes);
+
 /// <summary>
 /// Bounds the bytes a single broker may hold unacknowledged (sealed but not yet acked)
 /// so that producer queueing latency stays near <see cref="ProducerOptions.DeliveryLatencyTargetMs"/>
@@ -116,6 +137,9 @@ internal sealed class BrokerUnackedByteBudget
     /// 32 ms and above).
     /// </summary>
     private const int HistogramBucketCount = 16;
+    internal const int AdmissionBlockHistogramBucketCount = 24;
+    private const int MaxMinRttProbeDiagnosticEvents = 512;
+    private const int MaxCapacityProbeDiagnosticEvents = 4_096;
     private const int RequestSizeHistogramShift = 8;
 
     /// <summary>
@@ -228,6 +252,11 @@ internal sealed class BrokerUnackedByteBudget
     // readers may observe slightly stale counts (acceptable for diagnostics).
     private readonly long[] _requestSizeLog2Histogram = new long[HistogramBucketCount];
     private readonly long[] _requestRttMicrosLog2Histogram = new long[HistogramBucketCount];
+    private readonly long[]? _admissionBlockMicrosLog2Histogram;
+    private readonly object? _probeDiagnosticsLock;
+    private readonly Queue<BrokerBudgetProbeEvent>? _minRttProbeEvents;
+    private readonly Queue<BrokerBudgetProbeEvent>? _capacityProbeEvents;
+    private long _admissionBlockedSinceTimestamp;
     private long _currentWindowBucket = long.MinValue;
     private double _windowMaxRate;
     private double _windowRateSum;
@@ -245,6 +274,7 @@ internal sealed class BrokerUnackedByteBudget
     // Written only by the send loop; acquire-read by appenders after _budgetBytes publishes
     // the matching precomputed post-probe budgets.
     private long _minRttProbeUntilTimestamp;
+    private long _minRttProbeStartedTimestamp;
     private long _nextProbeTimestamp;
     private long _capacityProbeStartTimestamp;
     private long _capacityProbeDeadlineTimestamp;
@@ -268,7 +298,8 @@ internal sealed class BrokerUnackedByteBudget
         double targetSeconds,
         long floorBytes,
         long initialCapBytes,
-        double lingerSeconds = 0)
+        double lingerSeconds = 0,
+        bool enableDiagnostics = false)
     {
         _targetSeconds = targetSeconds;
         _probeResponseHorizonTicks = Math.Max(
@@ -280,6 +311,13 @@ internal sealed class BrokerUnackedByteBudget
         Volatile.Write(ref _budgetBytes, _capBytes);
         Volatile.Write(ref _budgetAfterMinRttProbeBytes, _capBytes);
         Volatile.Write(ref _probeBudgetAfterMinRttProbeBytes, _capBytes);
+        if (enableDiagnostics)
+        {
+            _admissionBlockMicrosLog2Histogram = new long[AdmissionBlockHistogramBucketCount];
+            _probeDiagnosticsLock = new object();
+            _minRttProbeEvents = new Queue<BrokerBudgetProbeEvent>();
+            _capacityProbeEvents = new Queue<BrokerBudgetProbeEvent>();
+        }
     }
 
     /// <summary>
@@ -449,6 +487,47 @@ internal sealed class BrokerUnackedByteBudget
     /// <summary>Diagnostics: log2 histogram of acked request round-trip times in microseconds.</summary>
     internal long[] CopyRequestRttMicrosHistogram() => CopyHistogram(_requestRttMicrosLog2Histogram);
 
+    internal long[] CopyAdmissionBlockMicrosHistogram() =>
+        _admissionBlockMicrosLog2Histogram is { } histogram
+            ? CopyHistogram(histogram)
+            : [];
+
+    internal BrokerBudgetProbeEvent[] CopyProbeEvents()
+    {
+        if (_minRttProbeEvents is null)
+            return [];
+
+        lock (_probeDiagnosticsLock!)
+            return [.. _minRttProbeEvents, .. _capacityProbeEvents!];
+    }
+
+    internal void ResetDiagnostics()
+    {
+        if (_admissionBlockMicrosLog2Histogram is { } histogram)
+        {
+            for (var i = 0; i < histogram.Length; i++)
+                Interlocked.Exchange(ref histogram[i], 0);
+            Volatile.Write(ref _admissionBlockedSinceTimestamp, 0);
+        }
+
+        if (_minRttProbeEvents is not null)
+        {
+            lock (_probeDiagnosticsLock!)
+            {
+                _minRttProbeEvents.Clear();
+                _capacityProbeEvents!.Clear();
+            }
+        }
+    }
+
+    internal long GetCurrentAdmissionBlockDurationMicros(long nowTicks)
+    {
+        var startedAt = Volatile.Read(ref _admissionBlockedSinceTimestamp);
+        return startedAt == 0 || nowTicks <= startedAt
+            ? 0
+            : (long)((nowTicks - startedAt) * 1_000_000.0 / Stopwatch.Frequency);
+    }
+
     private static long[] CopyHistogram(long[] source)
     {
         var copy = new long[source.Length];
@@ -535,8 +614,31 @@ internal sealed class BrokerUnackedByteBudget
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void RecordAdmissionBlock()
-        => Interlocked.Increment(ref _admissionBlockEvents);
+    public void RecordAdmissionBlock(long nowTicks = 0)
+    {
+        Interlocked.Increment(ref _admissionBlockEvents);
+        if (_admissionBlockMicrosLog2Histogram is null)
+            return;
+
+        if (nowTicks == 0)
+            nowTicks = Stopwatch.GetTimestamp();
+        _ = Interlocked.CompareExchange(ref _admissionBlockedSinceTimestamp, nowTicks, 0);
+    }
+
+    internal void RecordAdmissionAvailable(long nowTicks)
+    {
+        var startedAt = Interlocked.Exchange(ref _admissionBlockedSinceTimestamp, 0);
+        if (_admissionBlockMicrosLog2Histogram is null || startedAt == 0 || nowTicks <= startedAt)
+            return;
+
+        var durationMicros = (ulong)Math.Max(
+            1,
+            (long)((nowTicks - startedAt) * 1_000_000.0 / Stopwatch.Frequency));
+        var bucket = Math.Min(
+            BitOperations.Log2(durationMicros),
+            AdmissionBlockHistogramBucketCount - 1);
+        Interlocked.Increment(ref _admissionBlockMicrosLog2Histogram[bucket]);
+    }
 
     /// <summary>
     /// Records broker bytes written and awaiting responses. Parallel connection sends may
@@ -564,8 +666,10 @@ internal sealed class BrokerUnackedByteBudget
         _capBytes = Math.Max(_floorBytes, capBytes);
         CompleteExpiredMinRttProbe(nowTicks);
         if (_capacityProbeActive && nowTicks >= _capacityProbeDeadlineTimestamp)
-            DeactivateCapacityProbe();
+            DeactivateCapacityProbe(nowTicks);
         RecomputeBudget(nowTicks);
+        if (!IsOverBudgetAt(nowTicks))
+            RecordAdmissionAvailable(nowTicks);
     }
 
     /// <summary>
@@ -711,6 +815,8 @@ internal sealed class BrokerUnackedByteBudget
             AddOccupancySample(writtenUnackedPeak);
 
         RecomputeBudget(nowTicks);
+        if (!IsOverBudgetAt(nowTicks))
+            RecordAdmissionAvailable(nowTicks);
     }
 
     private void UpdateDeliveryLatency(
@@ -903,7 +1009,8 @@ internal sealed class BrokerUnackedByteBudget
 
     private void CompleteMinRttProbe(long nowTicks)
     {
-        if (_minRttProbeMinimumSeconds != double.MaxValue)
+        var succeeded = _minRttProbeMinimumSeconds != double.MaxValue;
+        if (succeeded)
         {
             _minRttSeconds = Math.Min(
                 _minRttProbeMinimumSeconds,
@@ -914,6 +1021,12 @@ internal sealed class BrokerUnackedByteBudget
         // freshness window. An idle gap is not a base-RTT measurement.
         _minRttTimestamp = nowTicks;
         _minRttProbeUntilTimestamp = 0;
+        RecordProbeEvent(
+            BrokerBudgetProbeType.MinimumRtt,
+            succeeded ? BrokerBudgetProbeOutcome.Succeeded : BrokerBudgetProbeOutcome.Failed,
+            nowTicks,
+            _minRttProbeStartedTimestamp);
+        _minRttProbeStartedTimestamp = 0;
     }
 
     private void StartMinRttProbe(long nowTicks, double observedRttSeconds)
@@ -925,6 +1038,12 @@ internal sealed class BrokerUnackedByteBudget
             MinRttProbeDurationTicks,
             MaxMinRttProbeDurationTicks);
         _minRttProbeUntilTimestamp = nowTicks + probeDurationTicks;
+        _minRttProbeStartedTimestamp = nowTicks;
+        RecordProbeEvent(
+            BrokerBudgetProbeType.MinimumRtt,
+            BrokerBudgetProbeOutcome.Started,
+            nowTicks,
+            nowTicks);
     }
 
     private void AdvanceWindow(long nowTicks)
@@ -1036,7 +1155,7 @@ internal sealed class BrokerUnackedByteBudget
         {
             if (nowTicks >= _capacityProbeDeadlineTimestamp)
             {
-                DeactivateCapacityProbe();
+                DeactivateCapacityProbe(nowTicks);
                 _nextProbeTimestamp = nowTicks + probeIntervalTicks;
                 return;
             }
@@ -1078,6 +1197,11 @@ internal sealed class BrokerUnackedByteBudget
                 // a sustainable baseline and would make the next average-rate rung unwinnable.
                 _capacityProbeBaselineRate = averageRate;
                 _capacityProbePreProbeRttSeconds = averageRttSeconds;
+                RecordProbeEvent(
+                    BrokerBudgetProbeType.Capacity,
+                    BrokerBudgetProbeOutcome.Succeeded,
+                    nowTicks,
+                    _capacityProbeStartTimestamp);
                 _capacityProbeStartTimestamp = nowTicks;
                 ResetCapacityProbeSamples();
                 Interlocked.Increment(ref _capacityProbeSuccessCount);
@@ -1085,7 +1209,7 @@ internal sealed class BrokerUnackedByteBudget
             }
             else
             {
-                DeactivateCapacityProbe();
+                DeactivateCapacityProbe(nowTicks);
                 _nextProbeTimestamp = nowTicks + probeIntervalTicks;
             }
 
@@ -1108,6 +1232,11 @@ internal sealed class BrokerUnackedByteBudget
             ResetCapacityProbeSamples();
             Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeDurationTicks);
             Volatile.Write(ref _capacityProbeActive, true);
+            RecordProbeEvent(
+                BrokerBudgetProbeType.Capacity,
+                BrokerBudgetProbeOutcome.Started,
+                nowTicks,
+                nowTicks);
         }
 
         // A schedule missed by a full interval represents producer idle time, not an
@@ -1137,14 +1266,54 @@ internal sealed class BrokerUnackedByteBudget
         _capacityProbeEvaluationDeadlineTimestamp = 0;
     }
 
-    private void DeactivateCapacityProbe()
+    private void DeactivateCapacityProbe(long nowTicks)
     {
         if (_capacityProbeActive)
+        {
             Interlocked.Increment(ref _capacityProbeFailureCount);
+            RecordProbeEvent(
+                BrokerBudgetProbeType.Capacity,
+                BrokerBudgetProbeOutcome.Failed,
+                nowTicks,
+                _capacityProbeStartTimestamp);
+        }
 
         ResetCapacityProbeSamples();
         Volatile.Write(ref _capacityProbeActive, false);
         Volatile.Write(ref _capacityProbeDeadlineTimestamp, 0);
+    }
+
+    private void RecordProbeEvent(
+        BrokerBudgetProbeType probeType,
+        BrokerBudgetProbeOutcome outcome,
+        long nowTicks,
+        long startedAtTicks)
+    {
+        if (_minRttProbeEvents is null)
+            return;
+
+        var durationMilliseconds = startedAtTicks > 0 && nowTicks > startedAtTicks
+            ? (long)((nowTicks - startedAtTicks) * 1_000.0 / Stopwatch.Frequency)
+            : 0;
+        var diagnostic = new BrokerBudgetProbeEvent(
+            probeType,
+            outcome,
+            DateTimeOffset.UtcNow,
+            durationMilliseconds,
+            BudgetBytes,
+            UnackedBytes);
+        lock (_probeDiagnosticsLock!)
+        {
+            var events = probeType == BrokerBudgetProbeType.MinimumRtt
+                ? _minRttProbeEvents
+                : _capacityProbeEvents!;
+            var capacity = probeType == BrokerBudgetProbeType.MinimumRtt
+                ? MaxMinRttProbeDiagnosticEvents
+                : MaxCapacityProbeDiagnosticEvents;
+            if (events.Count >= capacity)
+                _ = events.Dequeue();
+            events.Enqueue(diagnostic);
+        }
     }
 
     private static double Max(double[] values)

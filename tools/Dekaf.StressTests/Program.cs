@@ -635,6 +635,23 @@ public static class Program
             $"      capturedAtUtc={snapshot.CapturedAtUtc:O} " +
             $"inFlight={snapshot.InFlightBatchCount:N0} batches={snapshot.Batches.Count:N0}");
 
+        foreach (var budget in snapshot.BrokerBudgets)
+        {
+            var completedBlocks = budget.AdmissionBlockMicrosLog2Histogram?.Sum() ?? 0;
+            Console.WriteLine(
+                $"      broker={budget.BrokerId} admissionBlockEpisodes={completedBlocks:N0} " +
+                $"currentAdmissionBlock={budget.CurrentAdmissionBlockMicros / 1_000.0:F3}ms");
+        }
+
+        foreach (var probeEvent in snapshot.BudgetProbeEvents.TakeLast(32))
+        {
+            Console.WriteLine(
+                $"      probe={probeEvent.ProbeType}/{probeEvent.Outcome} " +
+                $"broker={probeEvent.BrokerId} at={probeEvent.OccurredAtUtc:O} " +
+                $"duration={probeEvent.DurationMilliseconds:N0}ms " +
+                $"budget={probeEvent.BudgetBytes:N0} unacked={probeEvent.UnackedBytes:N0}");
+        }
+
         if (snapshot.Batches.Count == 0)
         {
             Console.WriteLine("      No live in-flight batches remained when diagnostics were captured.");

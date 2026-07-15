@@ -860,7 +860,11 @@ public sealed class BrokerUnackedByteBudgetTests
     [Test]
     public async Task PeriodicProbe_CollectsThreeRtts_ThenRevertsWithoutRateGain()
     {
-        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.5,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000,
+            enableDiagnostics: true);
         budget.Charge(5_000);
 
         for (var i = 0; i <= 8; i++)
@@ -886,6 +890,14 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(1);
+        var capacityEvents = budget.CopyProbeEvents()
+            .Where(probeEvent => probeEvent.ProbeType == BrokerBudgetProbeType.Capacity)
+            .ToArray();
+        await Assert.That(capacityEvents.Select(probeEvent => probeEvent.Outcome)).IsEquivalentTo(new[]
+        {
+            BrokerBudgetProbeOutcome.Started,
+            BrokerBudgetProbeOutcome.Failed
+        });
     }
 
     [Test]
@@ -1842,5 +1854,47 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.RecordAdmissionBlock();
 
         await Assert.That(budget.AdmissionBlockEvents).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task AdmissionBlockDiagnostics_RecordContiguousBlockedDuration()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 3_200,
+            enableDiagnostics: true);
+
+        budget.RecordAdmissionBlock(T0);
+        budget.RecordAdmissionBlock(T0 + Seconds(0.002));
+        budget.RecordAdmissionAvailable(T0 + Seconds(0.008));
+
+        var histogram = budget.CopyAdmissionBlockMicrosHistogram();
+
+        await Assert.That(histogram.Sum()).IsEqualTo(1);
+        await Assert.That(histogram[12]).IsEqualTo(1)
+            .Because("8,000 microseconds belongs to log2 bucket 12");
+        await Assert.That(budget.GetCurrentAdmissionBlockDurationMicros(T0 + Seconds(1))).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task MinimumRttProbeDiagnostics_RecordWindowBoundaries()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000,
+            enableDiagnostics: true);
+
+        Ack(budget, 500, 0.005, T0);
+        Ack(budget, 500, 0.005, T0 + Seconds(0.051));
+
+        var events = budget.CopyProbeEvents();
+
+        await Assert.That(events).Count().IsEqualTo(2);
+        await Assert.That(events[0].ProbeType).IsEqualTo(BrokerBudgetProbeType.MinimumRtt);
+        await Assert.That(events[0].Outcome).IsEqualTo(BrokerBudgetProbeOutcome.Started);
+        await Assert.That(events[1].Outcome).IsEqualTo(BrokerBudgetProbeOutcome.Succeeded);
+        await Assert.That(events[1].DurationMilliseconds).IsEqualTo(50);
     }
 }

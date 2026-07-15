@@ -804,6 +804,74 @@ def format_producer_budget_timeline(results, title):
     return lines
 
 
+def format_budget_probe_timeline(results, title):
+    """Show bounded per-broker min-RTT and capacity probe state transitions."""
+    rows = [
+        (result, event)
+        for result in results
+        for event in (result.get('producerDeliveryDiagnostics') or {}).get('budgetProbeEvents') or []
+    ]
+    if not rows:
+        return []
+
+    rows.sort(key=lambda row: row[1].get('occurredAtUtc', ''))
+    displayed_rows = _sample_evenly(rows, MAX_TIMELINE_ROWS)
+    lines = [
+        f"## Producer Budget Probe Events - {title}",
+        "",
+        "| Client | UTC | Broker | Probe | Outcome | Duration | Budget / unacked |",
+        "|--------|-----|-------:|-------|---------|---------:|------------------|",
+    ]
+    for result, event in displayed_rows:
+        lines.append(
+            f"| {result.get('client', 'Unknown')} | {event.get('occurredAtUtc', '-')} | "
+            f"{event.get('brokerId', '-')} | {event.get('probeType', '-')} | "
+            f"{event.get('outcome', '-')} | {event.get('durationMilliseconds', 0):,}ms | "
+            f"{event.get('budgetBytes', 0) / 1_048_576:.1f} MiB / "
+            f"{event.get('unackedBytes', 0) / 1_048_576:.1f} MiB |"
+        )
+    omitted_rows = len(rows) - len(displayed_rows)
+    if omitted_rows > 0:
+        lines.append(
+            f"*{omitted_rows:,} probe event(s) omitted; rows sampled across the full timeline.*"
+        )
+    lines.append("")
+    return lines
+
+
+def format_admission_block_histogram(results, title):
+    """Show completed contiguous admission-block episodes by log2 duration."""
+    rows = []
+    for result in results:
+        diagnostics = result.get('producerDeliveryDiagnostics') or {}
+        for budget in diagnostics.get('brokerBudgets') or []:
+            for bucket, count in enumerate(budget.get('admissionBlockMicrosLog2Histogram') or []):
+                if count:
+                    rows.append((result, budget, bucket, count))
+    if not rows:
+        return []
+
+    lines = [
+        f"## Producer Admission Block Durations - {title}",
+        "",
+        "| Client | Broker | Duration bucket | Episodes |",
+        "|--------|-------:|-----------------|---------:|",
+    ]
+    for result, budget, bucket, count in rows:
+        lower_micros = 1 << bucket
+        duration = (
+            f"≥{lower_micros / 1000:.3f}ms"
+            if bucket == 23
+            else f"{lower_micros / 1000:.3f}–{(1 << (bucket + 1)) / 1000:.3f}ms"
+        )
+        lines.append(
+            f"| {result.get('client', 'Unknown')} | {budget.get('brokerId', '-')} | "
+            f"{duration} | {count:,} |"
+        )
+    lines.append("")
+    return lines
+
+
 def format_latency_outlier_timeline(results, title):
     """Correlate sampled delivery stalls with scaling, throughput, and GC."""
     rows = [
@@ -818,18 +886,28 @@ def format_latency_outlier_timeline(results, title):
     lines = [
         f"## Delivery Latency Outliers - {title}",
         "",
-        "| Client | Message | Started UTC | Latency | Correlated owner | Scale events in stall | Throughput interval | GC interval delta |",
-        "|--------|--------:|-------------|--------:|------------------|-----------------------|---------------------|-------------------|",
+        "| Client | Message | Started UTC | Latency | Correlated signal | Probe windows in stall | Scale events in stall | Throughput interval | GC interval delta |",
+        "|--------|--------:|-------------|--------:|------------------|------------------------|-----------------------|---------------------|-------------------|",
     ]
     for result, outlier in rows:
         started_at = _parse_timestamp(outlier.get('startedAtUtc'))
         completed_at = _parse_timestamp(outlier.get('completedAtUtc'))
         scale_events = []
-        for event in (result.get('producerDeliveryDiagnostics') or {}).get('connectionScaleEvents') or []:
+        diagnostics = result.get('producerDeliveryDiagnostics') or {}
+        for event in diagnostics.get('connectionScaleEvents') or []:
             occurred_at = _parse_timestamp(event.get('occurredAtUtc'))
             if started_at is not None and completed_at is not None and occurred_at is not None:
                 if started_at <= occurred_at <= completed_at:
                     scale_events.append(event)
+        probe_events = []
+        for event in diagnostics.get('budgetProbeEvents') or []:
+            occurred_at = _parse_timestamp(event.get('occurredAtUtc'))
+            if started_at is None or completed_at is None or occurred_at is None:
+                continue
+            duration_ms = event.get('durationMilliseconds', 0)
+            probe_started_at = occurred_at - timedelta(milliseconds=duration_ms)
+            if probe_started_at <= completed_at and occurred_at >= started_at:
+                probe_events.append(event)
 
         timestamped_samples = sorted(
             (
@@ -865,19 +943,25 @@ def format_latency_outlier_timeline(results, title):
             client_rate = (result.get('throughput') or {}).get('averageMessagesPerSecond', 0)
 
         if scale_events:
-            owner = 'connection transition'
+            signal = 'connection transition'
         elif gen2_delta > 0 or pause_delta_ms >= 10:
-            owner = 'GC pause'
+            signal = 'GC pause'
         elif completion is not None and completion.get('messagesPerSecond', 0) < client_rate * 0.5:
-            owner = 'throughput collapse'
+            signal = 'throughput collapse'
         else:
-            owner = 'broker/backlog (no scale or GC event)'
+            signal = 'broker/backlog (no scale or GC event)'
 
         scale_summary = '-'
         if scale_events:
             scale_summary = ', '.join(
                 f"{event.get('brokerId', '-')}:{event.get('oldConnectionCount', '-')}→{event.get('newConnectionCount', '-')}"
                 for event in scale_events
+            )
+        probe_summary = '-'
+        if probe_events:
+            probe_summary = ', '.join(
+                f"{event.get('brokerId', '-')}:{event.get('probeType', '-')}/{event.get('outcome', '-')}"
+                for event in probe_events
             )
         throughput_summary = '-'
         gc_summary = '-'
@@ -893,11 +977,15 @@ def format_latency_outlier_timeline(results, title):
         message_text = '-' if message_index is None else f"{message_index:,}"
         lines.append(
             f"| {result.get('client', 'Unknown')} | {message_text} | "
-            f"{outlier.get('startedAtUtc', '-')} | {latency_text} | {owner} | "
-            f"{scale_summary} | {throughput_summary} | {gc_summary} |"
+            f"{outlier.get('startedAtUtc', '-')} | {latency_text} | {signal} | "
+            f"{probe_summary} | {scale_summary} | {throughput_summary} | {gc_summary} |"
         )
 
-    lines.append("")
+    lines.extend([
+        "",
+        "*Probe overlap is temporal correlation only. Compare no-probe outliers, admission-block durations, GC, and throughput before attributing a stall.*",
+        "",
+    ])
     dropped = sum((result.get('latency') or {}).get('droppedOutlierSamples', 0) for result in results)
     if dropped > 0:
         lines.append(f"*{dropped:,} additional latency outlier sample(s) exceeded the bounded diagnostic capacity.*")
@@ -1103,6 +1191,8 @@ def generate_scenario_tables(results, include_ratio=False, include_callout=False
             output.extend(format_producer_request_diagnostics(scenario_results, title))
             output.extend(format_consumer_fetch_timeline(scenario_results, title))
             output.extend(format_producer_budget_timeline(scenario_results, title))
+            output.extend(format_budget_probe_timeline(scenario_results, title))
+            output.extend(format_admission_block_histogram(scenario_results, title))
             output.extend(format_latency_outlier_timeline(scenario_results, title))
             output.extend(format_transaction_verification(scenario_results))
             output.extend(format_roundtrip_validation_table(scenario_results))

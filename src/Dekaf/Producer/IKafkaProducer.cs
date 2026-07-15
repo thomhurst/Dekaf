@@ -278,6 +278,7 @@ internal sealed class ProducerDeliveryDiagnosticsSnapshot
     public List<ProducerBatchDeliveryDiagnostic> Batches { get; init; } = [];
     public List<ProducerBrokerBudgetDiagnostic> BrokerBudgets { get; init; } = [];
     public List<ProducerBrokerBudgetDiagnostic> BrokerBudgetSamples { get; init; } = [];
+    public List<ProducerBudgetProbeDiagnostic> BudgetProbeEvents { get; init; } = [];
     public List<ConnectionReapDiagnostic> ConnectionReapEvents { get; init; } = [];
     public List<ProducerConnectionScaleDiagnostic> ConnectionScaleEvents { get; init; } = [];
 }
@@ -328,6 +329,25 @@ internal sealed class ProducerBrokerBudgetDiagnostic
     /// Populated only on live snapshots.
     /// </summary>
     public long[]? RequestRttMicrosLog2Histogram { get; init; }
+
+    /// <summary>Log2 histogram of completed contiguous admission-block intervals in
+    /// microseconds. Populated only on live snapshots.</summary>
+    public long[]? AdmissionBlockMicrosLog2Histogram { get; init; }
+
+    /// <summary>Age of the currently open admission-block interval, or zero when the
+    /// broker gate is presently admitting.</summary>
+    public long CurrentAdmissionBlockMicros { get; init; }
+}
+
+internal sealed class ProducerBudgetProbeDiagnostic
+{
+    public required DateTimeOffset OccurredAtUtc { get; init; }
+    public required int BrokerId { get; init; }
+    public required string ProbeType { get; init; }
+    public required string Outcome { get; init; }
+    public required long DurationMilliseconds { get; init; }
+    public required long BudgetBytes { get; init; }
+    public required long UnackedBytes { get; init; }
 }
 
 internal sealed class ProducerConnectionScaleDiagnostic
