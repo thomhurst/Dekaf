@@ -30,10 +30,11 @@ internal readonly record struct BrokerBudgetProbeEvent(
 /// so that producer queueing latency stays near <see cref="ProducerOptions.DeliveryLatencyTargetMs"/>
 /// instead of growing to the full <see cref="ProducerOptions.BufferMemory"/> reservoir.
 /// Under open-loop saturation, append-to-ack latency equals standing unacked bytes divided
-/// by the broker's drain rate; capping the standing bytes to
-/// <c>target × measured drain rate</c> caps the latency. The RTT safety horizon uses a
-/// periodically refreshed minimum RTT or the loaded serving RTT, capped by the latency target
-/// but never below one measured BDP so replicated service time still keeps the pipe full.
+/// by the broker's drain rate, plus serving RTT. Capping standing bytes to
+/// <c>(target - servingRtt) × measured drain rate</c> therefore caps end-to-end latency.
+/// The RTT safety horizon uses a periodically refreshed minimum RTT or loaded serving RTT,
+/// capped by the remaining latency horizon but never below one minimum-RTT BDP so replicated
+/// service time still keeps the pipe full.
 /// Raw round trips include the drain time of bytes the budget
 /// itself admitted ahead of the request, so RTT samples are queue-corrected at intake (raw
 /// RTT minus unacked-at-send over the measured max rate) before feeding the minimum and
@@ -1485,7 +1486,13 @@ internal sealed class BrokerUnackedByteBudget
                 : Math.Max(
                     RttSafetyMultiplier * loadAwareRttSeconds,
                     MinimumNormalHorizonSeconds);
-            var latencyCapSeconds = Math.Max(latencyGovernedTargetSeconds, minRttSeconds);
+            // DeliveryLatencyTarget covers the complete produce-to-ack journey. Reserve the
+            // measured serving RTT inside that horizon so persisted request depth cannot fill
+            // the target with standing flight and then add broker service time on top. Retain
+            // one minimum-RTT BDP when the configured target is shorter than path service time.
+            var latencyCapSeconds = Math.Max(
+                latencyGovernedTargetSeconds - loadAwareRttSeconds,
+                minRttSeconds);
             var horizonSeconds = _hasMinRttSample
                 ? Math.Min(rttSafetyHorizonSeconds, latencyCapSeconds)
                 : latencyGovernedTargetSeconds;
@@ -1502,8 +1509,9 @@ internal sealed class BrokerUnackedByteBudget
                 // the latency cap bounds it. General capacity discovery remains the job of
                 // the periodic 25% probes below — this floor only crosses coarse request
                 // granularity that a smaller byte probe cannot expose. Successful capacity
-                // probes persist higher proven quanta here; the latency cap still supplies
-                // the downward bound when that deeper flight starts queueing.
+                // probes persist higher proven quanta here; the latency cap, after reserving
+                // serving RTT, still supplies the downward bound when that deeper flight
+                // starts queueing.
                 var requestPipelineHorizonSeconds =
                     _provenPipelineRequestQuanta * _requestSizeEwmaBytes / effectiveMaxRate;
                 horizonSeconds = Math.Max(

@@ -224,8 +224,8 @@ public sealed class BrokerUnackedByteBudgetTests
 
         await Assert.That(budget.DeliveryLatencyEwmaMicros).IsLessThan(6_000);
         await Assert.That(budget.LatencyBudgetScale).IsGreaterThan(reducedScale);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(3_225)
-            .Because("blocked demand restores a request pipeline only within the current latency cap");
+        await Assert.That(budget.BudgetBytes).IsEqualTo(2_225)
+            .Because("blocked demand restores a request pipeline only within the remaining end-to-end latency cap");
     }
 
     [Test]
@@ -385,10 +385,10 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 10_000, 0.100, T0 + Seconds(1.0));
 
         // Both samples measure 100,000 B/s. The later back-to-back 100ms service sample
-        // raises the preferred safety horizon above the 10ms cap while the 5ms base RTT
-        // remains unchanged, so the latency target limits the budget to 10ms of rate.
+        // raises the preferred safety horizon above the 10ms end-to-end cap while the 5ms
+        // base RTT remains unchanged, leaving one base-RTT BDP as standing flight.
         await Assert.That(budget.MinimumRttMicros).IsEqualTo(5_000);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(500);
     }
 
     [Test]
@@ -424,9 +424,10 @@ public sealed class BrokerUnackedByteBudgetTests
 
         // The final 10,000-byte request measures its own 100ms sojourn (100,000 B/s);
         // pipelined delivery credit flows through the delivered-counter delta rather than
-        // a shrunken inter-ack interval. Normal operation restores the serving-RTT floor.
+        // a shrunken inter-ack interval. Normal operation retains one base-RTT BDP after
+        // reserving serving time inside the end-to-end target.
         await Assert.That(budget.MinimumRttMicros).IsEqualTo(5_000);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(500);
     }
 
     [Test]
@@ -583,10 +584,10 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 10_000, 0.100, T0 + Seconds(10.25));
 
         // No ack landed inside the 100ms drain. The late loaded sample must not replace
-        // the retained 5ms base RTT, but it does restore a serving-RTT safety horizon
-        // (clamped to twice the base RTT).
+        // the retained 5ms base RTT. Serving time consumes the end-to-end target, so normal
+        // operation retains one base-RTT BDP rather than adding another target-sized flight.
         await Assert.That(budget.MinimumRttMicros).IsEqualTo(5_000);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(500);
     }
 
     [Test]
@@ -1020,8 +1021,31 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_latencyBudgetScale", 0.25);
         SetCapWithoutDecay(budget, 1_000_000, T0 + Seconds(0.302));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(2_500)
-            .Because("latency pressure must still bound previously proven request depth");
+        await Assert.That(budget.BudgetBytes).IsEqualTo(2_400)
+            .Because("latency pressure and serving RTT must still bound previously proven request depth");
+    }
+
+    [Test]
+    public async Task ProvenRequestDepth_ReservesServingRttWithinLatencyCap()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SetField(budget, "_hasMinRttSample", true);
+        SetField(budget, "_minRttSeconds", 0.001);
+        SetField(budget, "_servingRttEwmaSeconds", 0.002);
+        SetField(budget, "_hasLoadedServingSample", true);
+        SetField(budget, "_windowMaxRate", 1_000_000.0);
+        SetField(budget, "_retainedLoadedMaxRate", 1_000_000.0);
+        SetField(budget, "_requestSizeEwmaBytes", 1_000.0);
+        SetField(budget, "_provenPipelineRequestQuanta", 32.0);
+        SetField(budget, "_latencyBudgetScale", 1.0);
+
+        SetCapWithoutDecay(budget, 1_000_000, T0);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(8_000)
+            .Because("the configured horizon includes serving RTT; only the remainder may become standing flight");
     }
 
     [Test]
@@ -1260,8 +1284,8 @@ public sealed class BrokerUnackedByteBudgetTests
         }
 
         await Assert.That(budget.LatencyBudgetScale).IsEqualTo(1.0).Within(0.000_001);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(2_000)
-            .Because("request granularity must not turn the configured latency target back into a floor");
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000)
+            .Because("request granularity must not add standing flight on top of serving RTT");
     }
 
     [Test]
@@ -1301,8 +1325,8 @@ public sealed class BrokerUnackedByteBudgetTests
             floorBytes: 200,
             initialCapBytes: 1_000_000);
         EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.008);
-        await Assert.That(GetField<long>(budget, "_budgetAfterMinRttProbeBytes")).IsEqualTo(10_000)
-            .Because("the latency target binds below the 1.5x RTT safety horizon");
+        await Assert.That(GetField<long>(budget, "_budgetAfterMinRttProbeBytes")).IsEqualTo(8_000)
+            .Because("one base-RTT BDP remains when serving time consumes most of the end-to-end target");
         budget.Charge(20_000);
 
         for (var i = 1; i <= 8; i++)
