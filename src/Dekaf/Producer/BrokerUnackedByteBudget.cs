@@ -118,11 +118,12 @@ internal sealed class BrokerUnackedByteBudget
     /// the delivery-latency target with queueing delay.</summary>
     private const int MinimumPipelineRequestQuanta = 4;
 
-    /// <summary>Maximum low-RTT request floor persisted per active connection. Higher-RTT
-    /// bandwidth-delay products remain governed by the independent RTT safety horizon; this
-    /// bound only prevents capacity probes from turning request granularity into a full
-    /// 32-request-per-connection standing queue.</summary>
-    private const int MaximumPersistedPipelineRequestQuantaPerConnection = 8;
+    /// <summary>Additional persistent request headroom contributed by each active connection.
+    /// The aggregate proof ceiling is <c>connectionCount × (4 + 2 × connectionCount)</c>:
+    /// one connection stops at six requests before median latency pins at the target, while
+    /// wider senders can feed their independent acknowledgement clocks. The latency horizon
+    /// and byte cap still bound actual standing flight.</summary>
+    private const int PersistedPipelineHeadroomRequestQuantaPerConnection = 2;
 
     /// <summary>
     /// The scale shrinks only while written-unacked occupancy demonstrates at least this
@@ -1334,8 +1335,11 @@ internal sealed class BrokerUnackedByteBudget
 
     private double GetMaximumPipelineRequestQuanta()
     {
-        var minimum = GetMinimumPipelineRequestQuanta();
-        var persistentLimit = MaximumPersistedPipelineRequestQuantaPerConnection * _connectionCount;
+        var connectionCount = _connectionCount;
+        var minimum = MinimumPipelineRequestQuanta * connectionCount;
+        var requestQuantaPerConnection = MinimumPipelineRequestQuanta
+            + PersistedPipelineHeadroomRequestQuantaPerConnection * connectionCount;
+        var persistentLimit = requestQuantaPerConnection * connectionCount;
         return _requestSizeEwmaBytes > 0
             ? Math.Max(minimum, Math.Min(persistentLimit, _capBytes / _requestSizeEwmaBytes))
             : persistentLimit;
