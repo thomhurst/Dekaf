@@ -3220,20 +3220,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             if (TryReadActiveConsumedPosition(out var partition, out var nextOffset, out var leaderEpoch, out var version))
             {
-                if (_pendingFetches.Count > 0)
-                {
-                    var activePending = _pendingFetches.Peek();
-                    if (activePending.TopicPartition.Equals(partition)
+                PendingFetchData? activePending = _pendingFetches.Count > 0
+                    ? _pendingFetches.Peek()
+                    : null;
+                if (activePending is null
+                    || (activePending.TopicPartition.Equals(partition)
                         && activePending.LastYieldedOffset + 1 == nextOffset
-                        && activePending.LastYieldedLeaderEpoch == leaderEpoch)
-                    {
-                        activePending.MarkYieldedProcessed();
-                    }
+                        && activePending.LastYieldedLeaderEpoch == leaderEpoch))
+                {
+                    activePending?.MarkYieldedProcessed();
+                    ApplyConsumedPosition(partition, nextOffset, leaderEpoch);
+                    ClearActiveConsumedPosition(partition, nextOffset, version);
+                    return true;
                 }
 
-                ApplyConsumedPosition(partition, nextOffset, leaderEpoch);
+                // A batch API may have advanced the same pending fetch without publishing
+                // a new record snapshot. Discard the stale snapshot and vouch for the fetch.
                 ClearActiveConsumedPosition(partition, nextOffset, version);
-                return true;
             }
         }
 

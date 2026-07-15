@@ -706,6 +706,39 @@ public sealed class OffsetStoreTimingTests
             .IsEquivalentTo([22L, 22L]);
     }
 
+    [Test]
+    public async Task CommitAsync_AfterSwitchingToBatch_IgnoresStaleActiveSnapshot()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"),
+                CreateRecord(2, "c", "three"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        await using (var records = consumer.ConsumeAsync(CancellationToken.None).GetAsyncEnumerator())
+        {
+            await Assert.That(await records.MoveNextAsync()).IsTrue();
+            await Assert.That(records.Current.Offset).IsEqualTo(20L);
+        }
+
+        await using (var batches = consumer.ConsumeBatchAsync(CancellationToken.None).GetAsyncEnumerator())
+        {
+            await Assert.That(await batches.MoveNextAsync()).IsTrue();
+            await Assert.That(batches.Current.Select(record => record.Offset).ToArray())
+                .IsEquivalentTo([21L, 22L]);
+
+            await consumer.CommitAsync(CancellationToken.None);
+        }
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(23L);
+        await Assert.That(GetPositions(consumer)[tp]).IsEqualTo(23L);
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+    }
+
     // --- Close path ---
 
     [Test]
