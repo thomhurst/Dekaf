@@ -1,6 +1,8 @@
 import unittest
 
 from stress_report import (
+    format_admission_block_histogram,
+    format_budget_probe_timeline,
     format_consumer_fetch_timeline,
     format_roundtrip_validation_table,
     format_connection_scale_timeline,
@@ -164,6 +166,33 @@ class StressReportTests(unittest.TestCase):
         self.assertIn("3/2", report)
         self.assertIn("20.0s / 2,000 msg/s", report)
 
+    def test_probe_and_admission_diagnostics_are_reported(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["producerDeliveryDiagnostics"] = {
+            "budgetProbeEvents": [{
+                "occurredAtUtc": "2026-07-12T02:20:46+00:00",
+                "brokerId": 2,
+                "probeType": "min-rtt",
+                "outcome": "succeeded",
+                "durationMilliseconds": 51,
+                "budgetBytes": 4 * 1024 * 1024,
+                "unackedBytes": 3 * 1024 * 1024,
+            }],
+            "brokerBudgets": [{
+                "brokerId": 2,
+                "admissionBlockMicrosLog2Histogram": [0] * 12 + [3] + [0] * 11,
+            }],
+        }
+
+        probe_report = "\n".join(format_budget_probe_timeline([value], "Producer"))
+        admission_report = "\n".join(format_admission_block_histogram([value], "Producer"))
+
+        self.assertIn("min-rtt", probe_report)
+        self.assertIn("succeeded", probe_report)
+        self.assertIn("51ms", probe_report)
+        self.assertIn("4.096–8.192ms", admission_report)
+        self.assertIn("| 3 |", admission_report)
+
     def test_scenario_tables_surface_latency_outlier_diagnostics(self):
         value = stress_result("Dekaf", effective_rate=1400)
         value["scenario"] = "producer"
@@ -200,6 +229,46 @@ class StressReportTests(unittest.TestCase):
         self.assertIn("GC pause", report)
         self.assertIn("Gen2 +1 / pause +12.5ms", report)
         self.assertIn("2 additional latency outlier sample(s)", report)
+
+    def test_latency_outlier_correlates_overlapping_budget_probe_window(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["scenario"] = "producer"
+        value["latency"] = {
+            "outlierSamples": [{
+                "messageIndex": 42,
+                "startedAtUtc": "2026-07-12T02:20:44+00:00",
+                "completedAtUtc": "2026-07-12T02:20:46+00:00",
+                "latencyUs": 2_000_000,
+            }],
+        }
+        value["producerDeliveryDiagnostics"] = {
+            "budgetProbeEvents": [{
+                "occurredAtUtc": "2026-07-12T02:20:46+00:00",
+                "brokerId": 2,
+                "probeType": "min-rtt",
+                "outcome": "succeeded",
+                "durationMilliseconds": 2_000,
+            }],
+        }
+
+        report = "\n".join(generate_scenario_tables([value]))
+
+        self.assertIn("Probe overlap is temporal correlation only", report)
+        self.assertIn("2:min-rtt/succeeded", report)
+
+    def test_admission_block_histogram_derives_top_bucket_from_data(self):
+        value = stress_result("Dekaf", effective_rate=1400)
+        value["producerDeliveryDiagnostics"] = {
+            "brokerBudgets": [{
+                "brokerId": 2,
+                "admissionBlockMicrosLog2Histogram": [0, 0, 0, 3],
+            }],
+        }
+
+        report = "\n".join(format_admission_block_histogram([value], "Producer"))
+
+        self.assertIn("≥0.008ms", report)
+        self.assertNotIn("0.008–0.016ms", report)
 
     def test_paired_latency_thresholds_flag_high_p99(self):
         confluent = stress_result("Confluent", effective_rate=1000)

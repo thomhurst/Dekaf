@@ -186,7 +186,9 @@ public sealed class ProducerDeliveryDiagnosticsTests
             resolveLeaderId: static (_, _) => 7);
         var budget = accumulator.GetBrokerUnackedBudget(7)!;
         budget.Charge(600);
-        budget.RecordAdmissionBlock();
+        var blockStartedAt = Stopwatch.GetTimestamp();
+        budget.RecordAdmissionBlock(blockStartedAt);
+        budget.CompleteAckedPass(blockStartedAt + Stopwatch.Frequency * 8 / 1_000);
         var ackTimestamp = Stopwatch.GetTimestamp();
         budget.OnAcked(
             1_000,
@@ -211,12 +213,36 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(current.RequestSizeLog2Histogram!.Sum()).IsEqualTo(1);
         await Assert.That(current.RequestRttMicrosLog2Histogram).IsNotNull();
         await Assert.That(current.RequestRttMicrosLog2Histogram!.Sum()).IsEqualTo(1);
+        await Assert.That(current.AdmissionBlockMicrosLog2Histogram).IsNotNull();
+        await Assert.That(current.AdmissionBlockMicrosLog2Histogram!.Sum()).IsEqualTo(1);
+        await Assert.That(current.AdmissionBlockMicrosLog2Histogram[12]).IsEqualTo(1);
+        await Assert.That(current.CurrentAdmissionBlockMicros).IsEqualTo(0);
+        await Assert.That(snapshot.BudgetProbeEvents).Count().IsEqualTo(1);
+        await Assert.That(snapshot.BudgetProbeEvents[0].ProbeType).IsEqualTo("min-rtt");
+        await Assert.That(snapshot.BudgetProbeEvents[0].Outcome).IsEqualTo("started");
         await Assert.That(sample.BrokerId).IsEqualTo(7);
         await Assert.That(sample.CapacityProbeSuccessCount).IsEqualTo(0);
         await Assert.That(sample.CapacityProbeFailureCount).IsEqualTo(0);
         await Assert.That(sample.CapturedAtUtc).IsLessThanOrEqualTo(snapshot.CapturedAtUtc);
         await Assert.That(sample.RequestSizeLog2Histogram).IsNull()
             .Because("periodic samples omit histograms to keep the 4096-entry ring compact");
+        await Assert.That(sample.AdmissionBlockMicrosLog2Histogram).IsNull();
+    }
+
+    [Test]
+    public async Task BrokerBudgetPeriodicSample_CapturesOpenAdmissionBlockDuration()
+    {
+        await using var accumulator = new RecordAccumulator(
+            CreateOptions(enableDeliveryDiagnostics: true, deliveryLatencyTargetMs: 10),
+            resolveLeaderId: static (_, _) => 7);
+        var budget = accumulator.GetBrokerUnackedBudget(7)!;
+        budget.RecordAdmissionBlock(Stopwatch.GetTimestamp() - Stopwatch.Frequency / 1_000);
+
+        accumulator.RecordBrokerBudgetDiagnosticSample();
+        var sample = accumulator.GetDeliveryDiagnosticsSnapshot().BrokerBudgetSamples.Single();
+
+        await Assert.That(sample.CurrentAdmissionBlockMicros).IsGreaterThan(0);
+        await Assert.That(sample.AdmissionBlockMicrosLog2Histogram).IsNull();
     }
 
     [Test]

@@ -248,6 +248,53 @@ public sealed class ConnectionScaleReportingTests
                         SendLoopPressureDelta = 340
                     }
                 ],
+                BudgetProbeEvents =
+                [
+                    new ProducerBudgetProbeDiagnostic
+                    {
+                        OccurredAtUtc = startedAt.AddSeconds(6),
+                        BrokerId = 1,
+                        ProbeType = "min-rtt",
+                        Outcome = "succeeded",
+                        DurationMilliseconds = 2_000,
+                        BudgetBytes = 8 * 1024 * 1024,
+                        UnackedBytes = 6 * 1024 * 1024
+                    }
+                ],
+                BrokerBudgets =
+                [
+                    new ProducerBrokerBudgetDiagnostic
+                    {
+                        CapturedAtUtc = startedAt.AddMinutes(15),
+                        BrokerId = 1,
+                        BudgetBytes = 8 * 1024 * 1024,
+                        UnackedBytes = 0,
+                        MinRttMicros = 800,
+                        MaxRateBytesPerSec = 750_000_000,
+                        AdmissionBlockCount = 12,
+                        DeliveryLatencyEwmaMicros = 2_500,
+                        LatencyBudgetScale = 1.0,
+                        AdmissionBlockMicrosLog2Histogram =
+                        [
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 3, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0, 0, 0
+                        ]
+                    },
+                    new ProducerBrokerBudgetDiagnostic
+                    {
+                        CapturedAtUtc = startedAt.AddMinutes(15),
+                        BrokerId = 2,
+                        BudgetBytes = 1,
+                        UnackedBytes = 0,
+                        MinRttMicros = 1,
+                        MaxRateBytesPerSec = 1,
+                        AdmissionBlockCount = 1,
+                        DeliveryLatencyEwmaMicros = 1,
+                        LatencyBudgetScale = 1,
+                        AdmissionBlockMicrosLog2Histogram = [0, 0, 0, 1]
+                    }
+                ],
                 BrokerBudgetSamples =
                 [
                     new ProducerBrokerBudgetDiagnostic
@@ -290,9 +337,15 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(markdown).Contains("8.0 MiB");
         await Assert.That(markdown).Contains("750.0 MB/s");
         await Assert.That(markdown).Contains("3/2");
+        await Assert.That(markdown).Contains("Producer Budget Probe Events - Fire-and-Forget");
+        await Assert.That(markdown).Contains("min-rtt");
+        await Assert.That(markdown).Contains("Producer Admission Block Durations - Fire-and-Forget");
+        await Assert.That(markdown).Contains("4.096–8.192ms");
+        await Assert.That(markdown).Contains("≥0.008ms");
         await Assert.That(markdown).Contains("Delivery Latency Outliers - Fire-and-Forget");
         await Assert.That(markdown).Contains("42");
-        await Assert.That(markdown).Contains("connection transition");
+        await Assert.That(markdown).Contains("Probe overlap is temporal correlation only");
+        await Assert.That(markdown).Contains("1:min-rtt/succeeded");
         await Assert.That(markdown).Contains("Gen2 +1 / pause +12.5ms");
         await Assert.That(markdown).Contains("43");
         await Assert.That(markdown).Contains("GC pause");
@@ -305,5 +358,11 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(json).Contains("\"averageRequestBytes\": 262144");
         await Assert.That(json).Contains("\"coalesceWidthHistogram\"");
         await Assert.That(json).Contains("\"requestCount\": 2000");
+
+        result.ProducerDeliveryDiagnostics.BudgetProbeEvents.Clear();
+        var markdownWithoutProbeEvents = MarkdownReporter.Generate(results);
+
+        await Assert.That(markdownWithoutProbeEvents).DoesNotContain("Producer Budget Probe Events");
+        await Assert.That(markdownWithoutProbeEvents).Contains("Producer Admission Block Durations");
     }
 }

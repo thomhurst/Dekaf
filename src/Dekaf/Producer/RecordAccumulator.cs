@@ -4855,7 +4855,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _options.DeliveryLatencyTargetMs / 1000.0,
             floorBytes: 1,
             initialCapBytes: cap,
-            lingerSeconds: _options.LingerMs / 1000.0);
+            lingerSeconds: _options.LingerMs / 1000.0,
+            enableDiagnostics: _options.EnableDeliveryDiagnostics);
     }
 
     /// <summary>
@@ -4913,9 +4914,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var currentBudget = GetCachedAdmissionBudget(partitionDeque, topic, partition);
         if (currentBudget is null || !currentBudget.IsOverBudget())
-        {
             return false;
-        }
 
         // A leader may have changed since this partition last sealed or routed a batch.
         // Resolve again before actually blocking so a stale, pressured old leader never
@@ -4930,7 +4929,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         recheckDelayMilliseconds = currentBudget.GetAdmissionRecheckDelayMilliseconds(nowTicks);
         if (recordBlockEvent)
-            currentBudget.RecordAdmissionBlock();
+            currentBudget.RecordAdmissionBlock(nowTicks);
         return true;
     }
 
@@ -5210,7 +5209,27 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var capturedAtUtc = snapshot.CapturedAtUtc;
         foreach (var (brokerId, budget) in _brokerUnackedBudgets)
+        {
             snapshot.BrokerBudgets.Add(CreateBrokerBudgetDiagnostic(brokerId, budget, capturedAtUtc, includeHistograms: true));
+            foreach (var probeEvent in budget.CopyProbeEvents())
+            {
+                snapshot.BudgetProbeEvents.Add(new ProducerBudgetProbeDiagnostic
+                {
+                    OccurredAtUtc = probeEvent.OccurredAtUtc,
+                    BrokerId = brokerId,
+                    ProbeType = probeEvent.ProbeType == BrokerBudgetProbeType.MinimumRtt
+                        ? "min-rtt"
+                        : "capacity",
+                    Outcome = probeEvent.Outcome.ToString().ToLowerInvariant(),
+                    DurationMilliseconds = probeEvent.DurationMilliseconds,
+                    BudgetBytes = probeEvent.BudgetBytes,
+                    UnackedBytes = probeEvent.UnackedBytes
+                });
+            }
+        }
+
+        snapshot.BudgetProbeEvents.Sort(static (left, right) =>
+            left.OccurredAtUtc.CompareTo(right.OccurredAtUtc));
 
         lock (_deliveryDiagnosticsLock)
         {
@@ -5255,6 +5274,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Interlocked.Exchange(ref counters.RequestCount, 0);
             Interlocked.Exchange(ref counters.RequestBytes, 0);
         }
+        foreach (var budget in _brokerUnackedBudgets.Values)
+            budget.ResetDiagnostics();
     }
 
     private sealed class ProducerRequestDiagnosticCounters
@@ -5338,21 +5359,26 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         BrokerUnackedByteBudget budget,
         DateTimeOffset capturedAtUtc,
         bool includeHistograms) => new()
-    {
-        CapturedAtUtc = capturedAtUtc,
-        BrokerId = brokerId,
-        BudgetBytes = budget.BudgetBytes,
-        UnackedBytes = budget.UnackedBytes,
-        MinRttMicros = budget.MinimumRttMicros,
-        MaxRateBytesPerSec = budget.MaxRateBytesPerSecond,
-        AdmissionBlockCount = budget.AdmissionBlockEvents,
-        CapacityProbeSuccessCount = budget.CapacityProbeSuccessCount,
-        CapacityProbeFailureCount = budget.CapacityProbeFailureCount,
-        DeliveryLatencyEwmaMicros = budget.DeliveryLatencyEwmaMicros,
-        LatencyBudgetScale = budget.LatencyBudgetScale,
-        RequestSizeLog2Histogram = includeHistograms ? budget.CopyRequestSizeHistogram() : null,
-        RequestRttMicrosLog2Histogram = includeHistograms ? budget.CopyRequestRttMicrosHistogram() : null
-    };
+        {
+            CapturedAtUtc = capturedAtUtc,
+            BrokerId = brokerId,
+            BudgetBytes = budget.BudgetBytes,
+            UnackedBytes = budget.UnackedBytes,
+            MinRttMicros = budget.MinimumRttMicros,
+            MaxRateBytesPerSec = budget.MaxRateBytesPerSecond,
+            AdmissionBlockCount = budget.AdmissionBlockEvents,
+            CapacityProbeSuccessCount = budget.CapacityProbeSuccessCount,
+            CapacityProbeFailureCount = budget.CapacityProbeFailureCount,
+            DeliveryLatencyEwmaMicros = budget.DeliveryLatencyEwmaMicros,
+            LatencyBudgetScale = budget.LatencyBudgetScale,
+            RequestSizeLog2Histogram = includeHistograms ? budget.CopyRequestSizeHistogram() : null,
+            RequestRttMicrosLog2Histogram = includeHistograms ? budget.CopyRequestRttMicrosHistogram() : null,
+            AdmissionBlockMicrosLog2Histogram = includeHistograms
+            ? budget.CopyAdmissionBlockMicrosHistogram()
+            : null,
+            CurrentAdmissionBlockMicros = budget.GetCurrentAdmissionBlockDurationMicros(
+                Stopwatch.GetTimestamp())
+        };
 
     /// <summary>
     /// Sweeps the in-flight batch list for batches whose delivery timeout has expired

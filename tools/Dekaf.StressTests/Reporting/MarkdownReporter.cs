@@ -1,4 +1,5 @@
 using System.Text;
+using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
 
 namespace Dekaf.StressTests.Reporting;
@@ -303,6 +304,83 @@ internal static class MarkdownReporter
         if (omittedRows > 0)
             sb.AppendLine($"*{omittedRows:N0} budget sample(s) omitted; rows sampled across the full timeline.*");
         sb.AppendLine();
+
+        GenerateBudgetProbeTimeline(sb, results, label);
+        GenerateAdmissionBlockHistogram(sb, results, label);
+    }
+
+    private static void GenerateBudgetProbeTimeline(
+        StringBuilder sb,
+        List<StressTestResult> results,
+        string label)
+    {
+        var rows = results
+            .SelectMany(result => (result.ProducerDeliveryDiagnostics?.BudgetProbeEvents ?? [])
+                .Select(probeEvent => (Result: result, Event: probeEvent)))
+            .OrderBy(row => row.Event.OccurredAtUtc)
+            .ToList();
+        if (rows.Count == 0)
+            return;
+
+        var displayedRows = SampleEvenly(rows, MaxTimelineRows);
+        sb.AppendLine($"## Producer Budget Probe Events - {label}");
+        sb.AppendLine();
+        sb.AppendLine("| Client | UTC | Broker | Probe | Outcome | Duration | Budget / unacked |");
+        sb.AppendLine("|--------|-----|-------:|-------|---------|---------:|------------------|");
+        foreach (var row in displayedRows)
+        {
+            sb.AppendLine(
+                $"| {row.Result.Client} | {row.Event.OccurredAtUtc:HH:mm:ss.fff} | " +
+                $"{row.Event.BrokerId} | {row.Event.ProbeType} | {row.Event.Outcome} | " +
+                $"{row.Event.DurationMilliseconds:N0}ms | " +
+                $"{row.Event.BudgetBytes / 1_048_576.0:F1} MiB / " +
+                $"{row.Event.UnackedBytes / 1_048_576.0:F1} MiB |");
+        }
+
+        var omitted = rows.Count - displayedRows.Count;
+        if (omitted > 0)
+            sb.AppendLine($"*{omitted:N0} probe event(s) omitted; rows sampled across the full timeline.*");
+        sb.AppendLine();
+    }
+
+    private static void GenerateAdmissionBlockHistogram(
+        StringBuilder sb,
+        List<StressTestResult> results,
+        string label)
+    {
+        var rows = results
+            .SelectMany(result => (result.ProducerDeliveryDiagnostics?.BrokerBudgets ?? [])
+                .Select(budget => (
+                    Budget: budget,
+                    Histogram: budget.AdmissionBlockMicrosLog2Histogram ?? []))
+                .SelectMany(row => row.Histogram.Select((count, bucket) => (
+                    Result: result,
+                    row.Budget,
+                    Count: count,
+                    Bucket: bucket,
+                    TopBucket: row.Histogram.Length - 1))))
+            .Where(row => row.Count > 0)
+            .ToList();
+        if (rows.Count == 0)
+            return;
+
+        sb.AppendLine($"## Producer Admission Block Durations - {label}");
+        sb.AppendLine();
+        sb.AppendLine("| Client | Broker | Duration bucket | Episodes |");
+        sb.AppendLine("|--------|-------:|-----------------|---------:|");
+        foreach (var row in rows)
+        {
+            var lowerMicros = 1L << row.Bucket;
+            var upperMicros = row.Bucket == row.TopBucket
+                ? (long?)null
+                : 1L << (row.Bucket + 1);
+            var bucket = upperMicros is { } upper
+                ? $"{lowerMicros / 1_000.0:F3}–{upper / 1_000.0:F3}ms"
+                : $"≥{lowerMicros / 1_000.0:F3}ms";
+            sb.AppendLine(
+                $"| {row.Result.Client} | {row.Budget.BrokerId} | {bucket} | {row.Count:N0} |");
+        }
+        sb.AppendLine();
     }
 
     private static void GenerateConsumerFetchTimeline(
@@ -378,14 +456,17 @@ internal static class MarkdownReporter
 
         sb.AppendLine($"## Delivery Latency Outliers - {label}");
         sb.AppendLine();
-        sb.AppendLine("| Client | Message | Started UTC | Latency | Correlated owner | Scale events in stall | Throughput interval | GC interval delta |");
-        sb.AppendLine("|--------|--------:|-------------|--------:|------------------|-----------------------|---------------------|-------------------|");
+        sb.AppendLine("| Client | Message | Started UTC | Latency | Correlated signal | Probe windows in stall | Scale events in stall | Throughput interval | GC interval delta |");
+        sb.AppendLine("|--------|--------:|-------------|--------:|------------------|------------------------|-----------------------|---------------------|-------------------|");
         foreach (var row in rows)
         {
             var scaleEvents = (row.Result.ProducerDeliveryDiagnostics?.ConnectionScaleEvents ?? [])
                 .Where(scaleEvent =>
                     scaleEvent.OccurredAtUtc >= row.Sample.StartedAtUtc &&
                     scaleEvent.OccurredAtUtc <= row.Sample.CompletedAtUtc)
+                .ToList();
+            var probeEvents = (row.Result.ProducerDeliveryDiagnostics?.BudgetProbeEvents ?? [])
+                .Where(probeEvent => ProbeOverlaps(probeEvent, row.Sample))
                 .ToList();
             var samples = row.Result.Throughput.IntervalSamples;
             var throughputSample = samples.FirstOrDefault(sample => sample.CapturedAtUtc >= row.Sample.CompletedAtUtc)
@@ -397,7 +478,7 @@ internal static class MarkdownReporter
             var pauseDeltaMs = throughputSample is null
                 ? 0
                 : Math.Max(0, throughputSample.GcPauseDurationMs - (baselineSample?.GcPauseDurationMs ?? 0));
-            var owner = ClassifyLatencyOutlier(
+            var signal = ClassifyLatencyOutlier(
                 scaleEvents.Count,
                 gen2Delta,
                 pauseDeltaMs,
@@ -407,6 +488,10 @@ internal static class MarkdownReporter
                 ? "-"
                 : string.Join(", ", scaleEvents.Select(scaleEvent =>
                     $"{scaleEvent.BrokerId}:{scaleEvent.OldConnectionCount}→{scaleEvent.NewConnectionCount}"));
+            var probeSummary = probeEvents.Count == 0
+                ? "-"
+                : string.Join(", ", probeEvents.Select(probeEvent =>
+                    $"{probeEvent.BrokerId}:{probeEvent.ProbeType}/{probeEvent.Outcome}"));
             var throughputSummary = throughputSample is null
                 ? "-"
                 : $"{throughputSample.ElapsedSeconds:F1}s / {throughputSample.MessagesPerSecond:N0} msg/s";
@@ -417,10 +502,12 @@ internal static class MarkdownReporter
 
             sb.AppendLine(
                 $"| {row.Result.Client} | {messageIndex} | {row.Sample.StartedAtUtc:HH:mm:ss.fff} | " +
-                $"{FormatLatencyUs(row.Sample.LatencyUs).Trim()} | {owner} | {scaleSummary} | " +
+                $"{FormatLatencyUs(row.Sample.LatencyUs).Trim()} | {signal} | {probeSummary} | {scaleSummary} | " +
                 $"{throughputSummary} | {gcSummary} |");
         }
 
+        sb.AppendLine();
+        sb.AppendLine("*Probe overlap is temporal correlation only. Compare no-probe outliers, admission-block durations, GC, and throughput before attributing a stall.*");
         sb.AppendLine();
         var dropped = results.Sum(result => result.Latency?.DroppedOutlierSamples ?? 0);
         if (dropped > 0)
@@ -448,6 +535,17 @@ internal static class MarkdownReporter
         }
 
         return "broker/backlog (no scale or GC event)";
+    }
+
+    private static bool ProbeOverlaps(
+        ProducerBudgetProbeDiagnostic probeEvent,
+        LatencyOutlierSample outlier)
+    {
+        var probeEnd = probeEvent.OccurredAtUtc;
+        var probeStart = probeEvent.DurationMilliseconds > 0
+            ? probeEnd - TimeSpan.FromMilliseconds(probeEvent.DurationMilliseconds)
+            : probeEnd;
+        return probeStart <= outlier.CompletedAtUtc && probeEnd >= outlier.StartedAtUtc;
     }
 
     private static void GenerateLatencyTable(StringBuilder sb, List<StressTestResult> results, string title = "Latency Percentiles")
