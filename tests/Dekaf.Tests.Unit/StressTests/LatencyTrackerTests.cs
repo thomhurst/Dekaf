@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Dekaf.StressTests.Metrics;
+using Dekaf.StressTests.Scenarios;
 
 namespace Dekaf.Tests.Unit.StressTests;
 
@@ -32,6 +33,20 @@ public sealed class LatencyTrackerTests
         var snapshot = tracker.GetSnapshot();
         await Assert.That(snapshot.OutlierSamples).IsEmpty();
         await Assert.That(snapshot.DroppedOutlierSamples).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DeliveryLatencyTracker_CapturesSubSecondOutlier()
+    {
+        var tracker = StressTestHelpers.CreateDeliveryLatencyTracker();
+
+        tracker.RecordTicks(Stopwatch.Frequency * 99 / 1_000, messageIndex: 41);
+        tracker.RecordTicks(Stopwatch.Frequency * 333 / 1_000, messageIndex: 42);
+
+        var snapshot = tracker.GetSnapshot();
+        await Assert.That(snapshot.OutlierSamples).Count().IsEqualTo(1);
+        await Assert.That(snapshot.OutlierSamples[0].MessageIndex).IsEqualTo(42);
+        await Assert.That(snapshot.OutlierSamples[0].LatencyUs).IsBetween(332_000, 334_000);
     }
 
     [Test]
