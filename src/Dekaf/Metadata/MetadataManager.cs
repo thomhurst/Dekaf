@@ -31,6 +31,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private volatile IReadOnlyList<FinalizedFeature>? _finalizedFeatures;
     private readonly SemaphoreSlim _initializeLock = new(1, 1);
     private volatile bool _initialized;
+    private volatile bool _hasSuccessfulRefresh;
+    private int _initializationAttempt;
     private int _disposed;
     private readonly CancellationTokenSource _disposalCts = new();
     private readonly object _backgroundRefreshGate = new();
@@ -43,6 +45,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     // but the broker always sends the ApiVersions response with header v0 regardless of version.
     // Using a named constant prevents silent breakage if LowestSupportedVersion is bumped later.
     private const short ApiVersionsBootstrapVersion = 3;
+    private const int BootstrapWarningAttempt = 6;
 
     // Rebootstrap recovery state
     private readonly List<string> _originalBootstrapHostnames;
@@ -263,13 +266,20 @@ public sealed partial class MetadataManager : IAsyncDisposable
             {
                 for (var attempt = 0; ; attempt++)
                 {
+                    Volatile.Write(ref _initializationAttempt, attempt + 1);
                     try
                     {
                         await RefreshMetadataAsync(initializationToken).ConfigureAwait(false);
                         break;
                     }
-                    catch (Exception ex) when (!IsFatalMetadataError(ex) && attempt < _options.MaxInitRetries && !initializationToken.IsCancellationRequested)
+                    catch (Exception ex) when (!IsFatalMetadataError(ex) && !initializationToken.IsCancellationRequested)
                     {
+                        if (attempt >= _options.MaxInitRetries)
+                        {
+                            LogMetadataInitializationAbandoned(ex, attempt + 1);
+                            throw;
+                        }
+
                         LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
                         await Task.Delay(backoffMs, initializationToken).ConfigureAwait(false);
                         backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
@@ -279,6 +289,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
             catch (OperationCanceledException) when (_disposalCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
                 throw new ObjectDisposedException(nameof(MetadataManager));
+            }
+            finally
+            {
+                Volatile.Write(ref _initializationAttempt, 0);
             }
 
             if (Volatile.Read(ref _disposed) != 0)
@@ -620,6 +634,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     if (rebootstrapped)
                     {
                         ResetAllBrokersUnavailableTimestamp();
+                        _hasSuccessfulRefresh = true;
                         return;
                     }
                     // Rebootstrap failed — fall through and apply the original response as best-effort fallback
@@ -642,6 +657,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
+                _hasSuccessfulRefresh = true;
 
                 return;
             }
@@ -662,6 +678,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             var rebootstrapped = await TryRebootstrapAsync(topics, cancellationToken).ConfigureAwait(false);
             if (rebootstrapped)
             {
+                _hasSuccessfulRefresh = true;
                 return;
             }
         }
@@ -1093,17 +1110,59 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     #region Logging
 
+    private bool ShouldWarnAboutMetadataFailure()
+        => _hasSuccessfulRefresh || Volatile.Read(ref _initializationAttempt) >= BootstrapWarningAttempt;
+
+    private void LogMetadataInitializationFailed(Exception ex, int attempt, int backoffMs)
+    {
+        if (ShouldWarnAboutMetadataFailure())
+            LogMetadataInitializationFailedWarning(ex, attempt, backoffMs);
+        else
+            LogMetadataInitializationFailedDebug(ex, attempt, backoffMs);
+    }
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Metadata initialization attempt {Attempt} failed, retrying in {BackoffMs}ms")]
+    private partial void LogMetadataInitializationFailedDebug(Exception ex, int attempt, int backoffMs);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Metadata initialization attempt {Attempt} failed, retrying in {BackoffMs}ms")]
-    private partial void LogMetadataInitializationFailed(Exception ex, int attempt, int backoffMs);
+    private partial void LogMetadataInitializationFailedWarning(Exception ex, int attempt, int backoffMs);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Metadata initialization failed after {AttemptCount} attempts")]
+    private partial void LogMetadataInitializationAbandoned(Exception ex, int attemptCount);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Refreshed metadata: {BrokerCount} brokers, {TopicCount} topics")]
     private partial void LogMetadataRefreshed(int brokerCount, int topicCount);
 
+    private void LogMetadataRefreshFailed(Exception ex, string host, int port)
+    {
+        if (ShouldWarnAboutMetadataFailure())
+            LogMetadataRefreshFailedWarning(ex, host, port);
+        else
+            LogMetadataRefreshFailedDebug(ex, host, port);
+    }
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Failed to refresh metadata from {Host}:{Port}")]
+    private partial void LogMetadataRefreshFailedDebug(Exception ex, string host, int port);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to refresh metadata from {Host}:{Port}")]
-    private partial void LogMetadataRefreshFailed(Exception ex, string host, int port);
+    private partial void LogMetadataRefreshFailedWarning(Exception ex, string host, int port);
+
+    private void LogAllBrokersUnavailable(int triggerMs)
+    {
+        // This signal is emitted once per outage episode, so an initialization-attempt
+        // threshold cannot escalate it later. A terminal initialization warning covers a
+        // persistent bootstrap outage; after successful operation, a new outage is warning.
+        if (_hasSuccessfulRefresh)
+            LogAllBrokersUnavailableWarning(triggerMs);
+        else
+            LogAllBrokersUnavailableDebug(triggerMs);
+    }
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "All known brokers are unavailable. Rebootstrap will trigger after {TriggerMs}ms")]
+    private partial void LogAllBrokersUnavailableDebug(int triggerMs);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "All known brokers are unavailable. Rebootstrap will trigger after {TriggerMs}ms")]
-    private partial void LogAllBrokersUnavailable(int triggerMs);
+    private partial void LogAllBrokersUnavailableWarning(int triggerMs);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Rebootstrap not yet triggered. Elapsed: {ElapsedMs}ms, Trigger: {TriggerMs}ms")]
     private partial void LogRebootstrapNotYetTriggered(long elapsedMs, int triggerMs);
