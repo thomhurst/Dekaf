@@ -185,7 +185,7 @@ public sealed class ResponseFrameReaderTests
     [Test]
     public async Task ReadFrameAsync_EofMidNativeFrame_ReturnsBufferToPool()
     {
-        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var pool = new ResponseBufferPool(1024 * 1024, managedArraysPerBucket: 1);
         var seeded = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
         var address = seeded.Address;
         seeded.Return();

@@ -1115,12 +1115,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             },
             loggerFactory,
             connectionsPerBroker: options.ConnectionsPerBroker,
-            ResponseBufferPool.Create(
-                CalculateMaximumFetchResponsePayloadBytes(options),
-                PoolSizing.ForConsumerResponseBuffers(
-                    options.BootstrapServers.Count,
-                    options.PrefetchPipelineDepth,
-                    options.MaxConnectionsPerBroker)),
+            CreateResponseBufferPool(options),
             telemetryMetricCollector: telemetryMetricCollector);
 
         var metadataManager = new MetadataManager(
@@ -1130,6 +1125,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
         return (connectionPool, metadataManager, telemetryMetricCollector);
+    }
+
+    private static ResponseBufferPool CreateResponseBufferPool(ConsumerOptions options)
+    {
+        var responseBufferWorkingSet = PoolSizing.ForConsumerResponseBuffers(
+            options.BootstrapServers.Count,
+            options.PrefetchPipelineDepth,
+            options.MaxConnectionsPerBroker);
+        return ResponseBufferPool.Create(
+            CalculateMaximumFetchResponsePayloadBytes(options),
+            managedArraysPerBucket: responseBufferWorkingSet,
+            maxRetainedNativeBuffers: responseBufferWorkingSet);
     }
 
     internal static int CalculateMaximumFetchResponsePayloadBytes(ConsumerOptions options)
