@@ -149,6 +149,7 @@ public sealed partial class KafkaConnection :
     private Task? _disposeTask;
     private int _disposed;
     private int _connected;
+    private bool _hasReceivedResponse;
     private long _lastUsedTimestampMs = Dekaf.MonotonicClock.GetMilliseconds();
     private readonly SemaphoreSlim _connectLock = new(1, 1);
 
@@ -1847,7 +1848,11 @@ public sealed partial class KafkaConnection :
         }
         catch (Exception ex)
         {
-            LogReceiveLoopError(ex);
+            if (!_hasReceivedResponse)
+                LogReceiveLoopEndedBeforeFirstResponse(ex, _host, _port);
+            else
+                LogReceiveLoopError(ex);
+
             MarkDisposed(); // Prevent new requests from being queued on a dead connection
             FailAllPendingRequests(ex);
         }
@@ -1893,13 +1898,13 @@ public sealed partial class KafkaConnection :
 
         if (TryGetPendingRequest(correlationId, out var pending))
         {
+            _hasReceivedResponse = true;
             if (!pending.Request.TryComplete(pending.Version, responseData))
-            {
                 responseData.Dispose();
-            }
         }
         else if (_cancelledCorrelationIds.TryRemove(correlationId))
         {
+            _hasReceivedResponse = true;
             LogLateResponseForCancelledRequest(correlationId);
             responseData.Dispose();
         }
@@ -3572,6 +3577,9 @@ public sealed partial class KafkaConnection :
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error in receive loop")]
     private partial void LogReceiveLoopError(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Receive loop ended before first response from {Host}:{Port}; broker may still be starting")]
+    private partial void LogReceiveLoopEndedBeforeFirstResponse(Exception ex, string host, int port);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Starting SASL authentication with mechanism {Mechanism}")]
     private partial void LogStartingSaslAuthentication(SaslMechanism mechanism);

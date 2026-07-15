@@ -12,6 +12,7 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Security;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Tests.Unit.Networking;
 
@@ -682,6 +683,136 @@ public sealed class KafkaConnectionTests
 
     [Test]
     [Timeout(10_000)]
+    public async Task ReceiveLoop_FailureBeforeFirstResponse_LogsDebug(CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var logger = new CapturingLogger<KafkaConnection>();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                logger: logger);
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            await WriteInvalidFrameAsync(serverClient.GetStream(), cancellationToken);
+
+            await WaitForReceiveLoopFailureAsync(logger, cancellationToken);
+
+            await Assert.That(logger.Entries.Any(entry =>
+                entry.Level == LogLevel.Debug &&
+                entry.Message.Contains("before first response", StringComparison.Ordinal))).IsTrue();
+            await Assert.That(logger.Entries.Any(entry =>
+                entry.Level == LogLevel.Error &&
+                entry.Message.Contains("Error in receive loop", StringComparison.Ordinal))).IsFalse();
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task ReceiveLoop_FailureAfterFirstResponse_LogsError(CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var logger = new CapturingLogger<KafkaConnection>();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                logger: logger);
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            var responseTask = connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                apiVersion: 3,
+                cancellationToken).AsTask();
+            var requestFrame = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));
+            await serverClient.GetStream().WriteAsync(
+                BuildApiVersionsV3ResponseFrame(correlationId),
+                cancellationToken);
+            await responseTask.ConfigureAwait(false);
+
+            await WriteInvalidFrameAsync(serverClient.GetStream(), cancellationToken);
+            await WaitForReceiveLoopFailureAsync(logger, cancellationToken);
+
+            await Assert.That(logger.Entries.Any(entry =>
+                entry.Level == LogLevel.Error &&
+                entry.Message.Contains("Error in receive loop", StringComparison.Ordinal))).IsTrue();
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task ReceiveLoop_FailureAfterLateCancelledResponse_LogsError(
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var logger = new CapturingLogger<KafkaConnection>();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            await using var connection = new KafkaConnection(
+                IPAddress.Loopback.ToString(),
+                port,
+                logger: logger);
+
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+            using var callerCancellation = new CancellationTokenSource();
+            var responseTask = connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                apiVersion: 3,
+                callerCancellation.Token).AsTask();
+            var requestFrame = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));
+            await callerCancellation.CancelAsync();
+            _ = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await responseTask.ConfigureAwait(false));
+
+            await serverClient.GetStream().WriteAsync(
+                BuildApiVersionsV3ResponseFrame(correlationId),
+                cancellationToken);
+            while (!logger.Entries.Any(entry =>
+                       entry.Message.Contains("late response", StringComparison.OrdinalIgnoreCase)))
+                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+
+            await WriteInvalidFrameAsync(serverClient.GetStream(), cancellationToken);
+            await WaitForReceiveLoopFailureAsync(logger, cancellationToken);
+
+            await Assert.That(logger.Entries.Any(entry =>
+                entry.Level == LogLevel.Error &&
+                entry.Message.Contains("Error in receive loop", StringComparison.Ordinal))).IsTrue();
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Test]
+    [Timeout(10_000)]
     public async Task SendAsync_CallerCanceledRequest_DoesNotFailIdleConnectionAfterRequestTimeout(CancellationToken cancellationToken)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -1179,6 +1310,57 @@ public sealed class KafkaConnectionTests
         await stream.ReadExactlyAsync(frameBuffer, cancellationToken).ConfigureAwait(false);
         return frameBuffer;
     }
+
+    private static async Task WriteInvalidFrameAsync(
+        NetworkStream stream,
+        CancellationToken cancellationToken)
+    {
+        var invalidLength = new byte[sizeof(int)];
+        BinaryPrimitives.WriteInt32BigEndian(invalidLength, int.MaxValue);
+        await stream.WriteAsync(invalidLength, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task WaitForReceiveLoopFailureAsync(
+        CapturingLogger<KafkaConnection> logger,
+        CancellationToken cancellationToken)
+    {
+        while (!logger.Entries.Any(entry =>
+                   entry.Message.Contains("Error in receive loop", StringComparison.Ordinal) ||
+                   entry.Message.Contains("before first response", StringComparison.Ordinal)))
+            await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+    }
+
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        private readonly object _gate = new();
+        private readonly List<LogEntry> _entries = [];
+
+        public IReadOnlyList<LogEntry> Entries
+        {
+            get
+            {
+                lock (_gate)
+                    return _entries.ToArray();
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (_gate)
+                _entries.Add(new LogEntry(logLevel, formatter(state, exception), exception));
+        }
+    }
+
+    private sealed record LogEntry(LogLevel Level, string Message, Exception? Exception);
 
     [Test]
     public async Task DisposeAsync_ConcurrentCalls_DoesNotThrow()
