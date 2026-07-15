@@ -1,9 +1,11 @@
+using System.Net.Sockets;
 using System.Reflection;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Metadata;
@@ -317,6 +319,144 @@ public class MetadataManagerTests
     }
 
     [Test]
+    public async Task InitializeAsync_DefaultRetries_LogEarlyDebugAndTerminalWarning()
+    {
+        var pool = CreateFailingConnectionPool();
+        var logger = new CapturingLogger<MetadataManager>();
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                RetryBackoffMs = 0,
+                RetryBackoffMaxMs = 0
+            },
+            logger);
+
+        var act = () => manager.InitializeAsync().AsTask();
+        await Assert.That(act).Throws<InvalidOperationException>();
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            var expectedMessage = $"attempt {attempt} failed";
+            await Assert.That(logger.Entries.Any(entry =>
+                entry.Level == LogLevel.Debug &&
+                entry.Message.Contains(expectedMessage, StringComparison.Ordinal))).IsTrue();
+        }
+
+        await Assert.That(logger.Entries.Any(entry =>
+            entry.Level == LogLevel.Warning &&
+            entry.Message.Contains("failed after 4 attempts", StringComparison.Ordinal))).IsTrue();
+    }
+
+    [Test]
+    public async Task InitializeAsync_SixthBootstrapFailure_LogsWarning()
+    {
+        var pool = CreateFailingConnectionPool();
+        var logger = new CapturingLogger<MetadataManager>();
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                MaxInitRetries = 6,
+                RetryBackoffMs = 0,
+                RetryBackoffMaxMs = 0
+            },
+            logger);
+
+        var act = () => manager.InitializeAsync().AsTask();
+        await Assert.That(act).Throws<InvalidOperationException>();
+
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            var expectedMessage = $"attempt {attempt} failed";
+            await Assert.That(logger.Entries.Any(entry =>
+                entry.Level == LogLevel.Debug &&
+                entry.Message.Contains(expectedMessage, StringComparison.Ordinal))).IsTrue();
+        }
+
+        await Assert.That(logger.Entries.Any(entry =>
+            entry.Level == LogLevel.Warning &&
+            entry.Message.Contains("attempt 6 failed", StringComparison.Ordinal))).IsTrue();
+    }
+
+    [Test]
+    public async Task FirstBootstrapOutage_RemainsDebugRegardlessOfAttemptCounter()
+    {
+        var logger = new CapturingLogger<MetadataManager>();
+        await using var manager = new MetadataManager(
+            CreateFailingConnectionPool(),
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap
+            },
+            logger);
+        SetInstanceField(manager, "_initializationAttempt", 6);
+
+        var rebootstrapped = await manager.TryRebootstrapAsync(null, CancellationToken.None);
+
+        await Assert.That(rebootstrapped).IsFalse();
+        await Assert.That(logger.Entries.Any(entry =>
+            entry.Level == LogLevel.Debug &&
+            entry.Message.Contains("All known brokers are unavailable", StringComparison.Ordinal))).IsTrue();
+        await Assert.That(logger.Entries.Any(entry =>
+            entry.Level == LogLevel.Warning &&
+            entry.Message.Contains("All known brokers are unavailable", StringComparison.Ordinal))).IsFalse();
+    }
+
+    [Test]
+    public async Task RefreshMetadataAsync_AfterSuccessfulRefreshFailure_LogsWarning()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        var failConnections = false;
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ => failConnections
+                ? ValueTask.FromException<IKafkaConnection>(new SocketException())
+                : new ValueTask<IKafkaConnection>(connection));
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<ApiVersionsResponse>(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            }));
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<MetadataResponse>(CreateMetadataResponse((1, "localhost", 9092))));
+        var logger = new CapturingLogger<MetadataManager>();
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions { EnableBackgroundRefresh = false },
+            logger);
+        await manager.InitializeAsync();
+        failConnections = true;
+
+        var act = () => manager.RefreshMetadataAsync().AsTask();
+        await Assert.That(act).Throws<InvalidOperationException>();
+
+        await Assert.That(logger.Entries.Any(entry =>
+            entry.Level == LogLevel.Warning &&
+            entry.Message.Contains("Failed to refresh metadata", StringComparison.Ordinal))).IsTrue();
+    }
+
+    [Test]
     public async Task InitializeAsync_DisposeDuringRefresh_DoesNotStartBackgroundRefresh()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -516,6 +656,14 @@ public class MetadataManagerTests
         field.SetValue(metadataManager, MetadataRequest.HighestSupportedVersion);
     }
 
+    private static IConnectionPool CreateFailingConnectionPool()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromException<IKafkaConnection>(new SocketException()));
+        return pool;
+    }
+
     private static bool IsFatalMetadataError(MetadataManager metadataManager, Exception exception)
     {
         var method = typeof(MetadataManager)
@@ -647,4 +795,36 @@ public class MetadataManagerTests
         void IRetirableKafkaConnection.BeginRetirement() { }
         void IRetirableKafkaConnection.CompleteRetirement() { }
     }
+
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        private readonly object _gate = new();
+        private readonly List<LogEntry> _entries = [];
+
+        public IReadOnlyList<LogEntry> Entries
+        {
+            get
+            {
+                lock (_gate)
+                    return _entries.ToArray();
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (_gate)
+                _entries.Add(new LogEntry(logLevel, formatter(state, exception)));
+        }
+    }
+
+    private sealed record LogEntry(LogLevel Level, string Message);
 }
