@@ -141,8 +141,10 @@ class StressProfileWorkflowTests(unittest.TestCase):
             self.assertIn(profile_input, self.workflow)
 
     def test_profiles_only_one_explicit_dekaf_lane(self):
+        # Manual dispatches are always Dekaf-only, so the guard only needs to
+        # reject the full-matrix sweep.
         self.assertIn(
-            'if [ "$lane" = "all" ] || [ "$client" != "dekaf" ]',
+            'if [ "$profile_mode" != "off" ] && [ "$lane" = "all" ]',
             self.workflow,
         )
         self.assertIn('.paired_samples = 1', self.workflow)
