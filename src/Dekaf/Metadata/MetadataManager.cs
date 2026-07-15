@@ -591,8 +591,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
         {
             try
             {
-                var connection = await _connectionPool.GetConnectionAsync(host, port, cancellationToken)
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(host, port, cancellationToken)
                     .ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 // Negotiate API version if not already done
                 if (_metadataApiVersion < 0)
@@ -727,8 +728,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
         {
             try
             {
-                var connection = await _connectionPool.GetConnectionAsync(host, port, cancellationToken)
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(host, port, cancellationToken)
                     .ConfigureAwait(false);
+                var connection = connectionLease.Connection;
 
                 // Re-negotiate API versions with new broker
                 await NegotiateApiVersionsAsync(connection, cancellationToken).ConfigureAwait(false);
