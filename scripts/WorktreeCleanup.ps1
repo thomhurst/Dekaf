@@ -45,7 +45,9 @@ function Remove-MergedWorktree {
             Write-Host "WARNING: worktree $Label requires manual removal -- detach the node_modules junction at $($junction.FullName) first, then re-run cleanup: $Worktree"
             return
         }
-        Remove-Item -LiteralPath "\\?\$Worktree" -Recurse -Force -ErrorAction SilentlyContinue
+        # \\?\ disables Win32 path normalization, so forward slashes (git's output
+        # format) are NOT translated — convert to backslashes or the delete no-ops.
+        Remove-Item -LiteralPath ('\\?\' + ($Worktree -replace '/', '\')) -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     git -C $Repo worktree prune
