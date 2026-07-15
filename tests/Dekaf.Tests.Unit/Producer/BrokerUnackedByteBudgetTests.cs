@@ -103,6 +103,21 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task LowRttBudget_UsesMinimumNormalHorizon()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 3_200);
+
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.0001);
+        Ack(budget, 100, 0.0001, T0 + Seconds(0.051));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000)
+            .Because("an empty-pipe RTT must not make the admission horizon too shallow to discover capacity");
+    }
+
+    [Test]
     public async Task DeliveryLatencyAboveTarget_ReducesRateBudget()
     {
         var budget = new BrokerUnackedByteBudget(
@@ -209,8 +224,8 @@ public sealed class BrokerUnackedByteBudgetTests
 
         await Assert.That(budget.DeliveryLatencyEwmaMicros).IsLessThan(6_000);
         await Assert.That(budget.LatencyBudgetScale).IsGreaterThan(reducedScale);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500)
-            .Because("latency-scale recovery cannot grow the budget beyond its RTT safety horizon");
+        await Assert.That(budget.BudgetBytes).IsEqualTo(3_225)
+            .Because("blocked demand restores a request pipeline only within the current latency cap");
     }
 
     [Test]
@@ -1128,7 +1143,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task AdmissionPressureWithLatencyHeadroom_GrowsScaleWithinRttSafetyCap()
+    public async Task AdmissionPressureWithLatencyHeadroom_ProvidesMinimumRequestPipeline()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
@@ -1137,10 +1152,10 @@ public sealed class BrokerUnackedByteBudgetTests
         EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
         await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
 
-        // The drain estimate only ever measures traffic the gate admitted, so rate x target
-        // is self-confirming at any throughput (#2008). Blocked demand with latency headroom
-        // grows the target horizon so real capacity can be discovered. The RTT safety
-        // horizon remains the tighter cap on a low-latency link.
+        // The drain estimate only ever measures traffic the gate admitted, so a low-RTT
+        // budget smaller than a few request quanta is self-confirming at low throughput.
+        // Blocked demand provides a minimum request pipeline without filling the latency
+        // target with queueing delay.
         var now = T0;
         for (var i = 0; i < 30; i++)
         {
@@ -1153,15 +1168,16 @@ public sealed class BrokerUnackedByteBudgetTests
             Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
         }
 
-        await Assert.That(budget.LatencyBudgetScale).IsGreaterThan(1.5);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
+        await Assert.That(budget.LatencyBudgetScale).IsEqualTo(1.0).Within(0.000_001);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(4_000)
+            .Because("four full request quanta keep the acknowledgement clock running without a target-sized queue");
     }
 
     [Test]
-    public async Task LatencyBudgetScale_IsBoundedAboveByCeiling()
+    public async Task MinimumRequestPipeline_IsBoundedByLatencyTarget()
     {
         var budget = new BrokerUnackedByteBudget(
-            targetSeconds: 0.010,
+            targetSeconds: 0.002,
             floorBytes: 200,
             initialCapBytes: 32_000_000);
         EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
@@ -1178,9 +1194,65 @@ public sealed class BrokerUnackedByteBudgetTests
             Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
         }
 
-        await Assert.That(budget.LatencyBudgetScale).IsEqualTo(10.0).Within(0.000_001)
-            .Because("a stale-high scale must stay within a short shrink-back window");
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
+        await Assert.That(budget.LatencyBudgetScale).IsEqualTo(1.0).Within(0.000_001);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(2_000)
+            .Because("request granularity must not turn the configured latency target back into a floor");
+    }
+
+    [Test]
+    public async Task MinimumRequestPipeline_ExpiresWithoutRecentAdmissionPressure()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 32_000_000);
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+
+        var now = T0 + Seconds(0.110);
+        budget.RecordAdmissionBlock();
+        var snapshot = budget.SnapshotDelivery(
+            now - Seconds(0.001),
+            appLimited: true,
+            oldestBatchTimestamp: now - Seconds(0.002));
+        Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(4_000);
+
+        now += Seconds(0.110);
+        snapshot = budget.SnapshotDelivery(
+            now - Seconds(0.001),
+            appLimited: true,
+            oldestBatchTimestamp: now - Seconds(0.002));
+        Ack(budget, 1_000, rttSeconds: 0, now, snapshotAtSend: snapshot);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500)
+            .Because("one historical admission block must not retain the request floor forever");
+    }
+
+    [Test]
+    public async Task PeriodicProbe_RttDominantTarget_ExploresCapacityAboveTargetCap()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.008);
+        await Assert.That(GetField<long>(budget, "_budgetAfterMinRttProbeBytes")).IsEqualTo(10_000)
+            .Because("the latency target binds below the 1.5x RTT safety horizon");
+        budget.Charge(20_000);
+
+        for (var i = 1; i <= 8; i++)
+            Ack(budget, 8_000, 0.008, T0 + Seconds(i * 0.008));
+
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
+        var normalBudget = GetField<long>(budget, "_budgetAfterMinRttProbeBytes");
+        await Assert.That(budget.BudgetBytes).IsEqualTo((long)(normalBudget * 1.25))
+            .Because("the periodic probe must explore 25% beyond an RTT-dominant target cap");
+
+        for (var i = 9; i <= 12; i++)
+            Ack(budget, 10_000, 0.008, T0 + Seconds(i * 0.008));
+
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(1)
+            .Because("flat-RTT rate gain above the target cap must remain discoverable");
     }
 
     [Test]
