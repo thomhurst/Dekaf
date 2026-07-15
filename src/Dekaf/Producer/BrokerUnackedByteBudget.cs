@@ -118,6 +118,11 @@ internal sealed class BrokerUnackedByteBudget
     /// the delivery-latency target with queueing delay.</summary>
     private const int MinimumPipelineRequestQuanta = 4;
 
+    /// <summary>Paired stress measurements bound one acknowledgement clock at six persisted
+    /// requests: deeper flight pins median delivery latency without adding useful throughput.
+    /// Parallel connections retain independent capacity discovery up to their wire limit.</summary>
+    private const int SingleConnectionMaximumPipelineRequestQuanta = 6;
+
     /// <summary>
     /// The scale shrinks only while written-unacked occupancy demonstrates at least this
     /// fraction of the budget on the wire. Seal-to-send backlog with an underfilled wire
@@ -1395,7 +1400,9 @@ internal sealed class BrokerUnackedByteBudget
     {
         var connectionCount = _connectionCount;
         var minimum = MinimumPipelineRequestQuanta * connectionCount;
-        var wireLimit = (double)CapBatchMultiplier * connectionCount;
+        var wireLimit = connectionCount == 1
+            ? SingleConnectionMaximumPipelineRequestQuanta
+            : (double)CapBatchMultiplier * connectionCount;
         return _requestSizeEwmaBytes > 0
             ? Math.Max(minimum, Math.Min(wireLimit, _capBytes / _requestSizeEwmaBytes))
             : wireLimit;

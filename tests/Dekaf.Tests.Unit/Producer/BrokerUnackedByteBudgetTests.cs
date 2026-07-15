@@ -1136,7 +1136,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task ProvenRequestDepth_IsSeededByConnectionWidthAndBoundedByWireCap()
+    public async Task ProvenRequestDepth_UsesSingleConnectionCeilingAndParallelWireCap()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
@@ -1151,8 +1151,8 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.SetCap(32_000_000, T0, connectionCount: 1);
 
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
-            .IsEqualTo(32.0)
-            .Because("latency-aware probe evidence, not a width heuristic, bounds persistence below the wire cap");
+            .IsEqualTo(6.0)
+            .Because("paired stress evidence bounds one connection below target-pinned queue depth");
 
         SetField(budget, "_provenPipelineRequestQuanta", 4.0);
         budget.SetCap(96_000_000, T0, connectionCount: 3);
@@ -1170,7 +1170,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task PeriodicProbe_ProofIsNotStoppedByWidthHeuristic()
+    public async Task PeriodicProbe_SingleConnectionProofStopsAtMeasuredLatencyCeiling()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
@@ -1189,8 +1189,8 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 1_200, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
 
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
-            .IsEqualTo(7.5)
-            .Because("the measured delivery signal, not a fixed single-connection ceiling, must stop proof growth");
+            .IsEqualTo(6.0)
+            .Because("successful probe noise must not recreate the measured one-connection latency regression");
     }
 
     [Test]
@@ -1686,7 +1686,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task PeriodicProbe_RatchetsWhileRateAndRttProveCapacity()
+    public async Task PeriodicProbe_RatchetsToSingleConnectionCeilingWhileRateAndRttProveCapacity()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
         budget.Charge(5_000);
@@ -1723,8 +1723,8 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(2);
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
-            .IsEqualTo(6.25).Within(0.000_001)
-            .Because("two sustained 25% gains persist when no delivery-latency sample is available");
+            .IsEqualTo(6.0).Within(0.000_001)
+            .Because("rate and RTT evidence may reach but not exceed the measured one-connection ceiling");
     }
 
     [Test]
