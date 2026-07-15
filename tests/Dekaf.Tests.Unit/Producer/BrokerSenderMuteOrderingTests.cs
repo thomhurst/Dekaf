@@ -385,7 +385,7 @@ public sealed class BrokerSenderMuteOrderingTests
         await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
         metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-        var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        using var sendLogger = new PipelinedSendLogger(expectedSends: 1);
         var acknowledged = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = CreateSender(
@@ -407,7 +407,7 @@ public sealed class BrokerSenderMuteOrderingTests
         {
             var topicPartition = new TopicPartition("test-topic", 3);
             sender.Enqueue(CreateTestBatch(vtPool, topicPartition.Topic, topicPartition.Partition));
-            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+            sendLogger.WaitForSend(0, ct);
 
             metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 1));
             typeof(BrokerSender).GetMethod(
@@ -454,7 +454,7 @@ public sealed class BrokerSenderMuteOrderingTests
         await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
         metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-        var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        using var sendLogger = new PipelinedSendLogger(expectedSends: 1);
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, metadataManager,
             logger: sendLogger);
         var getConnection = typeof(BrokerSender).GetMethod(
@@ -466,7 +466,7 @@ public sealed class BrokerSenderMuteOrderingTests
         try
         {
             sender.Enqueue(CreateTestBatch(vtPool, topicPartition.Topic, topicPartition.Partition));
-            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+            sendLogger.WaitForSend(0, ct);
 
             metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2, partitionThreeLeader: 2));
             refreshRouting.Invoke(sender, null);
@@ -501,7 +501,7 @@ public sealed class BrokerSenderMuteOrderingTests
         await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
         metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 2));
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-        var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        using var sendLogger = new PipelinedSendLogger(expectedSends: 1);
         var testTimestamp = Stopwatch.GetTimestamp();
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { }, metadataManager,
             logger: sendLogger,
@@ -514,7 +514,7 @@ public sealed class BrokerSenderMuteOrderingTests
         try
         {
             sender.Enqueue(batch);
-            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+            sendLogger.WaitForSend(0, ct);
             await WaitForDiagAsync(batch, 'W', TimeSpan.FromSeconds(5), ct);
             metadataManager.Metadata.Update(CreateRoutingMetadata(partitionZeroLeader: 1));
             typeof(BrokerSender).GetMethod(
@@ -668,7 +668,7 @@ public sealed class BrokerSenderMuteOrderingTests
         var options = CreateOptions(maxInFlight: 2, enableIdempotence: false);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-        var sendLogger = new PipelinedSendLogger(expectedSends: 2);
+        using var sendLogger = new PipelinedSendLogger(expectedSends: 2);
         var acknowledgedOffsets = new List<long>();
         using var allAcknowledged = new ManualResetEventSlim();
         var sender = CreateSender(
@@ -693,14 +693,14 @@ public sealed class BrokerSenderMuteOrderingTests
         {
             var firstBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
             sender.Enqueue(firstBatch);
-            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+            sendLogger.WaitForSend(0, ct);
 
             await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsFalse();
 
             var secondBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
             sender.Enqueue(secondBatch);
 
-            await sendLogger.SendSignals[1].Task.WaitAsync(ct);
+            sendLogger.WaitForSend(1, ct);
             await Assert.That(sendLogger.SendCount).IsEqualTo(2);
 
             responses[0].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 100));
@@ -732,7 +732,7 @@ public sealed class BrokerSenderMuteOrderingTests
         var options = CreateOptions(maxInFlight: 2, enableIdempotence: false);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
-        var sendLogger = new PipelinedSendLogger(expectedSends: 1);
+        using var sendLogger = new PipelinedSendLogger(expectedSends: 1);
         var acknowledged = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = CreateSender(
@@ -749,7 +749,7 @@ public sealed class BrokerSenderMuteOrderingTests
         try
         {
             sender.Enqueue(CreateTestBatch(vtPool, "test-topic", partition: 1));
-            await sendLogger.SendSignals[0].Task.WaitAsync(ct);
+            sendLogger.WaitForSend(0, ct);
 
             var otherTopicPartition = new TopicPartition("other-topic", 1);
             var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
@@ -1995,23 +1995,30 @@ public sealed class BrokerSenderMuteOrderingTests
         }
     }
 
-    private sealed class PipelinedSendLogger : ILogger
+    private sealed class PipelinedSendLogger : ILogger, IDisposable
     {
+        private readonly ManualResetEventSlim[] _sendSignals;
         private int _sendCount;
 
         public PipelinedSendLogger(int expectedSends)
         {
-            SendSignals = Enumerable.Range(0, expectedSends)
-                .Select(_ => new TaskCompletionSource(
-                    TaskCreationOptions.RunContinuationsAsynchronously))
+            _sendSignals = Enumerable.Range(0, expectedSends)
+                .Select(_ => new ManualResetEventSlim())
                 .ToArray();
         }
-
-        public TaskCompletionSource[] SendSignals { get; }
 
         public int SendCount => Volatile.Read(ref _sendCount);
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public void Dispose()
+        {
+            foreach (var signal in _sendSignals)
+                signal.Dispose();
+        }
+
+        public void WaitForSend(int index, CancellationToken cancellationToken) =>
+            _sendSignals[index].Wait(cancellationToken);
 
         public bool IsEnabled(LogLevel logLevel) => logLevel == LogLevel.Debug;
 
@@ -2026,8 +2033,8 @@ public sealed class BrokerSenderMuteOrderingTests
                 return;
 
             var index = Interlocked.Increment(ref _sendCount) - 1;
-            if ((uint)index < (uint)SendSignals.Length)
-                SendSignals[index].TrySetResult();
+            if ((uint)index < (uint)_sendSignals.Length)
+                _sendSignals[index].Set();
         }
     }
 }
