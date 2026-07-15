@@ -57,6 +57,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.Tests.Aot.DependencyI
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.StressTests.Tests", "tools\Dekaf.StressTests.Tests\Dekaf.StressTests.Tests.csproj", "{F17E41FC-904D-4EC0-B2F8-E6158B8B75F5}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.TraceAnalyzer", "tools\Dekaf.TraceAnalyzer\Dekaf.TraceAnalyzer.csproj", "{C36DE679-3D66-45B2-8887-121E4FCEB8CE}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -343,6 +345,18 @@ Global
 		{F17E41FC-904D-4EC0-B2F8-E6158B8B75F5}.Release|x64.Build.0 = Release|Any CPU
 		{F17E41FC-904D-4EC0-B2F8-E6158B8B75F5}.Release|x86.ActiveCfg = Release|Any CPU
 		{F17E41FC-904D-4EC0-B2F8-E6158B8B75F5}.Release|x86.Build.0 = Release|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Debug|x64.Build.0 = Debug|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Debug|x86.Build.0 = Debug|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Release|x64.ActiveCfg = Release|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Release|x64.Build.0 = Release|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Release|x86.ActiveCfg = Release|Any CPU
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -371,5 +385,6 @@ Global
 		{297DF785-1A36-4A2A-9335-B71EED7D1D26} = {B2C3D4E5-F6A7-8901-BCDE-F12345678901}
 		{439DB660-B5F9-4C6B-BB4B-9EB15AE144E8} = {B2C3D4E5-F6A7-8901-BCDE-F12345678901}
 		{F17E41FC-904D-4EC0-B2F8-E6158B8B75F5} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
+		{C36DE679-3D66-45B2-8887-121E4FCEB8CE} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 	EndGlobalSection
 EndGlobal

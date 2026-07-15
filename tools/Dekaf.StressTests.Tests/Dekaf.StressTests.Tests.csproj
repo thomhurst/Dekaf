@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dekaf.StressTests\Dekaf.StressTests.csproj" />
+    <ProjectReference Include="..\Dekaf.TraceAnalyzer\Dekaf.TraceAnalyzer.csproj" />
   </ItemGroup>
 
   <ItemGroup>
