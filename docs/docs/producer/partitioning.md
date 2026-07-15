@@ -106,9 +106,9 @@ var producer = await Kafka.CreateProducer<string, string>()
     .BuildAsync();
 
 // These will likely batch together in one partition
-producer.Produce("events", null, "event1");
-producer.Produce("events", null, "event2");
-producer.Produce("events", null, "event3");
+await producer.FireAsync("events", null, "event1");
+await producer.FireAsync("events", null, "event2");
+await producer.FireAsync("events", null, "event3");
 ```
 
 ```csharp
