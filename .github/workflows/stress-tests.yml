@@ -61,6 +61,31 @@ on:
           - lane-default
           - dekaf
           - confluent
+      profile_mode:
+        description: 'Attach phased diagnostics to one Dekaf lane (off for normal acceptance runs)'
+        required: false
+        type: choice
+        default: 'off'
+        options:
+          - 'off'
+          - cpu
+          - contention
+          - gc
+          - full
+      profile_windows:
+        description: 'Trace windows as measured-phase offset_seconds:duration_seconds:label'
+        required: false
+        default: '60:30:healthy,330:30:pre-collapse,420:30:collapse,600:30:degraded'
+      profile_counters:
+        description: 'Collect one-second System.Runtime counters across the measured phase'
+        required: false
+        type: boolean
+        default: true
+      profile_stacks:
+        description: 'Capture a managed stack snapshot at each trace window'
+        required: false
+        type: boolean
+        default: true
 
 # Scoped per lane+client so a cheap single-lane or single-client dispatch is not
 # queued for hours behind a full-matrix run; lanes execute on separate VMs and
@@ -91,6 +116,7 @@ jobs:
         env:
           LANE: ${{ github.event.inputs.lane }}
           CLIENT: ${{ github.event.inputs.client }}
+          PROFILE_MODE: ${{ github.event.inputs.profile_mode }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           # The UI enforces the required choice input, but API/CLI dispatches can
@@ -115,6 +141,21 @@ jobs:
               exit 1
               ;;
           esac
+
+          profile_mode="${PROFILE_MODE:-off}"
+          case "$profile_mode" in
+            off|cpu|contention|gc|full) ;;
+            *)
+              echo "::error::Unknown profile_mode '$profile_mode'. Valid values: off, cpu, contention, gc, full."
+              exit 1
+              ;;
+          esac
+          if [ "$profile_mode" != "off" ]; then
+            if [ "$lane" = "all" ] || [ "$client" != "dekaf" ]; then
+              echo "::error::Profiling requires one explicit lane and client=dekaf. It is diagnostic, not a comparison run."
+              exit 1
+            fi
+          fi
 
           # timeout_minutes rationale: at a 30-minute dispatch the paired_samples=2
           # lanes run four paired client durations plus one 3-connection duration
@@ -143,13 +184,19 @@ jobs:
           # sample — paired_samples exists to alternate client order, which is
           # meaningless for a single client — and the Dekaf-only 3-connection
           # pass survives only a dekaf override.
-          matrix=$(jq -c --arg lane "$lane" --arg client "$client" '
+          matrix=$(jq -c --arg lane "$lane" --arg client "$client" --arg profile_mode "$profile_mode" '
             {include: [ .[]
               | select($lane == "all" or .lane == $lane)
               | if $client != "" and .client == "all" then
                   .client = $client
                   | .paired_samples = 1
                   | if $client == "confluent" then .run_3conn = false | .artifact_suffix = "" else . end
+                else . end
+              | if $profile_mode != "off" then
+                  .client = "dekaf"
+                  | .paired_samples = 1
+                  | .run_3conn = false
+                  | .artifact_suffix = "-profile"
                 else . end
             ]}' lanes.json)
           count=$(echo "$matrix" | jq '.include | length')
@@ -161,8 +208,8 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           # Only an unmodified full matrix may publish docs/history: a client
           # override produces single-client rows that would wipe ratio columns.
-          echo "full_run=$([ "$lane" = "all" ] && [ -z "$client" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "Selected $count lane(s) for '$lane'${client:+ (client override: $client)}"
+          echo "full_run=$([ "$lane" = "all" ] && [ -z "$client" ] && [ "$profile_mode" = "off" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "Selected $count lane(s) for '$lane'${client:+ (client override: $client)}${profile_mode:+ (profile: $profile_mode)}"
 
   # Run each scenario in parallel. Comparable clients run sequentially inside the
   # same job/VM so published ratios share hardware and noisy-neighbor conditions;
@@ -208,6 +255,12 @@ jobs:
         run: |
           dotnet tool install --global dotnet-stack --version 9.0.661903
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: Install profiling diagnostics
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.profile_mode != 'off'
+        run: |
+          dotnet tool install --global dotnet-counters --version 9.0.661903
+          dotnet tool install --global dotnet-trace --version 9.0.661903
 
       - name: Build Stress Tests
         run: dotnet build tools/Dekaf.StressTests --configuration Release
@@ -271,6 +324,7 @@ jobs:
           STRESS_BROKER_CPUSET: ${{ env.BROKER_CPUS }}
           STRESS_BROKER_TMPFS: ${{ env.BROKER_TMPFS }}
           STRESS_BROKER_HEAP: ${{ env.BROKER_HEAP }}
+          PROFILE_MODE: ${{ github.event.inputs.profile_mode || 'off' }}
         run: |
           # Background disk monitor: samples every broker's log-dir usage so a tmpfs
           # fill (ingestion outpacing retention — the known broker-halt failure mode)
@@ -318,18 +372,37 @@ jobs:
 
             # Delivery diagnostics are always on in CI so a message-loss failure ships the
             # in-flight batch dump needed to debug it, instead of "Not captured".
-            taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- \
-              --duration ${{ github.event.inputs.duration_minutes || '15' }} \
-              --message-size ${{ matrix.message_size || github.event.inputs.message_size || '1000' }} \
-              --scenario ${{ matrix.scenario }} \
-              --client ${{ matrix.client }} \
-              --brokers ${{ matrix.brokers }} \
-              --connections-per-broker 1 \
-              --producer-delivery-diagnostics \
-              ${EXTRA_ARGS} \
-              --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
-              --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
+            STRESS_ARGS=(
+              --duration ${{ github.event.inputs.duration_minutes || '15' }}
+              --message-size ${{ matrix.message_size || github.event.inputs.message_size || '1000' }}
+              --scenario ${{ matrix.scenario }}
+              --client ${{ matrix.client }}
+              --brokers ${{ matrix.brokers }}
+              --connections-per-broker 1
+              --producer-delivery-diagnostics
+              --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }}
+              --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }}
               --output ./results
+            )
+            if [ -n "$EXTRA_ARGS" ]; then
+              STRESS_ARGS+=("$EXTRA_ARGS")
+            fi
+
+            if [ "$PROFILE_MODE" != "off" ]; then
+              # The stress process retains the normal client-core isolation. Attach
+              # tools use one broker core; profiling runs diagnose within-run change
+              # and are intentionally excluded from acceptance/trend publication.
+              PROFILE_OUTPUT_DIR="$PWD/results/profiling" \
+              TRACE_PROFILE="$PROFILE_MODE" \
+              TRACE_WINDOWS="${{ github.event.inputs.profile_windows }}" \
+              PROFILE_COUNTERS="${{ github.event.inputs.profile_counters }}" \
+              PROFILE_STACKS="${{ github.event.inputs.profile_stacks }}" \
+              STRESS_CPUSET="$CLIENT_CPUS" \
+              PROFILER_CPUSET="5" \
+              bash ../../tools/profile-stress-test.sh "${STRESS_ARGS[@]}"
+            else
+              taskset -c ${CLIENT_CPUS} dotnet run --configuration Release --no-build -- "${STRESS_ARGS[@]}"
+            fi
           done
 
           if [ "${{ matrix.run_3conn }}" = "true" ]; then
