@@ -298,6 +298,25 @@ public class MetadataManagerTests
     }
 
     [Test]
+    public async Task InitializeAsync_HoldsConnectionLeaseAcrossNegotiationAndMetadataRequest()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = new LeaseTrackingConnection();
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions { EnableBackgroundRefresh = false });
+
+        await manager.InitializeAsync();
+
+        await Assert.That(connection.AllRequestsLeased).IsTrue();
+        await Assert.That(connection.LeaseCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task InitializeAsync_DisposeDuringRefresh_DoesNotStartBackgroundRefresh()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -540,5 +559,92 @@ public class MetadataManagerTests
             ?? throw new InvalidOperationException($"{name} field not found");
 
         field.SetValue(instance, value);
+    }
+
+    private sealed class LeaseTrackingConnection : IKafkaConnection, IRetirableKafkaConnection
+    {
+        private int _leaseCount;
+
+        public int BrokerId => -1;
+        public string Host => "localhost";
+        public int Port => 9092;
+        public bool IsConnected => true;
+        public bool AllRequestsLeased { get; private set; } = true;
+        public int LeaseCount => Volatile.Read(ref _leaseCount);
+        int IRetirableKafkaConnection.ActiveOperationCount => 0;
+
+        public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            AllRequestsLeased &= LeaseCount == 1;
+            object response = request switch
+            {
+                ApiVersionsRequest => new ApiVersionsResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    ApiKeys =
+                    [
+                        new ApiVersion(
+                            ApiKey.Metadata,
+                            MetadataRequest.LowestSupportedVersion,
+                            MetadataRequest.HighestSupportedVersion)
+                    ]
+                },
+                MetadataRequest => CreateMetadataResponse((1, "localhost", 9092)),
+                _ => throw new NotSupportedException()
+            };
+
+            return ValueTask.FromResult((TResponse)response);
+        }
+
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => ValueTask.FromException(new NotSupportedException());
+
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => ValueTask.FromException(new NotSupportedException());
+
+        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => Task.FromException<TResponse>(new NotSupportedException());
+
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+            => Task.FromException<TResponse>(new NotSupportedException());
+
+        bool IRetirableKafkaConnection.TryAcquireLease()
+        {
+            Interlocked.Increment(ref _leaseCount);
+            return true;
+        }
+
+        void IRetirableKafkaConnection.ReleaseLease() => Interlocked.Decrement(ref _leaseCount);
+        void IRetirableKafkaConnection.BeginRetirement() { }
+        void IRetirableKafkaConnection.CompleteRetirement() { }
     }
 }

@@ -48,6 +48,24 @@ internal static class ConnectionPoolLeaseExtensions
         }
     }
 
+    public static async ValueTask<KafkaConnectionLease> LeaseConnectionAsync(
+        this IConnectionPool connectionPool,
+        string host,
+        int port,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var connection = await connectionPool.GetConnectionAsync(host, port, cancellationToken)
+                .ConfigureAwait(false);
+            if (KafkaConnectionLease.TryAcquire(connection, out var lease))
+                return lease;
+
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(LeaseRetryDelay, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     public static async ValueTask<KafkaConnectionLease> LeaseConnectionByIndexAsync(
         this IConnectionPool connectionPool,
         int brokerId,

@@ -41,4 +41,28 @@ public sealed class KafkaConnectionLeaseTests
 
         await Assert.That(lease.Connection).IsSameReferenceAs(connection);
     }
+
+    [Test]
+    public async Task LeaseConnectionByEndpoint_RetiredSelection_RetriesAndReleasesLease()
+    {
+        await using var retiredConnection = new KafkaConnection("localhost", 9092);
+        await using var activeConnection = new KafkaConnection("localhost", 9093);
+        ((IRetirableKafkaConnection)retiredConnection).BeginRetirement();
+        var pool = Substitute.For<IConnectionPool>();
+        var selectionCount = 0;
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult<IKafkaConnection>(
+                Interlocked.Increment(ref selectionCount) == 1
+                    ? retiredConnection
+                    : activeConnection));
+
+        using (var lease = await pool.LeaseConnectionAsync("localhost", 9092, CancellationToken.None))
+        {
+            await Assert.That(lease.Connection).IsSameReferenceAs(activeConnection);
+            await Assert.That(((IRetirableKafkaConnection)activeConnection).LeaseCount).IsEqualTo(1);
+        }
+
+        _ = pool.Received(2).GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>());
+        await Assert.That(((IRetirableKafkaConnection)activeConnection).LeaseCount).IsEqualTo(0);
+    }
 }
