@@ -3585,6 +3585,33 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task DrainPendingAppends_BusyGuard_RecordsRetryRequest()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var pool = new PendingAppendPool(1);
+        var op = CreatePendingAppend(accumulator, pool);
+        var queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
+
+        queue.Enqueue(op);
+        SetPrivateField(accumulator, "_draining", 1);
+        var requestVersion = GetPrivateField<long>(accumulator, "_pendingAppendDrainRequestVersion");
+
+        try
+        {
+            await Assert.That(accumulator.DrainPendingAppends()).IsFalse();
+            await Assert.That(GetPrivateField<long>(accumulator, "_pendingAppendDrainRequestVersion"))
+                .IsEqualTo(requestVersion + 1);
+        }
+        finally
+        {
+            SetPrivateField(accumulator, "_draining", 0);
+            queue.TryDequeue(out _);
+            if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+                op.ReturnToPoolAfterTryFail();
+        }
+    }
+
+    [Test]
     public async Task PendingAppend_AdmissionRecheckKeepsEarlierDeadline()
     {
         await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
