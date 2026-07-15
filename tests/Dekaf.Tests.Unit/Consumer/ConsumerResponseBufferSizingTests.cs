@@ -86,11 +86,13 @@ public sealed class ConsumerResponseBufferSizingTests
         var connectionPool = GetField<ConnectionPool>(consumer, "_connectionPool");
         var responsePool = GetField<ResponseBufferPool>(connectionPool, "_responseBufferPool");
 
-        await Assert.That(responsePool.MaxArraysPerBucket).IsEqualTo(
-            PoolSizing.ForConsumerResponseBuffers(
-                options.BootstrapServers.Count,
-                options.PrefetchPipelineDepth,
-                options.MaxConnectionsPerBroker));
+        var expectedWorkingSet = PoolSizing.ForConsumerResponseBuffers(
+            options.BootstrapServers.Count,
+            options.PrefetchPipelineDepth,
+            options.MaxConnectionsPerBroker);
+
+        await Assert.That(responsePool.ManagedArraysPerBucket).IsEqualTo(expectedWorkingSet);
+        await Assert.That(responsePool.MaxRetainedNativeBuffers).IsEqualTo(expectedWorkingSet);
     }
 
     private static T GetField<T>(object target, string name) =>

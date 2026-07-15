@@ -120,7 +120,7 @@ public class ResponseBufferPoolTests
     [Test]
     public async Task NativePool_ReusesReturnedLargeBuffer()
     {
-        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var pool = new ResponseBufferPool(1024 * 1024, managedArraysPerBucket: 1);
         var first = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
         var address = first.Address;
         first.GetSpan()[0] = 42;
@@ -137,7 +137,10 @@ public class ResponseBufferPoolTests
     [Test]
     public async Task NativePool_BoundsRetentionAcrossSizeBuckets()
     {
-        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var pool = new ResponseBufferPool(
+            1024 * 1024,
+            managedArraysPerBucket: 4,
+            maxRetainedNativeBuffers: 1);
         var first = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
         var second = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes * 2);
 
@@ -151,7 +154,7 @@ public class ResponseBufferPoolTests
     [Test]
     public async Task NativePool_TrimReleasesAllDormantBuffers()
     {
-        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 4);
+        var pool = new ResponseBufferPool(1024 * 1024, managedArraysPerBucket: 4);
         var first = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
         var second = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes * 2);
         first.Return();
@@ -182,7 +185,7 @@ public class ResponseBufferPoolTests
     [Test]
     public async Task NativePool_MemoryPressureTrimsAndSuspendsRetention()
     {
-        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 2);
+        var pool = new ResponseBufferPool(1024 * 1024, managedArraysPerBucket: 2);
         var dormant = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
         dormant.Return();
 
@@ -203,7 +206,7 @@ public class ResponseBufferPoolTests
     [Test]
     public async Task NativeBuffer_TransferOwnershipReturnsBufferOnce()
     {
-        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var pool = new ResponseBufferPool(1024 * 1024, managedArraysPerBucket: 1);
         var native = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
         var address = native.Address;
         native.GetSpan()[0] = 99;
@@ -222,7 +225,7 @@ public class ResponseBufferPoolTests
     [Test]
     public async Task NativeBuffer_SlicedMemoryCopyPreservesOffset()
     {
-        var pool = new ResponseBufferPool(1024 * 1024, maxArraysPerBucket: 1);
+        var pool = new ResponseBufferPool(1024 * 1024, managedArraysPerBucket: 1);
         var native = pool.RentNative(ResponseBufferPool.NativeMemoryThresholdBytes);
         native.GetSpan().Clear();
         var source = new byte[] { 10, 20, 30, 40 };
@@ -351,12 +354,25 @@ public class ResponseBufferPoolTests
     [Test]
     public async Task Create_DifferentRetentionDepths_UseDifferentSharedPools()
     {
-        var shallow = ResponseBufferPool.Create(20 * 1024 * 1024, maxArraysPerBucket: 4);
-        var consumer = ResponseBufferPool.Create(20 * 1024 * 1024, maxArraysPerBucket: 16);
+        var shallow = ResponseBufferPool.Create(
+            20 * 1024 * 1024,
+            managedArraysPerBucket: 4,
+            maxRetainedNativeBuffers: 4);
+        var consumer = ResponseBufferPool.Create(
+            20 * 1024 * 1024,
+            managedArraysPerBucket: 16,
+            maxRetainedNativeBuffers: 16);
+        var nativeShallow = ResponseBufferPool.Create(
+            20 * 1024 * 1024,
+            managedArraysPerBucket: 16,
+            maxRetainedNativeBuffers: 4);
 
         await Assert.That(shallow).IsNotSameReferenceAs(consumer);
-        await Assert.That(shallow.MaxArraysPerBucket).IsEqualTo(4);
-        await Assert.That(consumer.MaxArraysPerBucket).IsEqualTo(16);
+        await Assert.That(nativeShallow).IsNotSameReferenceAs(consumer);
+        await Assert.That(shallow.ManagedArraysPerBucket).IsEqualTo(4);
+        await Assert.That(consumer.ManagedArraysPerBucket).IsEqualTo(16);
+        await Assert.That(nativeShallow.ManagedArraysPerBucket).IsEqualTo(16);
+        await Assert.That(nativeShallow.MaxRetainedNativeBuffers).IsEqualTo(4);
         await Assert.That(ResponseBufferPool.Create(20 * 1024 * 1024, 16))
             .IsSameReferenceAs(consumer);
     }

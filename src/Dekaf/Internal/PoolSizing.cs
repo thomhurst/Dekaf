@@ -23,8 +23,8 @@ internal static class PoolSizing
     private const int MaxValueTaskSources = 65536;
     private const int MinConsumerPrefetchBufferCapacity = 16;
     private const int MaxConsumerPrefetchBufferCapacity = 1024;
-    private const int MinConsumerResponseBuffersPerBucket = 16;
-    private const int MaxConsumerResponseBuffersPerBucket = 256;
+    private const int MinConsumerResponseBuffers = 16;
+    private const int MaxConsumerResponseBuffers = 256;
     private const int MinConsumerParsedRecordSlabsPerBucket = 16;
     private const int MaxConsumerParsedRecordSlabsPerBucket = 64;
 
@@ -168,6 +168,12 @@ internal static class PoolSizing
             MaxConsumerPrefetchBufferCapacity);
     }
 
+    /// <summary>
+    /// Returns the total response-buffer working set across brokers, pipeline slots, and
+    /// connections. The native response pool uses this as one global retention allowance
+    /// across capacity buckets so adaptive response sizes cannot multiply unmanaged memory.
+    /// The managed <see cref="ArrayPool{T}"/> uses the same depth independently per bucket.
+    /// </summary>
     internal static int ForConsumerResponseBuffers(
         int brokerCount,
         int prefetchPipelineDepth,
@@ -182,8 +188,8 @@ internal static class PoolSizing
 
         return ClampPoolDepth(
             liveResponseBuffers,
-            MinConsumerResponseBuffersPerBucket,
-            MaxConsumerResponseBuffersPerBucket);
+            MinConsumerResponseBuffers,
+            MaxConsumerResponseBuffers);
     }
 
     private static long CeilingDivide(long value, long divisor) =>

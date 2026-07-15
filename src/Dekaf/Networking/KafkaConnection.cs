@@ -3833,15 +3833,18 @@ internal sealed class ResponseBufferPool
     /// Default shared instance used by producers, admin clients, and connections
     /// that don't have consumer-specific configuration.
     /// </summary>
-    private const int DefaultMaxArraysPerBucket = 4;
+    private const int DefaultManagedArraysPerBucket = 4;
 #if !NETSTANDARD2_0
     private const long NativeMemoryPressureRefreshMilliseconds = 1_000;
 #endif
     internal static readonly ResponseBufferPool Default = new(
         DefaultMaxArrayLength,
-        DefaultMaxArraysPerBucket,
+        DefaultManagedArraysPerBucket,
+        maxRetainedNativeBuffers: DefaultManagedArraysPerBucket,
         monitorNativeMemoryPressure: true);
-    private static readonly ConcurrentDictionary<(int MaxArrayLength, int MaxArraysPerBucket), ResponseBufferPool>
+    private static readonly ConcurrentDictionary<
+        (int MaxArrayLength, int ManagedArraysPerBucket, int MaxRetainedNativeBuffers),
+        ResponseBufferPool>
         s_sharedPools = new();
     private readonly ConcurrentDictionary<int, NativeBufferBucket> _nativeBuckets = new();
     private int _retainedNativeBufferCount;
@@ -3853,23 +3856,28 @@ internal sealed class ResponseBufferPool
 
     internal ArrayPool<byte> Pool { get; }
     internal int MaxArrayLength { get; }
-    internal int MaxArraysPerBucket { get; }
+    internal int ManagedArraysPerBucket { get; }
+    internal int MaxRetainedNativeBuffers { get; }
     internal int RetainedNativeBufferCount => Volatile.Read(ref _retainedNativeBufferCount);
 
     internal ResponseBufferPool(
         int maxArrayLength,
-        int maxArraysPerBucket = DefaultMaxArraysPerBucket,
+        int managedArraysPerBucket = DefaultManagedArraysPerBucket,
+        int? maxRetainedNativeBuffers = null,
         bool monitorNativeMemoryPressure = false)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxArraysPerBucket);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(managedArraysPerBucket);
+        var nativeRetentionLimit = maxRetainedNativeBuffers ?? managedArraysPerBucket;
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(nativeRetentionLimit);
         MaxArrayLength = maxArrayLength;
-        MaxArraysPerBucket = maxArraysPerBucket;
+        ManagedArraysPerBucket = managedArraysPerBucket;
+        MaxRetainedNativeBuffers = nativeRetentionLimit;
 #if !NETSTANDARD2_0
         _monitorNativeMemoryPressure = monitorNativeMemoryPressure;
 #endif
         Pool = ArrayPool<byte>.Create(
             maxArrayLength: maxArrayLength,
-            maxArraysPerBucket: maxArraysPerBucket);
+            maxArraysPerBucket: managedArraysPerBucket);
     }
 
     /// <summary>
@@ -3879,16 +3887,21 @@ internal sealed class ResponseBufferPool
     /// </summary>
     internal static ResponseBufferPool Create(
         int fetchMaxBytes,
-        int maxArraysPerBucket = DefaultMaxArraysPerBucket)
+        int managedArraysPerBucket = DefaultManagedArraysPerBucket,
+        int? maxRetainedNativeBuffers = null)
     {
         var maxArrayLength = ComputeMaxArrayLength(fetchMaxBytes);
-        return maxArrayLength == DefaultMaxArrayLength && maxArraysPerBucket == DefaultMaxArraysPerBucket
+        var nativeRetentionLimit = maxRetainedNativeBuffers ?? managedArraysPerBucket;
+        return maxArrayLength == DefaultMaxArrayLength
+            && managedArraysPerBucket == DefaultManagedArraysPerBucket
+            && nativeRetentionLimit == DefaultManagedArraysPerBucket
             ? Default
             : s_sharedPools.GetOrAdd(
-                (maxArrayLength, maxArraysPerBucket),
+                (maxArrayLength, managedArraysPerBucket, nativeRetentionLimit),
                 static configuration => new ResponseBufferPool(
                     configuration.MaxArrayLength,
-                    configuration.MaxArraysPerBucket,
+                    configuration.ManagedArraysPerBucket,
+                    configuration.MaxRetainedNativeBuffers,
                     monitorNativeMemoryPressure: true));
     }
 
@@ -3935,7 +3948,7 @@ internal sealed class ResponseBufferPool
             return;
         }
 
-        if (Interlocked.Increment(ref _retainedNativeBufferCount) > MaxArraysPerBucket)
+        if (Interlocked.Increment(ref _retainedNativeBufferCount) > MaxRetainedNativeBuffers)
         {
             Interlocked.Decrement(ref _retainedNativeBufferCount);
             Marshal.FreeHGlobal(pointer);
@@ -3977,6 +3990,8 @@ internal sealed class ResponseBufferPool
 #if !NETSTANDARD2_0
     private void RefreshNativeMemoryPressure()
     {
+        // Sampling is demand-driven to avoid one background timer per shared pool. An idle
+        // pool remains bounded by MaxRetainedNativeBuffers and trims on its next return.
         if (!_monitorNativeMemoryPressure)
             return;
 
