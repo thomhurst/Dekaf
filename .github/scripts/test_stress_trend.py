@@ -7,6 +7,8 @@ from pathlib import Path
 
 from stress_trend import (
     HISTORY_LIMIT,
+    _identity,
+    _pair_identity,
     emit_annotations,
     evaluate_and_update,
     format_markdown,
@@ -83,6 +85,25 @@ def intra_run_result(client="Dekaf", steady_ratio=0.6, slope=-8.0, **overrides):
 
 
 class StressTrendTests(unittest.TestCase):
+    def test_steady_roundtrip_identity_uses_window_not_dynamic_message_count(self):
+        dekaf = result(
+            scenario="producer-roundtrip-steady",
+            client="Dekaf",
+            roundTripSteadySeconds=60,
+            roundTripValidation={"expectedMessages": 8_000_000},
+        )
+        confluent = result(
+            scenario="producer-roundtrip-steady",
+            client="Confluent",
+            roundTripSteadySeconds=60,
+            roundTripValidation={"expectedMessages": 10_000_000},
+        )
+
+        self.assertNotEqual(_identity(dekaf), _identity(confluent))
+        self.assertEqual(_pair_identity(dekaf), _pair_identity(confluent))
+        self.assertIn(60, _pair_identity(dekaf))
+        self.assertNotIn(8_000_000, _pair_identity(dekaf))
+
     def test_paired_latency_threshold_breach_fails_without_history(self):
         confluent = result(
             client="Confluent",

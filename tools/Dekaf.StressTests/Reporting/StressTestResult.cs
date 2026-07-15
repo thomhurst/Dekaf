@@ -34,6 +34,7 @@ internal sealed class StressTestResult
     public ConsumerFetchDiagnosticsSnapshot? ConsumerFetchDiagnostics { get; init; }
     public RoundTripValidationSnapshot? RoundTripValidation { get; init; }
     public RoundTripPhaseSnapshot? RoundTripPhases { get; init; }
+    public int? RoundTripSteadySeconds { get; init; }
 
     /// <summary>
     /// Whether a fixed message count, rather than <see cref="DurationMinutes"/>, defines

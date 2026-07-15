@@ -28,6 +28,7 @@ internal sealed class StressTestOptions
     public int BrokerCount { get; init; } = 1;
     public int ConnectionsPerBroker { get; init; } = 1;
     public int RoundTripMessages { get; init; } = 250_000;
+    public int RoundTripSteadySeconds { get; init; } = 60;
     public bool EnableProducerDeliveryDiagnostics { get; init; }
 
     /// <summary>

@@ -30,6 +30,7 @@ _IDENTITY_FIELDS = (
     "consumerSeedBatchSizeBytes",
     "consumerConnectionsPerBroker",
     "roundTripMessages",
+    "roundTripSteadySeconds",
     "pairedClientOrder",
     "pairedSampleCount",
 )
@@ -53,6 +54,8 @@ def _finite_number(value):
 
 
 def _roundtrip_messages(result):
+    if result.get("roundTripSteadySeconds") is not None:
+        return None
     validation = result.get("roundTripValidation")
     if isinstance(validation, dict):
         return validation.get("expectedMessages", result.get("roundTripMessages"))
@@ -92,6 +95,7 @@ def _identity(result):
         _consumer_seed_batch_size(result),
         _consumer_connections_per_broker(result),
         _roundtrip_messages(result),
+        result.get("roundTripSteadySeconds"),
         paired_order_identity(result),
     )
 
@@ -113,6 +117,7 @@ def _pair_identity(result):
         result.get("messageSizeBytes"),
         _consumer_seed_batch_size(result),
         _roundtrip_messages(result),
+        result.get("roundTripSteadySeconds"),
         paired_order_identity(result),
     )
 
