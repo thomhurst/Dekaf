@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 7
 ---
 
 # Partitioned Async Processing
@@ -191,22 +191,28 @@ Runtime-managed revoke and shutdown commits may batch completed offsets for
 multiple partitions into one `CommitAsync` call.
 
 Auto commit mode with automatic offset store (`OffsetCommitMode.Auto` +
-`EnableAutoOffsetStore = true`, the consumer defaults) stages and commits consumed
-positions in the background regardless of `MarkProcessed`, which would silently
-void the runtime's at-least-once tracking. `RunPartitionedAsync` therefore throws
-`InvalidOperationException` when the consumer uses that combination together with
-a runtime-managed commit policy (`CommitCompletedOnRevoke` or
-`CommitCompletedPeriodically`). For at-least-once partitioned processing, configure
-the consumer with `OffsetCommitMode.Manual`, or with `WithAutoOffsetStore(false)` —
-with the automatic store disabled, the background loop has nothing of its own to
-commit, so only the runtime's `MarkProcessed`-tracked commits advance offsets. The
-combination of auto commit and `PartitionCommitPolicy.UserManaged` also remains
-allowed for applications that accept auto-commit semantics.
+`EnableAutoOffsetStore = true`, the consumer defaults) stages offsets based on
+consume-loop progress. The partitioned runtime pulls records off the loop and
+dispatches them to workers, so loop progress no longer proves processing — the
+background loop would stage and commit records regardless of `MarkProcessed`,
+silently voiding the runtime's at-least-once tracking. This applies to both
+`OffsetStoreTiming` values, since neither ties staging to worker completion.
+`RunPartitionedAsync` therefore throws `InvalidOperationException` when the
+consumer uses that combination together with a runtime-managed commit policy
+(`CommitCompletedOnRevoke` or `CommitCompletedPeriodically`). For at-least-once
+partitioned processing, configure the consumer with `OffsetCommitMode.Manual`, or
+with `WithAutoOffsetStore(false)` — with the automatic store disabled, the
+background loop has nothing of its own to commit, so only the runtime's
+`MarkProcessed`-tracked commits advance offsets. The combination of auto commit
+and `PartitionCommitPolicy.UserManaged` also remains allowed for applications
+that accept auto-commit semantics.
 
 This check inspects the commit configuration of Dekaf's own consumer
-implementations (`KafkaConsumer` and the testing `InMemoryConsumer`). A custom
-`IKafkaConsumer` implementation or a wrapper around a Dekaf consumer is not
-inspected and will not fail fast — if you wrap a consumer, ensure the underlying
+implementations (`KafkaConsumer` and the testing `InMemoryConsumer`). Custom
+implementations and wrappers can opt into the same guard by implementing
+`IConsumerCommitConfiguration` and forwarding `OffsetCommitMode`,
+`EnableAutoOffsetStore`, and `HasConsumerGroup`. Types that do not implement that
+interface cannot be inspected and will not fail fast, so ensure their underlying
 configuration follows the rules above.
 
 Transactions remain user-managed. If a processor writes transactionally, send

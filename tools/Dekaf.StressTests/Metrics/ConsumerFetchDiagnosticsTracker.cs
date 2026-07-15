@@ -13,6 +13,7 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
     private static int s_activeMetricListener;
 
     private readonly string _topic;
+    private readonly bool _enabled;
     private readonly MeterListener? _listener;
     private readonly Func<GcDiagnosticSnapshot> _captureGcDiagnostics;
     private readonly List<ConsumerFetchDiagnosticSample> _samples = [];
@@ -29,11 +30,13 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
     internal ConsumerFetchDiagnosticsTracker(
         string topic,
         bool listenToMetrics = true,
-        Func<GcDiagnosticSnapshot>? captureGcDiagnostics = null)
+        Func<GcDiagnosticSnapshot>? captureGcDiagnostics = null,
+        bool enabled = true)
     {
         _topic = topic;
+        _enabled = enabled;
         _captureGcDiagnostics = captureGcDiagnostics ?? CaptureGcDiagnostics;
-        if (!listenToMetrics)
+        if (!enabled || !listenToMetrics)
             return;
         if (Interlocked.CompareExchange(ref s_activeMetricListener, 1, 0) != 0)
             throw new InvalidOperationException("Only one consumer diagnostics metric listener can be active at a time.");
@@ -77,6 +80,9 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
 
     internal void Start(ConsumerDiagnosticSnapshot snapshot)
     {
+        if (!_enabled)
+            return;
+
         _lastSampleAtUtc = snapshot.CapturedAtUtc;
         _lastFetchRequestCount = Interlocked.Read(ref _fetchRequestCount);
         _lastFetchDurationTicks = Interlocked.Read(ref _fetchDurationTicks);
@@ -150,13 +156,18 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
     internal Task RunSamplerAsync(
         Func<ConsumerDiagnosticSnapshot?> captureSnapshot,
         CancellationToken cancellationToken) =>
-        StressTestHelpers.RunPeriodicAsync(
-            SampleInterval,
-            () => TryTakeSample(captureSnapshot),
-            cancellationToken);
+        _enabled
+            ? StressTestHelpers.RunPeriodicAsync(
+                SampleInterval,
+                () => TryTakeSample(captureSnapshot),
+                cancellationToken)
+            : Task.CompletedTask;
 
     internal void TryTakeSample(Func<ConsumerDiagnosticSnapshot?> captureSnapshot)
     {
+        if (!_enabled)
+            return;
+
         try
         {
             if (captureSnapshot() is { } snapshot)
@@ -168,11 +179,13 @@ internal sealed class ConsumerFetchDiagnosticsTracker : IDisposable
         }
     }
 
-    internal ConsumerFetchDiagnosticsSnapshot GetSnapshot() => new()
-    {
-        Samples = [.. _samples],
-        ConnectionReapEvents = [.. _connectionReapEvents]
-    };
+    internal ConsumerFetchDiagnosticsSnapshot? GetSnapshot() => _enabled
+        ? new()
+        {
+            Samples = [.. _samples],
+            ConnectionReapEvents = [.. _connectionReapEvents]
+        }
+        : null;
 
     private bool HasTopic(ReadOnlySpan<KeyValuePair<string, object?>> tags)
     {

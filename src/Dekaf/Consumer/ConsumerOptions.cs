@@ -29,6 +29,30 @@ public enum OffsetCommitMode
 }
 
 /// <summary>
+/// Controls when a consumed record's offset is staged (stored) for commit under
+/// automatic offset storage (<see cref="ConsumerOptions.EnableAutoOffsetStore"/>).
+/// </summary>
+public enum OffsetStoreTiming
+{
+    /// <summary>
+    /// A record's offset is staged only once the application has demonstrably moved past it —
+    /// by requesting the next record or batch, completing a fetch, or committing explicitly.
+    /// A record whose processing throws out of the consume loop is never staged and is
+    /// redelivered after a restart or rebalance. This is the default and gives at-least-once
+    /// delivery for sequential consume loops.
+    /// </summary>
+    AfterProcessing,
+
+    /// <summary>
+    /// A record's offset is staged the moment it is delivered to the application, before
+    /// processing runs. A record whose processing fails can still be committed, so it is
+    /// not redelivered: at-most-once delivery. This matches the Confluent/librdkafka
+    /// auto-commit convention and costs additional per-message bookkeeping.
+    /// </summary>
+    OnDelivery
+}
+
+/// <summary>
 /// Configuration options for the Kafka consumer.
 /// </summary>
 public sealed class ConsumerOptions
@@ -85,6 +109,15 @@ public sealed class ConsumerOptions
     /// automatic background commits enabled.
     /// </summary>
     public bool EnableAutoOffsetStore { get; init; } = true;
+
+    /// <summary>
+    /// Controls when automatically stored offsets become committable.
+    /// Default is <see cref="OffsetStoreTiming.AfterProcessing"/> (at-least-once for
+    /// sequential consume loops). Use <see cref="OffsetStoreTiming.OnDelivery"/> for
+    /// Confluent-style at-most-once staging. Ignored when
+    /// <see cref="EnableAutoOffsetStore"/> is false.
+    /// </summary>
+    public OffsetStoreTiming OffsetStoreTiming { get; init; } = OffsetStoreTiming.AfterProcessing;
 
     /// <summary>
     /// Auto offset reset behavior.

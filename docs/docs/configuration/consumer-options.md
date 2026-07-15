@@ -81,6 +81,8 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithGroupInstanceId(...)` | `GroupInstanceId` | String |
 | `WithGroupRemoteAssignor(...)` | `GroupRemoteAssignor` | Common values: `uniform`, `range` |
 | `WithOffsetCommitMode(...)` | `OffsetCommitMode` | `Auto` or `Manual` |
+| `WithOffsetStoreTiming(...)` | `OffsetStoreTiming` | `AfterProcessing` (default, at-least-once) or `OnDelivery` (at-most-once) |
+| `WithAutoOffsetStore(...)` | `EnableAutoOffsetStore` | Boolean; disable for explicit `StoreOffset` acknowledgment |
 | `WithAutoCommitInterval(...)` | `AutoCommitIntervalMs` | Milliseconds |
 | `WithAutoOffsetReset(...)` | `AutoOffsetReset` | `Latest`, `Earliest`, `None` |
 | `WithAutoOffsetResetByDuration(...)` | `AutoOffsetReset`, `AutoOffsetResetDuration` | Use `AutoOffsetReset: ByDuration` plus a duration, or Kafka-style `by_duration:PT24H` |
@@ -161,6 +163,22 @@ How offsets are committed (matches Kafka's `enable.auto.commit`):
 ```csharp
 .WithOffsetCommitMode(OffsetCommitMode.Auto)    // Automatic commit in background (default)
 .WithOffsetCommitMode(OffsetCommitMode.Manual)  // You call CommitAsync() explicitly
+```
+
+### Processing Guarantees
+
+Intent-level methods that configure commit mode, offset storage, and staging timing together
+(see [Delivery Semantics](../consumer/delivery-semantics.md)):
+
+```csharp
+.WithAtLeastOnceProcessing()  // The default, stated explicitly: offsets become committable
+                              // only after the loop demonstrably processed the record
+.WithAtMostOnceProcessing()   // Confluent-style: offsets committable at delivery,
+                              // before processing runs
+.WithAutoOffsetStore(false)   // Strict at-least-once: only offsets you pass to
+                              // StoreOffset(...) are ever committed
+.WithOffsetStoreTiming(OffsetStoreTiming.AfterProcessing) // Granular knob behind the
+                              // intent methods (AfterProcessing | OnDelivery)
 ```
 
 ### WithAutoCommitInterval
@@ -386,6 +404,8 @@ For transactional reads:
 | `WithGroupId` | null | Consumer group ID |
 | `WithGroupInstanceId` | null | Static membership ID |
 | `WithOffsetCommitMode` | Auto | Offset management mode |
+| `WithOffsetStoreTiming` | AfterProcessing | When offsets become committable (at-least-once default) |
+| `WithAutoOffsetStore` | true | Automatic offset staging |
 | `WithAutoCommitInterval` | 5000ms | Auto-commit interval |
 | `WithAutoOffsetReset`, `WithAutoOffsetResetByDuration` | Latest | Start position |
 | `WithFetchMinBytes` | 1 | Minimum fetch bytes |

@@ -1377,6 +1377,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private OffsetCommitMode _offsetCommitMode = OffsetCommitMode.Auto;
     private int _autoCommitIntervalMs = 5000;
     private bool _enableAutoOffsetStore = true;
+    private OffsetStoreTiming _offsetStoreTiming = OffsetStoreTiming.AfterProcessing;
     private AutoOffsetReset _autoOffsetReset = AutoOffsetReset.Latest;
     private TimeSpan? _autoOffsetResetDuration;
     private int _fetchMinBytes = 1;
@@ -1583,9 +1584,61 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Configures at-least-once processing: offsets are committed in the background, but a
+    /// record's offset only becomes committable once the application has demonstrably moved
+    /// past it. This is Dekaf's default — call this method to make the intent explicit.
+    /// </summary>
+    /// <returns>The builder instance for method chaining.</returns>
+    /// <remarks>
+    /// Sets <see cref="OffsetCommitMode.Auto"/>, automatic offset storage, and
+    /// <see cref="OffsetStoreTiming.AfterProcessing"/>. In a sequential consume loop
+    /// (<c>await foreach</c>), requesting the next record proves the previous one was
+    /// processed; an exception that exits the loop leaves the failing record uncommitted so
+    /// it is redelivered after a restart or rebalance. Duplicates are possible — processing
+    /// must be idempotent. A caught-and-swallowed exception inside the loop body still counts
+    /// as processed once the loop continues; for strict per-record acknowledgment use
+    /// <see cref="WithAutoOffsetStore"/> (false) with
+    /// <see cref="IKafkaConsumer{TKey,TValue}.StoreOffset(ConsumeResult{TKey,TValue})"/>.
+    /// </remarks>
+    public ConsumerBuilder<TKey, TValue> WithAtLeastOnceProcessing()
+        => WithOffsetCommitMode(OffsetCommitMode.Auto)
+            .WithAutoOffsetStore(true)
+            .WithOffsetStoreTiming(OffsetStoreTiming.AfterProcessing);
+
+    /// <summary>
+    /// Configures at-most-once processing: a record's offset is staged for background commit
+    /// the moment it is delivered, before processing runs. A record whose processing fails may
+    /// already be committed and is then never redelivered.
+    /// </summary>
+    /// <returns>The builder instance for method chaining.</returns>
+    /// <remarks>
+    /// Sets <see cref="OffsetCommitMode.Auto"/>, automatic offset storage, and
+    /// <see cref="OffsetStoreTiming.OnDelivery"/>. This matches the Confluent/librdkafka
+    /// auto-commit convention. Use when occasional message loss is preferable to duplicate
+    /// processing.
+    /// </remarks>
+    public ConsumerBuilder<TKey, TValue> WithAtMostOnceProcessing()
+        => WithOffsetCommitMode(OffsetCommitMode.Auto)
+            .WithAutoOffsetStore(true)
+            .WithOffsetStoreTiming(OffsetStoreTiming.OnDelivery);
+
+    /// <summary>
+    /// Controls when automatically stored offsets become committable. Prefer the intent-level
+    /// <see cref="WithAtLeastOnceProcessing"/> / <see cref="WithAtMostOnceProcessing"/> methods.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithOffsetStoreTiming(OffsetStoreTiming timing)
+    {
+        _offsetStoreTiming = timing;
+        return this;
+    }
+
+    /// <summary>
     /// Controls whether consumed offsets are stored automatically for background auto-commit.
     /// Disable this and call <see cref="IKafkaConsumer{TKey,TValue}.StoreOffset(ConsumeResult{TKey,TValue})"/>
-    /// after processing succeeds to get Confluent-style manual offset store with auto-commit.
+    /// after processing succeeds to get strict per-record acknowledgment: only explicitly
+    /// stored offsets are ever committed, so a record that fails before its
+    /// <c>StoreOffset</c> call is always redelivered — even when the failure is caught and
+    /// the loop continues.
     /// </summary>
     public ConsumerBuilder<TKey, TValue> WithAutoOffsetStore(bool enabled = true)
     {
@@ -2597,6 +2650,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             OffsetCommitMode = _offsetCommitMode,
             AutoCommitIntervalMs = _autoCommitIntervalMs,
             EnableAutoOffsetStore = _enableAutoOffsetStore,
+            OffsetStoreTiming = _offsetStoreTiming,
             AutoOffsetReset = _autoOffsetReset,
             AutoOffsetResetDuration = _autoOffsetResetDuration,
             FetchMinBytes = _fetchMinBytes,

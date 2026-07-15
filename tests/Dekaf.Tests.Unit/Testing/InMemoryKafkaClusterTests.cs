@@ -69,7 +69,7 @@ public sealed class InMemoryKafkaClusterTests
 
         await Assert.That(consumer.ConsumerGroupMetadata).IsNull();
         await Assert.That(consumer.MemberId).IsNull();
-        await Assert.That(((IConsumerCommitModeSource)consumer).HasConsumerGroup).IsFalse();
+        await Assert.That(((IConsumerCommitConfiguration)consumer).HasConsumerGroup).IsFalse();
     }
 
     [Test]

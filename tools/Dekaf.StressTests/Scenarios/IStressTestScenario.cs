@@ -29,6 +29,13 @@ internal sealed class StressTestOptions
     public int ConnectionsPerBroker { get; init; } = 1;
     public int RoundTripMessages { get; init; } = 250_000;
     public bool EnableProducerDeliveryDiagnostics { get; init; }
+
+    /// <summary>
+    /// Enables the Dekaf-only per-fetch diagnostics listener and 1-minute snapshot sampler
+    /// in the consumer scenarios. Off by default so the measured window carries no
+    /// diagnostics overhead; pass <c>--consumer-fetch-diagnostics</c> on debug runs.
+    /// </summary>
+    public bool EnableConsumerFetchDiagnostics { get; init; }
     public required ProgressWatchdog ProgressWatchdog { get; init; }
     public int SoakMessagesPerSecond { get; init; } = 5_000;
     public double ResourceSampleIntervalSeconds { get; init; } = 60;

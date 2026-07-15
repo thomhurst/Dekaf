@@ -29,7 +29,7 @@ public sealed class ConsumerFetchDiagnosticsTests
                 "different-topic"));
         tracker.TakeSample(CreateConsumerSnapshot(startedAt.AddSeconds(1)));
 
-        var sample = tracker.GetSnapshot().Samples.Single();
+        var sample = tracker.GetSnapshot()!.Samples.Single();
         await Assert.That(sample.FetchRequestCount).IsEqualTo(1);
         await Assert.That(sample.BytesPerFetch).IsEqualTo(2_048);
         await Assert.That(sample.AverageFetchRttMs).IsBetween(19.9, 20.1);
@@ -61,7 +61,7 @@ public sealed class ConsumerFetchDiagnosticsTests
             prefetchBufferDepth: 3,
             prefetchedBytes: 4_096));
 
-        var sample = tracker.GetSnapshot().Samples.Single();
+        var sample = tracker.GetSnapshot()!.Samples.Single();
         await Assert.That(sample.IntervalSeconds).IsEqualTo(60.0);
         await Assert.That(sample.FetchRequestCount).IsEqualTo(2);
         await Assert.That(sample.FetchRequestsPerSecond).IsBetween(0.0333, 0.0334);
@@ -90,7 +90,7 @@ public sealed class ConsumerFetchDiagnosticsTests
 
         tracker.TakeSample(CreateConsumerSnapshot(startedAt.AddMinutes(1)));
 
-        var sample = tracker.GetSnapshot().Samples.Single();
+        var sample = tracker.GetSnapshot()!.Samples.Single();
         await Assert.That(sample.Gen0Collections).IsEqualTo(3);
         await Assert.That(sample.Gen1Collections).IsEqualTo(2);
         await Assert.That(sample.Gen2Collections).IsEqualTo(1);
@@ -124,7 +124,7 @@ public sealed class ConsumerFetchDiagnosticsTests
         };
         tracker.TakeSample(CreateConsumerSnapshot(startedAt.AddMinutes(2), connectionReaps: [reap]));
 
-        var snapshot = tracker.GetSnapshot();
+        var snapshot = tracker.GetSnapshot()!;
         var second = snapshot.Samples[1];
         await Assert.That(second.FetchRequestCount).IsEqualTo(1);
         await Assert.That(second.BytesPerFetch).IsEqualTo(400.0);
@@ -140,7 +140,29 @@ public sealed class ConsumerFetchDiagnosticsTests
 
         tracker.TryTakeSample(() => throw new InvalidOperationException("diagnostic failure"));
 
-        await Assert.That(tracker.GetSnapshot().Samples).IsEmpty();
+        await Assert.That(tracker.GetSnapshot()!.Samples).IsEmpty();
+    }
+
+    [Test]
+    [NotInParallel("MeterListener")]
+    public async Task DisabledTracker_NoOpsAndReturnsNullSnapshot()
+    {
+        // --consumer-fetch-diagnostics off (the default): no MeterListener registration,
+        // no sampler, no snapshot — the measured window carries zero diagnostics overhead.
+        using var tracker = new ConsumerFetchDiagnosticsTracker("consumer-topic", enabled: false);
+
+        var samplerTask = tracker.RunSamplerAsync(
+            () => throw new InvalidOperationException("must not be called"),
+            CancellationToken.None);
+        tracker.TryTakeSample(() => throw new InvalidOperationException("must not be called"));
+
+        await Assert.That(samplerTask.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(tracker.GetSnapshot()).IsNull();
+
+        // A second (enabled) tracker can register its listener because the disabled one
+        // never claimed the process-wide listener slot.
+        using var enabledTracker = new ConsumerFetchDiagnosticsTracker("consumer-topic");
+        await Assert.That(enabledTracker.GetSnapshot()).IsNotNull();
     }
 
     [Test]

@@ -20,6 +20,13 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
             ClientId = "stress-consumer-confluent",
             GroupId = $"stress-group-confluent-{Guid.NewGuid():N}",
             AutoOffsetReset = ConfluentKafka.AutoOffsetReset.Earliest,
+            // Both clients run their auto-commit defaults: identical 5s commit cadence and
+            // wire traffic. Staging semantics deliberately differ — librdkafka stages
+            // offsets at delivery (at-most-once) while Dekaf stages proven offsets per
+            // fetch (at-least-once, PR #2097) at ~equal per-message cost. Do NOT "match"
+            // them by forcing Dekaf to OffsetStoreTiming.OnDelivery: Dekaf's eager staging
+            // does per-message dictionary writes that librdkafka's internal store doesn't,
+            // which would burden Dekaf with work Confluent isn't doing.
             EnableAutoCommit = true,
             // Match Dekaf's ForHighThroughput() consumer preset so both clients fetch and prefetch
             // with the same bounds. Otherwise Confluent runs on librdkafka's smaller defaults and

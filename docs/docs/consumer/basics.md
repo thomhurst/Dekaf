@@ -171,16 +171,17 @@ catch (ConsumeException ex)
 }
 ```
 
-:::caution Catching an exception does not stop the commit
-With the default configuration (auto-commit + auto offset store), a message's offset is staged
-for commit the moment `ConsumeAsync` yields it to you — *before* your processing runs. If your
-handler throws and you log-and-continue like above, the failed message's offset is still
-committed within the auto-commit interval (5 seconds by default), and the message will never be
-redelivered. No crash is required for this loss — a swallowed exception is enough.
+:::caution Catching an exception still acknowledges the message
+Dekaf's default is at-least-once: a message that makes your handler **throw out of the loop**
+is not committed and is redelivered after a restart or rebalance. But the loop cannot see
+inside your `catch` — if you log-and-continue like above, the next loop iteration counts the
+failed message as processed and its offset is committed within the auto-commit interval
+(5 seconds by default). The message is then never redelivered.
 
-If losing failed messages is not acceptable, disable auto offset store and store offsets only
-after processing succeeds (see the complete example below), or switch to
-[manual commits](offset-management.md).
+If you need to catch exceptions and keep consuming *without* losing failed messages, disable
+auto offset store and store offsets only after processing succeeds (see the complete example
+below), or switch to [manual commits](offset-management.md). The full contract is on the
+[Delivery Semantics](delivery-semantics.md) page.
 :::
 
 ## Graceful Shutdown
@@ -255,10 +256,14 @@ string? memberId = consumer.MemberId;
 
 ## Complete Example
 
-This example processes orders with at-least-once semantics: auto offset store is disabled,
-offsets are stored only after processing succeeds, and a processing failure stops the consumer
-instead of skipping the order — so the failed order is redelivered on restart rather than being
-silently committed away. Background auto-commit still handles the actual commits.
+This example processes orders with strict at-least-once semantics: automatic offset storage is
+disabled, offsets are stored only after processing succeeds, and a processing failure stops the
+consumer instead of skipping the order — so the failed order is redelivered on restart rather
+than being silently committed away. Background auto-commit still handles the actual commits.
+
+The explicit `StoreOffset` pattern is stricter than Dekaf's (already at-least-once) default:
+it keeps failed orders safe even when an exception is caught somewhere and the loop continues,
+because nothing is committed without your explicit acknowledgment.
 
 ```csharp
 using Dekaf;
@@ -278,7 +283,7 @@ public class OrderConsumer : BackgroundService
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("order-processor")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithAutoOffsetStore(false)  // Only commit offsets we explicitly store
+            .WithAutoOffsetStore(false) // Only commit offsets we explicitly store
             .SubscribeTo("orders")
             .BuildAsync();
 

@@ -29,7 +29,9 @@ internal sealed class ConsumerBatchStressTest : IStressTestScenario
             .WithClientId("stress-consumer-batch-dekaf")
             .WithGroupId($"stress-group-batch-dekaf-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithCachedStringValues()
+            // No WithCachedStringValues(): keep deserialization work identical to the
+            // paired "consumer" scenario so batch-vs-single comparisons measure the API
+            // shape, not a 100%-hit string cache on the identical-value seed data.
             .ForHighThroughput()
             .BuildAsync(cancellationToken);
 
@@ -52,7 +54,7 @@ internal sealed class ConsumerBatchStressTest : IStressTestScenario
         using var gcStats = new GcStats();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
-        using var consumerDiagnostics = new ConsumerFetchDiagnosticsTracker(options.Topic);
+        using var consumerDiagnostics = new ConsumerFetchDiagnosticsTracker(options.Topic, enabled: options.EnableConsumerFetchDiagnostics);
         consumerDiagnostics.Start(StressTestHelpers.CaptureConsumerDiagnostics(consumer)!);
 
         Console.WriteLine($"  Running Dekaf consumer-batch stress test for {options.DurationMinutes} minutes...");

@@ -29,6 +29,10 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
             .WithConnectionsPerBroker(options.ConnectionsPerBroker)
+            // Confluent uses exactly the configured connection count. Pin Dekaf too so adaptive
+            // scale-up under backpressure (1 -> 3 connections/broker) cannot leak into the
+            // like-for-like baseline; the multi-connection pass measures that separately.
+            .WithoutAdaptiveConnections()
             .WithDeliveryLatencyTarget(TimeSpan.FromMilliseconds(options.DeliveryLatencyTargetMs));
 
         _ = options.Compression switch

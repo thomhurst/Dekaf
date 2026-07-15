@@ -177,6 +177,99 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithAtLeastOnceProcessing_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+
+        var result = builder.WithAtLeastOnceProcessing();
+
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithAtLeastOnceProcessing_ConfiguresCommitIntent()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithAutoOffsetStore(false)
+            .WithOffsetStoreTiming(OffsetStoreTiming.OnDelivery)
+            .WithAtLeastOnceProcessing()
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        var commitConfiguration = (IConsumerCommitConfiguration)consumer;
+
+        await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
+        await Assert.That(options.EnableAutoOffsetStore).IsTrue();
+        await Assert.That(options.OffsetStoreTiming).IsEqualTo(OffsetStoreTiming.AfterProcessing);
+        await Assert.That(commitConfiguration.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
+        await Assert.That(commitConfiguration.EnableAutoOffsetStore).IsTrue();
+        await Assert.That(commitConfiguration.HasConsumerGroup).IsTrue();
+    }
+
+    [Test]
+    public async Task WithAtLeastOnceProcessing_MatchesDefaults()
+    {
+        await using var defaultConsumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+        await using var explicitConsumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithAtLeastOnceProcessing()
+            .Build();
+
+        var defaultOptions = GetConsumerOptions(defaultConsumer);
+        var explicitOptions = GetConsumerOptions(explicitConsumer);
+
+        await Assert.That(defaultOptions.OffsetCommitMode).IsEqualTo(explicitOptions.OffsetCommitMode);
+        await Assert.That(defaultOptions.EnableAutoOffsetStore).IsEqualTo(explicitOptions.EnableAutoOffsetStore);
+        await Assert.That(defaultOptions.OffsetStoreTiming).IsEqualTo(explicitOptions.OffsetStoreTiming);
+        await Assert.That(defaultOptions.OffsetStoreTiming).IsEqualTo(OffsetStoreTiming.AfterProcessing);
+    }
+
+    [Test]
+    public async Task WithAtMostOnceProcessing_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+
+        var result = builder.WithAtMostOnceProcessing();
+
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithAtMostOnceProcessing_ConfiguresOnDeliveryStaging()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithAutoOffsetStore(false)
+            .WithAtMostOnceProcessing()
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+
+        await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
+        await Assert.That(options.EnableAutoOffsetStore).IsTrue();
+        await Assert.That(options.OffsetStoreTiming).IsEqualTo(OffsetStoreTiming.OnDelivery);
+    }
+
+    [Test]
+    public async Task WithOffsetStoreTiming_SetsOption()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithOffsetStoreTiming(OffsetStoreTiming.OnDelivery)
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        await Assert.That(options.OffsetStoreTiming).IsEqualTo(OffsetStoreTiming.OnDelivery);
+    }
+
+    [Test]
     public async Task WithAutoOffsetReset_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();

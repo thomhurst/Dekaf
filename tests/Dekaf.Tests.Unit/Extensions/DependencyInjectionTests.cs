@@ -315,6 +315,7 @@ public class DependencyInjectionTests
             BootstrapServers = ["broker1:9092"],
             ClientId = "typed-consumer",
             GroupId = "typed-group",
+            OffsetStoreTiming = OffsetStoreTiming.OnDelivery,
             FetchMinBytes = 4096,
             EnableAdaptiveConnections = false,
             UseTls = true,
@@ -336,6 +337,7 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.BootstrapServers[0]).IsEqualTo("broker1:9092");
         await Assert.That(boundOptions.ClientId).IsEqualTo("typed-consumer");
         await Assert.That(boundOptions.GroupId).IsEqualTo("override-group");
+        await Assert.That(boundOptions.OffsetStoreTiming).IsEqualTo(OffsetStoreTiming.OnDelivery);
         await Assert.That(boundOptions.FetchMinBytes).IsEqualTo(4096);
         await Assert.That(boundOptions.EnableAdaptiveConnections).IsFalse();
         await Assert.That(boundOptions.UseTls).IsTrue();
@@ -732,6 +734,7 @@ public class DependencyInjectionTests
             ["Kafka:Consumers:Orders:OffsetCommitMode"] = "Manual",
             ["Kafka:Consumers:Orders:AutoCommitIntervalMs"] = "2000",
             ["Kafka:Consumers:Orders:EnableAutoOffsetStore"] = "false",
+            ["Kafka:Consumers:Orders:OffsetStoreTiming"] = "OnDelivery",
             ["Kafka:Consumers:Orders:AutoOffsetReset"] = "Earliest",
             ["Kafka:Consumers:Orders:FetchMinBytes"] = "1024",
             ["Kafka:Consumers:Orders:FetchMaxBytes"] = "2097152",
@@ -790,6 +793,7 @@ public class DependencyInjectionTests
         await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Manual);
         await Assert.That(options.AutoCommitIntervalMs).IsEqualTo(2000);
         await Assert.That(options.EnableAutoOffsetStore).IsFalse();
+        await Assert.That(options.OffsetStoreTiming).IsEqualTo(OffsetStoreTiming.OnDelivery);
         await Assert.That(options.AutoOffsetReset).IsEqualTo(AutoOffsetReset.Earliest);
         await Assert.That(options.FetchMinBytes).IsEqualTo(1024);
         await Assert.That(options.FetchMaxBytes).IsEqualTo(2097152);

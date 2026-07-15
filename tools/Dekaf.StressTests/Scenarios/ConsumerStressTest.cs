@@ -24,7 +24,10 @@ internal sealed class ConsumerStressTest : IStressTestScenario
             .WithClientId("stress-consumer-dekaf")
             .WithGroupId($"stress-group-dekaf-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithCachedStringValues()
+            // No WithCachedStringValues(): the seeded topic repeats one identical value, so
+            // Dekaf's string cache would hit 100% and skip the per-message UTF-8 decode +
+            // allocation Confluent always pays — inflating both the throughput ratio and
+            // the Alloc/msg comparison. The head-to-head must deserialize like-for-like.
             .ForHighThroughput()
             .BuildAsync(cancellationToken);
 
@@ -47,7 +50,11 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         using var gcStats = new GcStats();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
-        using var consumerDiagnostics = new ConsumerFetchDiagnosticsTracker(options.Topic);
+        // Dekaf-only diagnostics (per-fetch MeterListener + 1-minute snapshot sampler) are
+        // opt-in via --consumer-fetch-diagnostics: enabled they slightly inflate Dekaf's own
+        // CPU/msg and alloc/msg vs Confluent, so measurement runs keep them off and debug
+        // runs turn them on when fetch-path visibility is needed to diagnose a regression.
+        using var consumerDiagnostics = new ConsumerFetchDiagnosticsTracker(options.Topic, enabled: options.EnableConsumerFetchDiagnostics);
         consumerDiagnostics.Start(StressTestHelpers.CaptureConsumerDiagnostics(consumer)!);
 
         Console.WriteLine($"  Running Dekaf consumer stress test for {options.DurationMinutes} minutes...");

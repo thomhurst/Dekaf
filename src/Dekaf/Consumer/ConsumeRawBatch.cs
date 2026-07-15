@@ -42,17 +42,20 @@ namespace Dekaf.Consumer
     {
         private readonly PendingFetchData _pendingFetchData;
         private readonly BatchIterationGuard _iterationGuard;
+        private readonly Action<TopicPartition, long, int>? _storeOffsetOnDelivery;
         private readonly int _maxRecords;
         private long _count;
 
         internal ConsumeRawBatch(
             PendingFetchData pendingFetchData,
             BatchIterationGuard iterationGuard = default,
+            Action<TopicPartition, long, int>? storeOffsetOnDelivery = null,
             int maxRecords = int.MaxValue)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
             _pendingFetchData = pendingFetchData;
             _iterationGuard = iterationGuard;
+            _storeOffsetOnDelivery = storeOffsetOnDelivery;
             _maxRecords = maxRecords;
         }
 
@@ -103,7 +106,7 @@ namespace Dekaf.Consumer
         public struct Enumerator : IEnumerator<ConsumeRawRecord>
         {
             private readonly ConsumeRawBatch _batch;
-            private readonly bool _canContinue;
+            private bool _canContinue;
             private int _observedVersion;
             private int _recordsYielded;
 
@@ -140,11 +143,13 @@ namespace Dekaf.Consumer
                 if (_recordsYielded >= _batch._maxRecords)
                 {
                     pending.TryBufferNext();
+                    _canContinue = false;
                     return false;
                 }
 
                 if (!pending.MoveNext())
                 {
+                    _canContinue = false;
                     return false;
                 }
 
@@ -169,6 +174,10 @@ namespace Dekaf.Consumer
                     return false;
 
                 pending.TrackConsumed(offset, messageBytes);
+                _batch._storeOffsetOnDelivery?.Invoke(
+                    pending.TopicPartition,
+                    offset + 1,
+                    pending.LastYieldedLeaderEpoch);
                 _recordsYielded++;
                 _batch._count++;
 

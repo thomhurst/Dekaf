@@ -174,6 +174,30 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
 }
 
 /// <summary>
+/// Optional capability exposing a consumer's effective offset-commit configuration.
+/// </summary>
+/// <remarks>
+/// Dekaf's built-in consumers implement this interface. Consumer wrappers can implement it to
+/// preserve commit-safety validation performed by processing extensions such as
+/// <c>RunPartitionedAsync</c>.
+/// A grouped consumer using <see cref="OffsetCommitMode.Auto"/> with automatic offset storage
+/// enabled stages offsets based on consume-loop progress; when records are handed to
+/// out-of-band workers (as partitioned processing does), that progress no longer proves
+/// processing, so offsets could be committed before processing completes.
+/// </remarks>
+public interface IConsumerCommitConfiguration
+{
+    /// <summary>Gets whether offsets are committed automatically or explicitly.</summary>
+    OffsetCommitMode OffsetCommitMode { get; }
+
+    /// <summary>Gets whether consumed offsets are staged automatically for commit.</summary>
+    bool EnableAutoOffsetStore { get; }
+
+    /// <summary>Gets whether the consumer is configured to participate in a consumer group.</summary>
+    bool HasConsumerGroup { get; }
+}
+
+/// <summary>
 /// Position and seek operations for a Kafka consumer.
 /// </summary>
 public interface IConsumerPositions

@@ -529,9 +529,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
         await oracle.WaitForAllSequencesAsync(cancellationToken);
         if (offsetCommitMode == OffsetCommitMode.Manual)
             await oracle.WaitForFinalCommitsAsync(cancellationToken);
-        await survivor.StopAsync();
-        if (offsetCommitMode == OffsetCommitMode.Auto)
+        else
             await WaitForFinalBrokerCommitsAsync(groupId, oracle, cancellationToken);
+        await survivor.StopAsync();
 
         await AssertCompletedScenarioAsync(
             groupId,
@@ -733,9 +733,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
             .IsTrue()
             .Because("the crashed member's last uncommitted record must be replayed after session expiry");
 
-        await survivor.StopAsync();
         if (offsetCommitMode == OffsetCommitMode.Auto)
             await WaitForFinalBrokerCommitsAsync(groupId, oracle, cancellationToken);
+        await survivor.StopAsync();
 
         await Assert.That(oracle.UniqueCount).IsEqualTo(PartitionCount * MessagesPerPartition);
         if (offsetCommitMode == OffsetCommitMode.Auto)
@@ -1286,7 +1286,9 @@ public sealed class ConsumerGroupRebalanceChaosTests(KafkaTestContainer kafka) :
                     .ConsumeAsync(StoppingToken)
                     .GetAsyncEnumerator(StoppingToken);
 
-                while (!Oracle.IsComplete)
+                // Auto mode must pull again after the final yield to prove it processed,
+                // and may need to redeliver an unproven tail from a departed member.
+                while (!_explicitlyCommit || !Oracle.IsComplete)
                 {
                     await Permits.WaitAsync(StoppingToken);
                     if (!await enumerator.MoveNextAsync())
