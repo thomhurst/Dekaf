@@ -1192,7 +1192,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // checks O(active unsealed partitions) instead of O(all partitions ever touched).
     private readonly ConcurrentQueue<TopicPartition> _lingerPartitions = new();
 
-    // Even when no linger sweep is active, odd while a sweep owns _flushLingerLock.
+    // Even when no batch sweep is active, odd while a sweep owns _flushLingerLock.
     // New batches compare the version observed before updating the deadline hint with the
     // version after queueing. A changed or odd version means the sweep may have missed the
     // batch, so the linger loop must be woken after the sweep raises the hint.
@@ -1240,6 +1240,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal Action? PurgeAppendWaitObservedForTest;
     internal Action? AfterLingerQueueSnapshotForTest;
+    internal Action<TopicPartition>? AfterFlushPartitionVisitedForTest;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
@@ -4638,9 +4639,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // FlushAsync will seal everything, so there's no work lost.
             if (!_flushLingerLock.Wait(0, CancellationToken.None))
                 return;
-
-            Interlocked.Increment(ref _lingerSweepVersion);
         }
+
+        Interlocked.Increment(ref _lingerSweepVersion);
 
         try
         {
@@ -4656,6 +4657,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     if (TrySealCurrentBatch(kvp.Key, kvp.Value, now, sealAll: true, cancellationToken, ref newOldestTicks, ref sawUnknownDeadline))
                         anySealed = true;
+                    AfterFlushPartitionVisitedForTest?.Invoke(kvp.Key);
                 }
             }
             else
@@ -4699,8 +4701,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             else
             {
-                // After sealing all, reset oldest batch tracking
-                Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
+                // A concurrent append may have lowered the hint while this sweep was
+                // visiting another partition. Preserve that value; its version check
+                // also wakes the linger loop when the flush snapshot missed its batch.
+                Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, long.MaxValue, observedOldestTicks);
             }
 
             if (anySealed)
@@ -4708,9 +4712,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            if (!sealAll)
-                Interlocked.Increment(ref _lingerSweepVersion);
-
+            Interlocked.Increment(ref _lingerSweepVersion);
             _flushLingerLock.Release();
         }
     }

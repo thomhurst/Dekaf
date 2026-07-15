@@ -238,4 +238,45 @@ public class LingerDeadlineWaitTests
             await accumulator.DisposeAsync();
         }
     }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task BatchQueuedAfterFlushVisitedPartition_SignalsLingerWakeup(CancellationToken cancellationToken)
+    {
+        var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 60_000));
+        using var partitionVisited = new ManualResetEventSlim();
+        using var continueFlush = new ManualResetEventSlim();
+        try
+        {
+            await AppendAsync(accumulator, partition: 0);
+            await Assert.That(await accumulator.WaitForLingerWakeupAsync(5_000)).IsTrue();
+
+            accumulator.AfterFlushPartitionVisitedForTest = topicPartition =>
+            {
+                if (topicPartition.Partition != 0)
+                    return;
+
+                partitionVisited.Set();
+                continueFlush.Wait(cancellationToken);
+            };
+
+            var flushSweep = Task.Run(
+                async () => await AccumulatorTestHelpers.SealAllAsync(accumulator),
+                cancellationToken);
+
+            partitionVisited.Wait(cancellationToken);
+            await AppendAsync(accumulator, partition: 0);
+            continueFlush.Set();
+            await flushSweep;
+
+            await Assert.That(GetUnsealedBatchCount(accumulator)).IsEqualTo(1);
+            await Assert.That(await accumulator.WaitForLingerWakeupAsync(100)).IsTrue();
+        }
+        finally
+        {
+            continueFlush.Set();
+            accumulator.AfterFlushPartitionVisitedForTest = null;
+            await accumulator.DisposeAsync();
+        }
+    }
 }
