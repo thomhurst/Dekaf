@@ -10,8 +10,8 @@ on:
       # lane is its own paid 8-core runner job (up to 3 hours), so pick the single
       # lane whose data you need and use "all" only when the full comparison
       # matrix is required. Manual dispatches also default to the cheap
-      # dispatch_shape (below); scheduled runs always run the full matrix in
-      # the full lane shape.
+      # dispatch_shape and the dekaf client (below); scheduled runs always run
+      # the full paired matrix in the full lane shape.
       lane:
         description: 'Stress lane to run (one paid runner job per lane; "all" runs the full matrix)'
         required: true
@@ -54,11 +54,14 @@ on:
       # Keep this choice input below duration_minutes: the options-sync test in
       # .github/scripts/test_stress_trend.py slices the workflow text from the
       # first 'options:' to 'duration_minutes:' to read the lane list.
+      # Manual dispatches default to dekaf: Confluent's numbers don't change
+      # with Dekaf code, so the routine feedback run measures only Dekaf.
+      # Scheduled runs have no inputs and keep the lane's paired behavior.
       client:
-        description: 'Client override for paired lanes: dekaf/confluent runs only that client (single sample, no ratio, results not published). Dekaf-only lanes ignore this.'
+        description: 'Client for paired lanes: dekaf/confluent runs only that client (single sample, no ratio, results not published); lane-default runs the paired comparison (required to publish). Dekaf-only lanes ignore this.'
         required: false
         type: choice
-        default: lane-default
+        default: dekaf
         options:
           - lane-default
           - dekaf
@@ -175,7 +178,15 @@ jobs:
             # Catch the expensive dead end before any paid runner starts: a
             # reduced-shape full matrix still costs all 13 lane jobs but can
             # never publish docs/history.
-            echo "::error::lane=all with dispatch_shape=$shape runs the full paid matrix but cannot publish. Use dispatch_shape=lane-default to publish, or pick a single lane."
+            echo "::error::lane=all with dispatch_shape=$shape runs the full paid matrix but cannot publish. Use dispatch_shape=lane-default and client=lane-default to publish, or pick a single lane."
+            exit 1
+          fi
+          if [ "$lane" = "all" ] && [ -n "$client" ]; then
+            # Same dead end via the client input: single-client rows can never
+            # publish (they would wipe the ratio columns), and since manual
+            # dispatches default to client=dekaf this is the easy mistake for
+            # a publish dispatch to make.
+            echo "::error::lane=all with client=$client runs the full paid matrix but cannot publish. Use client=lane-default and dispatch_shape=lane-default to publish, or pick a single lane."
             exit 1
           fi
 
