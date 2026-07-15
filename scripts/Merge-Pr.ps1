@@ -1,8 +1,9 @@
 # Merge-Pr.ps1
 # One-command, fail-closed merge for the issue-pr-loop skill:
 #   1. runs the pure gate  Assert-PrGreen.ps1  (read-only; exits 0 only when green)
-#   2. merges with  gh pr merge --squash --delete-branch  (only if the gate passed)
-#   3. removes the PR's isolated worktree so it cannot accumulate on disk
+#   2. merges with  gh pr merge --squash  (only if the gate passed)
+#   3. removes the PR's isolated worktree
+#   4. deletes the merged local and remote head branches
 #
 # Cleanup is *part of* the merge command — an agent cannot merge and then forget
 # to remove the worktree, because it is the same call. This is the durable fix for
@@ -38,7 +39,7 @@ function Fail([string]$msg) { [Console]::Error.WriteLine("MERGE ABORTED #${Pr} -
 & pwsh (Join-Path $PSScriptRoot 'Assert-PrGreen.ps1') -Pr $Pr @repoArgs
 if ($LASTEXITCODE -ne 0) { Fail "Assert-PrGreen denied (exit $LASTEXITCODE). Not merging." }
 
-# Resolve the head branch BEFORE merging (--delete-branch removes it server-side).
+# Resolve the head branch before merging so post-merge cleanup can remove it.
 $headRef = gh pr view $Pr @repoArgs --json headRefName --jq '.headRefName' 2>$null
 if ($LASTEXITCODE -ne 0 -or -not $headRef) { Fail "could not resolve head branch (exit $LASTEXITCODE)" }
 $headRef = $headRef.Trim()
@@ -49,7 +50,7 @@ $mainRepo = ((git worktree list --porcelain) | Where-Object { $_ -like 'worktree
     Select-Object -First 1) -replace '^worktree ', ''
 
 # --- 2. Merge. -----------------------------------------------------------------
-gh pr merge $Pr @repoArgs --squash --delete-branch
+gh pr merge $Pr @repoArgs --squash
 if ($LASTEXITCODE -ne 0) { Fail "gh pr merge failed (exit $LASTEXITCODE). Worktree untouched." }
 Write-Host "Merged #${Pr} ($headRef)."
 
@@ -66,8 +67,35 @@ if (-not $Worktree) {
 if (-not $Worktree) {
     Write-Host "No isolated worktree found for branch '$headRef' (nothing to remove)."
     git -C $mainRepo worktree prune
-    exit 0
+} else {
+    Remove-MergedWorktree -Repo $mainRepo -Worktree $Worktree -Label "#${Pr}"
+
+    # A dirty worktree is intentionally preserved. Its local and remote branches are
+    # also preserved so uncommitted work retains an upstream recovery point.
+    if (Test-Path -LiteralPath $Worktree) {
+        Write-Host "Preserving branches for worktree #${Pr}: $Worktree"
+        exit 0
+    }
 }
 
-Remove-MergedWorktree -Repo $mainRepo -Worktree $Worktree -Label "#${Pr}"
+# Branch cleanup happens only after the checked-out worktree is gone. Cleanup is
+# best-effort: the PR is already merged, so failures must not be reported as a
+# merge abort or invite a dangerous retry of the merge operation.
+$remoteRef = "refs/heads/$headRef"
+git -C $mainRepo ls-remote --exit-code origin $remoteRef 2>$null | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    git -C $mainRepo push origin --delete $headRef 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WARNING: merged #${Pr}, but could not delete remote branch '$headRef'"
+    }
+}
+
+git -C $mainRepo show-ref --verify --quiet "refs/heads/$headRef"
+if ($LASTEXITCODE -eq 0) {
+    git -C $mainRepo branch -D -- $headRef 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WARNING: merged #${Pr}, but could not delete local branch '$headRef'"
+    }
+}
+
 exit 0

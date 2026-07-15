@@ -279,7 +279,7 @@ Do not rely on branch protection being present, current, or configured for every
 
 The guard enforces only the **mechanical** MERGE signals. The judgment-only signals from the MERGE row — approval (or repo-does-not-gate), zero unaddressed comments, and a bot CI cycle since your last fix push — are still yours to confirm before you run it; a passing guard is necessary, not sufficient.
 
-Merge with the single command `scripts/Merge-Pr.ps1 -Pr <n>`. It runs the gate, merges only if the gate passes, then removes that PR's isolated worktree — atomically, so the worktree cannot be left behind:
+Merge with the single command `scripts/Merge-Pr.ps1 -Pr <n>`. It runs the gate, merges only if the gate passes, then performs best-effort cleanup of that PR's isolated worktree and head branches:
 
 ```powershell
 pwsh scripts/Merge-Pr.ps1 -Pr <n>
@@ -289,7 +289,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 ```
 
-`Merge-Pr.ps1` internally: (1) calls the pure `Assert-PrGreen.ps1` gate (re-fetches fresh state; exits 0 only when OPEN + `MERGEABLE` + `CLEAN` + every check terminal-and-passing + no unresolved threads); (2) on exit 0, runs `gh pr merge <n> --squash --delete-branch`; (3) finds the worktree by the PR's head branch and removes it, **preserving it untouched if it has uncommitted tracked changes**. The gate remains a separate read-only predicate — do not fold merging into it; `Merge-Pr.ps1` composes it.
+`Merge-Pr.ps1` internally: (1) calls the pure `Assert-PrGreen.ps1` gate (re-fetches fresh state; exits 0 only when OPEN + `MERGEABLE` + `CLEAN` + every check terminal-and-passing + no unresolved threads); (2) on exit 0, runs `gh pr merge <n> --squash` without asking `gh` to delete a branch that may still be checked out; (3) finds and removes the clean worktree by the PR's head branch; (4) only after the worktree is gone, deletes the remote and local head branches. If the worktree has uncommitted tracked changes, it and both branches are preserved. Once the merge succeeds, later cleanup failures warn and still exit 0 — never retry an already-completed merge because cleanup was incomplete. The gate remains a separate read-only predicate — do not fold merging into it; `Merge-Pr.ps1` composes it.
 
 Hard rules — no exceptions:
 
@@ -298,7 +298,7 @@ Hard rules — no exceptions:
 3. **Any non-terminal check (`QUEUED`/`IN_PROGRESS`/`PENDING`/`WAITING`) means the PR is not mergeable this iteration.** Skip it; the next iteration's survey re-checks it for free. Do not wait, poll, or auto-merge.
 4. **`Merge-Pr.ps1` exiting non-zero is the correct outcome, not an obstacle.** It means the gate denied or the merge failed — nothing was destroyed. Advance to the next item; never retry the merge or work around the gate.
 
-Worktree cleanup is now part of `Merge-Pr.ps1` — it removes the merged PR's isolated worktree automatically, preserving it untouched if it has uncommitted tracked changes (untracked build artifacts are cleared). You do **not** run a separate removal step after merge.
+Worktree and branch cleanup are part of `Merge-Pr.ps1`. It removes a clean merged-PR worktree before deleting its remote/local head branches. If tracked changes exist, it preserves the worktree and both branches (untracked build artifacts are cleared). Post-merge cleanup failures are warnings because the merge cannot safely be retried. You do **not** run a separate removal step after merge.
 
 **Per-iteration safety-net sweep.** Once per loop iteration, run `pwsh scripts/Remove-MergedWorktrees.ps1`. It reaps any worktree whose branch has a **merged PR** — including PRs squash-merged by another agent or a human, which `Merge-Pr.ps1` never saw. Detection is via GitHub's merged-PR head branches (`gh pr list --state merged`), the only signal that survives squash/rebase (the branch tip is not an ancestor of `main`, so ancestry checks miss it). It is squash-safe, skips branches with an open PR, skips detached worktrees, and preserves dirty worktrees. A `[gone]` branch is deliberately **not** treated as merged — that also happens to closed-unmerged PRs.
 
