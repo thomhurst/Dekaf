@@ -14,6 +14,28 @@ namespace Dekaf.Tests.Unit.Producer;
 internal static class AccumulatorTestHelpers
 {
     /// <summary>
+    /// Reads a private instance field via reflection.
+    /// </summary>
+    public static T GetPrivateField<T>(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"Field '{fieldName}' not found on {instance.GetType().Name}.");
+        return (T)field.GetValue(instance)!;
+    }
+
+    /// <summary>
+    /// Runs the accumulator's flush-mode batch sweep without waiting for delivery.
+    /// </summary>
+    public static ValueTask SealAllAsync(RecordAccumulator accumulator)
+    {
+        var method = typeof(RecordAccumulator).GetMethod(
+            "SealBatchesAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("SealBatchesAsync was not found.");
+        return (ValueTask)method.Invoke(accumulator, [true, CancellationToken.None])!;
+    }
+
+    /// <summary>
     /// Seals the partition's current batch via reflection and returns the ReadyBatch.
     /// </summary>
     public static ReadyBatch CompleteCurrentBatch(RecordAccumulator accumulator, string topic, int partition = 0)

@@ -51,6 +51,7 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
     /// </summary>
     private CancellationTokenRegistration _shutdownRegistration;
     private int _shutdownRegistered; // 0 = not registered, 1 = registered — guarded by Interlocked
+    private int _shutdownRequested; // 0 = running, 1 = shutdown requested — terminal once set
     private CancellationToken _shutdownToken;
 
     public AsyncAutoResetSignal()
@@ -82,22 +83,22 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
         if (!cancellationToken.CanBeCanceled)
             return;
 
-        // If already cancelled, skip registration. UnsafeRegister would fire the
-        // callback synchronously (state=Idle, CAS fails, no-op), but set
-        // _shutdownRegistered=1 — preventing future registration and silently
-        // disabling shutdown cancellation for all subsequent WaitAsync calls.
-        if (cancellationToken.IsCancellationRequested)
-            return;
-
         // Atomic guard: only the first caller registers.
         if (Interlocked.CompareExchange(ref _shutdownRegistered, 1, 0) != 0)
             return;
 
         _shutdownToken = cancellationToken;
+        if (cancellationToken.IsCancellationRequested)
+        {
+            Volatile.Write(ref _shutdownRequested, 1);
+            return;
+        }
+
         _shutdownRegistration = cancellationToken.UnsafeRegister(
             static state =>
             {
                 var self = (AsyncAutoResetSignal)state!;
+                Volatile.Write(ref self._shutdownRequested, 1);
                 // Shutdown requested — complete the waiter if one is pending.
                 if (Interlocked.CompareExchange(ref self._state, Idle, Waiting) == Waiting)
                 {
@@ -144,6 +145,8 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
     /// </remarks>
     public ValueTask<bool> WaitAsync(int timeoutMs)
     {
+        ThrowIfShutdownRequested();
+
         // Fast path: if already signaled, consume it immediately (no allocation).
         var previous = Interlocked.CompareExchange(ref _state, Idle, Signaled);
         if (previous == Signaled)
@@ -168,6 +171,15 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
             return new ValueTask<bool>(true);
         }
 
+        // Shutdown can race the loop's cancellation check and this wait registration.
+        // The callback latches cancellation even when no waiter exists; this recheck
+        // completes a waiter registered after such an idle callback.
+        if (Volatile.Read(ref _shutdownRequested) != 0
+            && Interlocked.CompareExchange(ref _state, Idle, Waiting) == Waiting)
+        {
+            _core.SetException(new OperationCanceledException(_shutdownToken));
+        }
+
         // Now in Waiting state — safe to arm timer. If timer fires immediately,
         // it will see Waiting, CAS succeeds, and SetResult(false) is called correctly.
         // If Signal() already completed _core (Waiting→Idle + SetResult), the timer's
@@ -182,6 +194,12 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
 
         // Return the awaitable — Signal(), timeout, or shutdown will complete _core.
         return new ValueTask<bool>(this, _core.Version);
+    }
+
+    private void ThrowIfShutdownRequested()
+    {
+        if (Volatile.Read(ref _shutdownRequested) != 0)
+            throw new OperationCanceledException(_shutdownToken);
     }
 
     private void DisarmTimer()

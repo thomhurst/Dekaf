@@ -46,7 +46,7 @@ public class ProducerCancellationTests
     }
 
     [Test]
-    public async Task DisposeAsync_StopsPendingLingerTimerPromptly()
+    public async Task DisposeAsync_StopsPendingLingerWaitPromptly()
     {
         var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
@@ -60,7 +60,7 @@ public class ProducerCancellationTests
     }
 
     [Test]
-    public async Task Cancellation_StopsActiveLingerTimerPromptly()
+    public async Task Cancellation_StopsActiveLingerWaitPromptly()
     {
         var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
@@ -72,7 +72,7 @@ public class ProducerCancellationTests
         var activeLingerWaitEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         SetField(
             producer,
-            "BeforeActiveLingerTimerWaitForTest",
+            "BeforeActiveLingerWaitForTest",
             (Action)(() => activeLingerWaitEntered.TrySetResult(true)));
 
         try

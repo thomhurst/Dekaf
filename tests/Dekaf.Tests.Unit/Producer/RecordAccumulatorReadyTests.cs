@@ -1126,7 +1126,7 @@ public class RecordAccumulatorReadyTests
     }
 
     [Test]
-    public async Task ExpireLingerAsync_DoesNotRaiseOldestBatchHint()
+    public async Task ExpireLingerAsync_RaisesStaleOldestBatchHintToSurvivingBatch()
     {
         var options = CreateTestOptions(batchSize: 100_000, lingerMs: 10_000);
         var accumulator = new RecordAccumulator(options);
@@ -1143,14 +1143,17 @@ public class RecordAccumulatorReadyTests
             await Assert.That(appended).IsTrue();
 
             var createdTicks = GetPrivateField<long>(accumulator, "_oldestBatchCreatedTicks");
-            var olderHint = Math.Max(0, createdTicks - Stopwatch.Frequency * 20);
-            SetPrivateField(accumulator, "_oldestBatchCreatedTicks", olderHint);
+            var staleHint = Math.Max(0, createdTicks - Stopwatch.Frequency * 20);
+            SetPrivateField(accumulator, "_oldestBatchCreatedTicks", staleHint);
             var lingerQueue = GetPrivateField<ConcurrentQueue<TopicPartition>>(accumulator, "_lingerPartitions");
 
             await accumulator.ExpireLingerAsync(CancellationToken.None);
 
+            // The sweep visited every queued partition, so it raises the stale hint to the
+            // surviving batch's creation time. Without the raise, the linger loop's deadline
+            // wait would floor at 1 ms against the long-gone hint (issue #2114).
             await Assert.That(GetPrivateField<long>(accumulator, "_oldestBatchCreatedTicks"))
-                .IsEqualTo(olderHint);
+                .IsEqualTo(createdTicks);
             await Assert.That(lingerQueue.Count).IsEqualTo(1);
         }
         finally
