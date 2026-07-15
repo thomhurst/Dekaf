@@ -42,11 +42,11 @@ var metadata = await producer.ProduceAsync("my-topic", "key", "Hello, Kafka!");
 Console.WriteLine($"Sent to partition {metadata.Partition} at offset {metadata.Offset}");
 ```
 
-For high-throughput scenarios where you don't need to wait:
+For high-throughput scenarios where you don't need to wait for broker acknowledgment:
 
 ```csharp
-// Fire and forget - returns immediately
-producer.Produce("my-topic", "key", "value");
+// Fire-and-forget - waits only for local enqueue/backpressure
+await producer.FireAsync("my-topic", "key", "value");
 
 // Make sure everything's delivered before shutting down
 await producer.FlushAsync();
@@ -63,7 +63,7 @@ await using var producer = await Kafka.CreateProducer<string, string>()
 
 // No topic parameter needed
 await producer.ProduceAsync("order-123", orderJson);
-producer.Produce("order-456", orderJson);
+await producer.FireAsync("order-456", orderJson);
 ```
 
 You can also create multiple topic producers that share the same connection:

@@ -4,18 +4,9 @@ sidebar_position: 3
 
 # Fire-and-Forget Production
 
-For high-throughput scenarios where you don't need to wait for acknowledgment, Dekaf provides `FireAsync` methods. `FireAsync` means "enqueue this record and return once local backpressure has accepted it"; it does not wait for broker acknowledgment.
+For high-throughput scenarios where you don't need to wait for acknowledgment, Dekaf provides `FireAsync` methods. Each method returns a non-generic `ValueTask`. Awaiting it means "enqueue this record and return once local backpressure has accepted it"; it does not wait for broker acknowledgment.
 
 ## FireAsync vs ProduceAsync
-
-Before:
-
-```csharp
-// Old fire-and-forget syntax
-producer.Produce("my-topic", "key", "value");
-```
-
-After:
 
 ```csharp
 // Enqueues locally; does not wait for broker acknowledgment

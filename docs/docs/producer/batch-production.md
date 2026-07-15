@@ -157,13 +157,13 @@ foreach (var batch in allMessages.Chunk(1000))
 
 ### Combining with Fire-and-Forget
 
-For maximum throughput when you don't need results, combine `Produce()` with `FlushAsync()`:
+For maximum throughput when you don't need results, combine `FireAsync()` with `FlushAsync()`. Awaiting `FireAsync()` waits only for local enqueue and backpressure, not broker acknowledgment:
 
 ```csharp
-// Send all messages without waiting
+// Queue all messages without waiting for broker acknowledgment
 foreach (var msg in messages)
 {
-    producer.Produce("topic", msg.Key, msg.Value);
+    await producer.FireAsync("topic", msg.Key, msg.Value);
 }
 
 // Ensure all are delivered before continuing

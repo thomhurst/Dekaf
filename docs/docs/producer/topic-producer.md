@@ -103,19 +103,19 @@ var metadata = await producer.ProduceAsync(new TopicProducerMessage<string, stri
 });
 ```
 
-### Send (Fire-and-Forget)
+### FireAsync (Fire-and-Forget)
 
-Send without waiting for acknowledgment:
+Queue a message without waiting for broker acknowledgment. The returned `ValueTask` completes once local backpressure accepts the record:
 
 ```csharp
 // Basic fire-and-forget
-producer.Produce("key", "value");
+await producer.FireAsync("key", "value");
 
 // With headers
-producer.Produce("key", "value", headers);
+await producer.FireAsync("key", "value", headers);
 
 // With delivery callback
-producer.Produce("key", "value", (metadata, error) =>
+await producer.FireAsync("key", "value", (metadata, error) =>
 {
     if (error is not null)
         Console.WriteLine($"Failed: {error.Message}");
