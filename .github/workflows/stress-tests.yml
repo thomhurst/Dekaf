@@ -1,5 +1,5 @@
 name: Stress Tests
-run-name: Stress Tests (${{ github.event.inputs.lane || 'all' }}${{ github.event.inputs.client != 'lane-default' && github.event.inputs.client && format(' / {0} only', github.event.inputs.client) || '' }})
+run-name: Stress Tests (${{ github.event.inputs.lane || 'all' }}${{ github.event.inputs.client != 'lane-default' && github.event.inputs.client && format(' / {0} only', github.event.inputs.client) || '' }}${{ github.event.inputs.dispatch_shape != 'lane-default' && github.event.inputs.dispatch_shape && format(' / {0}', github.event.inputs.dispatch_shape) || '' }})
 
 on:
   schedule:
@@ -9,7 +9,9 @@ on:
       # Required so every manual dispatch makes an explicit cost decision: each
       # lane is its own paid 8-core runner job (up to 3 hours), so pick the single
       # lane whose data you need and use "all" only when the full comparison
-      # matrix is required. Scheduled runs always run the full matrix.
+      # matrix is required. Manual dispatches also default to the cheap
+      # dispatch_shape (below); scheduled runs always run the full matrix in
+      # the full lane shape.
       lane:
         description: 'Stress lane to run (one paid runner job per lane; "all" runs the full matrix)'
         required: true
@@ -61,6 +63,21 @@ on:
           - lane-default
           - dekaf
           - confluent
+      # Manual dispatches default to the cheap shape (one paired sample, no
+      # Dekaf 3-connection pass), so a single-lane feedback run costs one or two
+      # measured durations instead of five. lane-default restores the lane's
+      # full acceptance shape and is what docs/history publishing requires (see
+      # the full_run gate below). Scheduled runs have no inputs and always use
+      # the full shape.
+      dispatch_shape:
+        description: 'cheap = 1 paired sample, no 3conn pass; cheap-with-3conn also runs the Dekaf 3-connection control pass; lane-default = full acceptance shape (required to publish)'
+        required: false
+        type: choice
+        default: cheap
+        options:
+          - cheap
+          - cheap-with-3conn
+          - lane-default
       profile_mode:
         description: 'Attach phased diagnostics to one Dekaf lane (off for normal acceptance runs)'
         required: false
@@ -116,6 +133,7 @@ jobs:
         env:
           LANE: ${{ github.event.inputs.lane }}
           CLIENT: ${{ github.event.inputs.client }}
+          DISPATCH_SHAPE: ${{ github.event.inputs.dispatch_shape }}
           PROFILE_MODE: ${{ github.event.inputs.profile_mode }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -142,6 +160,25 @@ jobs:
               ;;
           esac
 
+          # Dispatch-shape override. Empty (scheduled runs) means lane-default;
+          # the dispatch UI defaults to the cheap shape.
+          shape="$DISPATCH_SHAPE"
+          [ "$shape" = "lane-default" ] && shape=""
+          case "$shape" in
+            ""|cheap|cheap-with-3conn) ;;
+            *)
+              echo "::error::Unknown dispatch_shape '$shape'. Valid values: cheap, cheap-with-3conn, lane-default."
+              exit 1
+              ;;
+          esac
+          if [ "$lane" = "all" ] && [ -n "$shape" ]; then
+            # Catch the expensive dead end before any paid runner starts: a
+            # reduced-shape full matrix still costs all 13 lane jobs but can
+            # never publish docs/history.
+            echo "::error::lane=all with dispatch_shape=$shape runs the full paid matrix but cannot publish. Use dispatch_shape=lane-default to publish, or pick a single lane."
+            exit 1
+          fi
+
           profile_mode="${PROFILE_MODE:-off}"
           case "$profile_mode" in
             off|cpu|contention|gc|full) ;;
@@ -160,7 +197,9 @@ jobs:
           # timeout_minutes rationale: at a 30-minute dispatch the paired_samples=2
           # lanes run four paired client durations plus one 3-connection duration
           # (180 min); acks-all 1-broker runs four measured durations (150 min);
-          # all lanes leave setup/publish headroom.
+          # all lanes leave setup/publish headroom. Reduced dispatch shapes scale
+          # these budgets down proportionally to surviving measured durations
+          # (see the jq below).
           cat > lanes.json << 'EOF'
           [
             {"lane": "producer-1b", "scenario": "producer", "client": "all", "brokers": 1, "paired_samples": 2, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 180, "name": "Producer (Paired)"},
@@ -180,24 +219,38 @@ jobs:
           EOF
 
           # A client override applies only to paired lanes (client == "all"):
-          # Dekaf-only lanes keep their client. Overridden lanes drop to one
+          # Dekaf-only lanes keep their client, and overridden lanes drop to one
           # sample — paired_samples exists to alternate client order, which is
-          # meaningless for a single client — and the Dekaf-only 3-connection
-          # pass survives only a dekaf override.
-          matrix=$(jq -c --arg lane "$lane" --arg client "$client" --arg profile_mode "$profile_mode" '
+          # meaningless for a single client. The Dekaf-only 3-connection pass is
+          # the dispatch shape's call (cheap drops it; cheap-with-3conn and
+          # lane-default keep it where the lane defines it) and never runs for a
+          # confluent override. timeout_minutes scales down proportionally to
+          # the measured durations that survive the overrides, so a hung reduced
+          # dispatch cannot hold a paid runner for the full-shape budget;
+          # profile runs keep the lane budget because attach tooling adds
+          # overhead outside that per-duration model.
+          matrix=$(jq -c --arg lane "$lane" --arg client "$client" --arg shape "$shape" --arg profile_mode "$profile_mode" '
+            def segments: ((.paired_samples // 1) * (if .client == "all" then 2 else 1 end)) + (if .run_3conn == true then 1 else 0 end);
+            def drop_3conn: .run_3conn = false | .artifact_suffix = "";
             {include: [ .[]
               | select($lane == "all" or .lane == $lane)
+              | segments as $full_segments
+              | ((.timeout_minutes / $full_segments) | ceil) as $segment_budget
               | if $client != "" and .client == "all" then
                   .client = $client
                   | .paired_samples = 1
-                  | if $client == "confluent" then .run_3conn = false | .artifact_suffix = "" else . end
+                  | if $client == "confluent" then drop_3conn else . end
                 else . end
+              | if $shape != "" then .paired_samples = 1 else . end
+              | if $shape == "cheap" then drop_3conn else . end
               | if $profile_mode != "off" then
                   .client = "dekaf"
                   | .paired_samples = 1
                   | .run_3conn = false
                   | .artifact_suffix = "-profile"
-                else . end
+                else
+                  if segments < $full_segments then .timeout_minutes = $segment_budget * segments else . end
+                end
             ]}' lanes.json)
           count=$(echo "$matrix" | jq '.include | length')
           if [ "$count" -eq 0 ]; then
@@ -207,9 +260,11 @@ jobs:
 
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           # Only an unmodified full matrix may publish docs/history: a client
-          # override produces single-client rows that would wipe ratio columns.
-          echo "full_run=$([ "$lane" = "all" ] && [ -z "$client" ] && [ "$profile_mode" = "off" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "Selected $count lane(s) for '$lane'${client:+ (client override: $client)}${profile_mode:+ (profile: $profile_mode)}"
+          # override produces single-client rows that would wipe ratio columns,
+          # and a reduced dispatch shape (1 sample / no 3conn) would drop the
+          # order-alternated aggregate and control-group rows the tables carry.
+          echo "full_run=$([ "$lane" = "all" ] && [ -z "$client" ] && [ -z "$shape" ] && [ "$profile_mode" = "off" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "Selected $count lane(s) for '$lane'${client:+ (client override: $client)}${shape:+ (shape: $shape)}${profile_mode:+ (profile: $profile_mode)}"
 
   # Run each scenario in parallel. Comparable clients run sequentially inside the
   # same job/VM so published ratios share hardware and noisy-neighbor conditions;
@@ -635,7 +690,8 @@ jobs:
     runs-on: ubuntu-latest
     # stress-test success is required: a failed scenario (e.g. broker died mid-run)
     # must block the docs update rather than publish a partial or invalid table.
-    # Partial dispatches (single lane, or a client override) never publish: the
+    # Partial dispatches (single lane, client override, or reduced dispatch
+    # shape — the manual default) never publish: the
     # docs page and trend history are regenerated from this run's results alone,
     # so a partial run would drop other lanes' rows or the ratio columns. Read
     # partial-run data from the run summary and artifacts.
@@ -771,7 +827,8 @@ jobs:
     runs-on: ubuntu-latest
     # Wait for the docs PR so valid regression observations are persisted before
     # the workflow reports the repeated regression. Partial dispatches (single
-    # lane or client override) skip publish-to-docs and therefore this gate too:
+    # lane, client override, or reduced shape) skip publish-to-docs and therefore
+    # this gate too:
     # their observations are never persisted to history, so consecutive-regression
     # tracking would be spurious.
     if: >-
