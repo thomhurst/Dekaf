@@ -199,4 +199,43 @@ public class LingerDeadlineWaitTests
             await accumulator.DisposeAsync();
         }
     }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task BatchQueuedAfterSweepSnapshot_SignalsLingerWakeup(CancellationToken cancellationToken)
+    {
+        var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 60_000));
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        using var snapshotTaken = new ManualResetEventSlim();
+        using var continueSweep = new ManualResetEventSlim();
+        try
+        {
+            await AppendAsync(accumulator, pool.Rent(), partition: 0);
+            await Assert.That(await accumulator.WaitForLingerWakeupAsync(5_000)).IsTrue();
+
+            accumulator.AfterLingerQueueSnapshotForTest = () =>
+            {
+                snapshotTaken.Set();
+                continueSweep.Wait(cancellationToken);
+            };
+
+            await Task.Delay(5, cancellationToken);
+            var sweep = Task.Run(
+                async () => await accumulator.ExpireLingerAsync(CancellationToken.None),
+                cancellationToken);
+
+            snapshotTaken.Wait(cancellationToken);
+            await AppendAsync(accumulator, partition: 1);
+            continueSweep.Set();
+            await sweep;
+
+            await Assert.That(await accumulator.WaitForLingerWakeupAsync(100)).IsTrue();
+        }
+        finally
+        {
+            continueSweep.Set();
+            accumulator.AfterLingerQueueSnapshotForTest = null;
+            await accumulator.DisposeAsync();
+        }
+    }
 }

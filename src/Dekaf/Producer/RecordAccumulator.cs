@@ -1192,6 +1192,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // checks O(active unsealed partitions) instead of O(all partitions ever touched).
     private readonly ConcurrentQueue<TopicPartition> _lingerPartitions = new();
 
+    // Even when no linger sweep is active, odd while a sweep owns _flushLingerLock.
+    // New batches compare the version observed before updating the deadline hint with the
+    // version after queueing. A changed or odd version means the sweep may have missed the
+    // batch, so the linger loop must be woken after the sweep raises the hint.
+    private int _lingerSweepVersion;
+
     // Push-based notification queue for partitions with sealed batches ready to send.
     // Populated by append rotation, SealBatchesAsync, and Reenqueue when a batch
     // enters a partition deque. Drained by Ready() instead of scanning all _partitionDeques,
@@ -1233,6 +1239,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private int _closed;
 
     internal Action? PurgeAppendWaitObservedForTest;
+    internal Action? AfterLingerQueueSnapshotForTest;
 
     /// <summary>
     /// True after CloseAsync has been called. Used by the sender loop to know
@@ -2627,8 +2634,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void TrackCurrentBatchForLinger(PartitionDeque pd, TopicPartition topicPartition, PartitionBatch batch)
     {
+        var observedSweepVersion = Volatile.Read(ref _lingerSweepVersion);
         var shortensDeadline = TrackOldestBatchCreated(batch.CreatedAtStopwatchTimestamp);
-        QueueLingerPartition(pd, topicPartition, signalLingerLoop: shortensDeadline);
+        QueueLingerPartition(
+            pd,
+            topicPartition,
+            signalLingerLoop: shortensDeadline,
+            signalOnConcurrentSweep: true,
+            observedSweepVersion);
     }
 
     private bool TrackOldestBatchCreated(long createdTicks)
@@ -2650,12 +2663,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PartitionDeque pd,
         TopicPartition topicPartition,
         bool signalLingerLoop)
+        => QueueLingerPartition(
+            pd,
+            topicPartition,
+            signalLingerLoop,
+            signalOnConcurrentSweep: false,
+            observedSweepVersion: 0);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void QueueLingerPartition(
+        PartitionDeque pd,
+        TopicPartition topicPartition,
+        bool signalLingerLoop,
+        bool signalOnConcurrentSweep,
+        int observedSweepVersion)
     {
         if (Interlocked.Exchange(ref pd.LingerQueued, 1) == 0)
         {
             _lingerPartitions.Enqueue(topicPartition);
-            if (signalLingerLoop)
+            if (signalLingerLoop
+                || (signalOnConcurrentSweep
+                    && ((observedSweepVersion & 1) != 0
+                        || Volatile.Read(ref _lingerSweepVersion) != observedSweepVersion)))
+            {
                 _lingerWakeupSignal.Signal();
+            }
         }
     }
 
@@ -4606,6 +4638,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // FlushAsync will seal everything, so there's no work lost.
             if (!_flushLingerLock.Wait(0, CancellationToken.None))
                 return;
+
+            Interlocked.Increment(ref _lingerSweepVersion);
         }
 
         try
@@ -4627,6 +4661,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             else
             {
                 var count = _lingerPartitions.Count;
+                AfterLingerQueueSnapshotForTest?.Invoke();
                 for (var i = 0; i < count; i++)
                 {
                     if (!_lingerPartitions.TryDequeue(out var topicPartition))
@@ -4673,6 +4708,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
+            if (!sealAll)
+                Interlocked.Increment(ref _lingerSweepVersion);
+
             _flushLingerLock.Release();
         }
     }
