@@ -3585,6 +3585,91 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task DrainPendingAppends_BusyGuard_RecordsRetryRequest()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        var pool = new PendingAppendPool(1);
+        var op = CreatePendingAppend(accumulator, pool);
+        var queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
+
+        queue.Enqueue(op);
+        SetPrivateField(accumulator, "_draining", 1);
+        var requestVersion = GetPrivateField<long>(accumulator, "_pendingAppendDrainRequestVersion");
+
+        try
+        {
+            await Assert.That(accumulator.DrainPendingAppends()).IsFalse();
+            await Assert.That(GetPrivateField<long>(accumulator, "_pendingAppendDrainRequestVersion"))
+                .IsEqualTo(requestVersion + 1);
+        }
+        finally
+        {
+            SetPrivateField(accumulator, "_draining", 0);
+            queue.TryDequeue(out _);
+            if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+                op.ReturnToPoolAfterTryFail();
+        }
+    }
+
+    [Test]
+    public async Task DrainPendingAppends_CompetingWake_RescansReleasedBudget()
+    {
+        using var secondPartitionResolverEntered = new ManualResetEventSlim();
+        using var continueSecondPartitionResolver = new ManualResetEventSlim();
+        var secondPartitionResolverCalls = 0;
+        int ResolveLeaderId(string _, int partition)
+        {
+            if (partition == 1 && Interlocked.Increment(ref secondPartitionResolverCalls) == 1)
+            {
+                secondPartitionResolverEntered.Set();
+                if (!continueSecondPartitionResolver.Wait(TimeSpan.FromSeconds(5)))
+                    throw new TimeoutException("Timed out waiting to continue the partition 1 leader resolver.");
+            }
+
+            return partition;
+        }
+
+        var options = CreatePendingAppendTestOptions(unackedByteBudgetCapOverride: 1);
+        await using var accumulator = new RecordAccumulator(options, resolveLeaderId: ResolveLeaderId);
+        var pool = new PendingAppendPool(2);
+        var first = CreatePendingAppend(accumulator, pool, partition: 0, partitionCount: 2);
+        var second = CreatePendingAppend(accumulator, pool, partition: 1, partitionCount: 2);
+        var firstResult = new ValueTask<bool>((IValueTaskSource<bool>)first, first.Version).AsTask();
+        var queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
+        var firstBudget = accumulator.GetBrokerUnackedBudget(0)!;
+        var secondBudget = accumulator.GetBrokerUnackedBudget(1)!;
+        var firstCharge = firstBudget.BudgetBytes;
+        var secondCharge = secondBudget.BudgetBytes;
+        firstBudget.Charge(firstCharge);
+        secondBudget.Charge(secondCharge);
+        queue.Enqueue(first);
+        queue.Enqueue(second);
+
+        var ownerDrain = Task.Run(accumulator.DrainPendingAppends);
+        try
+        {
+            await Assert.That(secondPartitionResolverEntered.Wait(TimeSpan.FromSeconds(5))).IsTrue();
+
+            firstBudget.Release(firstCharge);
+            await Assert.That(accumulator.DrainPendingAppends()).IsFalse();
+            continueSecondPartitionResolver.Set();
+
+            await Assert.That(await ownerDrain.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(await firstResult.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(second.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            continueSecondPartitionResolver.Set();
+            await ownerDrain.WaitAsync(TimeSpan.FromSeconds(5));
+            secondBudget.Release(secondCharge);
+            queue.TryDequeue(out _);
+            if (second.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
+                second.ReturnToPoolAfterTryFail();
+        }
+    }
+
+    [Test]
     public async Task PendingAppend_AdmissionRecheckKeepsEarlierDeadline()
     {
         await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
@@ -3903,14 +3988,18 @@ public class RecordAccumulatorTests
         lockField!.SetValue(partitionDeque, Activator.CreateInstance(lockField.FieldType, [true]));
     }
 
-    private static PendingAppend CreatePendingAppend(RecordAccumulator accumulator, PendingAppendPool pool)
+    private static PendingAppend CreatePendingAppend(
+        RecordAccumulator accumulator,
+        PendingAppendPool pool,
+        int partition = 0,
+        int partitionCount = 1)
     {
         var now = Dekaf.MonotonicClock.GetMilliseconds();
         var op = pool.Rent();
         op.Initialize(
             "test-topic",
-            partition: 0,
-            partitionCount: 1,
+            partition,
+            partitionCount,
             timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             key: PooledMemory.Null,
             value: PooledMemory.Null,
@@ -3927,13 +4016,15 @@ public class RecordAccumulatorTests
         return op;
     }
 
-    private static ProducerOptions CreatePendingAppendTestOptions() => new()
+    private static ProducerOptions CreatePendingAppendTestOptions(
+        long? unackedByteBudgetCapOverride = null) => new()
     {
         BootstrapServers = new[] { "localhost:9092" },
         BufferMemory = 4096,
         BatchSize = 4096,
         LingerMs = 10,
-        MaxBlockMs = 30000
+        MaxBlockMs = 30000,
+        UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride
     };
 
     private static void InvokePendingAppendTimeout(PendingAppend op)

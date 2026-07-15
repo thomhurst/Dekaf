@@ -188,11 +188,10 @@ public sealed class ProducerBuilder<TKey, TValue>
 
     /// <summary>
     /// Sets the soft target for per-broker producer queueing latency (append to ack).
-    /// The producer bounds each broker's unacknowledged bytes to
-    /// <c>target × measured ack throughput</c>, so delivery latency stays near the target
-    /// instead of growing with the full buffer under sustained overload. A measured
-    /// round-trip guard keeps the bound above the bandwidth-delay product, so throughput
-    /// is never window-limited.
+    /// The producer bounds each broker's unacknowledged bytes to a preferred measured
+    /// bandwidth-delay product safety horizon, capped by the target but never below one
+    /// bandwidth-delay product. This avoids standing queueing under sustained overload
+    /// without making throughput window-limited.
     /// </summary>
     /// <param name="target">The latency target. <see cref="TimeSpan.Zero"/> disables the bound.</param>
     /// <remarks>

@@ -365,7 +365,7 @@ Soft target for per-broker queueing latency (append to broker acknowledgement):
 .WithDeliveryLatencyTarget(TimeSpan.Zero)                 // disable the bound
 ```
 
-Default: 10ms. The producer bounds each broker's unacknowledged bytes to `target × measured ack throughput`, so under sustained overload delivery latency stays near the target instead of growing with the full buffer (bufferbloat). A measured round-trip guard keeps the bound above the bandwidth-delay product, so throughput is never window-limited — on high-latency links the effective latency floor is ~1.5× the broker round-trip. When a broker exceeds its budget, produce calls block exactly like `BufferMemory` exhaustion (subject to `WithMaxBlock` and cancellation). Until the first drain measurement the bound sits at its ceiling, so short-lived producers are unaffected. Raise the target if you prefer deeper buffering over latency; set `TimeSpan.Zero` to restore pre-bound behavior.
+Default: 10ms. The producer bounds each broker's unacknowledged bytes to a preferred measured bandwidth-delay-product safety horizon, capped by `target × measured ack throughput` but never below one measured bandwidth-delay product. This avoids standing queueing under sustained overload (bufferbloat) without making throughput window-limited. When a broker exceeds its budget, produce calls block exactly like `BufferMemory` exhaustion (subject to `WithMaxBlock` and cancellation). Until the first drain measurement the bound sits at its ceiling, so short-lived producers are unaffected. Raise the target if you prefer deeper buffering over latency; set `TimeSpan.Zero` to restore pre-bound behavior.
 
 ### WithSocketSendBufferBytes / WithSocketReceiveBufferBytes
 

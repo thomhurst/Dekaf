@@ -1342,6 +1342,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly List<PendingAppend> _pendingAppendScan = [];
     private readonly List<PendingAppend> _drainablePendingAppends = [];
     private int _draining; // CAS guard for DrainPendingAppends
+    private long _pendingAppendDrainRequestVersion;
     private long _pendingAppendDrainEntryCount;
 
     /// <summary>
@@ -1980,9 +1981,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// rotating budget-blocked partitions so healthy brokers can progress.
     /// </summary>
     /// <remarks>
-    /// CAS on <c>_draining</c> ensures only one thread drains at a time. After releasing
-    /// the drain lock, we re-check for pending items with available memory to prevent
-    /// missed signals (a release could arrive while we hold the lock).
+    /// CAS on <c>_draining</c> ensures only one thread drains at a time. A caller that finds
+    /// the guard busy increments a request version; after releasing the guard, the owner
+    /// retries if that version changed. This prevents an unacked-budget release from being
+    /// lost when the active owner just observed the old, blocked state.
     /// </remarks>
     /// <returns>
     /// <see langword="false"/> only when another thread already owns the drain guard;
@@ -1993,9 +1995,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (_pendingAppends.IsEmpty)
             return true;
 
-        // Only one thread drains at a time — others return immediately.
+        // Only one thread drains at a time. Record the missed entry so the owner rescans
+        // after publishing the guard as free; a bool is insufficient because an older owner
+        // could consume a newer owner's wake in the handoff window.
         if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
+        {
+            Interlocked.Increment(ref _pendingAppendDrainRequestVersion);
             return false;
+        }
 
         Interlocked.Increment(ref _pendingAppendDrainEntryCount);
         var ownsDrainGuard = true;
@@ -2003,6 +2010,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             while (true)
             {
+                var drainRequestVersion = Volatile.Read(ref _pendingAppendDrainRequestVersion);
+
                 // Bail if accumulator is being disposed — DisposeAsync will drain the queue.
                 if (Volatile.Read(ref _disposed) != 0)
                     return true;
@@ -2104,11 +2113,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // can enter if we decide not to loop again.
                 ownsDrainGuard = false;
                 Volatile.Write(ref _draining, 0);
+                var drainRequested = Volatile.Read(ref _pendingAppendDrainRequestVersion)
+                    != drainRequestVersion;
 
                 // Re-check: a ReleaseMemory may have arrived while we held the drain lock,
-                // and new pending items may have been enqueued. Only re-enter if we made
-                // progress last round (prevents infinite loop when head item can't be served).
-                if (!madeProgress
+                // and new pending items may have been enqueued. A changed request version
+                // proves another caller observed us busy; otherwise only progress justifies
+                // another pass (preventing a spin while admission remains blocked).
+                if ((!madeProgress && !drainRequested)
                     || _pendingAppends.IsEmpty
                     || (ulong)Volatile.Read(ref _bufferedBytes) >= (ulong)Volatile.Read(ref _maxBufferMemory))
                 {

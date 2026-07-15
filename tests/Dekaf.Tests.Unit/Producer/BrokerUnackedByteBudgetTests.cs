@@ -91,14 +91,15 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task Budget_AfterRateSample_TracksTargetTimesRate()
+    public async Task Budget_AfterRateSample_TracksRttSafetyTimesRate()
     {
-        // 3,000 B/s at negligible RTT with a 0.5s target => budget 1,500, inside [200, 3,200].
+        // 300,000 B/s × 1.5 × 1ms RTT = 450 bytes, inside [200, 3,200].
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 3_200);
 
-        EstablishRate(budget, bytesPerSecond: 3_000, rttSeconds: 0.001);
+        EstablishRate(budget, bytesPerSecond: 300_000, rttSeconds: 0.001);
+        Ack(budget, 300, 0.001, T0 + Seconds(0.051));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(450);
     }
 
     [Test]
@@ -208,7 +209,8 @@ public sealed class BrokerUnackedByteBudgetTests
 
         await Assert.That(budget.DeliveryLatencyEwmaMicros).IsLessThan(6_000);
         await Assert.That(budget.LatencyBudgetScale).IsGreaterThan(reducedScale);
-        await Assert.That(budget.BudgetBytes).IsGreaterThan(2_500);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500)
+            .Because("latency-scale recovery cannot grow the budget beyond its RTT safety horizon");
     }
 
     [Test]
@@ -270,32 +272,31 @@ public sealed class BrokerUnackedByteBudgetTests
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 3_200);
 
-        // 1,000,000 B/s × 0.5s = 500,000 bytes — far above the cap.
-        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+        // One BDP at 1,000,000 B/s × 100ms is already far above the cap.
+        EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.100);
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(3_200);
     }
 
     [Test]
-    public async Task Budget_RttGuard_DominatesWhenRttExceedsTarget()
+    public async Task Budget_HorizonNeverDropsBelowOneBdp()
     {
-        // Target 10ms but the measured round-trip is 100ms: the guard keeps the budget at
-        // 1.5 × BDP (rate × RTT) so throughput is never window-limited.
+        // Target 10ms but measured RTT is 100ms: an impossible target still retains one BDP.
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
 
         EstablishRate(budget, bytesPerSecond: 100_000, rttSeconds: 0.100);
         Ack(budget, 10_000, 0.100, T0 + Seconds(0.101));
 
-        // 100,000 B/s × max(0.010, 1.5 × 0.100) = 15,000 bytes (±tick-quantization of the RTT).
-        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(14_990);
-        await Assert.That(budget.BudgetBytes).IsLessThanOrEqualTo(15_010);
+        // 100,000 B/s × 100ms = 10,000 bytes (±tick-quantization of the RTT).
+        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(9_990);
+        await Assert.That(budget.BudgetBytes).IsLessThanOrEqualTo(10_010);
     }
 
     [Test]
     public async Task Budget_RttGuard_UsesServingRttEwmaWithinClampUnderLoad()
     {
-        // Base RTT 10ms, loaded serving RTT 15ms — within the 2x clamp, so the loaded
-        // estimate (which includes replication service time) sizes the floor.
+        // Base RTT 10ms, loaded serving RTT 15ms — the 10ms target caps the preferred
+        // 1.5 × serving-RTT safety margin at one base-RTT BDP.
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
             floorBytes: 200,
@@ -309,8 +310,8 @@ public sealed class BrokerUnackedByteBudgetTests
 
         SetCapWithoutDecay(budget, 1_000_000, T0);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(22_500)
-            .Because("replicated serving RTT, not base RTT, determines the loaded BDP");
+        await Assert.That(budget.BudgetBytes).IsEqualTo(10_000)
+            .Because("the latency cap wins without dropping below one base-RTT BDP");
     }
 
     [Test]
@@ -319,7 +320,7 @@ public sealed class BrokerUnackedByteBudgetTests
         // Base RTT 1ms but the loaded serving RTT reads 20ms — that excess is queueing the
         // budget itself admitted. Unclamped, the floor would be 1.5 × 20ms = 30,000 bytes,
         // re-inflating the RTT it is derived from (the #2009 ratchet). The clamp bounds the
-        // floor at 1.5 × 2 × base RTT = 3ms; the 10ms target then governs.
+        // safety horizon at 1.5 × 2 × base RTT = 3ms, below the 10ms latency cap.
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
             floorBytes: 200,
@@ -333,8 +334,8 @@ public sealed class BrokerUnackedByteBudgetTests
 
         SetCapWithoutDecay(budget, 1_000_000, T0);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(10_000)
-            .Because("queue-inflated serving RTT must not raise the floor it feeds back into");
+        await Assert.That(budget.BudgetBytes).IsEqualTo(3_000)
+            .Because("queue-inflated serving RTT must not force the horizon to the target");
     }
 
     [Test]
@@ -355,9 +356,8 @@ public sealed class BrokerUnackedByteBudgetTests
 
         SetCapWithoutDecay(budget, 1_000_000, T0);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(12_500)
-            .Because("probing exactly when the RTT floor dominates accelerated the ratchet; " +
-                "the probe step is uniform");
+        await Assert.That(budget.BudgetBytes).IsEqualTo(3_750)
+            .Because("capacity probes apply uniform headroom to the target-bounded RTT horizon");
     }
 
     [Test]
@@ -370,10 +370,10 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 10_000, 0.100, T0 + Seconds(1.0));
 
         // Both samples measure 100,000 B/s. The later back-to-back 100ms service sample
-        // raises the loaded horizon — clamped to twice the retained 5ms base RTT, so the
-        // floor is 1.5 × 10ms — while the base RTT itself remains unchanged.
+        // raises the preferred safety horizon above the 10ms cap while the 5ms base RTT
+        // remains unchanged, so the latency target limits the budget to 10ms of rate.
         await Assert.That(budget.MinimumRttMicros).IsEqualTo(5_000);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
     }
 
     [Test]
@@ -398,10 +398,10 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 500, 0.005, T0);
         Ack(budget, 500, 0.005, T0 + Seconds(0.051));
 
-        // Expiring the minimum with a loaded sample starts a brief target-only drain,
+        // Expiring the minimum with a loaded sample starts a brief one-BDP drain,
         // rather than immediately accepting the 100ms queueing delay as base RTT.
         Ack(budget, 10_000, 0.100, T0 + Seconds(10.1));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(500);
 
         Ack(budget, 5_000, 0.050, T0 + Seconds(10.2));
         Ack(budget, 500, 0.005, T0 + Seconds(10.31));
@@ -411,7 +411,7 @@ public sealed class BrokerUnackedByteBudgetTests
         // pipelined delivery credit flows through the delivered-counter delta rather than
         // a shrunken inter-ack interval. Normal operation restores the serving-RTT floor.
         await Assert.That(budget.MinimumRttMicros).IsEqualTo(5_000);
-        await Assert.That(budget.BudgetBytes).IsGreaterThan(1_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
     }
 
     [Test]
@@ -480,10 +480,10 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 10_000, 0.100, T0 + Seconds(10.1));
         Ack(budget, 5_000, 0.050, T0 + Seconds(10.16));
 
-        // The 100ms sample that starts the refresh keeps the target-only drain active.
+        // The 100ms sample that starts the refresh keeps the one-BDP drain active.
         // Sizing from the stale 5ms minimum would have ended after the 50ms floor and
         // accepted the still-loaded 50ms sample as base RTT, inflating this to 7,500.
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(500);
     }
 
     [Test]
@@ -497,7 +497,9 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.Charge(11_000);
 
         await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(10.3))).IsTrue();
-        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(10.451))).IsFalse();
+        await Assert.That(GetField<long>(budget, "_minRttProbeUntilTimestamp"))
+            .IsLessThanOrEqualTo(T0 + Seconds(10.45));
+        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(10.452))).IsTrue();
     }
 
     [Test]
@@ -507,14 +509,14 @@ public sealed class BrokerUnackedByteBudgetTests
 
         Ack(budget, 10_000, 0.100, T0);
         Ack(budget, 10_000, 0.100, T0 + Seconds(0.101));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(15_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(10_000);
 
         Ack(budget, 20_000, 0.200, T0 + Seconds(10.2));
         await Assert.That(budget.BudgetBytes).IsEqualTo(10_000);
 
         SetCapWithoutDecay(budget, 1_000_000, T0 + Seconds(10.401));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(15_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(10_000);
     }
 
     [Test]
@@ -529,7 +531,9 @@ public sealed class BrokerUnackedByteBudgetTests
 
         await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(10.3))).IsTrue();
         await Assert.That(budget.IsOverBudget()).IsTrue();
-        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(10.401))).IsFalse();
+        await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(10.402))).IsTrue();
+        await Assert.That(GetField<long>(budget, "_minRttProbeUntilTimestamp"))
+            .IsLessThanOrEqualTo(T0 + Seconds(10.4));
     }
 
     [Test]
@@ -567,7 +571,7 @@ public sealed class BrokerUnackedByteBudgetTests
         // the retained 5ms base RTT, but it does restore a serving-RTT safety horizon
         // (clamped to twice the base RTT).
         await Assert.That(budget.MinimumRttMicros).IsEqualTo(5_000);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
     }
 
     [Test]
@@ -576,11 +580,11 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
 
         EstablishRate(budget, bytesPerSecond: 3_000, rttSeconds: 0.001);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(3_000);
 
         Ack(budget, 1, 0.001, T0 + Seconds(11.0));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(500);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(1_000);
     }
 
     [Test]
@@ -589,10 +593,10 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
 
         EstablishRate(budget, bytesPerSecond: 100_000, rttSeconds: 0.001);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(50_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(100_000);
 
         Ack(budget, 100, 0.001, T0 + Seconds(11.0));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(50_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(100_000);
     }
 
     [Test]
@@ -602,7 +606,7 @@ public sealed class BrokerUnackedByteBudgetTests
 
         Ack(budget, 10, 0.0001, T0);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(50_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(100_000);
     }
 
     [Test]
@@ -643,7 +647,7 @@ public sealed class BrokerUnackedByteBudgetTests
 
         // 1,000 bytes / 100ms request RTT = 10,000 B/s. The first request is enough to
         // establish rate; no preceding wall-clock ack timestamp is required.
-        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(10_000);
     }
 
     [Test]
@@ -672,7 +676,7 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 1_000, 0.100, T0);
         Ack(budget, 100, 0.100, T0 + Seconds(0.100));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(10_000);
     }
 
     [Test]
@@ -685,7 +689,7 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 1; i <= 23; i++)
             Ack(budget, 100, 0.100, T0 + Seconds(i * 0.100));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(500);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(1_000);
     }
 
     [Test]
@@ -700,7 +704,7 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 1; i <= 21; i++)
             Ack(budget, 100, 0.100, T0 + Seconds(i * 0.100), appLimitedAtSend: false);
 
-        await Assert.That(budget.BudgetBytes).IsGreaterThan(4_000)
+        await Assert.That(budget.MaxRateBytesPerSecond).IsGreaterThan(9_000)
             .Because("a two-second broker stall must not collapse the estimated pipe capacity");
     }
 
@@ -717,7 +721,7 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var second = 2; second <= 60; second += 2)
             Ack(budget, 100, 0.100, T0 + Seconds(second), appLimitedAtSend: false);
 
-        await Assert.That(budget.BudgetBytes).IsGreaterThan(4_500)
+        await Assert.That(budget.MaxRateBytesPerSecond).IsGreaterThan(9_000)
             .Because("a transient one-minute rate dip must not self-ratchet a saturated producer");
     }
 
@@ -731,7 +735,7 @@ public sealed class BrokerUnackedByteBudgetTests
 
         Ack(budget, 1_000, 0.100, T0, appLimitedAtSend: false);
         Ack(budget, 100, 0.100, T0 + Seconds(2.1), appLimitedAtSend: false);
-        await Assert.That(budget.BudgetBytes).IsGreaterThan(4_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsGreaterThan(9_000);
 
         Ack(budget, 100, 0.100, T0 + Seconds(3.0), appLimitedAtSend: true);
 
@@ -769,7 +773,7 @@ public sealed class BrokerUnackedByteBudgetTests
 
         Ack(budget, 1_000, 0.100, T0, appLimitedAtSend: false);
         Ack(budget, 100, 0.100, T0 + Seconds(2.1), appLimitedAtSend: false);
-        await Assert.That(budget.BudgetBytes).IsGreaterThan(4_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsGreaterThan(9_000);
 
         Ack(budget, 100, 0.100, T0 + Seconds(4.3), appLimitedAtSend: true);
 
@@ -850,11 +854,11 @@ public sealed class BrokerUnackedByteBudgetTests
 
         // Twenty fast acknowledgements cover only 500ms, so the 2-second maximum window
         // must retain the original 10,000 B/s observation.
-        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(10_000);
 
-        Ack(budget, 10, 0.025, T0 + Seconds(2.1));
+        Ack(budget, 10, 0.025, T0 + Seconds(2.6));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(400);
     }
 
     [Test]
@@ -866,24 +870,24 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 0; i <= 8; i++)
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
 
         Ack(budget, 1_000, 0.100, T0 + Seconds(0.900));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
 
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.000));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
 
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.100));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
 
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.200));
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.300));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
 
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.400));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(375);
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(1);
     }
@@ -1112,18 +1116,19 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task AdmissionPressureWithLatencyHeadroom_GrowsBudgetBeyondRateParity()
+    public async Task AdmissionPressureWithLatencyHeadroom_GrowsScaleWithinRttSafetyCap()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
             floorBytes: 200,
             initialCapBytes: 32_000_000);
         EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
-        await Assert.That(budget.BudgetBytes).IsEqualTo(10_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
 
         // The drain estimate only ever measures traffic the gate admitted, so rate x target
         // is self-confirming at any throughput (#2008). Blocked demand with latency headroom
-        // must grow the budget past that parity so real capacity can be discovered.
+        // grows the target horizon so real capacity can be discovered. The RTT safety
+        // horizon remains the tighter cap on a low-latency link.
         var now = T0;
         for (var i = 0; i < 30; i++)
         {
@@ -1137,7 +1142,7 @@ public sealed class BrokerUnackedByteBudgetTests
         }
 
         await Assert.That(budget.LatencyBudgetScale).IsGreaterThan(1.5);
-        await Assert.That(budget.BudgetBytes).IsGreaterThan(15_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
     }
 
     [Test]
@@ -1163,7 +1168,7 @@ public sealed class BrokerUnackedByteBudgetTests
 
         await Assert.That(budget.LatencyBudgetScale).IsEqualTo(10.0).Within(0.000_001)
             .Because("a stale-high scale must stay within a short shrink-back window");
-        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(100_000);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_500);
     }
 
     [Test]
@@ -1178,10 +1183,10 @@ public sealed class BrokerUnackedByteBudgetTests
         // One small response can arrive first after the larger budget is published.
         // It must not cancel the probe before other requests from the same RTT land.
         Ack(budget, 500, 0.100, T0 + Seconds(0.900));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
 
         Ack(budget, 1_250, 0.100, T0 + Seconds(0.950));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(7_812);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(585);
     }
 
     [Test]
@@ -1196,7 +1201,8 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 0; i <= 8; i++)
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
+        budget.Release(5_100);
         await Assert.That(budget.IsOverBudget()).IsTrue()
             .Because("occupancy above the normal budget must reach the deadline-aware gate");
         await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(0.900))).IsFalse()
@@ -1220,7 +1226,7 @@ public sealed class BrokerUnackedByteBudgetTests
         SetField(budget, "_minRttProbeUntilTimestamp", T0 + Seconds(0.050));
 
         await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(0.020))).IsTrue()
-            .Because("an active minimum-RTT probe must retain its target-only drain budget");
+            .Because("an active minimum-RTT probe must retain its one-BDP drain budget");
     }
 
     [Test]
@@ -1232,29 +1238,31 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 0; i <= 8; i++)
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
 
         // This request began before the probe opened at 800ms, so it cannot confirm
         // capacity under the larger admission budget even though it completes later.
         Ack(budget, 1_000, 0.200, T0 + Seconds(0.900));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
 
         // First request wholly admitted under the probe starts three RTTs of measurement.
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.000));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
 
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.100));
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.200));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
 
         // Target horizon is longer than three RTTs, so measurement continues until 500ms
         // after the first wholly admitted response.
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.300));
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.400));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(6_250);
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
 
         Ack(budget, 1_000, 0.100, T0 + Seconds(1.500));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000);
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsFalse();
+        await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(1);
     }
 
     [Test]
@@ -1341,17 +1349,19 @@ public sealed class BrokerUnackedByteBudgetTests
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
 
         Ack(budget, 1_250, 0.100, T0 + Seconds(0.900));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(7_812);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(585);
+        var firstRungBudget = budget.BudgetBytes;
 
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.000));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(8_787);
+        await Assert.That(budget.BudgetBytes).IsGreaterThan(firstRungBudget);
+        var secondRungBudget = budget.BudgetBytes;
 
         // The probe averages three RTTs before ratcheting to the higher level.
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.100));
-        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(8_787);
+        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(secondRungBudget);
 
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.200));
-        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(8_787);
+        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(secondRungBudget);
 
         // The ratcheted level gets another full-window average. Comparing average with
         // average lets the sustained 25% gain advance the next rung as well.
@@ -1363,7 +1373,7 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.800));
         Ack(budget, 1_562, 0.100, T0 + Seconds(1.900));
         Ack(budget, 1_562, 0.100, T0 + Seconds(2.000));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(9_762);
+        await Assert.That(budget.BudgetBytes).IsGreaterThan(secondRungBudget);
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(2);
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
     }
@@ -1392,7 +1402,7 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 100, 0.100, T0);
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(200)
-            .Because("minimum-RTT probes must publish a target-only budget that drains standing queueing");
+            .Because("minimum-RTT probes must publish a one-BDP budget that drains standing queueing");
 
         budget.ObserveWrittenUnackedBytes(20_000);
         Ack(budget, 100, 0.100, T0 + Seconds(0.101));
@@ -1417,7 +1427,7 @@ public sealed class BrokerUnackedByteBudgetTests
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
 
-        // 100,000 B/s drain at negligible RTT => rate budget 1,000 bytes. Feed the
+        // 100,000 B/s drain at negligible RTT => the configured 200-byte floor. Feed the
         // published budget back as observed occupancy each round — the exact feedback
         // shape that previously ratcheted the budget to its cap.
         Ack(budget, 100, 0.001, T0);
@@ -1427,8 +1437,8 @@ public sealed class BrokerUnackedByteBudgetTests
             Ack(budget, 100, 0.001, T0 + Seconds(i * 0.100));
         }
 
-        // Fixed point is the rate budget, not a multiple of it or the 1,000,000-byte cap.
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+        // Fixed point is the floor, not a multiple of it or the 1,000,000-byte cap.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
     }
 
     [Test]
@@ -1601,7 +1611,7 @@ public sealed class BrokerUnackedByteBudgetTests
         // took to arrive, not its own 5ms sojourn (which would read 20 MB/s).
         Ack(budget, 100_000, 0.005, T0 + Seconds(0.5), appLimitedAtSend: false);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(100_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(200_000);
     }
 
     [Test]
@@ -1615,7 +1625,7 @@ public sealed class BrokerUnackedByteBudgetTests
         // sample uses the request's own 5ms sojourn (20 MB/s, budget clamps to cap).
         Ack(budget, 100_000, 0.005, T0 + Seconds(5.0));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(20_000_000);
     }
 
     [Test]
@@ -1645,12 +1655,13 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 0; i <= 8; i++)
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
 
+        budget.Release(5_100);
         await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(0.900))).IsFalse();
         await Assert.That(budget.GetAdmissionRecheckDelayMilliseconds(T0 + Seconds(0.900)))
             .IsEqualTo(700);
         await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(1.601))).IsTrue();
 
-        budget.Release(5_500);
+        budget.Release(400);
     }
 
     [Test]
@@ -1661,7 +1672,7 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 1_000, 0.010, T0);
         Ack(budget, 1_000, 0.010, T0 + Seconds(1.0));
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(50_000);
+        await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(100_000);
     }
 
     [Test]
@@ -1674,7 +1685,7 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.BudgetBytes).IsEqualTo(6_400);
 
         // With a rate established, a cap below the computed budget clamps it...
-        EstablishRate(budget, bytesPerSecond: 3_000, rttSeconds: 0.001); // budget 1,500
+        EstablishRate(budget, bytesPerSecond: 3_000, rttSeconds: 0.5); // budget 1,500
         budget.SetCap(1_000, T0);
         await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
 

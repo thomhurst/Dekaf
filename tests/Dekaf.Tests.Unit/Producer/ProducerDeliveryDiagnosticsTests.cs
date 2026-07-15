@@ -220,7 +220,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
     }
 
     [Test]
-    public async Task BrokerBudgetFloor_UsesMeasuredTimeBudget_NotFixedBatchBytes()
+    public async Task BrokerBudgetHorizon_UsesMeasuredBdp_NotFixedBatchBytes()
     {
         await using var accumulator = new RecordAccumulator(
             CreateOptions(deliveryLatencyTargetMs: 10),
@@ -234,8 +234,8 @@ public sealed class ProducerDeliveryDiagnosticsTests
             now);
         budget.CompleteAckedPass(now);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000)
-            .Because("100 kB/s at a 10 ms target needs a 1 kB time-derived budget");
+        await Assert.That(budget.BudgetBytes).IsEqualTo(100)
+            .Because("100 kB/s at a 1 ms RTT needs a 100-byte measured BDP");
     }
 
     [Test]

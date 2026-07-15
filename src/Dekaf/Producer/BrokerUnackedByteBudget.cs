@@ -10,9 +10,10 @@ namespace Dekaf.Producer;
 /// instead of growing to the full <see cref="ProducerOptions.BufferMemory"/> reservoir.
 /// Under open-loop saturation, append-to-ack latency equals standing unacked bytes divided
 /// by the broker's drain rate; capping the standing bytes to
-/// <c>target × measured drain rate</c> caps the latency. The RTT safety floor uses a
-/// periodically refreshed minimum RTT or the loaded serving RTT, so replicated service time
-/// still keeps the pipe full. Raw round trips include the drain time of bytes the budget
+/// <c>target × measured drain rate</c> caps the latency. The RTT safety horizon uses a
+/// periodically refreshed minimum RTT or the loaded serving RTT, capped by the latency target
+/// but never below one measured BDP so replicated service time still keeps the pipe full.
+/// Raw round trips include the drain time of bytes the budget
 /// itself admitted ahead of the request, so RTT samples are queue-corrected at intake (raw
 /// RTT minus unacked-at-send over the measured max rate) before feeding the minimum and
 /// serving estimates, and the serving EWMA is additionally clamped to a bounded multiple of
@@ -147,10 +148,10 @@ internal sealed class BrokerUnackedByteBudget
     /// </summary>
     private static readonly long MaxMinRttProbeDurationTicks = Stopwatch.Frequency / 4;
 
-    /// <summary>Budget never drops below this multiple of the measured bandwidth-delay
-    /// product (rate × RTT). Without this guard a target below the broker RTT would shrink
-    /// the budget below BDP, underfill the pipe, lower the measured rate, and ratchet the
-    /// budget down to the floor — collapsing throughput on high-latency links.</summary>
+    /// <summary>Preferred multiple of the measured bandwidth-delay product (rate × RTT).
+    /// The latency target caps this safety margin, but the horizon never drops below one
+    /// base-RTT BDP; otherwise high-latency links underfill the pipe, lower the measured rate,
+    /// and ratchet the budget down to the floor.</summary>
     private const double RttSafetyMultiplier = 1.5;
     private const double MinRttProbeSafetyMultiplier = 1.0;
 
@@ -1258,11 +1259,12 @@ internal sealed class BrokerUnackedByteBudget
                     minRttSeconds,
                     Math.Min(_servingRttEwmaSeconds, ServingRttClampMultiplier * minRttSeconds))
                 : minRttSeconds;
-            var rttFloorSeconds = minRttProbeActive
+            var rttSafetyHorizonSeconds = minRttProbeActive
                 ? MinRttProbeSafetyMultiplier * minRttSeconds
                 : RttSafetyMultiplier * loadAwareRttSeconds;
+            var latencyCapSeconds = Math.Max(latencyGovernedTargetSeconds, minRttSeconds);
             var horizonSeconds = _hasMinRttSample
-                ? Math.Max(latencyGovernedTargetSeconds, rttFloorSeconds)
+                ? Math.Min(rttSafetyHorizonSeconds, latencyCapSeconds)
                 : latencyGovernedTargetSeconds;
             rateBudgetBytes = effectiveMaxRate * horizonSeconds;
             var estimatedBytes = rateBudgetBytes;

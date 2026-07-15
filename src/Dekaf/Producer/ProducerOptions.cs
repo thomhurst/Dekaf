@@ -142,10 +142,11 @@ public sealed class ProducerOptions
     /// <summary>
     /// Soft target, in milliseconds, for controllable per-broker producer queueing latency
     /// (batch seal to socket send). Configured linger and broker round-trip time are excluded.
-    /// Bounds the bytes each broker may hold unacknowledged to
-    /// <c>target × measured ack throughput</c>, with a measured round-trip lower guard so
-    /// throughput is never window-limited. When a broker exceeds its budget, message admission
-    /// blocks the same way <see cref="BufferMemory"/> exhaustion does (subject to
+    /// Bounds the bytes each broker may hold unacknowledged to a preferred measured
+    /// bandwidth-delay product safety horizon, capped by
+    /// <c>target × measured ack throughput</c> but never below one measured bandwidth-delay
+    /// product so throughput is not window-limited. When a broker exceeds its budget, message
+    /// admission blocks the same way <see cref="BufferMemory"/> exhaustion does (subject to
     /// <see cref="MaxBlockMs"/> and cancellation). Until the first drain measurement the bound
     /// equals its ceiling, so short-lived producers are unaffected.
     /// Set to 0 to disable the bound entirely. Default: 10.
