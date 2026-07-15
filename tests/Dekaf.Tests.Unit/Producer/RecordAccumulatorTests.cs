@@ -3612,6 +3612,26 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task DrainPendingAppends_EmptyQueueWithBusyGuard_RecordsRetryRequest()
+    {
+        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
+        SetPrivateField(accumulator, "_draining", 1);
+        var requestVersion = GetPrivateField<long>(accumulator, "_pendingAppendDrainRequestVersion");
+
+        try
+        {
+            await Assert.That(accumulator.DrainPendingAppends()).IsFalse()
+                .Because("the active drainer may hold a blocked candidate outside the queue");
+            await Assert.That(GetPrivateField<long>(accumulator, "_pendingAppendDrainRequestVersion"))
+                .IsEqualTo(requestVersion + 1);
+        }
+        finally
+        {
+            SetPrivateField(accumulator, "_draining", 0);
+        }
+    }
+
+    [Test]
     public async Task DrainPendingAppends_CompetingWake_RescansReleasedBudget()
     {
         using var secondPartitionResolverEntered = new ManualResetEventSlim();
