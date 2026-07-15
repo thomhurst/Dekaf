@@ -4,7 +4,7 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
-    <DekafPackageVersion Condition="'$(DekafPackageVersion)' == ''">1.3.0</DekafPackageVersion>
+    <DekafPackageVersion Condition="'$(DekafPackageVersion)' == ''">1.4.0</DekafPackageVersion>
   </PropertyGroup>
 
   <ItemGroup>
