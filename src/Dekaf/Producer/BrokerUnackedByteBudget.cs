@@ -276,8 +276,8 @@ internal sealed class BrokerUnackedByteBudget
     private double _requestSizeEwmaBytes;
     // Capacity probes raise this per-connection request-depth floor only after proving that
     // larger flight increases delivery rate without inflating RTT or seal-to-ack latency. It
-    // survives an individual probe ending, but remains within the full wire ceiling. Sustained
-    // idle resets path evidence.
+    // survives an individual probe ending, but remains within the full wire ceiling. Actionable
+    // over-target latency decays stale evidence; sustained idle resets it.
     private double _provenPipelineRequestQuanta;
     private int _connectionCount;
     private bool _hasLoadedServingSample;
@@ -967,8 +967,24 @@ internal sealed class BrokerUnackedByteBudget
             _latencyBudgetScale * adjustment,
             MinimumLatencyBudgetScale,
             1.0));
+        DecayProvenPipelineRequestQuanta(adjustment);
         _nextLatencyControlTimestamp = nowTicks + LatencyControlIntervalTicks;
         return sealToAckSeconds;
+    }
+
+    private void DecayProvenPipelineRequestQuanta(double adjustment)
+    {
+        var minimum = GetMinimumPipelineRequestQuanta();
+        if (adjustment >= 1.0 || _provenPipelineRequestQuanta <= minimum)
+            return;
+
+        // The scale is transient and recovers after the queue drains. Apply the same
+        // controller decrease to persistent proof so isolated false-positive probe rungs do
+        // not return as soon as the scale reaches one. This method is reached only after the
+        // sender-backlog/underfilled-wire actionability guard above.
+        Volatile.Write(
+            ref _provenPipelineRequestQuanta,
+            Math.Max(minimum, _provenPipelineRequestQuanta * adjustment));
     }
 
     private void UpdateAdmissionPressure()

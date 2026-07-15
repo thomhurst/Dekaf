@@ -134,13 +134,14 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task DeliveryLatencyAboveTarget_ReducesRateBudget()
+    public async Task DeliveryLatencyAboveTarget_ReducesRateBudgetAndProof()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
             floorBytes: 200,
             initialCapBytes: 1_000_000);
         EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+        SetField(budget, "_provenPipelineRequestQuanta", 32.0);
 
         var now = T0;
         for (var i = 0; i < 6; i++)
@@ -157,6 +158,8 @@ public sealed class BrokerUnackedByteBudgetTests
 
         await Assert.That(budget.DeliveryLatencyEwmaMicros).IsEqualTo(19_000).Within(10);
         await Assert.That(budget.LatencyBudgetScale).IsLessThan(0.25);
+        await Assert.That(budget.ProvenPipelineRequestQuanta).IsLessThan(8.0)
+            .Because("actionable over-target queueing must revoke stale probe proof, not only derate it transiently");
         await Assert.That(budget.BudgetBytes).IsLessThan(2_500);
     }
 
@@ -1373,13 +1376,14 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task SendLoopBacklog_WithoutWireOccupancy_DoesNotShrinkScale()
+    public async Task SendLoopBacklog_WithoutWireOccupancy_DoesNotShrinkScaleOrProof()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
             floorBytes: 200,
             initialCapBytes: 1_000_000);
         EstablishRate(budget, bytesPerSecond: 1_000_000, rttSeconds: 0.001);
+        SetField(budget, "_provenPipelineRequestQuanta", 8.0);
 
         // 19ms of seal-to-send backlog with an empty wire: the send loop, not broker
         // admission, is the bottleneck. Shrinking would starve the sender below capacity.
@@ -1396,6 +1400,8 @@ public sealed class BrokerUnackedByteBudgetTests
 
         await Assert.That(budget.LatencyBudgetScale).IsEqualTo(1.0).Within(0.000_001)
             .Because("sender backlog with an underfilled wire is not actionable by admission");
+        await Assert.That(budget.ProvenPipelineRequestQuanta).IsEqualTo(8.0).Within(0.000_001)
+            .Because("non-actionable sender backlog must not revoke proven broker capacity");
     }
 
     [Test]
