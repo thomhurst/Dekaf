@@ -228,7 +228,8 @@ At-least-once redelivery happens at these boundaries — size your idempotency a
 - **Failure exit:** the failing record and any records after it in already-fetched batches.
 - **Crash:** everything after the last background commit (up to `AutoCommitIntervalMs` of work,
   plus the current fetch).
-- **`break` without `CommitAsync()`:** exactly one record (the one you were holding).
+- **`break` without `CommitAsync()`:** exactly one record for record-at-a-time APIs (the one
+  you were holding), or up to the full current batch for batch APIs (the batch is the proof unit).
 - **Rebalance:** the in-flight tail of each moved partition.
 
 Idempotent processing turns all of these into non-events. Common patterns: upsert by key,
