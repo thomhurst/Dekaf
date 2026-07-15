@@ -980,6 +980,71 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task PeriodicProbe_SuccessPersistsProvenRequestDepthAfterProbeEnds()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SetField(budget, "_capacityProbeBaselineRate", 10_000.0);
+        SetField(budget, "_capacityProbeStartTimestamp", T0);
+        SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(1.0));
+        SetField(budget, "_capacityProbeEvaluationDeadlineTimestamp", T0 + Seconds(0.200));
+        SetField(budget, "_capacityProbeRateSum", 42_000.0);
+        SetField(budget, "_capacityProbeRateSampleCount", 2);
+        SetField(budget, "_capacityProbeActive", true);
+
+        Ack(budget, 1_200, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(1);
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(5.0).Within(0.000_001);
+
+        SetField(budget, "_capacityProbeActive", false);
+        SetField(budget, "_capacityProbeDeadlineTimestamp", 0L);
+        SetField(budget, "_minRttProbeUntilTimestamp", 0L);
+        SetField(budget, "_hasMinRttSample", true);
+        SetField(budget, "_minRttSeconds", 0.0001);
+        SetField(budget, "_servingRttEwmaSeconds", 0.0001);
+        SetField(budget, "_hasLoadedServingSample", true);
+        SetField(budget, "_windowMaxRate", 1_000_000.0);
+        SetField(budget, "_retainedLoadedMaxRate", 1_000_000.0);
+        SetField(budget, "_requestSizeEwmaBytes", 1_000.0);
+        SetField(budget, "_admissionPressureActive", false);
+        SetField(budget, "_latencyBudgetScale", 1.0);
+
+        SetCapWithoutDecay(budget, 1_000_000, T0 + Seconds(0.301));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(5_000)
+            .Because("a successful five-request rung must become the normal budget, not a transient probe only");
+
+        SetField(budget, "_latencyBudgetScale", 0.25);
+        SetCapWithoutDecay(budget, 1_000_000, T0 + Seconds(0.302));
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(2_500)
+            .Because("latency pressure must still bound previously proven request depth");
+    }
+
+    [Test]
+    public async Task ProvenRequestDepth_ResetsAfterSustainedIdle()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        Ack(budget, 1_000, 0.001, T0);
+        SetField(budget, "_provenPipelineRequestQuanta", 10.0);
+        SetField(budget, "_nextProbeTimestamp", T0 + Seconds(100));
+
+        var sendTimestamp = T0 + Seconds(3.0);
+        var snapshot = budget.SnapshotDelivery(sendTimestamp, appLimited: true);
+        Ack(budget, 1_000, 0.001, sendTimestamp + Seconds(0.001), snapshot);
+
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(4.0)
+            .Because("capacity proven before a sustained idle gap is stale path evidence");
+    }
+
+    [Test]
     public async Task BudgetDecay_IsRateLimitedWithoutAdmissionBlocks()
     {
         var budget = BrokerUnackedByteBudget.BoundBudgetDecay(
@@ -1460,6 +1525,9 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.BudgetBytes).IsGreaterThan(secondRungBudget);
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(2);
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(6.25).Within(0.000_001)
+            .Because("each flat-RTT rate-gain rung must become normal admission depth");
     }
 
     [Test]

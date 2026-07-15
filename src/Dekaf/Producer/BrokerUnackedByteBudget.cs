@@ -269,6 +269,11 @@ internal sealed class BrokerUnackedByteBudget
     private double _servingRttEwmaSeconds;
     private double _rawServingRttEwmaSeconds;
     private double _requestSizeEwmaBytes;
+    // Capacity probes raise this request-depth floor only after proving that the larger
+    // flight increases delivery rate without inflating RTT. It survives an individual
+    // probe ending so normal admission does not fall back to the self-confirming four-
+    // request floor after every successful rung. Sustained idle resets path evidence.
+    private double _provenPipelineRequestQuanta = MinimumPipelineRequestQuanta;
     private bool _hasLoadedServingSample;
     private double _sealToAckEwmaSeconds;
     private double _minRttProbeMinimumSeconds;
@@ -350,6 +355,9 @@ internal sealed class BrokerUnackedByteBudget
     internal long CapacityProbeSuccessCount => Volatile.Read(ref _capacityProbeSuccessCount);
 
     internal long CapacityProbeFailureCount => Volatile.Read(ref _capacityProbeFailureCount);
+
+    internal double ProvenPipelineRequestQuanta =>
+        Volatile.Read(ref _provenPipelineRequestQuanta);
 
     /// <summary>EWMA of controllable seal-to-send queue latency. The diagnostic property
     /// retains its original name for compatibility.</summary>
@@ -723,6 +731,7 @@ internal sealed class BrokerUnackedByteBudget
         if (sustainedIdle)
         {
             _hasLoadedServingSample = false;
+            _provenPipelineRequestQuanta = MinimumPipelineRequestQuanta;
             _lastNormalBudgetBytes = _capBytes;
             _lastBudgetUpdateTimestamp = nowTicks;
         }
@@ -1220,6 +1229,9 @@ internal sealed class BrokerUnackedByteBudget
                 // a sustainable baseline and would make the next average-rate rung unwinnable.
                 _capacityProbeBaselineRate = averageRate;
                 _capacityProbePreProbeRttSeconds = averageRttSeconds;
+                _provenPipelineRequestQuanta = Math.Min(
+                    GetMaximumPipelineRequestQuanta(),
+                    _provenPipelineRequestQuanta * ProbeBudgetMultiplier);
                 RecordProbeEvent(
                     BrokerBudgetProbeType.Capacity,
                     BrokerBudgetProbeOutcome.Succeeded,
@@ -1288,6 +1300,11 @@ internal sealed class BrokerUnackedByteBudget
         _capacityProbeRateSampleCount = 0;
         _capacityProbeEvaluationDeadlineTimestamp = 0;
     }
+
+    private double GetMaximumPipelineRequestQuanta()
+        => _requestSizeEwmaBytes > 0
+            ? Math.Max(MinimumPipelineRequestQuanta, _capBytes / _requestSizeEwmaBytes)
+            : MinimumPipelineRequestQuanta;
 
     private void DeactivateCapacityProbe(long nowTicks)
     {
@@ -1469,16 +1486,22 @@ internal sealed class BrokerUnackedByteBudget
                 ? Math.Min(rttSafetyHorizonSeconds, latencyCapSeconds)
                 : latencyGovernedTargetSeconds;
 
-            if (!minRttProbeActive && admissionPressureActive && _requestSizeEwmaBytes > 0)
+            var hasProvenAdditionalDepth =
+                _provenPipelineRequestQuanta > MinimumPipelineRequestQuanta;
+            if (!minRttProbeActive
+                && _requestSizeEwmaBytes > 0
+                && (admissionPressureActive || hasProvenAdditionalDepth))
             {
                 // Admission is charged in batch/request-sized quanta, so a sub-request BDP
                 // cannot expose additional capacity even when the byte-rate estimator is
                 // accurate. Recent blocked demand enables a small acknowledgement pipeline;
                 // the latency cap bounds it. General capacity discovery remains the job of
                 // the periodic 25% probes below — this floor only crosses coarse request
-                // granularity that a smaller byte probe cannot expose.
+                // granularity that a smaller byte probe cannot expose. Successful capacity
+                // probes persist higher proven quanta here; the latency cap still supplies
+                // the downward bound when that deeper flight starts queueing.
                 var requestPipelineHorizonSeconds =
-                    MinimumPipelineRequestQuanta * _requestSizeEwmaBytes / effectiveMaxRate;
+                    _provenPipelineRequestQuanta * _requestSizeEwmaBytes / effectiveMaxRate;
                 horizonSeconds = Math.Max(
                     horizonSeconds,
                     Math.Min(requestPipelineHorizonSeconds, latencyCapSeconds));

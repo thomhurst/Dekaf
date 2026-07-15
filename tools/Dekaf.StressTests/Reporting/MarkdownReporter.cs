@@ -285,8 +285,8 @@ internal static class MarkdownReporter
 
         sb.AppendLine($"## Producer Budget Timeline - {label}");
         sb.AppendLine();
-        sb.AppendLine("| Client | Sample UTC | Broker | Budget / unacked | Max rate | Probe success/failure | Admission blocks | Nearest throughput sample |");
-        sb.AppendLine("|--------|------------|-------:|------------------|---------:|----------------------:|-----------------:|---------------------------|");
+        sb.AppendLine("| Client | Sample UTC | Broker | Budget / unacked | Proven request depth | Max rate | Probe success/failure | Admission blocks | Nearest throughput sample |");
+        sb.AppendLine("|--------|------------|-------:|------------------|---------------------:|---------:|----------------------:|-----------------:|---------------------------|");
         foreach (var row in displayedRows)
         {
             var nearest = row.Result.Throughput.IntervalSamples
@@ -297,6 +297,7 @@ internal static class MarkdownReporter
             sb.AppendLine(
                 $"| {row.Result.Client} | {row.Sample.CapturedAtUtc:HH:mm:ss.fff} | {row.Sample.BrokerId} | " +
                 $"{row.Sample.BudgetBytes / 1_048_576.0:F1} MiB / {row.Sample.UnackedBytes / 1_048_576.0:F1} MiB | " +
+                $"{row.Sample.ProvenPipelineRequestQuanta:F2} | " +
                 $"{row.Sample.MaxRateBytesPerSec / 1_000_000.0:F1} MB/s | " +
                 $"{row.Sample.CapacityProbeSuccessCount:N0}/{row.Sample.CapacityProbeFailureCount:N0} | " +
                 $"{row.Sample.AdmissionBlockCount:N0} | {throughput} |");

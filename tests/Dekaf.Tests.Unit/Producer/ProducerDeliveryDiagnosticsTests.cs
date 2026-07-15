@@ -209,6 +209,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(current.AdmissionBlockCount).IsEqualTo(1);
         await Assert.That(current.CapacityProbeSuccessCount).IsEqualTo(0);
         await Assert.That(current.CapacityProbeFailureCount).IsEqualTo(0);
+        await Assert.That(current.ProvenPipelineRequestQuanta).IsEqualTo(4.0);
         await Assert.That(current.RequestSizeLog2Histogram).IsNotNull();
         await Assert.That(current.RequestSizeLog2Histogram!.Sum()).IsEqualTo(1);
         await Assert.That(current.RequestRttMicrosLog2Histogram).IsNotNull();
@@ -223,6 +224,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(sample.BrokerId).IsEqualTo(7);
         await Assert.That(sample.CapacityProbeSuccessCount).IsEqualTo(0);
         await Assert.That(sample.CapacityProbeFailureCount).IsEqualTo(0);
+        await Assert.That(sample.ProvenPipelineRequestQuanta).IsEqualTo(4.0);
         await Assert.That(sample.CapturedAtUtc).IsLessThanOrEqualTo(snapshot.CapturedAtUtc);
         await Assert.That(sample.RequestSizeLog2Histogram).IsNull()
             .Because("periodic samples omit histograms to keep the 4096-entry ring compact");

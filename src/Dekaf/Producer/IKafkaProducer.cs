@@ -311,6 +311,9 @@ internal sealed class ProducerBrokerBudgetDiagnostic
     // probe outcomes were added; missing JSON values naturally deserialize as zero.
     public long CapacityProbeSuccessCount { get; init; }
     public long CapacityProbeFailureCount { get; init; }
+    // Optional for backward compatibility with persisted stress results captured before
+    // successful capacity probes could persist their proven request depth.
+    public double ProvenPipelineRequestQuanta { get; init; }
     /// <summary>Controllable seal-to-send queue-latency EWMA. Name retained for diagnostic
     /// output compatibility.</summary>
     public required long DeliveryLatencyEwmaMicros { get; init; }
