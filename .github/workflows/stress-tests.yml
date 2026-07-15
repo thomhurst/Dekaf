@@ -1,5 +1,5 @@
 name: Stress Tests
-run-name: Stress Tests (${{ github.event.inputs.lane || 'all' }})
+run-name: Stress Tests (${{ github.event.inputs.lane || 'all' }}${{ github.event.inputs.client != 'lane-default' && github.event.inputs.client && format(' / {0} only', github.event.inputs.client) || '' }})
 
 on:
   schedule:
@@ -49,12 +49,25 @@ on:
         description: 'Enable Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead to the measured window)'
         required: false
         default: 'false'
+      # Keep this choice input below duration_minutes: the options-sync test in
+      # .github/scripts/test_stress_trend.py slices the workflow text from the
+      # first 'options:' to 'duration_minutes:' to read the lane list.
+      client:
+        description: 'Client override for paired lanes: dekaf/confluent runs only that client (single sample, no ratio, results not published). Dekaf-only lanes ignore this.'
+        required: false
+        type: choice
+        default: lane-default
+        options:
+          - lane-default
+          - dekaf
+          - confluent
 
-# Scoped per lane so a cheap single-lane dispatch is not queued for hours behind
-# a full-matrix run; lanes execute on separate VMs and share no mutable state
-# (docs/history publishing only happens on full runs).
+# Scoped per lane+client so a cheap single-lane or single-client dispatch is not
+# queued for hours behind a full-matrix run; lanes execute on separate VMs and
+# share no mutable state (docs/history publishing only happens on unmodified
+# full runs, which all fall in the stress-tests-all-lane-default group).
 concurrency:
-  group: stress-tests-${{ github.event.inputs.lane || 'all' }}
+  group: stress-tests-${{ github.event.inputs.lane || 'all' }}-${{ github.event.inputs.client || 'lane-default' }}
   cancel-in-progress: false
 
 env:
@@ -77,6 +90,7 @@ jobs:
         id: select
         env:
           LANE: ${{ github.event.inputs.lane }}
+          CLIENT: ${{ github.event.inputs.client }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           # The UI enforces the required choice input, but API/CLI dispatches can
@@ -88,6 +102,19 @@ jobs:
             exit 1
           fi
           lane="${LANE:-all}"
+
+          # Client override: empty means the lane's own paired behavior. Validate
+          # here (choice is UI-enforced only) so a bad value fails on this free
+          # runner, not on a paid one.
+          client="$CLIENT"
+          [ "$client" = "lane-default" ] && client=""
+          case "$client" in
+            ""|dekaf|confluent) ;;
+            *)
+              echo "::error::Unknown client '$client'. Valid values: lane-default, dekaf, confluent."
+              exit 1
+              ;;
+          esac
 
           # timeout_minutes rationale: at a 30-minute dispatch the paired_samples=2
           # lanes run four paired client durations plus one 3-connection duration
@@ -111,8 +138,20 @@ jobs:
           ]
           EOF
 
-          matrix=$(jq -c --arg lane "$lane" \
-            '{include: [ .[] | select($lane == "all" or .lane == $lane) ]}' lanes.json)
+          # A client override applies only to paired lanes (client == "all"):
+          # Dekaf-only lanes keep their client. Overridden lanes drop to one
+          # sample — paired_samples exists to alternate client order, which is
+          # meaningless for a single client — and the Dekaf-only 3-connection
+          # pass survives only a dekaf override.
+          matrix=$(jq -c --arg lane "$lane" --arg client "$client" '
+            {include: [ .[]
+              | select($lane == "all" or .lane == $lane)
+              | if $client != "" and .client == "all" then
+                  .client = $client
+                  | .paired_samples = 1
+                  | if $client == "confluent" then .run_3conn = false | .artifact_suffix = "" else . end
+                else . end
+            ]}' lanes.json)
           count=$(echo "$matrix" | jq '.include | length')
           if [ "$count" -eq 0 ]; then
             echo "::error::Unknown lane '$lane'. Valid lanes: all $(jq -r '[.[].lane] | join(" ")' lanes.json)"
@@ -120,8 +159,10 @@ jobs:
           fi
 
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "full_run=$([ "$lane" = "all" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "Selected $count lane(s) for '$lane'"
+          # Only an unmodified full matrix may publish docs/history: a client
+          # override produces single-client rows that would wipe ratio columns.
+          echo "full_run=$([ "$lane" = "all" ] && [ -z "$client" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "Selected $count lane(s) for '$lane'${client:+ (client override: $client)}"
 
   # Run each scenario in parallel. Comparable clients run sequentially inside the
   # same job/VM so published ratios share hardware and noisy-neighbor conditions;
@@ -514,9 +555,10 @@ jobs:
     runs-on: ubuntu-latest
     # stress-test success is required: a failed scenario (e.g. broker died mid-run)
     # must block the docs update rather than publish a partial or invalid table.
-    # Single-lane dispatches never publish: the docs page and trend history are
-    # regenerated from this run's results alone, so a partial run would drop every
-    # other lane's rows. Read single-lane data from the run summary and artifacts.
+    # Partial dispatches (single lane, or a client override) never publish: the
+    # docs page and trend history are regenerated from this run's results alone,
+    # so a partial run would drop other lanes' rows or the ratio columns. Read
+    # partial-run data from the run summary and artifacts.
     if: github.ref == 'refs/heads/main' && needs.select-lanes.outputs.full_run == 'true' && needs.stress-test.result == 'success' && needs.generate-summary.result == 'success'
 
     permissions:
@@ -648,9 +690,10 @@ jobs:
     needs: [stress-test, generate-summary, publish-to-docs]
     runs-on: ubuntu-latest
     # Wait for the docs PR so valid regression observations are persisted before
-    # the workflow reports the repeated regression. Single-lane dispatches skip
-    # publish-to-docs and therefore this gate too: their observations are never
-    # persisted to history, so consecutive-regression tracking would be spurious.
+    # the workflow reports the repeated regression. Partial dispatches (single
+    # lane or client override) skip publish-to-docs and therefore this gate too:
+    # their observations are never persisted to history, so consecutive-regression
+    # tracking would be spurious.
     if: >-
       always() &&
       needs.stress-test.result == 'success' &&

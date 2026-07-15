@@ -462,17 +462,19 @@ def allocated_per_message(result):
 
 
 def find_confluent_baseline(results):
-    """Find Confluent throughput as a baseline for ratio calculations."""
+    """Find Confluent throughput as a baseline for ratio calculations.
+
+    Returns None when no Confluent rows exist (Dekaf-only scenarios and
+    single-client dispatches) so the ratio column renders '-' instead of a
+    self-referential ratio that reads as a Confluent comparison.
+    """
     confluent_results = [
         result for result in results
         if result.get('client', '').lower() == 'confluent'
     ]
-    if confluent_results:
-        rate = aggregate_client_rate(confluent_results)
-        if rate is not None:
-            return rate
+    if not confluent_results:
         return None
-    return min((comparison_rate(r) or 1 for r in results), default=1)
+    return aggregate_client_rate(confluent_results)
 
 
 def throughput_sort_key(result):
