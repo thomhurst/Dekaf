@@ -30,14 +30,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Google.Protobuf" Version="3.35.1" />
-    <PackageReference Include="OpenTelemetry" Version="1.16.0" />
-    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.10" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
-    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="2.3.2" />
-    <PackageReference Include="NSubstitute" Version="6.0.0" />
-    <PackageReference Include="TUnit" Version="1.60.0" />
-    <PackageReference Include="Verify.TUnit" Version="31.24.2" />
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="OpenTelemetry" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="TUnit" />
+    <PackageReference Include="Verify.TUnit" />
   </ItemGroup>
 
   <ItemGroup>

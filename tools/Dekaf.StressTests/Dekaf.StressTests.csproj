@@ -28,11 +28,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Confluent.Kafka" Version="2.15.0" />
-    <PackageReference Include="Testcontainers" Version="4.13.0" />
-    <PackageReference Include="Testcontainers.Kafka" Version="4.13.0" />
-    <PackageReference Include="Testcontainers.Toxiproxy" Version="4.13.0" />
-    <PackageReference Include="ToxiproxyNetCore" Version="1.0.50" />
+    <PackageReference Include="Confluent.Kafka" />
+    <PackageReference Include="Testcontainers" />
+    <PackageReference Include="Testcontainers.Kafka" />
+    <PackageReference Include="Testcontainers.Toxiproxy" />
+    <PackageReference Include="ToxiproxyNetCore" />
   </ItemGroup>
 
   <ItemGroup>

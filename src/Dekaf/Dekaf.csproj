@@ -26,9 +26,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.10" />
-    <PackageReference Include="System.IO.Hashing" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="System.IO.Hashing" />
   </ItemGroup>
 
   <PropertyGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
@@ -40,11 +40,11 @@
 
   <!-- Compatibility dependencies for the package's netstandard2.0 asset. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.10" />
-    <PackageReference Include="Polyfill" Version="11.0.1" PrivateAssets="all" />
-    <PackageReference Include="System.IO.Pipelines" Version="10.0.10" />
-    <PackageReference Include="System.Text.Json" Version="10.0.9" />
-    <PackageReference Include="System.Threading.Channels" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" />
+    <PackageReference Include="Polyfill" PrivateAssets="all" />
+    <PackageReference Include="System.IO.Pipelines" />
+    <PackageReference Include="System.Text.Json" />
+    <PackageReference Include="System.Threading.Channels" />
   </ItemGroup>
 
 </Project>
