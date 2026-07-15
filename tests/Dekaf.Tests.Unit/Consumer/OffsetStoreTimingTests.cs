@@ -215,6 +215,33 @@ public sealed class OffsetStoreTimingTests
     }
 
     [Test]
+    public async Task ConsumeAsync_NewStreamProvesRetainedRecord()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(20,
+                CreateRecord(0, "a", "one"),
+                CreateRecord(1, "b", "two"))
+        ]);
+        await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, fetch);
+        var tp = new TopicPartition(Topic, Partition);
+
+        await using (var firstStream = consumer.ConsumeAsync(CancellationToken.None).GetAsyncEnumerator())
+        {
+            await Assert.That(await firstStream.MoveNextAsync()).IsTrue();
+            await Assert.That(firstStream.Current.Offset).IsEqualTo(20L);
+        }
+
+        await using (var secondStream = consumer.ConsumeAsync(CancellationToken.None).GetAsyncEnumerator())
+        {
+            await Assert.That(await secondStream.MoveNextAsync()).IsTrue();
+            await Assert.That(secondStream.Current.Offset).IsEqualTo(21L);
+        }
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
+    }
+
+    [Test]
     public async Task CommitAsync_AfterBreak_VouchesForInDoubtRecord()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
@@ -578,6 +605,7 @@ public sealed class OffsetStoreTimingTests
             CreateBatch(20, CreateRecord(0, "a", "one"))
         ]);
         await using var consumer = CreateInitializedConsumer(OffsetCommitMode.Auto, firstFetch);
+        var tp = new TopicPartition(Topic, Partition);
 
         if (raw)
         {
@@ -613,6 +641,8 @@ public sealed class OffsetStoreTimingTests
             await Assert.That(await batches.MoveNextAsync()).IsTrue();
             await Assert.That(batches.Current.Select(record => record.Offset).ToArray()).IsEquivalentTo([30L]);
         }
+
+        await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
     }
 
     // --- ConsumeOneAsync ---

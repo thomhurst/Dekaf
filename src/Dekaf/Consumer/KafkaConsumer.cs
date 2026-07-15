@@ -1848,6 +1848,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 while (_pendingFetches.Count > 0)
                 {
                     var pending = _pendingFetches.Peek();
+                    // A fresh ConsumeAsync stream is another pull and therefore proves any
+                    // record retained when a previous stream was disposed at its yield point.
+                    pending.MarkYieldedProcessed();
                     var pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                     long? batchProcessingStarted = _adaptiveFetchSizer is not null
                         ? Stopwatch.GetTimestamp() : null;
@@ -2166,6 +2169,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
 
                 PendingFetchData pending = _pendingFetches.Peek();
+                pending.MarkYieldedProcessed();
                 int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                 var batchYielded = false;
                 var resumedAfterYield = false;
@@ -2319,6 +2323,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     continue;
 
                 PendingFetchData pending = _pendingFetches.Peek();
+                pending.MarkYieldedProcessed();
                 int pendingFetchesVersion = Volatile.Read(ref _pendingFetchesVersion);
                 var batchYielded = false;
                 var resumedAfterYield = false;
@@ -2408,9 +2413,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool TryDiscardExhaustedPendingFetch()
     {
-        if (_pendingFetches.Count == 0 || !_pendingFetches.Peek().IsExhausted)
+        if (_pendingFetches.Count == 0)
             return false;
 
+        var pending = _pendingFetches.Peek();
+        if (!pending.IsExhausted)
+            return false;
+
+        pending.MarkYieldedProcessed();
+        FlushConsumedPositions(pending);
         DisposeQueuedFetch(DequeuePendingFetch());
         return true;
     }
