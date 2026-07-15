@@ -12,13 +12,13 @@ namespace Dekaf.StressTests.Metrics;
 internal sealed class LatencyTracker
 {
     private const int MaxOutlierSamples = 256;
-    private static readonly long OutlierThresholdTicks = Stopwatch.Frequency;
 
     private readonly long[] _buckets;
     private readonly object _outlierLock = new();
     private readonly LatencyOutlierSample[] _outlierSamples = new LatencyOutlierSample[MaxOutlierSamples];
     private readonly double _bucketWidthUs;
     private readonly double _maxValueUs;
+    private readonly long _outlierThresholdTicks;
     private long _count;
     private long _overflowCount;
     private long _minTicks = long.MaxValue;
@@ -27,10 +27,17 @@ internal sealed class LatencyTracker
 
     /// <param name="maxValueMs">Upper bound of the histogram in milliseconds. Values above this are counted as overflow.</param>
     /// <param name="bucketWidthUs">Width of each bucket in microseconds. Smaller = higher resolution but more memory.</param>
-    public LatencyTracker(double maxValueMs = 5000, double bucketWidthUs = 10)
+    /// <param name="outlierThresholdMs">Minimum latency captured in the bounded diagnostic timeline.</param>
+    public LatencyTracker(
+        double maxValueMs = 5000,
+        double bucketWidthUs = 10,
+        double outlierThresholdMs = 1000)
     {
         _maxValueUs = maxValueMs * 1000.0;
         _bucketWidthUs = bucketWidthUs;
+        _outlierThresholdTicks = Math.Max(
+            1,
+            (long)(outlierThresholdMs / 1000.0 * Stopwatch.Frequency));
         _buckets = new long[(int)(_maxValueUs / bucketWidthUs)];
     }
 
@@ -40,7 +47,7 @@ internal sealed class LatencyTracker
         Interlocked.Increment(ref _count);
         UpdateMinMax(ticks);
 
-        if (ticks >= OutlierThresholdTicks)
+        if (ticks >= _outlierThresholdTicks)
         {
             RecordOutlier(ticks, messageIndex);
         }

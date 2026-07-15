@@ -64,9 +64,11 @@ internal static class StressTestHelpers
     /// Histogram for sampled delivery latency. The sample includes time queued in the
     /// client's send buffer, which under saturation is seconds deep — so the range must
     /// be much wider than the LatencyTracker default (coarser buckets keep it at ~2.4 MB).
+    /// Capture outliers from 100ms so the bounded timeline includes the multi-hundred-ms
+    /// stalls that producer diagnostics correlate against probes, GC, and throughput.
     /// </summary>
     internal static LatencyTracker CreateDeliveryLatencyTracker() =>
-        new(maxValueMs: 30_000, bucketWidthUs: 100);
+        new(maxValueMs: 30_000, bucketWidthUs: 100, outlierThresholdMs: 100);
 
     /// <summary>
     /// Queries the high watermark of each partition, giving the fixed end offsets that
