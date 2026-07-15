@@ -1226,6 +1226,8 @@ internal sealed class BrokerUnackedByteBudget
         {
             if (nowTicks >= _capacityProbeDeadlineTimestamp)
             {
+                // This was only an untreated control window. No enlarged candidate budget
+                // opened, so a traffic-thinned baseline is not a capacity-probe failure.
                 CompleteCapacityProbeSession();
                 _nextProbeTimestamp = nowTicks + CapacityProbeCooldownTicks;
                 return;

@@ -194,6 +194,14 @@ internal static class DekafMetrics
         "Complete seal-to-ack delivery latency EWMA per broker.",
         static budget => budget.SealToAckLatencyEwmaMicros);
 
+    internal static readonly ObservableGauge<double> ProducerBrokerProvenPipelineRequestQuanta =
+        DekafDiagnostics.Meter.CreateObservableGauge(
+            "dekaf.producer.broker.proven_pipeline_request_quanta",
+            observeValues: () => ObserveProducers(static source => source.BudgetValues<double>(
+                static budget => budget.ProvenPipelineRequestQuanta)),
+            unit: "{request}",
+            description: "Persisted request-depth floor proven by capacity probes per broker.");
+
     internal static readonly ObservableGauge<double> ProducerBrokerLatencyBudgetScale =
         DekafDiagnostics.Meter.CreateObservableGauge(
             "dekaf.producer.broker.latency_budget_scale",

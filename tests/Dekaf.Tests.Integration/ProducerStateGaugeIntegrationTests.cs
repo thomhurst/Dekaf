@@ -13,7 +13,7 @@ namespace Dekaf.Tests.Integration;
 [Category("ProducerStateGauges")]
 public sealed class ProducerStateGaugeIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
-    private static readonly string[] BrokerLongGauges =
+    private static readonly string[] BrokerGauges =
     [
         "dekaf.producer.broker.budget_bytes",
         "dekaf.producer.broker.unacked_bytes",
@@ -21,6 +21,7 @@ public sealed class ProducerStateGaugeIntegrationTests(KafkaTestContainer kafka)
         "dekaf.producer.broker.max_delivery_rate",
         "dekaf.producer.broker.queue_latency_ewma",
         "dekaf.producer.broker.seal_to_ack_latency_ewma",
+        "dekaf.producer.broker.proven_pipeline_request_quanta",
         "dekaf.producer.broker.admission_blocks",
         "dekaf.producer.broker.capacity_probe.successes",
         "dekaf.producer.broker.capacity_probe.failures",
@@ -83,7 +84,7 @@ public sealed class ProducerStateGaugeIntegrationTests(KafkaTestContainer kafka)
                 observed = samples.Where(sample => sample.ClientId == clientId).ToList();
             }
 
-            foreach (var instrument in BrokerLongGauges)
+            foreach (var instrument in BrokerGauges)
             {
                 var instrumentSamples = observed.Where(sample => sample.Instrument == instrument).ToList();
                 await Assert.That(instrumentSamples).IsNotEmpty()
@@ -106,6 +107,12 @@ public sealed class ProducerStateGaugeIntegrationTests(KafkaTestContainer kafka)
             var budgets = observed.Where(s => s.Instrument == "dekaf.producer.broker.budget_bytes").ToList();
             await Assert.That(budgets.All(s => s.Value > 0)).IsTrue()
                 .Because("the unacked-byte budget starts at its cap, never zero");
+
+            var provenDepth = observed
+                .Where(s => s.Instrument == "dekaf.producer.broker.proven_pipeline_request_quanta")
+                .ToList();
+            await Assert.That(provenDepth.All(s => s.Value >= 4)).IsTrue()
+                .Because("live proven depth starts at the four-request-per-connection floor");
 
             var scales = observed.Where(s => s.Instrument == "dekaf.producer.broker.latency_budget_scale").ToList();
             await Assert.That(scales).IsNotEmpty();

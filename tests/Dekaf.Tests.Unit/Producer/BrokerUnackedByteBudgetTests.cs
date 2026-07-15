@@ -951,6 +951,29 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task PeriodicProbe_BaselineTimeoutDoesNotReportCandidateFailure()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.5,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000,
+            enableDiagnostics: true);
+        SetField(budget, "_capacityProbeStartTimestamp", T0);
+        SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(0.200));
+        SetField(budget, "_capacityProbeBaselineActive", true);
+
+        Ack(budget, 1_000, 0.100, T0 + Seconds(0.300));
+
+        await Assert.That(GetField<bool>(budget, "_capacityProbeBaselineActive")).IsFalse();
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsFalse();
+        await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0)
+            .Because("the enlarged candidate budget never opened");
+        await Assert.That(budget.CopyProbeEvents()
+                .Where(probeEvent => probeEvent.ProbeType == BrokerBudgetProbeType.Capacity))
+            .IsEmpty();
+    }
+
+    [Test]
     public async Task PeriodicProbe_MeasuresSettledBaselineBeforeOpeningCandidateBudget()
     {
         var budget = new BrokerUnackedByteBudget(
