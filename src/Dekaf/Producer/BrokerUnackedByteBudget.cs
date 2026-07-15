@@ -118,11 +118,6 @@ internal sealed class BrokerUnackedByteBudget
     /// the delivery-latency target with queueing delay.</summary>
     private const int MinimumPipelineRequestQuanta = 4;
 
-    /// <summary>Paired stress measurements bound one acknowledgement clock at six persisted
-    /// requests: deeper flight pins median delivery latency without adding useful throughput.
-    /// Parallel connections retain independent capacity discovery up to their wire limit.</summary>
-    private const int SingleConnectionMaximumPipelineRequestQuanta = 6;
-
     /// <summary>
     /// The scale shrinks only while written-unacked occupancy demonstrates at least this
     /// fraction of the budget on the wire. Seal-to-send backlog with an underfilled wire
@@ -217,9 +212,9 @@ internal sealed class BrokerUnackedByteBudget
     /// when queue is added, so a rate-only acceptance test converts every probe into budget
     /// growth; requiring a flat RTT distinguishes real headroom from added queueing.</summary>
     private const double ProbeRttGrowthTolerance = 1.25;
-    /// <summary>Allowed noise when comparing rate growth with seal-to-ack latency growth.
-    /// A useful probe improves or preserves delivered bytes per second per second of latency;
-    /// a rung whose latency grows materially faster than its rate only added standing queue.</summary>
+    /// <summary>Allowed noise when comparing marginal rate gain with marginal seal-to-ack
+    /// latency cost. Comparing deltas avoids granting every rung a fresh fixed 10% latency
+    /// allowance that compounds into standing queue as proof advances.</summary>
     private const double ProbeSealToAckEfficiencyTolerance = 1.10;
     private static readonly long MaxProbeIntervalTicks = Stopwatch.Frequency;
     // An empty pipe refilled within this gap is a serialized loaded cycle, not application idle.
@@ -1390,7 +1385,8 @@ internal sealed class BrokerUnackedByteBudget
         var rateGrowth = averageRate / _capacityProbeBaselineRate;
         var sealToAckGrowth = averageSealToAckSeconds
             / _capacityProbePreProbeSealToAckSeconds;
-        return sealToAckGrowth <= rateGrowth * ProbeSealToAckEfficiencyTolerance;
+        return sealToAckGrowth - 1.0
+            <= (rateGrowth - 1.0) * ProbeSealToAckEfficiencyTolerance;
     }
 
     private double GetMinimumPipelineRequestQuanta()
@@ -1400,9 +1396,7 @@ internal sealed class BrokerUnackedByteBudget
     {
         var connectionCount = _connectionCount;
         var minimum = MinimumPipelineRequestQuanta * connectionCount;
-        var wireLimit = connectionCount == 1
-            ? SingleConnectionMaximumPipelineRequestQuanta
-            : (double)CapBatchMultiplier * connectionCount;
+        var wireLimit = (double)CapBatchMultiplier * connectionCount;
         return _requestSizeEwmaBytes > 0
             ? Math.Max(minimum, Math.Min(wireLimit, _capBytes / _requestSizeEwmaBytes))
             : wireLimit;

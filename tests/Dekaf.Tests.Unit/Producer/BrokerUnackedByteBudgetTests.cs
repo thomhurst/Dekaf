@@ -1023,6 +1023,29 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task PeriodicProbe_RejectsSmallRateGainWithLargerMarginalLatencyCost()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.5,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SeedCapacityProbeEvaluation(budget, 10_000, 0.100, 20_400);
+
+        var now = T0 + Seconds(0.300);
+        var snapshot = budget.SnapshotDelivery(
+            sendTimestamp: now - Seconds(0.100),
+            appLimited: false,
+            oldestBatchTimestamp: now - Seconds(0.108));
+        Ack(budget, 1_020, 0.100, now, snapshot);
+
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
+        await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(1);
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(4.0).Within(0.000_001)
+            .Because("2% more rate cannot justify 8% more latency");
+    }
+
+    [Test]
     public async Task PeriodicProbe_PersistsRateGainWhenSealToAckEfficiencyImproves()
     {
         var budget = new BrokerUnackedByteBudget(
@@ -1136,7 +1159,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task ProvenRequestDepth_UsesSingleConnectionCeilingAndParallelWireCap()
+    public async Task ProvenRequestDepth_IsSeededByConnectionWidthAndBoundedByWireCap()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
@@ -1151,8 +1174,8 @@ public sealed class BrokerUnackedByteBudgetTests
         budget.SetCap(32_000_000, T0, connectionCount: 1);
 
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
-            .IsEqualTo(6.0)
-            .Because("paired stress evidence bounds one connection below target-pinned queue depth");
+            .IsEqualTo(32.0)
+            .Because("marginal delivery efficiency, not a fixed width heuristic, bounds persistence below the wire cap");
 
         SetField(budget, "_provenPipelineRequestQuanta", 4.0);
         budget.SetCap(96_000_000, T0, connectionCount: 3);
@@ -1170,7 +1193,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task PeriodicProbe_SingleConnectionProofStopsAtMeasuredLatencyCeiling()
+    public async Task PeriodicProbe_ProofIsNotStoppedByWidthHeuristic()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.010,
@@ -1189,8 +1212,8 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 1_200, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
 
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
-            .IsEqualTo(6.0)
-            .Because("successful probe noise must not recreate the measured one-connection latency regression");
+            .IsEqualTo(7.5)
+            .Because("the measured delivery signal, not a fixed single-connection ceiling, must stop proof growth");
     }
 
     [Test]
@@ -1686,7 +1709,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task PeriodicProbe_RatchetsToSingleConnectionCeilingWhileRateAndRttProveCapacity()
+    public async Task PeriodicProbe_RatchetsWhileRateAndRttProveCapacity()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
         budget.Charge(5_000);
@@ -1723,8 +1746,8 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(2);
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
-            .IsEqualTo(6.0).Within(0.000_001)
-            .Because("rate and RTT evidence may reach but not exceed the measured one-connection ceiling");
+            .IsEqualTo(6.25).Within(0.000_001)
+            .Because("two sustained 25% gains persist when no delivery-latency sample is available");
     }
 
     [Test]
