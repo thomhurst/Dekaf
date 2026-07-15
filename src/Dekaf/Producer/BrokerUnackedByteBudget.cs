@@ -103,24 +103,19 @@ internal sealed class BrokerUnackedByteBudget
     private const double OccupancySafetyMultiplier = 1.5;
     private const double ProbeGrowthThreshold = 1.01;
     private const double DeliveryLatencyEwmaWeight = 0.125;
+    private const double RequestSizeEwmaWeight = 0.125;
     private const double ServingRttEwmaWeight = 0.125;
     private const double MinimumLatencyBudgetScale = 0.10;
-
-    /// <summary>
-    /// Upper bound on the latency budget scale. Above 1.0 the scale is the budget's only
-    /// unconditional upward force (#2008): the drain-rate estimate is measured from traffic
-    /// the admission gate itself admitted, so <c>rate × target</c> is self-confirming at any
-    /// throughput level — without headroom above parity the budget can never discover broker
-    /// or sender capacity beyond whatever it happens to be admitting. The controller grows
-    /// the scale only while admission is blocking (proof of demand) and measured delivery
-    /// latency sits below target, and growth decelerates as latency approaches target. The
-    /// bound keeps a stale-high scale's overshoot window short: shrinking back to parity
-    /// from here takes ~8 control intervals (~0.8 s).
-    /// </summary>
-    private const double MaximumLatencyBudgetScale = 10.0;
     private const double MinimumLatencyAdjustmentFactor = 0.75;
     private const double MaximumLatencyAdjustmentFactor = 1.05;
     private const double MaximumBudgetDecayPerSecond = 0.10;
+
+    /// <summary>Minimum number of average encoded requests retained under proven demand.
+    /// A byte BDP smaller than one or two request quanta serializes the acknowledgement clock,
+    /// making its reduced delivery rate self-confirming. Four request quanta mirror BBR's
+    /// minimum flight: enough to tolerate request and scheduler granularity without filling
+    /// the delivery-latency target with queueing delay.</summary>
+    private const int MinimumPipelineRequestQuanta = 4;
 
     /// <summary>
     /// The scale shrinks only while written-unacked occupancy demonstrates at least this
@@ -178,6 +173,12 @@ internal sealed class BrokerUnackedByteBudget
     /// and ratchet the budget down to the floor.</summary>
     private const double RttSafetyMultiplier = 1.5;
     private const double MinRttProbeSafetyMultiplier = 1.0;
+
+    /// <summary>Minimum neutral safety horizon on low-latency links. Sub-millisecond
+    /// RTT samples describe an empty pipe but do not leave enough byte admission depth to
+    /// start a saturated sender's request pipeline. The request-quantum floor supplies the
+    /// remaining granularity only under proven demand; minimum-RTT probes bypass both.</summary>
+    private const double MinimumNormalHorizonSeconds = 0.001;
 
     /// <summary>Ceiling on the loaded serving RTT as a multiple of the queue-drained minimum
     /// RTT. The serving EWMA includes queueing delay the budget itself admitted, so letting
@@ -267,6 +268,7 @@ internal sealed class BrokerUnackedByteBudget
     private double _minRttSeconds;
     private double _servingRttEwmaSeconds;
     private double _rawServingRttEwmaSeconds;
+    private double _requestSizeEwmaBytes;
     private bool _hasLoadedServingSample;
     private double _sealToAckEwmaSeconds;
     private double _minRttProbeMinimumSeconds;
@@ -290,6 +292,7 @@ internal sealed class BrokerUnackedByteBudget
     private long _capacityProbeFailureCount;
     private double _deliveryLatencyEwmaSeconds;
     private double _latencyBudgetScale = 1.0;
+    private bool _admissionPressureActive;
     private long _nextLatencyControlTimestamp;
     private long _lastLatencyControlAdmissionBlockEvents;
     private long _lastNormalBudgetBytes;
@@ -747,17 +750,17 @@ internal sealed class BrokerUnackedByteBudget
             naturalMinRttSample: sendSnapshot.AppLimited && !sustainedIdle);
         if (loadedServingSample && !minRttProbeActive)
         {
-            _servingRttEwmaSeconds = _servingRttEwmaSeconds == 0
-                ? serviceRttSeconds
-                : _servingRttEwmaSeconds
-                    + ServingRttEwmaWeight * (serviceRttSeconds - _servingRttEwmaSeconds);
+            _servingRttEwmaSeconds = UpdateEwma(
+                _servingRttEwmaSeconds,
+                serviceRttSeconds,
+                ServingRttEwmaWeight);
             // Raw (uncorrected) companion estimate for the capacity probe: probe samples are
             // raw round trips, so their acceptance baseline must live in the same domain —
             // a corrected baseline under standing load would reject every probe.
-            _rawServingRttEwmaSeconds = _rawServingRttEwmaSeconds == 0
-                ? rttSeconds
-                : _rawServingRttEwmaSeconds
-                    + ServingRttEwmaWeight * (rttSeconds - _rawServingRttEwmaSeconds);
+            _rawServingRttEwmaSeconds = UpdateEwma(
+                _rawServingRttEwmaSeconds,
+                rttSeconds,
+                ServingRttEwmaWeight);
         }
         Volatile.Write(ref _minimumRttMicros, (long)(_minRttSeconds * 1_000_000));
         UpdateDeliveryLatency(
@@ -765,6 +768,10 @@ internal sealed class BrokerUnackedByteBudget
             sendSnapshot.SendTimestamp,
             nowTicks);
 
+        _requestSizeEwmaBytes = UpdateEwma(
+            _requestSizeEwmaBytes,
+            ackedBytes,
+            RequestSizeEwmaWeight);
         RecordRequestHistograms(ackedBytes, rttSeconds);
 
         // Keep two delivery-rate axes. The request axis attributes immediate delivery credit
@@ -847,10 +854,10 @@ internal sealed class BrokerUnackedByteBudget
             return;
 
         var sampleSeconds = (double)(sendTimestamp - oldestBatchTimestamp) / Stopwatch.Frequency;
-        var latencyEstimate = _deliveryLatencyEwmaSeconds == 0
-            ? sampleSeconds
-            : _deliveryLatencyEwmaSeconds
-                + DeliveryLatencyEwmaWeight * (sampleSeconds - _deliveryLatencyEwmaSeconds);
+        var latencyEstimate = UpdateEwma(
+            _deliveryLatencyEwmaSeconds,
+            sampleSeconds,
+            DeliveryLatencyEwmaWeight);
         Volatile.Write(ref _deliveryLatencyEwmaSeconds, latencyEstimate);
 
         // Measured seal-to-ack is the delivery latency users experience from the moment a
@@ -860,24 +867,22 @@ internal sealed class BrokerUnackedByteBudget
         // setpoint that suppressed fan-out (#1988). What remains — sender backlog plus
         // broker-side queueing — is exactly the delay the budget controls (#2008, #2009).
         var sealToAckSeconds = (double)(nowTicks - oldestBatchTimestamp) / Stopwatch.Frequency;
-        _sealToAckEwmaSeconds = _sealToAckEwmaSeconds == 0
-            ? sealToAckSeconds
-            : _sealToAckEwmaSeconds
-                + DeliveryLatencyEwmaWeight * (sealToAckSeconds - _sealToAckEwmaSeconds);
+        _sealToAckEwmaSeconds = UpdateEwma(
+            _sealToAckEwmaSeconds,
+            sealToAckSeconds,
+            DeliveryLatencyEwmaWeight);
 
         if (_nextLatencyControlTimestamp == 0)
         {
+            UpdateAdmissionPressure();
             _nextLatencyControlTimestamp = nowTicks + LatencyControlIntervalTicks;
-            _lastLatencyControlAdmissionBlockEvents = AdmissionBlockEvents;
             return;
         }
 
         if (nowTicks < _nextLatencyControlTimestamp)
             return;
 
-        var admissionBlockEvents = AdmissionBlockEvents;
-        var admissionWasBlocked = admissionBlockEvents > _lastLatencyControlAdmissionBlockEvents;
-        _lastLatencyControlAdmissionBlockEvents = admissionBlockEvents;
+        UpdateAdmissionPressure();
 
         var baseRttSeconds = _hasMinRttSample ? _minRttSeconds : 0;
         var brokerQueueSeconds = _sealToAckEwmaSeconds - baseRttSeconds;
@@ -900,21 +905,13 @@ internal sealed class BrokerUnackedByteBudget
                 ? Math.Max(MinimumLatencyAdjustmentFactor, targetRatio)
                 : 1.0;
         }
-        else if (admissionWasBlocked)
-        {
-            // The budget's only unconditional upward force: blocked demand with measured
-            // latency below target grows the scale past rate parity, breaking the
-            // self-confirming rate x target equilibrium (#2008). Growth decelerates as
-            // latency approaches target (adjustment -> 1 as targetRatio -> 1).
-            adjustment = Math.Min(MaximumLatencyAdjustmentFactor, targetRatio);
-        }
         else if (_latencyBudgetScale < 1.0)
         {
             // A transient queue can legitimately derate the budget, but once measured
             // latency is back below target the controller must return to its neutral scale.
             // Requiring another admission block here makes the derating self-sealing: the
             // smaller budget removes the pressure event that would restore it. Recovery
-            // without pressure stops at 1.0; only the branch above may probe past parity.
+            // without pressure stops at the neutral 1.0 scale.
             adjustment = Math.Min(
                 MaximumLatencyAdjustmentFactor,
                 1.0 / _latencyBudgetScale);
@@ -927,8 +924,15 @@ internal sealed class BrokerUnackedByteBudget
         Volatile.Write(ref _latencyBudgetScale, Math.Clamp(
             _latencyBudgetScale * adjustment,
             MinimumLatencyBudgetScale,
-            MaximumLatencyBudgetScale));
+            1.0));
         _nextLatencyControlTimestamp = nowTicks + LatencyControlIntervalTicks;
+    }
+
+    private void UpdateAdmissionPressure()
+    {
+        var admissionBlockEvents = AdmissionBlockEvents;
+        _admissionPressureActive = admissionBlockEvents > _lastLatencyControlAdmissionBlockEvents;
+        _lastLatencyControlAdmissionBlockEvents = admissionBlockEvents;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1344,6 +1348,10 @@ internal sealed class BrokerUnackedByteBudget
         return maximum;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static double UpdateEwma(double current, double sample, double weight)
+        => current == 0 ? sample : current + weight * (sample - current);
+
     private static long Max(long[] values)
     {
         var maximum = 0L;
@@ -1356,17 +1364,20 @@ internal sealed class BrokerUnackedByteBudget
     private void RecomputeBudget(long nowTicks)
     {
         var minRttProbeActive = _minRttProbeUntilTimestamp != 0;
+        var admissionPressureActive = _admissionPressureActive;
         var postProbeMinRttSeconds = _minRttSeconds;
         if (minRttProbeActive && _minRttProbeMinimumSeconds != double.MaxValue)
             postProbeMinRttSeconds = _minRttProbeMinimumSeconds;
         var computedNormalBudget = ComputeBudget(
             minRttProbeActive: false,
             capacityProbeActive: false,
+            admissionPressureActive,
             postProbeMinRttSeconds);
         var normalBudget = ApplyNormalBudgetDecayHysteresis(computedNormalBudget, nowTicks);
         var probeBudget = ComputeBudget(
             minRttProbeActive: false,
             capacityProbeActive: true,
+            admissionPressureActive,
             postProbeMinRttSeconds);
         probeBudget = Math.Max(normalBudget, probeBudget);
         Volatile.Write(ref _budgetAfterMinRttProbeBytes, normalBudget);
@@ -1378,6 +1389,7 @@ internal sealed class BrokerUnackedByteBudget
             budget = ComputeBudget(
                 minRttProbeActive: true,
                 capacityProbeActive: false,
+                admissionPressureActive,
                 _minRttSeconds);
         }
         else
@@ -1424,6 +1436,7 @@ internal sealed class BrokerUnackedByteBudget
     private long ComputeBudget(
         bool minRttProbeActive,
         bool capacityProbeActive,
+        bool admissionPressureActive,
         double minRttSeconds)
     {
         long budget;
@@ -1448,11 +1461,29 @@ internal sealed class BrokerUnackedByteBudget
                 : minRttSeconds;
             var rttSafetyHorizonSeconds = minRttProbeActive
                 ? MinRttProbeSafetyMultiplier * minRttSeconds
-                : RttSafetyMultiplier * loadAwareRttSeconds;
+                : Math.Max(
+                    RttSafetyMultiplier * loadAwareRttSeconds,
+                    MinimumNormalHorizonSeconds);
             var latencyCapSeconds = Math.Max(latencyGovernedTargetSeconds, minRttSeconds);
             var horizonSeconds = _hasMinRttSample
                 ? Math.Min(rttSafetyHorizonSeconds, latencyCapSeconds)
                 : latencyGovernedTargetSeconds;
+
+            if (!minRttProbeActive && admissionPressureActive && _requestSizeEwmaBytes > 0)
+            {
+                // Admission is charged in batch/request-sized quanta, so a sub-request BDP
+                // cannot expose additional capacity even when the byte-rate estimator is
+                // accurate. Recent blocked demand enables a small acknowledgement pipeline;
+                // the latency cap bounds it. General capacity discovery remains the job of
+                // the periodic 25% probes below — this floor only crosses coarse request
+                // granularity that a smaller byte probe cannot expose.
+                var requestPipelineHorizonSeconds =
+                    MinimumPipelineRequestQuanta * _requestSizeEwmaBytes / effectiveMaxRate;
+                horizonSeconds = Math.Max(
+                    horizonSeconds,
+                    Math.Min(requestPipelineHorizonSeconds, latencyCapSeconds));
+            }
+
             rateBudgetBytes = effectiveMaxRate * horizonSeconds;
             var estimatedBytes = rateBudgetBytes;
             if (capacityProbeActive && !minRttProbeActive)
