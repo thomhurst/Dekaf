@@ -851,15 +851,16 @@ public class PooledPendingRequestTests
     }
 
     [Test]
-    public async Task RunContinuationsAsynchronously_SurvivesResetAndReuse()
+    public async Task RunContinuationsAsynchronously_IsRestoredAfterInlineUse()
     {
-        // Regression test: RunContinuationsAsynchronously must remain true after
-        // Reset() and pool reuse. If it reverts to false, response continuations
-        // run inline on the receive loop thread, causing deadlocks when
-        // Send() → .GetAwaiter().GetResult() blocks that thread.
+        // Pipelined requests opt into inline internal continuations. A later direct request
+        // reusing the source must restore asynchronous application continuations.
         var pool = new PendingRequestPool();
         var request = pool.Rent();
-        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        request.Initialize(
+            responseHeaderVersion: 0,
+            CancellationToken.None,
+            runContinuationsAsynchronously: false);
 
         // Complete, reset, reuse — simulates pool lifecycle
         var testData = new byte[] { 0, 0, 0, 1, 10 };

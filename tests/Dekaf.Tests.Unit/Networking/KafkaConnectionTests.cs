@@ -505,7 +505,7 @@ public sealed class KafkaConnectionTests
 
     [Test]
     [Timeout(10_000)]
-    public async Task PipelinedResponse_ContinuationRunsInlineInCompletionFrame(
+    public async Task PipelinedResponse_ContinuationRunsInlineInReceiveDispatch(
         CancellationToken cancellationToken)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -528,14 +528,16 @@ public sealed class KafkaConnectionTests
             var correlationId = BinaryPrimitives.ReadInt32BigEndian(requestFrame.AsSpan(4, 4));
             var completion = new TaskCompletionSource<ApiVersionsResponse>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            var ranInCompletionFrame = false;
+            var ranInReceiveDispatch = false;
             response.UnsafeOnCompleted(() =>
             {
-                ranInCompletionFrame = new StackTrace().GetFrames().Any(
-                    static frame => frame.GetMethod()?.Name == "CompletePendingResponse"
-                        && frame.GetMethod()?.DeclaringType?.Name.StartsWith(
-                            "PooledPipelinedResponse",
-                            StringComparison.Ordinal) == true);
+                var frames = new StackTrace().GetFrames();
+                ranInReceiveDispatch = frames.Any(
+                        static frame => frame.GetMethod()?.Name == "CompletePendingResponse"
+                            && frame.GetMethod()?.DeclaringType?.Name.StartsWith(
+                                "PooledPipelinedResponse",
+                                StringComparison.Ordinal) == true)
+                    && frames.Any(static frame => frame.GetMethod()?.Name == "DispatchResponse");
 
                 try
                 {
@@ -552,7 +554,7 @@ public sealed class KafkaConnectionTests
                 cancellationToken);
             var parsed = await completion.Task.WaitAsync(cancellationToken);
 
-            await Assert.That(ranInCompletionFrame).IsTrue();
+            await Assert.That(ranInReceiveDispatch).IsTrue();
             await Assert.That(parsed.ErrorCode).IsEqualTo(ErrorCode.None);
         }
         finally

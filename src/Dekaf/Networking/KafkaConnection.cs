@@ -723,11 +723,14 @@ public sealed partial class KafkaConnection :
 
         await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
         var pending = _pendingRequestPool.Rent();
+        // The pipelined wrapper performs bounded internal parsing, then only signals the
+        // sender. Resume it in the receive dispatch frame to avoid a ThreadPool round trip.
         pending.Initialize(
             responseHeaderVersion,
             cancellationToken,
             registerCancellation: false,
-            checkCrcs: request is FetchRequest { CheckCrcs: true });
+            checkCrcs: request is FetchRequest { CheckCrcs: true },
+            runContinuationsAsynchronously: false);
         try
         {
             AddPendingRequest(correlationId, pending);
@@ -4272,11 +4275,13 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         short responseHeaderVersion,
         CancellationToken cancellationToken,
         bool registerCancellation = true,
-        bool checkCrcs = false)
+        bool checkCrcs = false,
+        bool runContinuationsAsynchronously = true)
     {
         _responseHeaderVersion = responseHeaderVersion;
         _cancellationToken = cancellationToken;
         _checkCrcs = checkCrcs;
+        _core.RunContinuationsAsynchronously = runContinuationsAsynchronously;
         _state = CreateState(_core.Version, StatePending);
 
         // Register for cancellation if the token can be cancelled
