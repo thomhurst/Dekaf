@@ -2000,17 +2000,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </returns>
     internal bool DrainPendingAppends()
     {
-        if (_pendingAppends.IsEmpty)
+        // The active owner temporarily moves every candidate out of the concurrent queue
+        // while it evaluates admission. An empty queue is therefore conclusive only when
+        // no drainer owns that private snapshot.
+        if (_pendingAppends.IsEmpty && Volatile.Read(ref _draining) == 0)
             return true;
 
-        // Only one thread drains at a time. Record the missed entry so the owner rescans
-        // after publishing the guard as free; a bool is insufficient because an older owner
-        // could consume a newer owner's wake in the handoff window.
+        // Publish the request before competing for ownership. If the current owner releases
+        // between these operations, this caller takes over; otherwise that owner observes the
+        // version change and rescans. Publishing after a failed CAS leaves a handoff window
+        // where both callers can miss the wake.
+        Interlocked.Increment(ref _pendingAppendDrainRequestVersion);
         if (Interlocked.CompareExchange(ref _draining, 1, 0) != 0)
-        {
-            Interlocked.Increment(ref _pendingAppendDrainRequestVersion);
             return false;
-        }
 
         Interlocked.Increment(ref _pendingAppendDrainEntryCount);
         var ownsDrainGuard = true;
