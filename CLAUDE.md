@@ -16,6 +16,8 @@ Dekaf is a high-performance, pure C# Apache Kafka client library for .NET 10+. T
 
 6. **Code Cleanup Before PRs**: Before creating any pull request, and after finishing implementation work, run `/simplify` to review the final code for reuse, quality, and efficiency. This ensures code is clean, simple, and production-ready before review.
 
+7. **Minimize Stress-Test Scope**: When a PR, change, or performance improvement can be validated with one stress lane and one client, run only that `lane` and `client`. Use paired clients or the full matrix only when the required evidence depends on client comparison or multiple scenarios.
+
 ## Important Warnings
 
 - **Test Projects Require Docker**: Integration tests use Testcontainers.Kafka. Ensure Docker is running before executing integration tests.
