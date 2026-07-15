@@ -105,6 +105,13 @@ public interface IKafkaConnection : IAsyncDisposable
 
 internal interface IKafkaPipelinedWriteCompletionConnection
 {
+    /// <summary>
+    /// Sends a pipelined request and returns its response handle after the socket write completes.
+    /// </summary>
+    /// <remarks>
+    /// Response completion runs inline on the receive-dispatch path. Code awaiting the returned
+    /// response must remain bounded and non-blocking until its next asynchronous yield.
+    /// </remarks>
     ValueTask<PipelinedResponse<TResponse>> SendPipelinedAfterWriteAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
