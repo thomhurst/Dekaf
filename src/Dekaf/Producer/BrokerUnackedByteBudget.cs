@@ -731,7 +731,9 @@ internal sealed class BrokerUnackedByteBudget
         if (sustainedIdle)
         {
             _hasLoadedServingSample = false;
-            _provenPipelineRequestQuanta = MinimumPipelineRequestQuanta;
+            Volatile.Write(
+                ref _provenPipelineRequestQuanta,
+                MinimumPipelineRequestQuanta);
             _lastNormalBudgetBytes = _capBytes;
             _lastBudgetUpdateTimestamp = nowTicks;
         }
@@ -1229,9 +1231,11 @@ internal sealed class BrokerUnackedByteBudget
                 // a sustainable baseline and would make the next average-rate rung unwinnable.
                 _capacityProbeBaselineRate = averageRate;
                 _capacityProbePreProbeRttSeconds = averageRttSeconds;
-                _provenPipelineRequestQuanta = Math.Min(
-                    GetMaximumPipelineRequestQuanta(),
-                    _provenPipelineRequestQuanta * ProbeBudgetMultiplier);
+                Volatile.Write(
+                    ref _provenPipelineRequestQuanta,
+                    Math.Min(
+                        GetMaximumPipelineRequestQuanta(),
+                        _provenPipelineRequestQuanta * ProbeBudgetMultiplier));
                 RecordProbeEvent(
                     BrokerBudgetProbeType.Capacity,
                     BrokerBudgetProbeOutcome.Succeeded,
