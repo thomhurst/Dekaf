@@ -15,7 +15,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="2.3.2" />
-    <PackageReference Include="TUnit" Version="1.59.0" />
+    <PackageReference Include="TUnit" Version="1.60.0" />
   </ItemGroup>
 
 </Project>
