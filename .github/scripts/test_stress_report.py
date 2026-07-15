@@ -383,6 +383,24 @@ class StressReportTests(unittest.TestCase):
         self.assertTrue(rows[0].startswith("| Dekaf"))
         self.assertIn("| 2.00x |", rows[0])
 
+    def test_throughput_table_single_client_shows_no_ratio(self):
+        # Dekaf-only scenarios and single-client dispatches have no Confluent
+        # baseline; a self-referential ratio would read as a Confluent comparison.
+        lines = format_throughput_table(
+            [
+                stress_result("Dekaf", effective_rate=2000, median_rate=1800),
+                stress_result("Dekaf (3conn)", effective_rate=2400, median_rate=2200),
+            ],
+            "Producer Throughput",
+            include_ratio=True,
+        )
+
+        rows = [line for line in lines if line.startswith("| Dekaf")]
+
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertTrue(row.endswith("| - |"), row)
+
     def test_throughput_table_aggregates_order_balanced_samples(self):
         dekaf_first = stress_result("Dekaf", effective_rate=1_440_000)
         dekaf_first["pairedClientOrder"] = "dekaf-first"

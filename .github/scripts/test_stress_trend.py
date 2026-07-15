@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -14,6 +15,12 @@ from stress_trend import (
     format_markdown,
     main,
 )
+
+
+def stress_workflow_text():
+    return (
+        Path(__file__).parent.parent / "workflows" / "stress-tests.yml"
+    ).read_text(encoding="utf-8")
 
 
 def result(messages_per_second=1000.0, cpu_micros_per_message=2.0, **overrides):
@@ -906,9 +913,7 @@ class StressTrendTests(unittest.TestCase):
             self.assertFalse(github_output_path.exists())
 
     def test_workflow_creates_merged_results_before_searching_for_results(self):
-        workflow = (
-            Path(__file__).parent.parent / "workflows" / "stress-tests.yml"
-        ).read_text(encoding="utf-8")
+        workflow = stress_workflow_text()
         step = workflow[
             workflow.index("      - name: Detect Performance Trends"):
             workflow.index("      - name: Upload Merged Results")
@@ -919,9 +924,7 @@ class StressTrendTests(unittest.TestCase):
         self.assertLess(create_directory, find_result)
 
     def test_workflow_regression_gate_consumes_all_failure_kinds(self):
-        workflow = (
-            Path(__file__).parent.parent / "workflows" / "stress-tests.yml"
-        ).read_text(encoding="utf-8")
+        workflow = stress_workflow_text()
 
         self.assertIn(
             "regression_failure: ${{ steps.stress-trends.outputs.should_fail }}",
@@ -932,10 +935,31 @@ class StressTrendTests(unittest.TestCase):
             workflow,
         )
 
+    def test_workflow_lane_options_match_selectable_lanes(self):
+        # The workflow_dispatch 'lane' choice list and the lanes.json matrix in
+        # the select-lanes job are maintained by hand in two places; an option
+        # without a lane dispatches a run that fails, and a lane without an
+        # option cannot be dispatched individually.
+        workflow = stress_workflow_text()
+
+        heredoc = re.search(
+            r"cat > lanes\.json << 'EOF'\n(?P<body>.*?)\n\s*EOF\n",
+            workflow,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(heredoc)
+        lanes = json.loads(heredoc.group("body"))
+        lane_ids = [lane["lane"] for lane in lanes]
+        self.assertEqual(len(lane_ids), len(set(lane_ids)))
+
+        options_block = workflow[
+            workflow.index("        options:"):workflow.index("      duration_minutes:")
+        ]
+        options = re.findall(r"^\s+- (\S+)$", options_block, re.MULTILINE)
+        self.assertEqual(options, lane_ids + ["all"])
+
     def test_history_merge_uses_admin_token(self):
-        workflow = (
-            Path(__file__).parent.parent / "workflows" / "stress-tests.yml"
-        ).read_text(encoding="utf-8")
+        workflow = stress_workflow_text()
         step = workflow[
             workflow.index("      - name: Auto-merge Pull Request"):
             workflow.index("  regression-gate:")

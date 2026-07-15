@@ -1,10 +1,34 @@
 name: Stress Tests
+run-name: Stress Tests (${{ github.event.inputs.lane || 'all' }}${{ github.event.inputs.client != 'lane-default' && github.event.inputs.client && format(' / {0} only', github.event.inputs.client) || '' }})
 
 on:
   schedule:
     - cron: '0 2 * * 0'  # Weekly Sunday 2 AM UTC
   workflow_dispatch:
     inputs:
+      # Required so every manual dispatch makes an explicit cost decision: each
+      # lane is its own paid 8-core runner job (up to 3 hours), so pick the single
+      # lane whose data you need and use "all" only when the full comparison
+      # matrix is required. Scheduled runs always run the full matrix.
+      lane:
+        description: 'Stress lane to run (one paid runner job per lane; "all" runs the full matrix)'
+        required: true
+        type: choice
+        options:
+          - producer-1b
+          - producer-3b
+          - producer-idempotent-1b
+          - producer-idempotent-3b
+          - producer-acks-all-1b
+          - producer-acks-all-3b
+          - producer-transactional-3b
+          - producer-roundtrip-1b
+          - producer-roundtrip-steady-1b
+          - consumer-1b
+          - consumer-batch-1b
+          - consumer-raw-1b
+          - consumer-raw-batch-1b
+          - all
       duration_minutes:
         description: 'Test duration in minutes'
         required: false
@@ -25,9 +49,25 @@ on:
         description: 'Enable Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead to the measured window)'
         required: false
         default: 'false'
+      # Keep this choice input below duration_minutes: the options-sync test in
+      # .github/scripts/test_stress_trend.py slices the workflow text from the
+      # first 'options:' to 'duration_minutes:' to read the lane list.
+      client:
+        description: 'Client override for paired lanes: dekaf/confluent runs only that client (single sample, no ratio, results not published). Dekaf-only lanes ignore this.'
+        required: false
+        type: choice
+        default: lane-default
+        options:
+          - lane-default
+          - dekaf
+          - confluent
 
+# Scoped per lane+client so a cheap single-lane or single-client dispatch is not
+# queued for hours behind a full-matrix run; lanes execute on separate VMs and
+# share no mutable state (docs/history publishing only happens on unmodified
+# full runs, which all fall in the stress-tests-all-lane-default group).
 concurrency:
-  group: stress-tests
+  group: stress-tests-${{ github.event.inputs.lane || 'all' }}-${{ github.event.inputs.client || 'lane-default' }}
   cancel-in-progress: false
 
 env:
@@ -35,114 +75,103 @@ env:
   Deterministic: true
 
 jobs:
+  # Resolves the lane input to the matrix that actually runs, on a free runner,
+  # before any paid 8-core runner spins up. Keep the lane list here in sync with
+  # the workflow_dispatch choice options above (enforced by
+  # test_workflow_lane_options_match_selectable_lanes in .github/scripts).
+  select-lanes:
+    name: Select Lanes
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      full_run: ${{ steps.select.outputs.full_run }}
+    steps:
+      - name: Select lanes for this run
+        id: select
+        env:
+          LANE: ${{ github.event.inputs.lane }}
+          CLIENT: ${{ github.event.inputs.client }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # The UI enforces the required choice input, but API/CLI dispatches can
+          # omit it; fail fast here rather than defaulting a manual run to the
+          # full (expensive) matrix. Scheduled runs have no inputs and always run
+          # the full matrix.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -z "$LANE" ]; then
+            echo "::error::Missing required 'lane' input. Pass -f lane=<lane> (single paid-runner job) or -f lane=all for the full matrix."
+            exit 1
+          fi
+          lane="${LANE:-all}"
+
+          # Client override: empty means the lane's own paired behavior. Validate
+          # here (choice is UI-enforced only) so a bad value fails on this free
+          # runner, not on a paid one.
+          client="$CLIENT"
+          [ "$client" = "lane-default" ] && client=""
+          case "$client" in
+            ""|dekaf|confluent) ;;
+            *)
+              echo "::error::Unknown client '$client'. Valid values: lane-default, dekaf, confluent."
+              exit 1
+              ;;
+          esac
+
+          # timeout_minutes rationale: at a 30-minute dispatch the paired_samples=2
+          # lanes run four paired client durations plus one 3-connection duration
+          # (180 min); acks-all 1-broker runs four measured durations (150 min);
+          # all lanes leave setup/publish headroom.
+          cat > lanes.json << 'EOF'
+          [
+            {"lane": "producer-1b", "scenario": "producer", "client": "all", "brokers": 1, "paired_samples": 2, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 180, "name": "Producer (Paired)"},
+            {"lane": "producer-3b", "scenario": "producer", "client": "all", "brokers": 3, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 150, "name": "Producer (Paired, 3 Brokers)"},
+            {"lane": "producer-idempotent-1b", "scenario": "producer-idempotent", "client": "all", "brokers": 1, "paired_samples": 2, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 180, "name": "Producer Idempotent (Paired)"},
+            {"lane": "producer-idempotent-3b", "scenario": "producer-idempotent", "client": "all", "brokers": 3, "run_3conn": true, "artifact_suffix": "-with-3conn", "timeout_minutes": 150, "name": "Producer Idempotent (Paired, 3 Brokers)"},
+            {"lane": "producer-acks-all-1b", "scenario": "producer-acks-all", "client": "all", "brokers": 1, "paired_samples": 2, "timeout_minutes": 150, "name": "Producer Acks All (Paired)"},
+            {"lane": "producer-acks-all-3b", "scenario": "producer-acks-all", "client": "all", "brokers": 3, "timeout_minutes": 120, "name": "Producer Acks All (Paired, 3 Brokers)"},
+            {"lane": "producer-transactional-3b", "scenario": "producer-transactional", "client": "all", "brokers": 3, "timeout_minutes": 150, "name": "Transactional EOS (Paired, 3 Brokers)"},
+            {"lane": "producer-roundtrip-1b", "scenario": "producer-roundtrip", "client": "all", "brokers": 1, "timeout_minutes": 90, "name": "Producer → Consumer Round-Trip (Paired)"},
+            {"lane": "producer-roundtrip-steady-1b", "scenario": "producer-roundtrip-steady", "client": "all", "brokers": 1, "message_size": 128, "roundtrip_steady_seconds": 60, "timeout_minutes": 90, "name": "Producer → Consumer Round-Trip Steady State (Paired)"},
+            {"lane": "consumer-1b", "scenario": "consumer", "client": "all", "brokers": 1, "timeout_minutes": 90, "name": "Consumer (Paired)"},
+            {"lane": "consumer-batch-1b", "scenario": "consumer-batch", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Batch"},
+            {"lane": "consumer-raw-1b", "scenario": "consumer-raw", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Raw"},
+            {"lane": "consumer-raw-batch-1b", "scenario": "consumer-raw-batch", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Raw Batch"}
+          ]
+          EOF
+
+          # A client override applies only to paired lanes (client == "all"):
+          # Dekaf-only lanes keep their client. Overridden lanes drop to one
+          # sample — paired_samples exists to alternate client order, which is
+          # meaningless for a single client — and the Dekaf-only 3-connection
+          # pass survives only a dekaf override.
+          matrix=$(jq -c --arg lane "$lane" --arg client "$client" '
+            {include: [ .[]
+              | select($lane == "all" or .lane == $lane)
+              | if $client != "" and .client == "all" then
+                  .client = $client
+                  | .paired_samples = 1
+                  | if $client == "confluent" then .run_3conn = false | .artifact_suffix = "" else . end
+                else . end
+            ]}' lanes.json)
+          count=$(echo "$matrix" | jq '.include | length')
+          if [ "$count" -eq 0 ]; then
+            echo "::error::Unknown lane '$lane'. Valid lanes: all $(jq -r '[.[].lane] | join(" ")' lanes.json)"
+            exit 1
+          fi
+
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          # Only an unmodified full matrix may publish docs/history: a client
+          # override produces single-client rows that would wipe ratio columns.
+          echo "full_run=$([ "$lane" = "all" ] && [ -z "$client" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "Selected $count lane(s) for '$lane'${client:+ (client override: $client)}"
+
   # Run each scenario in parallel. Comparable clients run sequentially inside the
   # same job/VM so published ratios share hardware and noisy-neighbor conditions;
   # 1-broker producer acceptance lanes repeat in both client orders.
   stress-test:
+    needs: select-lanes
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - scenario: producer
-            client: all
-            brokers: 1
-            paired_samples: 2
-            run_3conn: true
-            artifact_suffix: -with-3conn
-            # At a 30-minute dispatch this runs four paired client durations plus
-            # one 3-connection duration; leave setup/publish headroom as well.
-            timeout_minutes: 180
-            name: Producer (Paired)
-          - scenario: producer
-            client: all
-            brokers: 3
-            run_3conn: true
-            artifact_suffix: -with-3conn
-            timeout_minutes: 150
-            name: Producer (Paired, 3 Brokers)
-          - scenario: producer-idempotent
-            client: all
-            brokers: 1
-            paired_samples: 2
-            run_3conn: true
-            artifact_suffix: -with-3conn
-            # Same five measured durations as the fire-and-forget lane.
-            timeout_minutes: 180
-            name: Producer Idempotent (Paired)
-          - scenario: producer-idempotent
-            client: all
-            brokers: 3
-            run_3conn: true
-            artifact_suffix: -with-3conn
-            timeout_minutes: 150
-            name: Producer Idempotent (Paired, 3 Brokers)
-          - scenario: producer-acks-all
-            client: all
-            brokers: 1
-            paired_samples: 2
-            run_3conn: false
-            artifact_suffix: ""
-            # Four measured durations need 120 minutes at a 30-minute dispatch.
-            timeout_minutes: 150
-            name: Producer Acks All (Paired)
-          - scenario: producer-acks-all
-            client: all
-            brokers: 3
-            run_3conn: false
-            artifact_suffix: ""
-            timeout_minutes: 120
-            name: Producer Acks All (Paired, 3 Brokers)
-          - scenario: producer-transactional
-            client: all
-            brokers: 3
-            run_3conn: false
-            artifact_suffix: ""
-            timeout_minutes: 150
-            name: Transactional EOS (Paired, 3 Brokers)
-          - scenario: producer-roundtrip
-            client: all
-            brokers: 1
-            run_3conn: false
-            artifact_suffix: ""
-            timeout_minutes: 90
-            name: Producer → Consumer Round-Trip (Paired)
-          - scenario: producer-roundtrip-steady
-            client: all
-            brokers: 1
-            run_3conn: false
-            artifact_suffix: ""
-            message_size: 128
-            roundtrip_steady_seconds: 60
-            timeout_minutes: 90
-            name: Producer → Consumer Round-Trip Steady State (Paired)
-          - scenario: consumer
-            client: all
-            brokers: 1
-            run_3conn: false
-            artifact_suffix: ""
-            timeout_minutes: 90
-            name: Consumer (Paired)
-          - scenario: consumer-batch
-            client: dekaf
-            brokers: 1
-            run_3conn: false
-            artifact_suffix: ""
-            timeout_minutes: 60
-            name: Dekaf Consumer Batch
-          - scenario: consumer-raw
-            client: dekaf
-            brokers: 1
-            run_3conn: false
-            artifact_suffix: ""
-            timeout_minutes: 60
-            name: Dekaf Consumer Raw
-          - scenario: consumer-raw-batch
-            client: dekaf
-            brokers: 1
-            run_3conn: false
-            artifact_suffix: ""
-            timeout_minutes: 60
-            name: Dekaf Consumer Raw Batch
+      matrix: ${{ fromJson(needs.select-lanes.outputs.matrix) }}
 
     name: ${{ matrix.name }}
     # 8 vCPUs, split so the client under test is the measured bottleneck:
@@ -522,11 +551,15 @@ jobs:
 
   publish-to-docs:
     name: Publish Stress Test Results to Documentation
-    needs: [stress-test, generate-summary]
+    needs: [select-lanes, stress-test, generate-summary]
     runs-on: ubuntu-latest
     # stress-test success is required: a failed scenario (e.g. broker died mid-run)
     # must block the docs update rather than publish a partial or invalid table.
-    if: github.ref == 'refs/heads/main' && needs.stress-test.result == 'success' && needs.generate-summary.result == 'success'
+    # Partial dispatches (single lane, or a client override) never publish: the
+    # docs page and trend history are regenerated from this run's results alone,
+    # so a partial run would drop other lanes' rows or the ratio columns. Read
+    # partial-run data from the run summary and artifacts.
+    if: github.ref == 'refs/heads/main' && needs.select-lanes.outputs.full_run == 'true' && needs.stress-test.result == 'success' && needs.generate-summary.result == 'success'
 
     permissions:
       contents: write
@@ -657,7 +690,10 @@ jobs:
     needs: [stress-test, generate-summary, publish-to-docs]
     runs-on: ubuntu-latest
     # Wait for the docs PR so valid regression observations are persisted before
-    # the workflow reports the repeated regression.
+    # the workflow reports the repeated regression. Partial dispatches (single
+    # lane or client override) skip publish-to-docs and therefore this gate too:
+    # their observations are never persisted to history, so consecutive-regression
+    # tracking would be spurious.
     if: >-
       always() &&
       needs.stress-test.result == 'success' &&
