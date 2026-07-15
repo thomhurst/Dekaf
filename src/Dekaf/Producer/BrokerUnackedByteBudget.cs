@@ -199,9 +199,8 @@ internal sealed class BrokerUnackedByteBudget
     /// still converge when the path's base RTT has genuinely increased.</summary>
     private const double MinRttRefreshGrowthFactor = 1.25;
 
-    private const int ProbeIntervalRtts = 8;
-    // A capacity probe needs one RTT for the enlarged budget to reach the wire,
-    // then three wholly-probed RTTs to average before accepting or rejecting growth.
+    // A capacity probe needs one RTT for the enlarged budget to reach the wire, then at
+    // least three wholly-probed RTTs to average before accepting or rejecting growth.
     private const int ProbeEvaluationRtts = 3;
     private const double ProbeBudgetMultiplier = 1.25;
     /// <summary>Only probe when standing demand fills at least this fraction of the gate;
@@ -216,7 +215,13 @@ internal sealed class BrokerUnackedByteBudget
     /// latency cost. Comparing deltas avoids granting every rung a fresh fixed 10% latency
     /// allowance that compounds into standing queue as proof advances.</summary>
     private const double ProbeSealToAckEfficiencyTolerance = 1.10;
-    private static readonly long MaxProbeIntervalTicks = Stopwatch.Frequency;
+    private const int ProbeScheduleRtts = 8;
+    // Same-budget baseline/candidate windows must span scheduler and response clustering
+    // noise, and completed sessions must not turn that noise into thousands of upward votes.
+    private static readonly long MinimumCapacityProbeEvaluationTicks = Math.Max(
+        1,
+        Stopwatch.Frequency / 10);
+    private static readonly long CapacityProbeCooldownTicks = Stopwatch.Frequency;
     // An empty pipe refilled within this gap is a serialized loaded cycle, not application idle.
     private static readonly long MaximumSerializedRateCycleGapTicks = Math.Max(1, Stopwatch.Frequency / 500);
     // Shorter loaded epochs are dominated by timer, scheduler, and burst quantization on common hosts.
@@ -251,8 +256,6 @@ internal sealed class BrokerUnackedByteBudget
     private readonly long _probeResponseHorizonTicks;
     private long _capBytes;
     private readonly double[] _rateBucketMaxValues = new double[WindowBucketCount];
-    private readonly double[] _rateBucketSums = new double[WindowBucketCount];
-    private readonly int[] _rateBucketSampleCounts = new int[WindowBucketCount];
     private readonly long[] _occupancyBucketMaxValues = new long[WindowBucketCount];
     // Per-request diagnostics: log2 histograms of acked request sizes and RTTs. Incremented
     // only by the owning send loop; snapshot copies use per-element volatile reads, so
@@ -266,13 +269,10 @@ internal sealed class BrokerUnackedByteBudget
     private long _admissionBlockedSinceTimestamp;
     private long _currentWindowBucket = long.MinValue;
     private double _windowMaxRate;
-    private double _windowRateSum;
-    private int _windowRateSampleCount;
     private double _retainedLoadedMaxRate;
     private long _windowMaxOccupancyBytes;
     private double _minRttSeconds;
     private double _servingRttEwmaSeconds;
-    private double _rawServingRttEwmaSeconds;
     private double _requestSizeEwmaBytes;
     // Capacity probes raise this per-connection request-depth floor only after proving that
     // larger flight increases delivery rate without inflating RTT or seal-to-ack latency. It
@@ -301,6 +301,7 @@ internal sealed class BrokerUnackedByteBudget
     private double _capacityProbePreProbeSealToAckSeconds;
     private int _capacityProbeRateSampleCount;
     private int _capacityProbeSealToAckSampleCount;
+    private bool _capacityProbeBaselineActive;
     private bool _capacityProbeActive;
     private long _capacityProbeSuccessCount;
     private long _capacityProbeFailureCount;
@@ -724,8 +725,13 @@ internal sealed class BrokerUnackedByteBudget
                 GetMinimumPipelineRequestQuanta(),
                 GetMaximumPipelineRequestQuanta()));
         CompleteExpiredMinRttProbe(nowTicks);
-        if (_capacityProbeActive && nowTicks >= _capacityProbeDeadlineTimestamp)
-            DeactivateCapacityProbe(nowTicks);
+        if (nowTicks >= _capacityProbeDeadlineTimestamp)
+        {
+            if (_capacityProbeActive)
+                DeactivateCapacityProbe(nowTicks);
+            else if (_capacityProbeBaselineActive)
+                CompleteCapacityProbeSession();
+        }
         RecomputeBudget(nowTicks);
         if (!IsOverBudgetAt(nowTicks))
             RecordAdmissionAvailable(nowTicks);
@@ -793,13 +799,6 @@ internal sealed class BrokerUnackedByteBudget
             _servingRttEwmaSeconds = UpdateEwma(
                 _servingRttEwmaSeconds,
                 serviceRttSeconds,
-                ServingRttEwmaWeight);
-            // Raw (uncorrected) companion estimate for the capacity probe: probe samples are
-            // raw round trips, so their acceptance baseline must live in the same domain —
-            // a corrected baseline under standing load would reject every probe.
-            _rawServingRttEwmaSeconds = UpdateEwma(
-                _rawServingRttEwmaSeconds,
-                rttSeconds,
                 ServingRttEwmaWeight);
         }
         Volatile.Write(ref _minimumRttMicros, (long)(_minRttSeconds * 1_000_000));
@@ -1144,12 +1143,8 @@ internal sealed class BrokerUnackedByteBudget
         if (elapsed >= WindowBucketCount)
         {
             Array.Clear(_rateBucketMaxValues);
-            Array.Clear(_rateBucketSums);
-            Array.Clear(_rateBucketSampleCounts);
             Array.Clear(_occupancyBucketMaxValues);
             _windowMaxRate = 0;
-            _windowRateSum = 0;
-            _windowRateSampleCount = 0;
             _windowMaxOccupancyBytes = 0;
         }
         else
@@ -1162,11 +1157,7 @@ internal sealed class BrokerUnackedByteBudget
                 recomputeRate |= _windowMaxRate > 0 && _rateBucketMaxValues[slot] >= _windowMaxRate;
                 recomputeOccupancy |= _windowMaxOccupancyBytes > 0
                     && _occupancyBucketMaxValues[slot] >= _windowMaxOccupancyBytes;
-                _windowRateSum -= _rateBucketSums[slot];
-                _windowRateSampleCount -= _rateBucketSampleCounts[slot];
                 _rateBucketMaxValues[slot] = 0;
-                _rateBucketSums[slot] = 0;
-                _rateBucketSampleCounts[slot] = 0;
                 _occupancyBucketMaxValues[slot] = 0;
             }
 
@@ -1192,11 +1183,7 @@ internal sealed class BrokerUnackedByteBudget
     {
         var slot = (int)(_currentWindowBucket % WindowBucketCount);
         _rateBucketMaxValues[slot] = Math.Max(_rateBucketMaxValues[slot], bytesPerSecond);
-        _rateBucketSums[slot] += bytesPerSecond;
-        _rateBucketSampleCounts[slot]++;
         _windowMaxRate = Math.Max(_windowMaxRate, bytesPerSecond);
-        _windowRateSum += bytesPerSecond;
-        _windowRateSampleCount++;
         if (sustainedIdle)
             _retainedLoadedMaxRate = 0;
         else if (loadedSample)
@@ -1204,10 +1191,6 @@ internal sealed class BrokerUnackedByteBudget
     }
 
     private double GetEffectiveMaxRate() => Math.Max(_windowMaxRate, _retainedLoadedMaxRate);
-
-    private double GetWindowAverageRate() => _windowRateSampleCount > 0
-        ? _windowRateSum / _windowRateSampleCount
-        : 0;
 
     private void AddOccupancySample(long bytes)
     {
@@ -1224,22 +1207,60 @@ internal sealed class BrokerUnackedByteBudget
         double sealToAckSeconds,
         long nowTicks)
     {
-        var probeIntervalTicks = GetProbeIntervalTicks(rttTicks);
+        var probeScheduleIntervalTicks = GetCapacityProbeScheduleIntervalTicks(rttTicks);
         var evaluationWindowTicks = Math.Max(
-            ProbeEvaluationRtts * rttTicks,
-            _probeResponseHorizonTicks);
+            MinimumCapacityProbeEvaluationTicks,
+            Math.Max(ProbeEvaluationRtts * rttTicks, _probeResponseHorizonTicks));
         var probeDurationTicks = Math.Max(
-            probeIntervalTicks,
+            probeScheduleIntervalTicks,
             rttTicks + evaluationWindowTicks);
         if (_nextProbeTimestamp == 0)
-            _nextProbeTimestamp = nowTicks + probeIntervalTicks;
+            _nextProbeTimestamp = nowTicks + probeScheduleIntervalTicks;
+
+        if (_capacityProbeBaselineActive)
+        {
+            if (nowTicks >= _capacityProbeDeadlineTimestamp)
+            {
+                CompleteCapacityProbeSession();
+                _nextProbeTimestamp = nowTicks + CapacityProbeCooldownTicks;
+                return;
+            }
+
+            // Compare only work admitted after the control window began. This uses the
+            // same per-request rate, RTT, and seal-to-ack path as the candidate phase.
+            if (admissionTimestamp < _capacityProbeStartTimestamp)
+                return;
+
+            AddCapacityProbeSample(bytesPerSecond, rttSeconds, sealToAckSeconds);
+            if (!CapacityProbeEvaluationWindowElapsed(nowTicks, evaluationWindowTicks, rttTicks))
+                return;
+
+            _capacityProbeBaselineRate =
+                _capacityProbeRateSum / _capacityProbeRateSampleCount;
+            _capacityProbePreProbeRttSeconds =
+                _capacityProbeRttSumSeconds / _capacityProbeRateSampleCount;
+            _capacityProbePreProbeSealToAckSeconds = _capacityProbeSealToAckSampleCount > 0
+                ? _capacityProbeSealToAckSumSeconds / _capacityProbeSealToAckSampleCount
+                : 0;
+            _capacityProbeStartTimestamp = nowTicks;
+            ResetCapacityProbeSamples();
+            Volatile.Write(ref _capacityProbeBaselineActive, false);
+            Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeDurationTicks);
+            Volatile.Write(ref _capacityProbeActive, true);
+            RecordProbeEvent(
+                BrokerBudgetProbeType.Capacity,
+                BrokerBudgetProbeOutcome.Started,
+                nowTicks,
+                nowTicks);
+            return;
+        }
 
         if (_capacityProbeActive)
         {
             if (nowTicks >= _capacityProbeDeadlineTimestamp)
             {
                 DeactivateCapacityProbe(nowTicks);
-                _nextProbeTimestamp = nowTicks + probeIntervalTicks;
+                _nextProbeTimestamp = nowTicks + CapacityProbeCooldownTicks;
                 return;
             }
 
@@ -1249,24 +1270,8 @@ internal sealed class BrokerUnackedByteBudget
             if (admissionTimestamp < _capacityProbeStartTimestamp)
                 return;
 
-            _capacityProbeRateSum += bytesPerSecond;
-            _capacityProbeRttSumSeconds += rttSeconds;
-            _capacityProbeRateSampleCount++;
-            if (sealToAckSeconds > 0)
-            {
-                _capacityProbeSealToAckSumSeconds += sealToAckSeconds;
-                _capacityProbeSealToAckSampleCount++;
-            }
-            if (_capacityProbeEvaluationDeadlineTimestamp == 0)
-            {
-                _capacityProbeEvaluationDeadlineTimestamp = nowTicks + evaluationWindowTicks;
-                Volatile.Write(
-                    ref _capacityProbeDeadlineTimestamp,
-                    Math.Max(_capacityProbeDeadlineTimestamp, nowTicks + evaluationWindowTicks));
-                return;
-            }
-
-            if (nowTicks < _capacityProbeEvaluationDeadlineTimestamp)
+            AddCapacityProbeSample(bytesPerSecond, rttSeconds, sealToAckSeconds);
+            if (!CapacityProbeEvaluationWindowElapsed(nowTicks, evaluationWindowTicks, rttTicks))
                 return;
 
             // Real headroom raises rate without buying proportionally more delivery latency.
@@ -1282,16 +1287,6 @@ internal sealed class BrokerUnackedByteBudget
                 && averageRate > _capacityProbeBaselineRate * ProbeGrowthThreshold
                 && CapacityProbePreservedSealToAckEfficiency(averageRate))
             {
-                // Compare like with like across rungs. A single clustered-response peak is not
-                // a sustainable baseline and would make the next average-rate rung unwinnable.
-                _capacityProbeBaselineRate = averageRate;
-                _capacityProbePreProbeRttSeconds = averageRttSeconds;
-                if (_capacityProbeSealToAckSampleCount > 0)
-                {
-                    _capacityProbePreProbeSealToAckSeconds =
-                        _capacityProbeSealToAckSumSeconds
-                        / _capacityProbeSealToAckSampleCount;
-                }
                 Volatile.Write(
                     ref _provenPipelineRequestQuanta,
                     Math.Min(
@@ -1302,15 +1297,14 @@ internal sealed class BrokerUnackedByteBudget
                     BrokerBudgetProbeOutcome.Succeeded,
                     nowTicks,
                     _capacityProbeStartTimestamp);
-                _capacityProbeStartTimestamp = nowTicks;
-                ResetCapacityProbeSamples();
                 Interlocked.Increment(ref _capacityProbeSuccessCount);
-                Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeDurationTicks);
+                CompleteCapacityProbeSession();
+                _nextProbeTimestamp = nowTicks + CapacityProbeCooldownTicks;
             }
             else
             {
                 DeactivateCapacityProbe(nowTicks);
-                _nextProbeTimestamp = nowTicks + probeIntervalTicks;
+                _nextProbeTimestamp = nowTicks + CapacityProbeCooldownTicks;
             }
 
             return;
@@ -1319,30 +1313,18 @@ internal sealed class BrokerUnackedByteBudget
         if (nowTicks < _nextProbeTimestamp)
             return;
 
-        if (nowTicks - _nextProbeTimestamp < probeIntervalTicks
+        if (nowTicks - _nextProbeTimestamp < probeScheduleIntervalTicks
             && HasCapacityProbeDemand())
         {
             _capacityProbeStartTimestamp = nowTicks;
-            _capacityProbeBaselineRate = GetWindowAverageRate();
-            // Raw-domain baseline to match the raw probe samples; the queue-corrected
-            // serving EWMA sits below loaded round trips and would fail every probe.
-            _capacityProbePreProbeRttSeconds = _rawServingRttEwmaSeconds > 0
-                ? _rawServingRttEwmaSeconds
-                : rttSeconds;
-            _capacityProbePreProbeSealToAckSeconds = _sealToAckEwmaSeconds;
             ResetCapacityProbeSamples();
             Volatile.Write(ref _capacityProbeDeadlineTimestamp, nowTicks + probeDurationTicks);
-            Volatile.Write(ref _capacityProbeActive, true);
-            RecordProbeEvent(
-                BrokerBudgetProbeType.Capacity,
-                BrokerBudgetProbeOutcome.Started,
-                nowTicks,
-                nowTicks);
+            Volatile.Write(ref _capacityProbeBaselineActive, true);
         }
 
         // A schedule missed by a full interval represents producer idle time, not an
         // active-pipeline probe opportunity. Re-arm instead of probing on resume.
-        _nextProbeTimestamp = nowTicks + probeIntervalTicks;
+        _nextProbeTimestamp = nowTicks + probeScheduleIntervalTicks;
     }
 
     private bool HasCapacityProbeDemand()
@@ -1354,10 +1336,44 @@ internal sealed class BrokerUnackedByteBudget
         return Volatile.Read(ref _unackedBytes) >= minimumDemandBytes;
     }
 
-    private static long GetProbeIntervalTicks(long rttTicks)
-        => rttTicks >= MaxProbeIntervalTicks / ProbeIntervalRtts
-            ? MaxProbeIntervalTicks
-            : ProbeIntervalRtts * rttTicks;
+    private static long GetCapacityProbeScheduleIntervalTicks(long rttTicks)
+        => rttTicks >= CapacityProbeCooldownTicks / ProbeScheduleRtts
+            ? CapacityProbeCooldownTicks
+            : ProbeScheduleRtts * rttTicks;
+
+    private void AddCapacityProbeSample(
+        double bytesPerSecond,
+        double rttSeconds,
+        double sealToAckSeconds)
+    {
+        _capacityProbeRateSum += bytesPerSecond;
+        _capacityProbeRttSumSeconds += rttSeconds;
+        _capacityProbeRateSampleCount++;
+        if (sealToAckSeconds > 0)
+        {
+            _capacityProbeSealToAckSumSeconds += sealToAckSeconds;
+            _capacityProbeSealToAckSampleCount++;
+        }
+    }
+
+    private bool CapacityProbeEvaluationWindowElapsed(
+        long nowTicks,
+        long evaluationWindowTicks,
+        long rttTicks)
+    {
+        if (_capacityProbeEvaluationDeadlineTimestamp == 0)
+        {
+            _capacityProbeEvaluationDeadlineTimestamp = nowTicks + evaluationWindowTicks;
+            Volatile.Write(
+                ref _capacityProbeDeadlineTimestamp,
+                Math.Max(
+                    _capacityProbeDeadlineTimestamp,
+                    _capacityProbeEvaluationDeadlineTimestamp + rttTicks));
+            return false;
+        }
+
+        return nowTicks >= _capacityProbeEvaluationDeadlineTimestamp;
+    }
 
     private void ResetCapacityProbeSamples()
     {
@@ -1414,7 +1430,13 @@ internal sealed class BrokerUnackedByteBudget
                 _capacityProbeStartTimestamp);
         }
 
+        CompleteCapacityProbeSession();
+    }
+
+    private void CompleteCapacityProbeSession()
+    {
         ResetCapacityProbeSamples();
+        Volatile.Write(ref _capacityProbeBaselineActive, false);
         Volatile.Write(ref _capacityProbeActive, false);
         Volatile.Write(ref _capacityProbeDeadlineTimestamp, 0);
     }

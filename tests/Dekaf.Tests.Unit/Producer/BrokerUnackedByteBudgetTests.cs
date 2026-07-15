@@ -909,26 +909,23 @@ public sealed class BrokerUnackedByteBudgetTests
         for (var i = 0; i <= 8; i++)
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
 
+        await Assert.That(budget.BudgetBytes).IsEqualTo(375);
+        await Assert.That(GetField<bool>(budget, "_capacityProbeBaselineActive")).IsTrue();
+
+        for (var i = 9; i <= 14; i++)
+            Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
+
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
         await Assert.That(budget.BudgetBytes).IsEqualTo(468);
 
-        Ack(budget, 1_000, 0.100, T0 + Seconds(0.900));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
-
-        Ack(budget, 1_000, 0.100, T0 + Seconds(1.000));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
-
-        Ack(budget, 1_000, 0.100, T0 + Seconds(1.100));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
-
-        Ack(budget, 1_000, 0.100, T0 + Seconds(1.200));
-        Ack(budget, 1_000, 0.100, T0 + Seconds(1.300));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(468);
-
-        Ack(budget, 1_000, 0.100, T0 + Seconds(1.400));
+        for (var i = 15; i <= 20; i++)
+            Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(375);
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(1);
+        await Assert.That(GetField<long>(budget, "_nextProbeTimestamp") - (T0 + Seconds(2.000)))
+            .IsGreaterThanOrEqualTo(Seconds(1.0));
         var capacityEvents = budget.CopyProbeEvents()
             .Where(probeEvent => probeEvent.ProbeType == BrokerBudgetProbeType.Capacity)
             .ToArray();
@@ -951,6 +948,40 @@ public sealed class BrokerUnackedByteBudgetTests
 
         var nextProbeTimestamp = GetField<long>(budget, "_nextProbeTimestamp");
         await Assert.That(nextProbeTimestamp - T0).IsLessThanOrEqualTo(Seconds(1.0));
+    }
+
+    [Test]
+    public async Task PeriodicProbe_MeasuresSettledBaselineBeforeOpeningCandidateBudget()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        Ack(budget, 1_000, 0.008, T0);
+        budget.Charge(20_000);
+
+        var probeStart = T0 + Seconds(0.064);
+        SetField(budget, "_nextProbeTimestamp", probeStart);
+        Ack(budget, 1_000, 0.008, probeStart);
+
+        var normalBudget = GetField<long>(budget, "_budgetAfterMinRttProbeBytes");
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsFalse()
+            .Because("the first phase must observe the current budget before changing the treatment");
+        await Assert.That(GetField<bool>(budget, "_capacityProbeBaselineActive")).IsTrue();
+        await Assert.That(budget.BudgetBytes).IsEqualTo(normalBudget);
+
+        Ack(budget, 1_000, 0.008, T0 + Seconds(0.073));
+        await Assert.That(GetField<int>(budget, "_capacityProbeRateSampleCount")).IsEqualTo(1);
+        Ack(budget, 1_000, 0.008, T0 + Seconds(0.123));
+        Ack(budget, 1_000, 0.008, T0 + Seconds(0.174));
+
+        await Assert.That(GetField<bool>(budget, "_capacityProbeBaselineActive")).IsFalse();
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
+        await Assert.That(GetField<double>(budget, "_capacityProbeBaselineRate"))
+            .IsEqualTo(125_000.0).Within(0.001)
+            .Because("baseline and candidate must use the same per-request delivery-rate domain");
+        await Assert.That(budget.BudgetBytes).IsGreaterThan(normalBudget)
+            .Because("only the candidate phase may publish the enlarged budget");
     }
 
     [Test]
@@ -978,7 +1009,7 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task PeriodicProbe_SuccessCarriesAverageRateToNextRung_NotSinglePeak()
+    public async Task PeriodicProbe_SuccessClosesSessionBeforeAnotherRung()
     {
         var budget = new BrokerUnackedByteBudget(
             targetSeconds: 0.5,
@@ -994,9 +1025,14 @@ public sealed class BrokerUnackedByteBudgetTests
 
         Ack(budget, 1_200, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
 
-        await Assert.That(GetField<double>(budget, "_capacityProbeBaselineRate"))
-            .IsEqualTo(18_000.0).Within(0.001)
-            .Because("the next probe rung must compare average rate with average rate");
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(1);
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsFalse()
+            .Because("a successful sample must not chain another +25% treatment without a settled baseline");
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(5.0).Within(0.000_001);
+        await Assert.That(GetField<long>(budget, "_nextProbeTimestamp") - (T0 + Seconds(0.300)))
+            .IsGreaterThanOrEqualTo(Seconds(1.0))
+            .Because("scheduler bursts must not become thousands of independent probe votes");
     }
 
     [Test]
@@ -1525,7 +1561,7 @@ public sealed class BrokerUnackedByteBudgetTests
             .Because("one base-RTT BDP remains when serving time consumes most of the end-to-end target");
         budget.Charge(20_000);
 
-        for (var i = 1; i <= 8; i++)
+        for (var i = 1; i <= 22; i++)
             Ack(budget, 8_000, 0.008, T0 + Seconds(i * 0.008));
 
         await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
@@ -1533,11 +1569,13 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.BudgetBytes).IsEqualTo((long)(normalBudget * 1.25))
             .Because("the periodic probe must explore 25% beyond an RTT-dominant target cap");
 
-        for (var i = 9; i <= 12; i++)
+        for (var i = 23; i <= 36; i++)
             Ack(budget, 10_000, 0.008, T0 + Seconds(i * 0.008));
 
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(1)
             .Because("flat-RTT rate gain above the target cap must remain discoverable");
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsFalse()
+            .Because("the next rung requires a newly settled baseline");
     }
 
     [Test]
@@ -1546,8 +1584,15 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
         budget.Charge(5_000);
 
-        for (var i = 0; i <= 8; i++)
+        for (var i = 0; i <= 7; i++)
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
+
+        SetField(budget, "_capacityProbeBaselineRate", 10_000.0);
+        SetField(budget, "_capacityProbePreProbeRttSeconds", 0.100);
+        SetField(budget, "_capacityProbeStartTimestamp", T0 + Seconds(0.800));
+        SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(1.600));
+        SetField(budget, "_capacityProbeActive", true);
+        CompleteAckedPassWithoutDecay(budget, T0 + Seconds(0.800));
 
         // One small response can arrive first after the larger budget is published.
         // It must not cancel the probe before other requests from the same RTT land.
@@ -1567,8 +1612,13 @@ public sealed class BrokerUnackedByteBudgetTests
             initialCapBytes: 1_000_000);
         budget.Charge(5_500);
 
-        for (var i = 0; i <= 8; i++)
+        for (var i = 0; i <= 7; i++)
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
+
+        SetField(budget, "_capacityProbeStartTimestamp", T0 + Seconds(0.800));
+        SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(1.600));
+        SetField(budget, "_capacityProbeActive", true);
+        CompleteAckedPassWithoutDecay(budget, T0 + Seconds(0.800));
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(468);
         budget.Release(5_100);
@@ -1604,8 +1654,14 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
         budget.Charge(5_000);
 
-        for (var i = 0; i <= 8; i++)
+        for (var i = 0; i <= 7; i++)
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
+
+        SetField(budget, "_capacityProbeBaselineRate", 10_000.0);
+        SetField(budget, "_capacityProbeStartTimestamp", T0 + Seconds(0.800));
+        SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(2.000));
+        SetField(budget, "_capacityProbeActive", true);
+        CompleteAckedPassWithoutDecay(budget, T0 + Seconds(0.800));
 
         await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
@@ -1654,6 +1710,24 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task PeriodicProbe_BaselineRejectsBatchAdmittedBeforeControlWindow()
+    {
+        var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
+        SetField(budget, "_capacityProbeStartTimestamp", T0);
+        SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(1.0));
+        SetField(budget, "_capacityProbeBaselineActive", true);
+
+        var snapshot = budget.SnapshotDelivery(
+            sendTimestamp: T0 + Seconds(0.010),
+            appLimited: true,
+            oldestBatchTimestamp: T0 - Seconds(0.010));
+        Ack(budget, 200, 0.001, T0 + Seconds(0.011), snapshot);
+
+        await Assert.That(GetField<int>(budget, "_capacityProbeRateSampleCount")).IsEqualTo(0)
+            .Because("the control window must exclude the same pre-phase admissions as the treatment window");
+    }
+
+    [Test]
     public async Task PeriodicProbe_EvaluationWindowCoversTargetHorizonAndLinger()
     {
         var budget = new BrokerUnackedByteBudget(
@@ -1674,23 +1748,28 @@ public sealed class BrokerUnackedByteBudgetTests
         Ack(budget, 20, 0.001, now, snapshot);
 
         var evaluationDeadline = GetField<long>(budget, "_capacityProbeEvaluationDeadlineTimestamp");
-        await Assert.That(evaluationDeadline - now).IsGreaterThanOrEqualTo(Seconds(0.015))
-            .Because("probe-added admissions need a full target horizon plus linger to affect delivery rate");
+        await Assert.That(evaluationDeadline - now).IsGreaterThanOrEqualTo(Seconds(0.100))
+            .Because("probe-added admissions need a scheduler-noise-resistant observation horizon");
     }
 
     [Test]
-    public async Task PeriodicProbe_UsesWindowAverageBaseline_NotDecayingRetainedPeak()
+    public async Task PeriodicProbe_BaselineIgnoresDifferentDomainRollingRateWindow()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.010, floorBytes: 200, initialCapBytes: 1_000_000);
-        Ack(budget, 10, 0.001, T0);
-        budget.Charge(100);
-        SetField(budget, "_retainedLoadedMaxRate", 100_000.0);
-        SetField(budget, "_nextProbeTimestamp", T0 + Seconds(0.008));
+        Ack(budget, 1_000, 0.008, T0);
+        budget.Charge(20_000);
+        SetField(budget, "_windowMaxRate", 10_000_000.0);
+        SetField(budget, "_retainedLoadedMaxRate", 10_000_000.0);
+        SetField(budget, "_nextProbeTimestamp", T0 + Seconds(0.064));
 
-        Ack(budget, 10, 0.001, T0 + Seconds(0.008));
+        Ack(budget, 1_000, 0.008, T0 + Seconds(0.064));
+        Ack(budget, 1_000, 0.008, T0 + Seconds(0.073));
+        Ack(budget, 1_000, 0.008, T0 + Seconds(0.123));
+        Ack(budget, 1_000, 0.008, T0 + Seconds(0.174));
 
-        await Assert.That(GetField<double>(budget, "_capacityProbeBaselineRate")).IsEqualTo(10_000.0)
-            .Because("a stale retained peak must not make every recovery probe impossible");
+        await Assert.That(GetField<double>(budget, "_capacityProbeBaselineRate"))
+            .IsEqualTo(125_000.0).Within(0.001)
+            .Because("the control and treatment windows must use identical measurements");
     }
 
     [Test]
@@ -1709,45 +1788,36 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task PeriodicProbe_RatchetsWhileRateAndRttProveCapacity()
+    public async Task PeriodicProbe_NextRungRequiresFreshSettledBaseline()
     {
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
         budget.Charge(5_000);
+        SeedCapacityProbeEvaluation(budget, 10_000, 0, 42_000);
 
-        for (var i = 0; i <= 8; i++)
-            Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
+        Ack(budget, 1_200, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(1);
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(5.0).Within(0.000_001);
 
-        Ack(budget, 1_250, 0.100, T0 + Seconds(0.900));
-        await Assert.That(budget.BudgetBytes).IsEqualTo(585);
-        var firstRungBudget = budget.BudgetBytes;
+        Ack(budget, 1_250, 0.100, T0 + Seconds(1.300));
+        await Assert.That(GetField<bool>(budget, "_capacityProbeBaselineActive")).IsTrue();
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsFalse();
 
-        Ack(budget, 1_562, 0.100, T0 + Seconds(1.000));
-        await Assert.That(budget.BudgetBytes).IsGreaterThan(firstRungBudget);
-        var secondRungBudget = budget.BudgetBytes;
+        for (var i = 14; i <= 19; i++)
+            Ack(budget, 1_250, 0.100, T0 + Seconds(i * 0.100));
 
-        // The probe averages three RTTs before ratcheting to the higher level.
-        Ack(budget, 1_562, 0.100, T0 + Seconds(1.100));
-        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(secondRungBudget);
+        await Assert.That(GetField<bool>(budget, "_capacityProbeActive")).IsTrue();
+        await Assert.That(GetField<double>(budget, "_capacityProbeBaselineRate"))
+            .IsEqualTo(12_500.0).Within(0.001);
 
-        Ack(budget, 1_562, 0.100, T0 + Seconds(1.200));
-        await Assert.That(budget.BudgetBytes).IsGreaterThanOrEqualTo(secondRungBudget);
+        for (var i = 20; i <= 25; i++)
+            Ack(budget, 1_563, 0.100, T0 + Seconds(i * 0.100));
 
-        // The ratcheted level gets another full-window average. Comparing average with
-        // average lets the sustained 25% gain advance the next rung as well.
-        Ack(budget, 1_562, 0.100, T0 + Seconds(1.300));
-        Ack(budget, 1_562, 0.100, T0 + Seconds(1.400));
-        Ack(budget, 1_562, 0.100, T0 + Seconds(1.500));
-        Ack(budget, 1_562, 0.100, T0 + Seconds(1.600));
-        Ack(budget, 1_562, 0.100, T0 + Seconds(1.700));
-        Ack(budget, 1_562, 0.100, T0 + Seconds(1.800));
-        Ack(budget, 1_562, 0.100, T0 + Seconds(1.900));
-        Ack(budget, 1_562, 0.100, T0 + Seconds(2.000));
-        await Assert.That(budget.BudgetBytes).IsGreaterThan(secondRungBudget);
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(2);
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
             .IsEqualTo(6.25).Within(0.000_001)
-            .Because("two sustained 25% gains persist when no delivery-latency sample is available");
+            .Because("two independently baselined 25% gains remain discoverable");
     }
 
     [Test]
@@ -2024,8 +2094,13 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = new BrokerUnackedByteBudget(targetSeconds: 0.5, floorBytes: 200, initialCapBytes: 1_000_000);
         budget.Charge(5_500);
 
-        for (var i = 0; i <= 8; i++)
+        for (var i = 0; i <= 7; i++)
             Ack(budget, 1_000, 0.100, T0 + Seconds(i * 0.100));
+
+        SetField(budget, "_capacityProbeStartTimestamp", T0 + Seconds(0.800));
+        SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(1.600));
+        SetField(budget, "_capacityProbeActive", true);
+        CompleteAckedPassWithoutDecay(budget, T0 + Seconds(0.800));
 
         budget.Release(5_100);
         await Assert.That(budget.IsOverBudgetAt(T0 + Seconds(0.900))).IsFalse();
