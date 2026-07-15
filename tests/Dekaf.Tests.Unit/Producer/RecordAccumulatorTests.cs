@@ -3643,6 +3643,9 @@ public class RecordAccumulatorTests
             while (accumulator.BufferPressureEvents == 0 && !appendTask.IsCompleted)
                 await Task.Yield();
 
+            while (accumulator.PendingAppendCountForTest == 0 && !appendTask.IsCompleted)
+                await Task.Yield();
+
             await Assert.That(appendTask.IsCompleted).IsFalse();
 
             // Release exactly the pending append's estimated reservation so DrainPendingAppends
