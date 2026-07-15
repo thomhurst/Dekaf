@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
+using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Internal;

@@ -322,7 +322,7 @@ public ref struct KafkaProtocolWriter
         if (value.Length <= StackallocCharThreshold)
         {
             Span<byte> buffer = stackalloc byte[StackallocUtf8ByteCount];
-            var byteCount = EncodingCompat.GetBytes(value, buffer);
+            var byteCount = Encoding.UTF8.GetBytes(value, buffer);
             WriteInt16((short)byteCount);
             WriteUtf8Bytes(buffer[..byteCount]);
             return;
@@ -330,13 +330,13 @@ public ref struct KafkaProtocolWriter
 
         if (value.Length > short.MaxValue)
         {
-            var byteCount = EncodingCompat.GetByteCount(value);
+            var byteCount = Encoding.UTF8.GetByteCount(value);
             throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({byteCount} bytes > {short.MaxValue}).", nameof(value));
         }
 
         var maxByteCount = Encoding.UTF8.GetMaxByteCount(value.Length);
         var span = _output.GetSpan(sizeof(short) + maxByteCount);
-        var actualBytes = EncodingCompat.GetBytes(value, span[sizeof(short)..]);
+        var actualBytes = Encoding.UTF8.GetBytes(value, span[sizeof(short)..]);
 
         if (actualBytes > short.MaxValue)
             throw new ArgumentException($"String exceeds maximum Kafka short-prefixed string length ({actualBytes} bytes > {short.MaxValue}).", nameof(value));
@@ -352,14 +352,14 @@ public ref struct KafkaProtocolWriter
         if (value.Length <= StackallocCharThreshold)
         {
             Span<byte> buffer = stackalloc byte[StackallocUtf8ByteCount];
-            var byteCount = EncodingCompat.GetBytes(value, buffer);
+            var byteCount = Encoding.UTF8.GetBytes(value, buffer);
             WriteUtf8Bytes(buffer[..byteCount]);
             return;
         }
 
         var maxByteCount = Encoding.UTF8.GetMaxByteCount(value.Length);
         var span = _output.GetSpan(maxByteCount);
-        var actualBytes = EncodingCompat.GetBytes(value, span);
+        var actualBytes = Encoding.UTF8.GetBytes(value, span);
         _output.Advance(actualBytes);
         _bytesWritten += actualBytes;
     }
@@ -370,7 +370,7 @@ public ref struct KafkaProtocolWriter
         if (value.Length <= StackallocCharThreshold)
         {
             Span<byte> buffer = stackalloc byte[StackallocUtf8ByteCount];
-            var byteCount = EncodingCompat.GetBytes(value, buffer);
+            var byteCount = Encoding.UTF8.GetBytes(value, buffer);
             WriteUnsignedVarInt(byteCount + 1);
             WriteUtf8Bytes(buffer[..byteCount]);
             return;
@@ -378,7 +378,7 @@ public ref struct KafkaProtocolWriter
 
         var maxByteCount = Encoding.UTF8.GetMaxByteCount(value.Length);
         var span = _output.GetSpan(MaxUnsignedVarIntByteCount + maxByteCount);
-        var actualBytes = EncodingCompat.GetBytes(value, span[MaxUnsignedVarIntByteCount..]);
+        var actualBytes = Encoding.UTF8.GetBytes(value, span[MaxUnsignedVarIntByteCount..]);
         var lengthBytes = WriteVarUIntToSpan((uint)(actualBytes + 1), span);
 
         if (actualBytes > 0 && lengthBytes != MaxUnsignedVarIntByteCount)

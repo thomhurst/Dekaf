@@ -134,13 +134,13 @@ internal sealed class StringSerde : ISerde<string>
 #endif
     {
         var span = destination.GetSpan(checked(value.Length * 3));
-        var bytesWritten = EncodingCompat.GetBytes(value, span);
+        var bytesWritten = Encoding.UTF8.GetBytes(value, span);
         destination.Advance(bytesWritten);
     }
 
     public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
     {
-        return EncodingCompat.GetString(data.Span);
+        return Encoding.UTF8.GetString(data.Span);
     }
 }
 
@@ -156,7 +156,7 @@ internal sealed class NullableStringSerde : ISerde<string?>
             return;
 
         var span = destination.GetSpan(checked(value.Length * 3));
-        var bytesWritten = EncodingCompat.GetBytes(value, span);
+        var bytesWritten = Encoding.UTF8.GetBytes(value, span);
         destination.Advance(bytesWritten);
     }
 
@@ -168,7 +168,7 @@ internal sealed class NullableStringSerde : ISerde<string?>
         if (data.Length == 0)
             return string.Empty;
 
-        return EncodingCompat.GetString(data.Span);
+        return Encoding.UTF8.GetString(data.Span);
     }
 }
 
