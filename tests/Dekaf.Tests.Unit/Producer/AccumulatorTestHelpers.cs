@@ -14,6 +14,16 @@ namespace Dekaf.Tests.Unit.Producer;
 internal static class AccumulatorTestHelpers
 {
     /// <summary>
+    /// Reads a private instance field via reflection.
+    /// </summary>
+    public static T GetPrivateField<T>(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"Field '{fieldName}' not found on {instance.GetType().Name}.");
+        return (T)field.GetValue(instance)!;
+    }
+
+    /// <summary>
     /// Seals the partition's current batch via reflection and returns the ReadyBatch.
     /// </summary>
     public static ReadyBatch CompleteCurrentBatch(RecordAccumulator accumulator, string topic, int partition = 0)

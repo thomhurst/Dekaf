@@ -2195,6 +2195,30 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal bool HasPendingLingerBatches => HasUnsealedBatches();
 
     /// <summary>
+    /// Computes how long the linger loop may sleep before the earliest unsealed batch can
+    /// reach its linger deadline. Based on the oldest-batch hint (a lower bound on the oldest
+    /// unsealed batch's creation time), so the result can only wake the loop early, never late.
+    /// Clamped to [1, <paramref name="maxWaitMs"/>]: the 1 ms floor prevents a busy spin when
+    /// a deadline has already passed (e.g. a muted partition defers its seal past linger).
+    /// </summary>
+    internal int GetMillisUntilEarliestLingerDeadline(int maxWaitMs)
+    {
+        // Any batch holding an awaited produce seals on the shorter awaited window,
+        // so the wait horizon must shrink to it while such a batch is pending.
+        var effectiveLingerMs = Volatile.Read(ref _pendingAwaitedProduceCount) > 0
+            ? PartitionBatch.GetAwaitedLingerWindowMilliseconds(_options.LingerMs)
+            : _options.LingerMs;
+
+        var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
+        var elapsedMs = oldestTicks == long.MaxValue
+            ? 0.0
+            : Stopwatch.GetElapsedTime(oldestTicks).TotalMilliseconds;
+
+        var remainingMs = effectiveLingerMs - elapsedMs;
+        return Math.Clamp((int)Math.Ceiling(remainingMs), 1, Math.Max(1, maxWaitMs));
+    }
+
+    /// <summary>
     /// Registers a shutdown token with the wakeup signal so cancellation wakes the sender loop
     /// without per-wait allocation. Must be called once before the sender loop starts waiting.
     /// </summary>
@@ -2799,7 +2823,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 if (firstAwaitedProduceInBatch)
-                                    Interlocked.Increment(ref _pendingAwaitedProduceCount);
+                                    TrackPendingAwaitedProduceBatch();
                                 if (ShouldSealAppendedBatch(currentBatch))
                                 {
                                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
@@ -2839,7 +2863,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 if (firstAwaitedProduceInBatch)
-                                    Interlocked.Increment(ref _pendingAwaitedProduceCount);
+                                    TrackPendingAwaitedProduceBatch();
                                 if (ShouldSealAppendedBatch(newBatch))
                                 {
                                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, newBatch);
@@ -3368,7 +3392,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsReservation = false;
                                 ownsHeaderResources = false;
                                 if (reservedFirstAwaitedProduceInBatch)
-                                    Interlocked.Increment(ref _pendingAwaitedProduceCount);
+                                    TrackPendingAwaitedProduceBatch();
 
                                 if (ShouldSealAppendedBatch(reservedAppendBatch))
                                 {
@@ -3715,7 +3739,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
 
             if (result.FirstCompletionSourceInBatch)
-                Interlocked.Increment(ref _pendingAwaitedProduceCount);
+                TrackPendingAwaitedProduceBatch();
 
             if (ShouldSealAppendedBatch(currentBatch))
             {
@@ -3873,6 +3897,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         Interlocked.Decrement(ref _pendingAwaitedProduceCount);
         released = true;
+    }
+
+    /// <summary>
+    /// Tracks the first awaited produce landing in an unsealed batch. That shortens the
+    /// batch's effective linger to the awaited window, so if the linger loop is parked on
+    /// a full-LingerMs deadline wait it must wake and re-arm with the shorter one. Only the
+    /// 0→1 transition signals: while the count stays positive the loop already waits on the
+    /// awaited window.
+    /// </summary>
+    private void TrackPendingAwaitedProduceBatch()
+    {
+        if (Interlocked.Increment(ref _pendingAwaitedProduceCount) == 1)
+            _lingerWakeupSignal.Signal();
     }
 
     private bool TryCompleteDetachedBatchForCleanup(
@@ -4478,6 +4515,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </remarks>
     public ValueTask ExpireLingerAsync(CancellationToken cancellationToken)
     {
+        // Cheap per-wake clock check (two volatile reads); runs before the fast paths so
+        // budget samples keep flowing while sealed batches drain (no unsealed work to do).
+        // The deadline-based linger wait bounds the call rate, so this is no longer per-tick.
         MaybeRecordBrokerBudgetDiagnosticSample();
 
         // Fast path 1: no unsealed batches to check - avoid queue draining and async overhead entirely
@@ -4571,12 +4611,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var now = Stopwatch.GetTimestamp();
             var newOldestTicks = long.MaxValue;
             var anySealed = false;
+            var observedOldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
+            var sawUnknownDeadline = false;
 
             if (sealAll)
             {
                 foreach (var kvp in _partitionDeques)
                 {
-                    if (TrySealCurrentBatch(kvp.Key, kvp.Value, now, sealAll: true, cancellationToken, ref newOldestTicks))
+                    if (TrySealCurrentBatch(kvp.Key, kvp.Value, now, sealAll: true, cancellationToken, ref newOldestTicks, ref sawUnknownDeadline))
                         anySealed = true;
                 }
             }
@@ -4592,19 +4634,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         continue;
 
                     MarkLingerPartitionDequeued(pd);
-                    if (TrySealCurrentBatch(topicPartition, pd, now, sealAll: false, cancellationToken, ref newOldestTicks))
+                    if (TrySealCurrentBatch(topicPartition, pd, now, sealAll: false, cancellationToken, ref newOldestTicks, ref sawUnknownDeadline))
                         anySealed = true;
                 }
             }
 
             if (!sealAll)
             {
-                // This is a best-effort lower-bound hint. Linger mode drains a queue snapshot,
-                // so a concurrent append or queued partition outside this snapshot may be older
-                // than newOldestTicks. Only lower the hint; raising it can delay an already
-                // expired batch until a newer batch reaches linger.
-                if (newOldestTicks != long.MaxValue)
-                    TrackOldestBatchCreated(newOldestTicks);
+                // The sweep visited every queued partition, so newOldestTicks is the creation
+                // time of the oldest surviving batch in the snapshot (long.MaxValue when all
+                // sealed). Raise the hint to it so the linger loop's deadline wait tracks live
+                // batches instead of long-sealed ones. Two guards keep raising safe:
+                // - CAS from the value observed at sweep start: a concurrent lower (an append
+                //   racing this sweep) must win, or its batch could wait a full extra linger.
+                // - Skip the raise when a partition was requeued mid-rotation: its batch's
+                //   creation time is unknown, and the stale hint keeps the next wait at the
+                //   1 ms floor until the following sweep observes it.
+                // A batch created after the snapshot is never delayed by the raise: queueing
+                // its partition signals the linger wakeup, which re-arms the deadline wait.
+                if (sawUnknownDeadline
+                    || Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, newOldestTicks, observedOldestTicks) != observedOldestTicks)
+                {
+                    // Fall back to lower-only maintenance of the hint.
+                    if (newOldestTicks != long.MaxValue)
+                        TrackOldestBatchCreated(newOldestTicks);
+                }
             }
             else
             {
@@ -4630,7 +4684,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         long now,
         bool sealAll,
         CancellationToken cancellationToken,
-        ref long newOldestTicks)
+        ref long newOldestTicks,
+        ref bool sawUnknownDeadline)
     {
         ReadyBatch? sealedBatch = null;
         PartitionBatch? batchToComplete = null;
@@ -4680,6 +4735,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             if (!sealAll)
             {
+                // Rotation/append in progress: the surviving batch's creation time cannot be
+                // read safely, so the sweep's newOldestTicks does not cover it.
+                sawUnknownDeadline = true;
                 QueueLingerPartition(pd, topicPartition, signalLingerLoop: false);
                 break;
             }
@@ -6188,6 +6246,13 @@ internal sealed class PartitionBatch
     private const double AwaitedLingerFraction = 0.5;
     private const double MaximumAwaitedLingerMilliseconds = 2.0;
 
+    /// <summary>
+    /// The shortened linger window applied to a batch once it holds an awaited produce:
+    /// min(2ms, LingerMs/2). Shared with the linger loop's deadline-wait computation.
+    /// </summary>
+    internal static double GetAwaitedLingerWindowMilliseconds(int lingerMs) =>
+        Math.Min(MaximumAwaitedLingerMilliseconds, lingerMs * AwaitedLingerFraction);
+
     private TopicPartition _topicPartition;
     private int _partitionCount;
     private ProducerOptions _options;
@@ -6828,10 +6893,7 @@ internal sealed class PartitionBatch
             if (lingerMs == 0)
                 return true;
 
-            var awaitedLingerMilliseconds = Math.Min(
-                MaximumAwaitedLingerMilliseconds,
-                lingerMs * AwaitedLingerFraction);
-            return elapsedMs >= awaitedLingerMilliseconds;
+            return elapsedMs >= GetAwaitedLingerWindowMilliseconds(lingerMs);
         }
 
         return elapsedMs >= lingerMs;
