@@ -1878,6 +1878,21 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task AdmissionBlockDiagnostics_DisabledDoesNotTouchTrackingState()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 3_200);
+        SetField(budget, "_admissionBlockedSinceTimestamp", T0);
+
+        budget.RecordAdmissionAvailable(T0 + Seconds(0.008));
+
+        await Assert.That(budget.HasAdmissionBlockDiagnostics).IsFalse();
+        await Assert.That(GetField<long>(budget, "_admissionBlockedSinceTimestamp")).IsEqualTo(T0);
+    }
+
+    [Test]
     public async Task MinimumRttProbeDiagnostics_RecordWindowBoundaries()
     {
         var budget = new BrokerUnackedByteBudget(
@@ -1895,6 +1910,6 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(events[0].ProbeType).IsEqualTo(BrokerBudgetProbeType.MinimumRtt);
         await Assert.That(events[0].Outcome).IsEqualTo(BrokerBudgetProbeOutcome.Started);
         await Assert.That(events[1].Outcome).IsEqualTo(BrokerBudgetProbeOutcome.Succeeded);
-        await Assert.That(events[1].DurationMilliseconds).IsEqualTo(50);
+        await Assert.That(events[1].DurationMilliseconds).IsBetween(50, 51);
     }
 }

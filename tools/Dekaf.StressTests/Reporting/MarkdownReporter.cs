@@ -316,11 +316,7 @@ internal static class MarkdownReporter
             .OrderBy(row => row.Event.OccurredAtUtc)
             .ToList();
         if (rows.Count == 0)
-        {
-            GenerateBudgetProbeTimeline(sb, results, label);
-            GenerateAdmissionBlockHistogram(sb, results, label);
             return;
-        }
 
         var displayedRows = SampleEvenly(rows, MaxTimelineRows);
         sb.AppendLine($"## Producer Budget Probe Events - {label}");

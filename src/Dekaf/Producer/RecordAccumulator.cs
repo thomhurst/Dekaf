@@ -4903,7 +4903,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var currentBudget = GetCachedAdmissionBudget(partitionDeque, topic, partition);
         if (currentBudget is null || !currentBudget.IsOverBudget())
         {
-            currentBudget?.RecordAdmissionAvailable(Stopwatch.GetTimestamp());
+            if (currentBudget?.HasAdmissionBlockDiagnostics == true)
+                currentBudget.RecordAdmissionAvailable(Stopwatch.GetTimestamp());
             return false;
         }
 
@@ -4913,7 +4914,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         currentBudget = ResolveAndCacheUnackedBudget(partitionDeque, topic, partition);
         if (currentBudget is null || !currentBudget.IsOverBudget())
         {
-            currentBudget?.RecordAdmissionAvailable(Stopwatch.GetTimestamp());
+            if (currentBudget?.HasAdmissionBlockDiagnostics == true)
+                currentBudget.RecordAdmissionAvailable(Stopwatch.GetTimestamp());
             return false;
         }
 

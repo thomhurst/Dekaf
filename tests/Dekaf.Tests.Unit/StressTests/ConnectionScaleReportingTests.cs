@@ -343,5 +343,11 @@ public sealed class ConnectionScaleReportingTests
         await Assert.That(json).Contains("\"averageRequestBytes\": 262144");
         await Assert.That(json).Contains("\"coalesceWidthHistogram\"");
         await Assert.That(json).Contains("\"requestCount\": 2000");
+
+        result.ProducerDeliveryDiagnostics.BudgetProbeEvents.Clear();
+        var markdownWithoutProbeEvents = MarkdownReporter.Generate(results);
+
+        await Assert.That(markdownWithoutProbeEvents).DoesNotContain("Producer Budget Probe Events");
+        await Assert.That(markdownWithoutProbeEvents).Contains("Producer Admission Block Durations");
     }
 }
