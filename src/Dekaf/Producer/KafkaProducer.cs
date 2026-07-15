@@ -3292,8 +3292,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 {
                     // Deadline wait: sleep until the earliest pending batch can reach its
                     // linger deadline instead of polling a fixed 1 ms tick (~1,000 threadpool
-                    // wakes/s under any active workload). A new batch or a first awaited
-                    // produce signals the wakeup so the wait re-arms with a shorter deadline.
+                    // wakes/s under any active workload). A batch with an earlier deadline or
+                    // a first awaited produce signals the wakeup so the wait re-arms.
                     var lingerWaitMs = _accumulator.GetMillisUntilEarliestLingerDeadline(orphanWaitMs);
                     BeforeActiveLingerWaitForTest?.Invoke();
                     await _accumulator.WaitForLingerWakeupAsync(lingerWaitMs).ConfigureAwait(false);

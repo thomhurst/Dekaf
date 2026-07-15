@@ -144,6 +144,29 @@ public class LingerDeadlineWaitTests
     }
 
     [Test]
+    public async Task NewerFireAndForgetBatch_DoesNotSignalLingerWakeup()
+    {
+        var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 60_000));
+        try
+        {
+            await AppendAsync(accumulator, partition: 0);
+            await Assert.That(await accumulator.WaitForLingerWakeupAsync(5_000)).IsTrue();
+
+            var wakeup = accumulator.WaitForLingerWakeupAsync(100).AsTask();
+
+            // A newer batch cannot shorten the existing batch's linger deadline, so it
+            // must not interrupt an active wait that is already armed for that deadline.
+            await AppendAsync(accumulator, partition: 1);
+
+            await Assert.That(await wakeup).IsFalse();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Timeout(30_000)]
     public async Task LingerSweep_RaisesOldestBatchHintToSurvivingBatch(CancellationToken cancellationToken)
     {

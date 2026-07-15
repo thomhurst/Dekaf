@@ -2627,27 +2627,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void TrackCurrentBatchForLinger(PartitionDeque pd, TopicPartition topicPartition, PartitionBatch batch)
     {
-        TrackOldestBatchCreated(batch.CreatedAtStopwatchTimestamp);
-        QueueLingerPartition(pd, topicPartition);
+        var shortensDeadline = TrackOldestBatchCreated(batch.CreatedAtStopwatchTimestamp);
+        QueueLingerPartition(pd, topicPartition, signalLingerLoop: shortensDeadline);
     }
 
-    private void TrackOldestBatchCreated(long createdTicks)
+    private bool TrackOldestBatchCreated(long createdTicks)
     {
         var current = Volatile.Read(ref _oldestBatchCreatedTicks);
         while (createdTicks < current)
         {
             var original = Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, createdTicks, current);
             if (original == current)
-                break;
+                return true;
             current = original;
         }
+
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void QueueLingerPartition(
         PartitionDeque pd,
         TopicPartition topicPartition,
-        bool signalLingerLoop = true)
+        bool signalLingerLoop)
     {
         if (Interlocked.Exchange(ref pd.LingerQueued, 1) == 0)
         {
@@ -2831,7 +2833,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 }
                                 else if (completionSource is not null)
                                 {
-                                    QueueLingerPartition(pd, topicPartition);
+                                    QueueLingerPartition(pd, topicPartition, signalLingerLoop: false);
                                 }
                                 batchToReturn = rentedBatch;
                                 rentedBatch = null;
@@ -3407,7 +3409,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 }
                                 else if (completionSource is not null)
                                 {
-                                    QueueLingerPartition(pd, topicPartition);
+                                    QueueLingerPartition(pd, topicPartition, signalLingerLoop: false);
                                 }
                             }
                         }
@@ -3756,7 +3758,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         else if (completionSource is not null)
         {
-            QueueLingerPartition(pd, new TopicPartition(topic, partition));
+            QueueLingerPartition(pd, new TopicPartition(topic, partition), signalLingerLoop: false);
         }
 
         return true;
