@@ -268,6 +268,22 @@ No issues to flag. This is a clean, well-tested, appropriately-scoped perf chang
         Blocks = $false
     },
     @{
+        Name = 'allows correctness verification bullets with global no-actionable verdict'
+        Body = @'
+## Review
+
+### Correctness
+- The new threshold defaults to the prior value, so existing call sites retain their behavior — verified no behavior change there.
+- Threshold conversion is correct and consistent with the existing recording path.
+
+### Tests
+- The regression test exercises the reproduced range.
+
+No actionable issues found.
+'@
+        Blocks = $false
+    },
+    @{
         Name = 'blocks api surface category defect despite no-issues verdict'
         Body = @'
 ## Review

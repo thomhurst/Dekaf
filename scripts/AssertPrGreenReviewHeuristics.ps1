@@ -204,6 +204,7 @@ function Get-ActionableReviewBodyReason {
         'genuine\s+improvement,\s+not\s+just\s+churn(?:[\s\S]*)?'
         'fix\s+is\s+scoped(?:\s+to\b[\s\S]*)?'
         '(?:[\s\S]*\b)?allocation[- ]free(?:[\s\S]*)?'
+        '(?:[\s\S]*\b)?verified\s+no\s+behavior\s+change(?:[\s\S]*)?'
     ) -join '|'
     $positiveCategoryVerdict =
         "(?is)^(?!.*$positiveVerdictBlocker)(?!.*$positiveVerdictContinuationBlocker)\s*(?:[-*]\s*)?(?:$positiveVerdictAlternatives)\.?\s*$"
