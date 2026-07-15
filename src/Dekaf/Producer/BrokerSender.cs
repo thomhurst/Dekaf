@@ -3400,7 +3400,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _totalMaxInFlightBytes = GetInFlightByteBudget(connectionCount);
         _unackedBudget?.SetCap(
             _options.UnackedByteBudgetCapOverride ?? _totalMaxInFlightBytes,
-            _getTimestamp());
+            _getTimestamp(),
+            connectionCount);
     }
 
     private static long SumEncodedBytes(List<PendingResponse> pendingResponses)

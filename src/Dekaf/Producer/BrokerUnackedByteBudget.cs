@@ -118,6 +118,12 @@ internal sealed class BrokerUnackedByteBudget
     /// the delivery-latency target with queueing delay.</summary>
     private const int MinimumPipelineRequestQuanta = 4;
 
+    /// <summary>Maximum low-RTT request floor persisted per active connection. Higher-RTT
+    /// bandwidth-delay products remain governed by the independent RTT safety horizon; this
+    /// bound only prevents capacity probes from turning request granularity into a full
+    /// 32-request-per-connection standing queue.</summary>
+    private const int MaximumPersistedPipelineRequestQuantaPerConnection = 8;
+
     /// <summary>
     /// The scale shrinks only while written-unacked occupancy demonstrates at least this
     /// fraction of the budget on the wire. Seal-to-send backlog with an underfilled wire
@@ -270,11 +276,11 @@ internal sealed class BrokerUnackedByteBudget
     private double _servingRttEwmaSeconds;
     private double _rawServingRttEwmaSeconds;
     private double _requestSizeEwmaBytes;
-    // Capacity probes raise this request-depth floor only after proving that the larger
-    // flight increases delivery rate without inflating RTT. It survives an individual
-    // probe ending so normal admission does not fall back to the self-confirming four-
-    // request floor after every successful rung. Sustained idle resets path evidence.
-    private double _provenPipelineRequestQuanta = MinimumPipelineRequestQuanta;
+    // Capacity probes raise this per-connection request-depth floor only after proving that
+    // larger flight increases delivery rate without inflating RTT. It survives an individual
+    // probe ending, but remains below the full wire ceiling. Sustained idle resets path evidence.
+    private double _provenPipelineRequestQuanta;
+    private int _connectionCount;
     private bool _hasLoadedServingSample;
     private double _sealToAckEwmaSeconds;
     private double _minRttProbeMinimumSeconds;
@@ -309,7 +315,8 @@ internal sealed class BrokerUnackedByteBudget
         long floorBytes,
         long initialCapBytes,
         double lingerSeconds = 0,
-        bool enableDiagnostics = false)
+        bool enableDiagnostics = false,
+        int initialConnectionCount = 1)
     {
         _targetSeconds = targetSeconds;
         _probeResponseHorizonTicks = Math.Max(
@@ -317,6 +324,8 @@ internal sealed class BrokerUnackedByteBudget
             (long)(Math.Max(0, targetSeconds + lingerSeconds) * Stopwatch.Frequency));
         _floorBytes = Math.Max(1, floorBytes);
         _capBytes = Math.Max(_floorBytes, initialCapBytes);
+        _connectionCount = Math.Max(1, initialConnectionCount);
+        _provenPipelineRequestQuanta = GetMinimumPipelineRequestQuanta();
         _lastNormalBudgetBytes = _capBytes;
         Volatile.Write(ref _budgetBytes, _capBytes);
         Volatile.Write(ref _budgetAfterMinRttProbeBytes, _capBytes);
@@ -693,8 +702,22 @@ internal sealed class BrokerUnackedByteBudget
     /// Called by the owning send loop at construction and on connection scale events.
     /// </summary>
     public void SetCap(long capBytes, long nowTicks)
+        => SetCap(capBytes, nowTicks, _connectionCount);
+
+    /// <summary>
+    /// Updates the ceiling and active routing width together, seeding or clamping the
+    /// low-RTT request floor before republishing the budget.
+    /// </summary>
+    public void SetCap(long capBytes, long nowTicks, int connectionCount)
     {
         _capBytes = Math.Max(_floorBytes, capBytes);
+        _connectionCount = Math.Max(1, connectionCount);
+        Volatile.Write(
+            ref _provenPipelineRequestQuanta,
+            Math.Clamp(
+                _provenPipelineRequestQuanta,
+                GetMinimumPipelineRequestQuanta(),
+                GetMaximumPipelineRequestQuanta()));
         CompleteExpiredMinRttProbe(nowTicks);
         if (_capacityProbeActive && nowTicks >= _capacityProbeDeadlineTimestamp)
             DeactivateCapacityProbe(nowTicks);
@@ -734,7 +757,7 @@ internal sealed class BrokerUnackedByteBudget
             _hasLoadedServingSample = false;
             Volatile.Write(
                 ref _provenPipelineRequestQuanta,
-                MinimumPipelineRequestQuanta);
+                GetMinimumPipelineRequestQuanta());
             _lastNormalBudgetBytes = _capBytes;
             _lastBudgetUpdateTimestamp = nowTicks;
         }
@@ -1306,10 +1329,17 @@ internal sealed class BrokerUnackedByteBudget
         _capacityProbeEvaluationDeadlineTimestamp = 0;
     }
 
+    private double GetMinimumPipelineRequestQuanta()
+        => MinimumPipelineRequestQuanta * _connectionCount;
+
     private double GetMaximumPipelineRequestQuanta()
-        => _requestSizeEwmaBytes > 0
-            ? Math.Max(MinimumPipelineRequestQuanta, _capBytes / _requestSizeEwmaBytes)
-            : MinimumPipelineRequestQuanta;
+    {
+        var minimum = GetMinimumPipelineRequestQuanta();
+        var persistentLimit = MaximumPersistedPipelineRequestQuantaPerConnection * _connectionCount;
+        return _requestSizeEwmaBytes > 0
+            ? Math.Max(minimum, Math.Min(persistentLimit, _capBytes / _requestSizeEwmaBytes))
+            : persistentLimit;
+    }
 
     private void DeactivateCapacityProbe(long nowTicks)
     {
@@ -1498,7 +1528,7 @@ internal sealed class BrokerUnackedByteBudget
                 : latencyGovernedTargetSeconds;
 
             var hasProvenAdditionalDepth =
-                _provenPipelineRequestQuanta > MinimumPipelineRequestQuanta;
+                _provenPipelineRequestQuanta > GetMinimumPipelineRequestQuanta();
             if (!minRttProbeActive
                 && _requestSizeEwmaBytes > 0
                 && (admissionPressureActive || hasProvenAdditionalDepth))

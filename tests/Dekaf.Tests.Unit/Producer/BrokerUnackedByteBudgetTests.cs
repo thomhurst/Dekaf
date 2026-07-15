@@ -1049,6 +1049,56 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task ProvenRequestDepth_IsSeededAndBoundedOnConnectionScale()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 32_000_000);
+
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(4.0);
+
+        budget.SetCap(96_000_000, T0, connectionCount: 3);
+
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(12.0)
+            .Because("each active connection needs its own four-request acknowledgement pipeline");
+
+        SetField(budget, "_provenPipelineRequestQuanta", 96.0);
+        SetField(budget, "_requestSizeEwmaBytes", 1_000_000.0);
+        budget.SetCap(32_000_000, T0, connectionCount: 1);
+
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(8.0)
+            .Because("stale low-RTT proof must not retain the full wire ceiling after scale-down");
+    }
+
+    [Test]
+    public async Task PeriodicProbe_ProvenRequestDepthStopsAtLowRttPerConnectionLimit()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 200,
+            initialCapBytes: 32_000_000);
+        SetField(budget, "_provenPipelineRequestQuanta", 8.0);
+        SetField(budget, "_requestSizeEwmaBytes", 1_000_000.0);
+        SetField(budget, "_capacityProbeBaselineRate", 10_000.0);
+        SetField(budget, "_capacityProbeStartTimestamp", T0);
+        SetField(budget, "_capacityProbeDeadlineTimestamp", T0 + Seconds(1.0));
+        SetField(budget, "_capacityProbeEvaluationDeadlineTimestamp", T0 + Seconds(0.200));
+        SetField(budget, "_capacityProbeRateSum", 42_000.0);
+        SetField(budget, "_capacityProbeRateSampleCount", 2);
+        SetField(budget, "_capacityProbeActive", true);
+
+        Ack(budget, 1_200, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
+
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(8.0)
+            .Because("persistent low-RTT flight stays below the 32-request wire ceiling");
+    }
+
+    [Test]
     public async Task ProvenRequestDepth_ResetsAfterSustainedIdle()
     {
         var budget = new BrokerUnackedByteBudget(

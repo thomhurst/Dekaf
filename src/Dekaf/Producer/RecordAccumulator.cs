@@ -4962,7 +4962,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             floorBytes: 1,
             initialCapBytes: cap,
             lingerSeconds: _options.LingerMs / 1000.0,
-            enableDiagnostics: _options.EnableDeliveryDiagnostics);
+            enableDiagnostics: _options.EnableDeliveryDiagnostics,
+            initialConnectionCount: _options.ConnectionsPerBroker);
     }
 
     /// <summary>
