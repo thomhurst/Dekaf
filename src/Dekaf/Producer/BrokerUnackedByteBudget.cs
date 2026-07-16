@@ -203,9 +203,9 @@ internal sealed class BrokerUnackedByteBudget
     private const int ProbeEvaluationRtts = 3;
     private const double ProbeBudgetMultiplier = 1.25;
     /// <summary>Minimum fraction of added standing flight that must convert into delivered-rate
-    /// growth. A 25% budget treatment therefore needs at least 5% more rate. This preserves
-    /// useful capacity discovery while rejecting small scheduler/response-clustering wins.</summary>
-    private const double MinimumProbeThroughputElasticity = 0.20;
+    /// growth. A 25% budget treatment therefore needs at least 3% more rate. Settled control
+    /// windows reject smaller scheduler/response-clustering wins while preserving useful rungs.</summary>
+    private const double MinimumProbeThroughputElasticity = 0.12;
     private const double ProbeGrowthThreshold =
         1.0 + (ProbeBudgetMultiplier - 1.0) * MinimumProbeThroughputElasticity;
     /// <summary>Only probe when standing demand fills at least this fraction of the gate;

@@ -1111,15 +1111,33 @@ public sealed class BrokerUnackedByteBudgetTests
             targetSeconds: 0.5,
             floorBytes: 200,
             initialCapBytes: 1_000_000);
-        SeedCapacityProbeEvaluation(budget, 10_000, 0, 20_800);
+        SeedCapacityProbeEvaluation(budget, 10_000, 0, 20_400);
 
-        Ack(budget, 1_040, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
+        Ack(budget, 1_020, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
 
         await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(1);
         await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
             .IsEqualTo(4.0).Within(0.000_001)
-            .Because("4% more rate does not justify 25% more standing flight");
+            .Because("2% more rate does not justify 25% more standing flight");
+    }
+
+    [Test]
+    public async Task PeriodicProbe_AcceptsUsefulElasticityRateGainWhenLatencyIsFlat()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.5,
+            floorBytes: 200,
+            initialCapBytes: 1_000_000);
+        SeedCapacityProbeEvaluation(budget, 10_000, 0, 20_620);
+
+        Ack(budget, 1_031, 0.100, T0 + Seconds(0.300), appLimitedAtSend: false);
+
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(1);
+        await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
+        await Assert.That(GetField<double>(budget, "_provenPipelineRequestQuanta"))
+            .IsEqualTo(5.0).Within(0.000_001)
+            .Because("3.1% more rate is useful capacity when delivery latency stays flat");
     }
 
     [Test]
