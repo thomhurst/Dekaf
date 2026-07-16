@@ -26,6 +26,12 @@ internal readonly record struct BrokerWindowDecision(
 /// Pure, allocation-free knee-seeking byte-window controller. Its quantum is the configured
 /// batch capacity and never changes with fragmented request sizes. It searches for the
 /// smallest whole-quantum window that preserves broker goodput.
+/// When the latency ceiling is enabled, every window value is additionally bounded by
+/// <c>delivery-latency target × windowed-maximum measured goodput</c>: standing unacked
+/// bytes divided by drain rate is the queueing delay each delivery wears, so goodput probes
+/// may only explore beneath the target's worth of measured drain. The same bound, fed by an
+/// ack-clocked cumulative rate before the first control epoch completes, paces the
+/// cold-start window open instead of releasing the optimistic initial size in one step.
 /// </summary>
 internal sealed class BrokerWindowController
 {
@@ -38,13 +44,28 @@ internal sealed class BrokerWindowController
 
     private const int SizeBucketCount = 16;
     private const int SizeBucketShift = 8;
-    // The control run sustained its knee at roughly seven full requests. One extra quantum
-    // absorbs response/scheduler granularity without allowing fragmented requests to redefine
-    // the floor.
-    private const int MinimumPipelineQuanta = 8;
+    // Two quanta keep the acknowledgement clock pipelined (one request on the wire while the
+    // next seals) without encoding any topology's knee into the floor. The knee itself is
+    // discovered by paired probes underneath the latency ceiling: an eight-quantum floor
+    // matched a one-broker drain rate but forced ~3x the delivery-latency target of standing
+    // queue per broker on three-broker topologies (#2109). Applies only while the latency
+    // ceiling is armed — probing below the old floor is safe only with the ceiling's
+    // rate-derived bound above it.
+    private const int MinimumPipelineQuanta = 2;
+    // Ceiling-disabled controllers (explicit cap override, Acks.None) keep the original
+    // eight-quantum floor: for them the down-probe goodput guard is the only other
+    // protection against walking a fast pipe below its knee, so their semantics are
+    // deliberately unchanged.
+    private const int UnceiledMinimumPipelineQuanta = 8;
     // Open partition batches also hold bounded lease slack, so start above the expected knee
     // and search downward. This avoids throughput-biased learning from a starved startup.
+    // With the latency ceiling enabled the optimistic start is additionally bounded by
+    // measured drain rate, so it cannot flood a cold broker.
     private const int InitialRequestQuanta = 16;
+    // The latency ceiling tracks the maximum epoch goodput over this many completed control
+    // epochs (~30s of loaded time). A windowed maximum ignores transient dips without letting
+    // a stale one-time peak size the window forever.
+    private const int GoodputRingEpochs = 60;
     // Treatments are deliberately sparse and settled: frequent sub-second window changes
     // caused self-inflicted admission stalls that looked like congestion. Each experiment is
     // a B-A-B sandwich (3s candidate, 6s baseline, 3s candidate after a 1s washout at each
@@ -70,13 +91,20 @@ internal sealed class BrokerWindowController
     private readonly long _floorBytes;
     private readonly long _requestQuantumBytes;
     private readonly long _targetDelayTicks;
+    private readonly bool _latencyCeilingEnabled;
     private readonly long[] _minimumRttBySizeTicks = new long[SizeBucketCount];
     private readonly long[] _minimumRttTimestamps = new long[SizeBucketCount];
+    private readonly double[] _epochGoodputRing = new double[GoodputRingEpochs];
 
     private long _capBytes;
     private long _windowBytes;
     private long _generation = 1;
     private BrokerWindowPhase _phase = BrokerWindowPhase.Steady;
+    private long _latencyCeilingBytes = long.MaxValue;
+    private int _epochGoodputIndex;
+    private bool _coldStartRampComplete;
+    private long _rampStartTimestamp;
+    private long _rampAckedBytes;
 
     private long _epochStartedAt;
     private long _epochBytes;
@@ -108,16 +136,23 @@ internal sealed class BrokerWindowController
         double targetSeconds,
         long floorBytes,
         long capBytes,
-        long initialRequestBytes)
+        long initialRequestBytes,
+        bool latencyCeilingEnabled = false)
     {
         _floorBytes = Math.Max(1, floorBytes);
         _capBytes = Math.Max(_floorBytes, capBytes);
         _targetDelayTicks = Math.Max(1, (long)(targetSeconds * Stopwatch.Frequency));
         _requestQuantumBytes = Math.Max(_floorBytes, initialRequestBytes);
+        _latencyCeilingEnabled = latencyCeilingEnabled;
+        // Ceiling-enabled controllers start pessimistic: the window opens as the cold-start
+        // ramp measures the broker's actual drain rate, so the first acknowledgement cannot
+        // release an unlearned multi-quantum burst into a cold broker (#2109).
+        if (latencyCeilingEnabled)
+            _latencyCeilingBytes = MinimumWindowBytes;
         _windowBytes = Math.Clamp(
             SaturatingMultiply(_requestQuantumBytes, InitialRequestQuanta),
             MinimumWindowBytes,
-            _capBytes);
+            EffectiveCapBytes);
     }
 
     internal long WindowBytes => _windowBytes;
@@ -127,6 +162,7 @@ internal sealed class BrokerWindowController
     internal long MaximumGoodputBytesPerSecond => (long)_maximumGoodputBytesPerSecond;
     internal long ControlledDelayEwmaTicks => (long)_controlledDelayEwmaTicks;
     internal long RequestQuantumBytes => _requestQuantumBytes;
+    internal long LatencyCeilingBytes => _latencyCeilingEnabled ? _latencyCeilingBytes : 0;
     internal double WindowScale => _capBytes == 0 ? 1 : (double)_windowBytes / _capBytes;
     internal long CapacityProbeSuccessCount { get; private set; }
     internal long CapacityProbeFailureCount { get; private set; }
@@ -134,16 +170,7 @@ internal sealed class BrokerWindowController
     internal BrokerWindowDecision SetCap(long capBytes)
     {
         _capBytes = Math.Max(_floorBytes, capBytes);
-        if (_windowBytes > _capBytes)
-        {
-            _windowBytes = _capBytes;
-            _generation++;
-        }
-        if (_probeBaselineWindow > _capBytes)
-            _probeBaselineWindow = _capBytes;
-        if (_probeCandidateWindow > _capBytes)
-            _probeCandidateWindow = _capBytes;
-
+        ApplyEffectiveCap();
         return CurrentDecision();
     }
 
@@ -164,6 +191,9 @@ internal sealed class BrokerWindowController
 
         if (_epochStartedAt == 0)
             _epochStartedAt = nowTicks;
+
+        if (_latencyCeilingEnabled && !_coldStartRampComplete)
+            AdvanceColdStartRamp(logicalBytes, rttTicks, nowTicks);
 
         UpdateMinimumRtt(logicalBytes, rttTicks, nowTicks);
 
@@ -223,6 +253,9 @@ internal sealed class BrokerWindowController
         if (goodput <= 0)
             return CurrentDecision();
 
+        if (_latencyCeilingEnabled)
+            CompleteLatencyCeilingEpoch(goodput);
+
         if (!generationQualified)
         {
             if (_phase == BrokerWindowPhase.Steady
@@ -257,7 +290,7 @@ internal sealed class BrokerWindowController
             return StartDownProbe();
 
         var requestedWindow = Math.Min(
-            _capBytes,
+            EffectiveCapBytes,
             Math.Max(
                 _windowBytes + _requestQuantumBytes,
                 (long)Math.Ceiling(_windowBytes * UpProbeMultiplier)));
@@ -485,7 +518,7 @@ internal sealed class BrokerWindowController
     private long NormalizeWindow(long requestedBytes)
     {
         var minimum = MinimumWindowBytes;
-        var next = Math.Clamp(requestedBytes, minimum, _capBytes);
+        var next = Math.Clamp(requestedBytes, minimum, EffectiveCapBytes);
         if (next > minimum && _requestQuantumBytes > 1)
         {
             next = next / _requestQuantumBytes * _requestQuantumBytes;
@@ -495,10 +528,120 @@ internal sealed class BrokerWindowController
         return next;
     }
 
+    /// <summary>Quantum floor for the window. Every latency-ceiling write clamps the ceiling
+    /// to at least this value, so the effective cap never undercuts it.</summary>
     private long MinimumWindowBytes => Math.Clamp(
-        SaturatingMultiply(_requestQuantumBytes, MinimumPipelineQuanta),
+        SaturatingMultiply(
+            _requestQuantumBytes,
+            _latencyCeilingEnabled ? MinimumPipelineQuanta : UnceiledMinimumPipelineQuanta),
         _floorBytes,
         _capBytes);
+
+    /// <summary>Cap actually available to the window: the routing-width byte ceiling bounded
+    /// by the latency ceiling (delivery-latency target × windowed-maximum measured goodput).
+    /// Under open-loop saturation, standing unacked bytes divided by drain rate is the
+    /// queueing delay every delivery wears, so no goodput-probed window may hold more than
+    /// the target's worth of measured drain. Goodput cannot be inflated by self-queueing
+    /// (unlike an RTT horizon), so this bound has no positive-feedback ratchet.</summary>
+    private long EffectiveCapBytes => Math.Min(_capBytes, _latencyCeilingBytes);
+
+    /// <summary>Clamps the window and any in-flight probe bookkeeping to the current
+    /// effective cap after the cap or the latency ceiling moves.</summary>
+    private void ApplyEffectiveCap()
+    {
+        var effectiveCap = EffectiveCapBytes;
+        if (_windowBytes > effectiveCap)
+        {
+            _windowBytes = effectiveCap;
+            _generation++;
+        }
+        if (_probeBaselineWindow > effectiveCap)
+            _probeBaselineWindow = effectiveCap;
+        if (_probeCandidateWindow > effectiveCap)
+            _probeCandidateWindow = effectiveCap;
+    }
+
+    /// <summary>
+    /// Keeps the pre-acknowledgement window large enough for one request wave at the current
+    /// routing width. Connection scale-up before the first acknowledgement grows the wave
+    /// beyond the pessimistic two-quantum start; the wave is still an unmeasured burst the
+    /// cold-start gate itself bounds, so admitting it does not reintroduce the flood.
+    /// No-op once any acknowledgement has been measured — the ramp owns the ceiling then.
+    /// </summary>
+    internal BrokerWindowDecision NoteColdStartWave(long waveBytes)
+    {
+        // _rampAckedBytes == 0 also implies the ramp has not completed: completing requires
+        // a control epoch with goodput, which requires an acknowledgement the ramp counted.
+        if (_latencyCeilingEnabled && _rampAckedBytes == 0)
+            TryRaiseColdStartCeiling(Math.Min(waveBytes, _capBytes));
+
+        return CurrentDecision();
+    }
+
+    /// <summary>
+    /// Cold-start ramp: before the first completed control epoch, the ceiling grows with the
+    /// cumulative acknowledged drain rate and the window follows it toward the optimistic
+    /// initial size. Ack-clocked and rate-proportional — a fast broker opens the window
+    /// within a few round trips, a cold broker admits only what it has demonstrably drained.
+    /// Single-writer (owning send loop), so plain field updates suffice.
+    /// </summary>
+    private void AdvanceColdStartRamp(long logicalBytes, long rttTicks, long nowTicks)
+    {
+        if (_rampStartTimestamp == 0)
+            _rampStartTimestamp = nowTicks - rttTicks;
+        _rampAckedBytes = SaturatingAdd(_rampAckedBytes, logicalBytes);
+        var elapsedTicks = Math.Max(1, nowTicks - _rampStartTimestamp);
+        var rateBytesPerSecond = _rampAckedBytes * (double)Stopwatch.Frequency / elapsedTicks;
+        TryRaiseColdStartCeiling(ComputeCeilingBytes(rateBytesPerSecond));
+    }
+
+    /// <summary>Raises the cold-start ceiling and re-seeks the optimistic initial window
+    /// underneath it. Raise-only: pre-epoch estimates may only open the window further.</summary>
+    private void TryRaiseColdStartCeiling(long ceilingBytes)
+    {
+        if (ceilingBytes <= _latencyCeilingBytes)
+            return;
+
+        _latencyCeilingBytes = ceilingBytes;
+        SetWindow(SaturatingMultiply(_requestQuantumBytes, InitialRequestQuanta));
+    }
+
+    /// <summary>Feeds one completed epoch's goodput into the windowed-maximum ring and
+    /// re-derives the latency ceiling. Ends the cold-start ramp: epoch goodput is measured
+    /// over a full control interval and supersedes the ramp's cumulative estimate.
+    /// A window sitting on the ceiling follows it back up when measured goodput recovers —
+    /// the raise carries the same rate-times-target justification as the clamp, so recovery
+    /// from a transient dip does not wait for the probe schedule. Windows the probe walk
+    /// placed below the ceiling are deliberate and stay put.</summary>
+    private void CompleteLatencyCeilingEpoch(double goodputBytesPerSecond)
+    {
+        _coldStartRampComplete = true;
+        _epochGoodputRing[_epochGoodputIndex] = goodputBytesPerSecond;
+        _epochGoodputIndex = (_epochGoodputIndex + 1) % GoodputRingEpochs;
+
+        var windowedMax = 0.0;
+        for (var i = 0; i < _epochGoodputRing.Length; i++)
+            windowedMax = Math.Max(windowedMax, _epochGoodputRing[i]);
+
+        var previousEffectiveCap = EffectiveCapBytes;
+        _latencyCeilingBytes = ComputeCeilingBytes(windowedMax);
+        if (_phase == BrokerWindowPhase.Steady
+            && _windowBytes >= previousEffectiveCap
+            && EffectiveCapBytes > previousEffectiveCap)
+        {
+            SetWindow(EffectiveCapBytes);
+        }
+        else
+        {
+            ApplyEffectiveCap();
+        }
+    }
+
+    private long ComputeCeilingBytes(double rateBytesPerSecond)
+    {
+        var targetBytes = rateBytesPerSecond * _targetDelayTicks / Stopwatch.Frequency;
+        return (long)Math.Clamp(targetBytes, MinimumWindowBytes, _capBytes);
+    }
 
     private void ResetEpoch(long nowTicks)
     {

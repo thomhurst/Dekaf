@@ -2760,6 +2760,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var response = task.GetResult();
                 ObserveBrokerThrottle(response.ThrottleTimeMs);
                 var allPartitionsSucceeded = true;
+                var anyPartitionSucceeded = false;
                 ProduceResponsePartitionData? directResponse = null;
                 // Reuse caller-provided dictionary to avoid per-response allocation.
                 // The dictionary is cleared after use in ProcessResponseBatches.
@@ -2776,6 +2777,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var partitionResponse = response.Responses[0].PartitionResponses[0];
                     directResponse = partitionResponse;
                     allPartitionsSucceeded = partitionResponse.ErrorCode == ErrorCode.None;
+                    anyPartitionSucceeded = allPartitionsSucceeded;
                 }
                 else
                 {
@@ -2786,6 +2788,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         {
                             if (topicResp.PartitionResponses[p].ErrorCode != ErrorCode.None)
                                 allPartitionsSucceeded = false;
+                            else
+                                anyPartitionSucceeded = true;
                             responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
                             responseLookup[(topicResp.Name, topicResp.PartitionResponses[p].Index)] =
                                 topicResp.PartitionResponses[p];
@@ -2803,6 +2807,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         pending.DeliverySnapshotAtSend,
                         lastAckTimestamp);
                     anyAckedThisPass = true;
+                }
+                else if (anyPartitionSucceeded && _unackedBudget is { } partiallyAckedBudget)
+                {
+                    // Mixed responses carry no cleanly attributable request timing, so they
+                    // feed no window sample — but a delivered partition still proves the
+                    // broker drains data, which must end the cold-start clamp.
+                    partiallyAckedBudget.NotePartialDeliverySuccess();
                 }
 
                 // Diagnostic: log response content and expected batches for mismatch diagnosis

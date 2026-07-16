@@ -82,6 +82,7 @@ internal sealed class BrokerUnackedByteBudget
     private long _nextAdmissionFlushClaim;
     private long _probeStartedTimestamp;
     private double _latencyBudgetScale = 1;
+    private long _latencyCeilingBytes;
 
     // Single-writer state. Production supplies one request wave here; the first successful
     // acknowledgement permanently hands admission back to the adaptive window controller.
@@ -104,11 +105,15 @@ internal sealed class BrokerUnackedByteBudget
         if (initialRequestBytes <= 0)
             initialRequestBytes = Math.Clamp(64 * 1024, floor, cap);
 
+        // The latency ceiling shares the cold-start gate's arming condition (no explicit cap
+        // override, acknowledgements exist to measure) plus a positive latency target: with
+        // no target there is no delay budget to convert measured drain into a byte bound.
         _controller = new BrokerWindowController(
             targetSeconds,
             floor,
             cap,
-            initialRequestBytes);
+            initialRequestBytes,
+            latencyCeilingEnabled: coldStartBudgetBytes is not null && targetSeconds > 0);
         if (coldStartBudgetBytes is { } coldStartBudget)
         {
             _coldStartBudgetBytes = Math.Clamp(coldStartBudget, floor, _controller.WindowBytes);
@@ -143,6 +148,7 @@ internal sealed class BrokerUnackedByteBudget
     internal long PipelineBatchCount => Volatile.Read(ref _pipelineBatchCount);
     internal long DeliveryLatencyEwmaMicros => Volatile.Read(ref _deliveryLatencyEwmaMicros);
     internal double LatencyBudgetScale => Volatile.Read(ref _latencyBudgetScale);
+    internal long LatencyCeilingBytes => Volatile.Read(ref _latencyCeilingBytes);
 
     /// <summary>
     /// Atomically reserves logical bytes. One reservation larger than the current window may
@@ -330,6 +336,10 @@ internal sealed class BrokerUnackedByteBudget
         var decision = _controller.SetCap(capBytes);
         if (_awaitingInitialAcknowledgement && coldStartBudgetBytes is { } coldStartBudget)
         {
+            // The pre-ack window must be able to carry one wave at the new routing width,
+            // otherwise the ceiling's pessimistic start would shrink the wave the cold gate
+            // itself intends to admit.
+            decision = _controller.NoteColdStartWave(coldStartBudget);
             _coldStartBudgetBytes = Math.Clamp(
                 coldStartBudget,
                 _floorBytes,
@@ -371,12 +381,26 @@ internal sealed class BrokerUnackedByteBudget
             sendSnapshot.AppLimited,
             sendSnapshot.AdmissionGeneration,
             nowTicks);
-        if (_awaitingInitialAcknowledgement)
-        {
-            _awaitingInitialAcknowledgement = false;
-            Publish(_controller.WindowBytes, _controller.Generation);
-        }
+        EndColdStartGate();
         RecordRequestHistograms(ackedBytes, rttTicks);
+    }
+
+    /// <summary>
+    /// Ends the cold-start phase when a response delivered at least one partition but not all
+    /// of them. <see cref="OnAcked"/> only runs for fully successful responses, so without
+    /// this a broker whose first responses carry one churning partition (for example
+    /// NotLeaderOrFollower during startup elections) would stay clamped to a single request
+    /// wave despite demonstrably draining data. Single-writer: owning send loop only.
+    /// </summary>
+    public void NotePartialDeliverySuccess() => EndColdStartGate();
+
+    private void EndColdStartGate()
+    {
+        if (!_awaitingInitialAcknowledgement)
+            return;
+
+        _awaitingInitialAcknowledgement = false;
+        Publish(_controller.WindowBytes, _controller.Generation);
     }
 
     public void CompleteAckedPass(long nowTicks)
@@ -450,6 +474,7 @@ internal sealed class BrokerUnackedByteBudget
             ref _deliveryLatencyEwmaMicros,
             _controller.ControlledDelayEwmaTicks * 1_000_000 / Stopwatch.Frequency);
         Volatile.Write(ref _latencyBudgetScale, _controller.WindowScale);
+        Volatile.Write(ref _latencyCeilingBytes, _controller.LatencyCeilingBytes);
         Volatile.Write(ref _capacityProbeSuccessCount, _controller.CapacityProbeSuccessCount);
         Volatile.Write(ref _capacityProbeFailureCount, _controller.CapacityProbeFailureCount);
 

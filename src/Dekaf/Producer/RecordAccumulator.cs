@@ -5115,9 +5115,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var requestWaveBytes = BrokerUnackedByteBudget.ComputeColdStartBudget(
             _options.BatchSize,
             _options.ConnectionsPerBroker);
-        // Bound only the unsampled startup burst. The first successful acknowledgement hands
-        // admission to the controller's wider adaptive window. Explicit cap overrides retain
-        // their existing controller semantics for tests and advanced callers.
+        // Bound only the unsampled startup burst. Acknowledgements then open the controller's
+        // adaptive window at the measured drain rate (the latency-ceiling ramp) instead of in
+        // one unlearned step. Explicit cap overrides retain their existing controller
+        // semantics for tests and advanced callers.
         return new BrokerUnackedByteBudget(
             _options.DeliveryLatencyTargetMs / 1000.0,
             floorBytes: 1,
@@ -5779,6 +5780,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             CapacityProbeFailureCount = budget.CapacityProbeFailureCount,
             DeliveryLatencyEwmaMicros = budget.DeliveryLatencyEwmaMicros,
             LatencyBudgetScale = budget.LatencyBudgetScale,
+            LatencyCeilingBytes = budget.LatencyCeilingBytes,
             RequestSizeLog2Histogram = includeHistograms ? budget.CopyRequestSizeHistogram() : null,
             RequestRttMicrosLog2Histogram = includeHistograms ? budget.CopyRequestRttMicrosHistogram() : null,
             AdmissionBlockMicrosLog2Histogram = includeHistograms

@@ -150,7 +150,10 @@ public sealed class ProducerOptions
     /// full, admission blocks like <see cref="BufferMemory"/> exhaustion (subject to
     /// <see cref="MaxBlockMs"/> and cancellation).
     /// Before the first successful broker acknowledgement, admission is limited to one
-    /// configured batch per current connection; the adaptive window then takes over.
+    /// configured batch per current connection; acknowledgements then open the adaptive
+    /// window at the measured drain rate, and the window is thereafter bounded by this
+    /// target multiplied by the maximum goodput observed over the recent control epochs, so
+    /// standing queueing delay cannot exceed the target's worth of measured drain.
     /// <see cref="Acks.None"/> keeps the normal controller window because no acknowledgement
     /// can end the startup phase.
     /// Set to 0 to disable the bound entirely. Default: 10.

@@ -25,37 +25,41 @@ public sealed class BrokerUnackedByteBudgetTests
     [Test]
     public async Task ColdStartAdmission_UsesOneRequestWaveUntilFirstAcknowledgement()
     {
-        var budget = new BrokerUnackedByteBudget(
-            targetSeconds: 0.010,
-            floorBytes: 1,
-            initialCapBytes: 10_000,
-            initialRequestBytes: 100,
-            coldStartBudgetBytes: 100);
+        var budget = CreateColdStartBudget();
 
         await Assert.That(budget.BudgetBytes).IsEqualTo(100);
         await Assert.That(budget.TryReserve(100, out _)).IsTrue();
         await Assert.That(budget.TryReserve(1, out _)).IsFalse();
 
+        // First ack: 100 bytes drained in 1ms = 100 KB/s; the 10ms target admits ten
+        // milliseconds of that drain (1,000 bytes), not the full optimistic initial window.
         var now = T0 + Seconds(0.001);
         budget.OnAcked(
             ackedBytes: 100,
             budget.SnapshotDelivery(now - Seconds(0.001), appLimited: false),
             now);
 
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+        await Assert.That(budget.TryReserve(900, out _)).IsTrue();
+        await Assert.That(budget.TryReserve(1, out _)).IsFalse();
+        budget.Release(1_000);
+
+        // Second ack raises the cumulative measured rate; the ramp opens the window further
+        // until the optimistic sixteen-quantum start stops being the binding bound.
+        var later = now + Seconds(0.001);
+        budget.OnAcked(
+            ackedBytes: 1_000,
+            budget.SnapshotDelivery(later - Seconds(0.001), appLimited: false),
+            later);
+        budget.CompleteAckedPass(later);
+
         await Assert.That(budget.BudgetBytes).IsEqualTo(1_600);
-        await Assert.That(budget.TryReserve(1_500, out _)).IsTrue();
-        budget.Release(1_600);
     }
 
     [Test]
     public async Task ColdStartAdmission_TracksCurrentConnectionWidthBeforeFirstAck()
     {
-        var budget = new BrokerUnackedByteBudget(
-            targetSeconds: 0.010,
-            floorBytes: 1,
-            initialCapBytes: 10_000,
-            initialRequestBytes: 100,
-            coldStartBudgetBytes: 100);
+        var budget = CreateColdStartBudget();
 
         budget.SetCap(capBytes: 30_000, coldStartBudgetBytes: 300, nowTicks: T0);
         await Assert.That(budget.BudgetBytes).IsEqualTo(300);
@@ -71,6 +75,108 @@ public sealed class BrokerUnackedByteBudgetTests
             .IsEqualTo(3_000);
         await Assert.That(BrokerUnackedByteBudget.ComputeCap(1_000, 3))
             .IsEqualTo(96_000);
+    }
+
+    [Test]
+    public async Task NotePartialDeliverySuccess_EndsColdStartClampWithoutRateSample()
+    {
+        var budget = CreateColdStartBudget();
+        await Assert.That(budget.BudgetBytes).IsEqualTo(100);
+
+        budget.NotePartialDeliverySuccess();
+
+        // No rate was measured, so the window opens only to the pessimistic two-quantum
+        // start — but admission is no longer serialized on one request wave per round trip.
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
+
+        budget.NotePartialDeliverySuccess();
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
+
+        // The ramp still owns subsequent growth once a clean acknowledgement is measured.
+        var now = T0 + Seconds(0.001);
+        budget.OnAcked(
+            ackedBytes: 100,
+            budget.SnapshotDelivery(now - Seconds(0.001), appLimited: false),
+            now);
+        budget.CompleteAckedPass(now);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_000);
+    }
+
+    [Test]
+    public async Task LatencyCeiling_ClampsWindowWhenMeasuredGoodputFallsBelowTarget()
+    {
+        var budget = CreateColdStartBudget();
+        var now = FlipColdStartGateWithFastAck(budget);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_600);
+        var generation = budget.CurrentGeneration;
+
+        // One completed control epoch at ~5.9 KB/s: ten milliseconds of that drain rounds
+        // far below the two-quantum floor, so the window clamps to the floor.
+        now += Seconds(0.510);
+        DriveBudgetEpoch(budget, now, logicalBytes: 1_000, rttSeconds: 0.001);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
+        await Assert.That(budget.CurrentGeneration).IsGreaterThan(generation);
+    }
+
+    [Test]
+    public async Task LatencyCeiling_RestoresCeilingBoundWindowWhenGoodputRecovers()
+    {
+        var budget = CreateColdStartBudget();
+        var now = FlipColdStartGateWithFastAck(budget);
+
+        now += Seconds(0.510);
+        DriveBudgetEpoch(budget, now, logicalBytes: 1_000, rttSeconds: 0.001);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
+
+        // A recovered epoch (~980 KB/s) re-raises the ceiling; the ceiling-bound window
+        // follows it without waiting for the probe schedule.
+        now += Seconds(0.510);
+        DriveBudgetEpoch(budget, now, logicalBytes: 500_000, rttSeconds: 0.001);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(9_800);
+    }
+
+    [Test]
+    public async Task LatencyCeiling_SuppressesProbesWhileBindingAtTheFloor()
+    {
+        var budget = CreateColdStartBudget();
+        var now = FlipColdStartGateWithFastAck(budget);
+
+        // Sustained ~200 B/s goodput pins the ceiling at the floor: no up-probe candidate
+        // can differ from the baseline, so the schedule never launches an experiment.
+        for (var i = 0; i < 100; i++)
+        {
+            now += Seconds(0.510);
+            DriveBudgetEpoch(budget, now, logicalBytes: 100, rttSeconds: 0.001);
+        }
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
+        await Assert.That(budget.Phase).IsEqualTo(BrokerWindowPhase.Steady);
+        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
+        await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
+    }
+
+    private static BrokerUnackedByteBudget CreateColdStartBudget() =>
+        new(
+            targetSeconds: 0.010,
+            floorBytes: 1,
+            initialCapBytes: 10_000,
+            initialRequestBytes: 100,
+            coldStartBudgetBytes: 100);
+
+    /// <summary>Ends the cold-start phase with a 2 MB/s first acknowledgement, whose
+    /// target-scaled ceiling (20 KB, capped to 10 KB) leaves the sixteen-quantum optimistic
+    /// window as the binding bound — the pre-ceiling handoff behavior.</summary>
+    private static long FlipColdStartGateWithFastAck(BrokerUnackedByteBudget budget)
+    {
+        var now = T0 + Seconds(0.001);
+        budget.OnAcked(
+            ackedBytes: 2_000,
+            budget.SnapshotDelivery(now - Seconds(0.001), appLimited: false),
+            now);
+        return now;
     }
 
     [Test]

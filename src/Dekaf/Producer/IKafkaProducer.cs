@@ -315,6 +315,9 @@ internal sealed class ProducerBrokerBudgetDiagnostic
     /// output compatibility.</summary>
     public required long DeliveryLatencyEwmaMicros { get; init; }
     public required double LatencyBudgetScale { get; init; }
+    /// <summary>Latency ceiling (delivery-latency target × windowed-maximum measured
+    /// goodput) bounding the window, or 0 when the ceiling is disabled.</summary>
+    public long LatencyCeilingBytes { get; init; }
 
     /// <summary>
     /// Log2 histogram of acked produce-request payload sizes; bucket semantics are defined
