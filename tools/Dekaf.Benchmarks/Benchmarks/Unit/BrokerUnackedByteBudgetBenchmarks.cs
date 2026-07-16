@@ -26,6 +26,19 @@ public class BrokerUnackedByteBudgetBenchmarks
     }
 
     [Benchmark(OperationsPerInvoke = Operations)]
+    public long ReserveAndRelease()
+    {
+        for (var i = 0; i < Operations; i++)
+        {
+            if (!_budget.TryReserve(1_024, out _))
+                throw new InvalidOperationException("Benchmark reservation unexpectedly blocked.");
+            _budget.Release(1_024);
+        }
+
+        return _budget.UnackedBytes;
+    }
+
+    [Benchmark(OperationsPerInvoke = Operations)]
     public long RecordAcknowledgements()
     {
         for (var i = 0; i < Operations; i++)
@@ -33,7 +46,8 @@ public class BrokerUnackedByteBudgetBenchmarks
             var snapshotAtSend = _budget.SnapshotDelivery(
                 _timestamp,
                 appLimited: false,
-                oldestBatchTimestamp: _timestamp - RttTicks);
+                oldestBatchTimestamp: _timestamp - RttTicks,
+                admissionGeneration: _budget.CurrentGeneration);
             _timestamp += RttTicks;
             _budget.OnAcked(ackedBytes: 1024 * 1024, snapshotAtSend, _timestamp);
         }
@@ -57,7 +71,8 @@ public class BrokerUnackedByteBudgetBenchmarks
                 var snapshotAtSend = _budget.SnapshotDelivery(
                     _timestamp,
                     appLimited: false,
-                    oldestBatchTimestamp: _timestamp - RttTicks);
+                    oldestBatchTimestamp: _timestamp - RttTicks,
+                    admissionGeneration: _budget.CurrentGeneration);
                 _timestamp += RttTicks;
                 _budget.OnAcked(ackedBytes: 1024 * 1024, snapshotAtSend, _timestamp);
             }

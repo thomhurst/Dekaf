@@ -1092,8 +1092,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly ConcurrentDictionary<TopicPartition, PartitionDeque> _partitionDeques = new();
 
     /// <summary>
-    /// Per-broker unacked-byte budgets bounding delivery latency under sustained overload.
-    /// Populated lazily at the first batch seal for a broker; entries are never removed
+    /// Per-broker logical-byte admission windows bounding latency under sustained overload.
+    /// Populated lazily at the first append for a broker; entries are never removed
     /// (brokers are few and long-lived). Null-pattern: the registry is consulted only when
     /// <see cref="_unackedBudgetEnabled"/> is true.
     /// </summary>
@@ -1350,12 +1350,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly PendingAppendPool _pendingAppendPool;
     private readonly ConcurrentQueue<PendingAppend> _pendingAppends = new();
     private readonly object _pendingAppendQueueLock = new();
-    private readonly Dictionary<TopicPartition, long> _blockedPendingPartitionRecheckTimes = [];
+    private readonly HashSet<TopicPartition> _blockedPendingPartitions = [];
     private readonly List<PendingAppend> _pendingAppendScan = [];
-    private readonly List<PendingAppend> _drainablePendingAppends = [];
+    private readonly List<DrainablePendingAppend> _drainablePendingAppends = [];
     private int _draining; // CAS guard for DrainPendingAppends
     private long _pendingAppendDrainRequestVersion;
     private long _pendingAppendDrainEntryCount;
+
+    private readonly record struct AdmissionReservation(
+        BrokerUnackedByteBudget? Budget,
+        long Generation,
+        int Bytes)
+    {
+        internal bool HasBrokerReservation => Budget is not null && Bytes > 0;
+    }
+
+    private readonly record struct DrainablePendingAppend(
+        PendingAppend Operation,
+        AdmissionReservation AdmissionReservation);
 
     /// <summary>
     /// Per-partition state matching Java's Deque&lt;ProducerBatch&gt; design.
@@ -1394,6 +1406,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public bool AppendInProgress;
 
         public int SlowPathAppendCount;
+
+        /// <summary>
+        /// Set when this partition cannot reserve more broker-window bytes. The linger loop
+        /// seals the current batch immediately so already-admitted data can reach the wire.
+        /// </summary>
+        public int AdmissionFlushRequested;
 
         /// <summary>
         /// Broker budget used by the append admission gate. Refreshed at batch seal/routing
@@ -2035,7 +2053,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     _pendingAppendScan.Clear();
                     _drainablePendingAppends.Clear();
-                    _blockedPendingPartitionRecheckTimes.Clear();
+                    _blockedPendingPartitions.Clear();
 
                     var remainingToInspect = _pendingAppends.Count;
                     while (remainingToInspect-- > 0 && _pendingAppends.TryDequeue(out var candidate))
@@ -2055,52 +2073,49 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             continue;
                         }
 
-                        if (_blockedPendingPartitionRecheckTimes.TryGetValue(
-                                topicPartition,
-                                out var existingRecheckAt))
+                        if (_blockedPendingPartitions.Contains(topicPartition))
                         {
                             _pendingAppends.Enqueue(candidate);
-                            candidate.ScheduleAdmissionRecheck(existingRecheckAt);
                             continue;
                         }
 
-                        if (TryGetAdmissionRecheckAt(
+                        if (!TryReserveForAppend(
                                 candidate.Topic,
                                 candidate.Partition,
-                                out var recheckAt))
+                                candidate.RecordSize,
+                                enforceFifo: false,
+                                out var admissionReservation,
+                                out var brokerBlocked))
                         {
                             _pendingAppends.Enqueue(candidate);
-                            candidate.ScheduleAdmissionRecheck(recheckAt);
-                            _blockedPendingPartitionRecheckTimes.Add(
-                                topicPartition,
-                                recheckAt);
+                            if (brokerBlocked)
+                                _blockedPendingPartitions.Add(topicPartition);
+                            else
+                                memoryExhausted = true;
                             continue;
                         }
 
-                        if (!TryReserveMemory(candidate.RecordSize))
-                        {
-                            memoryExhausted = true;
-                            _pendingAppends.Enqueue(candidate);
-                            continue;
-                        }
-
-                        _drainablePendingAppends.Add(candidate);
+                        _drainablePendingAppends.Add(new DrainablePendingAppend(
+                            candidate,
+                            admissionReservation));
                     }
 
                     _pendingAppendScan.Clear();
                     madeProgress = _drainablePendingAppends.Count > 0;
                 }
 
-                foreach (var op in _drainablePendingAppends)
+                foreach (var drainable in _drainablePendingAppends)
                 {
+                    var op = drainable.Operation;
                     // Claim the operation with CAS BEFORE touching resources.
                     // This prevents timeout/cancel from cleaning up key/value/headers
                     // while AppendAfterReservation is using them.
                     if (!op.TryClaim())
                     {
                         // Timeout/cancel won the race and already cleaned up resources.
-                        // Release the memory reservation we made above.
+                        // Release both reservations made above.
                         ReleaseMemoryWithoutDrain(op.RecordSize);
+                        ReleaseAdmissionReservation(drainable.AdmissionReservation);
                         continue;
                     }
 
@@ -2109,7 +2124,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         var result = AppendAfterReservation(
                             op.Topic, op.Partition, op.Timestamp,
                             op.Key, op.Value, op.Headers, op.HeaderCount,
-                            op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount);
+                            op.CompletionSource, op.Callback, op.RecordSize, op.PartitionCount,
+                            drainable.AdmissionReservation);
 
                         op.ReleasePendingCountAfterClaim();
                         op.CompleteResult(result);
@@ -2152,7 +2168,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             if (ownsDrainGuard)
             {
-                _blockedPendingPartitionRecheckTimes.Clear();
+                _blockedPendingPartitions.Clear();
                 _pendingAppendScan.Clear();
                 _drainablePendingAppends.Clear();
                 // Ensure drain lock is released on exception. Once ownership passes to
@@ -2744,9 +2760,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Hot path: non-blocking gate check + CAS reservation — no async state machine
         // allocated. An over-budget broker applies the same backpressure as a full buffer.
-        if (TryAdmitAndReserve(topic, partition, recordSize))
+        if (TryAdmitAndReserve(topic, partition, recordSize, out var admissionReservation))
             return new ValueTask<bool>(AppendAfterReservation(topic, partition, timestamp, key, value,
-                headers, headerCount, completionSource, callback, recordSize, partitionCount));
+                headers, headerCount, completionSource, callback, recordSize, partitionCount,
+                admissionReservation));
 
         // Cold path: buffer full or broker over budget — enqueue pooled PendingAppend
         // (zero async state machine allocation)
@@ -2765,10 +2782,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        int partitionCount)
+        int partitionCount,
+        AdmissionReservation admissionReservation)
     {
         return AppendPooledAfterReservationCore(topic, partition, timestamp, key, value, headers, headerCount,
-            completionSource, callback, recordSize, partitionCount);
+            completionSource, callback, recordSize, partitionCount, admissionReservation);
     }
 
     private bool AppendPooledAfterReservationCore(
@@ -2782,7 +2800,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        int partitionCount)
+        int partitionCount,
+        AdmissionReservation admissionReservation)
     {
         var topicPartition = new TopicPartition(topic, partition);
         var pd = GetOrCreateDeque(topic, partition);
@@ -2799,6 +2818,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (ownsReservation)
             {
                 ReleaseMemory(recordSize);
+                ReleaseAdmissionReservation(admissionReservation);
                 ownsReservation = false;
             }
             if (ownsRecordResources)
@@ -2861,6 +2881,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 out var firstAwaitedProduceInBatch))
                             {
                                 actualBytesAdded = appendedBytes;
+                                currentBatch.AddAdmissionReservation(
+                                    admissionReservation.Budget,
+                                    admissionReservation.Generation,
+                                    admissionReservation.Bytes);
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 if (firstAwaitedProduceInBatch)
@@ -2901,6 +2925,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 out var firstAwaitedProduceInBatch))
                             {
                                 actualBytesAdded = appendedBytes;
+                                newBatch.AddAdmissionReservation(
+                                    admissionReservation.Budget,
+                                    admissionReservation.Generation,
+                                    admissionReservation.Bytes);
                                 ownsReservation = false;
                                 ownsRecordResources = false;
                                 if (firstAwaitedProduceInBatch)
@@ -2942,6 +2970,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
                     batchToFail.Fail(disposedException);
+                    ReleaseUntrackedBudget(batchToFail);
                     ReleaseBatchMemory(batchToFail);
                 }
 
@@ -2994,10 +3023,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             releaseMemoryOnFailure: false);
                         if (sealedBatchToEnqueue is not null)
                         {
-                            sealedBatchToEnqueue.UnackedBudget = ResolveAndCacheUnackedBudget(
-                                pd,
-                                topic,
-                                partition);
+                            AttributeUntrackedBudget(
+                                sealedBatchToEnqueue,
+                                ResolveAndCacheUnackedBudget(pd, topic, partition));
                         }
                     }
                     catch
@@ -3081,18 +3109,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Close the memory-release TOCTOU window for the first queued operation. Later
-        // admission-blocked appends arm their own broker deadline without rescanning the
-        // queue; memory-blocked appends rely on ReleaseMemory's unconditional drain.
+        // Close the release TOCTOU window for the first queued operation. Later waiters are
+        // woken by terminal broker-byte or BufferMemory release.
         if (wasQueueEmpty)
-        {
             DrainPendingAppends();
-        }
-        else
-        {
-            if (TryGetAdmissionRecheckAt(topic, partition, out var recheckAt))
-                op.ScheduleAdmissionRecheck(recheckAt);
-        }
 
         return new ValueTask<bool>(op, op.Version);
     }
@@ -3137,11 +3157,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Try the admission gate + non-blocking memory reservation. If the buffer is full
         // or the destination broker is over its unacked-byte budget, return false so the
         // caller (ProduceAsync fast path) falls back to the async path.
-        if (!TryAdmitAndReserve(topic, partition, recordSize))
+        if (!TryAdmitAndReserve(topic, partition, recordSize, out var admissionReservation))
             return false;
 
         return AppendPooledAfterReservationCore(topic, partition, timestamp, key, value, headers, headerCount,
-            completionSource, callback: null, recordSize, partitionCount);
+            completionSource, callback: null, recordSize, partitionCount, admissionReservation);
     }
 
     /// <summary>
@@ -3172,12 +3192,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             topic, partition, keyIsNull, keyLength, valueIsNull, valueLength,
             headers, headerCount, recordSize);
 
-        if (!TryAdmitAndReserve(topic, partition, recordSize))
+        if (!TryAdmitAndReserve(topic, partition, recordSize, out var admissionReservation))
             return false;
 
         return AppendFromSpansAfterReservationCore(topic, partition, timestamp, keyData, keyIsNull,
             valueData, valueIsNull, headers, headerCount, completionSource, callback: null,
-            recordSize, partitionCount, returnHeadersOnFailure: false);
+            recordSize, partitionCount, returnHeadersOnFailure: false, admissionReservation);
     }
 
     private bool AppendFromSpansAfterReservationCore(
@@ -3194,7 +3214,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         int partitionCount,
-        bool returnHeadersOnFailure)
+        bool returnHeadersOnFailure,
+        AdmissionReservation admissionReservation)
     {
         // Headerless records dominate every producer mode. When the current batch has room,
         // encode and commit under one partition-lock acquisition instead of publishing
@@ -3217,6 +3238,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     callback,
                     recordSize,
                     partitionCount,
+                    admissionReservation,
                     out appendCommitted))
                 {
                     return true;
@@ -3225,7 +3247,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             catch
             {
                 if (!appendCommitted)
+                {
                     ReleaseMemory(recordSize);
+                    ReleaseAdmissionReservation(admissionReservation);
+                }
                 throw;
             }
         }
@@ -3245,6 +3270,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (ownsReservation)
             {
                 ReleaseMemory(recordSize);
+                ReleaseAdmissionReservation(admissionReservation);
                 ownsReservation = false;
             }
             if (ownsHeaderResources)
@@ -3389,6 +3415,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
                     batchToFail.Fail(disposedException);
+                    ReleaseUntrackedBudget(batchToFail);
                     ReleaseBatchMemory(batchToFail);
                 }
 
@@ -3427,6 +3454,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                      callback,
                                      headers,
                                      recordSize);
+                                reservedAppendBatch.AddAdmissionReservation(
+                                    admissionReservation.Budget,
+                                    admissionReservation.Generation,
+                                    admissionReservation.Bytes);
                                 committedReservedAppend = true;
                                 ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
                                 ClearAppendInProgressUnderLock(pd);
@@ -3513,10 +3544,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             releaseMemoryOnFailure: false);
                         if (sealedBatchToEnqueue is not null)
                         {
-                            sealedBatchToEnqueue.UnackedBudget = ResolveAndCacheUnackedBudget(
-                                pd,
-                                topic,
-                                partition);
+                            AttributeUntrackedBudget(
+                                sealedBatchToEnqueue,
+                                ResolveAndCacheUnackedBudget(pd, topic, partition));
                         }
                     }
                     catch
@@ -3611,9 +3641,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Hot path: non-blocking gate check + CAS reservation — no async state machine
         // allocated. An over-budget broker applies the same backpressure as a full buffer.
-        if (TryAdmitAndReserve(topic, partition, recordSize))
+        if (TryAdmitAndReserve(topic, partition, recordSize, out var admissionReservation))
             return new ValueTask<bool>(AppendFromSpansAfterReservation(topic, partition, timestamp,
-                keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, callback, recordSize, partitionCount));
+                keyData, keyIsNull, valueData, valueIsNull, headers, headerCount, callback, recordSize,
+                partitionCount, admissionReservation));
 
         // Cold path: buffer full. Copy spans to PooledMemory BEFORE the await boundary
         // (ReadOnlySpan<byte> cannot survive across async suspension points).
@@ -3722,11 +3753,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
-        int partitionCount)
+        int partitionCount,
+        AdmissionReservation admissionReservation)
     {
         return AppendFromSpansAfterReservationCore(topic, partition, timestamp, keyData, keyIsNull,
             valueData, valueIsNull, headers, headerCount, completionSource: null, callback,
-            recordSize, partitionCount, returnHeadersOnFailure: true);
+            recordSize, partitionCount, returnHeadersOnFailure: true, admissionReservation);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -3742,6 +3774,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int recordSize,
         int partitionCount,
+        AdmissionReservation admissionReservation,
         out bool appendCommitted)
     {
         appendCommitted = false;
@@ -3775,6 +3808,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (!result.Success)
                 return false;
 
+            currentBatch.AddAdmissionReservation(
+                admissionReservation.Budget,
+                admissionReservation.Generation,
+                admissionReservation.Bytes);
             appendCommitted = true;
             actualBytesAdded = result.ActualSizeAdded;
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
@@ -4042,10 +4079,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (readyBatch is not null)
         {
-            readyBatch.UnackedBudget = ResolveAndCacheUnackedBudget(
-                pd,
-                readyBatch.TopicPartition.Topic,
-                readyBatch.TopicPartition.Partition);
+            AttributeUntrackedBudget(
+                readyBatch,
+                ResolveAndCacheUnackedBudget(
+                    pd,
+                    readyBatch.TopicPartition.Topic,
+                    readyBatch.TopicPartition.Partition));
         }
 
         {
@@ -4752,6 +4791,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
                 else if (pd.CurrentBatch is null)
                 {
+                    Volatile.Write(ref pd.AdmissionFlushRequested, 0);
                     break;
                 }
                 // A muted or serialized busy partition already has an earlier batch to send.
@@ -4759,9 +4799,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // allocating one BatchSize arena per record while they wait. Size-full batches
                 // still seal in the append path, and FlushAsync must always seal.
                 else if (sealAll
+                    || Volatile.Read(ref pd.AdmissionFlushRequested) != 0
                     || (!ShouldDeferPartialBatchSeal(pd.CurrentBatch)
                         && pd.CurrentBatch.ShouldFlush(now, _options.LingerMs)))
                 {
+                    Volatile.Write(ref pd.AdmissionFlushRequested, 0);
                     ProducerDebugCounters.RecordBatchFlushedFromDictionary();
                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, pd.CurrentBatch);
                     break;
@@ -4850,9 +4892,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (Interlocked.Exchange(ref batch.UnackedBudget, null) is { } unackedBudget)
         {
-            // DataSize is exactly what ChargeUnackedBudget charged; it stays valid until
-            // Reset() at pool return, which cannot precede this first-exit path.
-            unackedBudget.Release(batch.DataSize);
+            var reservedBytes = batch.UnackedReservedBytes;
+            batch.UnackedReservedBytes = 0;
+            batch.AdmissionGeneration = 0;
+            unackedBudget.Release(reservedBytes);
             // Freed unacked headroom can unblock appenders gated on this broker's budget —
             // wake them through the same machinery BufferMemory releases use.
             DrainPendingAppends();
@@ -4884,18 +4927,56 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Charges a freshly sealed batch against its current leader broker's unacked-byte budget.
-    /// Called under the partition lock (same ordering domain as InFlightBatchListAdd) so a fast ack
-    /// can never release before the charge lands. The budget is resolved outside this partition
-    /// lock after completion, closing the append-to-seal leader-change window without adding
-    /// metadata or dictionary work inside the lock. Drain and rerouting transfer later leader changes.
+    /// Reconciles a sealed batch when some bytes could not be reserved at append time (for
+    /// example, metadata was temporarily unavailable). Normally the exact record reservations
+    /// already equal <see cref="ReadyBatch.DataSize"/> after seal-time estimate refund.
     /// </summary>
     private static void ChargeUnackedBudget(ReadyBatch batch)
     {
         if (batch.UnackedBudget is not { } budget)
             return;
 
-        budget.Charge(batch.DataSize);
+        var missingBytes = batch.DataSize - batch.UnackedReservedBytes;
+        if (missingBytes <= 0)
+            return;
+
+        budget.Charge(missingBytes);
+        if (batch.UnackedReservedBytes != 0)
+            batch.AdmissionGeneration = 0;
+        else
+            batch.AdmissionGeneration = budget.CurrentGeneration;
+        batch.UnackedReservedBytes = batch.DataSize;
+    }
+
+    private static void AttributeUntrackedBudget(
+        ReadyBatch batch,
+        BrokerUnackedByteBudget? newBudget)
+    {
+        if (newBudget is null || ReferenceEquals(batch.UnackedBudget, newBudget))
+            return;
+
+        var reservedBytes = batch.UnackedReservedBytes;
+        if (reservedBytes > 0)
+        {
+            newBudget.Charge(reservedBytes);
+            batch.UnackedBudget?.Release(reservedBytes);
+            batch.AdmissionGeneration = 0;
+        }
+        else
+        {
+            batch.AdmissionGeneration = newBudget.CurrentGeneration;
+        }
+
+        batch.UnackedBudget = newBudget;
+    }
+
+    private static void ReleaseUntrackedBudget(ReadyBatch batch)
+    {
+        var budget = Interlocked.Exchange(ref batch.UnackedBudget, null);
+        var reservedBytes = batch.UnackedReservedBytes;
+        batch.UnackedReservedBytes = 0;
+        batch.AdmissionGeneration = 0;
+        budget?.Release(reservedBytes);
     }
 
     /// <summary>Transfers a live batch's charge when drain or retry routing selects another broker.</summary>
@@ -4920,10 +5001,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (!batch.InFlightLinked || ReferenceEquals(batch.UnackedBudget, newBudget))
                 return;
 
-            newBudget.Charge(batch.DataSize);
+            var reservedBytes = batch.UnackedReservedBytes;
+            newBudget.Charge(reservedBytes);
             var oldBudget = batch.UnackedBudget;
             batch.UnackedBudget = newBudget;
-            oldBudget?.Release(batch.DataSize);
+            batch.AdmissionGeneration = 0;
+            oldBudget?.Release(reservedBytes);
         }
         finally
         {
@@ -4954,15 +5037,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var cap = _options.UnackedByteBudgetCapOverride
             ?? BrokerUnackedByteBudget.ComputeCap(_options.BatchSize, _options.ConnectionsPerBroker);
-        // Cold start uses the cap. After the first drain sample, target × rate and the
-        // minimum-RTT BDP guard provide time-derived floors; a fixed batch-byte floor makes
-        // standing latency grow as per-broker drain rate falls under fan-out.
+        // Start with four request quanta per configured connection. This supplies immediate
+        // pipeline depth without opening the full safety cap; the controller then searches
+        // upward/downward for the smallest window that preserves goodput.
         return new BrokerUnackedByteBudget(
             _options.DeliveryLatencyTargetMs / 1000.0,
             floorBytes: 1,
             initialCapBytes: cap,
             lingerSeconds: _options.LingerMs / 1000.0,
-            enableDiagnostics: _options.EnableDeliveryDiagnostics);
+            enableDiagnostics: _options.EnableDeliveryDiagnostics,
+            initialRequestBytes: (long)_options.BatchSize * Math.Max(1, _options.ConnectionsPerBroker));
     }
 
     /// <summary>
@@ -4971,99 +5055,99 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// single choke point for every append entry path.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryAdmitAndReserve(string topic, int partition, int recordSize)
-    {
-        var partitionDeque = GetOrCreateDeque(topic, partition);
-        if (_unackedBudgetEnabled
-            && IsBrokerAdmissionBlocked(
-                partitionDeque,
-                topic,
-                partition,
-                recordBlockEvent: true))
-            return false;
-
-        return Volatile.Read(ref partitionDeque.SlowPathAppendCount) == 0
-            && TryReserveMemory(recordSize);
-    }
-
-    /// <summary>
-    /// True when the destination broker for (topic, partition) is over its unacked-byte
-    /// budget and message admission should block. Lock-free: a cached metadata lookup and
-    /// volatile reads.
-    /// Block events feed adaptive connection scaling; the pending-append drain passes false
-    /// because the operation already recorded one when it was first gated.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool IsBrokerAdmissionBlocked(
-        PartitionDeque partitionDeque,
+    private bool TryAdmitAndReserve(
         string topic,
         int partition,
-        bool recordBlockEvent)
-        => IsBrokerAdmissionBlocked(
-            partitionDeque,
+        int recordSize,
+        out AdmissionReservation admissionReservation)
+        => TryReserveForAppend(
             topic,
             partition,
-            recordBlockEvent,
+            recordSize,
+            enforceFifo: true,
+            out admissionReservation,
             out _);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool IsBrokerAdmissionBlocked(
-        PartitionDeque partitionDeque,
+    private bool TryReserveForAppend(
         string topic,
         int partition,
-        bool recordBlockEvent,
-        out int recheckDelayMilliseconds)
+        int recordSize,
+        bool enforceFifo,
+        out AdmissionReservation admissionReservation,
+        out bool brokerBlocked)
     {
-        recheckDelayMilliseconds = Timeout.Infinite;
-        if (!_unackedBudgetEnabled)
-            return false;
+        var partitionDeque = GetOrCreateDeque(topic, partition);
+        admissionReservation = default;
+        brokerBlocked = false;
 
-        var currentBudget = GetCachedAdmissionBudget(partitionDeque, topic, partition);
-        if (currentBudget is null || !currentBudget.IsOverBudget())
+        if (enforceFifo && Volatile.Read(ref partitionDeque.SlowPathAppendCount) != 0)
+        {
+            if (_unackedBudgetEnabled
+                && GetCachedAdmissionBudget(partitionDeque, topic, partition) is { } queuedBudget
+                && queuedBudget.IsOverBudget())
+            {
+                brokerBlocked = true;
+                queuedBudget.RecordAdmissionBlock();
+                RequestAdmissionFlush(partitionDeque, topic, partition);
+            }
             return false;
+        }
 
-        // A leader may have changed since this partition last sealed or routed a batch.
-        // Resolve again before actually blocking so a stale, pressured old leader never
-        // causes false backpressure. This lookup is confined to the already-cold path.
-        currentBudget = ResolveAndCacheUnackedBudget(partitionDeque, topic, partition);
-        if (currentBudget is null || !currentBudget.IsOverBudget())
-            return false;
+        BrokerUnackedByteBudget? budget = null;
+        long generation = 0;
+        if (_unackedBudgetEnabled)
+        {
+            budget = GetCachedAdmissionBudget(partitionDeque, topic, partition);
+            if (budget is not null && !budget.TryReserve(recordSize, out generation))
+            {
+                // Metadata can move a partition while the old leader is pressured. Refresh
+                // only after the cached, lock-free fast path rejects admission.
+                var refreshedBudget = ResolveAndCacheUnackedBudget(
+                    partitionDeque,
+                    topic,
+                    partition);
+                if (refreshedBudget is null
+                    || ReferenceEquals(refreshedBudget, budget)
+                    || !refreshedBudget.TryReserve(recordSize, out generation))
+                {
+                    brokerBlocked = true;
+                    (refreshedBudget ?? budget).RecordAdmissionBlock();
+                    RequestAdmissionFlush(partitionDeque, topic, partition);
+                    return false;
+                }
 
-        var nowTicks = Stopwatch.GetTimestamp();
-        if (!currentBudget.IsOverBudgetAt(nowTicks))
-            return false;
+                budget = refreshedBudget;
+            }
+        }
 
-        recheckDelayMilliseconds = currentBudget.GetAdmissionRecheckDelayMilliseconds(nowTicks);
-        if (recordBlockEvent)
-            currentBudget.RecordAdmissionBlock(nowTicks);
-        return true;
+        admissionReservation = new AdmissionReservation(budget, generation, recordSize);
+        if (TryReserveMemory(recordSize))
+            return true;
+
+        ReleaseAdmissionReservation(admissionReservation);
+        admissionReservation = default;
+        return false;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryGetAdmissionRecheckAt(
-        string topic,
-        int partition,
-        out long recheckAt)
+    private static void ReleaseAdmissionReservation(in AdmissionReservation reservation)
     {
-        recheckAt = 0;
-        var partitionDeque = GetOrCreateDeque(topic, partition);
-        if (!IsBrokerAdmissionBlocked(
-                partitionDeque,
-                topic,
-                partition,
-                recordBlockEvent: false,
-                out var recheckDelayMilliseconds))
-        {
-            return false;
-        }
+        if (reservation.HasBrokerReservation)
+            reservation.Budget!.Release(reservation.Bytes);
+    }
 
-        if (recheckDelayMilliseconds != Timeout.Infinite)
-        {
-            recheckAt = Dekaf.MonotonicClock.GetMilliseconds()
-                + Math.Max(1, recheckDelayMilliseconds);
-        }
-
-        return true;
+    private void RequestAdmissionFlush(
+        PartitionDeque partitionDeque,
+        string topic,
+        int partition)
+    {
+        Volatile.Write(ref partitionDeque.AdmissionFlushRequested, 1);
+        QueueLingerPartition(
+            partitionDeque,
+            new TopicPartition(topic, partition),
+            signalLingerLoop: false);
+        _lingerWakeupSignal.Signal();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -6088,6 +6172,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                     if (readyBatch is not null)
                                     {
                                         readyBatch.Fail(disposedException);
+                                        ReleaseUntrackedBudget(readyBatch);
                                         ReleaseBatchMemory(readyBatch);
                                     }
                                     if (bytesToRelease > 0)
@@ -6329,6 +6414,9 @@ internal sealed class PartitionBatch
     private int _encodedRecordsLength;
     private int _estimatedSize;
     private int _reservedSize;
+    private BrokerUnackedByteBudget? _admissionBudget;
+    private long _admissionGeneration;
+    private int _admissionReservedBytes;
     private int _effectiveBatchSizeLimit;
     // Note: _offsetDelta removed - it always equals _recordCount at assignment time
     private long _createdStopwatchTimestamp;
@@ -6430,6 +6518,7 @@ internal sealed class PartitionBatch
         _encodedRecordsLength = 0;
         _estimatedSize = 0;
         _reservedSize = 0;
+        ReleaseAdmissionReservation();
         _isCompleted = 0;  // Only reset here - see remarks
         _completedBatch = null;
     }
@@ -6479,6 +6568,7 @@ internal sealed class PartitionBatch
         _encodedRecordsLength = 0;
         _estimatedSize = 0;
         _reservedSize = 0;
+        ReleaseAdmissionReservation();
         // _isCompleted stays at 1 - batch is "completed" while in pool
         _completedBatch = null;
     }
@@ -6500,6 +6590,39 @@ internal sealed class PartitionBatch
         (long)RecordBatch.TotalBatchHeaderSize + _encodedRecordsLength == EffectiveBatchSizeLimit;
 
     internal int EffectiveBatchSizeLimit => _effectiveBatchSizeLimit;
+
+    /// <summary>
+    /// Transfers one successful append's atomic broker reservation to this batch. A leader
+    /// change moves the already-admitted bytes to the newest budget; rerouting cannot reject
+    /// data that already owns accumulator memory.
+    /// </summary>
+    internal void AddAdmissionReservation(
+        BrokerUnackedByteBudget? budget,
+        long generation,
+        int bytes)
+    {
+        if (budget is null || bytes <= 0)
+            return;
+
+        if (_admissionBudget is null)
+        {
+            _admissionBudget = budget;
+            _admissionGeneration = generation;
+        }
+        else if (!ReferenceEquals(_admissionBudget, budget))
+        {
+            budget.Charge(_admissionReservedBytes);
+            _admissionBudget.Release(_admissionReservedBytes);
+            _admissionBudget = budget;
+            _admissionGeneration = 0;
+        }
+        else if (_admissionGeneration != generation)
+        {
+            _admissionGeneration = 0;
+        }
+
+        _admissionReservedBytes += bytes;
+    }
 
     private static int GetEffectiveBatchSizeLimit(
         TopicPartition topicPartition,
@@ -6964,6 +7087,7 @@ internal sealed class PartitionBatch
         if (_recordCount == 0)
         {
             // Empty batch - return arrays to pool immediately
+            ReleaseAdmissionReservation();
             ReturnBatchArraysToPool();
             return null;
         }
@@ -7021,6 +7145,22 @@ internal sealed class PartitionBatch
                 _recordCount,
                 _createdStopwatchTimestamp);
 
+            if (_admissionBudget is { } admissionBudget)
+            {
+                var overestimatedBytes = Math.Max(0, _admissionReservedBytes - _estimatedSize);
+                if (overestimatedBytes > 0)
+                    admissionBudget.Release(overestimatedBytes);
+
+                readyBatch.UnackedBudget = admissionBudget;
+                readyBatch.UnackedReservedBytes = _admissionReservedBytes - overestimatedBytes;
+                readyBatch.AdmissionGeneration = readyBatch.UnackedReservedBytes == _estimatedSize
+                    ? _admissionGeneration
+                    : 0;
+                _admissionBudget = null;
+                _admissionGeneration = 0;
+                _admissionReservedBytes = 0;
+            }
+
             _completedBatch = readyBatch;
 
             batch = null;
@@ -7052,6 +7192,7 @@ internal sealed class PartitionBatch
     internal int FailCompleteFailure(Exception exception)
     {
         var bytesToRelease = _reservedSize;
+        ReleaseAdmissionReservation();
 
         if (_completionSourceCount > 0 && _completionSources is not null)
         {
@@ -7084,6 +7225,17 @@ internal sealed class PartitionBatch
         _completedBatch = null;
 
         return bytesToRelease;
+    }
+
+    private void ReleaseAdmissionReservation()
+    {
+        var budget = _admissionBudget;
+        var bytes = _admissionReservedBytes;
+        _admissionBudget = null;
+        _admissionGeneration = 0;
+        _admissionReservedBytes = 0;
+        if (budget is not null && bytes > 0)
+            budget.Release(bytes);
     }
 
     private void ReturnBatchArraysToPool()
@@ -7301,6 +7453,8 @@ internal sealed class ReadyBatch
     // once (first terminal path wins, guarded by OnBatchExitsPipeline's InFlightBatchListRemove)
     // and cleared in Reset(). Rerouting transfers this charge to the selected leader.
     internal BrokerUnackedByteBudget? UnackedBudget;
+    internal int UnackedReservedBytes;
+    internal long AdmissionGeneration;
 
     // Intrusive linked list pointers for RecordAccumulator._inFlightBatchList.
     // Using embedded pointers eliminates per-batch ConcurrentDictionary.Node allocations
@@ -7825,6 +7979,9 @@ internal sealed class ReadyBatch
         _recordCount = recordCount;
         DataSize = dataSize;
         EncodedSize = dataSize;
+        UnackedBudget = null;
+        UnackedReservedBytes = 0;
+        AdmissionGeneration = 0;
         _arena = arena;
         _callbacks = callbacks;
         _callbackCount = callbackCount;
@@ -7885,7 +8042,10 @@ internal sealed class ReadyBatch
         _callbackCount = 0;
         _arrayReuseQueue = null;
         InflightEntry = null;
-        UnackedBudget = null;
+        var orphanedBudget = Interlocked.Exchange(ref UnackedBudget, null);
+        orphanedBudget?.Release(UnackedReservedBytes);
+        UnackedReservedBytes = 0;
+        AdmissionGeneration = 0;
         InFlightPrev = null;
         InFlightNext = null;
         InFlightLinked = false;
