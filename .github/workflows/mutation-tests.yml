@@ -52,7 +52,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6.0.0
         with:
           # Stryker 4.16 targets net8.0; the test projects build with the net10 SDK.
           dotnet-version: |
