@@ -105,6 +105,32 @@ class StressAbaComparisonTests(unittest.TestCase):
         self.assertEqual("inconclusive", throughput["status"])
         self.assertAlmostEqual(20.0, throughput["controlDriftPercent"])
 
+    def test_candidate_beating_both_noisy_controls_passes(self):
+        # Run 29525842754: candidate p99 (14.85ms) was better than both controls
+        # (17.25 / 15.25ms), yet 12.3% control drift ruled the metric inconclusive.
+        # A candidate at least as good as the better control cannot have regressed.
+        comparison = compare(
+            result(p99=17.25),
+            result(p99=14.85),
+            result(p99=15.25),
+        )
+
+        self.assertEqual("pass", comparison["verdict"])
+        p99 = next(
+            metric for metric in comparison["metrics"] if metric["key"] == "p99"
+        )
+        self.assertEqual("pass", p99["status"])
+        self.assertGreater(p99["controlDriftPercent"], 10.0)
+
+    def test_bracketed_candidate_with_noisy_controls_stays_inconclusive(self):
+        comparison = compare(result(p99=13.0), result(p99=15.0), result(p99=17.0))
+
+        self.assertEqual("inconclusive", comparison["verdict"])
+        p99 = next(
+            metric for metric in comparison["metrics"] if metric["key"] == "p99"
+        )
+        self.assertEqual("inconclusive", p99["status"])
+
     def test_decisive_regression_overrides_noisy_controls(self):
         comparison = compare(result(100), result(70), result(130))
 
