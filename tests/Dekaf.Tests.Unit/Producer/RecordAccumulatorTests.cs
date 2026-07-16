@@ -282,6 +282,77 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task AdmissionFlushClaim_AllowsOneBlockedPartitionUntilPipelineProgressExits()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1_000,
+            LingerMs = 5_000
+        };
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: static (_, _) => 1);
+        var firstPartition = new TopicPartition("test-topic", 0);
+        var secondPartition = new TopicPartition("test-topic", 1);
+
+        await Assert.That(await AppendNullRecordAsync(accumulator, firstPartition.Partition)).IsTrue();
+        await Assert.That(await AppendNullRecordAsync(accumulator, secondPartition.Partition)).IsTrue();
+
+        var budget = accumulator.GetBrokerUnackedBudget(1)!;
+        var firstDeque = GetPartitionDeque(accumulator, firstPartition);
+        var secondDeque = GetPartitionDeque(accumulator, secondPartition);
+
+        // Model two appenders rejected by the shared broker budget without introducing
+        // pending-append timers into this claim-contention test.
+        RequestAdmissionFlushForTest(accumulator, firstDeque, firstPartition, budget);
+        RequestAdmissionFlushForTest(accumulator, secondDeque, secondPartition, budget);
+
+        var firstClaim = GetPartitionDequeField<long>(firstDeque, "AdmissionFlushClaim");
+        await Assert.That(firstClaim).IsNotEqualTo(0);
+        await Assert.That(GetPartitionDequeField<int>(firstDeque, "AdmissionFlushRequested")).IsEqualTo(1);
+        await Assert.That(GetPartitionDequeField<int>(secondDeque, "AdmissionFlushRequested")).IsEqualTo(0);
+        await Assert.That(budget.IsAdmissionFlushClaimActive(firstClaim)).IsTrue();
+
+        ForceLingerSweepForTest(accumulator);
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+
+        await Assert.That(GetCurrentPartitionBatchOrDefault(accumulator, firstPartition)).IsNull();
+        await Assert.That(GetCurrentPartitionBatchOrDefault(accumulator, secondPartition)).IsNotNull();
+        await Assert.That(GetPartitionDequeField<int>(firstDeque, "AdmissionFlushRequested")).IsEqualTo(0);
+        await Assert.That(budget.IsAdmissionFlushClaimActive(firstClaim)).IsFalse();
+        await Assert.That(budget.PipelineBatchCount).IsEqualTo(1);
+        await Assert.That(accumulator.TryDrainBatch(out var firstBatch)).IsTrue();
+        var firstBatchPartition = firstBatch!.TopicPartition;
+        var firstExited = CompleteAndReturnPipelineBatch(accumulator, firstBatch);
+
+        await Assert.That(firstBatchPartition).IsEqualTo(firstPartition);
+        await Assert.That(firstExited).IsTrue();
+        await Assert.That(budget.PipelineBatchCount).IsEqualTo(0);
+
+        RequestAdmissionFlushForTest(accumulator, secondDeque, secondPartition, budget);
+
+        var secondClaim = GetPartitionDequeField<long>(secondDeque, "AdmissionFlushClaim");
+        await Assert.That(secondClaim).IsNotEqualTo(firstClaim);
+        await Assert.That(budget.IsAdmissionFlushClaimActive(secondClaim)).IsTrue();
+
+        ForceLingerSweepForTest(accumulator);
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+
+        await Assert.That(GetCurrentPartitionBatchOrDefault(accumulator, secondPartition)).IsNull();
+        await Assert.That(GetPartitionDequeField<int>(secondDeque, "AdmissionFlushRequested")).IsEqualTo(0);
+        await Assert.That(accumulator.TryDrainBatch(out var secondBatch)).IsTrue();
+        var secondBatchPartition = secondBatch!.TopicPartition;
+        var secondExited = CompleteAndReturnPipelineBatch(accumulator, secondBatch);
+
+        await Assert.That(secondBatchPartition).IsEqualTo(secondPartition);
+        await Assert.That(secondExited).IsTrue();
+        await Assert.That(budget.PipelineBatchCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Purge_Queue_CompleteFailure_ReleasesReservedMemory()
     {
         var options = CreateTestOptions();
@@ -4127,10 +4198,45 @@ public class RecordAccumulatorTests
         return op;
     }
 
-    private static ValueTask<bool> AppendNullRecordAsync(RecordAccumulator accumulator) =>
+    private static void RequestAdmissionFlushForTest(
+        RecordAccumulator accumulator,
+        object partitionDeque,
+        TopicPartition topicPartition,
+        BrokerUnackedByteBudget budget)
+    {
+        var method = typeof(RecordAccumulator).GetMethod(
+            "RequestAdmissionFlush",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(
+            accumulator,
+            [partitionDeque, topicPartition.Topic, topicPartition.Partition, budget]);
+    }
+
+    private static T GetPartitionDequeField<T>(object partitionDeque, string fieldName) =>
+        (T)partitionDeque.GetType().GetField(fieldName)!.GetValue(partitionDeque)!;
+
+    private static bool CompleteAndReturnPipelineBatch(
+        RecordAccumulator accumulator,
+        ReadyBatch batch)
+    {
+        batch.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
+        var exited = accumulator.OnBatchExitsPipeline(batch);
+        accumulator.ReturnReadyBatch(batch);
+        return exited;
+    }
+
+    private static void ForceLingerSweepForTest(RecordAccumulator accumulator) =>
+        SetPrivateField(
+            accumulator,
+            "_oldestBatchCreatedTicks",
+            Stopwatch.GetTimestamp() - 10 * Stopwatch.Frequency);
+
+    private static ValueTask<bool> AppendNullRecordAsync(
+        RecordAccumulator accumulator,
+        int partition = 0) =>
         accumulator.AppendAsync(
             "test-topic",
-            partition: 0,
+            partition,
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             PooledMemory.Null,
             PooledMemory.Null,
