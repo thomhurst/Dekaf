@@ -12,11 +12,7 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal sealed class ProducerRoundTripStressTest : IStressTestScenario
 {
-    private readonly bool _steadyState;
-
-    public ProducerRoundTripStressTest(bool steadyState = false) => _steadyState = steadyState;
-
-    public string Name => _steadyState ? "producer-roundtrip-steady" : "producer-roundtrip";
+    public string Name => "producer-roundtrip-steady";
     public string Client => "Dekaf";
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
@@ -100,12 +96,13 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
         {
             produceTimeout.CancelAfter(RoundTripScenarioHelpers.GetTimeout(options));
 
-            Console.WriteLine(RoundTripScenarioHelpers.GetProduceDescription(options, _steadyState, "Dekaf"));
-            for (var ordinal = 0;
+            Console.WriteLine(RoundTripScenarioHelpers.GetProduceDescription(options, "Dekaf"));
+            var estimatedLogBytes = 0L;
+            int ordinal;
+            for (ordinal = 0;
                  !RoundTripScenarioHelpers.HasReachedProduceLimit(
                      options,
-                     _steadyState,
-                     ordinal,
+                     estimatedLogBytes,
                      produceTimer.Elapsed);
                  ordinal++)
             {
@@ -120,6 +117,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
                 }
 
                 var message = factory.Create(ordinal % options.Partitions);
+                estimatedLogBytes += RoundTripScenarioHelpers.EstimateLogBytes(message);
                 try
                 {
                     await producer.FireAsync(options.Topic, message.Key, message.Value).ConfigureAwait(false);
@@ -134,12 +132,12 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
                 {
                     RoundTripScenarioHelpers.LogProduceProgress(
                         options,
-                        _steadyState,
                         ordinal + 1,
                         produceTimer.Elapsed);
                 }
             }
 
+            RoundTripScenarioHelpers.LogProduceWindowEnd(options, ordinal, estimatedLogBytes, produceTimer.Elapsed);
             await StressTestHelpers.FlushWithTimeoutAsync(producer, throughput).ConfigureAwait(false);
         }
 
@@ -209,8 +207,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
                 produceTimer.Elapsed,
                 validation.ConsumedMessages,
                 consumeTimer.Elapsed),
-            producerDiagnostics,
-            isMessageBounded: !_steadyState);
+            producerDiagnostics);
     }
 
     internal static DekafDeliveryErrorListener CreateDeliveryErrorListener(
@@ -280,11 +277,7 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
 
 internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 {
-    private readonly bool _steadyState;
-
-    public ConfluentProducerRoundTripStressTest(bool steadyState = false) => _steadyState = steadyState;
-
-    public string Name => _steadyState ? "producer-roundtrip-steady" : "producer-roundtrip";
+    public string Name => "producer-roundtrip-steady";
     public string Client => "Confluent";
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
@@ -357,12 +350,13 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
         // every message, CPU the Dekaf side (error-only MeterListener) never pays — the same
         // skew the acks-all scenario avoids (see ConfluentStressTestHelpers). Lost messages
         // still fail the run via the consume-side completion tracker + CRC validation.
-        Console.WriteLine(RoundTripScenarioHelpers.GetProduceDescription(options, _steadyState, "Confluent.Kafka"));
-        for (var ordinal = 0;
+        Console.WriteLine(RoundTripScenarioHelpers.GetProduceDescription(options, "Confluent.Kafka"));
+        var estimatedLogBytes = 0L;
+        int ordinal;
+        for (ordinal = 0;
              !RoundTripScenarioHelpers.HasReachedProduceLimit(
                  options,
-                 _steadyState,
-                 ordinal,
+                 estimatedLogBytes,
                  produceTimer.Elapsed);
              ordinal++)
         {
@@ -377,6 +371,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             }
 
             var message = factory.Create(ordinal % options.Partitions);
+            estimatedLogBytes += RoundTripScenarioHelpers.EstimateLogBytes(message);
             try
             {
                 ConfluentStressTestHelpers.ProduceWithBackpressure(
@@ -410,13 +405,13 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
             {
                 RoundTripScenarioHelpers.LogProduceProgress(
                     options,
-                    _steadyState,
                     ordinal + 1,
                     produceTimer.Elapsed);
                 await Task.Yield();
             }
         }
 
+        RoundTripScenarioHelpers.LogProduceWindowEnd(options, ordinal, estimatedLogBytes, produceTimer.Elapsed);
         ConfluentStressTestHelpers.FlushWithTimeout(producer, throughput);
         produceTimer.Stop();
         await sampler.StopAsync().ConfigureAwait(false);
@@ -459,8 +454,7 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
                 produceTimer.Elapsed,
                 validation.ConsumedMessages,
                 consumeTimer.Elapsed),
-            producerDeliveryDiagnostics: null,
-            isMessageBounded: !_steadyState);
+            producerDeliveryDiagnostics: null);
     }
 
     private static bool ConsumeAndValidate(
@@ -519,42 +513,60 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 
 internal static class RoundTripScenarioHelpers
 {
+    // Upper-bound estimate of what one record costs in broker log-dir bytes beyond its
+    // key and value: record framing varints, timestamp/offset deltas, batch header
+    // amortization, index entries, and producer snapshots. Measured on the CI broker
+    // (run 29536760536: 33.1M records with 128-byte payloads and ~40-byte keys filled
+    // ~6.0 GB): ~12 bytes/record beyond key+value. 32 deliberately overestimates so the
+    // real log stays under the budget.
+    private const int EstimatedPerRecordLogOverheadBytes = 32;
+
     public static void ValidateOptions(StressTestOptions options)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(options.RoundTripMessages, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.RoundTripSteadySeconds, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.RoundTripSteadyMaxLogBytes, 1L);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MessageSizeBytes, RoundTripMessageCodec.MinimumPayloadSize);
     }
 
+    public static long EstimateLogBytes(RoundTripMessage message) =>
+        message.Key.Length + message.Value.Length + EstimatedPerRecordLogOverheadBytes;
+
+    // The round-trip topic disables retention so validation can consume every produced
+    // byte, which means the broker log dir must hold the whole produce phase. The byte
+    // budget bounds that: the phase ends at the configured duration or the budget,
+    // whichever comes first, so a fast producer cannot fill the broker's tmpfs.
     public static bool HasReachedProduceLimit(
         StressTestOptions options,
-        bool steadyState,
-        long messagesProduced,
+        long estimatedLogBytes,
         TimeSpan elapsed) =>
-        steadyState
-            ? elapsed >= TimeSpan.FromSeconds(options.RoundTripSteadySeconds)
-            : messagesProduced >= options.RoundTripMessages;
+        elapsed >= TimeSpan.FromSeconds(options.RoundTripSteadySeconds)
+        || estimatedLogBytes >= options.RoundTripSteadyMaxLogBytes;
 
-    public static string GetProduceDescription(StressTestOptions options, bool steadyState, string client) =>
-        steadyState
-            ? $"  Producing sequenced messages with {client} for {options.RoundTripSteadySeconds:N0}s..."
-            : $"  Producing {options.RoundTripMessages:N0} sequenced messages with {client}...";
+    public static string GetProduceDescription(StressTestOptions options, string client) =>
+        $"  Producing sequenced messages with {client} for up to {options.RoundTripSteadySeconds:N0}s " +
+        $"(log budget {MarkdownReporter.FormatDiagnosticBytes(options.RoundTripSteadyMaxLogBytes)})...";
 
     public static void LogProduceProgress(
         StressTestOptions options,
-        bool steadyState,
         long messagesProduced,
+        TimeSpan elapsed) =>
+        Console.WriteLine(
+            $"  Produced {messagesProduced:N0}; elapsed {elapsed.TotalSeconds:N1}s / " +
+            $"{options.RoundTripSteadySeconds:N0}s");
+
+    public static void LogProduceWindowEnd(
+        StressTestOptions options,
+        long messagesProduced,
+        long estimatedLogBytes,
         TimeSpan elapsed)
     {
-        if (steadyState)
+        if (estimatedLogBytes >= options.RoundTripSteadyMaxLogBytes)
         {
             Console.WriteLine(
-                $"  Produced {messagesProduced:N0}; elapsed {elapsed.TotalSeconds:N1}s / " +
-                $"{options.RoundTripSteadySeconds:N0}s");
-            return;
+                $"  Log budget ({MarkdownReporter.FormatDiagnosticBytes(options.RoundTripSteadyMaxLogBytes)} estimated) " +
+                $"ended the produce window after {elapsed.TotalSeconds:N1}s / {options.RoundTripSteadySeconds:N0}s " +
+                $"at {messagesProduced:N0} messages.");
         }
-
-        Console.WriteLine($"  Produced {messagesProduced:N0} / {options.RoundTripMessages:N0}");
     }
 
     public static TimeSpan GetTimeout(StressTestOptions options) =>
@@ -661,8 +673,7 @@ internal static class RoundTripScenarioHelpers
         long delivered,
         RoundTripValidationSnapshot validation,
         RoundTripPhaseSnapshot phases,
-        ProducerDeliveryDiagnosticsSnapshot? producerDeliveryDiagnostics,
-        bool isMessageBounded = true) =>
+        ProducerDeliveryDiagnosticsSnapshot? producerDeliveryDiagnostics) =>
         new()
         {
             Scenario = scenario,
@@ -677,10 +688,9 @@ internal static class RoundTripScenarioHelpers
             Latency = null,
             GcStats = gcStats.ToSnapshot(),
             CpuTimeSeconds = throughput.CpuTimeSeconds,
-            IsMessageBounded = isMessageBounded,
             RoundTripValidation = validation,
             RoundTripPhases = phases,
-            RoundTripSteadySeconds = isMessageBounded ? null : options.RoundTripSteadySeconds,
+            RoundTripSteadySeconds = options.RoundTripSteadySeconds,
             ProducerDeliveryDiagnostics = producerDeliveryDiagnostics
         };
 

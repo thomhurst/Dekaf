@@ -12,7 +12,6 @@ SCENARIO_TITLES = {
     'producer-async': 'Producer (Async)',
     'producer-async-idempotent': 'Producer (Async, Idempotent)',
     'producer-transactional': 'Producer (Transactional EOS)',
-    'producer-roundtrip': 'Producer → Consumer Round-Trip',
     'producer-roundtrip-steady': 'Producer → Consumer Round-Trip Steady State',
     'consumer': 'Consumer',
     'consumer-batch': 'Consumer (Batch)',

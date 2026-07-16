@@ -103,7 +103,6 @@ public sealed class IntraRunThroughputReportingTests
     }
 
     [Test]
-    [Arguments("message-bounded")]
     [Arguments("zero-elapsed")]
     [Arguments("too-few-samples")]
     [Arguments("zero-baseline")]
@@ -111,7 +110,6 @@ public sealed class IntraRunThroughputReportingTests
     {
         var result = guard switch
         {
-            "message-bounded" => CreateResult([100, 90, 80], isMessageBounded: true),
             "zero-elapsed" => CreateResult([100, 90, 80], elapsedSeconds: 0),
             "too-few-samples" => CreateResult([100, 90]),
             "zero-baseline" => CreateResult([0, 0, 100, 90, 80, 70]),
@@ -127,8 +125,7 @@ public sealed class IntraRunThroughputReportingTests
     private static StressTestResult CreateResult(
         List<double> samples,
         double elapsedSeconds = 12,
-        double sampledElapsedSeconds = 12,
-        bool isMessageBounded = false)
+        double sampledElapsedSeconds = 12)
     {
         var now = DateTime.UtcNow;
         return new StressTestResult
@@ -139,7 +136,6 @@ public sealed class IntraRunThroughputReportingTests
             MessageSizeBytes = 1000,
             StartedAtUtc = now,
             CompletedAtUtc = now.AddMinutes(15),
-            IsMessageBounded = isMessageBounded,
             Throughput = new ThroughputSnapshot
             {
                 TotalMessages = 12_000,

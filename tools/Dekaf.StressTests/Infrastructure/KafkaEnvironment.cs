@@ -105,6 +105,43 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     private static readonly string? BrokerCpuset = Environment.GetEnvironmentVariable("STRESS_BROKER_CPUSET");
     private static readonly string? BrokerTmpfsSize = Environment.GetEnvironmentVariable("STRESS_BROKER_TMPFS");
     private const string KafkaLogDir = "/var/lib/kafka/data";
+    private const string KafkaTopicsScript = "/opt/kafka/bin/kafka-topics.sh";
+    private const string ClusterInternalBootstrap = "kafka-1:9092";
+
+    /// <summary>
+    /// The broker log-dir tmpfs size declared via STRESS_BROKER_TMPFS, in bytes, or null
+    /// when unset or unparseable (local runs on Docker's default storage). The steady
+    /// round-trip log budget derives from this so the workflow's tmpfs sizing stays the
+    /// single source of truth for how much unretained data a scenario may leave behind.
+    /// </summary>
+    internal static long? BrokerTmpfsSizeBytes { get; } = ParseByteSize(BrokerTmpfsSize);
+
+    // Accepts the docker tmpfs size grammar the workflow uses: bare bytes or a k/m/g
+    // (or b) suffix, case-insensitive, e.g. "6g" or "512m".
+    internal static long? ParseByteSize(string? value)
+    {
+        var trimmed = value?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return null;
+        }
+
+        var multiplier = char.ToLowerInvariant(trimmed[^1]) switch
+        {
+            'k' => 1024L,
+            'm' => 1024L * 1024,
+            'g' => 1024L * 1024 * 1024,
+            'b' => 1L,
+            _ => 0L
+        };
+        var digits = multiplier == 0 ? trimmed : trimmed[..^1];
+        if (multiplier == 0)
+        {
+            multiplier = 1;
+        }
+
+        return long.TryParse(digits, out var number) && number > 0 ? number * multiplier : null;
+    }
 
     public string BootstrapServers { get; }
     private readonly KafkaContainer? _container;
@@ -351,7 +388,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
 
         if (_clusterContainers is { Count: > 0 })
         {
-            await ExecCreateTopicAsync(_clusterContainers[0], "/opt/kafka/bin/kafka-topics.sh", "kafka-1:9092",
+            await ExecCreateTopicAsync(_clusterContainers[0], KafkaTopicsScript, ClusterInternalBootstrap,
                 topic, partitions, replicationFactor, configs).ConfigureAwait(false);
             return;
         }
@@ -359,15 +396,65 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         await AdminCreateTopicAsync(BootstrapServers, topic, partitions, replicationFactor, configs).ConfigureAwait(false);
     }
 
-    private static async Task AdminCreateTopicAsync(
-        string bootstrapServers, string topic, int partitions, int replicationFactor,
-        IReadOnlyDictionary<string, string>? configs)
+    public async Task DeleteTopicAsync(string topic)
     {
-        await using var adminClient = Kafka.CreateAdminClient()
+        if (_container is null && _clusterContainers is { Count: > 0 })
+        {
+            await ExecDeleteTopicAsync(_clusterContainers[0], KafkaTopicsScript, ClusterInternalBootstrap, topic)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        await AdminDeleteTopicAsync(BootstrapServers, topic).ConfigureAwait(false);
+    }
+
+    private static async Task AdminDeleteTopicAsync(string bootstrapServers, string topic)
+    {
+        await using var adminClient = CreateAdminClient(bootstrapServers);
+
+        try
+        {
+            await adminClient.DeleteTopicsAsync([topic]).ConfigureAwait(false);
+            Console.WriteLine($"Deleted topic via Dekaf admin API: {topic}");
+        }
+        catch (Dekaf.Errors.KafkaException ex) when (ex.ErrorCode == Dekaf.Protocol.ErrorCode.UnknownTopicOrPartition)
+        {
+            Console.WriteLine($"Topic {topic} already deleted");
+        }
+    }
+
+    private static async Task ExecDeleteTopicAsync(
+        IContainer container, string executablePath, string bootstrapServer, string topic)
+    {
+        var result = await container.ExecAsync([
+            executablePath,
+            "--bootstrap-server", bootstrapServer,
+            "--delete",
+            "--topic", topic,
+            "--if-exists"
+        ]).ConfigureAwait(false);
+
+        if (result.ExitCode != 0)
+        {
+            Console.WriteLine($"Warning: Topic deletion returned exit code {result.ExitCode}: {result.Stderr}");
+            return;
+        }
+
+        Console.WriteLine($"Deleted topic: {topic}");
+    }
+
+    private static IAdminClient CreateAdminClient(string bootstrapServers) =>
+        Kafka.CreateAdminClient()
             .WithLoggerFactory(StressClientLogging.LoggerFactory)
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("stress-test-admin")
             .Build();
+
+    private static async Task AdminCreateTopicAsync(
+        string bootstrapServers, string topic, int partitions, int replicationFactor,
+        IReadOnlyDictionary<string, string>? configs)
+    {
+        await using var adminClient = CreateAdminClient(bootstrapServers);
 
         try
         {

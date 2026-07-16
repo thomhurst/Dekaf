@@ -19,13 +19,12 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
 ///   --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
 ///   --consumer-fetch-diagnostics  Capture Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead)
-///   --roundtrip-messages &lt;count&gt;  Bounded message count for producer-roundtrip (default: 250000)
 ///   --roundtrip-steady-seconds &lt;seconds&gt;  Measured producer duration for producer-roundtrip-steady (default: 60)
 ///   report --input &lt;path&gt;   Generate report from existing results
 ///   fault [options]          Run fault-injection correctness suite
@@ -147,7 +146,6 @@ public static class Program
         var producerTopic = $"stress-producer-{Guid.NewGuid():N}";
         var consumerTopic = $"stress-consumer-{Guid.NewGuid():N}";
         var transactionalTopics = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var roundTripTopic = $"stress-roundtrip-{Guid.NewGuid():N}";
 
         var replicationFactor = Math.Min(options.Brokers, 3);
         var replayTopicConfigs = new Dictionary<string, string>
@@ -180,18 +178,6 @@ public static class Program
             replicationFactor,
             replayTopicConfigs).ConfigureAwait(false);
 
-        if (IsRoundTripScenario(options.Scenario) || options.Scenario == "all")
-        {
-            // Round-trip validation must consume every produced byte. Keep this topic
-            // retention-free; the cold lane is message-bounded and the steady lane uses
-            // a compact payload plus a bounded measurement window to cap disk use.
-            await kafka.CreateTopicAsync(roundTripTopic, options.Partitions, replicationFactor, new Dictionary<string, string>
-            {
-                ["retention.ms"] = "-1",
-                ["retention.bytes"] = "-1"
-            }).ConfigureAwait(false);
-        }
-
         if (options.Scenario is "consumer" or "consumer-batch" or "consumer-raw" or "consumer-raw-batch" or "all")
         {
             await SeedConsumerTopicAsync(kafka.BootstrapServers, consumerTopic, options).ConfigureAwait(false);
@@ -200,6 +186,7 @@ public static class Program
         var results = new List<StressTestResult>();
         var runStartedAt = DateTime.UtcNow;
 
+        // Round-trip scenarios get a fresh per-run topic from RunScenarioAsync instead.
         string ResolveScenarioTopic(IStressTestScenario scenario)
         {
             if (scenario.Name.Equals("producer-transactional", StringComparison.OrdinalIgnoreCase))
@@ -210,18 +197,23 @@ public static class Program
                         $"Transactional topic was not created for {scenario.Client}.");
             }
 
-            if (IsRoundTripScenario(scenario.Name))
-                return roundTripTopic;
-
             return UsesProducerTopic(scenario.Name)
                 ? producerTopic
                 : consumerTopic;
         }
 
-        StressTestOptions BuildTestOptions(IStressTestScenario scenario, int connectionsPerBroker) => new()
+        // The steady round-trip produce phase must fit the broker log dir because its
+        // topic disables retention. Budget two-thirds of the CI-declared tmpfs, leaving
+        // headroom for estimate error, warmup records, and internal topics; local runs
+        // without STRESS_BROKER_TMPFS use the conservative default.
+        var roundTripSteadyMaxLogBytes = KafkaEnvironment.BrokerTmpfsSizeBytes is { } tmpfsBytes
+            ? tmpfsBytes * 2 / 3
+            : StressTestOptions.DefaultRoundTripSteadyMaxLogBytes;
+
+        StressTestOptions BuildTestOptions(IStressTestScenario scenario, int connectionsPerBroker, string topic) => new()
         {
             BootstrapServers = kafka.BootstrapServers,
-            Topic = ResolveScenarioTopic(scenario),
+            Topic = topic,
             DurationMinutes = options.DurationMinutes,
             MessageSizeBytes = options.MessageSizeBytes,
             Partitions = options.Partitions,
@@ -231,8 +223,8 @@ public static class Program
             Compression = options.Compression,
             BrokerCount = options.Brokers,
             ConnectionsPerBroker = connectionsPerBroker,
-            RoundTripMessages = options.RoundTripMessages,
             RoundTripSteadySeconds = options.RoundTripSteadySeconds,
+            RoundTripSteadyMaxLogBytes = roundTripSteadyMaxLogBytes,
             EnableProducerDeliveryDiagnostics = options.EnableProducerDeliveryDiagnostics,
             EnableConsumerFetchDiagnostics = options.EnableConsumerFetchDiagnostics,
             ProgressWatchdog = progressWatchdog,
@@ -249,6 +241,46 @@ public static class Program
             }
         };
 
+        async Task<StressTestResult> RunScenarioAsync(IStressTestScenario scenario, int connectionsPerBroker)
+        {
+            if (!IsRoundTripScenario(scenario.Name))
+            {
+                return await scenario.RunAsync(
+                    BuildTestOptions(scenario, connectionsPerBroker, ResolveScenarioTopic(scenario)),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            // Round-trip validation must consume every produced byte, so this topic
+            // disables retention. The scenario's log-byte budget bounds what lands on
+            // disk, and deleting the topic afterwards returns that space before the
+            // next client's phase.
+            var roundTripTopic = $"stress-roundtrip-{scenario.Client.ToLowerInvariant()}-{Guid.NewGuid():N}";
+            await kafka.CreateTopicAsync(roundTripTopic, options.Partitions, replicationFactor, replayTopicConfigs)
+                .ConfigureAwait(false);
+
+            try
+            {
+                return await scenario.RunAsync(
+                    BuildTestOptions(scenario, connectionsPerBroker, roundTripTopic),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                try
+                {
+                    await kafka.DeleteTopicAsync(roundTripTopic).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // A leaked retention-free topic leaves its data on the broker's
+                    // fixed-size log dir, so a later round-trip phase may hit its log
+                    // budget against less free space. Warn loudly but keep the run:
+                    // the remaining scenarios are still valid.
+                    Console.WriteLine($"Warning: failed to delete round-trip topic {roundTripTopic}: {ex.Message}");
+                }
+            }
+        }
+
         if (options.ConnectionsPerBroker == 1)
         {
             // Baseline pass: single connection for fair comparison with Confluent. The
@@ -260,9 +292,7 @@ public static class Program
                 Console.WriteLine();
                 Console.WriteLine($"=== Running: {scenario.Client} {scenario.Name} ===");
 
-                var result = await scenario.RunAsync(
-                    BuildTestOptions(scenario, connectionsPerBroker: 1),
-                    CancellationToken.None).ConfigureAwait(false);
+                var result = await RunScenarioAsync(scenario, connectionsPerBroker: 1).ConfigureAwait(false);
                 results.Add(result);
 
                 GC.Collect();
@@ -286,9 +316,7 @@ public static class Program
                 Console.WriteLine();
                 Console.WriteLine($"=== Running: {scenario.Client} {scenario.Name}{connectionLabel} ===");
 
-                var result = await scenario.RunAsync(
-                    BuildTestOptions(scenario, connectionsPerBroker),
-                    CancellationToken.None).ConfigureAwait(false);
+                var result = await RunScenarioAsync(scenario, connectionsPerBroker).ConfigureAwait(false);
                 if (connectionsPerBroker > 1)
                     result.Client = $"Dekaf ({connectionsPerBroker}conn)";
                 results.Add(result);
@@ -486,7 +514,7 @@ public static class Program
             if (StressRunCompletionPolicy.EndedEarly(
                     result.Throughput.ElapsedSeconds,
                     result.DurationMinutes,
-                    isMessageBounded: result.IsMessageBounded))
+                    isSelfBounded: result.RoundTripSteadySeconds is not null))
             {
                 var expectedSeconds = result.DurationMinutes * 60;
                 reasons.Add(
@@ -791,8 +819,6 @@ public static class Program
             new ConfluentTransactionalProducerStressTest(),
             new ProducerRoundTripStressTest(),
             new ConfluentProducerRoundTripStressTest(),
-            new ProducerRoundTripStressTest(steadyState: true),
-            new ConfluentProducerRoundTripStressTest(steadyState: true),
             new ConsumerStressTest(),
             new ConsumerBatchStressTest(),
             new ConsumerRawStressTest(),
@@ -933,13 +959,6 @@ public static class Program
                         throw new ArgumentException("--seed-messages must be at least 1");
                     }
                     break;
-                case "--roundtrip-messages":
-                    options.RoundTripMessages = int.Parse(args[++i]);
-                    if (options.RoundTripMessages < 1)
-                    {
-                        throw new ArgumentException("--roundtrip-messages must be at least 1");
-                    }
-                    break;
                 case "--roundtrip-steady-seconds":
                     options.RoundTripSteadySeconds = ParsePositiveInt(args[++i], "--roundtrip-steady-seconds");
                     break;
@@ -1048,7 +1067,7 @@ public static class Program
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, soak, all (default: all; all excludes soak)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-acks-all, producer-async, producer-async-idempotent, producer-transactional, producer-roundtrip-steady, consumer, consumer-batch, consumer-raw, consumer-raw-batch, soak, all (default: all; all excludes soak)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)
@@ -1068,7 +1087,6 @@ public static class Program
               --max-gc-heap-slope-mib-per-hour <n>      GC-heap growth limit (default: 4)
               --max-loh-slope-mib-per-hour <n>          LOH growth limit (default: 4)
               --max-throughput-decay-percent-per-hour <n> Throughput decay limit (default: 5)
-              --roundtrip-messages <count>  Bounded message count for producer-roundtrip (default: 250000)
               --roundtrip-steady-seconds <seconds>  Measured producer duration for producer-roundtrip-steady (default: 60)
               report --input <path>   Generate report from existing results
 
@@ -1115,7 +1133,6 @@ public static class Program
         public int Brokers { get; set; } = 1;
         public int ConnectionsPerBroker { get; set; } = 1;
         public int SeedMessages { get; set; } = 2_000_000;
-        public int RoundTripMessages { get; set; } = 250_000;
         public int RoundTripSteadySeconds { get; set; } = 60;
         public bool EnableProducerDeliveryDiagnostics { get; set; }
         public bool EnableConsumerFetchDiagnostics { get; set; }

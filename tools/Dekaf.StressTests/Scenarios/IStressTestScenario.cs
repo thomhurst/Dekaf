@@ -27,8 +27,21 @@ internal sealed class StressTestOptions
     public string Compression { get; init; } = "none";
     public int BrokerCount { get; init; } = 1;
     public int ConnectionsPerBroker { get; init; } = 1;
-    public int RoundTripMessages { get; init; } = 250_000;
     public int RoundTripSteadySeconds { get; init; } = 60;
+
+    /// <summary>
+    /// Fallback round-trip log budget for runs that don't declare a broker log-dir size
+    /// via STRESS_BROKER_TMPFS (Program derives the budget from that when present).
+    /// </summary>
+    public const long DefaultRoundTripSteadyMaxLogBytes = 4_000_000_000;
+
+    /// <summary>
+    /// Estimated broker log bytes at which the round-trip produce phase stops even if
+    /// <see cref="RoundTripSteadySeconds"/> has not elapsed. The round-trip topic disables
+    /// retention so validation can consume everything, so the produce phase must fit the
+    /// broker's log dir (a tmpfs in CI stress jobs; see stress-tests.yml).
+    /// </summary>
+    public long RoundTripSteadyMaxLogBytes { get; init; } = DefaultRoundTripSteadyMaxLogBytes;
     public bool EnableProducerDeliveryDiagnostics { get; init; }
 
     /// <summary>
