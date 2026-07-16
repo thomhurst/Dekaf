@@ -19,6 +19,14 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     internal const string KafkaImage = "apache/kafka:4.3.1";
     internal static ConsensusProtocol SingleBrokerConsensusProtocol { get; } = ConsensusProtocol.KRaft;
 
+    // Raw ContainerBuilder has no Kafka-aware readiness check, so "started" would
+    // otherwise mean only "container running" — brokers still forming the KRaft quorum
+    // reset incoming connections, and ready-check clients log metadata-initialization
+    // failures. RECOVERY→RUNNING is the broker-unfenced transition: the broker is
+    // registered and serving. Shared by every raw-builder broker container here.
+    internal static IWaitForContainerOS BrokerServingWaitStrategy()
+        => Wait.ForUnixContainer().UntilMessageIsLogged(".*Transitioning from RECOVERY to RUNNING.*");
+
     // Testcontainers.Kafka emits a trailing comma in KAFKA_ADVERTISED_LISTENERS
     // when no extra listener is configured. Kafka 4.2+ rejects that empty value.
     private static readonly byte[] RunWrapperScript = Encoding.UTF8.GetBytes(
@@ -244,7 +252,8 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
                 .WithEnvironment("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", Math.Min(brokerCount, 3).ToString())
                 // Explicit log dir so the optional tmpfs mount target always matches
                 .WithEnvironment("KAFKA_LOG_DIRS", KafkaLogDir)
-                .WithEnvironment("KAFKA_HEAP_OPTS", BrokerHeapOpts);
+                .WithEnvironment("KAFKA_HEAP_OPTS", BrokerHeapOpts)
+                .WithWaitStrategy(BrokerServingWaitStrategy());
 
             foreach (var (key, value) in RetentionConfig)
             {
@@ -300,6 +309,10 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
                     .WithLoggerFactory(StressClientLogging.LoggerFactory)
                     .WithBootstrapServers(bootstrapServers)
                     .WithClientId("kafka-ready-check")
+                    // Keep the probe granular: initialization blocks up to MaxBlock
+                    // (default 60s) retrying internally, but this loop supplies its own
+                    // retry cadence and per-attempt logging.
+                    .WithMaxBlock(TimeSpan.FromSeconds(5))
                     .BuildAsync();
 
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));

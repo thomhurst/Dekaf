@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Reflection;
 using Dekaf.Errors;
@@ -319,7 +320,7 @@ public class MetadataManagerTests
     }
 
     [Test]
-    public async Task InitializeAsync_DefaultRetries_LogEarlyDebugAndTerminalWarning()
+    public async Task InitializeAsync_AttemptCapped_LogEarlyDebugAndTerminalWarning()
     {
         var pool = CreateFailingConnectionPool();
         var logger = new CapturingLogger<MetadataManager>();
@@ -329,6 +330,7 @@ public class MetadataManagerTests
             new MetadataOptions
             {
                 EnableBackgroundRefresh = false,
+                MaxInitRetries = 3,
                 RetryBackoffMs = 0,
                 RetryBackoffMaxMs = 0
             },
@@ -348,6 +350,38 @@ public class MetadataManagerTests
         await Assert.That(logger.Entries.Any(entry =>
             entry.Level == LogLevel.Warning &&
             entry.Message.Contains("failed after 4 attempts", StringComparison.Ordinal))).IsTrue();
+    }
+
+    [Test]
+    public async Task InitializeAsync_DefaultRetries_TimeBounded_ThrowsKafkaTimeoutException()
+    {
+        var pool = CreateFailingConnectionPool();
+        var logger = new CapturingLogger<MetadataManager>();
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                InitTimeoutMs = 100,
+                RetryBackoffMs = 10,
+                RetryBackoffMaxMs = 20
+            },
+            logger);
+
+        var startedAt = Stopwatch.GetTimestamp();
+        var act = () => manager.InitializeAsync().AsTask();
+        var exception = await Assert.That(act).Throws<KafkaTimeoutException>();
+        var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+        // Retries until the time budget is exhausted, then surfaces a timeout
+        // carrying the last underlying failure.
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Metadata);
+        await Assert.That(exception.InnerException).IsNotNull();
+        await Assert.That(elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(100));
+        await Assert.That(logger.Entries.Any(entry =>
+            entry.Level == LogLevel.Warning &&
+            entry.Message.Contains("Metadata initialization failed after", StringComparison.Ordinal))).IsTrue();
     }
 
     [Test]
