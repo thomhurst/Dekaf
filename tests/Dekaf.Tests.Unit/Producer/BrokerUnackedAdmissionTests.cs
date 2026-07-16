@@ -18,7 +18,9 @@ public sealed class BrokerUnackedAdmissionTests
         long? capOverride,
         int deliveryLatencyTargetMs = 10,
         int maxBlockMs = 60_000,
-        int batchSize = 50) => new()
+        int batchSize = 50,
+        int connectionsPerBroker = 1,
+        Acks acks = Acks.Leader) => new()
         {
             BootstrapServers = ["localhost:9092"],
             ClientId = "test-producer",
@@ -27,9 +29,62 @@ public sealed class BrokerUnackedAdmissionTests
             LingerMs = 60_000, // No linger-driven seals: rotation on full batches only.
             MaxBlockMs = maxBlockMs,
             DeliveryLatencyTargetMs = deliveryLatencyTargetMs,
-            UnackedByteBudgetCapOverride = capOverride
+            UnackedByteBudgetCapOverride = capOverride,
+            ConnectionsPerBroker = connectionsPerBroker,
+            Acks = acks
         };
 
+    [Test]
+    public async Task ColdStartAdmission_UsesOneBatchPerConfiguredConnection()
+    {
+        const int batchSize = 1_024;
+        const int connectionsPerBroker = 3;
+        var options = CreateOptions(
+            capOverride: null,
+            batchSize: batchSize,
+            connectionsPerBroker: connectionsPerBroker);
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: (_, _) => LeaderNodeId);
+
+        var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(batchSize * connectionsPerBroker);
+    }
+
+    [Test]
+    public async Task ColdStartAdmission_ExplicitCapOverrideKeepsControllerWindow()
+    {
+        const int capOverride = 10_000;
+        var options = CreateOptions(
+            capOverride,
+            batchSize: 1_024,
+            connectionsPerBroker: 3);
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: (_, _) => LeaderNodeId);
+
+        var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(capOverride);
+    }
+
+    [Test]
+    public async Task ColdStartAdmission_AcksNoneKeepsControllerWindow()
+    {
+        const int batchSize = 1_024;
+        var options = CreateOptions(
+            capOverride: null,
+            batchSize: batchSize,
+            acks: Acks.None);
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: (_, _) => LeaderNodeId);
+
+        var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(batchSize * 16);
+    }
 
     /// <summary>
     /// Appends empty-payload records until at least one batch has been sealed (batch rotation
@@ -92,7 +147,9 @@ public sealed class BrokerUnackedAdmissionTests
     [Test]
     public async Task Seal_ChargesLeaderBudget_AndBatchExitReleases()
     {
-        var options = CreateOptions(capOverride: null);
+        // Keep enough initial controller credit to cover multiple sealed batches so this test
+        // protects cumulative accounting instead of stopping after the first cold-start seal.
+        var options = CreateOptions(capOverride: 10_000);
         var accumulator = new RecordAccumulator(options, resolveLeaderId: (_, _) => LeaderNodeId);
         var metadataManager = AccumulatorTestHelpers.CreateMetadataManager("test-topic", 1, LeaderNodeId);
 
@@ -106,7 +163,7 @@ public sealed class BrokerUnackedAdmissionTests
             await Assert.That(budget!.UnackedBytes).IsGreaterThan(0);
 
             var batches = DrainSealedBatches(accumulator, metadataManager);
-            await Assert.That(batches.Count).IsGreaterThan(0);
+            await Assert.That(batches.Count).IsGreaterThanOrEqualTo(2);
 
             var chargedBytes = batches.Sum(b => (long)b.DataSize);
             await Assert.That(budget.UnackedBytes).IsEqualTo(chargedBytes);
@@ -489,7 +546,7 @@ public sealed class BrokerUnackedAdmissionTests
     [Test]
     public async Task LeaderChange_ChargesSubsequentSeals_ToNewBrokerBudget()
     {
-        var options = CreateOptions(capOverride: null);
+        var options = CreateOptions(capOverride: 10_000);
         var currentLeader = 1;
         var accumulator = new RecordAccumulator(options, resolveLeaderId: (_, _) => currentLeader);
 
@@ -598,7 +655,7 @@ public sealed class BrokerUnackedAdmissionTests
     [Test]
     public async Task Reroute_TransfersExistingBatchCharge_ToNewBrokerBudget()
     {
-        var options = CreateOptions(capOverride: null);
+        var options = CreateOptions(capOverride: 10_000);
         var accumulator = new RecordAccumulator(options, resolveLeaderId: (_, _) => LeaderNodeId);
         var metadataManager = AccumulatorTestHelpers.CreateMetadataManager("test-topic", 1, LeaderNodeId);
 

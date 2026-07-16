@@ -5112,15 +5112,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var cap = _options.UnackedByteBudgetCapOverride
             ?? BrokerUnackedByteBudget.ComputeCap(_options.BatchSize, _options.ConnectionsPerBroker);
-        // The controller starts with enough fixed batch quanta for both open partition batches
-        // and broker flight, then searches downward for the smallest window preserving goodput.
+        var requestWaveBytes = BrokerUnackedByteBudget.ComputeColdStartBudget(
+            _options.BatchSize,
+            _options.ConnectionsPerBroker);
+        // Bound only the unsampled startup burst. The first successful acknowledgement hands
+        // admission to the controller's wider adaptive window. Explicit cap overrides retain
+        // their existing controller semantics for tests and advanced callers.
         return new BrokerUnackedByteBudget(
             _options.DeliveryLatencyTargetMs / 1000.0,
             floorBytes: 1,
             initialCapBytes: cap,
             lingerSeconds: _options.LingerMs / 1000.0,
             enableDiagnostics: _options.EnableDeliveryDiagnostics,
-            initialRequestBytes: (long)_options.BatchSize * Math.Max(1, _options.ConnectionsPerBroker));
+            initialRequestBytes: requestWaveBytes,
+            coldStartBudgetBytes: _options.UnackedByteBudgetCapOverride is null
+                && _options.Acks != Acks.None
+                ? requestWaveBytes
+                : null);
     }
 
     /// <summary>

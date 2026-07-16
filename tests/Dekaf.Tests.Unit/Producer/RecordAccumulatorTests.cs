@@ -290,7 +290,9 @@ public class RecordAccumulatorTests
             ClientId = "test-producer",
             BufferMemory = ulong.MaxValue,
             BatchSize = 1_000,
-            LingerMs = 5_000
+            LingerMs = 5_000,
+            // This test injects admission pressure explicitly after opening two partitions.
+            UnackedByteBudgetCapOverride = 10_000
         };
         await using var accumulator = new RecordAccumulator(
             options,

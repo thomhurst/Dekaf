@@ -58,6 +58,7 @@ internal sealed class BrokerUnackedByteBudget
     private const int MaxProbeDiagnosticEvents = 4_096;
 
     private readonly BrokerWindowController _controller;
+    private readonly long _floorBytes;
     private readonly long[] _requestSizeLog2Histogram = new long[HistogramBucketCount];
     private readonly long[] _requestRttMicrosLog2Histogram = new long[HistogramBucketCount];
     private readonly long[]? _admissionBlockMicrosLog2Histogram;
@@ -82,16 +83,23 @@ internal sealed class BrokerUnackedByteBudget
     private long _probeStartedTimestamp;
     private double _latencyBudgetScale = 1;
 
+    // Single-writer state. Production supplies one request wave here; the first successful
+    // acknowledgement permanently hands admission back to the adaptive window controller.
+    private long _coldStartBudgetBytes;
+    private bool _awaitingInitialAcknowledgement;
+
     public BrokerUnackedByteBudget(
         double targetSeconds,
         long floorBytes,
         long initialCapBytes,
         double lingerSeconds = 0,
         bool enableDiagnostics = false,
-        long initialRequestBytes = 0)
+        long initialRequestBytes = 0,
+        long? coldStartBudgetBytes = null)
     {
         _ = lingerSeconds;
         var floor = Math.Max(1, floorBytes);
+        _floorBytes = floor;
         var cap = Math.Max(floor, initialCapBytes);
         if (initialRequestBytes <= 0)
             initialRequestBytes = Math.Clamp(64 * 1024, floor, cap);
@@ -101,7 +109,12 @@ internal sealed class BrokerUnackedByteBudget
             floor,
             cap,
             initialRequestBytes);
-        Publish(_controller.WindowBytes, _controller.Generation);
+        if (coldStartBudgetBytes is { } coldStartBudget)
+        {
+            _coldStartBudgetBytes = Math.Clamp(coldStartBudget, floor, _controller.WindowBytes);
+            _awaitingInitialAcknowledgement = true;
+        }
+        Publish(GetPublishedBudget(_controller.WindowBytes), _controller.Generation);
 
         if (enableDiagnostics)
         {
@@ -112,7 +125,10 @@ internal sealed class BrokerUnackedByteBudget
     }
 
     internal static long ComputeCap(int batchSize, int connectionCount) =>
-        (long)Math.Max(1, batchSize) * CapBatchMultiplier * Math.Max(1, connectionCount);
+        ComputeBudget(batchSize, connectionCount, CapBatchMultiplier);
+
+    internal static long ComputeColdStartBudget(int batchSize, int connectionCount) =>
+        ComputeBudget(batchSize, connectionCount, batchMultiplier: 1);
 
     internal long UnackedBytes => Volatile.Read(ref _unackedBytes);
     internal long BudgetBytes => Volatile.Read(ref _budgetBytes);
@@ -306,10 +322,20 @@ internal sealed class BrokerUnackedByteBudget
     }
 
     public void SetCap(long capBytes, long nowTicks)
+        => SetCap(capBytes, coldStartBudgetBytes: null, nowTicks);
+
+    public void SetCap(long capBytes, long? coldStartBudgetBytes, long nowTicks)
     {
         _ = nowTicks;
         var decision = _controller.SetCap(capBytes);
-        Publish(decision.WindowBytes, decision.Generation);
+        if (_awaitingInitialAcknowledgement && coldStartBudgetBytes is { } coldStartBudget)
+        {
+            _coldStartBudgetBytes = Math.Clamp(
+                coldStartBudget,
+                _floorBytes,
+                decision.WindowBytes);
+        }
+        Publish(GetPublishedBudget(decision.WindowBytes), decision.Generation);
     }
 
     internal DeliverySnapshot SnapshotDelivery(
@@ -345,6 +371,11 @@ internal sealed class BrokerUnackedByteBudget
             sendSnapshot.AppLimited,
             sendSnapshot.AdmissionGeneration,
             nowTicks);
+        if (_awaitingInitialAcknowledgement)
+        {
+            _awaitingInitialAcknowledgement = false;
+            Publish(_controller.WindowBytes, _controller.Generation);
+        }
         RecordRequestHistograms(ackedBytes, rttTicks);
     }
 
@@ -410,7 +441,7 @@ internal sealed class BrokerUnackedByteBudget
 
     private void PublishDecision(BrokerWindowDecision decision, long nowTicks)
     {
-        Publish(decision.WindowBytes, decision.Generation);
+        Publish(GetPublishedBudget(decision.WindowBytes), decision.Generation);
         Volatile.Write(
             ref _minimumRttMicros,
             _controller.MinimumRttTicks * 1_000_000 / Stopwatch.Frequency);
@@ -431,6 +462,23 @@ internal sealed class BrokerUnackedByteBudget
     {
         Volatile.Write(ref _budgetBytes, budgetBytes);
         Volatile.Write(ref _generation, generation);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private long GetPublishedBudget(long controllerWindowBytes) =>
+        _awaitingInitialAcknowledgement
+            ? Math.Min(_coldStartBudgetBytes, controllerWindowBytes)
+            : controllerWindowBytes;
+
+    private static long ComputeBudget(
+        int batchSize,
+        int connectionCount,
+        int batchMultiplier)
+    {
+        var requestWaveBytes = (long)Math.Max(1, batchSize) * Math.Max(1, connectionCount);
+        return requestWaveBytes > long.MaxValue / batchMultiplier
+            ? long.MaxValue
+            : requestWaveBytes * batchMultiplier;
     }
 
     private void RecordProbeEvent(

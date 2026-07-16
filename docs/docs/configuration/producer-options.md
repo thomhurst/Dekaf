@@ -365,7 +365,7 @@ Soft target for per-broker queueing latency (append to broker acknowledgement):
 .WithDeliveryLatencyTarget(TimeSpan.Zero)                 // disable the bound
 ```
 
-Default: 10ms. The producer bounds each broker's unacknowledged bytes to a preferred measured bandwidth-delay-product safety horizon, capped by `target × measured ack throughput` but never below one measured bandwidth-delay product. This avoids standing queueing under sustained overload (bufferbloat) without making throughput window-limited. When a broker exceeds its budget, produce calls block exactly like `BufferMemory` exhaustion (subject to `WithMaxBlock` and cancellation). Until the first drain measurement the bound sits at its ceiling, so short-lived producers are unaffected. Raise the target if you prefer deeper buffering over latency; set `TimeSpan.Zero` to restore pre-bound behavior.
+Default: 10ms. Before a broker's first successful acknowledgement, the producer admits one configured batch per current connection. This prevents an unsampled startup burst from filling the full pipeline. The adaptive controller then starts from a wider request window and probes up and down for the smallest whole-request window that preserves acknowledged goodput without increasing controllable queueing delay. `Acks.None` keeps the normal controller window because no acknowledgement can end the startup phase. When a broker reaches its budget, produce calls block exactly like `BufferMemory` exhaustion (subject to `WithMaxBlock` and cancellation). Raise the target if you prefer deeper buffering over latency; set `TimeSpan.Zero` to disable the bound.
 
 ### WithSocketSendBufferBytes / WithSocketReceiveBufferBytes
 

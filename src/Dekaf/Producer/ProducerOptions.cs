@@ -149,6 +149,10 @@ public sealed class ProducerOptions
     /// entering a batch, so concurrent partitions cannot overshoot it. When the window is
     /// full, admission blocks like <see cref="BufferMemory"/> exhaustion (subject to
     /// <see cref="MaxBlockMs"/> and cancellation).
+    /// Before the first successful broker acknowledgement, admission is limited to one
+    /// configured batch per current connection; the adaptive window then takes over.
+    /// <see cref="Acks.None"/> keeps the normal controller window because no acknowledgement
+    /// can end the startup phase.
     /// Set to 0 to disable the bound entirely. Default: 10.
     /// </summary>
     public int DeliveryLatencyTargetMs

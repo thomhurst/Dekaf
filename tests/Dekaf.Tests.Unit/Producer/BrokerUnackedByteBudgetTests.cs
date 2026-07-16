@@ -23,6 +23,57 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task ColdStartAdmission_UsesOneRequestWaveUntilFirstAcknowledgement()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 1,
+            initialCapBytes: 10_000,
+            initialRequestBytes: 100,
+            coldStartBudgetBytes: 100);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(100);
+        await Assert.That(budget.TryReserve(100, out _)).IsTrue();
+        await Assert.That(budget.TryReserve(1, out _)).IsFalse();
+
+        var now = T0 + Seconds(0.001);
+        budget.OnAcked(
+            ackedBytes: 100,
+            budget.SnapshotDelivery(now - Seconds(0.001), appLimited: false),
+            now);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_600);
+        await Assert.That(budget.TryReserve(1_500, out _)).IsTrue();
+        budget.Release(1_600);
+    }
+
+    [Test]
+    public async Task ColdStartAdmission_TracksCurrentConnectionWidthBeforeFirstAck()
+    {
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 1,
+            initialCapBytes: 10_000,
+            initialRequestBytes: 100,
+            coldStartBudgetBytes: 100);
+
+        budget.SetCap(capBytes: 30_000, coldStartBudgetBytes: 300, nowTicks: T0);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(300);
+
+        budget.SetCap(capBytes: 10_000, coldStartBudgetBytes: 100, nowTicks: T0);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(100);
+    }
+
+    [Test]
+    public async Task ColdStartBudget_UsesSharedBatchAndConnectionFormula()
+    {
+        await Assert.That(BrokerUnackedByteBudget.ComputeColdStartBudget(1_000, 3))
+            .IsEqualTo(3_000);
+        await Assert.That(BrokerUnackedByteBudget.ComputeCap(1_000, 3))
+            .IsEqualTo(96_000);
+    }
+
+    [Test]
     public async Task TryReserve_AtomicallyEnforcesWindow()
     {
         var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);

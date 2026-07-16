@@ -3408,14 +3408,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Recomputes the written-unacked pipeline ceiling for the given routing width and
-    /// republishes the admission budget's cap in lockstep. Every path that changes
-    /// <c>_connectionCount</c> must go through this so the two ceilings never desync.
+    /// republishes the admission cap and pre-ack request wave in lockstep. Every path that
+    /// changes <c>_connectionCount</c> must go through this so the ceilings never desync.
     /// </summary>
     private void UpdateInFlightByteBudget(int connectionCount)
     {
         _totalMaxInFlightBytes = GetInFlightByteBudget(connectionCount);
         _unackedBudget?.SetCap(
             _options.UnackedByteBudgetCapOverride ?? _totalMaxInFlightBytes,
+            _options.UnackedByteBudgetCapOverride is null
+                && _options.Acks != Acks.None
+                ? BrokerUnackedByteBudget.ComputeColdStartBudget(
+                    _options.BatchSize,
+                    connectionCount)
+                : null,
             _getTimestamp());
     }
 
