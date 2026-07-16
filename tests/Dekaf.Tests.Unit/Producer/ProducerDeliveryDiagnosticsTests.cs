@@ -192,7 +192,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
         budget.Charge(600);
         var controlAnchor = Stopwatch.GetTimestamp();
         budget.CompleteAckedPass(controlAnchor);
-        var ackTimestamp = controlAnchor + Stopwatch.Frequency * 110 / 1_000;
+        var ackTimestamp = controlAnchor + Stopwatch.Frequency * 510 / 1_000;
         budget.OnAcked(
             1_000,
             budget.SnapshotDelivery(

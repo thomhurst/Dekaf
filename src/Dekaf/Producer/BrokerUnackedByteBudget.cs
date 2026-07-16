@@ -28,14 +28,15 @@ internal readonly record struct BrokerBudgetProbeEvent(
 /// <summary>
 /// Per-broker logical-byte congestion window and admission gate.
 /// <para>
-/// Every record reserves its uncompressed encoded size before entering an unsealed batch.
-/// That reservation remains owned by the batch until its terminal path. Admission,
-/// outstanding bytes, delivered bytes, goodput, and request quanta therefore use one unit.
-/// Compressed bytes remain a separate socket-pipeline concern in <see cref="BrokerSender"/>.
+/// A partition batch acquires fixed-size byte leases and records consume the credit locally.
+/// Sealing refunds unused credit and transfers the exact logical batch bytes through
+/// acknowledgement. Compressed bytes remain a separate socket-pipeline concern in
+/// <see cref="BrokerSender"/>.
 /// </para>
 /// <para>
-/// The gate is multi-writer and uses a compare/exchange reservation. The adaptive controller
-/// is single-writer: only the owning broker response loop calls <see cref="OnAcked"/>,
+/// The batch gate is multi-writer and amortizes compare/exchange reservations across many
+/// records. The adaptive controller is single-writer: only the owning broker response loop
+/// calls <see cref="OnAcked"/>,
 /// <see cref="CompleteAckedPass"/>, and <see cref="SetCap"/>. It publishes one byte limit and
 /// generation for appenders to read.
 /// </para>
