@@ -599,6 +599,70 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task DisposeAsync_WaitsForAdmissionHandoffBeforeReturningCurrentBatch()
+    {
+        var accumulator = new RecordAccumulator(
+            CreatePendingAppendTestOptions(),
+            resolveLeaderId: static (_, _) => 1);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        using var handoffEntered = new ManualResetEventSlim();
+        using var releaseHandoff = new ManualResetEventSlim();
+        var disposed = false;
+        Task<bool>? handoffTask = null;
+
+        try
+        {
+            await Assert.That(await AppendNullRecordAsync(accumulator)).IsTrue();
+            var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
+            var admissionField = partitionDeque.GetType().GetField("AdmissionInProgress")!;
+            handoffTask = RunOnDedicatedThread(() =>
+            {
+                admissionField.SetValue(partitionDeque, 1);
+                handoffEntered.Set();
+                try
+                {
+                    if (!releaseHandoff.Wait(TimeSpan.FromSeconds(5)))
+                        throw new TimeoutException("Timed out waiting to release admission handoff.");
+                }
+                finally
+                {
+                    admissionField.SetValue(partitionDeque, 0);
+                }
+
+                return true;
+            });
+
+            await WaitUntilAsync(() => handoffEntered.IsSet, TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(
+                () => IsAdmissionInProgress(accumulator, topicPartition),
+                TimeSpan.FromSeconds(5));
+
+            var disposeTask = RunOnDedicatedThread(() =>
+            {
+                accumulator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                return true;
+            });
+            await WaitUntilAsync(
+                () => GetPrivateField<int>(accumulator, "_disposed") != 0 || disposeTask.IsCompleted,
+                TimeSpan.FromSeconds(5));
+            await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+            releaseHandoff.Set();
+
+            await Assert.That(await handoffTask.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            disposed = true;
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            releaseHandoff.Set();
+            if (!disposed)
+                await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task Purge_Queue_FailsSealedQueuedBatch()
     {
         var options = new ProducerOptions
@@ -4159,6 +4223,13 @@ public class RecordAccumulatorTests
         var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
         var appendInProgressField = partitionDeque.GetType().GetField("AppendInProgress");
         return (bool)appendInProgressField!.GetValue(partitionDeque)!;
+    }
+
+    private static bool IsAdmissionInProgress(RecordAccumulator accumulator, TopicPartition topicPartition)
+    {
+        var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
+        var admissionInProgressField = partitionDeque.GetType().GetField("AdmissionInProgress");
+        return (int)admissionInProgressField!.GetValue(partitionDeque)! != 0;
     }
 
     private static void EnableThreadOwnerTrackingForPartitionLock(

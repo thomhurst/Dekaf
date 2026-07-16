@@ -172,6 +172,94 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task IdleAppLimitedTraffic_DoesNotStartCapacityProbe()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        var initialWindow = controller.WindowBytes;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+
+        for (var i = 0; i < 100; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                appLimited: true,
+                recordAdmissionBlock: false,
+                observedOutstandingBytes: 0);
+        }
+
+        await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.Steady);
+        await Assert.That(controller.WindowBytes).IsEqualTo(initialWindow);
+    }
+
+    [Test]
+    public async Task OccupancyPressure_AloneStartsCapacityProbe()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+
+        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                appLimited: true,
+                recordAdmissionBlock: false,
+                observedOutstandingBytes: controller.WindowBytes);
+        }
+
+        await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.ProbeDown);
+    }
+
+    [Test]
+    public async Task AdmissionPressure_AloneStartsCapacityProbe()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+
+        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                appLimited: true,
+                observedOutstandingBytes: 0);
+        }
+
+        await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.ProbeDown);
+    }
+
+    [Test]
+    public async Task LoadedEpoch_AloneStartsCapacityProbe()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+
+        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                recordAdmissionBlock: false,
+                observedOutstandingBytes: 0);
+        }
+
+        await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.ProbeDown);
+    }
+
+    [Test]
     public async Task PersistentQueueDelay_DoesNotBypassSettledProbeSchedule()
     {
         var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
@@ -509,6 +597,84 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task PartitionBatch_MixedLeaseGenerationsClearAdmissionGeneration()
+    {
+        var batch = new PartitionBatch(
+            new TopicPartition("topic", 0),
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                BatchSize = 1_024
+            });
+        var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
+        const int leaseBytes = 1_024;
+        await Assert.That(budget.TryReserve(leaseBytes, out var generation)).IsTrue();
+
+        batch.AddAdmissionLease(budget, generation, leaseBytes / 2);
+        batch.AddAdmissionLease(budget, generation + 1, leaseBytes / 2);
+        var append = batch.TryAppendFromSpans(
+            timestamp: 1,
+            keyData: ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            valueData: new byte[10],
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            estimatedSize: 200);
+        var ready = batch.Complete()!;
+
+        await Assert.That(append.Success).IsTrue();
+        await Assert.That(ready.AdmissionGeneration).IsEqualTo(0);
+        await Assert.That(ready.UnackedReservedBytes).IsEqualTo(ready.DataSize);
+        await Assert.That(budget.UnackedBytes).IsEqualTo(ready.DataSize);
+
+        ready.Fail(new InvalidOperationException("test cleanup"));
+        ready.Reset();
+        await Assert.That(budget.UnackedBytes).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PartitionBatch_UnderReservedTopUpClearsAdmissionGeneration()
+    {
+        var batch = new PartitionBatch(
+            new TopicPartition("topic", 0),
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                BatchSize = 1_024
+            });
+        var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
+        const int leaseBytes = 64;
+        await Assert.That(budget.TryReserve(leaseBytes, out var generation)).IsTrue();
+        batch.AddAdmissionLease(budget, generation, leaseBytes);
+
+        var append = batch.TryAppendFromSpans(
+            timestamp: 1,
+            keyData: ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            valueData: new byte[128],
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            estimatedSize: 200);
+        var ready = batch.Complete()!;
+
+        await Assert.That(append.Success).IsTrue();
+        await Assert.That(ready.DataSize).IsGreaterThan(leaseBytes);
+        await Assert.That(ready.AdmissionGeneration).IsEqualTo(0);
+        await Assert.That(ready.UnackedReservedBytes).IsEqualTo(ready.DataSize);
+        await Assert.That(budget.UnackedBytes).IsEqualTo(ready.DataSize);
+
+        ready.Fail(new InvalidOperationException("test cleanup"));
+        ready.Reset();
+        await Assert.That(budget.UnackedBytes).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task PartitionBatch_LeaderChangeTransfersExistingReservation()
     {
         var batch = new PartitionBatch(
@@ -657,20 +823,24 @@ public sealed class BrokerUnackedByteBudgetTests
         double rttSeconds = 0.001,
         long logicalBytes = 100,
         long? admissionGeneration = null,
-        double sealToSendSeconds = 0)
+        double sealToSendSeconds = 0,
+        bool appLimited = false,
+        bool recordAdmissionBlock = true,
+        long? observedOutstandingBytes = null)
     {
         now += Seconds(0.510);
-        admissionBlocks++;
+        if (recordAdmissionBlock)
+            admissionBlocks++;
         controller.RecordAcknowledgement(
             logicalBytes,
             rttTicks: Seconds(rttSeconds),
             sealToSendTicks: Seconds(sealToSendSeconds),
-            appLimited: false,
+            appLimited,
             admissionGeneration ?? controller.Generation,
             now);
         return controller.CompleteInterval(
             admissionBlocks,
-            controller.WindowBytes,
+            observedOutstandingBytes ?? controller.WindowBytes,
             now);
     }
 }
