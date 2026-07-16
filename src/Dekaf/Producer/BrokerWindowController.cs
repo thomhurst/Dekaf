@@ -89,7 +89,18 @@ internal sealed class BrokerWindowController
     private const double UpProbeMultiplier = 1.125;
     private const double DownProbeMultiplier = 0.875;
     private const double UpProbeGoodputThreshold = 1.03;
+    // When the experiment itself observed admission blocking, demand is provably clipped by
+    // the window and "not worse" goodput suffices to grow it — the +3% bar exists to stop
+    // speculative bufferbloat, not to trap an over-shrunk window: down-probes pass on noise
+    // at 0.99 while up-probes never pass on noise at 1.03, and that asymmetry compounds into
+    // a run-long throughput ratchet (observed as steady/peak 0.745 on run 29513570135).
+    // The delay-growth veto below still guards against queue-building growth.
+    private const double BlockedUpProbeGoodputThreshold = 1.00;
     private const double DownProbeGoodputThreshold = 0.99;
+    // Descent below the legacy floor must demonstrably buy latency, not merely avoid hurting
+    // goodput: sub-floor windows trade admission headroom for queueing delay, so a paired
+    // experiment that shows no delay gain has no business shrinking further.
+    private const double DeepDescentDelayGainFactor = 0.90;
     private const double DelayGrowthTolerance = 1.25;
     private const double EwmaWeight = 0.125;
 
@@ -134,6 +145,7 @@ internal sealed class BrokerWindowController
     private int _unqualifiedProbeEpochs;
     private double _probeGoodputTotal;
     private double _probeDelayTotalTicks;
+    private bool _probeSawAdmissionPressure;
 
     internal BrokerWindowController(
         double targetSeconds,
@@ -273,6 +285,8 @@ internal sealed class BrokerWindowController
         var occupancyPressure = observedOutstandingBytes
             >= _windowBytes - _windowBytes / 4;
         var demand = admissionPressure || occupancyPressure || _epochLoaded;
+        if (_phase != BrokerWindowPhase.Steady && admissionPressure)
+            _probeSawAdmissionPressure = true;
 
         _lastAdmissionBlockEvents = admissionBlockEvents;
         ResetEpoch(nowTicks);
@@ -436,13 +450,21 @@ internal sealed class BrokerWindowController
             _targetDelayTicks,
             _probeBaselineDelayTicks * DelayGrowthTolerance);
         var goodputThreshold = probingUp
-            ? UpProbeGoodputThreshold
+            ? _probeSawAdmissionPressure
+                ? BlockedUpProbeGoodputThreshold
+                : UpProbeGoodputThreshold
             : DownProbeGoodputThreshold;
+        var deepDescent = !probingUp
+            && _probeCandidateWindow < QuantaFloorBytes(MinimumPipelineQuanta);
         // Seal-to-send plus network queueing omits pre-seal admission and batch-fill time, so
         // it cannot veto a lower window. It remains a conservative guard against growing a
         // window that raises the delay component the controller can observe.
         var succeeded = treatmentGoodput >= _probeBaselineGoodput * goodputThreshold
-            && (!probingUp || treatmentDelayTicks <= delayLimit);
+            && (!probingUp || treatmentDelayTicks <= delayLimit)
+            && (!deepDescent
+                || (_probeBaselineDelayTicks > _targetDelayTicks
+                    && treatmentDelayTicks
+                        <= _probeBaselineDelayTicks * DeepDescentDelayGainFactor));
         return CompleteCapacityProbe(succeeded);
     }
 
@@ -466,9 +488,12 @@ internal sealed class BrokerWindowController
         // Continue walking in a direction while it wins. A failed treatment reverses the
         // next probe, converging on the knee instead of oscillating unconditionally.
         _probeDownNext = probingUp ? !succeeded : succeeded;
-        // A goodput-preserving descent while over the latency target earns an early retry;
-        // anything else returns to the sparse schedule.
-        _epochsUntilProbe = !probingUp && succeeded && DelayOverTarget
+        // A goodput-preserving descent earns an early retry only while the experiment's own
+        // baseline delay missed the target — the instantaneous EWMA flickers on bursts and
+        // over-accelerated the walk (run 29513570135).
+        _epochsUntilProbe = !probingUp
+            && succeeded
+            && _probeBaselineDelayTicks > _targetDelayTicks
             ? AcceleratedDescentIntervalEpochs
             : ProbeIntervalEpochs;
         _unqualifiedProbeEpochs = 0;
@@ -492,6 +517,7 @@ internal sealed class BrokerWindowController
         _probeBaselineGoodput = 0;
         _probeBaselineDelayTicks = 0;
         _probeSettleEpochsRemaining = 0;
+        _probeSawAdmissionPressure = false;
         ResetProbeEvaluation();
     }
 

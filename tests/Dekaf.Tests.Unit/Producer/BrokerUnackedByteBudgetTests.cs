@@ -108,20 +108,20 @@ public sealed class BrokerUnackedByteBudgetTests
         var admissionBlocks = 0L;
         _ = controller.CompleteInterval(admissionBlocks, 0, now);
 
-        // Sustained 50ms of controllable delay against a 10ms target biases every probe
-        // downward; each goodput-preserving descent re-probes early, so the walk reaches
-        // the two-quantum descent floor instead of parking at the legacy eight-quantum one.
+        // Controllable delay proportional to the window (12ms at the descent floor, 96ms at
+        // the optimistic window) against a 10ms target: every descent step demonstrably buys
+        // latency, so the biased walk reaches the two-quantum floor instead of parking at
+        // the legacy eight-quantum one.
         for (var i = 0; i < 2_000 && controller.WindowBytes > 200; i++)
         {
             _ = DriveControllerEpoch(
                 controller,
                 ref now,
                 ref admissionBlocks,
-                sealToSendSeconds: 0.050);
+                sealToSendSeconds: 0.00006 * controller.WindowBytes);
         }
 
         await Assert.That(controller.WindowBytes).IsEqualTo(200);
-        await Assert.That(controller.CapacityProbeFailureCount).IsEqualTo(0);
 
         // Let the experiment that reached the floor finish before pinning the schedule.
         for (var i = 0; i < 100 && controller.Phase != BrokerWindowPhase.Steady; i++)
@@ -130,7 +130,7 @@ public sealed class BrokerUnackedByteBudgetTests
                 controller,
                 ref now,
                 ref admissionBlocks,
-                sealToSendSeconds: 0.050);
+                sealToSendSeconds: 0.00006 * controller.WindowBytes);
         }
 
         // At the floor and still over target: growth is withheld, so no further experiment
@@ -142,12 +142,35 @@ public sealed class BrokerUnackedByteBudgetTests
                 controller,
                 ref now,
                 ref admissionBlocks,
-                sealToSendSeconds: 0.050);
+                sealToSendSeconds: 0.00006 * controller.WindowBytes);
         }
 
         await Assert.That(controller.WindowBytes).IsEqualTo(200);
         await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.Steady);
         await Assert.That(controller.CapacityProbeSuccessCount).IsEqualTo(successes);
+    }
+
+    [Test]
+    public async Task DeepDescent_RequiresDemonstratedDelayGain()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+
+        // Delay is over target but window-independent (a fixed 50ms): shrinking below the
+        // legacy floor cannot help, so every sub-floor experiment fails its delay-gain
+        // requirement and the window holds at the legacy floor.
+        for (var i = 0; i < 2_000; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.050);
+        }
+
+        await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(800);
     }
 
     [Test]
@@ -164,6 +187,23 @@ public sealed class BrokerUnackedByteBudgetTests
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
 
         await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(800);
+    }
+
+    [Test]
+    public async Task BlockedDemand_RecoversWindowWithoutGoodputGain()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+
+        // Flat goodput walks the window down to the legacy floor; sustained admission
+        // blocking then lets up-probes pass at "not worse" goodput, so the window recovers
+        // instead of staying trapped under the +3% growth bar it can never clear on noise.
+        for (var i = 0; i < 5_000; i++)
+            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+
+        await Assert.That(controller.WindowBytes).IsGreaterThan(1_600);
     }
 
     [Test]
@@ -562,11 +602,15 @@ public sealed class BrokerUnackedByteBudgetTests
             ref now,
             ref admissionBlocks);
 
+        // No admission blocking during the experiment: unblocked flat goodput must not buy
+        // a larger window (blocked demand relaxes this bar — see
+        // BlockedDemand_RecoversWindowWithoutGoodputGain).
         var decision = CompleteActiveProbe(
             controller,
             baselineWindow,
             ref now,
-            ref admissionBlocks);
+            ref admissionBlocks,
+            recordAdmissionBlock: false);
 
         await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
         await Assert.That(controller.WindowBytes).IsEqualTo(baselineWindow);
@@ -654,7 +698,8 @@ public sealed class BrokerUnackedByteBudgetTests
                 controller,
                 ref now,
                 ref admissionBlocks,
-                logicalBytes: 100 + epoch++);
+                logicalBytes: 100 + epoch++,
+                recordAdmissionBlock: false);
         }
 
         await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
@@ -942,7 +987,8 @@ public sealed class BrokerUnackedByteBudgetTests
         long candidateLogicalBytes = 100,
         long baselineLogicalBytes = 100,
         double candidateSealToSendSeconds = 0,
-        double baselineSealToSendSeconds = 0)
+        double baselineSealToSendSeconds = 0,
+        bool recordAdmissionBlock = true)
     {
         BrokerWindowDecision decision = default;
         for (var i = 0; i < 100 && controller.Phase != BrokerWindowPhase.Steady; i++)
@@ -955,7 +1001,8 @@ public sealed class BrokerUnackedByteBudgetTests
                 logicalBytes: candidateActive ? candidateLogicalBytes : baselineLogicalBytes,
                 sealToSendSeconds: candidateActive
                     ? candidateSealToSendSeconds
-                    : baselineSealToSendSeconds);
+                    : baselineSealToSendSeconds,
+                recordAdmissionBlock: recordAdmissionBlock);
         }
 
         if (controller.Phase != BrokerWindowPhase.Steady)
