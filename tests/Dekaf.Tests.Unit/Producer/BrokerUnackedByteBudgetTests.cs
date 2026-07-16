@@ -39,16 +39,33 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task TryReserve_AllowsOneOversizedRequestOnlyWhenEmpty()
+    public async Task TryReserve_OversizedRequestCannotStarveBehindWindowOccupancy()
     {
         var budget = CreateBudget(capBytes: 400, initialRequestBytes: 100);
 
+        await Assert.That(budget.TryReserve(400, out _)).IsTrue();
         await Assert.That(budget.TryReserve(500, out _)).IsTrue();
         await Assert.That(budget.TryReserve(1, out _)).IsFalse();
+        await Assert.That(budget.TryReserve(500, out _)).IsFalse();
+        await Assert.That(budget.UnackedBytes).IsEqualTo(900);
 
         budget.Release(500);
-        await Assert.That(budget.TryReserve(500, out _)).IsTrue();
-        budget.Release(500);
+        await Assert.That(budget.UnackedBytes).IsEqualTo(400);
+        budget.Release(400);
+    }
+
+    [Test]
+    public async Task Release_UnderflowClampsAccountingAndRecordsDiagnostic()
+    {
+        var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
+
+        await Assert.That(budget.TryReserve(100, out _)).IsTrue();
+        budget.Release(101);
+
+        await Assert.That(budget.UnackedBytes).IsEqualTo(0);
+        await Assert.That(budget.AccountingUnderflowCount).IsEqualTo(1);
+        await Assert.That(budget.TryReserve(budget.BudgetBytes, out _)).IsTrue();
+        budget.Release(budget.BudgetBytes);
     }
 
     [Test]
@@ -159,6 +176,61 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task DownProbe_RevertsSmallerWindowWhenGoodputFalls()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        var baselineWindow = controller.WindowBytes;
+
+        while (controller.Phase != BrokerWindowPhase.ProbeDown)
+            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+
+        BrokerWindowDecision decision = default;
+        for (var i = 0; i < 3; i++)
+        {
+            decision = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                logicalBytes: 50);
+        }
+
+        await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
+        await Assert.That(controller.WindowBytes).IsEqualTo(baselineWindow);
+        await Assert.That(controller.CapacityProbeFailureCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ActiveProbe_MixedGenerationsAbortAndRestoreBaseline()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        var baselineWindow = controller.WindowBytes;
+
+        while (controller.Phase != BrokerWindowPhase.ProbeDown)
+            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+
+        BrokerWindowDecision decision = default;
+        for (var i = 0; i < 4; i++)
+        {
+            decision = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                admissionGeneration: 0);
+        }
+
+        await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
+        await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.Steady);
+        await Assert.That(controller.WindowBytes).IsEqualTo(baselineWindow);
+        await Assert.That(controller.CapacityProbeFailureCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task UpProbe_RejectsWindowGrowthWithoutGoodputGrowth()
     {
         var controller = CreateController();
@@ -182,6 +254,38 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
         await Assert.That(controller.WindowBytes).IsEqualTo(baselineWindow);
         await Assert.That(controller.CapacityProbeFailureCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task UpProbe_KeepsLargerWindowWhenGoodputGrows()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+
+        while (controller.Phase != BrokerWindowPhase.ProbeDown)
+            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        for (var i = 0; i < 3; i++)
+            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+
+        while (controller.Phase != BrokerWindowPhase.ProbeUp)
+            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        var probedWindow = controller.WindowBytes;
+
+        BrokerWindowDecision decision = default;
+        for (var i = 0; i < 3; i++)
+        {
+            decision = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                logicalBytes: 120);
+        }
+
+        await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Succeeded);
+        await Assert.That(controller.WindowBytes).IsEqualTo(probedWindow);
+        await Assert.That(controller.CapacityProbeSuccessCount).IsEqualTo(2);
     }
 
     [Test]
@@ -354,16 +458,19 @@ public sealed class BrokerUnackedByteBudgetTests
         BrokerWindowController controller,
         ref long now,
         ref long admissionBlocks,
-        double rttSeconds = 0.001)
+        double rttSeconds = 0.001,
+        long logicalBytes = 100,
+        long? admissionGeneration = null,
+        double sealToSendSeconds = 0)
     {
         now += Seconds(0.510);
         admissionBlocks++;
         controller.RecordAcknowledgement(
-            logicalBytes: 100,
+            logicalBytes,
             rttTicks: Seconds(rttSeconds),
-            sealToSendTicks: 0,
+            sealToSendTicks: Seconds(sealToSendSeconds),
             appLimited: false,
-            controller.Generation,
+            admissionGeneration ?? controller.Generation,
             now);
         return controller.CompleteInterval(
             admissionBlocks,

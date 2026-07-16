@@ -75,6 +75,7 @@ internal sealed class BrokerUnackedByteBudget
     private long _deliveryLatencyEwmaMicros;
     private long _capacityProbeSuccessCount;
     private long _capacityProbeFailureCount;
+    private long _accountingUnderflowCount;
     private long _probeStartedTimestamp;
     private double _latencyBudgetScale = 1;
 
@@ -119,12 +120,15 @@ internal sealed class BrokerUnackedByteBudget
     internal long MaxRateBytesPerSecond => Volatile.Read(ref _maxRateBytesPerSecond);
     internal long CapacityProbeSuccessCount => Volatile.Read(ref _capacityProbeSuccessCount);
     internal long CapacityProbeFailureCount => Volatile.Read(ref _capacityProbeFailureCount);
+    internal long AccountingUnderflowCount => Volatile.Read(ref _accountingUnderflowCount);
     internal long DeliveryLatencyEwmaMicros => Volatile.Read(ref _deliveryLatencyEwmaMicros);
     internal double LatencyBudgetScale => Volatile.Read(ref _latencyBudgetScale);
 
     /// <summary>
-    /// Atomically reserves logical bytes. One request larger than the current window may enter
-    /// only when the window is empty, preventing permanent deadlock for a valid large record.
+    /// Atomically reserves logical bytes. One reservation larger than the current window may
+    /// exceed it alongside at most one window of existing traffic. Once admitted, its own
+    /// charge keeps every later reservation blocked until enough bytes are acknowledged. This
+    /// bounded overshoot prevents a valid large record from starving behind continuous traffic.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryReserve(long bytes, out long generation)
@@ -140,7 +144,8 @@ internal sealed class BrokerUnackedByteBudget
             var generationBefore = Volatile.Read(ref _generation);
             var used = Volatile.Read(ref _unackedBytes);
             var limit = Volatile.Read(ref _budgetBytes);
-            if (used != 0 && (used >= limit || bytes > limit - used))
+            var oversized = bytes > limit;
+            if (oversized ? used > limit : used > limit - bytes)
             {
                 generation = 0;
                 return false;
@@ -182,8 +187,19 @@ internal sealed class BrokerUnackedByteBudget
         if (bytes <= 0)
             return;
 
-        var remaining = Interlocked.Add(ref _unackedBytes, -bytes);
-        Debug.Assert(remaining >= 0, "Unacked byte accounting went negative.");
+        long remaining;
+        while (true)
+        {
+            var used = Volatile.Read(ref _unackedBytes);
+            remaining = bytes <= used ? used - bytes : 0;
+            if (Interlocked.CompareExchange(ref _unackedBytes, remaining, used) != used)
+                continue;
+
+            if (bytes > used)
+                Interlocked.Increment(ref _accountingUnderflowCount);
+            break;
+        }
+
         if (_admissionBlockMicrosLog2Histogram is not null
             && remaining < Volatile.Read(ref _budgetBytes))
         {
