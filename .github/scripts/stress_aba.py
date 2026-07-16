@@ -20,8 +20,17 @@ class Metric:
     unit: str
     higher_is_better: bool
     gated: bool = True
+    floor: bool = False
 
 
+# Steady/peak is a shape statistic: it normalizes a run's settled throughput by that same
+# run's best interval. Comparing it A-vs-B penalizes a candidate whose adaptive window
+# intentionally front-loads throughput while it settles — run 29518014693's candidate beat
+# both controls on delivered throughput yet "failed" stability solely because its own early
+# peak was higher — and its control spread has been observed near 5%, wider than the adverse
+# tolerance. It is therefore gated against the harness's own absolute steady-state floor,
+# which still rejects genuine intra-run collapse (run 29513570135's 0.745 breaches it) and
+# marks the comparison inconclusive when a control itself is unstable.
 METRICS = (
     Metric("throughput", "Delivered throughput", "msg/s", True),
     Metric("medianThroughput", "Median interval throughput", "msg/s", True),
@@ -30,10 +39,12 @@ METRICS = (
     Metric("p99", "Latency p99", "ms", False),
     Metric("cpu", "CPU", "us/msg", False),
     Metric("alloc", "Allocation", "B/msg", False),
-    Metric("stability", "Steady/peak ratio", "ratio", True),
+    Metric("stability", "Steady/peak ratio", "ratio", True, floor=True),
     Metric("max", "Latency max", "ms", False, gated=False),
     Metric("averageRequest", "Average request", "KiB", True, gated=False),
 )
+
+DEFAULT_STABILITY_FLOOR = 0.85
 
 
 def _finite_number(value):
@@ -128,6 +139,18 @@ def _delivery_mismatch(result):
     return delivered is not None and accepted is not None and delivered != accepted
 
 
+def _stability_breached(result):
+    breached = result.get("steadyStatePeakThresholdBreached")
+    if isinstance(breached, bool):
+        return breached
+
+    ratio = result.get("steadyStatePeakRatio")
+    threshold = result.get("steadyStatePeakRatioThreshold")
+    if not _finite_number(threshold):
+        threshold = DEFAULT_STABILITY_FLOOR
+    return _finite_number(ratio) and ratio < threshold
+
+
 def _metric_status(
     metric,
     baseline_a,
@@ -135,6 +158,7 @@ def _metric_status(
     baseline_a2,
     tolerance_percent,
     max_control_drift_percent,
+    floor_status=None,
 ):
     baseline_mean = (baseline_a + baseline_a2) / 2
     if baseline_mean == 0:
@@ -144,6 +168,8 @@ def _metric_status(
     control_drift_percent = 100 * abs(baseline_a2 - baseline_a) / abs(baseline_mean)
     if not metric.gated:
         status = "recorded"
+    elif metric.floor:
+        status = floor_status
     else:
         if metric.higher_is_better:
             worse_than_both = candidate < min(baseline_a, baseline_a2) * (
@@ -205,6 +231,12 @@ def compare(
     baseline_a = _measurements(baseline_a_result)
     candidate = _measurements(candidate_result)
     baseline_a2 = _measurements(baseline_a2_result)
+    if _stability_breached(candidate_result):
+        stability_status = "regression"
+    elif _stability_breached(baseline_a_result) or _stability_breached(baseline_a2_result):
+        stability_status = "inconclusive"
+    else:
+        stability_status = "pass"
     metrics = [
         _metric_status(
             metric,
@@ -213,6 +245,7 @@ def compare(
             baseline_a2[metric.key],
             tolerance_percent,
             max_control_drift_percent,
+            floor_status=stability_status if metric.floor else None,
         )
         for metric in METRICS
     ]
