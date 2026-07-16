@@ -216,6 +216,24 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task Purge_Queue_ReleasesDetachedCurrentBatchAdmissionLease()
+    {
+        var options = CreateTestOptions();
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: static (_, _) => 1);
+
+        await Assert.That(await AppendNullRecordAsync(accumulator)).IsTrue();
+
+        var budget = accumulator.GetBrokerUnackedBudget(1)!;
+        await Assert.That(budget.UnackedBytes).IsGreaterThan(0);
+
+        await Assert.That(accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()))
+            .IsEqualTo(1);
+        await Assert.That(budget.UnackedBytes).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Purge_Queue_CompleteFailure_ReleasesReservedMemory()
     {
         var options = CreateTestOptions();
@@ -3603,6 +3621,81 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task AdmissionFailure_WakesWaiterQueuedDuringLeaderResolution()
+    {
+        var pool = new PendingAppendPool(1);
+        RecordAccumulator? accumulator = null;
+        ConcurrentQueue<PendingAppend>? queue = null;
+        Task<bool>? pendingResult = null;
+        var resolverCalls = 0;
+
+        int ResolveLeaderId(string _, int partition)
+        {
+            if (Interlocked.Increment(ref resolverCalls) != 1)
+                return 1;
+
+            var pending = CreatePendingAppend(accumulator!, pool, partition);
+            pendingResult = new ValueTask<bool>(
+                (IValueTaskSource<bool>)pending,
+                pending.Version).AsTask();
+            queue!.Enqueue(pending);
+            throw new InvalidOperationException("leader resolution failed");
+        }
+
+        accumulator = new RecordAccumulator(
+            CreatePendingAppendTestOptions(),
+            resolveLeaderId: ResolveLeaderId);
+        queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
+
+        try
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await AppendNullRecordAsync(accumulator));
+
+            await Assert.That(exception!.Message).IsEqualTo("leader resolution failed");
+            await Assert.That(await pendingResult!.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task AdmissionDisabled_DoesNotEnterPerPartitionCasGate()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1_000,
+            LingerMs = 10,
+            DeliveryLatencyTargetMs = 0
+        };
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: static (_, _) => 1);
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        await Assert.That(await AppendNullRecordAsync(accumulator)).IsTrue();
+
+        var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
+        var admissionField = partitionDeque.GetType().GetField("AdmissionInProgress")!;
+        admissionField.SetValue(partitionDeque, 1);
+        try
+        {
+            var appendTask = Task.Run(() => AppendNullRecordAsync(accumulator).AsTask());
+
+            await Assert.That(await appendTask.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+        }
+        finally
+        {
+            admissionField.SetValue(partitionDeque, 0);
+        }
+    }
+
+    [Test]
     public async Task DrainPendingAppends_CompetingWake_RescansReleasedBudget()
     {
         using var secondPartitionResolverEntered = new ManualResetEventSlim();
@@ -3629,8 +3722,10 @@ public class RecordAccumulatorTests
         var queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
         var firstBudget = accumulator.GetBrokerUnackedBudget(0)!;
         var secondBudget = accumulator.GetBrokerUnackedBudget(1)!;
-        var firstCharge = firstBudget.BudgetBytes;
-        var secondCharge = secondBudget.BudgetBytes;
+        // Oversized records may make one bounded admission while occupancy is within the
+        // window. Charge one byte beyond it so this test isolates competing drain wakeups.
+        var firstCharge = firstBudget.BudgetBytes + 1;
+        var secondCharge = secondBudget.BudgetBytes + 1;
         firstBudget.Charge(firstCharge);
         secondBudget.Charge(secondCharge);
         queue.Enqueue(first);
@@ -3984,16 +4079,29 @@ public class RecordAccumulatorTests
         return op;
     }
 
+    private static ValueTask<bool> AppendNullRecordAsync(RecordAccumulator accumulator) =>
+        accumulator.AppendAsync(
+            "test-topic",
+            partition: 0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null,
+            PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            CancellationToken.None);
+
     private static ProducerOptions CreatePendingAppendTestOptions(
         long? unackedByteBudgetCapOverride = null) => new()
-    {
-        BootstrapServers = new[] { "localhost:9092" },
-        BufferMemory = 4096,
-        BatchSize = 4096,
-        LingerMs = 10,
-        MaxBlockMs = 30000,
-        UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride
-    };
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            BufferMemory = 4096,
+            BatchSize = 4096,
+            LingerMs = 10,
+            MaxBlockMs = 30000,
+            UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride
+        };
 
     private static void InvokePendingAppendTimeout(PendingAppend op)
     {

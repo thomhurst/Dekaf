@@ -5118,6 +5118,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return false;
         }
 
+        // With admission disabled, preserve FIFO and BufferMemory semantics without paying
+        // for the per-partition admission CAS on every producer hot-path append.
+        if (!_unackedBudgetEnabled)
+            return TryReserveMemory(recordSize);
+
         // Serialize the short admission-to-append handoff for this partition. Without this
         // slot, another appender or linger seal could rotate the batch after the lease decision
         // and force an append into a new batch without owning its capacity.
@@ -5143,9 +5148,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         BrokerUnackedByteBudget? blockedBudget = null;
         try
         {
-            if (_unackedBudgetEnabled)
+            using (var guard = new SpinLockGuard(ref partitionDeque.Lock))
             {
-                using var guard = new SpinLockGuard(ref partitionDeque.Lock);
                 var currentBatch = partitionDeque.CurrentBatch;
                 var budget = GetCachedAdmissionBudget(partitionDeque, topic, partition);
                 if (NeedsAdmissionLease(currentBatch, budget, recordSize))
@@ -5214,6 +5218,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (reservedBudget is not null && leaseBytes > 0)
                 reservedBudget.Release(leaseBytes);
             Volatile.Write(ref partitionDeque.AdmissionInProgress, 0);
+            try
+            {
+                if (Volatile.Read(ref partitionDeque.SlowPathAppendCount) != 0)
+                    DrainPendingAppends();
+            }
+            catch
+            {
+                // Preserve the original admission failure; a sender wake supplies another
+                // drain opportunity if the immediate recovery scan also failed.
+                SignalWakeup();
+            }
             throw;
         }
     }
@@ -5919,6 +5934,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     ReleaseMemory(bytesToRelease);
                 if (readyBatch is not null)
                 {
+                    // This detached open batch never entered the in-flight list, so normal
+                    // pipeline cleanup cannot own its admission charge.
+                    ReleaseUntrackedBudget(readyBatch);
                     readyBatches ??= new List<ReadyBatch>();
                     readyBatches.Add(readyBatch);
                 }
