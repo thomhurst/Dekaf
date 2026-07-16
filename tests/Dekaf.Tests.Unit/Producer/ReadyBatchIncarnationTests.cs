@@ -169,7 +169,8 @@ public sealed class ReadyBatchIncarnationTests
         var timestamp = Stopwatch.GetTimestamp();
         var pending = Activator.CreateInstance(
             PendingResponseType,
-            responseTask, batches, generations, 1, (long)batch.EncodedSize, timestamp,
+            responseTask, batches, generations, 1,
+            (long)batch.EncodedSize, (long)batch.DataSize, timestamp,
             default(BrokerUnackedByteBudget.DeliverySnapshot))!;
         var isSameIncarnation = PendingResponseType.GetMethod("IsSameIncarnation")!;
 

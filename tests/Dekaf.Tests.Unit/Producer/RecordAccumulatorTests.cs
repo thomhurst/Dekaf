@@ -216,6 +216,143 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task Purge_Queue_ReleasesDetachedCurrentBatchAdmissionLease()
+    {
+        var options = CreateTestOptions();
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: static (_, _) => 1);
+
+        await Assert.That(await AppendNullRecordAsync(accumulator)).IsTrue();
+
+        var budget = accumulator.GetBrokerUnackedBudget(1)!;
+        await Assert.That(budget.UnackedBytes).IsGreaterThan(0);
+
+        await Assert.That(accumulator.Purge(PurgeOptions.Queue, CreatePurgedException()))
+            .IsEqualTo(1);
+        await Assert.That(budget.UnackedBytes).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PipelineBudgetCount_FollowsBatchRerouteAndExit()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1_000,
+            LingerMs = 0
+        };
+        var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: static (_, _) => 1);
+        ReadyBatch? batch = null;
+
+        try
+        {
+            await Assert.That(await AppendNullRecordAsync(accumulator)).IsTrue();
+
+            var firstBudget = accumulator.GetBrokerUnackedBudget(1)!;
+            await Assert.That(firstBudget.PipelineBatchCount).IsEqualTo(1);
+            await Assert.That(accumulator.TryDrainBatch(out batch)).IsTrue();
+
+            accumulator.ReattributeUnackedBudget(batch!, brokerId: 2);
+
+            var secondBudget = accumulator.GetBrokerUnackedBudget(2)!;
+            await Assert.That(firstBudget.PipelineBatchCount).IsEqualTo(0);
+            await Assert.That(secondBudget.PipelineBatchCount).IsEqualTo(1);
+
+            batch!.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
+            await Assert.That(accumulator.OnBatchExitsPipeline(batch)).IsTrue();
+            await Assert.That(secondBudget.PipelineBatchCount).IsEqualTo(0);
+            accumulator.ReturnReadyBatch(batch);
+            batch = null;
+        }
+        finally
+        {
+            if (batch is not null)
+            {
+                accumulator.OnBatchExitsPipeline(batch);
+                accumulator.ReturnReadyBatch(batch);
+            }
+
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task AdmissionFlushClaim_AllowsOneBlockedPartitionUntilPipelineProgressExits()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1_000,
+            LingerMs = 5_000
+        };
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: static (_, _) => 1);
+        var firstPartition = new TopicPartition("test-topic", 0);
+        var secondPartition = new TopicPartition("test-topic", 1);
+
+        await Assert.That(await AppendNullRecordAsync(accumulator, firstPartition.Partition)).IsTrue();
+        await Assert.That(await AppendNullRecordAsync(accumulator, secondPartition.Partition)).IsTrue();
+
+        var budget = accumulator.GetBrokerUnackedBudget(1)!;
+        var firstDeque = GetPartitionDeque(accumulator, firstPartition);
+        var secondDeque = GetPartitionDeque(accumulator, secondPartition);
+
+        // Model two appenders rejected by the shared broker budget without introducing
+        // pending-append timers into this claim-contention test.
+        RequestAdmissionFlushForTest(accumulator, firstDeque, firstPartition, budget);
+        RequestAdmissionFlushForTest(accumulator, secondDeque, secondPartition, budget);
+
+        var firstClaim = GetPartitionDequeField<long>(firstDeque, "AdmissionFlushClaim");
+        await Assert.That(firstClaim).IsNotEqualTo(0);
+        await Assert.That(GetPartitionDequeField<int>(firstDeque, "AdmissionFlushRequested")).IsEqualTo(1);
+        await Assert.That(GetPartitionDequeField<int>(secondDeque, "AdmissionFlushRequested")).IsEqualTo(0);
+        await Assert.That(budget.IsAdmissionFlushClaimActive(firstClaim)).IsTrue();
+
+        ForceLingerSweepForTest(accumulator);
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+
+        await Assert.That(GetCurrentPartitionBatchOrDefault(accumulator, firstPartition)).IsNull();
+        await Assert.That(GetCurrentPartitionBatchOrDefault(accumulator, secondPartition)).IsNotNull();
+        await Assert.That(GetPartitionDequeField<int>(firstDeque, "AdmissionFlushRequested")).IsEqualTo(0);
+        await Assert.That(budget.IsAdmissionFlushClaimActive(firstClaim)).IsFalse();
+        await Assert.That(budget.PipelineBatchCount).IsEqualTo(1);
+        await Assert.That(accumulator.TryDrainBatch(out var firstBatch)).IsTrue();
+        var firstBatchPartition = firstBatch!.TopicPartition;
+        var firstExited = CompleteAndReturnPipelineBatch(accumulator, firstBatch);
+
+        await Assert.That(firstBatchPartition).IsEqualTo(firstPartition);
+        await Assert.That(firstExited).IsTrue();
+        await Assert.That(budget.PipelineBatchCount).IsEqualTo(0);
+
+        RequestAdmissionFlushForTest(accumulator, secondDeque, secondPartition, budget);
+
+        var secondClaim = GetPartitionDequeField<long>(secondDeque, "AdmissionFlushClaim");
+        await Assert.That(secondClaim).IsNotEqualTo(firstClaim);
+        await Assert.That(budget.IsAdmissionFlushClaimActive(secondClaim)).IsTrue();
+
+        ForceLingerSweepForTest(accumulator);
+        await accumulator.ExpireLingerAsync(CancellationToken.None);
+
+        await Assert.That(GetCurrentPartitionBatchOrDefault(accumulator, secondPartition)).IsNull();
+        await Assert.That(GetPartitionDequeField<int>(secondDeque, "AdmissionFlushRequested")).IsEqualTo(0);
+        await Assert.That(accumulator.TryDrainBatch(out var secondBatch)).IsTrue();
+        var secondBatchPartition = secondBatch!.TopicPartition;
+        var secondExited = CompleteAndReturnPipelineBatch(accumulator, secondBatch);
+
+        await Assert.That(secondBatchPartition).IsEqualTo(secondPartition);
+        await Assert.That(secondExited).IsTrue();
+        await Assert.That(budget.PipelineBatchCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Purge_Queue_CompleteFailure_ReleasesReservedMemory()
     {
         var options = CreateTestOptions();
@@ -456,6 +593,70 @@ public class RecordAccumulatorTests
         finally
         {
             headerValue.Release();
+            if (!disposed)
+                await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task DisposeAsync_WaitsForAdmissionHandoffBeforeReturningCurrentBatch()
+    {
+        var accumulator = new RecordAccumulator(
+            CreatePendingAppendTestOptions(),
+            resolveLeaderId: static (_, _) => 1);
+        var topicPartition = new TopicPartition("test-topic", 0);
+        using var handoffEntered = new ManualResetEventSlim();
+        using var releaseHandoff = new ManualResetEventSlim();
+        var disposed = false;
+        Task<bool>? handoffTask = null;
+
+        try
+        {
+            await Assert.That(await AppendNullRecordAsync(accumulator)).IsTrue();
+            var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
+            var admissionField = partitionDeque.GetType().GetField("AdmissionInProgress")!;
+            handoffTask = RunOnDedicatedThread(() =>
+            {
+                admissionField.SetValue(partitionDeque, 1);
+                handoffEntered.Set();
+                try
+                {
+                    if (!releaseHandoff.Wait(TimeSpan.FromSeconds(5)))
+                        throw new TimeoutException("Timed out waiting to release admission handoff.");
+                }
+                finally
+                {
+                    admissionField.SetValue(partitionDeque, 0);
+                }
+
+                return true;
+            });
+
+            await WaitUntilAsync(() => handoffEntered.IsSet, TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(
+                () => IsAdmissionInProgress(accumulator, topicPartition),
+                TimeSpan.FromSeconds(5));
+
+            var disposeTask = RunOnDedicatedThread(() =>
+            {
+                accumulator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                return true;
+            });
+            await WaitUntilAsync(
+                () => GetPrivateField<int>(accumulator, "_disposed") != 0 || disposeTask.IsCompleted,
+                TimeSpan.FromSeconds(5));
+            await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+            releaseHandoff.Set();
+
+            await Assert.That(await handoffTask.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            disposed = true;
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            releaseHandoff.Set();
             if (!disposed)
                 await accumulator.DisposeAsync();
         }
@@ -3556,35 +3757,6 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task PendingAppend_AdmissionRecheckRetriesWhenDrainGuardIsBusy()
-    {
-        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
-        var pool = new PendingAppendPool(1);
-        var op = CreatePendingAppend(accumulator, pool);
-        var queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
-
-        queue.Enqueue(op);
-        SetPrivateField(accumulator, "_draining", 1);
-        SetPrivateField(op, "_admissionRecheckTickCount", Dekaf.MonotonicClock.GetMilliseconds() - 1);
-
-        try
-        {
-            InvokePendingAppendTimeout(op);
-            var retryAt = GetPrivateField<long>(op, "_admissionRecheckTickCount");
-
-            await Assert.That(retryAt).IsGreaterThan(0);
-            await Assert.That(op.IsCompleted).IsFalse();
-        }
-        finally
-        {
-            SetPrivateField(accumulator, "_draining", 0);
-            queue.TryDequeue(out _);
-            if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
-                op.ReturnToPoolAfterTryFail();
-        }
-    }
-
-    [Test]
     public async Task DrainPendingAppends_BusyGuard_RecordsRetryRequest()
     {
         await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
@@ -3632,6 +3804,81 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task AdmissionFailure_WakesWaiterQueuedDuringLeaderResolution()
+    {
+        var pool = new PendingAppendPool(1);
+        RecordAccumulator? accumulator = null;
+        ConcurrentQueue<PendingAppend>? queue = null;
+        Task<bool>? pendingResult = null;
+        var resolverCalls = 0;
+
+        int ResolveLeaderId(string _, int partition)
+        {
+            if (Interlocked.Increment(ref resolverCalls) != 1)
+                return 1;
+
+            var pending = CreatePendingAppend(accumulator!, pool, partition);
+            pendingResult = new ValueTask<bool>(
+                (IValueTaskSource<bool>)pending,
+                pending.Version).AsTask();
+            queue!.Enqueue(pending);
+            throw new InvalidOperationException("leader resolution failed");
+        }
+
+        accumulator = new RecordAccumulator(
+            CreatePendingAppendTestOptions(),
+            resolveLeaderId: ResolveLeaderId);
+        queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
+
+        try
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await AppendNullRecordAsync(accumulator));
+
+            await Assert.That(exception!.Message).IsEqualTo("leader resolution failed");
+            await Assert.That(await pendingResult!.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task AdmissionDisabled_DoesNotEnterPerPartitionCasGate()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1_000,
+            LingerMs = 10,
+            DeliveryLatencyTargetMs = 0
+        };
+        await using var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: static (_, _) => 1);
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        await Assert.That(await AppendNullRecordAsync(accumulator)).IsTrue();
+
+        var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
+        var admissionField = partitionDeque.GetType().GetField("AdmissionInProgress")!;
+        admissionField.SetValue(partitionDeque, 1);
+        try
+        {
+            var appendTask = Task.Run(() => AppendNullRecordAsync(accumulator).AsTask());
+
+            await Assert.That(await appendTask.WaitAsync(TimeSpan.FromSeconds(5))).IsTrue();
+        }
+        finally
+        {
+            admissionField.SetValue(partitionDeque, 0);
+        }
+    }
+
+    [Test]
     public async Task DrainPendingAppends_CompetingWake_RescansReleasedBudget()
     {
         using var secondPartitionResolverEntered = new ManualResetEventSlim();
@@ -3658,8 +3905,10 @@ public class RecordAccumulatorTests
         var queue = GetPrivateField<ConcurrentQueue<PendingAppend>>(accumulator, "_pendingAppends");
         var firstBudget = accumulator.GetBrokerUnackedBudget(0)!;
         var secondBudget = accumulator.GetBrokerUnackedBudget(1)!;
-        var firstCharge = firstBudget.BudgetBytes;
-        var secondCharge = secondBudget.BudgetBytes;
+        // Oversized records may make one bounded admission while occupancy is within the
+        // window. Charge one byte beyond it so this test isolates competing drain wakeups.
+        var firstCharge = firstBudget.BudgetBytes + 1;
+        var secondCharge = secondBudget.BudgetBytes + 1;
         firstBudget.Charge(firstCharge);
         secondBudget.Charge(secondCharge);
         queue.Enqueue(first);
@@ -3686,29 +3935,6 @@ public class RecordAccumulatorTests
             queue.TryDequeue(out _);
             if (second.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
                 second.ReturnToPoolAfterTryFail();
-        }
-    }
-
-    [Test]
-    public async Task PendingAppend_AdmissionRecheckKeepsEarlierDeadline()
-    {
-        await using var accumulator = new RecordAccumulator(CreatePendingAppendTestOptions());
-        var pool = new PendingAppendPool(1);
-        var op = CreatePendingAppend(accumulator, pool);
-        var firstRecheckAt = Dekaf.MonotonicClock.GetMilliseconds() + 10_000;
-
-        try
-        {
-            op.ScheduleAdmissionRecheck(firstRecheckAt);
-            op.ScheduleAdmissionRecheck(firstRecheckAt + 1_000);
-
-            await Assert.That(GetPrivateField<long>(op, "_admissionRecheckTickCount"))
-                .IsEqualTo(firstRecheckAt);
-        }
-        finally
-        {
-            if (op.TryFail(new ObjectDisposedException(nameof(RecordAccumulator))))
-                op.ReturnToPoolAfterTryFail();
         }
     }
 
@@ -3999,6 +4225,13 @@ public class RecordAccumulatorTests
         return (bool)appendInProgressField!.GetValue(partitionDeque)!;
     }
 
+    private static bool IsAdmissionInProgress(RecordAccumulator accumulator, TopicPartition topicPartition)
+    {
+        var partitionDeque = GetPartitionDeque(accumulator, topicPartition);
+        var admissionInProgressField = partitionDeque.GetType().GetField("AdmissionInProgress");
+        return (int)admissionInProgressField!.GetValue(partitionDeque)! != 0;
+    }
+
     private static void EnableThreadOwnerTrackingForPartitionLock(
         RecordAccumulator accumulator,
         TopicPartition topicPartition)
@@ -4036,16 +4269,64 @@ public class RecordAccumulatorTests
         return op;
     }
 
+    private static void RequestAdmissionFlushForTest(
+        RecordAccumulator accumulator,
+        object partitionDeque,
+        TopicPartition topicPartition,
+        BrokerUnackedByteBudget budget)
+    {
+        var method = typeof(RecordAccumulator).GetMethod(
+            "RequestAdmissionFlush",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+        method.Invoke(
+            accumulator,
+            [partitionDeque, topicPartition.Topic, topicPartition.Partition, budget]);
+    }
+
+    private static T GetPartitionDequeField<T>(object partitionDeque, string fieldName) =>
+        (T)partitionDeque.GetType().GetField(fieldName)!.GetValue(partitionDeque)!;
+
+    private static bool CompleteAndReturnPipelineBatch(
+        RecordAccumulator accumulator,
+        ReadyBatch batch)
+    {
+        batch.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
+        var exited = accumulator.OnBatchExitsPipeline(batch);
+        accumulator.ReturnReadyBatch(batch);
+        return exited;
+    }
+
+    private static void ForceLingerSweepForTest(RecordAccumulator accumulator) =>
+        SetPrivateField(
+            accumulator,
+            "_oldestBatchCreatedTicks",
+            Stopwatch.GetTimestamp() - 10 * Stopwatch.Frequency);
+
+    private static ValueTask<bool> AppendNullRecordAsync(
+        RecordAccumulator accumulator,
+        int partition = 0) =>
+        accumulator.AppendAsync(
+            "test-topic",
+            partition,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null,
+            PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            CancellationToken.None);
+
     private static ProducerOptions CreatePendingAppendTestOptions(
         long? unackedByteBudgetCapOverride = null) => new()
-    {
-        BootstrapServers = new[] { "localhost:9092" },
-        BufferMemory = 4096,
-        BatchSize = 4096,
-        LingerMs = 10,
-        MaxBlockMs = 30000,
-        UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride
-    };
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            BufferMemory = 4096,
+            BatchSize = 4096,
+            LingerMs = 10,
+            MaxBlockMs = 30000,
+            UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride
+        };
 
     private static void InvokePendingAppendTimeout(PendingAppend op)
     {

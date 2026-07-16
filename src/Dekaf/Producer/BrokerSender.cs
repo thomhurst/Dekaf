@@ -178,6 +178,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int[] BatchGenerations,
         int Count,
         long EncodedBytes,
+        long DataBytes,
         long RequestStartTime,
         BrokerUnackedByteBudget.DeliverySnapshot DeliverySnapshotAtSend)
     {
@@ -2297,6 +2298,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         return oldestBatchTimestamp == long.MaxValue ? 0 : oldestBatchTimestamp;
     }
 
+    internal static long GetCommonAdmissionGeneration(ReadyBatch[] batches, int count)
+    {
+        if (count <= 0)
+            return 0;
+
+        var generation = batches[0].AdmissionGeneration;
+        if (generation <= 0)
+            return 0;
+
+        for (var i = 1; i < count; i++)
+        {
+            if (batches[i].AdmissionGeneration != generation)
+                return 0;
+        }
+
+        return generation;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool CarryOverIfCoalescedLimitReached(
         BatchReference batchRef,
@@ -2776,14 +2795,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 if (allPartitionsSucceeded && _unackedBudget is { } unackedBudget)
                 {
-                    // Per-request BBR delivery-rate sample: the delivered-counter delta since
-                    // this request's send snapshot covers concurrent connection lanes. A fresh
-                    // timestamp per call keeps 'now' honest when a pass spends time in
-                    // acknowledgement callbacks between completions. The budget itself is
-                    // republished once per pass via CompleteAckedPass below.
+                    // Feed logical request bytes and direct timing into the broker window.
+                    // Publication remains once per response pass, keeping the ack path O(1).
                     lastAckTimestamp = Stopwatch.GetTimestamp();
                     unackedBudget.OnAcked(
-                        pending.EncodedBytes,
+                        pending.DataBytes,
                         pending.DeliverySnapshotAtSend,
                         lastAckTimestamp);
                     anyAckedThisPass = true;
@@ -3612,11 +3628,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // time biases individual RTT samples high, which the budget's minimum filter
                 // discards.
                 var oldestBatchTimestamp = GetOldestBatchSealTimestamp(batches, count);
+                var admissionGeneration = GetCommonAdmissionGeneration(batches, count);
 
                 var deliverySnapshotAtSend = _unackedBudget?.SnapshotDelivery(
                     Stopwatch.GetTimestamp(),
                     appLimited: Volatile.Read(ref _totalPendingResponseCount) == 0,
-                    oldestBatchTimestamp) ?? default;
+                    oldestBatchTimestamp,
+                    admissionGeneration) ?? default;
                 responseTask = await SendPipelinedAfterWriteAsync(
                     connection,
                     request,
@@ -3636,6 +3654,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // BufferMemory without the unbounded growth caused by drain-time release.
                 // CleanupBatch still releases for error paths where TCP send wasn't reached.
                 long encodedBytes = 0;
+                long dataBytes = 0;
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
@@ -3650,6 +3669,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // EncodedSize is unavailable for some synthetic/test batches. DataSize
                     // is a conservative fallback and deliberately overestimates compression.
                     encodedBytes += Math.Max(batch.EncodedSize, batch.DataSize);
+                    dataBytes += batch.DataSize;
                 }
 
                 var pendingResponse = new PendingResponse(
@@ -3658,13 +3678,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     generations,
                     count,
                     encodedBytes,
+                    dataBytes,
                     requestStartTime,
                     deliverySnapshotAtSend);
                 _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
                 pendingResponseAdded = true; // Array ownership transferred to PendingResponse
                 Interlocked.Increment(ref _totalPendingResponseCount);
-                var writtenUnackedBytes = Interlocked.Add(ref _totalPendingResponseBytes, encodedBytes);
-                _unackedBudget?.ObserveWrittenUnackedBytes(writtenUnackedBytes);
+                Interlocked.Add(ref _totalPendingResponseBytes, encodedBytes);
+                _unackedBudget?.ObserveWrittenUnackedBytes(_unackedBudget.UnackedBytes);
                 Interlocked.Add(ref _pendingResponseBytesByConnection[connectionIndex], encodedBytes);
 
                 // Diagnostic: log instance+task+partitions at PendingResponse creation time.
