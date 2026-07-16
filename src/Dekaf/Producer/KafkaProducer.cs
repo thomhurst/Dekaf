@@ -3351,22 +3351,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             if (_initialized)
                 return;
 
-            var startedAt = Stopwatch.GetTimestamp();
-            try
-            {
-                await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
-                var elapsed = Stopwatch.GetElapsedTime(startedAt);
-                throw new KafkaTimeoutException(
-                    TimeoutKind.Metadata,
-                    elapsed,
-                    configured,
-                    $"Failed to fetch initial metadata within max.block.ms ({_options.MaxBlockMs}ms). " +
-                    $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
-            }
+            // The metadata manager time-bounds initialization itself (InitTimeoutMs, mapped
+            // from MaxBlockMs by the builder) and throws KafkaTimeoutException on expiry.
+            await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
             if (_options.EnableIdempotence && _options.TransactionalId is null && !_idempotentInitialized)
             {

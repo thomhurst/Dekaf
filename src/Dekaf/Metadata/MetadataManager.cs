@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Runtime.CompilerServices;
 using Dekaf.Errors;
@@ -261,6 +262,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposalCts.Token);
             var initializationToken = linkedCts.Token;
             var backoffMs = _options.RetryBackoffMs;
+            var startedAt = Stopwatch.GetTimestamp();
 
             try
             {
@@ -280,8 +282,22 @@ public sealed partial class MetadataManager : IAsyncDisposable
                             throw;
                         }
 
+                        var elapsed = Stopwatch.GetElapsedTime(startedAt);
+                        var remainingMs = _options.InitTimeoutMs - elapsed.TotalMilliseconds;
+                        if (remainingMs <= 0)
+                        {
+                            LogMetadataInitializationAbandoned(ex, attempt + 1);
+                            throw new KafkaTimeoutException(
+                                TimeoutKind.Metadata,
+                                elapsed,
+                                TimeSpan.FromMilliseconds(_options.InitTimeoutMs),
+                                $"Failed to fetch initial metadata within {_options.InitTimeoutMs}ms. " +
+                                "Ensure the Kafka cluster is reachable and the bootstrap servers are correct.",
+                                ex);
+                        }
+
                         LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
-                        await Task.Delay(backoffMs, initializationToken).ConfigureAwait(false);
+                        await Task.Delay((int)Math.Min(backoffMs, remainingMs), initializationToken).ConfigureAwait(false);
                         backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
                     }
                 }
@@ -1264,19 +1280,29 @@ public sealed class MetadataOptions
 
     /// <summary>
     /// Initial retry backoff in milliseconds for metadata initialization.
-    /// Matches Java client's reconnect.backoff.ms. Default is 100ms.
+    /// Matches Java client's retry.backoff.ms. Default is 100ms.
     /// </summary>
     public int RetryBackoffMs { get; init; } = 100;
 
     /// <summary>
     /// Maximum retry backoff in milliseconds for metadata initialization.
-    /// Matches Java client's reconnect.backoff.max.ms. Default is 1000ms.
+    /// Matches Java client's retry.backoff.max.ms. Default is 1000ms.
     /// </summary>
     public int RetryBackoffMaxMs { get; init; } = 1000;
 
     /// <summary>
-    /// Maximum number of retries for initial metadata fetch.
-    /// Default is 3 (matching Kafka convention).
+    /// Total time budget in milliseconds for the initial metadata fetch. Initialization
+    /// keeps retrying retriable failures with exponential backoff until this deadline,
+    /// then throws <see cref="Errors.KafkaTimeoutException"/>. Matches the Java client,
+    /// where the first send blocks up to max.block.ms (60s) while metadata is fetched.
+    /// Default is 60000 (60 seconds). The producer maps its MaxBlockMs setting here.
     /// </summary>
-    public int MaxInitRetries { get; init; } = 3;
+    public int InitTimeoutMs { get; init; } = 60000;
+
+    /// <summary>
+    /// Optional cap on the number of retries for the initial metadata fetch. By default
+    /// initialization is bounded by <see cref="InitTimeoutMs"/> alone; set this to make
+    /// it give up after a fixed number of attempts instead, rethrowing the last failure.
+    /// </summary>
+    public int MaxInitRetries { get; init; } = int.MaxValue;
 }

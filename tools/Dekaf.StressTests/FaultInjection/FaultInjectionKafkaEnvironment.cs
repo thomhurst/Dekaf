@@ -144,6 +144,7 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
                     .WithEnvironment("KAFKA_MIN_INSYNC_REPLICAS", minInSyncReplicas.ToString())
                     .WithEnvironment("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0")
                     .WithEnvironment("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false")
+                    .WithWaitStrategy(KafkaEnvironment.BrokerServingWaitStrategy())
                     .Build();
 
                 brokers.Add(broker);

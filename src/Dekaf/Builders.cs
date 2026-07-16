@@ -1273,7 +1273,9 @@ public sealed class ProducerBuilder<TKey, TValue>
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
-            ClientDnsLookup = _clientDnsLookup
+            ClientDnsLookup = _clientDnsLookup,
+            // Java parity: initial metadata blocks up to max.block.ms, retrying throughout.
+            InitTimeoutMs = options.MaxBlockMs
         };
 
         var producer = _clientInfrastructure is null
