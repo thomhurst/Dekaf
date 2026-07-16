@@ -66,6 +66,19 @@ internal sealed class BrokerWindowController
     // epochs (~30s of loaded time). A windowed maximum ignores transient dips without letting
     // a stale one-time peak size the window forever.
     private const int GoodputRingEpochs = 60;
+    // Serving-time floor on the ceiling's horizon, in multiples of the best request-sized
+    // round trip. Growth out of a clamped window has gain = multiplier x best/average round
+    // trip; jittery environments run averages near twice the best, so a multiplier of two
+    // sat at gain ~1.0 and froze (observed locally as an 84% throughput collapse at the
+    // window floor). Three keeps the gain above one at 2:1 jitter while staying under the
+    // 10ms latency target wherever request round trips are a few milliseconds.
+    private const int ServingHorizonRttMultiplier = 3;
+    // Escape valve for environments whose jitter beats the multiplier: a ceiling that binds
+    // under demand while goodput persists below this fraction of the windowed maximum is
+    // strangling the pipe, not saving latency.
+    private const double CeilingStrangleGoodputFraction = 0.75;
+    // One violating epoch can be a broker hiccup; two consecutive epochs (~1s) is a regime.
+    private const int CeilingStrangleEpochsBeforeEscape = 2;
     // Treatments are deliberately sparse and settled: frequent sub-second window changes
     // caused self-inflicted admission stalls that looked like congestion. Each experiment is
     // a B-A-B sandwich (3s candidate, 6s baseline, 3s candidate after a 1s washout at each
@@ -105,6 +118,8 @@ internal sealed class BrokerWindowController
     private bool _coldStartRampComplete;
     private long _rampStartTimestamp;
     private long _rampAckedBytes;
+    private long _ceilingEscapeFloorBytes;
+    private int _ceilingStrangleEpochs;
 
     private long _epochStartedAt;
     private long _epochBytes;
@@ -256,7 +271,7 @@ internal sealed class BrokerWindowController
             return CurrentDecision();
 
         if (_latencyCeilingEnabled)
-            CompleteLatencyCeilingEpoch(goodput);
+            CompleteLatencyCeilingEpoch(goodput, demand);
 
         if (!generationQualified)
         {
@@ -615,7 +630,7 @@ internal sealed class BrokerWindowController
     /// the raise carries the same rate-times-target justification as the clamp, so recovery
     /// from a transient dip does not wait for the probe schedule. Windows the probe walk
     /// placed below the ceiling are deliberate and stay put.</summary>
-    private void CompleteLatencyCeilingEpoch(double goodputBytesPerSecond)
+    private void CompleteLatencyCeilingEpoch(double goodputBytesPerSecond, bool demand)
     {
         _coldStartRampComplete = true;
         _epochGoodputRing[_epochGoodputIndex] = goodputBytesPerSecond;
@@ -626,7 +641,10 @@ internal sealed class BrokerWindowController
             windowedMax = Math.Max(windowedMax, _epochGoodputRing[i]);
 
         var previousEffectiveCap = EffectiveCapBytes;
-        _latencyCeilingBytes = ComputeCeilingBytes(windowedMax);
+        UpdateCeilingEscapeFloor(goodputBytesPerSecond, windowedMax, demand, previousEffectiveCap);
+        _latencyCeilingBytes = Math.Max(
+            ComputeCeilingBytes(windowedMax),
+            _ceilingEscapeFloorBytes);
         if (_phase == BrokerWindowPhase.Steady
             && _windowBytes >= previousEffectiveCap
             && EffectiveCapBytes > previousEffectiveCap)
@@ -639,19 +657,54 @@ internal sealed class BrokerWindowController
         }
     }
 
+    /// <summary>
+    /// Goodput-preservation escape valve: a ceiling that binds under demand while goodput
+    /// persists well below the windowed maximum is strangling the pipe — the clamp itself
+    /// suppresses the measurement that would justify a wider window. Doubling the ceiling's
+    /// floor (monotone within a run) restores throughput within an epoch or two; a latency
+    /// clamp is never worth a goodput regression. One violating epoch is ignored as a
+    /// possible broker hiccup so a transient stall cannot permanently widen the floor.
+    /// </summary>
+    private void UpdateCeilingEscapeFloor(
+        double goodputBytesPerSecond,
+        double windowedMaxGoodput,
+        bool demand,
+        long previousEffectiveCap)
+    {
+        var ceilingBinding = _latencyCeilingBytes < _capBytes
+            && _windowBytes >= previousEffectiveCap;
+        if (!ceilingBinding
+            || !demand
+            || goodputBytesPerSecond >= CeilingStrangleGoodputFraction * windowedMaxGoodput)
+        {
+            _ceilingStrangleEpochs = 0;
+            return;
+        }
+
+        if (++_ceilingStrangleEpochs < CeilingStrangleEpochsBeforeEscape)
+            return;
+
+        _ceilingStrangleEpochs = 0;
+        _ceilingEscapeFloorBytes = Math.Min(
+            Math.Max(SaturatingMultiply(previousEffectiveCap, 2), _ceilingEscapeFloorBytes),
+            _capBytes);
+    }
+
     private long ComputeCeilingBytes(double rateBytesPerSecond)
     {
-        // The delivery-latency target is an aspiration; two request-sized round trips are
+        // The delivery-latency target is an aspiration; a few request-sized round trips are
         // physics. When a full request's best-case round trip exceeds the target, a
         // target-only horizon demands fewer standing bytes than the pipe needs to stay
         // full, goodput is then measured at the strangled window, and the lower measurement
         // justifies an even lower ceiling — a self-confirming collapse (observed as an 84%
-        // local throughput loss). Flooring the horizon at twice the request-quantum-sized
-        // minimum RTT keeps one request serving while the next seals, so measured goodput
-        // reflects drain capacity and the ceiling's growth feedback stays above unity.
+        // local throughput loss). Flooring the horizon at a small multiple of the
+        // request-quantum-sized minimum RTT keeps requests pipelined, so measured goodput
+        // reflects drain capacity and the ceiling's growth feedback stays above unity even
+        // when average round trips run well above the best case (see
+        // ServingHorizonRttMultiplier).
         var horizonTicks = Math.Max(
             _targetDelayTicks,
-            SaturatingMultiply(QuantumMinimumRttTicks, 2));
+            SaturatingMultiply(QuantumMinimumRttTicks, ServingHorizonRttMultiplier));
         var targetBytes = rateBytesPerSecond * horizonTicks / Stopwatch.Frequency;
         return (long)Math.Clamp(targetBytes, MinimumWindowBytes, _capBytes);
     }

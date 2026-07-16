@@ -139,23 +139,34 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task LatencyCeiling_SuppressesProbesWhileBindingAtTheFloor()
+    public async Task LatencyCeiling_EscapesWhenClampPersistentlyCostsGoodput()
     {
         var budget = CreateColdStartBudget();
         var now = FlipColdStartGateWithFastAck(budget);
 
-        // Sustained ~200 B/s goodput pins the ceiling at the floor: no up-probe candidate
-        // can differ from the baseline, so the schedule never launches an experiment.
-        for (var i = 0; i < 100; i++)
-        {
-            now += Seconds(0.510);
-            DriveBudgetEpoch(budget, now, logicalBytes: 100, rttSeconds: 0.001);
-        }
-
+        // First epoch measures ~5.9 KB/s: ten milliseconds of that drain clamps the window
+        // to the floor while the windowed maximum remembers the higher rate.
+        now += Seconds(0.510);
+        DriveBudgetEpoch(budget, now, logicalBytes: 1_000, rttSeconds: 0.001);
         await Assert.That(budget.BudgetBytes).IsEqualTo(200);
-        await Assert.That(budget.Phase).IsEqualTo(BrokerWindowPhase.Steady);
-        await Assert.That(budget.CapacityProbeSuccessCount).IsEqualTo(0);
-        await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
+
+        // One strangled epoch could be a broker hiccup — the clamp holds.
+        now += Seconds(0.510);
+        DriveBudgetEpoch(budget, now, logicalBytes: 100, rttSeconds: 0.001);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(200);
+
+        // A second consecutive strangled epoch proves the clamp is suppressing goodput,
+        // not saving latency: the escape valve doubles the ceiling's floor.
+        now += Seconds(0.510);
+        DriveBudgetEpoch(budget, now, logicalBytes: 100, rttSeconds: 0.001);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(400);
+
+        // Persistent strangulation keeps doubling toward the cap.
+        now += Seconds(0.510);
+        DriveBudgetEpoch(budget, now, logicalBytes: 100, rttSeconds: 0.001);
+        now += Seconds(0.510);
+        DriveBudgetEpoch(budget, now, logicalBytes: 100, rttSeconds: 0.001);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(800);
     }
 
     [Test]
