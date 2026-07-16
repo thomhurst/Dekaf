@@ -26,6 +26,23 @@ internal readonly record struct BrokerWindowDecision(
 /// Pure, allocation-free knee-seeking byte-window controller. Its quantum is the configured
 /// batch capacity and never changes with fragmented request sizes. It searches for the
 /// smallest whole-quantum window that preserves broker goodput.
+/// With the latency governor enabled, two behaviors change — both expressed through the
+/// existing goodput-guarded paired experiments rather than a separate control law, so no
+/// self-measured estimate can strangle or inflate the window:
+/// <list type="bullet">
+/// <item>Cold start opens by ack-clocked doubling from two quanta to the optimistic initial
+/// size. Each doubling follows a fully acknowledged response pass, so the broker has always
+/// drained the previous window within one round trip before more is admitted; the first
+/// acknowledgement can no longer release the whole optimistic window as one unmeasured
+/// burst into a cold broker (#2109).</item>
+/// <item>While the controlled-delay EWMA exceeds the delivery-latency target, probes are
+/// biased downward: up-probes are withheld, down-probes may explore beneath the normal
+/// pipeline floor, and each successful goodput-preserving descent schedules the next probe
+/// early. Every step remains a B-A-B experiment whose goodput guard reverts harmful
+/// shrinks, so topologies whose knee sits high keep their window and only pay a treatment
+/// slice per cycle, while topologies with a low knee descend out of standing queueing
+/// delay the target forbids.</item>
+/// </list>
 /// </summary>
 internal sealed class BrokerWindowController
 {
@@ -40,8 +57,15 @@ internal sealed class BrokerWindowController
     private const int SizeBucketShift = 8;
     // The control run sustained its knee at roughly seven full requests. One extra quantum
     // absorbs response/scheduler granularity without allowing fragmented requests to redefine
-    // the floor.
+    // the floor. Descent below this floor is allowed only while the controlled-delay EWMA
+    // exceeds the delivery-latency target (see LatencyDescentPipelineQuanta).
     private const int MinimumPipelineQuanta = 8;
+    // Deep-descent floor while over the latency target: two quanta keep the acknowledgement
+    // clock pipelined (one request on the wire while the next seals). The eight-quantum
+    // floor encoded a one-broker knee and forced ~3x the delivery-latency target of standing
+    // queue per broker on three-broker topologies (#2109); the goodput guard, not a fixed
+    // constant, decides how far each topology can actually descend.
+    private const int LatencyDescentPipelineQuanta = 2;
     // Open partition batches also hold bounded lease slack, so start above the expected knee
     // and search downward. This avoids throughput-biased learning from a starved startup.
     private const int InitialRequestQuanta = 16;
@@ -51,6 +75,11 @@ internal sealed class BrokerWindowController
     // transition), which cancels a linear runner trend instead of comparing one temporal
     // slice with one 1.5-second vote.
     private const int ProbeIntervalEpochs = 60;
+    // While over the latency target, a successful goodput-preserving descent re-probes after
+    // this many epochs (~3s) instead of the full interval, so escaping standing queueing
+    // delay takes tens of seconds rather than many minutes. A failed descent proves the
+    // current window earns its goodput and falls back to the sparse schedule.
+    private const int AcceleratedDescentIntervalEpochs = 6;
     private const int ProbeSettleEpochs = 2;
     private const int OuterProbeEvaluationEpochs = 6;
     private const int BaselineProbeEvaluationEpochs = 12;
@@ -60,7 +89,18 @@ internal sealed class BrokerWindowController
     private const double UpProbeMultiplier = 1.125;
     private const double DownProbeMultiplier = 0.875;
     private const double UpProbeGoodputThreshold = 1.03;
+    // When the experiment itself observed admission blocking, demand is provably clipped by
+    // the window and "not worse" goodput suffices to grow it — the +3% bar exists to stop
+    // speculative bufferbloat, not to trap an over-shrunk window: down-probes pass on noise
+    // at 0.99 while up-probes never pass on noise at 1.03, and that asymmetry compounds into
+    // a run-long throughput ratchet (observed as steady/peak 0.745 on run 29513570135).
+    // The delay-growth veto below still guards against queue-building growth.
+    private const double BlockedUpProbeGoodputThreshold = 1.00;
     private const double DownProbeGoodputThreshold = 0.99;
+    // Descent below the legacy floor must demonstrably buy latency, not merely avoid hurting
+    // goodput: sub-floor windows trade admission headroom for queueing delay, so a paired
+    // experiment that shows no delay gain has no business shrinking further.
+    private const double DeepDescentDelayGainFactor = 0.90;
     private const double DelayGrowthTolerance = 1.25;
     private const double EwmaWeight = 0.125;
 
@@ -70,6 +110,7 @@ internal sealed class BrokerWindowController
     private readonly long _floorBytes;
     private readonly long _requestQuantumBytes;
     private readonly long _targetDelayTicks;
+    private readonly bool _latencyGovernorEnabled;
     private readonly long[] _minimumRttBySizeTicks = new long[SizeBucketCount];
     private readonly long[] _minimumRttTimestamps = new long[SizeBucketCount];
 
@@ -77,6 +118,7 @@ internal sealed class BrokerWindowController
     private long _windowBytes;
     private long _generation = 1;
     private BrokerWindowPhase _phase = BrokerWindowPhase.Steady;
+    private bool _slowStartActive;
 
     private long _epochStartedAt;
     private long _epochBytes;
@@ -103,21 +145,26 @@ internal sealed class BrokerWindowController
     private int _unqualifiedProbeEpochs;
     private double _probeGoodputTotal;
     private double _probeDelayTotalTicks;
+    private bool _probeSawAdmissionPressure;
 
     internal BrokerWindowController(
         double targetSeconds,
         long floorBytes,
         long capBytes,
-        long initialRequestBytes)
+        long initialRequestBytes,
+        bool latencyGovernorEnabled = false)
     {
         _floorBytes = Math.Max(1, floorBytes);
         _capBytes = Math.Max(_floorBytes, capBytes);
         _targetDelayTicks = Math.Max(1, (long)(targetSeconds * Stopwatch.Frequency));
         _requestQuantumBytes = Math.Max(_floorBytes, initialRequestBytes);
-        _windowBytes = Math.Clamp(
-            SaturatingMultiply(_requestQuantumBytes, InitialRequestQuanta),
-            MinimumWindowBytes,
-            _capBytes);
+        _latencyGovernorEnabled = latencyGovernorEnabled;
+        _slowStartActive = latencyGovernorEnabled;
+        // Governor-enabled controllers slow-start from the descent floor; everything else
+        // (explicit cap override, Acks.None) keeps the optimistic start unchanged.
+        _windowBytes = _slowStartActive
+            ? MinimumWindowBytes
+            : Math.Max(MinimumWindowBytes, OptimisticWindowBytes);
     }
 
     internal long WindowBytes => _windowBytes;
@@ -131,6 +178,9 @@ internal sealed class BrokerWindowController
     internal long CapacityProbeSuccessCount { get; private set; }
     internal long CapacityProbeFailureCount { get; private set; }
 
+    private bool DelayOverTarget =>
+        _latencyGovernorEnabled && _controlledDelayEwmaTicks > _targetDelayTicks;
+
     internal BrokerWindowDecision SetCap(long capBytes)
     {
         _capBytes = Math.Max(_floorBytes, capBytes);
@@ -143,6 +193,20 @@ internal sealed class BrokerWindowController
             _probeBaselineWindow = _capBytes;
         if (_probeCandidateWindow > _capBytes)
             _probeCandidateWindow = _capBytes;
+
+        return CurrentDecision();
+    }
+
+    /// <summary>
+    /// Keeps the pre-acknowledgement window large enough for one request wave at the current
+    /// routing width. Connection scale-up before the first acknowledgement grows the wave
+    /// beyond the slow-start floor; the wave is still an unmeasured burst the cold-start
+    /// gate itself bounds, so admitting it does not reintroduce the flood.
+    /// </summary>
+    internal BrokerWindowDecision NoteColdStartWave(long waveBytes)
+    {
+        if (_slowStartActive)
+            SetWindow(Math.Max(_windowBytes, waveBytes));
 
         return CurrentDecision();
     }
@@ -189,6 +253,11 @@ internal sealed class BrokerWindowController
         long observedOutstandingBytes,
         long nowTicks)
     {
+        // Called once per response pass that carried at least one full acknowledgement, so
+        // each doubling follows a proven drain of the previous window within one round trip.
+        if (_slowStartActive)
+            AdvanceSlowStart();
+
         if (_epochStartedAt == 0)
         {
             _epochStartedAt = nowTicks;
@@ -216,6 +285,8 @@ internal sealed class BrokerWindowController
         var occupancyPressure = observedOutstandingBytes
             >= _windowBytes - _windowBytes / 4;
         var demand = admissionPressure || occupancyPressure || _epochLoaded;
+        if (_phase != BrokerWindowPhase.Steady && admissionPressure)
+            _probeSawAdmissionPressure = true;
 
         _lastAdmissionBlockEvents = admissionBlockEvents;
         ResetEpoch(nowTicks);
@@ -245,6 +316,18 @@ internal sealed class BrokerWindowController
         };
     }
 
+    private void AdvanceSlowStart()
+    {
+        var optimisticWindow = OptimisticWindowBytes;
+        SetWindow(Math.Min(SaturatingMultiply(_windowBytes, 2), optimisticWindow));
+        if (_windowBytes >= optimisticWindow)
+            _slowStartActive = false;
+    }
+
+    private long OptimisticWindowBytes => Math.Min(
+        SaturatingMultiply(_requestQuantumBytes, InitialRequestQuanta),
+        _capBytes);
+
     private BrokerWindowDecision UpdateSteady(bool demand)
     {
         if (!demand)
@@ -253,8 +336,17 @@ internal sealed class BrokerWindowController
         if (--_epochsUntilProbe > 0)
             return CurrentDecision();
 
-        if (_probeDownNext && _windowBytes > MinimumWindowBytes)
-            return StartDownProbe();
+        var descentBias = DelayOverTarget;
+        if ((_probeDownNext || descentBias) && _windowBytes > ProbeFloorBytes(descentBias))
+            return StartDownProbe(descentBias);
+
+        if (descentBias)
+        {
+            // At the descent floor while still over target: growing would stack queueing on
+            // an already-missed target, so hold and re-check on the next cycle.
+            _epochsUntilProbe = ProbeIntervalEpochs;
+            return CurrentDecision();
+        }
 
         var requestedWindow = Math.Min(
             _capBytes,
@@ -266,15 +358,21 @@ internal sealed class BrokerWindowController
             requestedWindow);
     }
 
-    private BrokerWindowDecision StartDownProbe()
+    private BrokerWindowDecision StartDownProbe(bool descentBias)
     {
         var requestedWindow = Math.Max(
-            MinimumWindowBytes,
+            ProbeFloorBytes(descentBias),
             (long)Math.Floor(_windowBytes * DownProbeMultiplier));
         return StartCapacityProbe(
             BrokerWindowPhase.ProbeDown,
             requestedWindow);
     }
+
+    /// <summary>Lowest window a down-probe may propose. The legacy eight-quantum floor holds
+    /// while latency is on target; descent below it is justified only by a missed target,
+    /// and even then each step must pass the paired goodput guard.</summary>
+    private long ProbeFloorBytes(bool descentBias) => QuantaFloorBytes(
+        descentBias ? LatencyDescentPipelineQuanta : MinimumPipelineQuanta);
 
     private BrokerWindowDecision StartCapacityProbe(
         BrokerWindowPhase phase,
@@ -352,13 +450,21 @@ internal sealed class BrokerWindowController
             _targetDelayTicks,
             _probeBaselineDelayTicks * DelayGrowthTolerance);
         var goodputThreshold = probingUp
-            ? UpProbeGoodputThreshold
+            ? _probeSawAdmissionPressure
+                ? BlockedUpProbeGoodputThreshold
+                : UpProbeGoodputThreshold
             : DownProbeGoodputThreshold;
+        var deepDescent = !probingUp
+            && _probeCandidateWindow < QuantaFloorBytes(MinimumPipelineQuanta);
         // Seal-to-send plus network queueing omits pre-seal admission and batch-fill time, so
         // it cannot veto a lower window. It remains a conservative guard against growing a
         // window that raises the delay component the controller can observe.
         var succeeded = treatmentGoodput >= _probeBaselineGoodput * goodputThreshold
-            && (!probingUp || treatmentDelayTicks <= delayLimit);
+            && (!probingUp || treatmentDelayTicks <= delayLimit)
+            && (!deepDescent
+                || (_probeBaselineDelayTicks > _targetDelayTicks
+                    && treatmentDelayTicks
+                        <= _probeBaselineDelayTicks * DeepDescentDelayGainFactor));
         return CompleteCapacityProbe(succeeded);
     }
 
@@ -382,7 +488,14 @@ internal sealed class BrokerWindowController
         // Continue walking in a direction while it wins. A failed treatment reverses the
         // next probe, converging on the knee instead of oscillating unconditionally.
         _probeDownNext = probingUp ? !succeeded : succeeded;
-        _epochsUntilProbe = ProbeIntervalEpochs;
+        // A goodput-preserving descent earns an early retry only while the experiment's own
+        // baseline delay missed the target — the instantaneous EWMA flickers on bursts and
+        // over-accelerated the walk (run 29513570135).
+        _epochsUntilProbe = !probingUp
+            && succeeded
+            && _probeBaselineDelayTicks > _targetDelayTicks
+            ? AcceleratedDescentIntervalEpochs
+            : ProbeIntervalEpochs;
         _unqualifiedProbeEpochs = 0;
         ResetProbeExperiment();
         return CurrentDecision(
@@ -404,6 +517,7 @@ internal sealed class BrokerWindowController
         _probeBaselineGoodput = 0;
         _probeBaselineDelayTicks = 0;
         _probeSettleEpochsRemaining = 0;
+        _probeSawAdmissionPressure = false;
         ResetProbeEvaluation();
     }
 
@@ -495,8 +609,15 @@ internal sealed class BrokerWindowController
         return next;
     }
 
-    private long MinimumWindowBytes => Math.Clamp(
-        SaturatingMultiply(_requestQuantumBytes, MinimumPipelineQuanta),
+    /// <summary>Hard lower bound on any window value. Governor-enabled controllers may hold
+    /// descent-floor windows reached while over target; probe policy (not this bound)
+    /// decides when descent below the legacy floor is permitted.</summary>
+    private long MinimumWindowBytes => QuantaFloorBytes(
+        _latencyGovernorEnabled ? LatencyDescentPipelineQuanta : MinimumPipelineQuanta);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private long QuantaFloorBytes(int quanta) => Math.Clamp(
+        SaturatingMultiply(_requestQuantumBytes, quanta),
         _floorBytes,
         _capBytes);
 

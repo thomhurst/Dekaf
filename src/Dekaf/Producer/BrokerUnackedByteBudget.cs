@@ -58,6 +58,7 @@ internal sealed class BrokerUnackedByteBudget
     private const int MaxProbeDiagnosticEvents = 4_096;
 
     private readonly BrokerWindowController _controller;
+    private readonly long _floorBytes;
     private readonly long[] _requestSizeLog2Histogram = new long[HistogramBucketCount];
     private readonly long[] _requestRttMicrosLog2Histogram = new long[HistogramBucketCount];
     private readonly long[]? _admissionBlockMicrosLog2Histogram;
@@ -82,26 +83,42 @@ internal sealed class BrokerUnackedByteBudget
     private long _probeStartedTimestamp;
     private double _latencyBudgetScale = 1;
 
+    // Single-writer state. Production supplies one request wave here; the first successful
+    // acknowledgement permanently hands admission back to the adaptive window controller.
+    private long _coldStartBudgetBytes;
+    private bool _awaitingInitialAcknowledgement;
+
     public BrokerUnackedByteBudget(
         double targetSeconds,
         long floorBytes,
         long initialCapBytes,
         double lingerSeconds = 0,
         bool enableDiagnostics = false,
-        long initialRequestBytes = 0)
+        long initialRequestBytes = 0,
+        long? coldStartBudgetBytes = null)
     {
         _ = lingerSeconds;
         var floor = Math.Max(1, floorBytes);
+        _floorBytes = floor;
         var cap = Math.Max(floor, initialCapBytes);
         if (initialRequestBytes <= 0)
             initialRequestBytes = Math.Clamp(64 * 1024, floor, cap);
 
+        // The latency governor shares the cold-start gate's arming condition (no explicit cap
+        // override, acknowledgements exist to pace the slow start) plus a positive latency
+        // target: with no target there is no delay budget for the descent bias to enforce.
         _controller = new BrokerWindowController(
             targetSeconds,
             floor,
             cap,
-            initialRequestBytes);
-        Publish(_controller.WindowBytes, _controller.Generation);
+            initialRequestBytes,
+            latencyGovernorEnabled: coldStartBudgetBytes is not null && targetSeconds > 0);
+        if (coldStartBudgetBytes is { } coldStartBudget)
+        {
+            _coldStartBudgetBytes = Math.Clamp(coldStartBudget, floor, _controller.WindowBytes);
+            _awaitingInitialAcknowledgement = true;
+        }
+        Publish(GetPublishedBudget(_controller.WindowBytes), _controller.Generation);
 
         if (enableDiagnostics)
         {
@@ -112,7 +129,10 @@ internal sealed class BrokerUnackedByteBudget
     }
 
     internal static long ComputeCap(int batchSize, int connectionCount) =>
-        (long)Math.Max(1, batchSize) * CapBatchMultiplier * Math.Max(1, connectionCount);
+        ComputeBudget(batchSize, connectionCount, CapBatchMultiplier);
+
+    internal static long ComputeColdStartBudget(int batchSize, int connectionCount) =>
+        ComputeBudget(batchSize, connectionCount, batchMultiplier: 1);
 
     internal long UnackedBytes => Volatile.Read(ref _unackedBytes);
     internal long BudgetBytes => Volatile.Read(ref _budgetBytes);
@@ -306,10 +326,24 @@ internal sealed class BrokerUnackedByteBudget
     }
 
     public void SetCap(long capBytes, long nowTicks)
+        => SetCap(capBytes, coldStartBudgetBytes: null, nowTicks);
+
+    public void SetCap(long capBytes, long? coldStartBudgetBytes, long nowTicks)
     {
         _ = nowTicks;
         var decision = _controller.SetCap(capBytes);
-        Publish(decision.WindowBytes, decision.Generation);
+        if (_awaitingInitialAcknowledgement && coldStartBudgetBytes is { } coldStartBudget)
+        {
+            // The pre-ack window must be able to carry one wave at the new routing width,
+            // otherwise the slow start's pessimistic floor would shrink the wave the cold
+            // gate itself intends to admit.
+            decision = _controller.NoteColdStartWave(coldStartBudget);
+            _coldStartBudgetBytes = Math.Clamp(
+                coldStartBudget,
+                _floorBytes,
+                decision.WindowBytes);
+        }
+        Publish(GetPublishedBudget(decision.WindowBytes), decision.Generation);
     }
 
     internal DeliverySnapshot SnapshotDelivery(
@@ -345,7 +379,26 @@ internal sealed class BrokerUnackedByteBudget
             sendSnapshot.AppLimited,
             sendSnapshot.AdmissionGeneration,
             nowTicks);
+        EndColdStartGate();
         RecordRequestHistograms(ackedBytes, rttTicks);
+    }
+
+    /// <summary>
+    /// Ends the cold-start phase when a response delivered at least one partition but not all
+    /// of them. <see cref="OnAcked"/> only runs for fully successful responses, so without
+    /// this a broker whose first responses carry one churning partition (for example
+    /// NotLeaderOrFollower during startup elections) would stay clamped to a single request
+    /// wave despite demonstrably draining data. Single-writer: owning send loop only.
+    /// </summary>
+    public void NotePartialDeliverySuccess() => EndColdStartGate();
+
+    private void EndColdStartGate()
+    {
+        if (!_awaitingInitialAcknowledgement)
+            return;
+
+        _awaitingInitialAcknowledgement = false;
+        Publish(_controller.WindowBytes, _controller.Generation);
     }
 
     public void CompleteAckedPass(long nowTicks)
@@ -410,7 +463,7 @@ internal sealed class BrokerUnackedByteBudget
 
     private void PublishDecision(BrokerWindowDecision decision, long nowTicks)
     {
-        Publish(decision.WindowBytes, decision.Generation);
+        Publish(GetPublishedBudget(decision.WindowBytes), decision.Generation);
         Volatile.Write(
             ref _minimumRttMicros,
             _controller.MinimumRttTicks * 1_000_000 / Stopwatch.Frequency);
@@ -431,6 +484,23 @@ internal sealed class BrokerUnackedByteBudget
     {
         Volatile.Write(ref _budgetBytes, budgetBytes);
         Volatile.Write(ref _generation, generation);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private long GetPublishedBudget(long controllerWindowBytes) =>
+        _awaitingInitialAcknowledgement
+            ? Math.Min(_coldStartBudgetBytes, controllerWindowBytes)
+            : controllerWindowBytes;
+
+    private static long ComputeBudget(
+        int batchSize,
+        int connectionCount,
+        int batchMultiplier)
+    {
+        var requestWaveBytes = (long)Math.Max(1, batchSize) * Math.Max(1, connectionCount);
+        return requestWaveBytes > long.MaxValue / batchMultiplier
+            ? long.MaxValue
+            : requestWaveBytes * batchMultiplier;
     }
 
     private void RecordProbeEvent(

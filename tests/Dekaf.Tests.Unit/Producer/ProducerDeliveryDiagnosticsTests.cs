@@ -5,17 +5,21 @@ namespace Dekaf.Tests.Unit.Producer;
 
 public sealed class ProducerDeliveryDiagnosticsTests
 {
+    private const int TestBatchSize = 60;
+
     private static ProducerOptions CreateOptions(
         bool enableDeliveryDiagnostics = false,
-        int deliveryLatencyTargetMs = 0) => new()
+        int deliveryLatencyTargetMs = 0,
+        long? unackedByteBudgetCapOverride = null) => new()
         {
             BootstrapServers = ["localhost:9092"],
             ClientId = "diagnostics-test",
             BufferMemory = ulong.MaxValue,
-            BatchSize = 60,
+            BatchSize = TestBatchSize,
             LingerMs = 10_000,
             EnableDeliveryDiagnostics = enableDeliveryDiagnostics,
-            DeliveryLatencyTargetMs = deliveryLatencyTargetMs
+            DeliveryLatencyTargetMs = deliveryLatencyTargetMs,
+            UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride
         };
 
     [Test]
@@ -180,7 +184,10 @@ public sealed class ProducerDeliveryDiagnosticsTests
     {
         var options = CreateOptions(
             enableDeliveryDiagnostics: true,
-            deliveryLatencyTargetMs: 10);
+            deliveryLatencyTargetMs: 10,
+            unackedByteBudgetCapOverride: BrokerUnackedByteBudget.ComputeCap(
+                TestBatchSize,
+                connectionCount: 1));
         await using var accumulator = new RecordAccumulator(
             options,
             resolveLeaderId: static (_, _) => 7);
@@ -221,7 +228,8 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(current.RequestRttMicrosLog2Histogram!.Sum()).IsEqualTo(1);
         await Assert.That(current.AdmissionBlockMicrosLog2Histogram).IsNotNull();
         await Assert.That(current.AdmissionBlockMicrosLog2Histogram!.Sum()).IsEqualTo(1);
-        await Assert.That(current.AdmissionBlockMicrosLog2Histogram[12]).IsEqualTo(1);
+        await Assert.That(current.AdmissionBlockMicrosLog2Histogram.Skip(12).Sum()).IsEqualTo(1)
+            .Because("the synthetic block began eight milliseconds earlier; scheduling may extend it");
         await Assert.That(current.CurrentAdmissionBlockMicros).IsEqualTo(0);
         await Assert.That(snapshot.BudgetProbeEvents).IsEmpty();
         await Assert.That(sample.BrokerId).IsEqualTo(7);
@@ -253,7 +261,11 @@ public sealed class ProducerDeliveryDiagnosticsTests
     public async Task BrokerWindow_DoesNotTreatOneRttAsSustainableGoodput()
     {
         await using var accumulator = new RecordAccumulator(
-            CreateOptions(deliveryLatencyTargetMs: 10),
+            CreateOptions(
+                deliveryLatencyTargetMs: 10,
+                unackedByteBudgetCapOverride: BrokerUnackedByteBudget.ComputeCap(
+                    TestBatchSize,
+                    connectionCount: 1)),
             resolveLeaderId: static (_, _) => 7);
         var budget = accumulator.GetBrokerUnackedBudget(7)!;
         var now = Stopwatch.GetTimestamp();

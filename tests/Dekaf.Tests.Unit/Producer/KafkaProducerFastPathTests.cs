@@ -231,7 +231,9 @@ public class KafkaProducerFastPathTests
             LingerMs = 10,
             RequestTimeoutMs = 500,
             DeliveryTimeoutMs = 1000,
-            CloseTimeoutMs = 1000
+            CloseTimeoutMs = 1000,
+            // Background senders are stopped; direct batch completion does not produce acks.
+            DeliveryLatencyTargetMs = 0
         };
 
         await using var producer = new KafkaProducer<string, string>(
@@ -286,6 +288,8 @@ public class KafkaProducerFastPathTests
             RequestTimeoutMs = 500,
             DeliveryTimeoutMs = 1000,
             CloseTimeoutMs = 1000,
+            // Background senders are stopped; this test buffers several batches without acks.
+            DeliveryLatencyTargetMs = 0,
             EnableAdaptivePartitioning = false
         };
 

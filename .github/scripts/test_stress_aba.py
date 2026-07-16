@@ -51,6 +51,8 @@ def result(
         "cpuMicrosPerMessage": cpu,
         "allocatedBytesPerMessage": allocation,
         "steadyStatePeakRatio": stability,
+        "steadyStatePeakRatioThreshold": 0.85,
+        "steadyStatePeakThresholdBreached": stability < 0.85,
         "throughput": {
             "totalMessages": total_messages,
             "totalErrors": errors,
@@ -111,6 +113,58 @@ class StressAbaComparisonTests(unittest.TestCase):
             metric for metric in comparison["metrics"] if metric["key"] == "throughput"
         )
         self.assertEqual("regression", throughput["status"])
+
+    def test_stability_gates_on_absolute_floor_not_shape_comparison(self):
+        # Run 29518014693: candidate beat both controls on throughput yet its
+        # steady/peak shape sat >3% under the control mean purely because its
+        # adaptive window front-loaded throughput. The floor gate accepts it.
+        comparison = compare(
+            result(throughput=1172, stability=0.951),
+            result(throughput=1211, stability=0.888, cpu=0.78),
+            result(throughput=1185, stability=0.906),
+        )
+
+        self.assertEqual("pass", comparison["verdict"])
+        stability = next(
+            metric for metric in comparison["metrics"] if metric["key"] == "stability"
+        )
+        self.assertEqual("pass", stability["status"])
+
+    def test_candidate_stability_floor_breach_forces_regression(self):
+        # Run 29513570135: genuine intra-run throughput collapse (0.745) must
+        # still reject the candidate.
+        comparison = compare(
+            result(stability=0.994),
+            result(stability=0.745),
+            result(stability=0.996),
+        )
+
+        self.assertEqual("regression", comparison["verdict"])
+        stability = next(
+            metric for metric in comparison["metrics"] if metric["key"] == "stability"
+        )
+        self.assertEqual("regression", stability["status"])
+
+    def test_unstable_control_marks_stability_inconclusive(self):
+        comparison = compare(
+            result(stability=0.70),
+            result(stability=0.95),
+            result(stability=0.95),
+        )
+
+        self.assertEqual("inconclusive", comparison["verdict"])
+        stability = next(
+            metric for metric in comparison["metrics"] if metric["key"] == "stability"
+        )
+        self.assertEqual("inconclusive", stability["status"])
+
+    def test_stability_floor_falls_back_to_ratio_when_flag_missing(self):
+        candidate = result(stability=0.74)
+        del candidate["steadyStatePeakThresholdBreached"]
+
+        comparison = compare(result(), candidate, result())
+
+        self.assertEqual("regression", comparison["verdict"])
 
     def test_candidate_errors_force_regression(self):
         comparison = compare(result(), result(errors=1), result())
