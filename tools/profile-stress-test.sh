@@ -172,14 +172,14 @@ fi
 
 if [[ ! -f "$STRESS_EXE" ]]; then
     echo "Building stress tests in Release mode..."
-    dotnet build "$REPO_ROOT/tools/Dekaf.StressTests" --configuration Release -q
+    dotnet build "$REPO_ROOT/tools/Dekaf.StressTests" --configuration Release --verbosity quiet
 fi
 
 # Built up front so a broken analyzer fails fast instead of after the paid run,
 # and each window invokes the binary without re-paying MSBuild evaluation.
 if [[ "$COLLECT_RUNTIME_EVENTS" == "true" && ! -f "$ANALYZER_EXE" ]]; then
     echo "Building trace analyzer in Release mode..."
-    dotnet build "$REPO_ROOT/tools/Dekaf.TraceAnalyzer" --configuration Release -q
+    dotnet build "$REPO_ROOT/tools/Dekaf.TraceAnalyzer" --configuration Release --verbosity quiet
 fi
 
 mkdir -p "$PROFILE_OUTPUT_DIR"
