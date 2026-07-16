@@ -151,9 +151,10 @@ public sealed class ProducerOptions
     /// <see cref="MaxBlockMs"/> and cancellation).
     /// Before the first successful broker acknowledgement, admission is limited to one
     /// configured batch per current connection; acknowledgements then open the adaptive
-    /// window at the measured drain rate, and the window is thereafter bounded by this
-    /// target multiplied by the maximum goodput observed over the recent control epochs, so
-    /// standing queueing delay cannot exceed the target's worth of measured drain.
+    /// window by doubling once per fully acknowledged response pass. While the controller's
+    /// measured queueing delay exceeds this target, window growth is withheld and
+    /// goodput-guarded shrink experiments run preferentially, so standing queueing delay
+    /// converges toward the target wherever the broker's drain capacity allows it.
     /// <see cref="Acks.None"/> keeps the normal controller window because no acknowledgement
     /// can end the startup phase.
     /// Set to 0 to disable the bound entirely. Default: 10.

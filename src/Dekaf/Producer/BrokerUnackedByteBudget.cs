@@ -82,7 +82,6 @@ internal sealed class BrokerUnackedByteBudget
     private long _nextAdmissionFlushClaim;
     private long _probeStartedTimestamp;
     private double _latencyBudgetScale = 1;
-    private long _latencyCeilingBytes;
 
     // Single-writer state. Production supplies one request wave here; the first successful
     // acknowledgement permanently hands admission back to the adaptive window controller.
@@ -105,15 +104,15 @@ internal sealed class BrokerUnackedByteBudget
         if (initialRequestBytes <= 0)
             initialRequestBytes = Math.Clamp(64 * 1024, floor, cap);
 
-        // The latency ceiling shares the cold-start gate's arming condition (no explicit cap
-        // override, acknowledgements exist to measure) plus a positive latency target: with
-        // no target there is no delay budget to convert measured drain into a byte bound.
+        // The latency governor shares the cold-start gate's arming condition (no explicit cap
+        // override, acknowledgements exist to pace the slow start) plus a positive latency
+        // target: with no target there is no delay budget for the descent bias to enforce.
         _controller = new BrokerWindowController(
             targetSeconds,
             floor,
             cap,
             initialRequestBytes,
-            latencyCeilingEnabled: coldStartBudgetBytes is not null && targetSeconds > 0);
+            latencyGovernorEnabled: coldStartBudgetBytes is not null && targetSeconds > 0);
         if (coldStartBudgetBytes is { } coldStartBudget)
         {
             _coldStartBudgetBytes = Math.Clamp(coldStartBudget, floor, _controller.WindowBytes);
@@ -148,7 +147,6 @@ internal sealed class BrokerUnackedByteBudget
     internal long PipelineBatchCount => Volatile.Read(ref _pipelineBatchCount);
     internal long DeliveryLatencyEwmaMicros => Volatile.Read(ref _deliveryLatencyEwmaMicros);
     internal double LatencyBudgetScale => Volatile.Read(ref _latencyBudgetScale);
-    internal long LatencyCeilingBytes => Volatile.Read(ref _latencyCeilingBytes);
 
     /// <summary>
     /// Atomically reserves logical bytes. One reservation larger than the current window may
@@ -474,7 +472,6 @@ internal sealed class BrokerUnackedByteBudget
             ref _deliveryLatencyEwmaMicros,
             _controller.ControlledDelayEwmaTicks * 1_000_000 / Stopwatch.Frequency);
         Volatile.Write(ref _latencyBudgetScale, _controller.WindowScale);
-        Volatile.Write(ref _latencyCeilingBytes, _controller.LatencyCeilingBytes);
         Volatile.Write(ref _capacityProbeSuccessCount, _controller.CapacityProbeSuccessCount);
         Volatile.Write(ref _capacityProbeFailureCount, _controller.CapacityProbeFailureCount);
 
