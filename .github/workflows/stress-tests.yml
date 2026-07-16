@@ -1,5 +1,5 @@
 name: Stress Tests
-run-name: Stress Tests (${{ github.event.inputs.lane || 'all' }}${{ github.event_name == 'workflow_dispatch' && ' / dekaf only' || '' }}${{ github.event.inputs.dispatch_shape != 'lane-default' && github.event.inputs.dispatch_shape && format(' / {0}', github.event.inputs.dispatch_shape) || '' }})
+run-name: Stress Tests (${{ github.event.inputs.lane || 'all' }}${{ github.event_name == 'workflow_dispatch' && ' / dekaf only' || '' }}${{ github.event.inputs.dispatch_shape != 'lane-default' && github.event.inputs.dispatch_shape && format(' / {0}', github.event.inputs.dispatch_shape) || '' }}${{ github.event.inputs.baseline_sha && ' / exact-SHA A-B-A' || '' }})
 
 on:
   schedule:
@@ -12,7 +12,8 @@ on:
       # Confluent's numbers don't change with Dekaf code, so the paired
       # comparison (and docs/history publishing) happens exclusively on the
       # weekly scheduled run. Manual dispatches also default to the cheap
-      # dispatch_shape (below).
+      # dispatch_shape (below); baseline_sha explicitly replaces it with three
+      # baseline/candidate/baseline segments for one supported producer lane.
       lane:
         description: 'Stress lane to run (one paid runner job per lane; "all" runs every lane — Dekaf only, never publishes)'
         required: true
@@ -69,6 +70,10 @@ on:
           - cheap
           - cheap-with-3conn
           - lane-default
+      baseline_sha:
+        description: 'Duration-based producer lanes only: exact SHA for baseline → candidate → baseline; triples duration and blocks on regression/noisy controls'
+        required: false
+        default: ''
       profile_mode:
         description: 'Attach phased diagnostics to one Dekaf lane (off for normal acceptance runs)'
         required: false
@@ -124,6 +129,7 @@ jobs:
         env:
           LANE: ${{ github.event.inputs.lane }}
           DISPATCH_SHAPE: ${{ github.event.inputs.dispatch_shape }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
           PROFILE_MODE: ${{ github.event.inputs.profile_mode }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -176,6 +182,29 @@ jobs:
             exit 1
           fi
 
+          baseline_sha="$BASELINE_SHA"
+          if [ -n "$baseline_sha" ]; then
+            if ! [[ "$baseline_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "::error::baseline_sha must be an exact 40-character Git SHA."
+              exit 1
+            fi
+            if [ "$lane" = "all" ]; then
+              echo "::error::Exact-SHA A-B-A requires one explicit lane."
+              exit 1
+            fi
+            if [ "$profile_mode" != "off" ]; then
+              echo "::error::Exact-SHA A-B-A and profiling are separate measurement modes."
+              exit 1
+            fi
+            case "$lane" in
+              producer-1b|producer-3b|producer-idempotent-1b|producer-idempotent-3b|producer-acks-all-1b|producer-acks-all-3b) ;;
+              *)
+                echo "::error::Exact-SHA A-B-A requires a duration-based producer lane with delivery-latency metrics."
+                exit 1
+                ;;
+            esac
+          fi
+
           # timeout_minutes rationale: at a 30-minute dispatch the paired_samples=2
           # lanes run four paired client durations plus one 3-connection duration
           # (180 min); acks-all 1-broker runs four measured durations (150 min);
@@ -208,10 +237,10 @@ jobs:
           # cheap-with-3conn and lane-default keep it where the lane defines
           # it). timeout_minutes scales down proportionally to the measured
           # durations that survive the overrides, so a hung reduced dispatch
-          # cannot hold a paid runner for the full-shape budget; profile runs
-          # keep the lane budget because attach tooling adds overhead outside
-          # that per-duration model.
-          matrix=$(jq -c --arg lane "$lane" --arg client "$client" --arg shape "$shape" --arg profile_mode "$profile_mode" '
+          # cannot hold a paid runner for the full-shape budget. A-B-A reserves
+          # three segment budgets; profile runs keep the lane budget because
+          # attach tooling adds overhead outside that per-duration model.
+          matrix=$(jq -c --arg lane "$lane" --arg client "$client" --arg shape "$shape" --arg profile_mode "$profile_mode" --arg baseline_sha "$baseline_sha" '
             def segments: ((.paired_samples // 1) * (if .client == "all" then 2 else 1 end)) + (if .run_3conn == true then 1 else 0 end);
             def drop_3conn: .run_3conn = false | .artifact_suffix = "";
             {include: [ .[]
@@ -224,7 +253,14 @@ jobs:
                 else . end
               | if $shape != "" then .paired_samples = 1 else . end
               | if $shape == "cheap" then drop_3conn else . end
-              | if $profile_mode != "off" then
+              | if $baseline_sha != "" then
+                  .baseline_sha = $baseline_sha
+                  | .client = "dekaf"
+                  | .paired_samples = 1
+                  | drop_3conn
+                  | .artifact_suffix = "-aba"
+                  | .timeout_minutes = $segment_budget * 3
+                elif $profile_mode != "off" then
                   .client = "dekaf"
                   | .paired_samples = 1
                   | .run_3conn = false
@@ -245,7 +281,7 @@ jobs:
           # the published tables carry. The scheduled run has no inputs, so it
           # is always the unmodified paired full matrix.
           echo "full_run=$([ "$EVENT_NAME" = "schedule" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "Selected $count lane(s) for '$lane'${client:+ (client override: $client)}${shape:+ (shape: $shape)}${profile_mode:+ (profile: $profile_mode)}"
+          echo "Selected $count lane(s) for '$lane'${client:+ (client override: $client)}${shape:+ (shape: $shape)}${profile_mode:+ (profile: $profile_mode)}${baseline_sha:+ (baseline A-B-A: $baseline_sha)}"
 
   # Run each scenario in parallel. Comparable clients run sequentially inside the
   # same job/VM so published ratios share hardware and noisy-neighbor conditions;
@@ -282,6 +318,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Checkout exact baseline
+        if: matrix.baseline_sha != ''
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.baseline_sha }}
+          path: baseline-source
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v6.0.0
         with:
@@ -303,8 +346,12 @@ jobs:
             dotnet tool install --global dotnet-gcdump --version 9.0.661903
           fi
 
-      - name: Build Stress Tests
+      - name: Build Stress Tests (candidate)
         run: dotnet build tools/Dekaf.StressTests --configuration Release
+
+      - name: Build Stress Tests (exact baseline)
+        if: matrix.baseline_sha != ''
+        run: dotnet build baseline-source/tools/Dekaf.StressTests --configuration Release
 
       - name: Start Kafka
         if: matrix.brokers == 1
@@ -366,6 +413,7 @@ jobs:
           STRESS_BROKER_TMPFS: ${{ env.BROKER_TMPFS }}
           STRESS_BROKER_HEAP: ${{ env.BROKER_HEAP }}
           PROFILE_MODE: ${{ github.event.inputs.profile_mode || 'off' }}
+          BASELINE_SHA: ${{ matrix.baseline_sha }}
         run: |
           # Background disk monitor: samples every broker's log-dir usage so a tmpfs
           # fill (ingestion outpacing retention — the known broker-halt failure mode)
@@ -391,7 +439,6 @@ jobs:
           DISK_MONITOR_PID=$!
           trap 'kill $DISK_MONITOR_PID 2>/dev/null || true' EXIT
 
-          cd tools/Dekaf.StressTests
           # Consumer fetch diagnostics are opt-in: they add Dekaf-only overhead inside the
           # measured window, so measurement runs keep them off and debug dispatches enable them.
           # An array so multi-token additions stay separate argv entries: appending a
@@ -401,6 +448,45 @@ jobs:
           if [ "${{ github.event.inputs.consumer_fetch_diagnostics }}" = "true" ]; then
             EXTRA_ARGS+=(--consumer-fetch-diagnostics)
           fi
+
+          if [ -n "$BASELINE_SHA" ]; then
+            run_aba() {
+              label="$1"
+              project_dir="$2"
+              output_dir="$3"
+              echo "Running exact-SHA A-B-A segment: $label"
+              taskset -c "${CLIENT_CPUS}" dotnet run \
+                --project "$project_dir/Dekaf.StressTests.csproj" \
+                --configuration Release --no-build -- \
+                --duration ${{ github.event.inputs.duration_minutes || '15' }} \
+                --message-size ${{ matrix.message_size || github.event.inputs.message_size || '1000' }} \
+                --scenario ${{ matrix.scenario }} \
+                --client dekaf \
+                --brokers ${{ matrix.brokers }} \
+                --connections-per-broker 1 \
+                --producer-delivery-diagnostics \
+                --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
+                --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
+                "${EXTRA_ARGS[@]}" \
+                --output "$output_dir"
+            }
+
+            run_aba \
+              baseline-a \
+              "$GITHUB_WORKSPACE/baseline-source/tools/Dekaf.StressTests" \
+              "$GITHUB_WORKSPACE/aba-results/baseline-a"
+            run_aba \
+              candidate-b \
+              "$GITHUB_WORKSPACE/tools/Dekaf.StressTests" \
+              "$GITHUB_WORKSPACE/tools/Dekaf.StressTests/results"
+            run_aba \
+              baseline-a2 \
+              "$GITHUB_WORKSPACE/baseline-source/tools/Dekaf.StressTests" \
+              "$GITHUB_WORKSPACE/aba-results/baseline-a2"
+            exit 0
+          fi
+
+          cd tools/Dekaf.StressTests
           # Client pinned to its own cores: whichever client pushes more through the
           # same cores is genuinely faster, instead of both saturating the broker.
           paired_samples=${{ matrix.paired_samples || 1 }}
@@ -496,6 +582,20 @@ jobs:
           fi
           echo "Broker container is running"
 
+      - name: Compare exact baseline A-B-A
+        id: aba-comparison
+        if: always() && matrix.baseline_sha != ''
+        run: >-
+          python3 .github/scripts/stress_aba.py
+          --baseline-a aba-results/baseline-a
+          --candidate tools/Dekaf.StressTests/results
+          --baseline-a2 aba-results/baseline-a2
+          --baseline-sha "${{ matrix.baseline_sha }}"
+          --candidate-sha "${{ github.sha }}"
+          --output aba-results/comparison.json
+          --summary "$GITHUB_STEP_SUMMARY"
+          --github-output "$GITHUB_OUTPUT"
+
       - name: Upload Results
         if: always()
         uses: actions/upload-artifact@v7
@@ -504,6 +604,14 @@ jobs:
           path: |
             tools/Dekaf.StressTests/results/
             broker-disk.log
+          retention-days: 90
+
+      - name: Upload exact baseline A-B-A controls
+        if: always() && matrix.baseline_sha != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: aba-controls-${{ matrix.scenario }}-${{ matrix.brokers }}brokers
+          path: aba-results/
           retention-days: 90
 
       - name: Stop Kafka
