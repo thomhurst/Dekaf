@@ -175,15 +175,26 @@ def _metric_status(
             worse_than_both = candidate < min(baseline_a, baseline_a2) * (
                 1 - tolerance_percent / 100
             )
+            better_than_both = candidate >= max(baseline_a, baseline_a2)
             adverse = delta_percent < -tolerance_percent
         else:
             worse_than_both = candidate > max(baseline_a, baseline_a2) * (
                 1 + tolerance_percent / 100
             )
+            better_than_both = candidate <= min(baseline_a, baseline_a2)
             adverse = delta_percent > tolerance_percent
 
+        # Symmetric decisiveness overrides for noisy controls: a candidate worse than both
+        # bracketing controls by more than the tolerance is a regression no matter how far
+        # apart the controls sit, and a candidate at least as good as the better control
+        # cannot have regressed under any reading of the data — control drift only matters
+        # for candidates the controls actually bracket (run 29525842754: the candidate beat
+        # both controls on p99 yet was ruled inconclusive because the controls disagreed
+        # with each other by 12%).
         if worse_than_both:
             status = "regression"
+        elif better_than_both:
+            status = "pass"
         elif control_drift_percent > max_control_drift_percent:
             status = "inconclusive"
         elif adverse:
