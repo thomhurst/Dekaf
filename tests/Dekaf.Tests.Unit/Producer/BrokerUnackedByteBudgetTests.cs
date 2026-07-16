@@ -14,12 +14,12 @@ public sealed class BrokerUnackedByteBudgetTests
     private static long Seconds(double seconds) => (long)(seconds * Stopwatch.Frequency);
 
     [Test]
-    public async Task InitialWindow_IsFourRequestQuanta()
+    public async Task InitialWindow_IsSixteenFixedRequestQuanta()
     {
         var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(400);
-        await Assert.That(budget.Phase).IsEqualTo(BrokerWindowPhase.Startup);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_600);
+        await Assert.That(budget.Phase).IsEqualTo(BrokerWindowPhase.Steady);
     }
 
     [Test]
@@ -27,14 +27,14 @@ public sealed class BrokerUnackedByteBudgetTests
     {
         var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
 
-        await Assert.That(budget.TryReserve(250, out var firstGeneration)).IsTrue();
-        await Assert.That(budget.TryReserve(150, out var secondGeneration)).IsTrue();
+        await Assert.That(budget.TryReserve(1_000, out var firstGeneration)).IsTrue();
+        await Assert.That(budget.TryReserve(600, out var secondGeneration)).IsTrue();
         await Assert.That(budget.TryReserve(1, out _)).IsFalse();
-        await Assert.That(budget.UnackedBytes).IsEqualTo(400);
+        await Assert.That(budget.UnackedBytes).IsEqualTo(1_600);
         await Assert.That(firstGeneration).IsEqualTo(budget.CurrentGeneration);
         await Assert.That(secondGeneration).IsEqualTo(budget.CurrentGeneration);
 
-        budget.Release(400);
+        budget.Release(1_600);
         await Assert.That(budget.UnackedBytes).IsEqualTo(0);
     }
 
@@ -63,7 +63,7 @@ public sealed class BrokerUnackedByteBudgetTests
                 Interlocked.Increment(ref successes);
         });
 
-        await Assert.That(successes).IsEqualTo(40);
+        await Assert.That(successes).IsEqualTo(160);
         await Assert.That(budget.UnackedBytes).IsEqualTo(budget.BudgetBytes);
         budget.Release(successes * 10L);
     }
@@ -81,14 +81,19 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task Startup_GrowsWindowWhenDemandAndGoodputExist()
+    public async Task FragmentedAcknowledgements_DoNotRedefineWindowQuantum()
     {
         var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
         budget.CompleteAckedPass(T0);
 
-        DriveBudgetEpoch(budget, T0 + Seconds(0.110), logicalBytes: 100, rttSeconds: 0.001);
+        var now = T0;
+        for (var i = 0; i < 4; i++)
+        {
+            now += Seconds(0.510);
+            DriveBudgetEpoch(budget, now, logicalBytes: 10, rttSeconds: 0.001);
+        }
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(800);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_600);
         await Assert.That(budget.MaxRateBytesPerSecond).IsGreaterThan(0);
     }
 
@@ -98,31 +103,32 @@ public sealed class BrokerUnackedByteBudgetTests
         var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
         var initialGeneration = budget.CurrentGeneration;
         budget.CompleteAckedPass(T0);
-        DriveBudgetEpoch(budget, T0 + Seconds(0.110), 100, 0.001);
-        var grownWindow = budget.BudgetBytes;
+        var initialWindow = budget.BudgetBytes;
 
         DriveBudgetEpoch(
             budget,
-            T0 + Seconds(0.220),
+            T0 + Seconds(0.510),
             100,
             0.001,
-            admissionGeneration: initialGeneration);
+            admissionGeneration: initialGeneration - 1);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(grownWindow);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(initialWindow);
     }
 
     [Test]
-    public async Task PersistentQueueDelay_EntersRecoveryAndCutsWindow()
+    public async Task PersistentQueueDelay_DoesNotBypassSettledProbeSchedule()
     {
         var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
         budget.CompleteAckedPass(T0);
-        DriveBudgetEpoch(budget, T0 + Seconds(0.110), 100, 0.001);
-        var grownWindow = budget.BudgetBytes;
+        DriveBudgetEpoch(budget, T0 + Seconds(0.510), 100, 0.001);
+        var initialWindow = budget.BudgetBytes;
 
-        DriveBudgetEpoch(budget, T0 + Seconds(0.220), 100, 0.030);
+        DriveBudgetEpoch(budget, T0 + Seconds(1.020), 100, 0.030);
+        DriveBudgetEpoch(budget, T0 + Seconds(1.530), 100, 0.030);
+        DriveBudgetEpoch(budget, T0 + Seconds(2.040), 100, 0.030);
 
-        await Assert.That(budget.Phase).IsEqualTo(BrokerWindowPhase.Recovery);
-        await Assert.That(budget.BudgetBytes).IsLessThan(grownWindow);
+        await Assert.That(budget.Phase).IsEqualTo(BrokerWindowPhase.Steady);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(initialWindow);
         await Assert.That(budget.DeliveryLatencyEwmaMicros).IsGreaterThan(0);
     }
 
@@ -137,14 +143,15 @@ public sealed class BrokerUnackedByteBudgetTests
 
         var baselineWindow = controller.WindowBytes;
         BrokerWindowDecision decision = default;
-        for (var i = 0; i < 20 && controller.Phase != BrokerWindowPhase.ProbeDown; i++)
+        for (var i = 0; i < 100 && controller.Phase != BrokerWindowPhase.ProbeDown; i++)
             decision = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
 
         await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.ProbeDown);
         await Assert.That(controller.WindowBytes).IsLessThan(baselineWindow);
         var probedWindow = controller.WindowBytes;
 
-        decision = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        for (var i = 0; i < 3; i++)
+            decision = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
 
         await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Succeeded);
         await Assert.That(controller.WindowBytes).IsEqualTo(probedWindow);
@@ -166,47 +173,30 @@ public sealed class BrokerUnackedByteBudgetTests
 
         while (controller.Phase != BrokerWindowPhase.ProbeUp)
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
-        var baselineWindow = (long)Math.Floor(controller.WindowBytes / 1.125);
+        var baselineWindow = controller.WindowBytes - controller.RequestQuantumBytes;
 
-        var decision = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        BrokerWindowDecision decision = default;
+        for (var i = 0; i < 3; i++)
+            decision = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
 
         await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
-        await Assert.That(controller.WindowBytes).IsLessThanOrEqualTo(baselineWindow + 1);
+        await Assert.That(controller.WindowBytes).IsEqualTo(baselineWindow);
         await Assert.That(controller.CapacityProbeFailureCount).IsEqualTo(1);
     }
 
     [Test]
-    public async Task RttProbe_DrainsThenRestoresSteadyWindow()
+    public async Task CapacityProbes_NeverShrinkBelowFixedPipelineFloor()
     {
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
         _ = controller.CompleteInterval(admissionBlocks, 0, now);
-        ReachSteady(controller, ref now, ref admissionBlocks);
-        var steadyWindow = controller.WindowBytes;
+        _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks, rttSeconds: 0.001);
+        for (var i = 0; i < 1_000; i++)
+            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks, rttSeconds: 0.050);
 
-        now = T0 + Seconds(10.1);
-        admissionBlocks++;
-        controller.RecordAcknowledgement(
-            logicalBytes: 100,
-            rttTicks: Seconds(0.001),
-            sealToSendTicks: 0,
-            appLimited: false,
-            controller.Generation,
-            now);
-        var started = controller.CompleteInterval(
-            admissionBlocks,
-            controller.WindowBytes,
-            now);
-
-        await Assert.That(started.ProbeType).IsEqualTo(BrokerBudgetProbeType.MinimumRtt);
-        await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.ProbeRtt);
-        await Assert.That(controller.WindowBytes).IsLessThanOrEqualTo(steadyWindow);
-
-        var completed = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
-        await Assert.That(completed.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Succeeded);
-        await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.Steady);
-        await Assert.That(controller.WindowBytes).IsEqualTo(steadyWindow);
+        await Assert.That(controller.RequestQuantumBytes).IsEqualTo(100);
+        await Assert.That(controller.WindowBytes).IsGreaterThanOrEqualTo(800);
     }
 
     [Test]
@@ -219,8 +209,8 @@ public sealed class BrokerUnackedByteBudgetTests
         };
         var batch = new PartitionBatch(new TopicPartition("topic", 0), options);
         var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
-        const int reservedBytes = 200;
-        await Assert.That(budget.TryReserve(reservedBytes, out var generation)).IsTrue();
+        const int leaseBytes = 1_024;
+        await Assert.That(budget.TryReserve(leaseBytes, out var generation)).IsTrue();
 
         var append = batch.TryAppendFromSpans(
             timestamp: 1,
@@ -232,14 +222,52 @@ public sealed class BrokerUnackedByteBudgetTests
             headerCount: 0,
             completionSource: null,
             callback: null,
-            estimatedSize: reservedBytes);
-        batch.AddAdmissionReservation(budget, generation, reservedBytes);
+            estimatedSize: 200);
+        batch.AddAdmissionLease(budget, generation, leaseBytes);
         var ready = batch.Complete()!;
 
         await Assert.That(append.Success).IsTrue();
         await Assert.That(ready.UnackedReservedBytes).IsEqualTo(ready.DataSize);
         await Assert.That(budget.UnackedBytes).IsEqualTo(ready.DataSize);
 
+        ready.Fail(new InvalidOperationException("test cleanup"));
+        ready.Reset();
+        await Assert.That(budget.UnackedBytes).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task PartitionBatch_MultipleRecordsReuseOneBrokerLease()
+    {
+        var batch = new PartitionBatch(
+            new TopicPartition("topic", 0),
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                BatchSize = 1_024
+            });
+        var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
+        await Assert.That(budget.TryReserve(1_024, out var generation)).IsTrue();
+        batch.AddAdmissionLease(budget, generation, 1_024);
+
+        for (var i = 0; i < 2; i++)
+        {
+            var append = batch.TryAppendFromSpans(
+                timestamp: i + 1,
+                keyData: ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                valueData: new byte[10],
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                estimatedSize: 64);
+            await Assert.That(append.Success).IsTrue();
+            await Assert.That(budget.UnackedBytes).IsEqualTo(1_024);
+        }
+
+        var ready = batch.Complete()!;
+        await Assert.That(budget.UnackedBytes).IsEqualTo(ready.DataSize);
         ready.Fail(new InvalidOperationException("test cleanup"));
         ready.Reset();
         await Assert.That(budget.UnackedBytes).IsEqualTo(0);
@@ -257,14 +285,14 @@ public sealed class BrokerUnackedByteBudgetTests
             });
         var oldBudget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
         var newBudget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
-        _ = oldBudget.TryReserve(100, out var oldGeneration);
-        _ = newBudget.TryReserve(100, out var newGeneration);
+        _ = oldBudget.TryReserve(1_024, out var oldGeneration);
+        _ = newBudget.TryReserve(1_024, out var newGeneration);
 
-        batch.AddAdmissionReservation(oldBudget, oldGeneration, 100);
-        batch.AddAdmissionReservation(newBudget, newGeneration, 100);
+        batch.AddAdmissionLease(oldBudget, oldGeneration, 1_024);
+        batch.AddAdmissionLease(newBudget, newGeneration, 1_024);
 
         await Assert.That(oldBudget.UnackedBytes).IsEqualTo(0);
-        await Assert.That(newBudget.UnackedBytes).IsEqualTo(200);
+        await Assert.That(newBudget.UnackedBytes).IsEqualTo(2_048);
         await Assert.That(batch.Complete()).IsNull();
         await Assert.That(newBudget.UnackedBytes).IsEqualTo(0);
     }
@@ -318,9 +346,6 @@ public sealed class BrokerUnackedByteBudgetTests
         ref long now,
         ref long admissionBlocks)
     {
-        for (var i = 0; i < 10 && controller.Phase != BrokerWindowPhase.Steady; i++)
-            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
-
         if (controller.Phase != BrokerWindowPhase.Steady)
             throw new InvalidOperationException("Controller did not leave startup.");
     }
@@ -331,7 +356,7 @@ public sealed class BrokerUnackedByteBudgetTests
         ref long admissionBlocks,
         double rttSeconds = 0.001)
     {
-        now += Seconds(0.110);
+        now += Seconds(0.510);
         admissionBlocks++;
         controller.RecordAcknowledgement(
             logicalBytes: 100,
