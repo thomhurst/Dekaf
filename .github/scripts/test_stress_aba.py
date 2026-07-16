@@ -103,6 +103,15 @@ class StressAbaComparisonTests(unittest.TestCase):
         self.assertEqual("inconclusive", throughput["status"])
         self.assertAlmostEqual(20.0, throughput["controlDriftPercent"])
 
+    def test_decisive_regression_overrides_noisy_controls(self):
+        comparison = compare(result(100), result(70), result(130))
+
+        self.assertEqual("regression", comparison["verdict"])
+        throughput = next(
+            metric for metric in comparison["metrics"] if metric["key"] == "throughput"
+        )
+        self.assertEqual("regression", throughput["status"])
+
     def test_candidate_errors_force_regression(self):
         comparison = compare(result(), result(errors=1), result())
 
@@ -145,7 +154,6 @@ class StressAbaComparisonTests(unittest.TestCase):
                 )
             output = root / "comparison.json"
             summary = root / "summary.md"
-            github_output = root / "github-output.txt"
 
             with contextlib.redirect_stdout(io.StringIO()):
                 exit_code = main(
@@ -164,15 +172,12 @@ class StressAbaComparisonTests(unittest.TestCase):
                         str(output),
                         "--summary",
                         str(summary),
-                        "--github-output",
-                        str(github_output),
                     ]
                 )
 
             self.assertEqual(0, exit_code)
             self.assertEqual("pass", json.loads(output.read_text())["verdict"])
             self.assertIn("Verdict: PASS", summary.read_text(encoding="utf-8"))
-            self.assertIn("verdict=pass", github_output.read_text(encoding="utf-8"))
 
 
 class StressAbaWorkflowTests(unittest.TestCase):

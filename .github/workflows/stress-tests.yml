@@ -583,7 +583,6 @@ jobs:
           echo "Broker container is running"
 
       - name: Compare exact baseline A-B-A
-        id: aba-comparison
         if: always() && matrix.baseline_sha != ''
         run: >-
           python3 .github/scripts/stress_aba.py
@@ -594,7 +593,6 @@ jobs:
           --candidate-sha "${{ github.sha }}"
           --output aba-results/comparison.json
           --summary "$GITHUB_STEP_SUMMARY"
-          --github-output "$GITHUB_OUTPUT"
 
       - name: Upload Results
         if: always()

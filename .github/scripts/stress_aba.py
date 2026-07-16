@@ -284,23 +284,6 @@ def markdown(comparison, baseline_sha, candidate_sha):
     return "\n".join(lines) + "\n"
 
 
-def _write_github_output(path, comparison):
-    if not path:
-        return
-    regressions = sum(
-        item["status"] == "regression" for item in comparison["metrics"]
-    )
-    if comparison["candidateErrors"] or comparison["candidateDeliveryMismatch"]:
-        regressions += 1
-    inconclusive = sum(
-        item["status"] == "inconclusive" for item in comparison["metrics"]
-    )
-    with Path(path).open("a", encoding="utf-8") as handle:
-        handle.write(f"verdict={comparison['verdict']}\n")
-        handle.write(f"regressions={regressions}\n")
-        handle.write(f"inconclusive_metrics={inconclusive}\n")
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-a", required=True)
@@ -310,7 +293,6 @@ def main(argv=None):
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--summary")
-    parser.add_argument("--github-output")
     parser.add_argument(
         "--tolerance-percent", type=float, default=DEFAULT_TOLERANCE_PERCENT
     )
@@ -337,7 +319,6 @@ def main(argv=None):
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as handle:
             handle.write(report)
-    _write_github_output(args.github_output, comparison)
     return 0 if comparison["verdict"] == "pass" else 1
 
 
