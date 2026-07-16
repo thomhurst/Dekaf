@@ -29,6 +29,13 @@ internal readonly record struct BrokerWindowDecision(
 /// </summary>
 internal sealed class BrokerWindowController
 {
+    private enum CapacityProbeStage : byte
+    {
+        TreatmentBefore,
+        Baseline,
+        TreatmentAfter
+    }
+
     private const int SizeBucketCount = 16;
     private const int SizeBucketShift = 8;
     // The control run sustained its knee at roughly seven full requests. One extra quantum
@@ -39,15 +46,20 @@ internal sealed class BrokerWindowController
     // and search downward. This avoids throughput-biased learning from a starved startup.
     private const int InitialRequestQuanta = 16;
     // Treatments are deliberately sparse and settled: frequent sub-second window changes
-    // caused self-inflicted admission stalls that looked like congestion.
+    // caused self-inflicted admission stalls that looked like congestion. Each experiment is
+    // a B-A-B sandwich (3s candidate, 6s baseline, 3s candidate after a 1s washout at each
+    // transition), which cancels a linear runner trend instead of comparing one temporal
+    // slice with one 1.5-second vote.
     private const int ProbeIntervalEpochs = 60;
-    private const int ProbeEvaluationEpochs = 3;
+    private const int ProbeSettleEpochs = 2;
+    private const int OuterProbeEvaluationEpochs = 6;
+    private const int BaselineProbeEvaluationEpochs = 12;
     // A treatment must not remain active forever if coalescing briefly mixes generations.
     // Four unqualified epochs bound the experiment to roughly two extra seconds.
     private const int MaximumUnqualifiedProbeEpochs = 4;
     private const double UpProbeMultiplier = 1.125;
     private const double DownProbeMultiplier = 0.875;
-    private const double UpProbeGoodputThreshold = 1.01;
+    private const double UpProbeGoodputThreshold = 1.03;
     private const double DownProbeGoodputThreshold = 0.99;
     private const double DelayGrowthTolerance = 1.25;
     private const double EwmaWeight = 0.125;
@@ -73,7 +85,6 @@ internal sealed class BrokerWindowController
     private bool _epochLoaded;
 
     private double _controlledDelayEwmaTicks;
-    private double _goodputEwmaBytesPerSecond;
     private double _maximumGoodputBytesPerSecond;
     private long _minimumRttTicks;
     private long _lastAdmissionBlockEvents;
@@ -81,9 +92,14 @@ internal sealed class BrokerWindowController
     private int _epochsUntilProbe = ProbeIntervalEpochs;
     private bool _probeDownNext = true;
     private long _probeBaselineWindow;
+    private long _probeCandidateWindow;
+    private CapacityProbeStage _probeStage;
+    private double _probeTreatmentBeforeGoodput;
+    private double _probeTreatmentBeforeDelayTicks;
     private double _probeBaselineGoodput;
     private double _probeBaselineDelayTicks;
     private int _probeEvaluationCount;
+    private int _probeSettleEpochsRemaining;
     private int _unqualifiedProbeEpochs;
     private double _probeGoodputTotal;
     private double _probeDelayTotalTicks;
@@ -125,6 +141,8 @@ internal sealed class BrokerWindowController
         }
         if (_probeBaselineWindow > _capBytes)
             _probeBaselineWindow = _capBytes;
+        if (_probeCandidateWindow > _capBytes)
+            _probeCandidateWindow = _capBytes;
 
         return CurrentDecision();
     }
@@ -184,10 +202,7 @@ internal sealed class BrokerWindowController
 
         var goodput = _epochBytes * (double)Stopwatch.Frequency / elapsedTicks;
         if (goodput > 0)
-        {
-            _goodputEwmaBytesPerSecond = UpdateEwma(_goodputEwmaBytesPerSecond, goodput);
             _maximumGoodputBytesPerSecond = Math.Max(_maximumGoodputBytesPerSecond, goodput);
-        }
 
         var generationQualified = _epochCurrentGenerationBytes > 0
             && _epochCurrentGenerationBytes >= _epochBytes / 2 + _epochBytes % 2;
@@ -197,7 +212,7 @@ internal sealed class BrokerWindowController
         var admissionPressure = admissionBlockEvents != _lastAdmissionBlockEvents;
         // Occupancy is a demand signal, not a floor. A floor would make the lower-window
         // treatment impossible to test; the 99% goodput guard below reverts a harmful probe
-        // after three qualified epochs instead.
+        // after the paired experiment instead.
         var occupancyPressure = observedOutstandingBytes
             >= _windowBytes - _windowBytes / 4;
         var demand = admissionPressure || occupancyPressure || _epochLoaded;
@@ -223,17 +238,14 @@ internal sealed class BrokerWindowController
 
         return _phase switch
         {
-            BrokerWindowPhase.Steady => UpdateSteady(goodput, controlledDelayTicks, demand),
+            BrokerWindowPhase.Steady => UpdateSteady(demand),
             BrokerWindowPhase.ProbeUp or BrokerWindowPhase.ProbeDown =>
                 EvaluateCapacityProbe(goodput, controlledDelayTicks),
             _ => CurrentDecision()
         };
     }
 
-    private BrokerWindowDecision UpdateSteady(
-        double goodput,
-        double controlledDelayTicks,
-        bool demand)
+    private BrokerWindowDecision UpdateSteady(bool demand)
     {
         if (!demand)
             return CurrentDecision();
@@ -242,7 +254,7 @@ internal sealed class BrokerWindowController
             return CurrentDecision();
 
         if (_probeDownNext && _windowBytes > MinimumWindowBytes)
-            return StartDownProbe(goodput, controlledDelayTicks);
+            return StartDownProbe();
 
         var requestedWindow = Math.Min(
             _capBytes,
@@ -251,45 +263,38 @@ internal sealed class BrokerWindowController
                 (long)Math.Ceiling(_windowBytes * UpProbeMultiplier)));
         return StartCapacityProbe(
             BrokerWindowPhase.ProbeUp,
-            requestedWindow,
-            goodput,
-            controlledDelayTicks);
+            requestedWindow);
     }
 
-    private BrokerWindowDecision StartDownProbe(
-        double goodput,
-        double controlledDelayTicks)
+    private BrokerWindowDecision StartDownProbe()
     {
         var requestedWindow = Math.Max(
             MinimumWindowBytes,
             (long)Math.Floor(_windowBytes * DownProbeMultiplier));
         return StartCapacityProbe(
             BrokerWindowPhase.ProbeDown,
-            requestedWindow,
-            goodput,
-            controlledDelayTicks);
+            requestedWindow);
     }
 
     private BrokerWindowDecision StartCapacityProbe(
         BrokerWindowPhase phase,
-        long requestedWindow,
-        double goodput,
-        double controlledDelayTicks)
+        long requestedWindow)
     {
         _probeBaselineWindow = _windowBytes;
-        _probeBaselineGoodput = Math.Max(goodput, _goodputEwmaBytesPerSecond);
-        _probeBaselineDelayTicks = controlledDelayTicks;
-        _phase = phase;
-        _unqualifiedProbeEpochs = 0;
-        ResetProbeEvaluation();
-        SetWindow(requestedWindow);
-        if (_windowBytes == _probeBaselineWindow)
+        _probeCandidateWindow = NormalizeWindow(requestedWindow);
+        if (_probeCandidateWindow == _probeBaselineWindow)
         {
-            _phase = BrokerWindowPhase.Steady;
             _probeDownNext = phase == BrokerWindowPhase.ProbeUp;
             _epochsUntilProbe = ProbeIntervalEpochs;
             return CurrentDecision();
         }
+
+        _phase = phase;
+        _probeStage = CapacityProbeStage.TreatmentBefore;
+        _unqualifiedProbeEpochs = 0;
+        ResetProbeExperiment();
+        _probeSettleEpochsRemaining = ProbeSettleEpochs;
+        SetWindow(_probeCandidateWindow);
 
         return CurrentDecision(
             BrokerBudgetProbeType.Capacity,
@@ -300,15 +305,48 @@ internal sealed class BrokerWindowController
         double goodput,
         double controlledDelayTicks)
     {
+        if (_probeSettleEpochsRemaining > 0)
+        {
+            _probeSettleEpochsRemaining--;
+            return CurrentDecision();
+        }
+
+        var requiredEpochs = _probeStage == CapacityProbeStage.Baseline
+            ? BaselineProbeEvaluationEpochs
+            : OuterProbeEvaluationEpochs;
         if (!TryCompleteProbeEvaluation(
-            goodput,
-            controlledDelayTicks,
-            out var averageGoodput,
-            out var averageControlledDelayTicks))
+                goodput,
+                controlledDelayTicks,
+                requiredEpochs,
+                out var averageGoodput,
+                out var averageControlledDelayTicks))
         {
             return CurrentDecision();
         }
 
+        if (_probeStage == CapacityProbeStage.TreatmentBefore)
+        {
+            _probeTreatmentBeforeGoodput = averageGoodput;
+            _probeTreatmentBeforeDelayTicks = averageControlledDelayTicks;
+            _probeStage = CapacityProbeStage.Baseline;
+            _probeSettleEpochsRemaining = ProbeSettleEpochs;
+            SetWindow(_probeBaselineWindow);
+            return CurrentDecision();
+        }
+
+        if (_probeStage == CapacityProbeStage.Baseline)
+        {
+            _probeBaselineGoodput = averageGoodput;
+            _probeBaselineDelayTicks = averageControlledDelayTicks;
+            _probeStage = CapacityProbeStage.TreatmentAfter;
+            _probeSettleEpochsRemaining = ProbeSettleEpochs;
+            SetWindow(_probeCandidateWindow);
+            return CurrentDecision();
+        }
+
+        var treatmentGoodput = (_probeTreatmentBeforeGoodput + averageGoodput) / 2;
+        var treatmentDelayTicks =
+            (_probeTreatmentBeforeDelayTicks + averageControlledDelayTicks) / 2;
         var probingUp = _phase == BrokerWindowPhase.ProbeUp;
         var delayLimit = Math.Max(
             _targetDelayTicks,
@@ -316,26 +354,23 @@ internal sealed class BrokerWindowController
         var goodputThreshold = probingUp
             ? UpProbeGoodputThreshold
             : DownProbeGoodputThreshold;
-        // Growing admitted capacity can add queueing, so an up treatment must also preserve
-        // the soft delay envelope. A down treatment cannot add admitted queue capacity; use
-        // goodput alone so transient RTT noise cannot veto a smaller, equally productive window.
-        var succeeded = averageGoodput >= _probeBaselineGoodput * goodputThreshold
-            && (!probingUp || averageControlledDelayTicks <= delayLimit);
-        return CompleteCapacityProbe(succeeded, averageGoodput);
+        // Seal-to-send plus network queueing omits pre-seal admission and batch-fill time, so
+        // it cannot veto a lower window. It remains a conservative guard against growing a
+        // window that raises the delay component the controller can observe.
+        var succeeded = treatmentGoodput >= _probeBaselineGoodput * goodputThreshold
+            && (!probingUp || treatmentDelayTicks <= delayLimit);
+        return CompleteCapacityProbe(succeeded);
     }
 
     private BrokerWindowDecision AbortUnqualifiedProbe() =>
-        CompleteCapacityProbe(succeeded: false, averageGoodput: 0);
+        CompleteCapacityProbe(succeeded: false);
 
-    private BrokerWindowDecision CompleteCapacityProbe(
-        bool succeeded,
-        double averageGoodput)
+    private BrokerWindowDecision CompleteCapacityProbe(bool succeeded)
     {
         var probingUp = _phase == BrokerWindowPhase.ProbeUp;
         if (succeeded)
         {
             CapacityProbeSuccessCount++;
-            _goodputEwmaBytesPerSecond = averageGoodput;
         }
         else
         {
@@ -344,10 +379,12 @@ internal sealed class BrokerWindowController
         }
 
         _phase = BrokerWindowPhase.Steady;
-        _probeDownNext = probingUp;
+        // Continue walking in a direction while it wins. A failed treatment reverses the
+        // next probe, converging on the knee instead of oscillating unconditionally.
+        _probeDownNext = probingUp ? !succeeded : succeeded;
         _epochsUntilProbe = ProbeIntervalEpochs;
         _unqualifiedProbeEpochs = 0;
-        ResetProbeEvaluation();
+        ResetProbeExperiment();
         return CurrentDecision(
             BrokerBudgetProbeType.Capacity,
             succeeded ? BrokerBudgetProbeOutcome.Succeeded : BrokerBudgetProbeOutcome.Failed);
@@ -360,16 +397,27 @@ internal sealed class BrokerWindowController
         _probeDelayTotalTicks = 0;
     }
 
+    private void ResetProbeExperiment()
+    {
+        _probeTreatmentBeforeGoodput = 0;
+        _probeTreatmentBeforeDelayTicks = 0;
+        _probeBaselineGoodput = 0;
+        _probeBaselineDelayTicks = 0;
+        _probeSettleEpochsRemaining = 0;
+        ResetProbeEvaluation();
+    }
+
     private bool TryCompleteProbeEvaluation(
         double goodput,
         double controlledDelayTicks,
+        int requiredEpochs,
         out double averageGoodput,
         out double averageControlledDelayTicks)
     {
         _probeEvaluationCount++;
         _probeGoodputTotal += goodput;
         _probeDelayTotalTicks += controlledDelayTicks;
-        if (_probeEvaluationCount < ProbeEvaluationEpochs)
+        if (_probeEvaluationCount < requiredEpochs)
         {
             averageGoodput = 0;
             averageControlledDelayTicks = 0;
@@ -425,6 +473,17 @@ internal sealed class BrokerWindowController
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void SetWindow(long requestedBytes)
     {
+        var next = NormalizeWindow(requestedBytes);
+        if (next == _windowBytes)
+            return;
+
+        _windowBytes = next;
+        _generation++;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private long NormalizeWindow(long requestedBytes)
+    {
         var minimum = MinimumWindowBytes;
         var next = Math.Clamp(requestedBytes, minimum, _capBytes);
         if (next > minimum && _requestQuantumBytes > 1)
@@ -433,11 +492,7 @@ internal sealed class BrokerWindowController
             next = Math.Max(next, minimum);
         }
 
-        if (next == _windowBytes)
-            return;
-
-        _windowBytes = next;
-        _generation++;
+        return next;
     }
 
     private long MinimumWindowBytes => Math.Clamp(

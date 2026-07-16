@@ -234,6 +234,54 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    public async Task PipelineBudgetCount_FollowsBatchRerouteAndExit()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = 1_000,
+            LingerMs = 0
+        };
+        var accumulator = new RecordAccumulator(
+            options,
+            resolveLeaderId: static (_, _) => 1);
+        ReadyBatch? batch = null;
+
+        try
+        {
+            await Assert.That(await AppendNullRecordAsync(accumulator)).IsTrue();
+
+            var firstBudget = accumulator.GetBrokerUnackedBudget(1)!;
+            await Assert.That(firstBudget.PipelineBatchCount).IsEqualTo(1);
+            await Assert.That(accumulator.TryDrainBatch(out batch)).IsTrue();
+
+            accumulator.ReattributeUnackedBudget(batch!, brokerId: 2);
+
+            var secondBudget = accumulator.GetBrokerUnackedBudget(2)!;
+            await Assert.That(firstBudget.PipelineBatchCount).IsEqualTo(0);
+            await Assert.That(secondBudget.PipelineBatchCount).IsEqualTo(1);
+
+            batch!.CompleteSend(baseOffset: 0, DateTimeOffset.UtcNow);
+            await Assert.That(accumulator.OnBatchExitsPipeline(batch)).IsTrue();
+            await Assert.That(secondBudget.PipelineBatchCount).IsEqualTo(0);
+            accumulator.ReturnReadyBatch(batch);
+            batch = null;
+        }
+        finally
+        {
+            if (batch is not null)
+            {
+                accumulator.OnBatchExitsPipeline(batch);
+                accumulator.ReturnReadyBatch(batch);
+            }
+
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task Purge_Queue_CompleteFailure_ReleasesReservedMemory()
     {
         var options = CreateTestOptions();

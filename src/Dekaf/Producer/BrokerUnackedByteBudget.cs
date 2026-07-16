@@ -76,6 +76,9 @@ internal sealed class BrokerUnackedByteBudget
     private long _capacityProbeSuccessCount;
     private long _capacityProbeFailureCount;
     private long _accountingUnderflowCount;
+    private long _pipelineBatchCount;
+    private long _admissionFlushClaim;
+    private long _nextAdmissionFlushClaim;
     private long _probeStartedTimestamp;
     private double _latencyBudgetScale = 1;
 
@@ -121,6 +124,7 @@ internal sealed class BrokerUnackedByteBudget
     internal long CapacityProbeSuccessCount => Volatile.Read(ref _capacityProbeSuccessCount);
     internal long CapacityProbeFailureCount => Volatile.Read(ref _capacityProbeFailureCount);
     internal long AccountingUnderflowCount => Volatile.Read(ref _accountingUnderflowCount);
+    internal long PipelineBatchCount => Volatile.Read(ref _pipelineBatchCount);
     internal long DeliveryLatencyEwmaMicros => Volatile.Read(ref _deliveryLatencyEwmaMicros);
     internal double LatencyBudgetScale => Volatile.Read(ref _latencyBudgetScale);
 
@@ -225,6 +229,64 @@ internal sealed class BrokerUnackedByteBudget
         if (nowTicks == 0)
             nowTicks = Stopwatch.GetTimestamp();
         _ = Interlocked.CompareExchange(ref _admissionBlockedSinceTimestamp, nowTicks, 0);
+    }
+
+    /// <summary>
+    /// Claims the right to force one partial batch into the broker pipeline. A claim is only
+    /// needed when all charged bytes are held by open batches; an existing pipeline batch can
+    /// already acknowledge bytes and wake blocked appenders without fragmenting every partition.
+    /// </summary>
+    internal bool TryClaimAdmissionFlush(out long claim)
+    {
+        claim = 0;
+        if (Volatile.Read(ref _pipelineBatchCount) != 0)
+            return false;
+
+        var requestedClaim = Interlocked.Increment(ref _nextAdmissionFlushClaim);
+        if (requestedClaim == 0)
+            requestedClaim = Interlocked.Increment(ref _nextAdmissionFlushClaim);
+
+        if (Interlocked.CompareExchange(ref _admissionFlushClaim, requestedClaim, 0) != 0)
+            return false;
+
+        // Close the race with a batch entering the pipeline after the first count read.
+        if (Volatile.Read(ref _pipelineBatchCount) == 0)
+        {
+            claim = requestedClaim;
+            return true;
+        }
+
+        ReleaseAdmissionFlushClaim(requestedClaim);
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool IsAdmissionFlushClaimActive(long claim) =>
+        claim != 0
+        && Volatile.Read(ref _admissionFlushClaim) == claim
+        && Volatile.Read(ref _pipelineBatchCount) == 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void ReleaseAdmissionFlushClaim(long claim)
+    {
+        if (claim != 0)
+            _ = Interlocked.CompareExchange(ref _admissionFlushClaim, 0, claim);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void RecordPipelineBatchEntered()
+    {
+        Interlocked.Increment(ref _pipelineBatchCount);
+        // Pipeline progress supersedes a forced-flush claim. Its owner verifies the claim
+        // before sealing and will keep the partial batch open when this cancellation wins.
+        Interlocked.Exchange(ref _admissionFlushClaim, 0);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void RecordPipelineBatchExited()
+    {
+        var remaining = Interlocked.Decrement(ref _pipelineBatchCount);
+        Debug.Assert(remaining >= 0, "Broker pipeline batch count went negative.");
     }
 
     public void ObserveWrittenUnackedBytes(long bytes)

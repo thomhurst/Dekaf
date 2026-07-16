@@ -1426,6 +1426,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public int AdmissionFlushRequested;
 
         /// <summary>
+        /// Broker-scoped ownership for <see cref="AdmissionFlushRequested"/>. Kept through
+        /// rotation so another blocked partition cannot force a second partial batch before
+        /// this one becomes sendable.
+        /// </summary>
+        public BrokerUnackedByteBudget? AdmissionFlushBudget;
+        public long AdmissionFlushClaim;
+
+        /// <summary>
         /// Broker budget used by the append admission gate. Refreshed at batch seal/routing
         /// boundaries and whenever the cached budget reports pressure.
         /// </summary>
@@ -4139,7 +4147,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private static void ClearRotationInProgressUnderLock(PartitionDeque pd)
     {
+        ClearAdmissionFlushRequestUnderLock(pd);
         pd.RotationInProgress = false;
+    }
+
+    private static void ClearAdmissionFlushRequestUnderLock(PartitionDeque pd)
+    {
+        var budget = pd.AdmissionFlushBudget;
+        var claim = pd.AdmissionFlushClaim;
+        pd.AdmissionFlushBudget = null;
+        pd.AdmissionFlushClaim = 0;
+        Volatile.Write(ref pd.AdmissionFlushRequested, 0);
+        budget?.ReleaseAdmissionFlushClaim(claim);
     }
 
     private static void ClearRotationInProgress(PartitionDeque pd)
@@ -4605,6 +4624,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 Interlocked.Decrement(ref _unsealedBatchCount);
                 pd.CurrentBatch = null;
                 MarkLingerPartitionDequeued(pd);
+                ClearAdmissionFlushRequestUnderLock(pd);
             }
         }
     }
@@ -4816,7 +4836,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
                 else if (pd.CurrentBatch is null)
                 {
-                    Volatile.Write(ref pd.AdmissionFlushRequested, 0);
+                    ClearAdmissionFlushRequestUnderLock(pd);
                     break;
                 }
                 // A muted or serialized busy partition already has an earlier batch to send.
@@ -4824,11 +4844,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // allocating one BatchSize arena per record while they wait. Size-full batches
                 // still seal in the append path, and FlushAsync must always seal.
                 else if (sealAll
-                    || Volatile.Read(ref pd.AdmissionFlushRequested) != 0
+                    || IsAdmissionFlushRequiredUnderLock(pd)
                     || (!ShouldDeferPartialBatchSeal(pd.CurrentBatch)
                         && pd.CurrentBatch.ShouldFlush(now, _options.LingerMs)))
                 {
-                    Volatile.Write(ref pd.AdmissionFlushRequested, 0);
                     ProducerDebugCounters.RecordBatchFlushedFromDictionary();
                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, pd.CurrentBatch);
                     break;
@@ -4873,6 +4892,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return true;
     }
 
+    private static bool IsAdmissionFlushRequiredUnderLock(PartitionDeque pd)
+    {
+        if (Volatile.Read(ref pd.AdmissionFlushRequested) == 0)
+            return false;
+
+        if (pd.AdmissionFlushBudget is { } budget
+            && budget.IsAdmissionFlushClaimActive(pd.AdmissionFlushClaim))
+        {
+            return true;
+        }
+
+        ClearAdmissionFlushRequestUnderLock(pd);
+        return false;
+    }
+
     /// <summary>
     /// Tracks a batch entering the pipeline: increments counter and adds to reference-tracking dictionary.
     /// Called when a batch is completed and enqueued to a partition deque.
@@ -4881,6 +4915,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         if (_unackedBudgetEnabled)
             ChargeUnackedBudget(batch);
+
+        if (batch.UnackedBudget is { } unackedBudget)
+        {
+            unackedBudget.RecordPipelineBatchEntered();
+            Volatile.Write(ref batch.UnackedBudgetPipelineTracked, 1);
+        }
 
         _partitionQueueBytes.AddOrUpdate(
             batch.TopicPartition,
@@ -4917,6 +4957,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (Interlocked.Exchange(ref batch.UnackedBudget, null) is { } unackedBudget)
         {
+            if (Interlocked.Exchange(ref batch.UnackedBudgetPipelineTracked, 0) != 0)
+                unackedBudget.RecordPipelineBatchExited();
             var reservedBytes = batch.UnackedReservedBytes;
             batch.UnackedReservedBytes = 0;
             batch.AdmissionGeneration = 0;
@@ -4998,6 +5040,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private static void ReleaseUntrackedBudget(ReadyBatch batch)
     {
         var budget = Interlocked.Exchange(ref batch.UnackedBudget, null);
+        Debug.Assert(
+            Volatile.Read(ref batch.UnackedBudgetPipelineTracked) == 0,
+            "An untracked budget release cannot own a pipeline batch.");
         var reservedBytes = batch.UnackedReservedBytes;
         batch.UnackedReservedBytes = 0;
         batch.AdmissionGeneration = 0;
@@ -5031,6 +5076,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var oldBudget = batch.UnackedBudget;
             batch.UnackedBudget = newBudget;
             batch.AdmissionGeneration = 0;
+            newBudget.RecordPipelineBatchEntered();
+            if (Volatile.Read(ref batch.UnackedBudgetPipelineTracked) != 0)
+                oldBudget?.RecordPipelineBatchExited();
+            else
+                Volatile.Write(ref batch.UnackedBudgetPipelineTracked, 1);
             oldBudget?.Release(reservedBytes);
         }
         finally
@@ -5113,7 +5163,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 brokerBlocked = true;
                 queuedBudget.RecordAdmissionBlock();
-                RequestAdmissionFlush(partitionDeque, topic, partition);
+                RequestAdmissionFlush(partitionDeque, topic, partition, queuedBudget);
             }
             return false;
         }
@@ -5193,7 +5243,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 brokerBlocked = true;
                 blockedBudget.RecordAdmissionBlock();
                 Volatile.Write(ref partitionDeque.AdmissionInProgress, 0);
-                RequestAdmissionFlush(partitionDeque, topic, partition);
+                RequestAdmissionFlush(partitionDeque, topic, partition, blockedBudget);
                 return false;
             }
 
@@ -5284,9 +5334,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void RequestAdmissionFlush(
         PartitionDeque partitionDeque,
         string topic,
-        int partition)
+        int partition,
+        BrokerUnackedByteBudget budget)
     {
-        Volatile.Write(ref partitionDeque.AdmissionFlushRequested, 1);
+        using (var guard = new SpinLockGuard(ref partitionDeque.Lock))
+        {
+            if (partitionDeque.CurrentBatch is null
+                || Volatile.Read(ref partitionDeque.AdmissionFlushRequested) != 0
+                || !budget.TryClaimAdmissionFlush(out var claim))
+            {
+                return;
+            }
+
+            partitionDeque.AdmissionFlushBudget = budget;
+            partitionDeque.AdmissionFlushClaim = claim;
+            Volatile.Write(ref partitionDeque.AdmissionFlushRequested, 1);
+        }
+
         QueueLingerPartition(
             partitionDeque,
             new TopicPartition(topic, partition),
@@ -5896,6 +5960,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         {
                             pd.CurrentBatch = null;
                             MarkLingerPartitionDequeued(pd);
+                            ClearAdmissionFlushRequestUnderLock(pd);
                             Interlocked.Decrement(ref _unsealedBatchCount);
 
                             currentBatches ??= new List<PartitionBatch>();
@@ -6311,6 +6376,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             {
                                 pd.CurrentBatch = null;
                                 MarkLingerPartitionDequeued(pd);
+                                ClearAdmissionFlushRequestUnderLock(pd);
                                 Interlocked.Decrement(ref _unsealedBatchCount);
 
                                 if (TryCompleteDetachedBatchForCleanup(
@@ -7629,6 +7695,7 @@ internal sealed class ReadyBatch
     internal BrokerUnackedByteBudget? UnackedBudget;
     internal int UnackedReservedBytes;
     internal long AdmissionGeneration;
+    internal int UnackedBudgetPipelineTracked;
 
     // Intrusive linked list pointers for RecordAccumulator._inFlightBatchList.
     // Using embedded pointers eliminates per-batch ConcurrentDictionary.Node allocations
@@ -8156,6 +8223,7 @@ internal sealed class ReadyBatch
         UnackedBudget = null;
         UnackedReservedBytes = 0;
         AdmissionGeneration = 0;
+        UnackedBudgetPipelineTracked = 0;
         _arena = arena;
         _callbacks = callbacks;
         _callbackCount = callbackCount;
@@ -8217,6 +8285,11 @@ internal sealed class ReadyBatch
         _arrayReuseQueue = null;
         InflightEntry = null;
         var orphanedBudget = Interlocked.Exchange(ref UnackedBudget, null);
+        if (orphanedBudget is not null
+            && Interlocked.Exchange(ref UnackedBudgetPipelineTracked, 0) != 0)
+        {
+            orphanedBudget.RecordPipelineBatchExited();
+        }
         orphanedBudget?.Release(UnackedReservedBytes);
         UnackedReservedBytes = 0;
         AdmissionGeneration = 0;

@@ -86,6 +86,45 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
+    public async Task AdmissionFlushClaim_RequiresBrokerWithoutPipelineProgress()
+    {
+        var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
+
+        await Assert.That(budget.TryClaimAdmissionFlush(out var firstClaim)).IsTrue();
+        await Assert.That(budget.TryClaimAdmissionFlush(out _)).IsFalse();
+        await Assert.That(budget.IsAdmissionFlushClaimActive(firstClaim)).IsTrue();
+
+        budget.RecordPipelineBatchEntered();
+
+        await Assert.That(budget.PipelineBatchCount).IsEqualTo(1);
+        await Assert.That(budget.IsAdmissionFlushClaimActive(firstClaim)).IsFalse();
+        await Assert.That(budget.TryClaimAdmissionFlush(out _)).IsFalse();
+
+        budget.RecordPipelineBatchExited();
+
+        await Assert.That(budget.PipelineBatchCount).IsEqualTo(0);
+        await Assert.That(budget.TryClaimAdmissionFlush(out var nextClaim)).IsTrue();
+        await Assert.That(nextClaim).IsNotEqualTo(firstClaim);
+        budget.ReleaseAdmissionFlushClaim(nextClaim);
+    }
+
+    [Test]
+    public async Task AdmissionFlushClaim_StaleReleaseCannotCancelNewOwner()
+    {
+        var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
+
+        await Assert.That(budget.TryClaimAdmissionFlush(out var staleClaim)).IsTrue();
+        budget.RecordPipelineBatchEntered();
+        budget.RecordPipelineBatchExited();
+        await Assert.That(budget.TryClaimAdmissionFlush(out var activeClaim)).IsTrue();
+
+        budget.ReleaseAdmissionFlushClaim(staleClaim);
+
+        await Assert.That(budget.IsAdmissionFlushClaimActive(activeClaim)).IsTrue();
+        budget.ReleaseAdmissionFlushClaim(activeClaim);
+    }
+
+    [Test]
     public async Task SetCap_ClampsWindowAndAdvancesGeneration()
     {
         var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
@@ -159,22 +198,21 @@ public sealed class BrokerUnackedByteBudgetTests
         ReachSteady(controller, ref now, ref admissionBlocks);
 
         var baselineWindow = controller.WindowBytes;
-        BrokerWindowDecision decision = default;
-        for (var i = 0; i < 100 && controller.Phase != BrokerWindowPhase.ProbeDown; i++)
-            decision = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks);
 
         await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.ProbeDown);
         await Assert.That(controller.WindowBytes).IsLessThan(baselineWindow);
         var probedWindow = controller.WindowBytes;
 
-        for (var i = 0; i < 3; i++)
-        {
-            decision = DriveControllerEpoch(
-                controller,
-                ref now,
-                ref admissionBlocks,
-                sealToSendSeconds: 0.020);
-        }
+        var decision = CompleteActiveProbe(
+            controller,
+            baselineWindow,
+            ref now,
+            ref admissionBlocks);
 
         await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Succeeded);
         await Assert.That(controller.WindowBytes).IsEqualTo(probedWindow);
@@ -190,22 +228,48 @@ public sealed class BrokerUnackedByteBudgetTests
         _ = controller.CompleteInterval(admissionBlocks, 0, now);
         var baselineWindow = controller.WindowBytes;
 
-        while (controller.Phase != BrokerWindowPhase.ProbeDown)
-            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks);
 
-        BrokerWindowDecision decision = default;
-        for (var i = 0; i < 3; i++)
-        {
-            decision = DriveControllerEpoch(
-                controller,
-                ref now,
-                ref admissionBlocks,
-                logicalBytes: 50);
-        }
+        var decision = CompleteActiveProbe(
+            controller,
+            baselineWindow,
+            ref now,
+            ref admissionBlocks,
+            candidateLogicalBytes: 50);
 
         await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
         await Assert.That(controller.WindowBytes).IsEqualTo(baselineWindow);
         await Assert.That(controller.CapacityProbeFailureCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task DownProbe_DoesNotUseIncompletePostSealDelayAsVeto()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        var baselineWindow = controller.WindowBytes;
+
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks);
+
+        var decision = CompleteActiveProbe(
+            controller,
+            baselineWindow,
+            ref now,
+            ref admissionBlocks,
+            candidateSealToSendSeconds: 0.050);
+
+        await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Succeeded);
+        await Assert.That(controller.WindowBytes).IsLessThan(baselineWindow);
     }
 
     [Test]
@@ -217,8 +281,11 @@ public sealed class BrokerUnackedByteBudgetTests
         _ = controller.CompleteInterval(admissionBlocks, 0, now);
         var baselineWindow = controller.WindowBytes;
 
-        while (controller.Phase != BrokerWindowPhase.ProbeDown)
-            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks);
 
         BrokerWindowDecision decision = default;
         for (var i = 0; i < 4; i++)
@@ -245,21 +312,23 @@ public sealed class BrokerUnackedByteBudgetTests
         _ = controller.CompleteInterval(admissionBlocks, 0, now);
         ReachSteady(controller, ref now, ref admissionBlocks);
 
-        while (controller.Phase != BrokerWindowPhase.ProbeDown)
-            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
-        _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        FailNextDownProbe(controller, ref now, ref admissionBlocks);
+        var baselineWindow = controller.WindowBytes;
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeUp,
+            ref now,
+            ref admissionBlocks);
 
-        while (controller.Phase != BrokerWindowPhase.ProbeUp)
-            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
-        var baselineWindow = controller.WindowBytes - controller.RequestQuantumBytes;
-
-        BrokerWindowDecision decision = default;
-        for (var i = 0; i < 3; i++)
-            decision = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        var decision = CompleteActiveProbe(
+            controller,
+            baselineWindow,
+            ref now,
+            ref admissionBlocks);
 
         await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
         await Assert.That(controller.WindowBytes).IsEqualTo(baselineWindow);
-        await Assert.That(controller.CapacityProbeFailureCount).IsEqualTo(1);
+        await Assert.That(controller.CapacityProbeFailureCount).IsEqualTo(2);
     }
 
     [Test]
@@ -270,28 +339,84 @@ public sealed class BrokerUnackedByteBudgetTests
         var admissionBlocks = 0L;
         _ = controller.CompleteInterval(admissionBlocks, 0, now);
 
-        while (controller.Phase != BrokerWindowPhase.ProbeDown)
-            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
-        for (var i = 0; i < 3; i++)
-            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
-
-        while (controller.Phase != BrokerWindowPhase.ProbeUp)
-            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        FailNextDownProbe(controller, ref now, ref admissionBlocks);
+        var baselineWindow = controller.WindowBytes;
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeUp,
+            ref now,
+            ref admissionBlocks);
         var probedWindow = controller.WindowBytes;
 
+        var decision = CompleteActiveProbe(
+            controller,
+            baselineWindow,
+            ref now,
+            ref admissionBlocks,
+            candidateLogicalBytes: 120);
+
+        await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Succeeded);
+        await Assert.That(controller.WindowBytes).IsEqualTo(probedWindow);
+        await Assert.That(controller.CapacityProbeSuccessCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task UpProbe_RejectsGoodputGrowthWithControlledDelayInflation()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+
+        FailNextDownProbe(controller, ref now, ref admissionBlocks);
+        var baselineWindow = controller.WindowBytes;
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeUp,
+            ref now,
+            ref admissionBlocks);
+
+        var decision = CompleteActiveProbe(
+            controller,
+            baselineWindow,
+            ref now,
+            ref admissionBlocks,
+            candidateLogicalBytes: 120,
+            candidateSealToSendSeconds: 0.050);
+
+        await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
+        await Assert.That(controller.WindowBytes).IsEqualTo(baselineWindow);
+    }
+
+    [Test]
+    public async Task UpProbe_SandwichCancelsLinearRunnerTrend()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+
+        FailNextDownProbe(controller, ref now, ref admissionBlocks);
+        var baselineWindow = controller.WindowBytes;
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeUp,
+            ref now,
+            ref admissionBlocks);
+
         BrokerWindowDecision decision = default;
-        for (var i = 0; i < 3; i++)
+        var epoch = 0;
+        while (controller.Phase == BrokerWindowPhase.ProbeUp && epoch < 100)
         {
             decision = DriveControllerEpoch(
                 controller,
                 ref now,
                 ref admissionBlocks,
-                logicalBytes: 120);
+                logicalBytes: 100 + epoch++);
         }
 
-        await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Succeeded);
-        await Assert.That(controller.WindowBytes).IsEqualTo(probedWindow);
-        await Assert.That(controller.CapacityProbeSuccessCount).IsEqualTo(2);
+        await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
+        await Assert.That(controller.WindowBytes).IsEqualTo(baselineWindow);
     }
 
     [Test]
@@ -458,6 +583,71 @@ public sealed class BrokerUnackedByteBudgetTests
     {
         if (controller.Phase != BrokerWindowPhase.Steady)
             throw new InvalidOperationException("Controller did not leave startup.");
+    }
+
+    private static void StartNextProbe(
+        BrokerWindowController controller,
+        BrokerWindowPhase expectedPhase,
+        ref long now,
+        ref long admissionBlocks)
+    {
+        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+
+        if (controller.Phase != expectedPhase)
+        {
+            throw new InvalidOperationException(
+                $"Expected {expectedPhase}, reached {controller.Phase}.");
+        }
+    }
+
+    private static BrokerWindowDecision CompleteActiveProbe(
+        BrokerWindowController controller,
+        long baselineWindow,
+        ref long now,
+        ref long admissionBlocks,
+        long candidateLogicalBytes = 100,
+        long baselineLogicalBytes = 100,
+        double candidateSealToSendSeconds = 0,
+        double baselineSealToSendSeconds = 0)
+    {
+        BrokerWindowDecision decision = default;
+        for (var i = 0; i < 100 && controller.Phase != BrokerWindowPhase.Steady; i++)
+        {
+            var candidateActive = controller.WindowBytes != baselineWindow;
+            decision = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                logicalBytes: candidateActive ? candidateLogicalBytes : baselineLogicalBytes,
+                sealToSendSeconds: candidateActive
+                    ? candidateSealToSendSeconds
+                    : baselineSealToSendSeconds);
+        }
+
+        if (controller.Phase != BrokerWindowPhase.Steady)
+            throw new InvalidOperationException("Capacity probe did not complete.");
+
+        return decision;
+    }
+
+    private static void FailNextDownProbe(
+        BrokerWindowController controller,
+        ref long now,
+        ref long admissionBlocks)
+    {
+        var baselineWindow = controller.WindowBytes;
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeDown,
+            ref now,
+            ref admissionBlocks);
+        _ = CompleteActiveProbe(
+            controller,
+            baselineWindow,
+            ref now,
+            ref admissionBlocks,
+            candidateLogicalBytes: 50);
     }
 
     private static BrokerWindowDecision DriveControllerEpoch(
