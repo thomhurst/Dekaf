@@ -168,7 +168,13 @@ public sealed class BrokerUnackedByteBudgetTests
         var probedWindow = controller.WindowBytes;
 
         for (var i = 0; i < 3; i++)
-            decision = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+        {
+            decision = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.020);
+        }
 
         await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Succeeded);
         await Assert.That(controller.WindowBytes).IsEqualTo(probedWindow);

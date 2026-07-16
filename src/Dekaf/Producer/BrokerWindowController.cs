@@ -316,10 +316,11 @@ internal sealed class BrokerWindowController
         var goodputThreshold = probingUp
             ? UpProbeGoodputThreshold
             : DownProbeGoodputThreshold;
-        // Both treatments must stay within the soft delay envelope. A lower window is useful
-        // only when it preserves goodput without replacing queueing with extra request delay.
+        // Growing admitted capacity can add queueing, so an up treatment must also preserve
+        // the soft delay envelope. A down treatment cannot add admitted queue capacity; use
+        // goodput alone so transient RTT noise cannot veto a smaller, equally productive window.
         var succeeded = averageGoodput >= _probeBaselineGoodput * goodputThreshold
-            && averageControlledDelayTicks <= delayLimit;
+            && (!probingUp || averageControlledDelayTicks <= delayLimit);
         return CompleteCapacityProbe(succeeded, averageGoodput);
     }
 

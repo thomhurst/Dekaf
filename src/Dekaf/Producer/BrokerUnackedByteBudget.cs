@@ -187,17 +187,11 @@ internal sealed class BrokerUnackedByteBudget
         if (bytes <= 0)
             return;
 
-        long remaining;
-        while (true)
+        var remaining = Interlocked.Add(ref _unackedBytes, -bytes);
+        if (remaining < 0)
         {
-            var used = Volatile.Read(ref _unackedBytes);
-            remaining = bytes <= used ? used - bytes : 0;
-            if (Interlocked.CompareExchange(ref _unackedBytes, remaining, used) != used)
-                continue;
-
-            if (bytes > used)
-                Interlocked.Increment(ref _accountingUnderflowCount);
-            break;
+            Interlocked.Increment(ref _accountingUnderflowCount);
+            remaining = ClampNegativeAccountingToZero(remaining);
         }
 
         if (_admissionBlockMicrosLog2Histogram is not null
@@ -205,6 +199,20 @@ internal sealed class BrokerUnackedByteBudget
         {
             RecordAdmissionAvailable(Stopwatch.GetTimestamp());
         }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private long ClampNegativeAccountingToZero(long observed)
+    {
+        while (observed < 0)
+        {
+            var prior = Interlocked.CompareExchange(ref _unackedBytes, 0, observed);
+            if (prior == observed)
+                return 0;
+            observed = prior;
+        }
+
+        return observed;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
