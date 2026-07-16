@@ -335,8 +335,8 @@ internal sealed class BrokerUnackedByteBudget
         if (_awaitingInitialAcknowledgement && coldStartBudgetBytes is { } coldStartBudget)
         {
             // The pre-ack window must be able to carry one wave at the new routing width,
-            // otherwise the ceiling's pessimistic start would shrink the wave the cold gate
-            // itself intends to admit.
+            // otherwise the slow start's pessimistic floor would shrink the wave the cold
+            // gate itself intends to admit.
             decision = _controller.NoteColdStartWave(coldStartBudget);
             _coldStartBudgetBytes = Math.Clamp(
                 coldStartBudget,

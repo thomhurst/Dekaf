@@ -152,10 +152,7 @@ internal sealed class BrokerWindowController
         // (explicit cap override, Acks.None) keeps the optimistic start unchanged.
         _windowBytes = _slowStartActive
             ? MinimumWindowBytes
-            : Math.Clamp(
-                SaturatingMultiply(_requestQuantumBytes, InitialRequestQuanta),
-                MinimumWindowBytes,
-                _capBytes);
+            : Math.Max(MinimumWindowBytes, OptimisticWindowBytes);
     }
 
     internal long WindowBytes => _windowBytes;
@@ -307,13 +304,15 @@ internal sealed class BrokerWindowController
 
     private void AdvanceSlowStart()
     {
-        var optimisticWindow = Math.Min(
-            SaturatingMultiply(_requestQuantumBytes, InitialRequestQuanta),
-            _capBytes);
+        var optimisticWindow = OptimisticWindowBytes;
         SetWindow(Math.Min(SaturatingMultiply(_windowBytes, 2), optimisticWindow));
         if (_windowBytes >= optimisticWindow)
             _slowStartActive = false;
     }
+
+    private long OptimisticWindowBytes => Math.Min(
+        SaturatingMultiply(_requestQuantumBytes, InitialRequestQuanta),
+        _capBytes);
 
     private BrokerWindowDecision UpdateSteady(bool demand)
     {
@@ -358,12 +357,8 @@ internal sealed class BrokerWindowController
     /// <summary>Lowest window a down-probe may propose. The legacy eight-quantum floor holds
     /// while latency is on target; descent below it is justified only by a missed target,
     /// and even then each step must pass the paired goodput guard.</summary>
-    private long ProbeFloorBytes(bool descentBias) => Math.Clamp(
-        SaturatingMultiply(
-            _requestQuantumBytes,
-            descentBias ? LatencyDescentPipelineQuanta : MinimumPipelineQuanta),
-        _floorBytes,
-        _capBytes);
+    private long ProbeFloorBytes(bool descentBias) => QuantaFloorBytes(
+        descentBias ? LatencyDescentPipelineQuanta : MinimumPipelineQuanta);
 
     private BrokerWindowDecision StartCapacityProbe(
         BrokerWindowPhase phase,
@@ -591,10 +586,12 @@ internal sealed class BrokerWindowController
     /// <summary>Hard lower bound on any window value. Governor-enabled controllers may hold
     /// descent-floor windows reached while over target; probe policy (not this bound)
     /// decides when descent below the legacy floor is permitted.</summary>
-    private long MinimumWindowBytes => Math.Clamp(
-        SaturatingMultiply(
-            _requestQuantumBytes,
-            _latencyGovernorEnabled ? LatencyDescentPipelineQuanta : MinimumPipelineQuanta),
+    private long MinimumWindowBytes => QuantaFloorBytes(
+        _latencyGovernorEnabled ? LatencyDescentPipelineQuanta : MinimumPipelineQuanta);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private long QuantaFloorBytes(int quanta) => Math.Clamp(
+        SaturatingMultiply(_requestQuantumBytes, quanta),
         _floorBytes,
         _capBytes);
 

@@ -103,7 +103,7 @@ public sealed class BrokerUnackedByteBudgetTests
     [Test]
     public async Task DelayOverTarget_DescendsBelowLegacyFloorThenWithholdsGrowth()
     {
-        var controller = CreateGovernorController();
+        var controller = CreateController(latencyGovernorEnabled: true);
         var now = T0;
         var admissionBlocks = 0L;
         _ = controller.CompleteInterval(admissionBlocks, 0, now);
@@ -153,7 +153,7 @@ public sealed class BrokerUnackedByteBudgetTests
     [Test]
     public async Task DelayUnderTarget_KeepsLegacyFloor()
     {
-        var controller = CreateGovernorController();
+        var controller = CreateController(latencyGovernorEnabled: true);
         var now = T0;
         var admissionBlocks = 0L;
         _ = controller.CompleteInterval(admissionBlocks, 0, now);
@@ -167,30 +167,14 @@ public sealed class BrokerUnackedByteBudgetTests
     }
 
     [Test]
-    public async Task SlowStart_DoublesOnlyWhileGovernorEnabled()
+    public async Task InitialWindow_SlowStartsFromFloorOnlyWhileGovernorEnabled()
     {
-        var governed = CreateGovernorController();
+        var governed = CreateController(latencyGovernorEnabled: true);
         await Assert.That(governed.WindowBytes).IsEqualTo(200);
 
         var legacy = CreateController();
         await Assert.That(legacy.WindowBytes).IsEqualTo(1_600);
     }
-
-    private static BrokerUnackedByteBudget CreateColdStartBudget() =>
-        new(
-            targetSeconds: 0.010,
-            floorBytes: 1,
-            initialCapBytes: 10_000,
-            initialRequestBytes: 100,
-            coldStartBudgetBytes: 100);
-
-    private static BrokerWindowController CreateGovernorController() =>
-        new(
-            targetSeconds: 0.010,
-            floorBytes: 1,
-            capBytes: 10_000,
-            initialRequestBytes: 100,
-            latencyGovernorEnabled: true);
 
     [Test]
     public async Task TryReserve_AtomicallyEnforcesWindow()
@@ -888,8 +872,21 @@ public sealed class BrokerUnackedByteBudgetTests
             initialCapBytes: capBytes,
             initialRequestBytes: initialRequestBytes);
 
-    private static BrokerWindowController CreateController() =>
-        new(targetSeconds: 0.010, floorBytes: 1, capBytes: 10_000, initialRequestBytes: 100);
+    private static BrokerWindowController CreateController(bool latencyGovernorEnabled = false) =>
+        new(
+            targetSeconds: 0.010,
+            floorBytes: 1,
+            capBytes: 10_000,
+            initialRequestBytes: 100,
+            latencyGovernorEnabled: latencyGovernorEnabled);
+
+    private static BrokerUnackedByteBudget CreateColdStartBudget() =>
+        new(
+            targetSeconds: 0.010,
+            floorBytes: 1,
+            initialCapBytes: 10_000,
+            initialRequestBytes: 100,
+            coldStartBudgetBytes: 100);
 
     private static void DriveBudgetEpoch(
         BrokerUnackedByteBudget budget,
