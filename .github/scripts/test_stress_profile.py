@@ -141,8 +141,8 @@ class StressProfileWorkflowTests(unittest.TestCase):
             self.assertIn(profile_input, self.workflow)
 
     def test_profiles_only_one_explicit_dekaf_lane(self):
-        # Manual dispatches are always Dekaf-only, so the guard only needs to
-        # reject the full-matrix sweep.
+        # Normal manual dispatches are Dekaf-only; full_run forces lane=all, so
+        # the same guard also rejects profiling on a publish run.
         self.assertIn(
             'if [ "$profile_mode" != "off" ] && [ "$lane" = "all" ]',
             self.workflow,

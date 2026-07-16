@@ -9,7 +9,7 @@ Long-running stress tests comparing sustained performance between Dekaf and Conf
 **Last Updated:** 2026-07-13 14:23 UTC
 
 :::info
-These tests run weekly (Sunday 2 AM UTC) and can be manually triggered. 
+Paired tests run weekly (Sunday 2 AM UTC). Manual runs stay Dekaf-only unless `full_run` requests the weekly-equivalent publish path.
 They measure sustained performance over 15+ minutes with real Kafka instances.
 :::
 

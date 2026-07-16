@@ -935,6 +935,46 @@ class StressTrendTests(unittest.TestCase):
             workflow,
         )
 
+    def test_workflow_manual_full_run_is_explicit_and_preserves_defaults(self):
+        workflow = stress_workflow_text()
+
+        full_run_input = workflow[
+            workflow.index("      full_run:"):workflow.index("      baseline_sha:")
+        ]
+        self.assertIn("type: boolean", full_run_input)
+        self.assertIn("default: false", full_run_input)
+
+        dispatch_shape_input = workflow[
+            workflow.index("      dispatch_shape:"):workflow.index("      full_run:")
+        ]
+        self.assertIn("default: cheap", dispatch_shape_input)
+
+        selector = workflow[
+            workflow.index("      - name: Select lanes for this run"):
+            workflow.index("  # Run each scenario in parallel.")
+        ]
+        self.assertIn(
+            'elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FULL_RUN" = "true" ]',
+            selector,
+        )
+        self.assertIn('[ "$GITHUB_REF" != "refs/heads/main" ]', selector)
+        self.assertIn('full_run=true\n            lane="all"', selector)
+        self.assertIn(
+            'if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$full_run" != "true" ]; then\n'
+            '            client="dekaf"',
+            selector,
+        )
+        self.assertIn('if [ "$full_run" = "true" ]; then\n            shape=""', selector)
+        self.assertIn(
+            '[ "$full_run" = "true" ] && [ "$CONSUMER_FETCH_DIAGNOSTICS" = "true" ]',
+            selector,
+        )
+        self.assertIn('echo "full_run=$full_run"', selector)
+        self.assertIn(
+            "(github.event_name == 'schedule' || github.event.inputs.full_run == 'true') && 'all-schedule'",
+            workflow,
+        )
+
     def test_workflow_lane_options_match_selectable_lanes(self):
         # The workflow_dispatch 'lane' choice list and the lanes.json matrix in
         # the select-lanes job are maintained by hand in two places; an option
