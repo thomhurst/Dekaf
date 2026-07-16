@@ -5,12 +5,14 @@ namespace Dekaf.Tests.Unit.Stress;
 public sealed class StressRunCompletionPolicyTests
 {
     [Test]
-    public async Task EndedEarly_MessageBoundedRun_DoesNotRequireConfiguredDuration()
+    public async Task EndedEarly_SelfBoundedRun_DoesNotRequireConfiguredDuration()
     {
+        // Self-bounded scenarios (e.g. the steady round-trip produce window plus its
+        // variable-length consume phase) define their own completion instead of --duration.
         var endedEarly = StressRunCompletionPolicy.EndedEarly(
             elapsedSeconds: 30,
             configuredDurationMinutes: 15,
-            isMessageBounded: true);
+            isSelfBounded: true);
 
         await Assert.That(endedEarly).IsFalse();
     }
@@ -21,7 +23,7 @@ public sealed class StressRunCompletionPolicyTests
         var endedEarly = StressRunCompletionPolicy.EndedEarly(
             elapsedSeconds: 809,
             configuredDurationMinutes: 15,
-            isMessageBounded: false);
+            isSelfBounded: false);
 
         await Assert.That(endedEarly).IsTrue();
     }
@@ -32,7 +34,7 @@ public sealed class StressRunCompletionPolicyTests
         var endedEarly = StressRunCompletionPolicy.EndedEarly(
             elapsedSeconds: 900,
             configuredDurationMinutes: 15,
-            isMessageBounded: false);
+            isSelfBounded: false);
 
         await Assert.That(endedEarly).IsFalse();
     }

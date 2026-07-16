@@ -37,12 +37,6 @@ internal sealed class StressTestResult
     public int? RoundTripSteadySeconds { get; init; }
 
     /// <summary>
-    /// Whether a fixed message count, rather than <see cref="DurationMinutes"/>, defines
-    /// successful scenario completion. Message-bounded runs may finish before the duration.
-    /// </summary>
-    public bool IsMessageBounded { get; init; }
-
-    /// <summary>
     /// Whether the scenario's producer ran with idempotence enabled. Must mirror the
     /// producer configuration a few lines above where each scenario sets it. The failure
     /// policy in Program.CheckForFailures derives duplicate-delivery enforcement from
@@ -93,12 +87,12 @@ internal sealed class StressTestResult
         DeliveredMegabytesPerSecond ?? Throughput.AverageMegabytesPerSecond;
 
     /// <summary>
-    /// Median of sampled client-side throughput intervals. Message-bounded round-trip
-    /// scenarios sample only their producer phase, while the headline rate includes
-    /// validation, so exposing that partial-window median would make comparisons invalid.
+    /// Median of sampled client-side throughput intervals. Round-trip scenarios sample
+    /// only their producer phase, while the headline rate includes validation, so
+    /// exposing that partial-window median would make comparisons invalid.
     /// </summary>
     public double? MedianIntervalMessagesPerSecond =>
-        IsMessageBounded ? null : GetMedian(Throughput.MessagesPerSecondSamples);
+        RoundTripPhases is not null ? null : GetMedian(Throughput.MessagesPerSecondSamples);
 
     /// <summary>Last-third average divided by p95 sampled throughput.</summary>
     public double? SteadyStatePeakRatio =>
@@ -190,7 +184,7 @@ internal sealed class StressTestResult
     private bool TryGetIntraRunThroughput(out IntraRunThroughputMetrics metrics)
     {
         metrics = default;
-        if (IsMessageBounded || Throughput.ElapsedSeconds <= 0)
+        if (Throughput.ElapsedSeconds <= 0)
             return false;
 
         var rawSamples = Throughput.MessagesPerSecondSamples

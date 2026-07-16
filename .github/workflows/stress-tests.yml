@@ -26,7 +26,6 @@ on:
           - producer-acks-all-1b
           - producer-acks-all-3b
           - producer-transactional-3b
-          - producer-roundtrip-1b
           - producer-roundtrip-steady-1b
           - consumer-1b
           - consumer-batch-1b
@@ -41,10 +40,6 @@ on:
         description: 'Message size in bytes'
         required: false
         default: '1000'
-      roundtrip_messages:
-        description: 'Bounded message count for round-trip correctness scenario'
-        required: false
-        default: '250000'
       roundtrip_steady_seconds:
         description: 'Measured producer duration for steady-state round-trip scenario'
         required: false
@@ -71,7 +66,7 @@ on:
           - cheap-with-3conn
           - lane-default
       full_run:
-        description: 'Weekly-equivalent paired matrix; overrides lane/shape and publishes docs/history (13 paid jobs; main only)'
+        description: 'Weekly-equivalent paired matrix; overrides lane/shape and publishes docs/history (12 paid jobs; main only)'
         required: false
         type: boolean
         default: false
@@ -188,9 +183,9 @@ jobs:
           fi
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$full_run" = "true" ]; then
-            echo "::notice::Manual full_run selected: running all 13 paid lanes with the weekly paired shape, then publishing docs/history."
+            echo "::notice::Manual full_run selected: running all 12 paid lanes with the weekly paired shape, then publishing docs/history."
           elif [ "$lane" = "all" ] && [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            # Surface the cost/publish reality before 13 paid runners start:
+            # Surface the cost/publish reality before 12 paid runners start:
             # normal manual runs are Dekaf-only and do not publish docs/history.
             echo "::notice::Manual lane=all runs every lane Dekaf-only and does not publish docs/history; enable full_run for the weekly paired publish run."
           fi
@@ -250,7 +245,6 @@ jobs:
             {"lane": "producer-acks-all-1b", "scenario": "producer-acks-all", "client": "all", "brokers": 1, "paired_samples": 2, "timeout_minutes": 150, "name": "Producer Acks All (Paired)"},
             {"lane": "producer-acks-all-3b", "scenario": "producer-acks-all", "client": "all", "brokers": 3, "timeout_minutes": 120, "name": "Producer Acks All (Paired, 3 Brokers)"},
             {"lane": "producer-transactional-3b", "scenario": "producer-transactional", "client": "all", "brokers": 3, "timeout_minutes": 150, "name": "Transactional EOS (Paired, 3 Brokers)"},
-            {"lane": "producer-roundtrip-1b", "scenario": "producer-roundtrip", "client": "all", "brokers": 1, "timeout_minutes": 90, "name": "Producer → Consumer Round-Trip (Paired)"},
             {"lane": "producer-roundtrip-steady-1b", "scenario": "producer-roundtrip-steady", "client": "all", "brokers": 1, "message_size": 128, "roundtrip_steady_seconds": 60, "timeout_minutes": 90, "name": "Producer → Consumer Round-Trip Steady State (Paired)"},
             {"lane": "consumer-1b", "scenario": "consumer", "client": "all", "brokers": 1, "timeout_minutes": 90, "name": "Consumer (Paired)"},
             {"lane": "consumer-batch-1b", "scenario": "consumer-batch", "client": "dekaf", "brokers": 1, "timeout_minutes": 60, "name": "Dekaf Consumer Batch"},
@@ -494,7 +488,6 @@ jobs:
                 --brokers ${{ matrix.brokers }} \
                 --connections-per-broker 1 \
                 --producer-delivery-diagnostics \
-                --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
                 --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
                 "${EXTRA_ARGS[@]}" \
                 --output "$output_dir"
@@ -539,7 +532,6 @@ jobs:
               --brokers ${{ matrix.brokers }}
               --connections-per-broker 1
               --producer-delivery-diagnostics
-              --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }}
               --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }}
               --output ./results
             )
@@ -574,7 +566,6 @@ jobs:
               --connections-per-broker 3 \
               --producer-delivery-diagnostics \
               "${EXTRA_ARGS[@]}" \
-              --roundtrip-messages ${{ github.event.inputs.roundtrip_messages || '250000' }} \
               --roundtrip-steady-seconds ${{ github.event.inputs.roundtrip_steady_seconds || matrix.roundtrip_steady_seconds || '60' }} \
               --output ./results
           fi

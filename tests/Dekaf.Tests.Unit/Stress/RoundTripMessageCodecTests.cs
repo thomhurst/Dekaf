@@ -14,7 +14,7 @@ namespace Dekaf.Tests.Unit.Stress;
 public class RoundTripMessageCodecTests
 {
     [Test]
-    public async Task ScenarioRegistry_SeparatesColdStartAndSteadyStateRoundTrips()
+    public async Task ScenarioRegistry_RegistersSteadyStateRoundTripPerClient()
     {
         var scenarios = Dekaf.StressTests.Program.CreateAllScenarios()
             .Where(scenario => scenario.Name.StartsWith("producer-roundtrip", StringComparison.Ordinal))
@@ -23,21 +23,18 @@ public class RoundTripMessageCodecTests
 
         await Assert.That(scenarios).IsEquivalentTo(new[]
         {
-            ("producer-roundtrip", "Dekaf"),
-            ("producer-roundtrip", "Confluent"),
             ("producer-roundtrip-steady", "Dekaf"),
             ("producer-roundtrip-steady", "Confluent")
         });
     }
 
     [Test]
-    [Arguments(false, 249_999, 0, false)]
-    [Arguments(false, 250_000, 0, true)]
-    [Arguments(true, 1, 59_999, false)]
-    [Arguments(true, 1, 60_000, true)]
-    public async Task ProduceLimit_UsesMessageCountForColdStartAndDurationForSteadyState(
-        bool steadyState,
-        int messagesProduced,
+    [Arguments(0, 59_999, false)]
+    [Arguments(0, 60_000, true)]
+    [Arguments(3_999_999_999, 0, false)]
+    [Arguments(4_000_000_000, 0, true)]
+    public async Task ProduceLimit_EndsAtDurationOrLogByteBudget(
+        long estimatedLogBytes,
         int elapsedMilliseconds,
         bool expected)
     {
@@ -47,18 +44,30 @@ public class RoundTripMessageCodecTests
             Topic = "unused",
             DurationMinutes = 15,
             MessageSizeBytes = 128,
-            RoundTripMessages = 250_000,
             RoundTripSteadySeconds = 60,
             ProgressWatchdog = null!
         };
 
         var reached = RoundTripScenarioHelpers.HasReachedProduceLimit(
             options,
-            steadyState,
-            messagesProduced,
+            estimatedLogBytes,
             TimeSpan.FromMilliseconds(elapsedMilliseconds));
 
         await Assert.That(reached).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task EstimateLogBytes_ExceedsKeyAndValueSize()
+    {
+        var factory = new RoundTripMessageFactory("test-run", partitionCount: 6, payloadSize: 128);
+        var message = factory.Create(partition: 0);
+
+        var estimate = RoundTripScenarioHelpers.EstimateLogBytes(message);
+
+        // The estimate must upper-bound the broker's real per-record log cost (key +
+        // value + ~12 bytes of framing measured on the CI broker) or the log budget
+        // cannot guarantee the produce phase fits the log dir.
+        await Assert.That(estimate).IsGreaterThan((long)(message.Key.Length + message.Value.Length + 12));
     }
 
     [Test]
@@ -499,7 +508,7 @@ public class RoundTripMessageCodecTests
 
         using var gcStats = new GcStats();
         var result = RoundTripScenarioHelpers.CreateResult(
-            "producer-roundtrip",
+            "producer-roundtrip-steady",
             "Dekaf",
             options,
             DateTime.UtcNow,
@@ -526,7 +535,7 @@ public class RoundTripMessageCodecTests
             snapshot);
 
         await Assert.That(result.ProducerDeliveryDiagnostics).IsSameReferenceAs(snapshot);
-        await Assert.That(result.IsMessageBounded).IsTrue();
+        await Assert.That(result.RoundTripSteadySeconds).IsEqualTo(options.RoundTripSteadySeconds);
         await Assert.That(result.RoundTripPhases!.ProduceMessagesPerSecond).IsEqualTo(100);
         await Assert.That(result.RoundTripPhases.ConsumeMessagesPerSecond).IsEqualTo(50);
     }
@@ -600,7 +609,6 @@ public class RoundTripMessageCodecTests
             CompletedAtUtc = source.CompletedAtUtc,
             Throughput = source.Throughput,
             GcStats = source.GcStats,
-            IsMessageBounded = true,
             RoundTripPhases = source.RoundTripPhases,
             RoundTripValidation = new RoundTripValidationSnapshot
             {
@@ -620,35 +628,13 @@ public class RoundTripMessageCodecTests
     [Test]
     public async Task RoundTripResult_ExcludesProducerOnlyMedianRate()
     {
-        var now = DateTime.UtcNow;
-        var result = new StressTestResult
-        {
-            Scenario = "producer-roundtrip",
-            Client = "Dekaf",
-            DurationMinutes = 15,
-            MessageSizeBytes = 1_000,
-            StartedAtUtc = now,
-            CompletedAtUtc = now.AddSeconds(30),
-            Throughput = new ThroughputSnapshot
-            {
-                TotalMessages = 1_000,
-                TotalBytes = 1_000_000,
-                TotalErrors = 0,
-                ElapsedSeconds = 30,
-                AverageMessagesPerSecond = 33.3,
-                AverageMegabytesPerSecond = 0.03,
-                MessagesPerSecondSamples = [1_000, 1_100],
-                ErrorSamples = []
-            },
-            GcStats = new GcSnapshot
-            {
-                Gen0Collections = 0,
-                Gen1Collections = 0,
-                Gen2Collections = 0,
-                AllocatedBytes = 0
-            },
-            IsMessageBounded = true
-        };
+        // Round-trip results sample only their producer phase while the headline rate
+        // includes validation, so the partial-window median must not be exposed.
+        var result = CreateRoundTripResult(RoundTripScenarioHelpers.CreatePhaseSnapshot(
+            producedMessages: 1_000,
+            produceElapsed: TimeSpan.FromSeconds(10),
+            consumedMessages: 1_000,
+            consumeElapsed: TimeSpan.FromSeconds(20)));
 
         await Assert.That(result.MedianIntervalMessagesPerSecond).IsNull();
     }
@@ -658,7 +644,7 @@ public class RoundTripMessageCodecTests
         var now = DateTime.UtcNow;
         return new StressTestResult
         {
-            Scenario = "producer-roundtrip",
+            Scenario = "producer-roundtrip-steady",
             Client = "Dekaf",
             DurationMinutes = 1,
             MessageSizeBytes = 128,
@@ -672,7 +658,7 @@ public class RoundTripMessageCodecTests
                 ElapsedSeconds = 2.25,
                 AverageMessagesPerSecond = 111_111.11,
                 AverageMegabytesPerSecond = 13.56,
-                MessagesPerSecondSamples = [],
+                MessagesPerSecondSamples = [100_000, 120_000],
                 ErrorSamples = []
             },
             GcStats = new GcSnapshot
@@ -682,7 +668,6 @@ public class RoundTripMessageCodecTests
                 Gen2Collections = 0,
                 AllocatedBytes = 0
             },
-            IsMessageBounded = true,
             RoundTripPhases = phases
         };
     }
