@@ -158,6 +158,29 @@ public sealed class BrokerUnackedByteBudgetTests
         await Assert.That(budget.CapacityProbeFailureCount).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task LatencyCeiling_FloorsHorizonAtRequestServingTimeWhenTargetUnreachable()
+    {
+        var budget = CreateColdStartBudget();
+
+        // The first full acknowledgement takes 50ms — five times the 10ms target. The
+        // horizon floors at two serving round trips (100ms), so the ceiling admits 100ms of
+        // the measured 40 KB/s drain (4,000 bytes) and the optimistic 1,600-byte window
+        // stands, instead of a target-only horizon (400 bytes) strangling admission at the
+        // floor and re-measuring goodput through its own clamp.
+        var now = T0 + Seconds(0.050);
+        budget.OnAcked(
+            ackedBytes: 2_000,
+            budget.SnapshotDelivery(now - Seconds(0.050), appLimited: false),
+            now);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_600);
+
+        // The completed-epoch path honors the same serving-time floor.
+        now += Seconds(0.510);
+        DriveBudgetEpoch(budget, now, logicalBytes: 100_000, rttSeconds: 0.050);
+        await Assert.That(budget.BudgetBytes).IsEqualTo(1_600);
+    }
+
     private static BrokerUnackedByteBudget CreateColdStartBudget() =>
         new(
             targetSeconds: 0.010,

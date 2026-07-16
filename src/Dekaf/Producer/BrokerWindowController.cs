@@ -192,10 +192,12 @@ internal sealed class BrokerWindowController
         if (_epochStartedAt == 0)
             _epochStartedAt = nowTicks;
 
+        UpdateMinimumRtt(logicalBytes, rttTicks, nowTicks);
+
+        // After the RTT update so this acknowledgement's round trip already informs the
+        // ceiling's serving-time horizon.
         if (_latencyCeilingEnabled && !_coldStartRampComplete)
             AdvanceColdStartRamp(logicalBytes, rttTicks, nowTicks);
-
-        UpdateMinimumRtt(logicalBytes, rttTicks, nowTicks);
 
         var controlledDelayTicks = Math.Max(0, sealToSendTicks)
             + Math.Max(0, rttTicks - GetMinimumRtt(logicalBytes));
@@ -639,8 +641,32 @@ internal sealed class BrokerWindowController
 
     private long ComputeCeilingBytes(double rateBytesPerSecond)
     {
-        var targetBytes = rateBytesPerSecond * _targetDelayTicks / Stopwatch.Frequency;
+        // The delivery-latency target is an aspiration; two request-sized round trips are
+        // physics. When a full request's best-case round trip exceeds the target, a
+        // target-only horizon demands fewer standing bytes than the pipe needs to stay
+        // full, goodput is then measured at the strangled window, and the lower measurement
+        // justifies an even lower ceiling — a self-confirming collapse (observed as an 84%
+        // local throughput loss). Flooring the horizon at twice the request-quantum-sized
+        // minimum RTT keeps one request serving while the next seals, so measured goodput
+        // reflects drain capacity and the ceiling's growth feedback stays above unity.
+        var horizonTicks = Math.Max(
+            _targetDelayTicks,
+            SaturatingMultiply(QuantumMinimumRttTicks, 2));
+        var targetBytes = rateBytesPerSecond * horizonTicks / Stopwatch.Frequency;
         return (long)Math.Clamp(targetBytes, MinimumWindowBytes, _capBytes);
+    }
+
+    /// <summary>Best observed round trip for request-quantum-sized transfers, falling back
+    /// to the global minimum until that size bucket has a sample. The global minimum comes
+    /// from small early requests and can undercut a full request's service time by orders
+    /// of magnitude, which is exactly the gap that strangles the ceiling's horizon.</summary>
+    private long QuantumMinimumRttTicks
+    {
+        get
+        {
+            var bucketMinimum = _minimumRttBySizeTicks[GetSizeBucket(_requestQuantumBytes)];
+            return bucketMinimum != 0 ? bucketMinimum : _minimumRttTicks;
+        }
     }
 
     private void ResetEpoch(long nowTicks)
