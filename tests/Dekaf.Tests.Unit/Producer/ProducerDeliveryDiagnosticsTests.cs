@@ -186,13 +186,19 @@ public sealed class ProducerDeliveryDiagnosticsTests
             resolveLeaderId: static (_, _) => 7);
         var budget = accumulator.GetBrokerUnackedBudget(7)!;
         budget.Charge(600);
-        var blockStartedAt = Stopwatch.GetTimestamp();
+        var blockStartedAt = Stopwatch.GetTimestamp() - Stopwatch.Frequency * 8 / 1_000;
         budget.RecordAdmissionBlock(blockStartedAt);
-        budget.CompleteAckedPass(blockStartedAt + Stopwatch.Frequency * 8 / 1_000);
-        var ackTimestamp = Stopwatch.GetTimestamp();
+        budget.Release(600);
+        budget.Charge(600);
+        var controlAnchor = Stopwatch.GetTimestamp();
+        budget.CompleteAckedPass(controlAnchor);
+        var ackTimestamp = controlAnchor + Stopwatch.Frequency * 110 / 1_000;
         budget.OnAcked(
             1_000,
-            budget.SnapshotDelivery(ackTimestamp - Stopwatch.Frequency / 1_000, appLimited: true),
+            budget.SnapshotDelivery(
+                ackTimestamp - Stopwatch.Frequency / 1_000,
+                appLimited: false,
+                admissionGeneration: budget.CurrentGeneration),
             ackTimestamp);
         budget.CompleteAckedPass(ackTimestamp);
 
@@ -217,9 +223,7 @@ public sealed class ProducerDeliveryDiagnosticsTests
         await Assert.That(current.AdmissionBlockMicrosLog2Histogram!.Sum()).IsEqualTo(1);
         await Assert.That(current.AdmissionBlockMicrosLog2Histogram[12]).IsEqualTo(1);
         await Assert.That(current.CurrentAdmissionBlockMicros).IsEqualTo(0);
-        await Assert.That(snapshot.BudgetProbeEvents).Count().IsEqualTo(1);
-        await Assert.That(snapshot.BudgetProbeEvents[0].ProbeType).IsEqualTo("min-rtt");
-        await Assert.That(snapshot.BudgetProbeEvents[0].Outcome).IsEqualTo("started");
+        await Assert.That(snapshot.BudgetProbeEvents).IsEmpty();
         await Assert.That(sample.BrokerId).IsEqualTo(7);
         await Assert.That(sample.CapacityProbeSuccessCount).IsEqualTo(0);
         await Assert.That(sample.CapacityProbeFailureCount).IsEqualTo(0);
@@ -246,13 +250,14 @@ public sealed class ProducerDeliveryDiagnosticsTests
     }
 
     [Test]
-    public async Task BrokerBudgetHorizon_UsesMeasuredBdp_NotFixedBatchBytes()
+    public async Task BrokerWindow_DoesNotTreatOneRttAsSustainableGoodput()
     {
         await using var accumulator = new RecordAccumulator(
             CreateOptions(deliveryLatencyTargetMs: 10),
             resolveLeaderId: static (_, _) => 7);
         var budget = accumulator.GetBrokerUnackedBudget(7)!;
         var now = Stopwatch.GetTimestamp();
+        var initialWindow = budget.BudgetBytes;
 
         budget.OnAcked(
             100,
@@ -260,8 +265,8 @@ public sealed class ProducerDeliveryDiagnosticsTests
             now);
         budget.CompleteAckedPass(now);
 
-        await Assert.That(budget.BudgetBytes).IsEqualTo(100)
-            .Because("100 kB/s at a 1 ms RTT needs a 100-byte measured BDP");
+        await Assert.That(budget.BudgetBytes).IsEqualTo(initialWindow)
+            .Because("one request RTT is not a sustainable broker-goodput interval");
     }
 
     [Test]

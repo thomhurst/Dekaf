@@ -3309,7 +3309,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task Constructor_AppliesUnackedBudgetCap()
+    public async Task Constructor_AppliesCapWithoutInflatingCongestionWindow()
     {
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
         var (pool, _) = CreateMockConnection(responseQueue);
@@ -3320,8 +3320,8 @@ public sealed class BrokerSenderSendLoopTests
 
         try
         {
-            // Cold start: budget follows the cap the sender applied at construction.
-            await Assert.That(budget.BudgetBytes).IsEqualTo(4_096);
+            // Raising the safety cap must not manufacture congestion-window headroom.
+            await Assert.That(budget.BudgetBytes).IsEqualTo(100);
         }
         finally
         {
@@ -3353,7 +3353,7 @@ public sealed class BrokerSenderSendLoopTests
             sendSignals[index].TrySetResult();
         });
 
-        // One successful request must feed its encoded bytes and request RTT into the budget.
+        // One successful request must feed logical bytes and request RTT into the budget.
         var options = CreateOptions(maxInFlight: 1, unackedByteBudgetCapOverride: 1_000_000);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
@@ -3364,7 +3364,15 @@ public sealed class BrokerSenderSendLoopTests
         try
         {
             for (var i = 0; i < batchCount; i++)
-                sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0, dataSize: dataSize));
+            {
+                var batch = CreateTestBatch(
+                    valueTaskSourcePool,
+                    "test-topic",
+                    0,
+                    dataSize: dataSize);
+                batch.SetEncodedSize(500);
+                sender.Enqueue(batch);
+            }
 
             for (var i = 0; i < batchCount; i++)
             {
@@ -3372,12 +3380,10 @@ public sealed class BrokerSenderSendLoopTests
                 responses[i].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: i * 10));
             }
 
-            // The first ack establishes a rate and starts the base-RTT probe. The probe
-            // ignores recent occupancy but retains one BDP, exactly this one-request pipe,
-            // so sampling base RTT cannot empty the connection. Tick conversion may truncate
-            // the rate-times-RTT reconstruction by one byte.
-            await WaitUntilAsync(() => budget.BudgetBytes != 1_000_000, cancellationToken);
-            await Assert.That(budget.BudgetBytes).IsBetween(dataSize - 1, dataSize);
+            await WaitUntilAsync(() => budget.MinimumRttMicros > 0, cancellationToken);
+            var requestSizes = budget.CopyRequestSizeHistogram();
+            await Assert.That(requestSizes[4]).IsEqualTo(1);
+            await Assert.That(requestSizes.Sum()).IsEqualTo(1);
         }
         finally
         {
@@ -3537,10 +3543,11 @@ public sealed class BrokerSenderSendLoopTests
 
             firstResponse.SetException(new IOException("connection reset"));
 
-            // The retry send proves the faulted response was fully processed — and a faulted
-            // response must not count as drain, so the budget still has no rate sample.
+            // The retry send proves the faulted response was fully processed. Faulted
+            // responses must not enter controller samples or diagnostics.
             await sendSignals[1].Task.WaitAsync(cancellationToken);
-            await Assert.That(budget.BudgetBytes).IsEqualTo(1_000_000);
+            await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(0);
+            await Assert.That(budget.CopyRequestSizeHistogram().Sum()).IsEqualTo(0);
 
             retryResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
         }
@@ -3588,9 +3595,10 @@ public sealed class BrokerSenderSendLoopTests
             firstResponse.SetResult(CreateErrorResponse("test-topic", 0, ErrorCode.RequestTimedOut));
 
             // Retry proves the partition error was processed. It must not establish a
-            // successful drain-rate sample from the failed request's encoded bytes.
+            // successful goodput sample from the failed request.
             await sendSignals[1].Task.WaitAsync(cancellationToken);
-            await Assert.That(budget.BudgetBytes).IsEqualTo(1_000_000);
+            await Assert.That(budget.MaxRateBytesPerSecond).IsEqualTo(0);
+            await Assert.That(budget.CopyRequestSizeHistogram().Sum()).IsEqualTo(0);
 
             retryResponse.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 10));
         }

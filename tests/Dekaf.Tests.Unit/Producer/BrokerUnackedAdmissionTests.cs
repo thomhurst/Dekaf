@@ -7,11 +7,8 @@ using Dekaf.Protocol.Messages;
 namespace Dekaf.Tests.Unit.Producer;
 
 /// <summary>
-/// Tests for the per-broker unacked-byte admission gate: charging at batch seal, releasing
-/// at batch exit, blocking appends while a broker is over budget, and the escape hatches
-/// (disabled target, unknown leader). Batches are sealed through the real rotation path
-/// (small BatchSize + repeated appends), so charges flow through
-/// EnqueueCompletedBatchUnderLock exactly as in production.
+/// Tests for the per-broker logical-byte admission window: reserving before append,
+/// transferring ownership at seal/reroute, terminal release, and escape hatches.
 /// </summary>
 public sealed class BrokerUnackedAdmissionTests
 {
@@ -46,7 +43,10 @@ public sealed class BrokerUnackedAdmissionTests
         for (var i = 0; i < 10; i++)
         {
             if (stopOnceCharged?.UnackedBytes > 0)
+            {
+                await SealAllAsync(accumulator);
                 return;
+            }
 
             var appended = await accumulator.AppendAsync(
                 topic, 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -99,6 +99,7 @@ public sealed class BrokerUnackedAdmissionTests
         try
         {
             await AppendUntilSealedAsync(accumulator, "test-topic");
+            await SealAllAsync(accumulator);
 
             var budget = accumulator.GetBrokerUnackedBudget(LeaderNodeId);
             await Assert.That(budget).IsNotNull();
@@ -187,7 +188,7 @@ public sealed class BrokerUnackedAdmissionTests
 
     [Test]
     [Timeout(10_000)]
-    public async Task AsyncAppend_Unblocks_WhenMinRttProbeExpiresWithoutAck(CancellationToken cancellationToken)
+    public async Task AsyncAppend_Unblocks_WhenWindowBytesAreReleased(CancellationToken cancellationToken)
     {
         var options = CreateOptions(capOverride: 2_000_000);
         await using var accumulator = new RecordAccumulator(
@@ -209,13 +210,15 @@ public sealed class BrokerUnackedAdmissionTests
             PooledMemory.Null, PooledMemory.Null, null, 0, null, null, cancellationToken);
 
         await Assert.That(gatedAppend.IsCompleted).IsFalse();
+        budget.Release(1_200_000);
+        accumulator.DrainPendingAppends();
         await Assert.That(await gatedAppend).IsTrue();
-        await Assert.That(budget.UnackedBytes).IsEqualTo(1_200_000);
+        await Assert.That(budget.UnackedBytes).IsGreaterThan(0);
     }
 
     [Test]
     [Timeout(10_000)]
-    public async Task AsyncAppend_SiblingUnblocks_WhenFirstProbeWaiterIsCancelled(
+    public async Task AsyncAppend_SiblingUnblocks_WhenFirstWaiterIsCancelled(
         CancellationToken cancellationToken)
     {
         var options = CreateOptions(capOverride: 2_000_000);
@@ -246,8 +249,10 @@ public sealed class BrokerUnackedAdmissionTests
         firstCancellation.Cancel();
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await firstAppend);
+        budget.Release(1_200_000);
+        accumulator.DrainPendingAppends();
         await Assert.That(await siblingAppend).IsTrue();
-        await Assert.That(budget.UnackedBytes).IsEqualTo(1_200_000);
+        await Assert.That(budget.UnackedBytes).IsGreaterThan(0);
     }
 
     [Test]
@@ -491,12 +496,14 @@ public sealed class BrokerUnackedAdmissionTests
         try
         {
             await AppendUntilSealedAsync(accumulator, "test-topic");
+            await SealAllAsync(accumulator);
             var broker1 = accumulator.GetBrokerUnackedBudget(1)!;
             var broker1BytesAfterFirstSeals = broker1.UnackedBytes;
             await Assert.That(broker1BytesAfterFirstSeals).IsGreaterThan(0);
 
             currentLeader = 2;
             await AppendUntilSealedAsync(accumulator, "test-topic");
+            await SealAllAsync(accumulator);
 
             // New seals charge broker 2; broker 1 keeps only its pre-move charges.
             var broker2 = accumulator.GetBrokerUnackedBudget(2)!;
@@ -524,7 +531,7 @@ public sealed class BrokerUnackedAdmissionTests
             await Assert.That(appended).IsTrue();
 
             var broker1 = accumulator.GetBrokerUnackedBudget(1)!;
-            await Assert.That(broker1.UnackedBytes).IsEqualTo(0);
+            await Assert.That(broker1.UnackedBytes).IsGreaterThan(0);
 
             currentLeader = 2;
             await SealAllAsync(accumulator);
@@ -598,6 +605,7 @@ public sealed class BrokerUnackedAdmissionTests
         try
         {
             await AppendUntilSealedAsync(accumulator, "test-topic");
+            await SealAllAsync(accumulator);
             var batches = DrainSealedBatches(accumulator, metadataManager);
             var batch = batches[0];
             var originalBudget = accumulator.GetBrokerUnackedBudget(LeaderNodeId)!;
