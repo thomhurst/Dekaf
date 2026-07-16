@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Producer;
 
@@ -65,11 +66,11 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
     public async Task MaxBlock_ExceededWaitingForMetadata_ErrorPropagated()
     {
         // Arrange & Act - Resolve the invalid bootstrap server deterministically so metadata lookup will fail.
-        // BuildAsync() eagerly initializes and connects, so an unreachable broker
-        // should cause initialization to fail quickly rather than hanging indefinitely.
+        // BuildAsync() eagerly initializes, retrying metadata until MaxBlock expires
+        // (Java max.block.ms parity), then surfaces a timeout rather than hanging.
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
         {
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers("invalid-host-that-does-not-exist:9092")
@@ -82,9 +83,12 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
 
         sw.Stop();
 
-        // The error should propagate within a reasonable time frame.
-        // The injected resolver avoids depending on the host DNS timeout.
+        // The timeout should identify the metadata phase and carry the underlying
+        // failure. The injected resolver avoids depending on the host DNS timeout.
         // The key invariant is that the error does NOT hang indefinitely.
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Metadata);
+        await Assert.That(exception.InnerException).IsNotNull();
+        await Assert.That(sw.Elapsed.TotalSeconds).IsGreaterThanOrEqualTo(2);
         await Assert.That(sw.Elapsed.TotalSeconds).IsLessThan(30);
     }
 
