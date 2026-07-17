@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using Dekaf.Internal;
 
 namespace Dekaf.Producer;
 
@@ -69,6 +70,7 @@ internal sealed class BrokerUnackedByteBudget
     private long _budgetBytes;
     private long _generation;
     private long _admissionBlockEvents;
+    private long _admissionWaitTicks;
     private long _admissionBlockedSinceTimestamp;
     private long _pendingOutstandingPeakBytes;
     private long _minimumRttMicros;
@@ -115,7 +117,7 @@ internal sealed class BrokerUnackedByteBudget
             latencyGovernorEnabled: coldStartBudgetBytes is not null && targetSeconds > 0);
         if (coldStartBudgetBytes is { } coldStartBudget)
         {
-            _coldStartBudgetBytes = Math.Clamp(coldStartBudget, floor, _controller.WindowBytes);
+            _ = ArmColdStartWave(coldStartBudget);
             _awaitingInitialAcknowledgement = true;
         }
         Publish(GetPublishedBudget(_controller.WindowBytes), _controller.Generation);
@@ -252,6 +254,20 @@ internal sealed class BrokerUnackedByteBudget
     }
 
     /// <summary>
+    /// Records the wait a blocked append actually paid before it was admitted. The per-epoch
+    /// sum feeds the window controller's governed delay as a load-scaled average, so callers
+    /// queueing outside the window are visible to the same target the in-window pipeline is
+    /// held to. A sum, not a peak: one outlier block must not swamp the paired-experiment
+    /// delay comparison the way a per-epoch maximum did (run 29552281754, A-B-A REGRESSION).
+    /// Multi-writer; slow path only (a wait was already paid).
+    /// </summary>
+    public void RecordAdmissionWait(long waitTicks)
+    {
+        if (waitTicks > 0)
+            Interlocked.Add(ref _admissionWaitTicks, waitTicks);
+    }
+
+    /// <summary>
     /// Claims the right to force one partial batch into the broker pipeline. A claim is only
     /// needed when all charged bytes are held by open batches; an existing pipeline batch can
     /// already acknowledge bytes and wake blocked appenders without fragmenting every partition.
@@ -309,21 +325,8 @@ internal sealed class BrokerUnackedByteBudget
         Debug.Assert(remaining >= 0, "Broker pipeline batch count went negative.");
     }
 
-    public void ObserveWrittenUnackedBytes(long bytes)
-    {
-        var observed = Volatile.Read(ref _pendingOutstandingPeakBytes);
-        while (bytes > observed)
-        {
-            var prior = Interlocked.CompareExchange(
-                ref _pendingOutstandingPeakBytes,
-                bytes,
-                observed);
-            if (prior == observed)
-                return;
-
-            observed = prior;
-        }
-    }
+    public void ObserveWrittenUnackedBytes(long bytes) =>
+        InterlockedHelper.RatchetUp(ref _pendingOutstandingPeakBytes, bytes);
 
     public void SetCap(long capBytes, long nowTicks)
         => SetCap(capBytes, coldStartBudgetBytes: null, nowTicks);
@@ -333,17 +336,21 @@ internal sealed class BrokerUnackedByteBudget
         _ = nowTicks;
         var decision = _controller.SetCap(capBytes);
         if (_awaitingInitialAcknowledgement && coldStartBudgetBytes is { } coldStartBudget)
-        {
-            // The pre-ack window must be able to carry one wave at the new routing width,
-            // otherwise the slow start's pessimistic floor would shrink the wave the cold
-            // gate itself intends to admit.
-            decision = _controller.NoteColdStartWave(coldStartBudget);
-            _coldStartBudgetBytes = Math.Clamp(
-                coldStartBudget,
-                _floorBytes,
-                decision.WindowBytes);
-        }
+            decision = ArmColdStartWave(coldStartBudget);
         Publish(GetPublishedBudget(decision.WindowBytes), decision.Generation);
+    }
+
+    /// <summary>
+    /// Raises the pre-ack window to carry one cold-start wave at the current routing width
+    /// and clamps the pre-ack budget to it. The wave spans all connections while the
+    /// slow-start entry is denominated in single-connection quanta, so without this the
+    /// slow start's pessimistic floor would shrink the wave the cold gate intends to admit.
+    /// </summary>
+    private BrokerWindowDecision ArmColdStartWave(long coldStartBudget)
+    {
+        var decision = _controller.NoteColdStartWave(coldStartBudget);
+        _coldStartBudgetBytes = Math.Clamp(coldStartBudget, _floorBytes, decision.WindowBytes);
+        return decision;
     }
 
     internal DeliverySnapshot SnapshotDelivery(
@@ -409,7 +416,8 @@ internal sealed class BrokerUnackedByteBudget
         var decision = _controller.CompleteInterval(
             AdmissionBlockEvents,
             outstandingPeak,
-            nowTicks);
+            nowTicks,
+            Interlocked.Exchange(ref _admissionWaitTicks, 0));
         PublishDecision(decision, nowTicks);
         if (!IsOverBudget())
             RecordAdmissionAvailable(nowTicks);
@@ -470,7 +478,7 @@ internal sealed class BrokerUnackedByteBudget
         Volatile.Write(ref _maxRateBytesPerSecond, _controller.MaximumGoodputBytesPerSecond);
         Volatile.Write(
             ref _deliveryLatencyEwmaMicros,
-            _controller.ControlledDelayEwmaTicks * 1_000_000 / Stopwatch.Frequency);
+            _controller.GovernedDelayEwmaTicks * 1_000_000 / Stopwatch.Frequency);
         Volatile.Write(ref _latencyBudgetScale, _controller.WindowScale);
         Volatile.Write(ref _capacityProbeSuccessCount, _controller.CapacityProbeSuccessCount);
         Volatile.Write(ref _capacityProbeFailureCount, _controller.CapacityProbeFailureCount);

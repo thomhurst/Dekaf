@@ -84,6 +84,10 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
     internal Action<RecordMetadata, Exception?>? Callback => _callback;
     internal int RecordSize => _recordSize;
 
+    /// <summary>Monotonic milliseconds when the originating append started blocking; the
+    /// drain uses this to report the admission wait actually paid.</summary>
+    internal long StartTicks => _startTicks;
+
     public PendingAppend()
     {
         _core.RunContinuationsAsynchronously = true;

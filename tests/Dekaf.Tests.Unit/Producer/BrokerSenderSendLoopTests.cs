@@ -29,16 +29,66 @@ namespace Dekaf.Tests.Unit.Producer;
 public sealed class BrokerSenderSendLoopTests
 {
     [Test]
-    public async Task DeliveryLatencyTimestamp_HighThroughputLinger_UsesSealNotCreation()
+    public async Task DeliveryLatencyOrigin_SealWithinLinger_UsesSealNotCreation()
+    {
+        // Sealing within the configured linger: the origin stays the seal, so opted-in
+        // batching delay never reads as queueing to the window governor.
+        var readyBatch = CreateReadyBatchSealedAfter(
+            creationAgeTicks: Stopwatch.Frequency / 10,
+            lingerMs: 200);
+
+        try
+        {
+            var originTimestamp = BrokerSender.GetOldestBatchOriginTimestamp([readyBatch], 1);
+
+            await Assert.That(readyBatch.GovernedOriginTicks)
+                .IsEqualTo(readyBatch.StopwatchSealedTicks);
+            await Assert.That(originTimestamp).IsEqualTo(readyBatch.StopwatchSealedTicks);
+        }
+        finally
+        {
+            readyBatch.TrySetMemoryReleased();
+            readyBatch.Fail(new InvalidOperationException("test cleanup"));
+        }
+    }
+
+    [Test]
+    public async Task DeliveryLatencyOrigin_SealStalledPastLinger_UsesLingerDeadline()
+    {
+        // Sealing stalled past the linger deadline (admission-flush stall, drain starvation):
+        // the overrun is delay the caller pays, so the origin becomes the linger deadline
+        // rather than the late seal that would hide it from the window governor.
+        const int lingerMs = 10;
+        var readyBatch = CreateReadyBatchSealedAfter(
+            creationAgeTicks: Stopwatch.Frequency / 10,
+            lingerMs);
+        var lingerTicks = lingerMs * Stopwatch.Frequency / 1_000;
+
+        try
+        {
+            var originTimestamp = BrokerSender.GetOldestBatchOriginTimestamp([readyBatch], 1);
+
+            await Assert.That(originTimestamp)
+                .IsEqualTo(readyBatch.StopwatchCreatedTicks + lingerTicks);
+            await Assert.That(originTimestamp).IsLessThan(readyBatch.StopwatchSealedTicks);
+        }
+        finally
+        {
+            readyBatch.TrySetMemoryReleased();
+            readyBatch.Fail(new InvalidOperationException("test cleanup"));
+        }
+    }
+
+    private static ReadyBatch CreateReadyBatchSealedAfter(long creationAgeTicks, int lingerMs)
     {
         var options = new ProducerOptions
         {
             BootstrapServers = ["localhost:9092"],
-            LingerMs = 100,
+            LingerMs = lingerMs,
             DeliveryLatencyTargetMs = 10
         };
         var partitionBatch = new PartitionBatch(new TopicPartition("test-topic", 0), options);
-        var simulatedCreationTimestamp = Stopwatch.GetTimestamp() - Stopwatch.Frequency / 10;
+        var simulatedCreationTimestamp = Stopwatch.GetTimestamp() - creationAgeTicks;
         typeof(PartitionBatch)
             .GetField("_createdStopwatchTimestamp", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(partitionBatch, simulatedCreationTimestamp);
@@ -53,23 +103,10 @@ public sealed class BrokerSenderSendLoopTests
             completionSource: null,
             callback: null,
             estimatedSize: 1);
-        var readyBatch = partitionBatch.Complete()!;
+        if (!appendResult.Success)
+            throw new InvalidOperationException("Test batch append failed.");
 
-        try
-        {
-            var deliveryTimestamp = BrokerSender.GetOldestBatchSealTimestamp([readyBatch], 1);
-
-            await Assert.That(appendResult.Success).IsTrue();
-            await Assert.That(readyBatch.StopwatchCreatedTicks).IsEqualTo(simulatedCreationTimestamp);
-            await Assert.That(deliveryTimestamp).IsEqualTo(readyBatch.StopwatchSealedTicks);
-            await Assert.That(deliveryTimestamp - readyBatch.StopwatchCreatedTicks)
-                .IsGreaterThanOrEqualTo(Stopwatch.Frequency / 20);
-        }
-        finally
-        {
-            readyBatch.TrySetMemoryReleased();
-            readyBatch.Fail(new InvalidOperationException("test cleanup"));
-        }
+        return partitionBatch.Complete()!;
     }
 
     private sealed class TrackingPipelinedResponseSource : IPipelinedResponseSource<ProduceResponse>

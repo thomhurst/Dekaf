@@ -73,11 +73,13 @@ internal sealed class LatencyTracker
     {
         lock (_outlierLock)
         {
-            var slot = _outlierCount++;
+            // Reservoir sampling (Algorithm R): every outlier over the whole run has an equal
+            // chance of being kept. First-N capture saturated within minute 0 of stress runs
+            // and left the remaining tail invisible (run 29541359283).
+            var seen = _outlierCount++;
+            var slot = seen < MaxOutlierSamples ? seen : Random.Shared.NextInt64(seen + 1);
             if ((ulong)slot >= MaxOutlierSamples)
-            {
                 return;
-            }
 
             var completedAt = DateTimeOffset.UtcNow;
             var latency = Stopwatch.GetElapsedTime(0, ticks);
@@ -187,6 +189,9 @@ internal sealed class LatencyTracker
 
             droppedOutlierSamples = Math.Max(0, _outlierCount - MaxOutlierSamples);
         }
+
+        // The reservoir keeps samples in replacement order; report them chronologically.
+        outlierSamples.Sort(static (a, b) => a.StartedAtUtc.CompareTo(b.StartedAtUtc));
 
         return new LatencySnapshot
         {

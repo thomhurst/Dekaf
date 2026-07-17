@@ -106,7 +106,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController(latencyGovernorEnabled: true);
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         // Controllable delay proportional to the window (12ms at the descent floor, 96ms at
         // the optimistic window) against a 10ms target: every descent step demonstrably buys
@@ -156,7 +156,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController(latencyGovernorEnabled: true);
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         // Delay is over target but window-independent (a fixed 50ms): shrinking below the
         // legacy floor cannot help, so every sub-floor experiment fails its delay-gain
@@ -179,7 +179,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController(latencyGovernorEnabled: true);
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         // On-target delay keeps the legacy eight-quantum floor: the governor's deep descent
         // is justified only by a missed latency target.
@@ -195,7 +195,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         // Flat goodput walks the window down to the legacy floor; sustained admission
         // blocking then lets up-probes pass at "not worse" goodput, so the window recovers
@@ -204,6 +204,203 @@ public sealed class BrokerUnackedByteBudgetTests
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
 
         await Assert.That(controller.WindowBytes).IsGreaterThan(1_600);
+    }
+
+    [Test]
+    public async Task SlowStart_StopsDoublingWhenDelayGrowsOverTarget()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+
+        // First pass: on-target delay records the baseline and doubles (200 -> 400).
+        for (var i = 0; i < 8; i++)
+        {
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), Seconds(0.003), false, controller.Generation, now);
+        }
+        _ = controller.CompleteInterval(0, 0, now, 0);
+        await Assert.That(controller.WindowBytes).IsEqualTo(400);
+
+        // Second pass: the doubling manufactured queueing (delay over target and well past
+        // 1.5x the recorded baseline) — slow start ends without doubling again.
+        for (var i = 0; i < 8; i++)
+        {
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), Seconds(0.020), false, controller.Generation, now);
+        }
+        _ = controller.CompleteInterval(0, 0, now, 0);
+        await Assert.That(controller.WindowBytes).IsEqualTo(400);
+
+        // Slow start stays ended: further passes no longer double.
+        _ = controller.CompleteInterval(0, 0, now, 0);
+        await Assert.That(controller.WindowBytes).IsEqualTo(400);
+    }
+
+    [Test]
+    public async Task SlowStart_AmbientOverTargetDelayKeepsDoubling()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+
+        // A fixed 50ms delay that does not respond to the window (slow broker, long link)
+        // is over target from the first acknowledgement but shows no growth between
+        // doublings — it must not strangle the opening window.
+        for (var pass = 0; pass < 4; pass++)
+        {
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), Seconds(0.050), false, controller.Generation, now);
+            _ = controller.CompleteInterval(0, 0, now, 0);
+        }
+
+        await Assert.That(controller.WindowBytes).IsEqualTo(1_600);
+    }
+
+    [Test]
+    public async Task AdmissionWait_AloneDrivesDescentBelowLegacyFloor()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
+
+        // The in-window pipeline reads as idle (no post-seal delay, RTT at minimum) while
+        // blocked appends pay a wait proportional to the window. Only the admission-wait
+        // channel can justify descent here; before it fed the governed delay this exact
+        // shape parked at the legacy floor with callers queueing outside the window.
+        for (var i = 0; i < 2_000 && controller.WindowBytes > 200; i++)
+        {
+            now += Seconds(0.510);
+            admissionBlocks++;
+            controller.RecordAcknowledgement(
+                100, Seconds(0.001), 0, false, controller.Generation, now);
+            _ = controller.CompleteInterval(
+                admissionBlocks,
+                controller.WindowBytes,
+                now,
+                admissionWaitTicks: Seconds(0.00006) * controller.WindowBytes);
+        }
+
+        await Assert.That(controller.WindowBytes).IsEqualTo(200);
+    }
+
+    [Test]
+    public async Task AdmissionWait_SurfacesInPublishedDeliveryLatencyEwma()
+    {
+        var budget = CreateBudget(capBytes: 10_000, initialRequestBytes: 100);
+        budget.CompleteAckedPass(T0);
+
+        budget.RecordAdmissionWait(Seconds(0.050));
+        DriveBudgetEpoch(budget, T0 + Seconds(0.510), 100, 0.001);
+
+        await Assert.That(budget.DeliveryLatencyEwmaMicros).IsGreaterThan(40_000);
+    }
+
+    [Test]
+    public async Task ProbeFailures_BackOffTheProbeSchedule()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
+
+        // Two consecutive failed experiments: each doubles the wait before the next probe.
+        FailNextDownProbe(controller, ref now, ref admissionBlocks);
+        var baselineWindow = controller.WindowBytes;
+        var epochsToSecondProbe = CountEpochsUntilProbe(controller, ref now, ref admissionBlocks);
+        _ = CompleteActiveProbe(
+            controller,
+            baselineWindow,
+            ref now,
+            ref admissionBlocks,
+            candidateLogicalBytes: 50);
+        var epochsToThirdProbe = CountEpochsUntilProbe(controller, ref now, ref admissionBlocks);
+
+        await Assert.That(epochsToSecondProbe).IsGreaterThanOrEqualTo(120);
+        await Assert.That(epochsToThirdProbe).IsGreaterThanOrEqualTo(240);
+    }
+
+    [Test]
+    public async Task OverTargetProbeFailures_DoNotBackOffTheSchedule()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(0, 0, now, 0);
+
+        // Window-independent 50ms delay keeps the target missed forever; sub-floor descents
+        // repeatedly fail their delay-gain requirement.
+        for (var i = 0; i < 4_000 && controller.CapacityProbeFailureCount < 2; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.050);
+        }
+        await Assert.That(controller.CapacityProbeFailureCount).IsGreaterThanOrEqualTo(2);
+
+        // While the target is missed, failed experiments are the escape search: the next one
+        // must arrive on the normal schedule, not a 4x/8x backed-off one (run 29552281754
+        // froze the window at the slow-start ceiling for most of a run this way).
+        var epochsToNextProbe = CountEpochsUntilProbe(
+            controller,
+            ref now,
+            ref admissionBlocks,
+            sealToSendSeconds: 0.050);
+        await Assert.That(epochsToNextProbe).IsLessThanOrEqualTo(100);
+    }
+
+    [Test]
+    public async Task UpProbeTreatment_AbortsEarlyOnDelayBlowThrough()
+    {
+        var controller = CreateController();
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
+
+        FailNextDownProbe(controller, ref now, ref admissionBlocks);
+        var baselineWindow = controller.WindowBytes;
+        StartNextProbe(
+            controller,
+            BrokerWindowPhase.ProbeUp,
+            ref now,
+            ref admissionBlocks);
+
+        // The treatment blows through twice the target and twice the entry delay: the
+        // experiment cannot pass the final delay veto, so it aborts on the first qualified
+        // treatment epoch instead of holding the inflated window for the full sandwich.
+        BrokerWindowDecision decision = default;
+        for (var i = 0; i < 3 && controller.Phase != BrokerWindowPhase.Steady; i++)
+        {
+            decision = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.200);
+        }
+
+        await Assert.That(decision.ProbeOutcome).IsEqualTo(BrokerBudgetProbeOutcome.Failed);
+        await Assert.That(controller.Phase).IsEqualTo(BrokerWindowPhase.Steady);
+        await Assert.That(controller.WindowBytes).IsEqualTo(baselineWindow);
+    }
+
+    [Test]
+    public async Task ColdStartWave_WiderThanSlowStartEntry_RaisesPreAckWindow()
+    {
+        // Three connections per broker produce a cold-start wave of three single-connection
+        // quanta; the pre-ack window must carry the whole wave even though slow start now
+        // enters at two quanta of one connection.
+        var budget = new BrokerUnackedByteBudget(
+            targetSeconds: 0.010,
+            floorBytes: 1,
+            initialCapBytes: 10_000,
+            initialRequestBytes: 100,
+            coldStartBudgetBytes: 300);
+
+        await Assert.That(budget.BudgetBytes).IsEqualTo(300);
+        await Assert.That(budget.TryReserve(300, out _)).IsTrue();
+        await Assert.That(budget.TryReserve(1, out _)).IsFalse();
+        budget.Release(300);
     }
 
     [Test]
@@ -372,7 +569,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var now = T0;
         var admissionBlocks = 0L;
         var initialWindow = controller.WindowBytes;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         for (var i = 0; i < 100; i++)
         {
@@ -395,7 +592,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
         {
@@ -417,7 +614,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
         {
@@ -438,7 +635,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
         {
@@ -476,7 +673,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
         ReachSteady(controller, ref now, ref admissionBlocks);
 
         var baselineWindow = controller.WindowBytes;
@@ -507,7 +704,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
         var baselineWindow = controller.WindowBytes;
 
         StartNextProbe(
@@ -534,7 +731,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
         var baselineWindow = controller.WindowBytes;
 
         StartNextProbe(
@@ -560,7 +757,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
         var baselineWindow = controller.WindowBytes;
 
         StartNextProbe(
@@ -591,7 +788,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
         ReachSteady(controller, ref now, ref admissionBlocks);
 
         FailNextDownProbe(controller, ref now, ref admissionBlocks);
@@ -623,7 +820,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         FailNextDownProbe(controller, ref now, ref admissionBlocks);
         var baselineWindow = controller.WindowBytes;
@@ -652,7 +849,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         FailNextDownProbe(controller, ref now, ref admissionBlocks);
         var baselineWindow = controller.WindowBytes;
@@ -680,7 +877,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
 
         FailNextDownProbe(controller, ref now, ref admissionBlocks);
         var baselineWindow = controller.WindowBytes;
@@ -712,7 +909,7 @@ public sealed class BrokerUnackedByteBudgetTests
         var controller = CreateController();
         var now = T0;
         var admissionBlocks = 0L;
-        _ = controller.CompleteInterval(admissionBlocks, 0, now);
+        _ = controller.CompleteInterval(admissionBlocks, 0, now, 0);
         _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks, rttSeconds: 0.001);
         for (var i = 0; i < 1_000; i++)
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks, rttSeconds: 0.050);
@@ -969,7 +1166,9 @@ public sealed class BrokerUnackedByteBudgetTests
         ref long now,
         ref long admissionBlocks)
     {
-        for (var i = 0; i < 100 && controller.Phase == BrokerWindowPhase.Steady; i++)
+        // Consecutive probe failures back the schedule off exponentially (up to 8x the
+        // 60-epoch interval), so allow the longest backed-off wait before giving up.
+        for (var i = 0; i < 600 && controller.Phase == BrokerWindowPhase.Steady; i++)
             _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
 
         if (controller.Phase != expectedPhase)
@@ -1009,6 +1208,26 @@ public sealed class BrokerUnackedByteBudgetTests
             throw new InvalidOperationException("Capacity probe did not complete.");
 
         return decision;
+    }
+
+    private static int CountEpochsUntilProbe(
+        BrokerWindowController controller,
+        ref long now,
+        ref long admissionBlocks,
+        double sealToSendSeconds = 0)
+    {
+        for (var i = 1; i <= 1_000; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: sealToSendSeconds);
+            if (controller.Phase != BrokerWindowPhase.Steady)
+                return i;
+        }
+
+        throw new InvalidOperationException("No probe started within 1,000 epochs.");
     }
 
     private static void FailNextDownProbe(
@@ -1055,6 +1274,7 @@ public sealed class BrokerUnackedByteBudgetTests
         return controller.CompleteInterval(
             admissionBlocks,
             observedOutstandingBytes ?? controller.WindowBytes,
-            now);
+            now,
+            admissionWaitTicks: 0);
     }
 }

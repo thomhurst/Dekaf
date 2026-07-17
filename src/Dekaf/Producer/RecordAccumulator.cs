@@ -2139,6 +2139,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         continue;
                     }
 
+                    RecordAdmissionWaitForDrainedAppend(op, drainable.AdmissionReservation);
+
                     try
                     {
                         var result = AppendAfterReservation(
@@ -2215,6 +2217,27 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         DrainPendingAppends();
+    }
+
+    /// <summary>
+    /// Feeds the wait a drained slow-path append actually paid into its broker budget's
+    /// governed delay. Without this the window controller cannot see latency spent queueing
+    /// outside the window, and a window that is exactly the bottleneck reads as on-target
+    /// while callers block against it. The wait deliberately includes buffer-memory blocks,
+    /// not just window rejections: from the leader's governed-delay perspective any slow-path
+    /// wait is delay the caller paid, and the probe guards (goodput + delay-gain) prevent a
+    /// non-window cause from driving descent that buys nothing. Slow path only.
+    /// </summary>
+    private void RecordAdmissionWaitForDrainedAppend(
+        PendingAppend operation,
+        in AdmissionReservation reservation)
+    {
+        var budget = reservation.Budget;
+        if (budget is null && reservation.Deque is { } deque)
+            budget = GetCachedAdmissionBudget(deque, operation.Topic, operation.Partition);
+
+        var waitMilliseconds = MonotonicClock.GetMilliseconds() - operation.StartTicks;
+        budget?.RecordAdmissionWait(waitMilliseconds * Stopwatch.Frequency / 1_000);
     }
 
     /// <summary>
@@ -5119,13 +5142,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // adaptive window by ack-clocked doubling (slow start) instead of in one unlearned
         // step. Explicit cap overrides retain their existing controller semantics for tests
         // and advanced callers.
+        //
+        // The controller quantum is one batch regardless of connection count: connections are
+        // parallelism for draining the window, not license for more standing bytes. Scaling
+        // the quantum by routing width multiplied every floor and the slow-start ceiling by
+        // the connection count, which tripled standing queue at 3 connections per broker and
+        // put the descent floor itself above the delivery-latency target (run 29541359283).
+        // Only the cap and the pre-ack cold-start wave span the full routing width.
         return new BrokerUnackedByteBudget(
             _options.DeliveryLatencyTargetMs / 1000.0,
             floorBytes: 1,
             initialCapBytes: cap,
             lingerSeconds: _options.LingerMs / 1000.0,
             enableDiagnostics: _options.EnableDeliveryDiagnostics,
-            initialRequestBytes: requestWaveBytes,
+            initialRequestBytes: _options.BatchSize,
             coldStartBudgetBytes: _options.UnackedByteBudgetCapOverride is null
                 && _options.Acks != Acks.None
                 ? requestWaveBytes
@@ -7388,7 +7418,8 @@ internal sealed class PartitionBatch
                 _callbackCount,
                 _arrayReuseQueue,
                 _recordCount,
-                _createdStopwatchTimestamp);
+                _createdStopwatchTimestamp,
+                _options.LingerMs * Stopwatch.Frequency / 1_000);
 
             if (_admissionBudget is { } admissionBudget)
             {
@@ -8050,6 +8081,15 @@ internal sealed class ReadyBatch
     internal long StopwatchSealedTicks { get; private set; }
 
     /// <summary>
+    /// Origin for the governed delivery-delay sample: the seal, or the linger deadline when
+    /// sealing stalled past it. Configured linger is the caller's chosen batching delay and
+    /// must not read as queueing, but a batch held open beyond its linger (admission-flush
+    /// stalls, drain starvation) is delay the user pays that seal-to-send alone cannot see.
+    /// Fixed at seal time so retries keep their original origin.
+    /// </summary>
+    internal long GovernedOriginTicks { get; private set; }
+
+    /// <summary>
     /// Age of this ready batch in milliseconds since sealing (or since last reenqueue).
     /// </summary>
     internal int AgeMs => (int)((Stopwatch.GetTimestamp() - _createdTimestamp) * 1000 / Stopwatch.Frequency);
@@ -8192,7 +8232,8 @@ internal sealed class ReadyBatch
         int callbackCount = 0,
         BatchArrayReuseQueue? arrayReuseQueue = null,
         int recordCount = 0,
-        long createdStopwatchTimestamp = 0)
+        long createdStopwatchTimestamp = 0,
+        long lingerTicks = 0)
     {
         // The generation increment must happen BEFORE the lifecycle flags are cleared.
         // Stale-reference holders validate liveness by reading _returnedToPool first and
@@ -8241,6 +8282,9 @@ internal sealed class ReadyBatch
         StopwatchCreatedTicks = createdStopwatchTimestamp > 0
             ? createdStopwatchTimestamp
             : StopwatchSealedTicks;
+        GovernedOriginTicks = Math.Min(
+            StopwatchSealedTicks,
+            StopwatchCreatedTicks + lingerTicks);
         _createdTimestamp = StopwatchSealedTicks;
     }
 
