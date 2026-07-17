@@ -621,8 +621,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly long _scaleDownSustainedMs;
 
     // Maintained counter for O(1) hot-path access. Incremented in SendCoalescedAsync
-    // when a PendingResponse is added, decremented in ProcessCompletedResponses and
-    // HandleTimedOutRequests when entries are removed. Must use Interlocked: with
+    // when a PendingResponse is added and decremented when ClaimPendingResponseAt
+    // transfers its ownership out of the list. Must use Interlocked: with
     // multi-connection sends, concurrent SendCoalescedAsync calls increment from
     // different threads. Non-atomic ++ silently loses increments, causing the send
     // loop to undercount pending responses and enter idle wait prematurely.
@@ -699,6 +699,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </remarks>
     private readonly Action _responseCompletionCallback;
     private int _disposed;
+    private int _deferredPendingResponseCleanupCount;
 
     public BrokerSender(
         int brokerId,
@@ -2000,30 +2001,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Disposition order preserves per-partition FIFO for redelivery:
                 // in-flight pending responses hold the oldest batches, then already-recovered work,
                 // send-failed retries, this pass's coalesced head, carry-over, and channel backlog.
-                for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
-                {
-                    var pendingList = _pendingResponsesByConnection[connIdx];
-                    for (var i = 0; i < pendingList.Count; i++)
-                    {
-                        var pr = pendingList[i];
-                        for (var j = 0; j < pr.Count; j++)
-                        {
-                            if (pr.IsSameIncarnation(j))
-                                CollectOrFailOnLoopExit(
-                                    new BatchReference(pr.Batches[j], pr.BatchGenerations[j]),
-                                    redeliver, disposedException,
-                                    recoveredBatches, recoveredBatchSet);
-                        }
-                        pr.ResponseTask.Abandon();
-                        ReturnPendingResponseArrays(in pr);
-                    }
-                    Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
-                    var removedBytes = SumEncodedBytes(pendingList);
-                    Interlocked.Add(ref _totalPendingResponseBytes, -removedBytes);
-                    Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -removedBytes);
-                    pendingList.Clear();
-                    // No TrimExcess — lists are unreachable after disposal
-                }
+                CleanupPendingResponsesOnLoopExit(
+                    redeliver,
+                    disposedException,
+                    recoveredBatches,
+                    recoveredBatchSet);
+                RecordDeferredPendingResponseCleanupRecovered();
 
                 while (_loopExitRedeliveries.TryDequeue(out var redelivery))
                 {
@@ -2710,7 +2693,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Polls _pendingResponsesByConnection for completed response tasks and processes them inline.
     /// Equivalent to Java's Sender processing completed sends inside NetworkClient.poll().
-    /// Uses compact-in-place pattern to avoid list allocation during removal.
+    /// Claims completed entries before processing, then compacts their tombstones in place.
+    /// This prevents exit cleanup from observing a returned array after an exception without
+    /// adding allocations or quadratic List.RemoveAt shifts to the response hot path.
     /// </summary>
     private void ProcessCompletedResponses(
         PartitionCarryOver carryOver,
@@ -2730,156 +2715,165 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var pendingList = _pendingResponsesByConnection[connIdx];
             if (pendingList.Count == 0) continue;
 
-            var writeIdx = 0;
-            long completedResponseBytes = 0;
+            var removedAny = false;
             for (var i = 0; i < pendingList.Count; i++)
             {
                 var pending = pendingList[i];
                 if (!pending.ResponseTask.IsCompleted)
                 {
-                    // Keep this entry — compact in-place
-                    pendingList[writeIdx++] = pending;
                     continue;
                 }
 
+                pending = ClaimPendingResponseAt(connIdx, i);
+                removedAny = true;
                 var task = pending.ResponseTask;
-                completedResponseBytes += pending.EncodedBytes;
                 var batches = pending.Batches;
                 var count = pending.Count;
+                ProduceResponse? responseToReturn = null;
+                Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookupToClear = null;
 
-                if (task.IsFaulted || task.IsCanceled)
+                try
                 {
-                    Exception ex;
-                    try
+                    if (task.IsFaulted || task.IsCanceled)
                     {
-                        _ = task.GetResult();
-                        ex = new OperationCanceledException();
-                    }
-                    catch (Exception responseException)
-                    {
-                        ex = responseException;
-                    }
-                    LogResponseFailed(ex, _brokerId);
-                    _pinnedConnections[connIdx] = null; // Invalidate only the affected connection
-
-                    for (var j = 0; j < count; j++)
-                    {
-                        if (pending.IsSameIncarnation(j))
+                        Exception ex;
+                        try
                         {
-                            batches[j].AppendDiag('P'); // Faulted/cancelled response processed
-                            try
+                            _ = task.GetResult();
+                            ex = new OperationCanceledException();
+                        }
+                        catch (Exception responseException)
+                        {
+                            ex = responseException;
+                        }
+                        LogResponseFailed(ex, _brokerId);
+                        _pinnedConnections[connIdx] = null; // Invalidate only the affected connection
+
+                        for (var j = 0; j < count; j++)
+                        {
+                            if (pending.IsSameIncarnation(j))
                             {
-                                HandleRetriableBatch(batches[j], pending.BatchGenerations[j], ErrorCode.NetworkException,
-                                    carryOver, cancellationToken);
-                            }
-                            catch (Exception batchEx)
-                            {
-                                try { FailAndCleanupBatch(batches[j], ex); }
-                                catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                                LogBatchCleanupStepFailed(batchEx, _brokerId);
+                                batches[j].AppendDiag('P'); // Faulted/cancelled response processed
+                                try
+                                {
+                                    HandleRetriableBatch(batches[j], pending.BatchGenerations[j], ErrorCode.NetworkException,
+                                        carryOver, cancellationToken);
+                                }
+                                catch (Exception batchEx)
+                                {
+                                    try { FailAndCleanupBatch(batches[j], ex); }
+                                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                                    LogBatchCleanupStepFailed(batchEx, _brokerId);
+                                }
                             }
                         }
+
+                        continue;
+                    }
+
+                    var response = task.GetResult();
+                    responseToReturn = response;
+                    ObserveBrokerThrottle(response.ThrottleTimeMs);
+                    var allPartitionsSucceeded = true;
+                    var anyPartitionSucceeded = false;
+                    ProduceResponsePartitionData? directResponse = null;
+                    // Reuse caller-provided dictionary to avoid per-response allocation.
+                    // The dictionary is cleared after use in ProcessResponseBatches.
+                    var responseLookup = reusableResponseLookup;
+                    responseLookupToClear = responseLookup;
+                    if (count == 1
+                        && batches[0] is { } directBatch
+                        && response.TopicCount == 1
+                        && response.Responses[0].PartitionCount == 1
+                        && IsMatchingResponsePartition(
+                            directBatch.TopicPartition,
+                            response.Responses[0].Name,
+                            response.Responses[0].PartitionResponses[0].Index))
+                    {
+                        var partitionResponse = response.Responses[0].PartitionResponses[0];
+                        directResponse = partitionResponse;
+                        allPartitionsSucceeded = partitionResponse.ErrorCode == ErrorCode.None;
+                        anyPartitionSucceeded = allPartitionsSucceeded;
+                    }
+                    else
+                    {
+                        for (var t = 0; t < response.TopicCount; t++)
+                        {
+                            ref var topicResp = ref response.Responses[t];
+                            for (var p = 0; p < topicResp.PartitionCount; p++)
+                            {
+                                if (topicResp.PartitionResponses[p].ErrorCode != ErrorCode.None)
+                                    allPartitionsSucceeded = false;
+                                else
+                                    anyPartitionSucceeded = true;
+                                responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
+                                responseLookup[(topicResp.Name, topicResp.PartitionResponses[p].Index)] =
+                                    topicResp.PartitionResponses[p];
+                            }
+                        }
+                    }
+
+                    if (allPartitionsSucceeded && _unackedBudget is { } unackedBudget)
+                    {
+                        // Feed logical request bytes and direct timing into the broker window.
+                        // Publication remains once per response pass, keeping the ack path O(1).
+                        lastAckTimestamp = Stopwatch.GetTimestamp();
+                        unackedBudget.OnAcked(
+                            pending.DataBytes,
+                            pending.DeliverySnapshotAtSend,
+                            lastAckTimestamp);
+                        anyAckedThisPass = true;
+                    }
+                    else if (anyPartitionSucceeded && _unackedBudget is { } partiallyAckedBudget)
+                    {
+                        // Mixed responses carry no cleanly attributable request timing, so they
+                        // feed no window sample — but a delivered partition still proves the
+                        // broker drains data, which must end the cold-start clamp.
+                        partiallyAckedBudget.NotePartialDeliverySuccess();
+                    }
+
+                    // Diagnostic: log response content and expected batches for mismatch diagnosis
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        var batchKeys = string.Join(", ",
+                            Enumerable.Range(0, count)
+                                .Where(idx => batches[idx] is not null)
+                                .Select(idx => $"{batches[idx].TopicPartition.Topic}-{batches[idx].TopicPartition.Partition}"));
+                        var respKeys = directResponse is not null
+                            ? $"{batches[0].TopicPartition.Topic}-{directResponse.Value.Index}"
+                            : responseLookup is not null
+                                ? string.Join(", ", responseLookup.Keys.Select(k => $"{k.Topic}-{k.Partition}"))
+                                : "(empty)";
+                        LogProduceResponseProcessed(_instanceId, _brokerId, task.Id, count, batchKeys,
+                            directResponse is not null ? 1 : responseLookup?.Count ?? 0, respKeys);
+                    }
+
+                    responseLookupToClear = responseLookup;
+                    ProcessResponseBatches(pending, directResponse, responseLookup, response.NodeEndpoints,
+                        carryOver, cancellationToken, task.Id);
+                }
+                catch
+                {
+                    QueueDetachedPendingResponseForLoopExit(in pending);
+                    throw;
+                }
+                finally
+                {
+                    try { responseLookupToClear?.Clear(); }
+                    catch (Exception clearEx) { LogBatchCleanupStepFailed(clearEx, _brokerId); }
+                    if (responseToReturn is not null)
+                    {
+                        try { responseToReturn.Return(); }
+                        catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx, _brokerId); }
                     }
 
                     ReturnPendingResponseArrays(in pending);
-                    continue;
                 }
-
-                var response = task.GetResult();
-                ObserveBrokerThrottle(response.ThrottleTimeMs);
-                var allPartitionsSucceeded = true;
-                var anyPartitionSucceeded = false;
-                ProduceResponsePartitionData? directResponse = null;
-                // Reuse caller-provided dictionary to avoid per-response allocation.
-                // The dictionary is cleared after use in ProcessResponseBatches.
-                var responseLookup = reusableResponseLookup;
-                if (count == 1
-                    && batches[0] is { } directBatch
-                    && response.TopicCount == 1
-                    && response.Responses[0].PartitionCount == 1
-                    && IsMatchingResponsePartition(
-                        directBatch.TopicPartition,
-                        response.Responses[0].Name,
-                        response.Responses[0].PartitionResponses[0].Index))
-                {
-                    var partitionResponse = response.Responses[0].PartitionResponses[0];
-                    directResponse = partitionResponse;
-                    allPartitionsSucceeded = partitionResponse.ErrorCode == ErrorCode.None;
-                    anyPartitionSucceeded = allPartitionsSucceeded;
-                }
-                else
-                {
-                    for (var t = 0; t < response.TopicCount; t++)
-                    {
-                        ref var topicResp = ref response.Responses[t];
-                        for (var p = 0; p < topicResp.PartitionCount; p++)
-                        {
-                            if (topicResp.PartitionResponses[p].ErrorCode != ErrorCode.None)
-                                allPartitionsSucceeded = false;
-                            else
-                                anyPartitionSucceeded = true;
-                            responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
-                            responseLookup[(topicResp.Name, topicResp.PartitionResponses[p].Index)] =
-                                topicResp.PartitionResponses[p];
-                        }
-                    }
-                }
-
-                if (allPartitionsSucceeded && _unackedBudget is { } unackedBudget)
-                {
-                    // Feed logical request bytes and direct timing into the broker window.
-                    // Publication remains once per response pass, keeping the ack path O(1).
-                    lastAckTimestamp = Stopwatch.GetTimestamp();
-                    unackedBudget.OnAcked(
-                        pending.DataBytes,
-                        pending.DeliverySnapshotAtSend,
-                        lastAckTimestamp);
-                    anyAckedThisPass = true;
-                }
-                else if (anyPartitionSucceeded && _unackedBudget is { } partiallyAckedBudget)
-                {
-                    // Mixed responses carry no cleanly attributable request timing, so they
-                    // feed no window sample — but a delivered partition still proves the
-                    // broker drains data, which must end the cold-start clamp.
-                    partiallyAckedBudget.NotePartialDeliverySuccess();
-                }
-
-                // Diagnostic: log response content and expected batches for mismatch diagnosis
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    var batchKeys = string.Join(", ",
-                        Enumerable.Range(0, count)
-                            .Where(idx => batches[idx] is not null)
-                            .Select(idx => $"{batches[idx].TopicPartition.Topic}-{batches[idx].TopicPartition.Partition}"));
-                    var respKeys = directResponse is not null
-                        ? $"{batches[0].TopicPartition.Topic}-{directResponse.Value.Index}"
-                        : responseLookup is not null
-                            ? string.Join(", ", responseLookup.Keys.Select(k => $"{k.Topic}-{k.Partition}"))
-                            : "(empty)";
-                    LogProduceResponseProcessed(_instanceId, _brokerId, task.Id, count, batchKeys,
-                        directResponse is not null ? 1 : responseLookup?.Count ?? 0, respKeys);
-                }
-
-                ProcessResponseBatches(pending, directResponse, responseLookup, response.NodeEndpoints,
-                    carryOver, cancellationToken, task.Id);
-
-                // Clear for reuse on next response (avoids per-response dictionary allocation)
-                responseLookup?.Clear();
-
-                // Return pooled ProduceResponse for reuse
-                if (response is ProduceResponse poolableResponse)
-                    poolableResponse.Return();
-
-                ReturnPendingResponseArrays(in pending);
             }
 
-            // Compact: remove processed entries from the end
-            if (writeIdx < pendingList.Count)
+            if (removedAny)
             {
-                Interlocked.Add(ref _totalPendingResponseCount, -(pendingList.Count - writeIdx));
-                Interlocked.Add(ref _totalPendingResponseBytes, -completedResponseBytes);
-                Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -completedResponseBytes);
-                pendingList.RemoveRange(writeIdx, pendingList.Count - writeIdx);
+                CompactClaimedPendingResponses(pendingList);
 
                 // Prevent unbounded capacity ratcheting: when the list shrinks well below
                 // its internal array capacity, trim the excess. This is amortized — it only
@@ -3130,57 +3124,60 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
 
-            for (var i = 0; i < pendingList.Count; i++)
+            while (pendingList.Count > 0)
             {
-                var pending = pendingList[i];
-                for (var j = 0; j < pending.Count; j++)
+                var pending = RemovePendingResponseAt(connIdx, 0);
+                try
                 {
-                    if (!pending.IsSameIncarnation(j)) continue;
-                    var batch = pending.Batches[j];
-
-                    batch.AppendDiag('T'); // Timed-out request
-
-                    // Check delivery deadline: if exceeded, permanently fail the batch.
-                    // Otherwise, retry (like Java's handleProduceResponse for disconnected requests).
-                    if (now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
+                    for (var j = 0; j < pending.Count; j++)
                     {
-                        UnmutePartition(batch.TopicPartition);
-                        var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
-                        var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
-                        try
+                        if (!pending.IsSameIncarnation(j)) continue;
+                        var batch = pending.Batches[j];
+
+                        batch.AppendDiag('T'); // Timed-out request
+
+                        // Check delivery deadline: if exceeded, permanently fail the batch.
+                        // Otherwise, retry (like Java's handleProduceResponse for disconnected requests).
+                        if (now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
                         {
-                            FailAndCleanupBatch(batch, new KafkaTimeoutException(
-                                TimeoutKind.Delivery, elapsed, configured,
-                                $"Delivery timeout exceeded while awaiting response for {batch.TopicPartition}"));
-                        }
-                        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                    }
-                    else
-                    {
-                        try
-                        {
-                            HandleRetriableBatch(batch, pending.BatchGenerations[j], ErrorCode.NetworkException,
-                                carryOver, cancellationToken);
-                        }
-                        catch (Exception batchEx)
-                        {
-                            try { FailAndCleanupBatch(batch, batchEx); }
+                            UnmutePartition(batch.TopicPartition);
+                            var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                            var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+                            try
+                            {
+                                FailAndCleanupBatch(batch, new KafkaTimeoutException(
+                                    TimeoutKind.Delivery, elapsed, configured,
+                                    $"Delivery timeout exceeded while awaiting response for {batch.TopicPartition}"));
+                            }
                             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                         }
+                        else
+                        {
+                            try
+                            {
+                                HandleRetriableBatch(batch, pending.BatchGenerations[j], ErrorCode.NetworkException,
+                                    carryOver, cancellationToken);
+                            }
+                            catch (Exception batchEx)
+                            {
+                                try { FailAndCleanupBatch(batch, batchEx); }
+                                catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                            }
+                        }
                     }
+
+                    pending.ResponseTask.Abandon();
                 }
-
-                pending.ResponseTask.Abandon();
-                ReturnPendingResponseArrays(in pending);
+                catch
+                {
+                    QueueDetachedPendingResponseForLoopExit(in pending);
+                    throw;
+                }
+                finally
+                {
+                    ReturnPendingResponseArrays(in pending);
+                }
             }
-
-            // Remove all entries. Response tasks are orphaned — they'll eventually complete
-            // (via CTS timeout or connection disposal) but nobody polls them.
-            Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
-            var removedBytes = SumEncodedBytes(pendingList);
-            Interlocked.Add(ref _totalPendingResponseBytes, -removedBytes);
-            Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -removedBytes);
-            pendingList.Clear();
 
             if (_hasMigratingPartitions)
                 CompleteMigrations(connIdx);
@@ -3462,15 +3459,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     connectionCount)
                 : null,
             _getTimestamp());
-    }
-
-    private static long SumEncodedBytes(List<PendingResponse> pendingResponses)
-    {
-        long total = 0;
-        for (var i = 0; i < pendingResponses.Count; i++)
-            total += pendingResponses[i].EncodedBytes;
-
-        return total;
     }
 
     /// <summary>
@@ -4655,6 +4643,106 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Transfers send-loop ownership of an entry to its caller before processing. The default-valued
+    /// tombstone makes exit cleanup skip the entry if processing throws before compaction.
+    /// </summary>
+    private PendingResponse ClaimPendingResponseAt(int connectionIndex, int index)
+    {
+        var pendingList = _pendingResponsesByConnection[connectionIndex];
+        var pending = pendingList[index];
+        pendingList[index] = default;
+        if (pending.Count == 0)
+            return pending;
+
+        Interlocked.Decrement(ref _totalPendingResponseCount);
+        Interlocked.Add(ref _totalPendingResponseBytes, -pending.EncodedBytes);
+        Interlocked.Add(ref _pendingResponseBytesByConnection[connectionIndex], -pending.EncodedBytes);
+        return pending;
+    }
+
+    private PendingResponse RemovePendingResponseAt(int connectionIndex, int index)
+    {
+        var pending = ClaimPendingResponseAt(connectionIndex, index);
+        _pendingResponsesByConnection[connectionIndex].RemoveAt(index);
+        return pending;
+    }
+
+    private static void CompactClaimedPendingResponses(List<PendingResponse> pendingResponses)
+    {
+        var writeIndex = 0;
+        for (var readIndex = 0; readIndex < pendingResponses.Count; readIndex++)
+        {
+            var pending = pendingResponses[readIndex];
+            if (pending.Count == 0)
+                continue;
+
+            pendingResponses[writeIndex++] = pending;
+        }
+
+        if (writeIndex < pendingResponses.Count)
+            pendingResponses.RemoveRange(writeIndex, pendingResponses.Count - writeIndex);
+    }
+
+    private void QueueDetachedPendingResponseForLoopExit(in PendingResponse pending)
+    {
+        for (var i = 0; i < pending.Count; i++)
+        {
+            if (pending.IsSameIncarnation(i))
+                _loopExitRedeliveries.Enqueue((pending.Batches[i], pending.BatchGenerations[i]));
+        }
+    }
+
+    private void CleanupPendingResponsesOnLoopExit(
+        bool redeliver,
+        ObjectDisposedException disposedException,
+        List<BatchReference>? recoveredBatches,
+        HashSet<(ReadyBatch Batch, int Generation)>? recoveredBatchSet)
+    {
+        for (var connectionIndex = 0;
+             connectionIndex < _pendingResponsesByConnection.Length;
+             connectionIndex++)
+        {
+            var pendingList = _pendingResponsesByConnection[connectionIndex];
+            while (pendingList.Count > 0)
+            {
+                var pending = RemovePendingResponseAt(connectionIndex, 0);
+                if (pending.Count == 0)
+                    continue;
+
+                try
+                {
+                    for (var i = 0; i < pending.Count; i++)
+                    {
+                        if (!pending.IsSameIncarnation(i))
+                            continue;
+
+                        try
+                        {
+                            CollectOrFailOnLoopExit(
+                                new BatchReference(pending.Batches[i], pending.BatchGenerations[i]),
+                                redeliver,
+                                disposedException,
+                                recoveredBatches,
+                                recoveredBatchSet);
+                        }
+                        catch (Exception cleanupEx)
+                        {
+                            LogBatchCleanupStepFailed(cleanupEx, _brokerId);
+                        }
+                    }
+
+                    try { pending.ResponseTask.Abandon(); }
+                    catch (Exception abandonEx) { LogBatchCleanupStepFailed(abandonEx, _brokerId); }
+                }
+                finally
+                {
+                    ReturnPendingResponseArrays(in pending);
+                }
+            }
+        }
+    }
+
     private void DisposeCarryOverBatchesOnLoopExit(
         PartitionCarryOver carryOver,
         bool redeliver,
@@ -4849,8 +4937,43 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void ReturnPendingResponseArrays(in PendingResponse pending)
     {
-        if (!pending.TryReturnBatchesArray())
-            LogPendingResponseArraysAlreadyReturned(_instanceId, _brokerId);
+        try
+        {
+            if (!pending.TryReturnBatchesArray())
+                LogPendingResponseArraysAlreadyReturned(_instanceId, _brokerId);
+        }
+        catch (Exception returnEx)
+        {
+            LogBatchCleanupStepFailed(returnEx, _brokerId);
+        }
+    }
+
+    private void RecordDeferredPendingResponseCleanup(int pendingCount)
+    {
+        Interlocked.Exchange(ref _deferredPendingResponseCleanupCount, pendingCount);
+        var tags = new TagList
+        {
+            { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, _brokerId }
+        };
+        Diagnostics.DekafMetrics.PendingResponseCleanupDeferred.Add(pendingCount, tags);
+
+        // Close the race where the send loop completed between the caller's IsCompleted
+        // check and publishing the deferred count.
+        if (_sendLoopTask.IsCompleted)
+            RecordDeferredPendingResponseCleanupRecovered();
+    }
+
+    private void RecordDeferredPendingResponseCleanupRecovered()
+    {
+        var recoveredCount = Interlocked.Exchange(ref _deferredPendingResponseCleanupCount, 0);
+        if (recoveredCount == 0)
+            return;
+
+        var tags = new TagList
+        {
+            { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, _brokerId }
+        };
+        Diagnostics.DekafMetrics.PendingResponseCleanupRecovered.Add(recoveredCount, tags);
     }
 
     public async ValueTask DisposeAsync()
@@ -4892,9 +5015,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogBatchCleanupStepFailed(ex, _brokerId);
         }
 
-        // True when the loop finished (normally or faulted — its exit cleanup ran either way);
-        // false when the WaitAsync above timed out and the loop is still running.
-        var sendLoopExited = _sendLoopTask.IsCompleted;
+        var deferredPendingCount = Volatile.Read(ref _totalPendingResponseCount);
+        if (deferredPendingCount > 0 && !_sendLoopTask.IsCompleted)
+        {
+            RecordDeferredPendingResponseCleanup(deferredPendingCount);
+            LogSkippingPendingResponseCleanup(_brokerId, deferredPendingCount);
+        }
 
         // A final send-loop iteration may have already detached a retirement drain after
         // clearing the raw connection fields. Wait for every such drain before inspecting
@@ -4943,48 +5069,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         ClearMigratingPartitions();
-
-        var totalPending = _totalPendingResponseCount;
-        if (totalPending > 0 && !sendLoopExited)
-        {
-            // The send loop is still running and owns _pendingResponsesByConnection. Touching
-            // the lists here would race the loop's own exit cleanup and return the same rented
-            // arrays to ArrayPool.Shared twice — duplicate pool entries later hand one array to
-            // two concurrent requests, pairing responses with the wrong batches (#2187). The
-            // loop's exit path fails these batches and returns the arrays when it completes.
-            LogSkippingPendingResponseCleanup(_brokerId, totalPending);
-        }
-        else if (totalPending > 0)
-        {
-            LogFailingPendingResponses(_brokerId, totalPending);
-
-            for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
-            {
-                var pendingList = _pendingResponsesByConnection[connIdx];
-                for (var i = 0; i < pendingList.Count; i++)
-                {
-                    var pr = pendingList[i];
-                    for (var j = 0; j < pr.Count; j++)
-                    {
-                        if (pr.IsSameIncarnation(j))
-                        {
-                            try { FailAndCleanupBatch(pr.Batches[j], new ObjectDisposedException(nameof(BrokerSender))); }
-                            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                        }
-                    }
-
-                    pr.ResponseTask.Abandon();
-                    ReturnPendingResponseArrays(in pr);
-                }
-
-                Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
-                var removedBytes = SumEncodedBytes(pendingList);
-                Interlocked.Add(ref _totalPendingResponseBytes, -removedBytes);
-                Interlocked.Add(ref _pendingResponseBytesByConnection[connIdx], -removedBytes);
-                pendingList.Clear();
-                // No TrimExcess — lists are unreachable after disposal
-            }
-        }
 
         _cts.Dispose();
         _anyResponseCompleted.Dispose();
@@ -5699,9 +5783,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] waiting for send loop to finish")]
     private partial void LogWaitingForSendLoop(int brokerId);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] failing {RemainingCount} pending responses during disposal")]
-    private partial void LogFailingPendingResponses(int brokerId, int remainingCount);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] send loop still running after disposal wait; leaving {RemainingCount} pending responses to its exit cleanup")]
     private partial void LogSkippingPendingResponseCleanup(int brokerId, int remainingCount);

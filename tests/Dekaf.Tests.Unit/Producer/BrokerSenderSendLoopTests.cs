@@ -1,9 +1,11 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Reflection;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
+using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -840,6 +842,61 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [NotInParallel("MeterListener")]
+    public async Task DeferredPendingResponseCleanup_ReportsDeferredAndRecoveredMetrics()
+    {
+        var deferredCount = 0L;
+        var recoveredCount = 0L;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == DekafDiagnostics.MeterName
+                && (instrument.Name == "dekaf.producer.pending_response.cleanup.deferred"
+                    || instrument.Name == "dekaf.producer.pending_response.cleanup.recovered"))
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+        {
+            if (instrument.Name == "dekaf.producer.pending_response.cleanup.deferred")
+                Interlocked.Add(ref deferredCount, measurement);
+            else if (instrument.Name == "dekaf.producer.pending_response.cleanup.recovered")
+                Interlocked.Add(ref recoveredCount, measurement);
+        });
+        listener.Start();
+
+        var connection = new TestKafkaConnection();
+        var (pool, _) = CreateScaleTrackingPool(connection);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            typeof(BrokerSender).GetMethod(
+                "RecordDeferredPendingResponseCleanup",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(sender, [3]);
+
+            await Assert.That(Volatile.Read(ref deferredCount)).IsEqualTo(3);
+            await Assert.That(Volatile.Read(ref recoveredCount)).IsEqualTo(0);
+            await Assert.That(GetDeferredPendingResponseCleanupCount(sender)).IsEqualTo(3);
+
+            typeof(BrokerSender).GetMethod(
+                "RecordDeferredPendingResponseCleanupRecovered",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(sender, null);
+
+            await Assert.That(Volatile.Read(ref recoveredCount)).IsEqualTo(3);
+            await Assert.That(GetDeferredPendingResponseCleanupCount(sender)).IsEqualTo(0);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
         }
     }
 
@@ -3448,6 +3505,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     private static int GetPendingResponseCount(BrokerSender sender) =>
         (int)typeof(BrokerSender).GetField(
             "_totalPendingResponseCount",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+
+    private static int GetDeferredPendingResponseCleanupCount(BrokerSender sender) =>
+        (int)typeof(BrokerSender).GetField(
+            "_deferredPendingResponseCleanupCount",
             BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
 
     private static BrokerUnackedByteBudget.DeliverySnapshot GetDeliverySnapshot(
