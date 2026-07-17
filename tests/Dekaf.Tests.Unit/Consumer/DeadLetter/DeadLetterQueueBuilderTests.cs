@@ -13,7 +13,7 @@ public class DeadLetterQueueBuilderTests
         await Assert.That(options.TopicSuffix).IsEqualTo(".DLQ");
         await Assert.That(options.MaxFailures).IsEqualTo(1);
         await Assert.That(options.IncludeExceptionInHeaders).IsTrue();
-        await Assert.That(options.AwaitDelivery).IsFalse();
+        await Assert.That(options.AwaitDelivery).IsTrue();
     }
 
     [Test]
@@ -44,6 +44,16 @@ public class DeadLetterQueueBuilderTests
             .Build();
 
         await Assert.That(options.AwaitDelivery).IsTrue();
+    }
+
+    [Test]
+    public async Task Build_WithFireAndForget_ClearsFlag()
+    {
+        var options = new DeadLetterQueueBuilder()
+            .FireAndForget()
+            .Build();
+
+        await Assert.That(options.AwaitDelivery).IsFalse();
     }
 
     [Test]

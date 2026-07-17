@@ -251,8 +251,8 @@ public sealed class KafkaConsumerServiceTests
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
-        producer.FireAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>())
-            .Returns(ValueTask.CompletedTask);
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
 
         var source = CreateResult("orders", partition: 1, offset: 42);
         var retryHeaders = RetryTopicHeaders.Build(
@@ -279,9 +279,10 @@ public sealed class KafkaConsumerServiceTests
 
         await ProcessWithRetriesAsync(service, retryResult, CancellationToken.None);
 
-        await producer.Received(1).FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+        await producer.Received(1).ProduceAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
             message != null && message.Topic == "orders.DLQ" &&
-            message.Headers!.GetFirstAsString(DeadLetterHeaders.FailureCountKey) == "2"));
+            message.Headers!.GetFirstAsString(DeadLetterHeaders.FailureCountKey) == "2"),
+            Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -289,8 +290,8 @@ public sealed class KafkaConsumerServiceTests
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
-        producer.FireAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>())
-            .Returns(ValueTask.CompletedTask);
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
 
         var deadLetterOptions = new DeadLetterOptions
         {
@@ -310,12 +311,52 @@ public sealed class KafkaConsumerServiceTests
 
         await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), CancellationToken.None);
 
-        await producer.Received(1).FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+        await producer.Received(1).ProduceAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
             message != null && message.Topic == "orders-retry-5s" &&
-            message.Headers!.GetFirstAsString(RetryTopicHeaders.FailureCountKey) == "1"));
-        await producer.DidNotReceive().FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
-            message != null && message.Topic == "orders-retry-30s"));
+            message.Headers!.GetFirstAsString(RetryTopicHeaders.FailureCountKey) == "1"),
+            Arg.Any<CancellationToken>());
+        await producer.DidNotReceive().ProduceAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+            message != null && message.Topic == "orders-retry-30s"),
+            Arg.Any<CancellationToken>());
         await Assert.That(service.Errors).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_CustomDeadLetterPolicy_ControlsRoutingAndTopic()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
+
+        var policy = Substitute.For<IDeadLetterPolicy<string, string>>();
+        policy.ShouldDeadLetter(Arg.Any<ConsumeResult<string, string>>(), Arg.Any<Exception>(), Arg.Any<int>())
+            .Returns(true);
+        policy.GetDeadLetterTopic("orders").Returns("poison-messages");
+
+        var service = new FailingConsumerService(
+            consumer, ["orders"],
+            deadLetterOptions: new DeadLetterOptions { MaxFailures = 100 },
+            deadLetterPolicy: policy);
+        SetDlqProducer(service, producer);
+
+        await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), CancellationToken.None);
+
+        await producer.Received(1).ProduceAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+            message != null && message.Topic == "poison-messages"),
+            Arg.Any<CancellationToken>());
+        policy.Received(1).ShouldDeadLetter(Arg.Any<ConsumeResult<string, string>>(),
+            Arg.Any<InvalidOperationException>(), 1);
+    }
+
+    [Test]
+    public async Task Constructor_DeadLetterPolicyWithoutOptions_Throws()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var policy = Substitute.For<IDeadLetterPolicy<string, string>>();
+
+        await Assert.That(() => new FailingConsumerService(
+            consumer, ["orders"], deadLetterPolicy: policy)).Throws<ArgumentException>();
     }
 
     #endregion
@@ -759,8 +800,10 @@ public sealed class KafkaConsumerServiceTests
             IKafkaConsumer<string, string> consumer,
             string[] topics,
             DeadLetterOptions? deadLetterOptions = null,
-            IRetryPolicy? retryPolicy = null)
-            : base(consumer, topics, deadLetterOptions: deadLetterOptions, retryPolicy: retryPolicy)
+            IRetryPolicy? retryPolicy = null,
+            IDeadLetterPolicy<string, string>? deadLetterPolicy = null)
+            : base(consumer, topics, deadLetterOptions: deadLetterOptions, retryPolicy: retryPolicy,
+                deadLetterPolicy: deadLetterPolicy)
         {
         }
 
@@ -785,8 +828,9 @@ public sealed class KafkaConsumerServiceTests
             string[] topics,
             KafkaConsumerServiceOptions? options = null,
             DeadLetterOptions? deadLetterOptions = null,
-            IRetryPolicy? retryPolicy = null)
-            : base(consumer, NullLogger.Instance, deadLetterOptions, retryPolicy, options)
+            IRetryPolicy? retryPolicy = null,
+            IDeadLetterPolicy<string, string>? deadLetterPolicy = null)
+            : base(consumer, NullLogger.Instance, deadLetterOptions, retryPolicy, options, deadLetterPolicy)
         {
             _topics = topics;
         }

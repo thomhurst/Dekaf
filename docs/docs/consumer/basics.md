@@ -333,3 +333,5 @@ public class OrderConsumer : BackgroundService
     }
 }
 ```
+
+If you would rather not maintain this loop yourself, `KafkaConsumerService<TKey, TValue>` packages the same lifecycle — plus retries, [dead letter queue routing](dead-letter-queues.md), and graceful shutdown — behind a single `ProcessAsync` override. See [Hosted Consumer Services](../hosted-services.md); it is the recommended starting point for background consumers in hosted apps.

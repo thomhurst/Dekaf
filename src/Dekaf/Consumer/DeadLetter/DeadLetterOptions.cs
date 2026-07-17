@@ -25,9 +25,10 @@ public sealed class DeadLetterOptions
 
     /// <summary>
     /// Whether to await DLQ produce acknowledgment (guaranteed delivery) or use fire-and-forget.
-    /// Default: false (fire-and-forget).
+    /// Default: true (await acknowledgment), so a failed message cannot be committed away
+    /// before its dead-letter copy is durable. Set to false for fire-and-forget throughput.
     /// </summary>
-    public bool AwaitDelivery { get; init; } = false;
+    public bool AwaitDelivery { get; init; } = true;
 
     /// <summary>
     /// Bootstrap servers for the DLQ producer. If null, must be configured via <see cref="ConfigureProducer"/>.

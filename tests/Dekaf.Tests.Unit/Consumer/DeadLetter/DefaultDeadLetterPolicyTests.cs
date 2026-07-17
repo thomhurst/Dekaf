@@ -78,11 +78,11 @@ public class DefaultDeadLetterPolicyTests
     }
 
     [Test]
-    public async Task DefaultOptions_AwaitDeliveryIsFalse()
+    public async Task DefaultOptions_AwaitDeliveryIsTrue()
     {
         var options = new DeadLetterOptions();
 
-        await Assert.That(options.AwaitDelivery).IsFalse();
+        await Assert.That(options.AwaitDelivery).IsTrue();
     }
 
     private static ConsumeResult<string, string> CreateTestConsumeResult()

@@ -48,6 +48,14 @@ Everything you'd expect from a production Kafka client:
 - Idempotent producers
 - All the compression codecs (LZ4, Zstd, Snappy, Gzip)
 
+### Batteries Included for Real Services
+
+Most consumers live inside an ASP.NET Core or Worker Service app, so Dekaf ships the service plumbing too:
+
+- [Hosted consumer services](./hosted-services) — write one `ProcessAsync` override, get the consume loop, graceful shutdown, and final offset commit for free
+- Failure handling built in: in-place retries, [tiered retry topics, and dead letter queues](./consumer/dead-letter-queues)
+- [Dependency injection](./dependency-injection) with `appsettings.json` binding, keyed clients, and global interceptors
+
 ## Is Dekaf Right for You?
 
 Dekaf makes sense if you:

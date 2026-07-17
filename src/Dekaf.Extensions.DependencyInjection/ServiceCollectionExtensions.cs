@@ -66,6 +66,12 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
+    /// Gets the underlying service collection, for registrations that go beyond Dekaf clients
+    /// (e.g. hosted services layered on top of a registered consumer).
+    /// </summary>
+    public IServiceCollection Services => _services;
+
+    /// <summary>
     /// Registers a global producer interceptor type that will be applied to all producers.
     /// Global interceptors execute before per-instance interceptors, in registration order.
     /// The interceptor is constructed via <see cref="ActivatorUtilities"/> for DI constructor injection support.

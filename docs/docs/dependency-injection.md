@@ -243,34 +243,15 @@ builder.Services.AddDekaf(dekaf =>
 
 ## Background Consumer Service
 
-Create a hosted service for continuous consumption:
+For continuous consumption, subclass `KafkaConsumerService<TKey, TValue>` from `Dekaf.Extensions.Hosting` rather than hand-rolling a `BackgroundService` — see [Hosted Consumer Services](hosted-services.md) for the subclass shape, failure handling, and shutdown options. `AddConsumerService` registers the consumer and the hosted service in one call:
 
 ```csharp
-public class OrderConsumerService : BackgroundService
+builder.Services.AddDekaf(dekaf =>
 {
-    private readonly IKafkaConsumer<string, string> _consumer;
-    private readonly ILogger<OrderConsumerService> _logger;
-
-    public OrderConsumerService(
-        IKafkaConsumer<string, string> consumer,
-        ILogger<OrderConsumerService> logger)
-    {
-        _consumer = consumer;
-        _logger = logger;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        await foreach (var message in _consumer.ConsumeAsync(stoppingToken))
-        {
-            _logger.LogInformation("Received: {Key}", message.Key);
-            // Process message
-        }
-    }
-}
-
-// Registration
-builder.Services.AddHostedService<OrderConsumerService>();
+    dekaf.AddConsumerService<OrderConsumerService, string, string>(consumer => consumer
+        .WithBootstrapServers("localhost:9092")
+        .WithGroupId("orders-service"));
+});
 ```
 
 ## Configuration from appsettings.json
@@ -412,15 +393,12 @@ builder.Services.AddDekaf(dekaf =>
         .WithValueSerializer(new JsonSerializer<Order>())
         .ForReliability());
 
-    // Register consumer
-    dekaf.AddConsumer<string, Order>(consumer => consumer
+    // Register consumer + background service
+    dekaf.AddConsumerService<OrderProcessorService, string, Order>(consumer => consumer
         .WithBootstrapServers(kafkaConfig["BootstrapServers"]!)
         .WithGroupId(kafkaConfig["GroupId"]!)
         .WithValueDeserializer(new JsonDeserializer<Order>()));
 });
-
-// Register background consumer
-builder.Services.AddHostedService<OrderProcessorService>();
 
 var app = builder.Build();
 app.MapControllers();
@@ -447,25 +425,25 @@ public class OrdersController : ControllerBase
 }
 
 // OrderProcessorService.cs
-public class OrderProcessorService : BackgroundService
+public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
 {
-    private readonly IKafkaConsumer<string, Order> _consumer;
     private readonly IOrderRepository _repository;
 
     public OrderProcessorService(
         IKafkaConsumer<string, Order> consumer,
+        ILogger<OrderProcessorService> logger,
         IOrderRepository repository)
+        : base(consumer, logger)
     {
-        _consumer = consumer;
         _repository = repository;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken ct)
+    protected override IEnumerable<string> Topics => ["orders"];
+
+    protected override async ValueTask ProcessAsync(
+        ConsumeResult<string, Order> result, CancellationToken cancellationToken)
     {
-        await foreach (var msg in _consumer.ConsumeAsync(ct))
-        {
-            await _repository.SaveAsync(msg.Value);
-        }
+        await _repository.SaveAsync(result.Value);
     }
 }
 ```

@@ -37,13 +37,24 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     /// <param name="deadLetterOptions">Optional dead letter queue configuration.</param>
     /// <param name="retryPolicy">Optional retry policy for message processing failures.</param>
     /// <param name="serviceOptions">Optional shutdown and service behavior configuration.</param>
+    /// <param name="deadLetterPolicy">Optional custom routing policy. Defaults to
+    /// <see cref="DefaultDeadLetterPolicy{TKey, TValue}"/> built from <paramref name="deadLetterOptions"/>.
+    /// Requires <paramref name="deadLetterOptions"/>, which configures the DLQ producer.</param>
     protected KafkaConsumerService(
         IKafkaConsumer<TKey, TValue> consumer,
         ILogger logger,
         DeadLetterOptions? deadLetterOptions = null,
         IRetryPolicy? retryPolicy = null,
-        KafkaConsumerServiceOptions? serviceOptions = null)
+        KafkaConsumerServiceOptions? serviceOptions = null,
+        IDeadLetterPolicy<TKey, TValue>? deadLetterPolicy = null)
     {
+        if (deadLetterPolicy is not null && deadLetterOptions is null)
+        {
+            throw new ArgumentException(
+                "deadLetterPolicy requires deadLetterOptions, which configures the DLQ producer.",
+                nameof(deadLetterPolicy));
+        }
+
         _consumer = consumer;
         _logger = logger;
         _deadLetterOptions = deadLetterOptions;
@@ -52,7 +63,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         _serviceOptions = serviceOptions ?? new KafkaConsumerServiceOptions();
         if (deadLetterOptions is not null)
         {
-            _deadLetterPolicy = new DefaultDeadLetterPolicy<TKey, TValue>(deadLetterOptions);
+            _deadLetterPolicy = deadLetterPolicy ?? new DefaultDeadLetterPolicy<TKey, TValue>(deadLetterOptions);
         }
     }
 
