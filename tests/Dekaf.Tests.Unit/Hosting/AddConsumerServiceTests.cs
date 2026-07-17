@@ -2,6 +2,7 @@ using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Extensions.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -109,8 +110,122 @@ public class AddConsumerServiceTests
 
         var provider = services.BuildServiceProvider();
 
-        await Assert.That(() => provider.GetServices<IHostedService>().ToList())
-            .Throws<InvalidOperationException>();
+        InvalidOperationException? caught = null;
+        try
+        {
+            _ = provider.GetServices<IHostedService>().ToList();
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Message).Contains("DeadLetterOptions");
+    }
+
+    [Test]
+    public async Task AddConsumerService_ForwardingServiceWithMissingDependency_SurfacesOriginalError()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumerService<DlqWithDependencyService, string, string>(
+                c => c
+                    .WithBootstrapServers("localhost:9092")
+                    .WithGroupId("test-group"),
+                dlq => dlq.WithMaxFailures(3));
+        });
+
+        var provider = services.BuildServiceProvider();
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            _ = provider.GetServices<IHostedService>().ToList();
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Message).Contains("IMissingDependency");
+        await Assert.That(caught.Message).DoesNotContain("DeadLetterOptions");
+    }
+
+    [Test]
+    public async Task AddConsumerService_ConfigurationOverload_RegistersConsumerAndHostedService()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["BootstrapServers"] = "localhost:9092",
+                ["GroupId"] = "cfg-group"
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumerService<TestService, string, string>(configuration);
+        });
+
+        await Assert.That(services.Any(d =>
+            d.ServiceType == typeof(IKafkaConsumer<string, string>) &&
+            d.Lifetime == ServiceLifetime.Singleton)).IsTrue();
+        await Assert.That(services.Any(d =>
+            d.ServiceType == typeof(IHostedService) &&
+            d.ImplementationType == typeof(TestService))).IsTrue();
+    }
+
+    [Test]
+    public async Task AddConsumerService_InitializationServiceStartsBeforeConsumerService()
+    {
+        var services = new ServiceCollection();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumerService<TestService, string, string>(c => c
+                .WithBootstrapServers("localhost:9092")
+                .WithGroupId("test-group"));
+        });
+
+        var hostedDescriptors = services.Where(d => d.ServiceType == typeof(IHostedService)).ToList();
+        var initializerIndex = hostedDescriptors.FindIndex(d =>
+            d.ImplementationType?.Name == "DekafInitializationService");
+        var consumerServiceIndex = hostedDescriptors.FindIndex(d =>
+            d.ImplementationType == typeof(TestService));
+
+        await Assert.That(initializerIndex).IsGreaterThanOrEqualTo(0);
+        await Assert.That(consumerServiceIndex).IsGreaterThan(initializerIndex);
+    }
+
+    [Test]
+    public async Task AddConsumerService_SameServiceTypeUnderTwoKeys_BothServicesRegistered()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumerService<TestService, string, string>("orders", c => c
+                .WithBootstrapServers("localhost:9092")
+                .WithGroupId("orders"));
+
+            builder.AddConsumerService<TestService, string, string>("payments", c => c
+                .WithBootstrapServers("localhost:9092")
+                .WithGroupId("payments"));
+        });
+
+        var provider = services.BuildServiceProvider();
+        var instances = provider.GetServices<IHostedService>().OfType<TestService>().ToList();
+
+        await Assert.That(instances).Count().IsEqualTo(2);
+        await Assert.That(ReferenceEquals(instances[0], instances[1])).IsFalse();
     }
 
     [Test]
@@ -217,6 +332,27 @@ public class AddConsumerServiceTests
         }
 
         protected override IEnumerable<string> Topics => ["other-topic"];
+
+        protected override ValueTask ProcessAsync(
+            ConsumeResult<string, string> result, CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+    }
+
+    private interface IMissingDependency;
+
+    private sealed class DlqWithDependencyService : KafkaConsumerService<string, string>
+    {
+        public DlqWithDependencyService(
+            IKafkaConsumer<string, string> consumer,
+            ILogger<DlqWithDependencyService> logger,
+            DeadLetterOptions deadLetterOptions,
+            IMissingDependency dependency)
+            : base(consumer, logger, deadLetterOptions)
+        {
+            _ = dependency;
+        }
+
+        protected override IEnumerable<string> Topics => ["test-topic"];
 
         protected override ValueTask ProcessAsync(
             ConsumeResult<string, string> result, CancellationToken cancellationToken)

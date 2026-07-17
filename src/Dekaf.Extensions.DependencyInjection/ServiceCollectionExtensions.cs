@@ -33,10 +33,14 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddDekaf(this IServiceCollection services, Action<DekafBuilder> configure)
     {
         var builder = new DekafBuilder(services);
-        configure(builder);
 
-        // Register the initialization hosted service (TryAddEnumerable avoids duplicates if AddDekaf is called multiple times)
+        // Register the initialization hosted service before running the callback: hosted services
+        // start in registration order, so this guarantees all Dekaf clients are initialized before
+        // any hosted consumer service registered inside the callback (e.g. via AddConsumerService)
+        // starts processing. TryAddEnumerable avoids duplicates if AddDekaf is called multiple times.
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, DekafInitializationService>());
+
+        configure(builder);
 
         return services;
     }

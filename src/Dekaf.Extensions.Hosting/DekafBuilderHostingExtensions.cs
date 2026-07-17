@@ -4,6 +4,7 @@ using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Dekaf.Extensions.Hosting;
 
@@ -199,8 +200,11 @@ public static class DekafBuilderHostingExtensions
         else
         {
             // A factory is needed to hand the service its keyed consumer and/or verify the
-            // registered DeadLetterOptions actually reached the base constructor.
-            builder.Services.AddHostedService(sp =>
+            // registered DeadLetterOptions actually reached the base constructor. Registered
+            // with AddSingleton rather than AddHostedService because the latter de-duplicates
+            // by implementation type, which would drop the second registration when one service
+            // class is registered under multiple service keys.
+            builder.Services.AddSingleton<IHostedService>(sp =>
                 CreateService<TService, TKey, TValue>(sp, serviceKey, deadLetterConfigured));
         }
 
@@ -222,19 +226,20 @@ public static class DekafBuilderHostingExtensions
 
         if (deadLetterConfigured)
         {
+            // Verify up front that the service can receive the options at all, so a forgotten
+            // constructor parameter produces this message instead of an activation failure —
+            // and unrelated activation failures (missing DI registrations) surface unchanged.
+            if (!typeof(TService).GetConstructors().Any(static ctor =>
+                    ctor.GetParameters().Any(static p => p.ParameterType == typeof(DeadLetterOptions))))
+            {
+                throw new InvalidOperationException(DeadLetterOptionsNotForwardedMessage<TService>());
+            }
+
             explicitArguments.Add(serviceProvider.GetRequiredKeyedService<DeadLetterOptions>(
                 serviceKey ?? typeof(IKafkaConsumer<TKey, TValue>)));
         }
 
-        TService service;
-        try
-        {
-            service = ActivatorUtilities.CreateInstance<TService>(serviceProvider, [.. explicitArguments]);
-        }
-        catch (InvalidOperationException ex) when (deadLetterConfigured)
-        {
-            throw new InvalidOperationException(DeadLetterOptionsNotForwardedMessage<TService>(), ex);
-        }
+        var service = ActivatorUtilities.CreateInstance<TService>(serviceProvider, [.. explicitArguments]);
 
         if (deadLetterConfigured && service.ConfiguredDeadLetterOptions is null)
         {

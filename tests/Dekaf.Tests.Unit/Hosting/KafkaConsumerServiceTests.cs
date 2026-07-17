@@ -350,6 +350,27 @@ public sealed class KafkaConsumerServiceTests
     }
 
     [Test]
+    public async Task ProcessWithRetriesAsync_FireAndForget_RoutesToDeadLetterViaFireAsync()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.FireAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>())
+            .Returns(ValueTask.CompletedTask);
+
+        var service = new FailingConsumerService(
+            consumer, ["orders"],
+            deadLetterOptions: new DeadLetterOptions { AwaitDelivery = false });
+        SetDlqProducer(service, producer);
+
+        await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), CancellationToken.None);
+
+        await producer.Received(1).FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+            message != null && message.Topic == "orders.DLQ"));
+        await producer.DidNotReceive().ProduceAsync(
+            Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task Constructor_DeadLetterPolicyWithoutOptions_Throws()
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();
