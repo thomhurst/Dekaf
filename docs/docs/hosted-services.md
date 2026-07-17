@@ -65,7 +65,20 @@ builder.Services.AddDekaf(dekaf =>
 
 This registers the `IKafkaConsumer<string, Order>` singleton and the hosted service together — equivalent to `AddConsumer` followed by `builder.Services.AddHostedService<OrderProcessorService>()`, which remains available when you want to register them separately. Overloads accept a fluent configuration callback, typed `ConsumerOptions`, or an `IConfiguration` section, each with an optional dead-letter-queue callback.
 
-`AddConsumerService` uses the unkeyed consumer registration, where the last-registered consumer of a given `TKey`/`TValue` wins. To run several hosted services whose consumers share the same type pair, register each consumer with a service key via `AddConsumer(serviceKey, ...)`, add the services with `AddHostedService`, and inject the right consumer with `[FromKeyedServices]` — see [keyed clients](dependency-injection.md#multiple-producersconsumers).
+To run several hosted services whose consumers share the same `TKey`/`TValue` pair, use the keyed overloads — each takes a `serviceKey` as the first argument and hands the service its own consumer (and dead-letter options) directly, with no `[FromKeyedServices]` attribute needed on the constructor:
+
+```csharp
+builder.Services.AddDekaf(dekaf =>
+{
+    dekaf.AddConsumerService<OrderService, string, string>("orders", consumer => consumer
+        .WithBootstrapServers("localhost:9092").WithGroupId("orders"));
+
+    dekaf.AddConsumerService<PaymentService, string, string>("payments", consumer => consumer
+        .WithBootstrapServers("localhost:9092").WithGroupId("payments"));
+});
+```
+
+When a DLQ callback is supplied, registration verifies at service construction that your subclass actually forwards `DeadLetterOptions` to the base constructor, and fails fast with a clear error if the constructor omits it — a forgotten parameter cannot silently disable dead-lettering.
 
 The service subscribes to `Topics` itself — do not call `SubscribeTo` on the consumer registration as well.
 

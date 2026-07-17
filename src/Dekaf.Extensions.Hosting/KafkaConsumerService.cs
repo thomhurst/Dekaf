@@ -37,16 +37,34 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     /// <param name="deadLetterOptions">Optional dead letter queue configuration.</param>
     /// <param name="retryPolicy">Optional retry policy for message processing failures.</param>
     /// <param name="serviceOptions">Optional shutdown and service behavior configuration.</param>
+    protected KafkaConsumerService(
+        IKafkaConsumer<TKey, TValue> consumer,
+        ILogger logger,
+        DeadLetterOptions? deadLetterOptions = null,
+        IRetryPolicy? retryPolicy = null,
+        KafkaConsumerServiceOptions? serviceOptions = null)
+        : this(consumer, logger, deadLetterOptions, retryPolicy, serviceOptions, deadLetterPolicy: null)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="KafkaConsumerService{TKey, TValue}"/> class.
+    /// </summary>
+    /// <param name="consumer">The Kafka consumer instance.</param>
+    /// <param name="logger">The logger instance.</param>
+    /// <param name="deadLetterOptions">Optional dead letter queue configuration.</param>
+    /// <param name="retryPolicy">Optional retry policy for message processing failures.</param>
+    /// <param name="serviceOptions">Optional shutdown and service behavior configuration.</param>
     /// <param name="deadLetterPolicy">Optional custom routing policy. Defaults to
     /// <see cref="DefaultDeadLetterPolicy{TKey, TValue}"/> built from <paramref name="deadLetterOptions"/>.
     /// Requires <paramref name="deadLetterOptions"/>, which configures the DLQ producer.</param>
     protected KafkaConsumerService(
         IKafkaConsumer<TKey, TValue> consumer,
         ILogger logger,
-        DeadLetterOptions? deadLetterOptions = null,
-        IRetryPolicy? retryPolicy = null,
-        KafkaConsumerServiceOptions? serviceOptions = null,
-        IDeadLetterPolicy<TKey, TValue>? deadLetterPolicy = null)
+        DeadLetterOptions? deadLetterOptions,
+        IRetryPolicy? retryPolicy,
+        KafkaConsumerServiceOptions? serviceOptions,
+        IDeadLetterPolicy<TKey, TValue>? deadLetterPolicy)
     {
         if (deadLetterPolicy is not null && deadLetterOptions is null)
         {
@@ -66,6 +84,13 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             _deadLetterPolicy = deadLetterPolicy ?? new DefaultDeadLetterPolicy<TKey, TValue>(deadLetterOptions);
         }
     }
+
+    /// <summary>
+    /// Gets the dead letter configuration this service was constructed with, if any.
+    /// Used by registration helpers to verify DLQ options registered in DI actually
+    /// reached the base constructor.
+    /// </summary>
+    internal DeadLetterOptions? ConfiguredDeadLetterOptions => _deadLetterOptions;
 
     /// <summary>
     /// Gets the topics to subscribe to.
@@ -113,11 +138,18 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Enable raw byte capture and create DLQ producer if configured
-        if (_deadLetterOptions is not null && _consumer is IRawRecordAccessor rawAccessor)
+        if (_deadLetterOptions is not null)
         {
-            rawAccessor.EnableRawRecordTracking();
-            _dlqProducer = BuildDlqProducer();
-            await _dlqProducer.InitializeAsync(stoppingToken).ConfigureAwait(false);
+            if (_consumer is IRawRecordAccessor rawAccessor)
+            {
+                rawAccessor.EnableRawRecordTracking();
+                _dlqProducer = BuildDlqProducer();
+                await _dlqProducer.InitializeAsync(stoppingToken).ConfigureAwait(false);
+            }
+            else
+            {
+                LogDeadLetterRoutingUnavailable(_consumer.GetType().Name);
+            }
         }
 
         await _consumer.InitializeAsync(stoppingToken).ConfigureAwait(false);
@@ -354,6 +386,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
                 if (_retryPolicy is null && attempt < maxAttemptsWithoutPolicy)
                     continue;
+
+                if (_deadLetterOptions is not null)
+                {
+                    LogMessageSkippedWithoutDeadLetter(
+                        result.Topic, result.Partition, result.Offset, deadLetterFailureCount);
+                }
 
                 return;
             }
@@ -652,6 +690,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error processing message from {Topic}")]
     private partial void LogProcessingError(Exception ex, string? topic);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Dead letter routing is disabled: consumer {ConsumerType} does not support raw record tracking, so failed messages will not be routed despite DeadLetterOptions being configured")]
+    private partial void LogDeadLetterRoutingUnavailable(string consumerType);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Message from {Topic}[{Partition}]@{Offset} failed processing {FailureCount} time(s) and was skipped without dead letter routing; the dead letter policy declined it (check MaxFailures against the retry policy's attempt count)")]
+    private partial void LogMessageSkippedWithoutDeadLetter(string topic, int partition, long offset, int failureCount);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Started consuming from topics: {Topics}")]
     private partial void LogStartedConsuming(string topics);

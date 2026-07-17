@@ -34,8 +34,8 @@ public static class DekafBuilderHostingExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.AddConsumer(configure, configureDeadLetterQueue);
-        builder.Services.AddHostedService<TService>();
-        return builder;
+        return RegisterHostedService<TService, TKey, TValue>(
+            builder, serviceKey: null, configureDeadLetterQueue is not null);
     }
 
     /// <summary>
@@ -61,8 +61,8 @@ public static class DekafBuilderHostingExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.AddConsumer(options, configure, configureDeadLetterQueue);
-        builder.Services.AddHostedService<TService>();
-        return builder;
+        return RegisterHostedService<TService, TKey, TValue>(
+            builder, serviceKey: null, configureDeadLetterQueue is not null);
     }
 
     /// <summary>
@@ -90,7 +90,162 @@ public static class DekafBuilderHostingExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.AddConsumer(configuration, configure, configureDeadLetterQueue);
-        builder.Services.AddHostedService<TService>();
+        return RegisterHostedService<TService, TKey, TValue>(
+            builder, serviceKey: null, configureDeadLetterQueue is not null);
+    }
+
+    /// <summary>
+    /// Adds a keyed consumer and a <see cref="KafkaConsumerService{TKey, TValue}"/> hosted service
+    /// that processes it, in one call. The service receives the keyed consumer (and keyed dead
+    /// letter options, when configured) without needing <c>[FromKeyedServices]</c>, so multiple
+    /// hosted services can share the same <typeparamref name="TKey"/>/<typeparamref name="TValue"/> pair.
+    /// </summary>
+    /// <typeparam name="TService">The hosted consumer service type.</typeparam>
+    /// <typeparam name="TKey">The message key type.</typeparam>
+    /// <typeparam name="TValue">The message value type.</typeparam>
+    /// <param name="builder">The Dekaf builder.</param>
+    /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
+    /// <param name="configure">Configures the full consumer builder surface.</param>
+    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for the service.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public static DekafBuilder AddConsumerService<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService,
+        TKey, TValue>(
+        this DekafBuilder builder,
+        object serviceKey,
+        Action<ConsumerBuilder<TKey, TValue>> configure,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+        where TService : KafkaConsumerService<TKey, TValue>
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        builder.AddConsumer(serviceKey, configure, configureDeadLetterQueue);
+        return RegisterHostedService<TService, TKey, TValue>(
+            builder, serviceKey, configureDeadLetterQueue is not null);
+    }
+
+    /// <summary>
+    /// Adds a keyed consumer configured from typed options and a
+    /// <see cref="KafkaConsumerService{TKey, TValue}"/> hosted service that processes it, in one call.
+    /// </summary>
+    /// <typeparam name="TService">The hosted consumer service type.</typeparam>
+    /// <typeparam name="TKey">The message key type.</typeparam>
+    /// <typeparam name="TValue">The message value type.</typeparam>
+    /// <param name="builder">The Dekaf builder.</param>
+    /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
+    /// <param name="options">Consumer options to apply.</param>
+    /// <param name="configure">Optional additional consumer configuration.</param>
+    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for the service.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public static DekafBuilder AddConsumerService<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService,
+        TKey, TValue>(
+        this DekafBuilder builder,
+        object serviceKey,
+        ConsumerOptions options,
+        Action<ConsumerBuilder<TKey, TValue>>? configure = null,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+        where TService : KafkaConsumerService<TKey, TValue>
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        builder.AddConsumer(serviceKey, options, configure, configureDeadLetterQueue);
+        return RegisterHostedService<TService, TKey, TValue>(
+            builder, serviceKey, configureDeadLetterQueue is not null);
+    }
+
+    /// <summary>
+    /// Adds a keyed consumer configured from an <see cref="IConfiguration"/> section and a
+    /// <see cref="KafkaConsumerService{TKey, TValue}"/> hosted service that processes it, in one call.
+    /// </summary>
+    /// <typeparam name="TService">The hosted consumer service type.</typeparam>
+    /// <typeparam name="TKey">The message key type.</typeparam>
+    /// <typeparam name="TValue">The message value type.</typeparam>
+    /// <param name="builder">The Dekaf builder.</param>
+    /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
+    /// <param name="configuration">Configuration section using <see cref="ConsumerOptions"/> property names.</param>
+    /// <param name="configure">Optional additional consumer configuration.</param>
+    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for the service.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    [RequiresDynamicCode(DekafConfigurationBinding.RequiresDynamicCodeMessage)]
+    [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
+    public static DekafBuilder AddConsumerService<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService,
+        TKey, TValue>(
+        this DekafBuilder builder,
+        object serviceKey,
+        IConfiguration configuration,
+        Action<ConsumerBuilder<TKey, TValue>>? configure = null,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+        where TService : KafkaConsumerService<TKey, TValue>
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        builder.AddConsumer(serviceKey, configuration, configure, configureDeadLetterQueue);
+        return RegisterHostedService<TService, TKey, TValue>(
+            builder, serviceKey, configureDeadLetterQueue is not null);
+    }
+
+    private static DekafBuilder RegisterHostedService<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService,
+        TKey, TValue>(
+        DekafBuilder builder, object? serviceKey, bool deadLetterConfigured)
+        where TService : KafkaConsumerService<TKey, TValue>
+    {
+        if (serviceKey is null && !deadLetterConfigured)
+        {
+            builder.Services.AddHostedService<TService>();
+        }
+        else
+        {
+            // A factory is needed to hand the service its keyed consumer and/or verify the
+            // registered DeadLetterOptions actually reached the base constructor.
+            builder.Services.AddHostedService(sp =>
+                CreateService<TService, TKey, TValue>(sp, serviceKey, deadLetterConfigured));
+        }
+
         return builder;
     }
+
+    private static TService CreateService<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService,
+        TKey, TValue>(
+        IServiceProvider serviceProvider, object? serviceKey, bool deadLetterConfigured)
+        where TService : KafkaConsumerService<TKey, TValue>
+    {
+        var explicitArguments = new List<object>(2);
+        if (serviceKey is not null)
+        {
+            explicitArguments.Add(
+                serviceProvider.GetRequiredKeyedService<IKafkaConsumer<TKey, TValue>>(serviceKey));
+        }
+
+        if (deadLetterConfigured)
+        {
+            explicitArguments.Add(serviceProvider.GetRequiredKeyedService<DeadLetterOptions>(
+                serviceKey ?? typeof(IKafkaConsumer<TKey, TValue>)));
+        }
+
+        TService service;
+        try
+        {
+            service = ActivatorUtilities.CreateInstance<TService>(serviceProvider, [.. explicitArguments]);
+        }
+        catch (InvalidOperationException ex) when (deadLetterConfigured)
+        {
+            throw new InvalidOperationException(DeadLetterOptionsNotForwardedMessage<TService>(), ex);
+        }
+
+        if (deadLetterConfigured && service.ConfiguredDeadLetterOptions is null)
+        {
+            throw new InvalidOperationException(DeadLetterOptionsNotForwardedMessage<TService>());
+        }
+
+        return service;
+    }
+
+    private static string DeadLetterOptionsNotForwardedMessage<TService>() =>
+        $"{typeof(TService).Name} was registered with a dead letter queue, but its constructor " +
+        "did not pass DeadLetterOptions through to the KafkaConsumerService base constructor. " +
+        "Add a DeadLetterOptions parameter to the constructor and forward it to base(...).";
 }

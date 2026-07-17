@@ -27,6 +27,8 @@ builder.Services.AddDekaf(dekaf =>
 
 (The same `dlq` callback is available on `AddConsumer` if you register the consumer and hosted service separately.)
 
+Options are registered per consumer registration, so multiple DLQ-enabled consumers each get their own configuration. If your service's constructor forgets the `DeadLetterOptions` parameter, `AddConsumerService` fails at service construction with a clear error rather than silently running without dead-lettering.
+
 This registers a `DeadLetterOptions` singleton, which your service passes to the base constructor:
 
 ```csharp
@@ -94,7 +96,7 @@ protected override ValueTask OnDeadLetterRoutingFailedAsync(
 ## Failure Counting
 
 - **Without retry topics or a retry policy:** the record is retried in place until `MaxFailures` is reached, then dead-lettered. The default `MaxFailures = 1` dead-letters on the first failure.
-- **With an `IRetryPolicy`:** the policy's in-place retries run first; when it is exhausted, the total attempt count is compared against `MaxFailures`. Keep `MaxFailures` ≤ the policy's maximum attempts — if the policy gives up before `MaxFailures` is reached, the record is skipped without being dead-lettered.
+- **With an `IRetryPolicy`:** the policy's in-place retries run first; when it is exhausted, the total attempt count is compared against `MaxFailures`. Keep `MaxFailures` ≤ the policy's maximum attempts — if the policy gives up before `MaxFailures` is reached, the record is skipped without being dead-lettered (the service logs a warning whenever a failed record is skipped while a DLQ is configured).
 - **With retry topics:** each hop makes one local attempt (plus any retry-policy attempts), and the cumulative count travels with the record in headers.
 
 ## Tiered Retry Topics
@@ -130,6 +132,18 @@ public sealed class PoisonOnlyPolicy : IDeadLetterPolicy<string, Order>
         => exception is JsonException || failureCount >= 5;
 
     public string GetDeadLetterTopic(string sourceTopic) => "poison-messages";
+}
+```
+
+```csharp
+public OrderProcessorService(
+    IKafkaConsumer<string, Order> consumer,
+    ILogger<OrderProcessorService> logger,
+    DeadLetterOptions deadLetterOptions)
+    : base(consumer, logger, deadLetterOptions,
+        retryPolicy: null, serviceOptions: null,
+        deadLetterPolicy: new PoisonOnlyPolicy())
+{
 }
 ```
 
