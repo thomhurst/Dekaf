@@ -89,6 +89,17 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
         return true;
     }
 
+    /// <summary>
+    /// Number of topic entries regardless of whether the request was populated through
+    /// <see cref="TopicData"/> or the internal scratch arrays. Pairs with
+    /// <see cref="GetTopicEntry"/>; exists so tests can observe scratch-built requests
+    /// without reflecting into private fields.
+    /// </summary>
+    internal int TopicEntryCount => _topicDataScratch is not null ? _topicDataScratchCount : TopicData.Count;
+
+    internal ProduceRequestTopicData GetTopicEntry(int index) =>
+        _topicDataScratch is { } topicDataScratch ? topicDataScratch[index] : TopicData[index];
+
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteCompactNullableString(TransactionalId);
@@ -146,6 +157,19 @@ public sealed class ProduceRequestTopicData
         _partitionDataScratchStart = 0;
         _partitionDataScratchCount = 0;
     }
+
+    /// <summary>
+    /// Number of partition entries regardless of whether the topic was populated through
+    /// <see cref="PartitionData"/> or the internal scratch arrays. Pairs with
+    /// <see cref="GetPartitionEntry"/>; exists so tests can observe scratch-built requests
+    /// without reflecting into private fields.
+    /// </summary>
+    internal int PartitionEntryCount => _partitionDataScratch is not null ? _partitionDataScratchCount : PartitionData.Count;
+
+    internal ProduceRequestPartitionData GetPartitionEntry(int index) =>
+        _partitionDataScratch is { } partitionDataScratch
+            ? partitionDataScratch[_partitionDataScratchStart + index]
+            : PartitionData[index];
 
     internal bool TryGetSinglePartition(out ProduceRequestPartitionData partition)
     {

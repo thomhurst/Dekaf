@@ -26,7 +26,7 @@ namespace Dekaf.Tests.Unit.Producer;
 /// These tests use controllable mock connections to verify send loop timing behavior.
 /// Synchronization uses deterministic TCS signals from mock callbacks, not Task.Delay.
 /// </summary>
-public sealed class BrokerSenderSendLoopTests
+public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 {
     [Test]
     public async Task DeliveryLatencyOrigin_SealWithinLinger_UsesSealNotCreation()
@@ -583,36 +583,6 @@ public sealed class BrokerSenderSendLoopTests
             TransactionalId = transactionalId
         };
 
-    private readonly List<ScriptedProduceResponses> _scriptedResponses = [];
-
-    /// <summary>
-    /// Links the test's cancellation token to every mock connection script created so far,
-    /// so an unscripted (extra) send aborts in-test waits immediately instead of hanging
-    /// until the test timeout (#2187).
-    /// </summary>
-    private CancellationToken GuardUnscriptedSends(CancellationToken testToken)
-    {
-        var guarded = testToken;
-        foreach (var scripted in _scriptedResponses)
-            guarded = scripted.Guard(guarded);
-        return guarded;
-    }
-
-    [After(Test)]
-    public void FailTestOnUnscriptedSend()
-    {
-        InvalidOperationException? failure = null;
-        foreach (var scripted in _scriptedResponses)
-        {
-            scripted.Dispose();
-            failure ??= scripted.UnscriptedSendFailure;
-        }
-
-        _scriptedResponses.Clear();
-        if (failure is not null)
-            throw failure;
-    }
-
     /// <summary>
     /// Creates a mock connection pool that returns a controllable mock connection.
     /// The mock connection queues response tasks so each SendPipelinedAfterWriteAsync call
@@ -627,8 +597,7 @@ public sealed class BrokerSenderSendLoopTests
         Action? onSend = null)
     {
         var connection = new TestKafkaConnection();
-        var scripted = new ScriptedProduceResponses(responseQueue, onSend);
-        _scriptedResponses.Add(scripted);
+        var scripted = RegisterScript(responseQueue, onSend);
 
         connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(scripted.Dequeue());
 
@@ -3089,12 +3058,11 @@ public sealed class BrokerSenderSendLoopTests
             new TaskCompletionSource()
         };
         var sendCount = 0;
-        var scripted0 = new ScriptedProduceResponses(responseQueue, () =>
+        var scripted0 = RegisterScript(responseQueue, () =>
         {
             var index = Interlocked.Increment(ref sendCount) - 1;
             sendSignals[index].TrySetResult();
         });
-        _scriptedResponses.Add(scripted0);
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var connection0 = new TestKafkaConnection
         {

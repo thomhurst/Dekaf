@@ -21,6 +21,25 @@ internal static class TestWait
 
     public static async Task UntilAsync(
         Func<bool> condition,
+        TimeSpan timeout,
+        Func<string> timeoutMessage,
+        CancellationToken cancellationToken,
+        TimeSpan? pollInterval = null)
+    {
+        var deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
+        var delay = pollInterval ?? TimeSpan.FromMilliseconds(10);
+
+        while (!condition())
+        {
+            if (Environment.TickCount64 >= deadline)
+                throw new TimeoutException(timeoutMessage());
+
+            await Task.Delay(delay, cancellationToken);
+        }
+    }
+
+    public static async Task UntilAsync(
+        Func<bool> condition,
         CancellationToken cancellationToken,
         TimeSpan? pollInterval = null)
     {

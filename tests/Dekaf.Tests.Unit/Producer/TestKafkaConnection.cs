@@ -162,12 +162,17 @@ internal sealed class TestKafkaConnection :
         {
             var recordBatches = new List<object>();
             var info = new System.Text.StringBuilder();
-            foreach (var (topicName, partition) in EnumeratePartitions(produceRequest))
+            for (var t = 0; t < produceRequest.TopicEntryCount; t++)
             {
-                foreach (var recordBatch in partition.Records)
+                var topic = produceRequest.GetTopicEntry(t);
+                for (var p = 0; p < topic.PartitionEntryCount; p++)
                 {
-                    recordBatches.Add(recordBatch);
-                    info.Append($"{topicName}-{partition.Index}(seq={recordBatch.BaseSequence}) ");
+                    var partition = topic.GetPartitionEntry(p);
+                    foreach (var recordBatch in partition.Records)
+                    {
+                        recordBatches.Add(recordBatch);
+                        info.Append($"{topic.Name}-{partition.Index}(seq={recordBatch.BaseSequence}) ");
+                    }
                 }
             }
 
@@ -202,66 +207,4 @@ internal sealed class TestKafkaConnection :
     private static async Task<TResponse> CastResponseTask<TResponse>(Task<ProduceResponse> responseTask)
         where TResponse : IKafkaResponse
         => (TResponse)(IKafkaResponse)await responseTask.ConfigureAwait(false);
-
-    // BrokerSender populates produce requests through internal scratch arrays that the public
-    // TopicData/PartitionData properties never expose; read them reflectively so the capture
-    // also sees coalesced multi-batch requests.
-    private static readonly System.Reflection.FieldInfo TopicDataScratchField =
-        typeof(ProduceRequest).GetField("_topicDataScratch",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-
-    private static readonly System.Reflection.FieldInfo TopicDataScratchCountField =
-        typeof(ProduceRequest).GetField("_topicDataScratchCount",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-
-    private static readonly System.Reflection.FieldInfo PartitionDataScratchField =
-        typeof(ProduceRequestTopicData).GetField("_partitionDataScratch",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-
-    private static readonly System.Reflection.FieldInfo PartitionDataScratchStartField =
-        typeof(ProduceRequestTopicData).GetField("_partitionDataScratchStart",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-
-    private static readonly System.Reflection.FieldInfo PartitionDataScratchCountField =
-        typeof(ProduceRequestTopicData).GetField("_partitionDataScratchCount",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-
-    private static IEnumerable<(string TopicName, ProduceRequestPartitionData Partition)> EnumeratePartitions(
-        ProduceRequest request)
-    {
-        if (TopicDataScratchField.GetValue(request) is ProduceRequestTopicData[] topicScratch)
-        {
-            var topicCount = (int)TopicDataScratchCountField.GetValue(request)!;
-            for (var t = 0; t < topicCount; t++)
-            {
-                foreach (var partition in EnumerateTopicPartitions(topicScratch[t]))
-                    yield return (topicScratch[t].Name, partition);
-            }
-        }
-        else
-        {
-            foreach (var topic in request.TopicData)
-            {
-                foreach (var partition in EnumerateTopicPartitions(topic))
-                    yield return (topic.Name, partition);
-            }
-        }
-    }
-
-    private static IEnumerable<ProduceRequestPartitionData> EnumerateTopicPartitions(
-        ProduceRequestTopicData topic)
-    {
-        if (PartitionDataScratchField.GetValue(topic) is ProduceRequestPartitionData[] partitionScratch)
-        {
-            var start = (int)PartitionDataScratchStartField.GetValue(topic)!;
-            var count = (int)PartitionDataScratchCountField.GetValue(topic)!;
-            for (var p = 0; p < count; p++)
-                yield return partitionScratch[start + p];
-        }
-        else
-        {
-            foreach (var partition in topic.PartitionData)
-                yield return partition;
-        }
-    }
 }

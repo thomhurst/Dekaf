@@ -85,16 +85,15 @@ internal sealed class ScriptedProduceResponses : IDisposable
 
         // Cancel asynchronously: a synchronous Cancel would resume guarded test waits inline
         // on this sender-loop thread, and a resumed continuation may join this same thread
-        // (sender.DisposeAsync in the test's finally).
-        try
-        {
-            _ = guardCts?.CancelAsync();
-        }
-        catch (ObjectDisposedException)
-        {
-            // The After(Test) hook already tore the guard down; the recorded
-            // failure still fails the test.
-        }
+        // (sender.DisposeAsync in the test's finally). If Dispose raced ahead and the source
+        // is already disposed, CancelAsync surfaces ObjectDisposedException through its
+        // returned task rather than synchronously — observe the fault so it cannot become
+        // an unobserved-task exception; the recorded failure still fails the test.
+        guardCts?.CancelAsync().ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
         return _unscriptedSendResponse.Task;
     }
@@ -106,5 +105,53 @@ internal sealed class ScriptedProduceResponses : IDisposable
             _guardCts?.Dispose();
             _guardCts = null;
         }
+    }
+}
+
+/// <summary>
+/// Base fixture for test classes that script produce responses through
+/// <see cref="ScriptedProduceResponses"/>: registers every script the test creates, links
+/// them into the test's cancellation token via <see cref="GuardUnscriptedSends"/>, and
+/// fails the test after it finishes if any unscripted send was recorded.
+/// </summary>
+public abstract class ScriptedProduceResponseFixture
+{
+    private readonly List<ScriptedProduceResponses> _scriptedResponses = [];
+
+    private protected ScriptedProduceResponses RegisterScript(
+        Queue<TaskCompletionSource<ProduceResponse>> responses,
+        Action? onSend = null)
+    {
+        var scripted = new ScriptedProduceResponses(responses, onSend);
+        _scriptedResponses.Add(scripted);
+        return scripted;
+    }
+
+    /// <summary>
+    /// Links the test's cancellation token to every script registered so far, so an
+    /// unscripted (extra) send aborts in-test waits immediately instead of hanging
+    /// until the test timeout (#2187).
+    /// </summary>
+    protected CancellationToken GuardUnscriptedSends(CancellationToken testToken)
+    {
+        var guarded = testToken;
+        foreach (var scripted in _scriptedResponses)
+            guarded = scripted.Guard(guarded);
+        return guarded;
+    }
+
+    [After(Test)]
+    public void FailTestOnUnscriptedSend()
+    {
+        InvalidOperationException? failure = null;
+        foreach (var scripted in _scriptedResponses)
+        {
+            scripted.Dispose();
+            failure ??= scripted.UnscriptedSendFailure;
+        }
+
+        _scriptedResponses.Clear();
+        if (failure is not null)
+            throw failure;
     }
 }

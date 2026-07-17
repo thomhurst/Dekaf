@@ -22,7 +22,7 @@ namespace Dekaf.Tests.Unit.Producer;
 /// - FinalizeCoalescedRetries clears mute state only when batch actually sends
 /// - Carry-over ordering preserves retry-before-normal invariant
 /// </summary>
-public sealed class BrokerSenderMuteOrderingTests
+public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixture
 {
     // Well below the 30s TUnit timeout so a stalled wait fails with a state dump instead of
     // an opaque test-level timeout, while still generous for loaded CI runners.
@@ -59,15 +59,12 @@ public sealed class BrokerSenderMuteOrderingTests
             LingerMs = 0
         };
 
-    private ScriptedProduceResponses? _scriptedResponses;
-
     private (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
         Queue<TaskCompletionSource<ProduceResponse>> responseQueue,
         Action? onSend = null)
     {
         var connection = new TestKafkaConnection { CaptureProduceRequests = true };
-        var scripted = new ScriptedProduceResponses(responseQueue, onSend);
-        _scriptedResponses = scripted;
+        var scripted = RegisterScript(responseQueue, onSend);
 
         connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(scripted.Dequeue());
 
@@ -76,27 +73,6 @@ public sealed class BrokerSenderMuteOrderingTests
             .Returns(connection);
 
         return (pool, connection);
-    }
-
-    /// <summary>
-    /// Links the test's cancellation token to the mock connection script so an unscripted
-    /// (extra) send aborts every in-test wait immediately instead of hanging until the
-    /// 30s test timeout with no diagnosis (#2187).
-    /// </summary>
-    private CancellationToken GuardUnscriptedSends(CancellationToken testToken) =>
-        _scriptedResponses!.Guard(testToken);
-
-    [After(Test)]
-    public void FailTestOnUnscriptedSend()
-    {
-        var scripted = _scriptedResponses;
-        _scriptedResponses = null;
-        if (scripted is null)
-            return;
-
-        scripted.Dispose();
-        if (scripted.UnscriptedSendFailure is { } failure)
-            throw failure;
     }
 
     private static ReadyBatch CreateTestBatch(
@@ -119,32 +95,17 @@ public sealed class BrokerSenderMuteOrderingTests
         return batch;
     }
 
-    private static async Task WaitUntilAsync(
-        Func<bool> condition,
-        TimeSpan timeout,
-        Func<string> timeoutMessage,
-        CancellationToken cancellationToken)
-    {
-        var deadline = Stopwatch.GetTimestamp() + (long)(timeout.TotalSeconds * Stopwatch.Frequency);
-        while (!condition())
-        {
-            if (Stopwatch.GetTimestamp() >= deadline)
-                throw new TimeoutException(timeoutMessage());
-
-            await Task.Delay(1, cancellationToken);
-        }
-    }
-
     private static Task WaitForDiagAsync(
         ReadyBatch batch,
         char marker,
         TimeSpan timeout,
         CancellationToken cancellationToken) =>
-        WaitUntilAsync(
+        TestWait.UntilAsync(
             () => batch.DiagTrace.Contains(marker),
             timeout,
             () => $"Batch did not reach '{marker}': {batch.DiagTrace}",
-            cancellationToken);
+            cancellationToken,
+            pollInterval: TimeSpan.FromMilliseconds(1));
 
     private static ProduceResponse CreateSuccessResponse(string topic, int partition, long baseOffset) =>
         new()
@@ -579,11 +540,12 @@ public sealed class BrokerSenderMuteOrderingTests
             // array for two in-flight requests and complete the wrong batch (#2187).
             sender.Enqueue(CreateTestBatch(vtPool, "wake-topic", partition: 0));
 
-            await WaitUntilAsync(
+            await TestWait.UntilAsync(
                 () => (int)getMigratingCount.Invoke(sender, null)! == 0,
                 DiagnosticWaitTimeout,
                 () => "The send loop's request-timeout sweep did not clear the migration fence",
-                ct);
+                ct,
+                pollInterval: TimeSpan.FromMilliseconds(1));
 
             await Assert.That((int)getConnection.Invoke(sender, [topicPartition])!).IsEqualTo(1)
                 .Because("timeout removal leaves no old request that can justify a migration fence");
