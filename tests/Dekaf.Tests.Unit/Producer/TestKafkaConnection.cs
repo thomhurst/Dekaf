@@ -32,6 +32,19 @@ internal sealed class TestKafkaConnection :
     public TaskCompletionSource DisposeStarted { get; } = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <summary>
+    /// Opt-in switch for <see cref="CapturedProduceRequests"/>. Off by default so the many
+    /// suites sharing this double don't pay per-send capture cost for diagnostics they never read.
+    /// </summary>
+    public bool CaptureProduceRequests { get; set; }
+
+    /// <summary>
+    /// Snapshot of every pipelined produce request's record batches, captured at write time
+    /// (the sender's scratch request structures are cleared after each send, so the request
+    /// object itself cannot be inspected later). Lock the list to read it.
+    /// </summary>
+    public List<(string Info, IReadOnlyList<object> RecordBatches)> CapturedProduceRequests { get; } = [];
+
     public Func<ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWrite { get; set; }
     public IPipelinedResponseSource<ProduceResponse>? PipelinedResponseSource { get; set; }
     public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout { get; set; }
@@ -144,6 +157,28 @@ internal sealed class TestKafkaConnection :
         where TResponse : IKafkaResponse
     {
         Interlocked.Increment(ref SendPipelinedAfterWriteCalls);
+
+        if (CaptureProduceRequests && request is ProduceRequest produceRequest)
+        {
+            var recordBatches = new List<object>();
+            var info = new System.Text.StringBuilder();
+            for (var t = 0; t < produceRequest.TopicEntryCount; t++)
+            {
+                var topic = produceRequest.GetTopicEntry(t);
+                for (var p = 0; p < topic.PartitionEntryCount; p++)
+                {
+                    var partition = topic.GetPartitionEntry(p);
+                    foreach (var recordBatch in partition.Records)
+                    {
+                        recordBatches.Add(recordBatch);
+                        info.Append($"{topic.Name}-{partition.Index}(seq={recordBatch.BaseSequence}) ");
+                    }
+                }
+            }
+
+            lock (CapturedProduceRequests)
+                CapturedProduceRequests.Add((info.ToString(), recordBatches));
+        }
 
         if (PipelinedResponseSource is not null)
         {

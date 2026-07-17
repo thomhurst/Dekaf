@@ -26,7 +26,7 @@ namespace Dekaf.Tests.Unit.Producer;
 /// These tests use controllable mock connections to verify send loop timing behavior.
 /// Synchronization uses deterministic TCS signals from mock callbacks, not Task.Delay.
 /// </summary>
-public sealed class BrokerSenderSendLoopTests
+public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 {
     [Test]
     public async Task DeliveryLatencyOrigin_SealWithinLinger_UsesSealNotCreation()
@@ -425,6 +425,7 @@ public sealed class BrokerSenderSendLoopTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var responses = new Queue<TaskCompletionSource<ProduceResponse>>([pendingResponse]);
         var (pool, _) = CreateMockConnection(responses);
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 2, enableIdempotence: true, lingerMs: 0);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
@@ -497,6 +498,7 @@ public sealed class BrokerSenderSendLoopTests
         var responses = new Queue<TaskCompletionSource<ProduceResponse>>(
             [firstResponse, secondResponse]);
         var (pool, connection) = CreateMockConnection(responses);
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
             acks: Acks.All,
             maxInFlight: 5,
@@ -584,24 +586,20 @@ public sealed class BrokerSenderSendLoopTests
     /// <summary>
     /// Creates a mock connection pool that returns a controllable mock connection.
     /// The mock connection queues response tasks so each SendPipelinedAfterWriteAsync call
-    /// returns the next TaskCompletionSource's task from the queue.
+    /// returns the next TaskCompletionSource's task from the queue. An unscripted (extra)
+    /// send parks the sender and fails the test with a named diagnostic instead of feeding
+    /// BrokerSender's retry loop forever (#2187).
     /// The optional onSend callback fires each time SendPipelinedAfterWriteAsync is called,
     /// enabling deterministic synchronization without Task.Delay.
     /// </summary>
-    private static (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
+    private (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
         Queue<TaskCompletionSource<ProduceResponse>> responseQueue,
         Action? onSend = null)
     {
         var connection = new TestKafkaConnection();
+        var scripted = RegisterScript(responseQueue, onSend);
 
-        Task<ProduceResponse> DequeueResponse()
-        {
-            var task = responseQueue.Dequeue().Task;
-            onSend?.Invoke();
-            return task;
-        }
-
-        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(DequeueResponse());
+        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(scripted.Dequeue());
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -867,6 +865,7 @@ public sealed class BrokerSenderSendLoopTests
         {
             sends[Interlocked.Increment(ref sendCount) - 1].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
             retryBackoffMs: 0,
             retryBackoffMaxMs: 0,
@@ -1008,6 +1007,7 @@ public sealed class BrokerSenderSendLoopTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 5);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1063,6 +1063,7 @@ public sealed class BrokerSenderSendLoopTests
             if (index < sendSignals.Length)
                 sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 2, transactionalId: "test-transaction");
         var accumulator = new RecordAccumulator(options);
         var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1243,6 +1244,7 @@ public sealed class BrokerSenderSendLoopTests
         var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
         var sendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var (connectionPool, _) = CreateMockConnection(responses, sendStarted.SetResult);
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(transactionalId: "test-transaction");
         var accumulator = new RecordAccumulator(options);
         var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1335,6 +1337,7 @@ public sealed class BrokerSenderSendLoopTests
         var sendCount = 0;
         var (connectionPool, _) = CreateMockConnection(responses, () =>
             sendSignals[Interlocked.Increment(ref sendCount) - 1].TrySetResult());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
             retryBackoffMs: 0,
             retryBackoffMaxMs: 0,
@@ -1420,6 +1423,7 @@ public sealed class BrokerSenderSendLoopTests
             if (index < sends.Length)
                 sends[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
             maxInFlight: 5,
             retryBackoffMs: 0,
@@ -1489,6 +1493,7 @@ public sealed class BrokerSenderSendLoopTests
         {
             sends[Interlocked.Increment(ref sendCount) - 1].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
             maxInFlight: 5,
             retryBackoffMs: 0,
@@ -1603,6 +1608,7 @@ public sealed class BrokerSenderSendLoopTests
 
         var requestSent = new TaskCompletionSource();
         var (pool, _) = CreateMockConnection(responseQueue, onSend: () => requestSent.TrySetResult());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1656,6 +1662,7 @@ public sealed class BrokerSenderSendLoopTests
 
         var requestSent = new TaskCompletionSource();
         var (pool, _) = CreateMockConnection(responseQueue, onSend: () => requestSent.TrySetResult());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 1);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1758,6 +1765,7 @@ public sealed class BrokerSenderSendLoopTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 1);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1827,6 +1835,7 @@ public sealed class BrokerSenderSendLoopTests
             var index = Interlocked.Increment(ref sendCount) - 1;
             sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
             maxInFlight: 100,
             enableAdaptiveConnections: false,
@@ -1878,6 +1887,7 @@ public sealed class BrokerSenderSendLoopTests
             var index = Interlocked.Increment(ref sendCount) - 1;
             sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
             maxInFlight: 100,
             connectionsPerBroker: 2,
@@ -1934,6 +1944,7 @@ public sealed class BrokerSenderSendLoopTests
             var index = Interlocked.Increment(ref sendCount) - 1;
             sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
             maxInFlight: 100,
             connectionsPerBroker: 2,
@@ -2001,6 +2012,7 @@ public sealed class BrokerSenderSendLoopTests
                 Interlocked.Exchange(ref staleBatch!._returnedToPool, 1);
             sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(
             maxInFlight: 100,
             enableAdaptiveConnections: false,
@@ -2056,6 +2068,7 @@ public sealed class BrokerSenderSendLoopTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -2485,6 +2498,7 @@ public sealed class BrokerSenderSendLoopTests
             if (Interlocked.Increment(ref sendCount) >= 1)
                 allSent.TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 5);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -2719,6 +2733,7 @@ public sealed class BrokerSenderSendLoopTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 1, retryBackoffMs: 0, retryBackoffMaxMs: 0);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -2862,6 +2877,7 @@ public sealed class BrokerSenderSendLoopTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 2);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -2951,6 +2967,7 @@ public sealed class BrokerSenderSendLoopTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
 
         // Short request timeout (1s) so HandleTimedOutRequests fires quickly.
         // Delivery timeout also 1s so the batch is permanently failed rather than retried.
@@ -3041,15 +3058,15 @@ public sealed class BrokerSenderSendLoopTests
             new TaskCompletionSource()
         };
         var sendCount = 0;
+        var scripted0 = RegisterScript(responseQueue, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var connection0 = new TestKafkaConnection
         {
-            SendProducePipelinedAfterWrite = () =>
-            {
-                var response = responseQueue.Dequeue().Task;
-                var index = Interlocked.Increment(ref sendCount) - 1;
-                sendSignals[index].TrySetResult();
-                return new ValueTask<Task<ProduceResponse>>(response);
-            }
+            SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(scripted0.Dequeue())
         };
         var connection1 = new TestKafkaConnection();
         var pool = Substitute.For<IConnectionPool>();
@@ -3140,6 +3157,7 @@ public sealed class BrokerSenderSendLoopTests
             var index = Interlocked.Increment(ref sendCount) - 1;
             sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
 
         var options = CreateOptions(maxInFlight: 1);
         var accumulator = new RecordAccumulator(options);
@@ -3214,6 +3232,7 @@ public sealed class BrokerSenderSendLoopTests
             var index = Interlocked.Increment(ref sendCount) - 1;
             sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
 
         var options = CreateOptions(maxInFlight: 1);
         var accumulator = new RecordAccumulator(options);
@@ -3281,6 +3300,7 @@ public sealed class BrokerSenderSendLoopTests
             var index = Interlocked.Increment(ref sendCount) - 1;
             sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
 
         var options = CreateOptions(maxInFlight: 1, deliveryTimeoutMs: deliveryTimeoutMs);
         var accumulator = new RecordAccumulator(options);
@@ -3389,6 +3409,7 @@ public sealed class BrokerSenderSendLoopTests
             var index = Interlocked.Increment(ref sendCount) - 1;
             sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
 
         // One successful request must feed logical bytes and request RTT into the budget.
         var options = CreateOptions(maxInFlight: 1, unackedByteBudgetCapOverride: 1_000_000);
@@ -3441,6 +3462,7 @@ public sealed class BrokerSenderSendLoopTests
         // (microseconds), disabling the budget's RTT safety floor (#1941). The pre-write
         // anchor includes the write time, so the observed minimum cannot undercut it.
         var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var responseSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         connection.SendProducePipelinedAfterWrite = async () =>
         {
@@ -3487,6 +3509,7 @@ public sealed class BrokerSenderSendLoopTests
         };
         var (pool, _) = CreateMockConnection(
             new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 2, unackedByteBudgetCapOverride: 1_000_000);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
@@ -3566,6 +3589,7 @@ public sealed class BrokerSenderSendLoopTests
             var index = Interlocked.Increment(ref sendCount) - 1;
             sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 1, unackedByteBudgetCapOverride: 1_000_000);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
@@ -3616,6 +3640,7 @@ public sealed class BrokerSenderSendLoopTests
             var index = Interlocked.Increment(ref sendCount) - 1;
             sendSignals[index].TrySetResult();
         });
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions(maxInFlight: 1, retryBackoffMs: 0,
             unackedByteBudgetCapOverride: 1_000_000);
         var accumulator = new RecordAccumulator(options);
