@@ -231,7 +231,7 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 
 ## Compression
 
-Dekaf supports all standard Kafka compression codecs. Just add the relevant package:
+Dekaf supports standard Kafka compression codecs. Just add the relevant package:
 
 ```bash
 dotnet add package Dekaf.Compression.Lz4     # Fast, good compression
