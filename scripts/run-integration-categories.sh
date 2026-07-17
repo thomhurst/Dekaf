@@ -37,6 +37,12 @@ chmod +x "$exe"
 # Aggressive GC to reduce memory pressure on CI runners.
 export DOTNET_GCConserveMemory=9
 
+# Per-test OTel spans are the primary post-mortem evidence for timing failures
+# (#2199 was solved from them). The default 100-span cap truncated them in run
+# 29612262949, leaving the failing test with zero spans. Overridable from the
+# environment.
+export TUNIT_OTEL_MAX_EXTERNAL_SPANS="${TUNIT_OTEL_MAX_EXTERNAL_SPANS:-5000}"
+
 for category in "${categories[@]}"; do
   if [ "$tfm" = "aot" ] && [ "$category" = "Interop" ]; then
     echo "Skipping Interop for NativeAOT because Confluent.Kafka requires runtime reflection"
