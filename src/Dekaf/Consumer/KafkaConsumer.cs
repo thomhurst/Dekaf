@@ -4272,10 +4272,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(_options.RebalanceTimeoutMs);
 
+        await CommitRevokedOffsetsWithTimeoutAsync(partitions, cancellationToken, timeout.Token)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask CommitRevokedOffsetsWithTimeoutAsync(
+        IReadOnlyList<TopicPartition> partitions,
+        CancellationToken cancellationToken,
+        CancellationToken commitCancellationToken)
+    {
         try
         {
             var revoked = partitions.ToHashSet();
-            if (await CommitStoredOffsetsAsync(revoked, timeout.Token).ConfigureAwait(false))
+            if (await CommitStoredOffsetsAsync(revoked, commitCancellationToken).ConfigureAwait(false))
                 LogCommittedRevokedOffsets();
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

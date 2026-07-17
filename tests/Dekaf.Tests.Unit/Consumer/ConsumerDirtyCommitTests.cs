@@ -380,27 +380,33 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
-    [Timeout(5_000)]
-    public async Task Revoke_WhenCommitExceedsRebalanceTimeout_Continues(
-        CancellationToken cancellationToken)
+    public async Task Revoke_WhenCommitExceedsRebalanceTimeout_Continues()
     {
         var requests = new List<OffsetCommitRequest>();
         var commitAttempt = 0;
+        var commitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var consumer = CreateConsumer(
             requests,
             ErrorCode.None,
             OffsetCommitMode.Auto,
             enableAutoOffsetStore: false,
-            rebalanceTimeoutMs: 25,
-            onOffsetCommitAsync: token => Interlocked.Increment(ref commitAttempt) == 1
-                ? new ValueTask(Task.Delay(Timeout.InfiniteTimeSpan, token))
-                : ValueTask.CompletedTask);
+            onOffsetCommitAsync: async token =>
+            {
+                if (Interlocked.Increment(ref commitAttempt) != 1)
+                    return;
+
+                commitStarted.SetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            });
         var revoked = new TopicPartition("topic-a", 0);
         consumer.StoreOffset(new TopicPartitionOffset(revoked.Topic, revoked.Partition, 10));
+        using var rebalanceTimeout = new CancellationTokenSource();
 
-        await CommitRevokedOffsetsAsync(consumer, [revoked]);
+        var commit = CommitRevokedOffsetsWithTimeoutAsync(consumer, [revoked], rebalanceTimeout.Token);
+        await commitStarted.Task;
+        await rebalanceTimeout.CancelAsync();
+        await commit;
 
-        cancellationToken.ThrowIfCancellationRequested();
         await Assert.That(requests).Count().IsEqualTo(1);
     }
 
@@ -666,6 +672,20 @@ public sealed class ConsumerDirtyCommitTests
             BindingFlags.NonPublic | BindingFlags.Instance)!;
 
         await (ValueTask)method.Invoke(consumer, [partitions, CancellationToken.None])!;
+    }
+
+    private static async Task CommitRevokedOffsetsWithTimeoutAsync(
+        KafkaConsumer<string, string> consumer,
+        IReadOnlyList<TopicPartition> partitions,
+        CancellationToken commitCancellationToken)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "CommitRevokedOffsetsWithTimeoutAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await (ValueTask)method.Invoke(
+            consumer,
+            [partitions, CancellationToken.None, commitCancellationToken])!;
     }
 
     private static ConsumeResult<string, string> CreateConsumeResult(long offset, int leaderEpoch)
