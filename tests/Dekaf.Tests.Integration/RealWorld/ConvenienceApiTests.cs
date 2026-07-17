@@ -44,7 +44,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             .BuildAsync();
 
         // Start consuming in background (default offset is Latest, so produce after consumer joins)
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         ConsumeResult<string, string>? received = null;
         var consumeTask = Task.Run(async () =>
         {
@@ -55,10 +55,12 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             }
         });
 
-        // Wait for consumer to be assigned partitions before producing
+        // Assignment is published before the default Latest offsets are resolved. Wait for
+        // positions too, otherwise producing here can race offset initialization and be skipped.
         await WaitForConditionAsync(
-            () => consumer.Assignment.Count > 0,
-            TimeSpan.FromSeconds(20));
+            () => consumer.Assignment.Count > 0
+                  && consumer.Assignment.All(partition => consumer.GetPosition(partition) is not null),
+            TimeSpan.FromSeconds(30));
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
