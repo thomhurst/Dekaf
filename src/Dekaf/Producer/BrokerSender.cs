@@ -2289,11 +2289,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private static long MicrosecondsToStopwatchTicks(long microseconds) =>
         Math.Max(1, microseconds * Stopwatch.Frequency / 1_000_000);
 
-    internal static long GetOldestBatchSealTimestamp(ReadyBatch[] batches, int count)
+    /// <summary>
+    /// Origin timestamp for the governed delivery-delay sample of one request: the oldest
+    /// per-batch governed origin (seal, capped at the linger deadline when sealing stalled —
+    /// see <see cref="ReadyBatch.GovernedOriginTicks"/>).
+    /// </summary>
+    internal static long GetOldestBatchOriginTimestamp(ReadyBatch[] batches, int count)
     {
         var oldestBatchTimestamp = long.MaxValue;
         for (var i = 0; i < count; i++)
-            oldestBatchTimestamp = Math.Min(oldestBatchTimestamp, batches[i].StopwatchSealedTicks);
+            oldestBatchTimestamp = Math.Min(oldestBatchTimestamp, batches[i].GovernedOriginTicks);
 
         return oldestBatchTimestamp == long.MaxValue ? 0 : oldestBatchTimestamp;
     }
@@ -3644,7 +3649,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // RTT samples and disabled the budget's RTT safety floor. Including TCP write
                 // time biases individual RTT samples high, which the budget's minimum filter
                 // discards.
-                var oldestBatchTimestamp = GetOldestBatchSealTimestamp(batches, count);
+                var oldestBatchTimestamp = GetOldestBatchOriginTimestamp(batches, count);
                 var admissionGeneration = GetCommonAdmissionGeneration(batches, count);
 
                 var deliverySnapshotAtSend = _unackedBudget?.SnapshotDelivery(

@@ -34,14 +34,19 @@ internal readonly record struct BrokerWindowDecision(
 /// size. Each doubling follows a fully acknowledged response pass, so the broker has always
 /// drained the previous window within one round trip before more is admitted; the first
 /// acknowledgement can no longer release the whole optimistic window as one unmeasured
-/// burst into a cold broker (#2109).</item>
-/// <item>While the controlled-delay EWMA exceeds the delivery-latency target, probes are
-/// biased downward: up-probes are withheld, down-probes may explore beneath the normal
-/// pipeline floor, and each successful goodput-preserving descent schedules the next probe
-/// early. Every step remains a B-A-B experiment whose goodput guard reverts harmful
-/// shrinks, so topologies whose knee sits high keep their window and only pay a treatment
-/// slice per cycle, while topologies with a low knee descend out of standing queueing
-/// delay the target forbids.</item>
+/// burst into a cold broker (#2109). Doubling also stops early when the delay EWMA is over
+/// target and grew materially since the previous doubling — queueing the opening itself
+/// manufactured must not compound, while ambient window-independent delay keeps the
+/// opening unrestricted.</item>
+/// <item>While the governed-delay EWMA (post-seal pipeline delay plus observed
+/// admission-block wait) exceeds the delivery-latency target, probes are biased downward:
+/// up-probes are withheld, down-probes may explore beneath the normal pipeline floor, and
+/// each successful goodput-preserving descent schedules the next probe early. Every step
+/// remains a B-A-B experiment whose goodput guard reverts harmful shrinks, so topologies
+/// whose knee sits high keep their window and only pay a treatment slice per cycle, while
+/// topologies with a low knee descend out of standing queueing delay the target forbids.
+/// Consecutive failed experiments back the probe schedule off exponentially, bounding the
+/// standing-queue tax probes charge to a saturated broker.</item>
 /// </list>
 /// </summary>
 internal sealed class BrokerWindowController
@@ -103,6 +108,19 @@ internal sealed class BrokerWindowController
     private const double DeepDescentDelayGainFactor = 0.90;
     private const double DelayGrowthTolerance = 1.25;
     private const double EwmaWeight = 0.125;
+    // Slow start stops doubling only when the delay EWMA is over target AND grew by at least
+    // this factor since the previous doubling. Ambient delay that does not respond to the
+    // window (a slow broker, a long link) must not strangle the opening window — only
+    // queueing the doubling itself manufactured may end it early.
+    private const double SlowStartDelayGrowthFactor = 1.5;
+    // Consecutive failed experiments double the probe interval up to this shift (8x, ~4min):
+    // each failure means the broker is already at its knee, so re-running the same 15s
+    // experiment every cycle only injects periodic queueing the target forbids.
+    private const int MaximumProbeBackoffShift = 3;
+    // An up-probe treatment whose epoch delay blows past both twice the target and twice the
+    // delay observed at probe entry cannot pass the final delay veto; aborting immediately
+    // stops charging the remaining treatment epochs of standing queue to live traffic.
+    private const double UpProbeAbortDelayFactor = 2.0;
 
     private static readonly long ControlIntervalTicks = Math.Max(1, Stopwatch.Frequency / 2);
     private static readonly long MinimumRttRefreshTicks = 60 * Stopwatch.Frequency;
@@ -127,12 +145,16 @@ internal sealed class BrokerWindowController
     private bool _epochLoaded;
 
     private double _controlledDelayEwmaTicks;
+    private double _admissionWaitEwmaTicks;
+    private double _slowStartLastDelayEwmaTicks;
+    private long _epochAdmissionWaitPeakTicks;
     private double _maximumGoodputBytesPerSecond;
     private long _minimumRttTicks;
     private long _lastAdmissionBlockEvents;
 
     private int _epochsUntilProbe = ProbeIntervalEpochs;
     private bool _probeDownNext = true;
+    private int _consecutiveProbeFailures;
     private long _probeBaselineWindow;
     private long _probeCandidateWindow;
     private CapacityProbeStage _probeStage;
@@ -140,6 +162,7 @@ internal sealed class BrokerWindowController
     private double _probeTreatmentBeforeDelayTicks;
     private double _probeBaselineGoodput;
     private double _probeBaselineDelayTicks;
+    private double _probeEntryDelayTicks;
     private int _probeEvaluationCount;
     private int _probeSettleEpochsRemaining;
     private int _unqualifiedProbeEpochs;
@@ -172,14 +195,20 @@ internal sealed class BrokerWindowController
     internal BrokerWindowPhase Phase => _phase;
     internal long MinimumRttTicks => _minimumRttTicks;
     internal long MaximumGoodputBytesPerSecond => (long)_maximumGoodputBytesPerSecond;
-    internal long ControlledDelayEwmaTicks => (long)_controlledDelayEwmaTicks;
+    internal long GovernedDelayEwmaTicks => (long)GovernedDelayEwma;
     internal long RequestQuantumBytes => _requestQuantumBytes;
     internal double WindowScale => _capBytes == 0 ? 1 : (double)_windowBytes / _capBytes;
     internal long CapacityProbeSuccessCount { get; private set; }
     internal long CapacityProbeFailureCount { get; private set; }
 
+    /// <summary>The delay the governor regulates against the target: post-seal pipeline delay
+    /// plus the admission-block wait blocked appends actually paid. Without the admission
+    /// component, a window that is exactly the bottleneck reads as on-target while callers
+    /// queue outside it (run 29541359283: 120k-711k blocks/broker invisible to descent).</summary>
+    private double GovernedDelayEwma => _controlledDelayEwmaTicks + _admissionWaitEwmaTicks;
+
     private bool DelayOverTarget =>
-        _latencyGovernorEnabled && _controlledDelayEwmaTicks > _targetDelayTicks;
+        _latencyGovernorEnabled && GovernedDelayEwma > _targetDelayTicks;
 
     internal BrokerWindowDecision SetCap(long capBytes)
     {
@@ -251,8 +280,13 @@ internal sealed class BrokerWindowController
     internal BrokerWindowDecision CompleteInterval(
         long admissionBlockEvents,
         long observedOutstandingBytes,
-        long nowTicks)
+        long nowTicks,
+        long admissionWaitPeakTicks)
     {
+        _epochAdmissionWaitPeakTicks = Math.Max(
+            _epochAdmissionWaitPeakTicks,
+            admissionWaitPeakTicks);
+
         // Called once per response pass that carried at least one full acknowledgement, so
         // each doubling follows a proven drain of the previous window within one round trip.
         if (_slowStartActive)
@@ -275,9 +309,14 @@ internal sealed class BrokerWindowController
 
         var generationQualified = _epochCurrentGenerationBytes > 0
             && _epochCurrentGenerationBytes >= _epochBytes / 2 + _epochBytes % 2;
-        var controlledDelayTicks = generationQualified
+        // The epoch's governed delay adds the worst admission-block wait observed this epoch:
+        // an experiment that merely moves queueing from inside the window to blocked callers
+        // shows no delay gain and is rejected, while one that removes standing queue passes.
+        var epochAdmissionWaitTicks = _epochAdmissionWaitPeakTicks;
+        _admissionWaitEwmaTicks = UpdateEwma(_admissionWaitEwmaTicks, epochAdmissionWaitTicks);
+        var controlledDelayTicks = (generationQualified
             ? _epochCurrentGenerationDelayByteTicks / _epochCurrentGenerationBytes
-            : _controlledDelayEwmaTicks;
+            : _controlledDelayEwmaTicks) + epochAdmissionWaitTicks;
         var admissionPressure = admissionBlockEvents != _lastAdmissionBlockEvents;
         // Occupancy is a demand signal, not a floor. A floor would make the lower-window
         // treatment impossible to test; the 99% goodput guard below reverts a harmful probe
@@ -318,6 +357,21 @@ internal sealed class BrokerWindowController
 
     private void AdvanceSlowStart()
     {
+        // Stop doubling when the delay EWMA is over target AND has grown materially since the
+        // previous doubling: the previous window already manufactured standing queue, so the
+        // next doubling would only deepen it (run 29541359283: slow start reached the 3conn
+        // optimistic window in ~1s with a 403ms delay EWMA). Ambient over-target delay with no
+        // growth keeps doubling — a window-independent delay must not strangle the opening.
+        var governedDelay = GovernedDelayEwma;
+        if (_slowStartLastDelayEwmaTicks > 0
+            && governedDelay > _targetDelayTicks
+            && governedDelay > _slowStartLastDelayEwmaTicks * SlowStartDelayGrowthFactor)
+        {
+            _slowStartActive = false;
+            return;
+        }
+
+        _slowStartLastDelayEwmaTicks = governedDelay;
         var optimisticWindow = OptimisticWindowBytes;
         SetWindow(Math.Min(SaturatingMultiply(_windowBytes, 2), optimisticWindow));
         if (_windowBytes >= optimisticWindow)
@@ -391,6 +445,7 @@ internal sealed class BrokerWindowController
         _probeStage = CapacityProbeStage.TreatmentBefore;
         _unqualifiedProbeEpochs = 0;
         ResetProbeExperiment();
+        _probeEntryDelayTicks = GovernedDelayEwma;
         _probeSettleEpochsRemaining = ProbeSettleEpochs;
         SetWindow(_probeCandidateWindow);
 
@@ -407,6 +462,17 @@ internal sealed class BrokerWindowController
         {
             _probeSettleEpochsRemaining--;
             return CurrentDecision();
+        }
+
+        // An up-probe treatment whose delay has clearly blown through both the target and the
+        // entry delay can no longer pass the final delay veto: abort now instead of holding
+        // the inflated window for the remaining treatment and baseline epochs.
+        if (_phase == BrokerWindowPhase.ProbeUp
+            && _probeStage != CapacityProbeStage.Baseline
+            && controlledDelayTicks > UpProbeAbortDelayFactor
+                * Math.Max(_targetDelayTicks, _probeEntryDelayTicks))
+        {
+            return CompleteCapacityProbe(succeeded: false);
         }
 
         var requiredEpochs = _probeStage == CapacityProbeStage.Baseline
@@ -456,9 +522,9 @@ internal sealed class BrokerWindowController
             : DownProbeGoodputThreshold;
         var deepDescent = !probingUp
             && _probeCandidateWindow < QuantaFloorBytes(MinimumPipelineQuanta);
-        // Seal-to-send plus network queueing omits pre-seal admission and batch-fill time, so
-        // it cannot veto a lower window. It remains a conservative guard against growing a
-        // window that raises the delay component the controller can observe.
+        // The governed delay includes the epoch's worst admission-block wait, so a descent
+        // that only converts in-window queueing into blocked callers shows no delay gain and
+        // fails deep descent, while growth that manufactures queueing trips the delay veto.
         var succeeded = treatmentGoodput >= _probeBaselineGoodput * goodputThreshold
             && (!probingUp || treatmentDelayTicks <= delayLimit)
             && (!deepDescent
@@ -477,10 +543,14 @@ internal sealed class BrokerWindowController
         if (succeeded)
         {
             CapacityProbeSuccessCount++;
+            _consecutiveProbeFailures = 0;
         }
         else
         {
             CapacityProbeFailureCount++;
+            _consecutiveProbeFailures = Math.Min(
+                _consecutiveProbeFailures + 1,
+                MaximumProbeBackoffShift);
             SetWindow(_probeBaselineWindow);
         }
 
@@ -490,12 +560,15 @@ internal sealed class BrokerWindowController
         _probeDownNext = probingUp ? !succeeded : succeeded;
         // A goodput-preserving descent earns an early retry only while the experiment's own
         // baseline delay missed the target — the instantaneous EWMA flickers on bursts and
-        // over-accelerated the walk (run 29513570135).
+        // over-accelerated the walk (run 29513570135). Consecutive failures back the schedule
+        // off exponentially: a broker already at its knee proved the current window right,
+        // and re-running the same experiment every cycle spent 32-42% of broker time inside
+        // probes on run 29541359283.
         _epochsUntilProbe = !probingUp
             && succeeded
             && _probeBaselineDelayTicks > _targetDelayTicks
             ? AcceleratedDescentIntervalEpochs
-            : ProbeIntervalEpochs;
+            : ProbeIntervalEpochs << _consecutiveProbeFailures;
         _unqualifiedProbeEpochs = 0;
         ResetProbeExperiment();
         return CurrentDecision(
@@ -627,6 +700,7 @@ internal sealed class BrokerWindowController
         _epochBytes = 0;
         _epochCurrentGenerationBytes = 0;
         _epochCurrentGenerationDelayByteTicks = 0;
+        _epochAdmissionWaitPeakTicks = 0;
         _epochLoaded = false;
     }
 
