@@ -4851,6 +4851,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogBatchCleanupStepFailed(ex, _brokerId);
         }
 
+        // True when the loop finished (normally or faulted — its exit cleanup ran either way);
+        // false when the WaitAsync above timed out and the loop is still running.
+        var sendLoopExited = _sendLoopTask.IsCompleted;
+
         // A final send-loop iteration may have already detached a retirement drain after
         // clearing the raw connection fields. Wait for every such drain before inspecting
         // the remaining scale-down state.
@@ -4900,7 +4904,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ClearMigratingPartitions();
 
         var totalPending = _totalPendingResponseCount;
-        if (totalPending > 0)
+        if (totalPending > 0 && !sendLoopExited)
+        {
+            // The send loop is still running and owns _pendingResponsesByConnection. Touching
+            // the lists here would race the loop's own exit cleanup and return the same rented
+            // arrays to ArrayPool.Shared twice — duplicate pool entries later hand one array to
+            // two concurrent requests, pairing responses with the wrong batches (#2187). The
+            // loop's exit path fails these batches and returns the arrays when it completes.
+            LogSkippingPendingResponseCleanup(_brokerId, totalPending);
+        }
+        else if (totalPending > 0)
         {
             LogFailingPendingResponses(_brokerId, totalPending);
 
@@ -5645,6 +5658,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] failing {RemainingCount} pending responses during disposal")]
     private partial void LogFailingPendingResponses(int brokerId, int remainingCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] send loop still running after disposal wait; leaving {RemainingCount} pending responses to its exit cleanup")]
+    private partial void LogSkippingPendingResponseCleanup(int brokerId, int remainingCount);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception, int brokerId);

@@ -24,6 +24,10 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class BrokerSenderMuteOrderingTests
 {
+    // Well below the 30s TUnit timeout so a stalled wait fails with a state dump instead of
+    // an opaque test-level timeout, while still generous for loaded CI runners.
+    private static readonly TimeSpan DiagnosticWaitTimeout = TimeSpan.FromSeconds(15);
+
     private static readonly MethodInfo CoalesceBatchMethod = typeof(BrokerSender).GetMethod(
         "CoalesceBatch",
         BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -55,26 +59,44 @@ public sealed class BrokerSenderMuteOrderingTests
             LingerMs = 0
         };
 
-    private static (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
+    private ScriptedProduceResponses? _scriptedResponses;
+
+    private (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
         Queue<TaskCompletionSource<ProduceResponse>> responseQueue,
         Action? onSend = null)
     {
-        var connection = new TestKafkaConnection();
+        var connection = new TestKafkaConnection { CaptureProduceRequests = true };
+        var scripted = new ScriptedProduceResponses(responseQueue, onSend);
+        _scriptedResponses = scripted;
 
-        Task<ProduceResponse> DequeueResponse()
-        {
-            var task = responseQueue.Dequeue().Task;
-            onSend?.Invoke();
-            return task;
-        }
-
-        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(DequeueResponse());
+        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(scripted.Dequeue());
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(connection);
 
         return (pool, connection);
+    }
+
+    /// <summary>
+    /// Links the test's cancellation token to the mock connection script so an unscripted
+    /// (extra) send aborts every in-test wait immediately instead of hanging until the
+    /// 30s test timeout with no diagnosis (#2187).
+    /// </summary>
+    private CancellationToken GuardUnscriptedSends(CancellationToken testToken) =>
+        _scriptedResponses!.Guard(testToken);
+
+    [After(Test)]
+    public void FailTestOnUnscriptedSend()
+    {
+        var scripted = _scriptedResponses;
+        _scriptedResponses = null;
+        if (scripted is null)
+            return;
+
+        scripted.Dispose();
+        if (scripted.UnscriptedSendFailure is { } failure)
+            throw failure;
     }
 
     private static ReadyBatch CreateTestBatch(
@@ -97,21 +119,32 @@ public sealed class BrokerSenderMuteOrderingTests
         return batch;
     }
 
-    private static async Task WaitForDiagAsync(
-        ReadyBatch batch,
-        char marker,
+    private static async Task WaitUntilAsync(
+        Func<bool> condition,
         TimeSpan timeout,
+        Func<string> timeoutMessage,
         CancellationToken cancellationToken)
     {
         var deadline = Stopwatch.GetTimestamp() + (long)(timeout.TotalSeconds * Stopwatch.Frequency);
-        while (!batch.DiagTrace.Contains(marker))
+        while (!condition())
         {
             if (Stopwatch.GetTimestamp() >= deadline)
-                throw new TimeoutException($"Batch did not reach '{marker}': {batch.DiagTrace}");
+                throw new TimeoutException(timeoutMessage());
 
             await Task.Delay(1, cancellationToken);
         }
     }
+
+    private static Task WaitForDiagAsync(
+        ReadyBatch batch,
+        char marker,
+        TimeSpan timeout,
+        CancellationToken cancellationToken) =>
+        WaitUntilAsync(
+            () => batch.DiagTrace.Contains(marker),
+            timeout,
+            () => $"Batch did not reach '{marker}': {batch.DiagTrace}",
+            cancellationToken);
 
     private static ProduceResponse CreateSuccessResponse(string topic, int partition, long baseOffset) =>
         new()
@@ -377,6 +410,7 @@ public sealed class BrokerSenderMuteOrderingTests
         var (pool, connection) = CreateMockConnection(responseQueue);
         pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(connection);
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions(
             maxInFlight: 2,
             enableIdempotence: false,
@@ -449,6 +483,7 @@ public sealed class BrokerSenderMuteOrderingTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var (pool, connection) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>([response]));
         pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(connection);
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions(maxInFlight: 2, enableIdempotence: false, connectionsPerBroker: 2);
         var accumulator = new RecordAccumulator(options);
         await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
@@ -492,9 +527,14 @@ public sealed class BrokerSenderMuteOrderingTests
     {
         var timedOutResponse = new TaskCompletionSource<ProduceResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([timedOutResponse]);
+        // Second scripted response: the wake batch enqueued below may dispatch a send after
+        // the timeout sweep; script its response so the send is not an unscripted extra.
+        var wakeResponse = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([timedOutResponse, wakeResponse]);
         var (pool, connection) = CreateMockConnection(responseQueue);
         pool.GetConnectionByIndexAsync(1, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(connection);
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions(maxInFlight: 2, enableIdempotence: false,
             deliveryTimeoutMs: 1, requestTimeoutMs: 10_000, connectionsPerBroker: 2);
         var accumulator = new RecordAccumulator(options);
@@ -521,23 +561,29 @@ public sealed class BrokerSenderMuteOrderingTests
                     "RefreshPartitionRouting", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .Invoke(sender, null);
 
-            var migratingCount = (int)typeof(BrokerSender).GetMethod(
-                    "GetMigratingPartitionCount", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(sender, null)!;
+            var getMigratingCount = typeof(BrokerSender).GetMethod(
+                "GetMigratingPartitionCount", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var migratingCount = (int)getMigratingCount.Invoke(sender, null)!;
             await Assert.That(migratingCount).IsEqualTo(1);
 
             await Task.Delay(20, ct);
             Volatile.Write(
                 ref testTimestamp,
                 Stopwatch.GetTimestamp() + (20 * Stopwatch.Frequency));
-            typeof(BrokerSender).GetMethod(
-                    "HandleTimedOutRequests", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(sender, [CreateCarryOver(), ct]);
 
-            migratingCount = (int)typeof(BrokerSender).GetMethod(
-                    "GetMigratingPartitionCount", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .Invoke(sender, null)!;
-            await Assert.That(migratingCount).IsEqualTo(0);
+            // Wake the send loop with an unrelated-topic batch so the loop's OWN iteration runs
+            // the request-timeout sweep. Never invoke HandleTimedOutRequests reflectively from
+            // the test thread: it is send-loop-owned, and a concurrent test-thread invocation
+            // races the live loop's walk of the same pending-response list, double-returning its
+            // pooled arrays into the process-wide ArrayPool. Later tests then rent the same
+            // array for two in-flight requests and complete the wrong batch (#2187).
+            sender.Enqueue(CreateTestBatch(vtPool, "wake-topic", partition: 0));
+
+            await WaitUntilAsync(
+                () => (int)getMigratingCount.Invoke(sender, null)! == 0,
+                DiagnosticWaitTimeout,
+                () => "The send loop's request-timeout sweep did not clear the migration fence",
+                ct);
 
             await Assert.That((int)getConnection.Invoke(sender, [topicPartition])!).IsEqualTo(1)
                 .Because("timeout removal leaves no old request that can justify a migration fence");
@@ -545,6 +591,7 @@ public sealed class BrokerSenderMuteOrderingTests
         finally
         {
             timedOutResponse.TrySetResult(CreateSuccessResponse(topicPartition.Topic, topicPartition.Partition, 100));
+            wakeResponse.TrySetResult(CreateSuccessResponse("wake-topic", partition: 0, baseOffset: 100));
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
@@ -664,7 +711,8 @@ public sealed class BrokerSenderMuteOrderingTests
             .Select(_ => new TaskCompletionSource<ProduceResponse>())
             .ToArray();
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>(responses);
-        var (pool, _) = CreateMockConnection(responseQueue);
+        var (pool, connection) = CreateMockConnection(responseQueue);
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions(maxInFlight: 2, enableIdempotence: false);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -692,21 +740,50 @@ public sealed class BrokerSenderMuteOrderingTests
         try
         {
             var firstBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
+            ReadyBatch? secondBatch = null;
+
+            string Diagnose()
+            {
+                string acks;
+                lock (acknowledgedOffsets)
+                    acks = string.Join(',', acknowledgedOffsets);
+                string captured;
+                lock (connection.CapturedProduceRequests)
+                {
+                    captured = string.Join(" ; ", connection.CapturedProduceRequests.Select((c, i) =>
+                        $"send{i}: {c.Info}refs=[{string.Join(',', c.RecordBatches.Select(rb =>
+                            ReferenceEquals(rb, firstBatch.RecordBatch) ? "first"
+                            : ReferenceEquals(rb, secondBatch?.RecordBatch) ? "second"
+                            : "OTHER"))}]"));
+                }
+
+                return $"sends={sendLogger.SendCount}, afterWriteCalls={Volatile.Read(ref connection.SendPipelinedAfterWriteCalls)}, " +
+                    $"queuedResponses={responseQueue.Count}, acks=[{acks}], " +
+                    $"muted={accumulator.IsMuted(firstBatch.TopicPartition)}, " +
+                    $"first={firstBatch.DiagTrace}/pooled={firstBatch.IsReturnedToPool}/gen={firstBatch.Generation}, " +
+                    $"second={secondBatch?.DiagTrace}/pooled={secondBatch?.IsReturnedToPool}/gen={secondBatch?.Generation}, " +
+                    $"{captured}\n  " +
+                    sendLogger.DumpEvents();
+            }
+
             sender.Enqueue(firstBatch);
-            sendLogger.WaitForSend(0, ct);
+            if (!sendLogger.TryWaitForSend(0, DiagnosticWaitTimeout, ct))
+                throw new TimeoutException($"Send 1 never happened: {Diagnose()}");
 
             await Assert.That(accumulator.IsMuted(firstBatch.TopicPartition)).IsFalse();
 
-            var secondBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
+            secondBatch = CreateTestBatch(vtPool, "test-topic", partition: 0);
             sender.Enqueue(secondBatch);
 
-            sendLogger.WaitForSend(1, ct);
+            if (!sendLogger.TryWaitForSend(1, DiagnosticWaitTimeout, ct))
+                throw new TimeoutException($"Send 2 never happened: {Diagnose()}");
             await Assert.That(sendLogger.SendCount).IsEqualTo(2);
 
             responses[0].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 100));
             responses[1].SetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 101));
 
-            allAcknowledged.Wait(ct);
+            if (!allAcknowledged.Wait(DiagnosticWaitTimeout, ct))
+                throw new TimeoutException($"Acknowledgements never arrived: {Diagnose()}");
             await Assert.That(acknowledgedOffsets).IsEquivalentTo([100L, 101L]);
         }
         finally
@@ -729,6 +806,7 @@ public sealed class BrokerSenderMuteOrderingTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
         var (pool, _) = CreateMockConnection(responseQueue);
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions(maxInFlight: 2, enableIdempotence: false);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1098,6 +1176,7 @@ public sealed class BrokerSenderMuteOrderingTests
 
         var requestSent = new TaskCompletionSource();
         var (pool, _) = CreateMockConnection(responseQueue, onSend: () => requestSent.TrySetResult());
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions(retryBackoffMs: 10_000, retryBackoffMaxMs: 10_000);
         var accumulator = new RecordAccumulator(options);
         var metadataManager = new MetadataManager(pool, options.BootstrapServers);
@@ -1194,6 +1273,7 @@ public sealed class BrokerSenderMuteOrderingTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1292,6 +1372,7 @@ public sealed class BrokerSenderMuteOrderingTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1325,14 +1406,18 @@ public sealed class BrokerSenderMuteOrderingTests
             // Wait for send 1 (coalesced A+B)
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
-            // p0 gets retriable error, p1 succeeds
+            // Enqueue batch C (p1) while send 1 is still in flight, BEFORE releasing the
+            // response. Enqueuing after the response completes races the send loop: the p0
+            // retry can dispatch alone before C's channel event is drained, splitting send 2
+            // into two sends and breaking the script. With C already in the channel when the
+            // loop wakes, the same iteration drains it and coalesces it with the retry.
+            var batchC = CreateTestBatch(vtPool, "test-topic", 1);
+            sender.Enqueue(batchC);
+
+            // p0 gets retriable error, p1 succeeds; C proceeds (p1 is not muted)
             tcs1.SetResult(CreateMultiPartitionResponse("test-topic",
                 (0, ErrorCode.NotLeaderOrFollower, -1),
                 (1, ErrorCode.None, 200)));
-
-            // Enqueue batch C (p1) — should NOT be blocked (p1 is not muted)
-            var batchC = CreateTestBatch(vtPool, "test-topic", 1);
-            sender.Enqueue(batchC);
 
             // Wait for send 2 (batch A retry + batch C coalesced — both partitions)
             await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
@@ -1387,6 +1472,7 @@ public sealed class BrokerSenderMuteOrderingTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1475,6 +1561,7 @@ public sealed class BrokerSenderMuteOrderingTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1561,6 +1648,7 @@ public sealed class BrokerSenderMuteOrderingTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1651,6 +1739,7 @@ public sealed class BrokerSenderMuteOrderingTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1683,14 +1772,18 @@ public sealed class BrokerSenderMuteOrderingTests
 
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
-            // p0 fails, p1 succeeds → p0 muted
+            // Enqueue C (p1) while send 1 is still in flight, BEFORE releasing the response.
+            // Enqueuing after the response completes races the send loop: the p0 retry can
+            // dispatch alone before C's channel event is drained, splitting send 2 into two
+            // sends and breaking the script. With C already in the channel when the loop wakes,
+            // the same iteration drains it and coalesces it with the retry.
+            var batchC = CreateTestBatch(vtPool, "test-topic", 1);
+            sender.Enqueue(batchC);
+
+            // p0 fails, p1 succeeds → p0 muted; C proceeds (p1 is not muted)
             tcs1.SetResult(CreateMultiPartitionResponse("test-topic",
                 (0, ErrorCode.NotLeaderOrFollower, -1),
                 (1, ErrorCode.None, 200)));
-
-            // Enqueue C (p1) — p1 is NOT muted, should proceed
-            var batchC = CreateTestBatch(vtPool, "test-topic", 1);
-            sender.Enqueue(batchC);
 
             // Send 2: A retry (p0) + C (p1) coalesced
             await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
@@ -1742,6 +1835,7 @@ public sealed class BrokerSenderMuteOrderingTests
             if (index < sendSignals.Length)
                 sendSignals[index].TrySetResult();
         });
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions(maxInFlight: 1);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1879,6 +1973,7 @@ public sealed class BrokerSenderMuteOrderingTests
             if (idx < sendSignals.Length)
                 sendSignals[idx].TrySetResult();
         });
+        ct = GuardUnscriptedSends(ct);
         var options = CreateOptions(maxInFlight: 1);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1998,7 +2093,9 @@ public sealed class BrokerSenderMuteOrderingTests
     private sealed class PipelinedSendLogger : ILogger, IDisposable
     {
         private readonly ManualResetEventSlim[] _sendSignals;
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _events = new();
         private int _sendCount;
+        private int _eventCount;
 
         public PipelinedSendLogger(int expectedSends)
         {
@@ -2009,6 +2106,8 @@ public sealed class BrokerSenderMuteOrderingTests
 
         public int SendCount => Volatile.Read(ref _sendCount);
 
+        public string DumpEvents() => string.Join("\n  ", _events);
+
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
         public void Dispose()
@@ -2018,9 +2117,12 @@ public sealed class BrokerSenderMuteOrderingTests
         }
 
         public void WaitForSend(int index, CancellationToken cancellationToken) =>
-            _sendSignals[index].Wait(cancellationToken);
+            TryWaitForSend(index, Timeout.InfiniteTimeSpan, cancellationToken);
 
-        public bool IsEnabled(LogLevel logLevel) => logLevel == LogLevel.Debug;
+        public bool TryWaitForSend(int index, TimeSpan timeout, CancellationToken cancellationToken) =>
+            _sendSignals[index].Wait(timeout, cancellationToken);
+
+        public bool IsEnabled(LogLevel logLevel) => true;
 
         public void Log<TState>(
             LogLevel logLevel,
@@ -2029,6 +2131,12 @@ public sealed class BrokerSenderMuteOrderingTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
+            // Bounded capture: a runaway sender loop (the failure mode this diagnoses) must not
+            // balloon the queue — or keep paying for message formatting — while the test waits
+            // out its timeout.
+            if (Interlocked.Increment(ref _eventCount) <= 200)
+                _events.Enqueue($"{eventId.Name}: {formatter(state, exception)}{(exception is null ? "" : $" [{exception.GetType().Name}: {exception.Message}]")}");
+
             if (eventId.Name != "LogPipelinedSend")
                 return;
 
@@ -2037,4 +2145,5 @@ public sealed class BrokerSenderMuteOrderingTests
                 _sendSignals[index].Set();
         }
     }
+
 }

@@ -581,27 +581,41 @@ public sealed class BrokerSenderSendLoopTests
             TransactionalId = transactionalId
         };
 
+    private readonly List<ScriptedProduceResponses> _scriptedResponses = [];
+
+    [After(Test)]
+    public void FailTestOnUnscriptedSend()
+    {
+        InvalidOperationException? failure = null;
+        foreach (var scripted in _scriptedResponses)
+        {
+            scripted.Dispose();
+            failure ??= scripted.UnscriptedSendFailure;
+        }
+
+        _scriptedResponses.Clear();
+        if (failure is not null)
+            throw failure;
+    }
+
     /// <summary>
     /// Creates a mock connection pool that returns a controllable mock connection.
     /// The mock connection queues response tasks so each SendPipelinedAfterWriteAsync call
-    /// returns the next TaskCompletionSource's task from the queue.
+    /// returns the next TaskCompletionSource's task from the queue. An unscripted (extra)
+    /// send parks the sender and fails the test with a named diagnostic instead of feeding
+    /// BrokerSender's retry loop forever (#2187).
     /// The optional onSend callback fires each time SendPipelinedAfterWriteAsync is called,
     /// enabling deterministic synchronization without Task.Delay.
     /// </summary>
-    private static (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
+    private (IConnectionPool pool, TestKafkaConnection connection) CreateMockConnection(
         Queue<TaskCompletionSource<ProduceResponse>> responseQueue,
         Action? onSend = null)
     {
         var connection = new TestKafkaConnection();
+        var scripted = new ScriptedProduceResponses(responseQueue, onSend);
+        _scriptedResponses.Add(scripted);
 
-        Task<ProduceResponse> DequeueResponse()
-        {
-            var task = responseQueue.Dequeue().Task;
-            onSend?.Invoke();
-            return task;
-        }
-
-        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(DequeueResponse());
+        connection.SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(scripted.Dequeue());
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -3041,15 +3055,15 @@ public sealed class BrokerSenderSendLoopTests
             new TaskCompletionSource()
         };
         var sendCount = 0;
+        var scripted0 = new ScriptedProduceResponses(responseQueue, () =>
+        {
+            var index = Interlocked.Increment(ref sendCount) - 1;
+            sendSignals[index].TrySetResult();
+        });
+        _scriptedResponses.Add(scripted0);
         var connection0 = new TestKafkaConnection
         {
-            SendProducePipelinedAfterWrite = () =>
-            {
-                var response = responseQueue.Dequeue().Task;
-                var index = Interlocked.Increment(ref sendCount) - 1;
-                sendSignals[index].TrySetResult();
-                return new ValueTask<Task<ProduceResponse>>(response);
-            }
+            SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(scripted0.Dequeue())
         };
         var connection1 = new TestKafkaConnection();
         var pool = Substitute.For<IConnectionPool>();

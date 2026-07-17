@@ -32,6 +32,19 @@ internal sealed class TestKafkaConnection :
     public TaskCompletionSource DisposeStarted { get; } = new(
         TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <summary>
+    /// Opt-in switch for <see cref="CapturedProduceRequests"/>. Off by default so the many
+    /// suites sharing this double don't pay per-send capture cost for diagnostics they never read.
+    /// </summary>
+    public bool CaptureProduceRequests { get; set; }
+
+    /// <summary>
+    /// Snapshot of every pipelined produce request's record batches, captured at write time
+    /// (the sender's scratch request structures are cleared after each send, so the request
+    /// object itself cannot be inspected later). Lock the list to read it.
+    /// </summary>
+    public List<(string Info, IReadOnlyList<object> RecordBatches)> CapturedProduceRequests { get; } = [];
+
     public Func<ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWrite { get; set; }
     public IPipelinedResponseSource<ProduceResponse>? PipelinedResponseSource { get; set; }
     public Func<ValueTask>? SendProduceFireAndForgetWithCallerTimeout { get; set; }
@@ -145,6 +158,23 @@ internal sealed class TestKafkaConnection :
     {
         Interlocked.Increment(ref SendPipelinedAfterWriteCalls);
 
+        if (CaptureProduceRequests && request is ProduceRequest produceRequest)
+        {
+            var recordBatches = new List<object>();
+            var info = new System.Text.StringBuilder();
+            foreach (var (topicName, partition) in EnumeratePartitions(produceRequest))
+            {
+                foreach (var recordBatch in partition.Records)
+                {
+                    recordBatches.Add(recordBatch);
+                    info.Append($"{topicName}-{partition.Index}(seq={recordBatch.BaseSequence}) ");
+                }
+            }
+
+            lock (CapturedProduceRequests)
+                CapturedProduceRequests.Add((info.ToString(), recordBatches));
+        }
+
         if (PipelinedResponseSource is not null)
         {
             var source = (IPipelinedResponseSource<TResponse>)(object)PipelinedResponseSource;
@@ -172,4 +202,66 @@ internal sealed class TestKafkaConnection :
     private static async Task<TResponse> CastResponseTask<TResponse>(Task<ProduceResponse> responseTask)
         where TResponse : IKafkaResponse
         => (TResponse)(IKafkaResponse)await responseTask.ConfigureAwait(false);
+
+    // BrokerSender populates produce requests through internal scratch arrays that the public
+    // TopicData/PartitionData properties never expose; read them reflectively so the capture
+    // also sees coalesced multi-batch requests.
+    private static readonly System.Reflection.FieldInfo TopicDataScratchField =
+        typeof(ProduceRequest).GetField("_topicDataScratch",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+    private static readonly System.Reflection.FieldInfo TopicDataScratchCountField =
+        typeof(ProduceRequest).GetField("_topicDataScratchCount",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+    private static readonly System.Reflection.FieldInfo PartitionDataScratchField =
+        typeof(ProduceRequestTopicData).GetField("_partitionDataScratch",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+    private static readonly System.Reflection.FieldInfo PartitionDataScratchStartField =
+        typeof(ProduceRequestTopicData).GetField("_partitionDataScratchStart",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+    private static readonly System.Reflection.FieldInfo PartitionDataScratchCountField =
+        typeof(ProduceRequestTopicData).GetField("_partitionDataScratchCount",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+    private static IEnumerable<(string TopicName, ProduceRequestPartitionData Partition)> EnumeratePartitions(
+        ProduceRequest request)
+    {
+        if (TopicDataScratchField.GetValue(request) is ProduceRequestTopicData[] topicScratch)
+        {
+            var topicCount = (int)TopicDataScratchCountField.GetValue(request)!;
+            for (var t = 0; t < topicCount; t++)
+            {
+                foreach (var partition in EnumerateTopicPartitions(topicScratch[t]))
+                    yield return (topicScratch[t].Name, partition);
+            }
+        }
+        else
+        {
+            foreach (var topic in request.TopicData)
+            {
+                foreach (var partition in EnumerateTopicPartitions(topic))
+                    yield return (topic.Name, partition);
+            }
+        }
+    }
+
+    private static IEnumerable<ProduceRequestPartitionData> EnumerateTopicPartitions(
+        ProduceRequestTopicData topic)
+    {
+        if (PartitionDataScratchField.GetValue(topic) is ProduceRequestPartitionData[] partitionScratch)
+        {
+            var start = (int)PartitionDataScratchStartField.GetValue(topic)!;
+            var count = (int)PartitionDataScratchCountField.GetValue(topic)!;
+            for (var p = 0; p < count; p++)
+                yield return partitionScratch[start + p];
+        }
+        else
+        {
+            foreach (var partition in topic.PartitionData)
+                yield return partition;
+        }
+    }
 }
