@@ -361,6 +361,8 @@ builder.Services.AddDekaf(dekaf =>
 
 Both producers and consumers are registered as singletons. This is intentional—they're expensive to create, thread-safe, and meant to be reused. They'll be disposed automatically when your app shuts down.
 
+Hosted consumer services are singletons too, so scoped services like a `DbContext` can't be constructor-injected into them — see [Lifetime and Scoped Dependencies](hosted-services.md#lifetime-and-scoped-dependencies) for the scope-per-message pattern.
+
 Hosted consumer services should use the async disposal path provided by the generic host. `KafkaConsumerService<TKey, TValue>` implements `IAsyncDisposable`, so shutdown can flush and dispose its consumer and optional dead-letter producer without blocking a thread.
 
 Before:

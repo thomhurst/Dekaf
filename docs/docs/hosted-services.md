@@ -92,6 +92,46 @@ The service subscribes to `Topics` itself — do not call `SubscribeTo` on the c
 | `OnDeadLetterRoutingFailedAsync` | No | Called when a DLQ produce itself fails. Default logs. |
 | `OnRetryTopicRoutingFailedAsync` | No | Called when a retry-topic produce fails. Default logs. |
 
+## Lifetime and Scoped Dependencies
+
+Like every hosted service, the service is a **singleton**: one instance is constructed at startup and lives until shutdown. Constructor injection follows singleton rules:
+
+- Singleton dependencies — `IKafkaProducer<TKey, TValue>`, `ILogger<T>`, repositories over a connection pool — inject fine.
+- **Scoped services (`DbContext`, anything registered with `AddScoped`) cannot be constructor-injected.** With the host's default scope validation this fails at startup with "Cannot consume scoped service from singleton"; without validation it silently becomes a captive dependency — one `DbContext` instance shared by every message for the life of the app.
+- Transient *disposables* injected into the constructor are also captive: created once, never disposed until shutdown.
+
+For per-message scoped work, inject `IServiceScopeFactory` and create a scope inside `ProcessAsync`:
+
+```csharp
+public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+
+    public OrderProcessorService(
+        IKafkaConsumer<string, Order> consumer,
+        ILogger<OrderProcessorService> logger,
+        IServiceScopeFactory scopeFactory)
+        : base(consumer, logger)
+    {
+        _scopeFactory = scopeFactory;
+    }
+
+    protected override IEnumerable<string> Topics => ["orders"];
+
+    protected override async ValueTask ProcessAsync(
+        ConsumeResult<string, Order> result, CancellationToken cancellationToken)
+    {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrderDbContext>();
+
+        db.Orders.Add(result.Value);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+A scope per message is the standard pattern and its cost is negligible next to any real per-message I/O. If your processing is scope-free, skip all of this and inject singletons directly.
+
 ## Failure Handling
 
 When `ProcessAsync` throws, the service works through up to three layers, each optional:
