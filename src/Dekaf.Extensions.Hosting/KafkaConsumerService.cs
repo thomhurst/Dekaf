@@ -144,10 +144,19 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             rawAccessor.EnableRawRecordTracking();
             _dlqProducer = BuildDlqProducer();
 
-            // Independent broker round-trips; initialize concurrently.
-            await Task.WhenAll(
+            // Independent broker round-trips; initialize concurrently. If both fail, surface
+            // the AggregateException so neither root cause is silently dropped.
+            var initialization = Task.WhenAll(
                 _dlqProducer.InitializeAsync(stoppingToken).AsTask(),
-                _consumer.InitializeAsync(stoppingToken).AsTask()).ConfigureAwait(false);
+                _consumer.InitializeAsync(stoppingToken).AsTask());
+            try
+            {
+                await initialization.ConfigureAwait(false);
+            }
+            catch when (initialization.Exception?.InnerExceptions.Count > 1)
+            {
+                throw initialization.Exception;
+            }
         }
         else
         {
@@ -265,7 +274,18 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 }
 
                 drainedCount++;
-                await ProcessWithRetriesAsync(result.Value, drainCts.Token).ConfigureAwait(false);
+                try
+                {
+                    await ProcessWithRetriesAsync(result.Value, drainCts.Token).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Same in-doubt rule as the main consume loop: this drained record was not
+                    // fully handled (e.g. the drain timeout cancelled its awaited DLQ write),
+                    // so the final explicit commit must not vouch for it.
+                    _hasInDoubtFailedRecord = true;
+                    throw;
+                }
 
                 LogDrainProgress(drainedCount);
             }

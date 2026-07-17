@@ -448,6 +448,86 @@ public sealed class KafkaConsumerServiceTests
     }
 
     [Test]
+    public async Task StopAsync_DrainTimeoutCancelsDlqWrite_SkipsFinalCommit()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
+
+        var consumeOneCalls = 0;
+        consumer.ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref consumeOneCalls) == 1
+                ? new ValueTask<ConsumeResult<string, string>?>(CreateResult("orders", partition: 1, offset: 42))
+                : new ValueTask<ConsumeResult<string, string>?>((ConsumeResult<string, string>?)null));
+
+        var dlqWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => new ValueTask<RecordMetadata>(
+                BlockUntilCancelledAsync(dlqWriteStarted, callInfo.ArgAt<CancellationToken>(1))));
+
+        var service = new FailingConsumerService(
+            consumer, ["orders"],
+            deadLetterOptions: new DeadLetterOptions(),
+            serviceOptions: new KafkaConsumerServiceOptions
+            {
+                DrainOnShutdown = true,
+                ShutdownTimeout = TimeSpan.FromMilliseconds(500)
+            });
+        SetDlqProducer(service, producer);
+
+        await service.StartAsync(CancellationToken.None);
+        await service.StopAsync(CancellationToken.None);
+
+        // The drain timeout cancelled the drained record's awaited DLQ write, so the final
+        // explicit commit must not vouch for it — the record is redelivered on restart.
+        await dlqWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await consumer.Received().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+        await consumer.DidNotReceive().CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task StopAsync_ProcessAsyncCancelledMidRecord_SkipsDrainAndFinalCommit()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var service = new BlockingProcessConsumerService(consumer, ["orders"]);
+
+        await service.StartAsync(CancellationToken.None);
+        await service.ProcessingStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await service.StopAsync(CancellationToken.None);
+
+        // Shutdown interrupted the record mid-ProcessAsync: per delivery semantics a record
+        // whose processing threw must not be committed, so drain and the vouching commit are
+        // both skipped and the record is redelivered on restart. (Proven offsets still commit
+        // via the consumer's close path during disposal.)
+        await consumer.DidNotReceive().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+        await consumer.DidNotReceive().CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    private sealed class BlockingProcessConsumerService : TestableKafkaConsumerService
+    {
+        public TaskCompletionSource ProcessingStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public BlockingProcessConsumerService(IKafkaConsumer<string, string> consumer, string[] topics)
+            : base(consumer, topics)
+        {
+        }
+
+        protected override async ValueTask ProcessAsync(
+            ConsumeResult<string, string> result, CancellationToken cancellationToken)
+        {
+            ProcessingStarted.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
+    }
+
+    [Test]
     public async Task Constructor_DeadLetterPolicyWithoutOptions_Throws()
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();
@@ -899,9 +979,10 @@ public sealed class KafkaConsumerServiceTests
             string[] topics,
             DeadLetterOptions? deadLetterOptions = null,
             IRetryPolicy? retryPolicy = null,
-            IDeadLetterPolicy<string, string>? deadLetterPolicy = null)
-            : base(consumer, topics, deadLetterOptions: deadLetterOptions, retryPolicy: retryPolicy,
-                deadLetterPolicy: deadLetterPolicy)
+            IDeadLetterPolicy<string, string>? deadLetterPolicy = null,
+            KafkaConsumerServiceOptions? serviceOptions = null)
+            : base(consumer, topics, options: serviceOptions, deadLetterOptions: deadLetterOptions,
+                retryPolicy: retryPolicy, deadLetterPolicy: deadLetterPolicy)
         {
         }
 

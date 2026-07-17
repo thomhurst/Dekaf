@@ -193,6 +193,26 @@ public static class DekafBuilderHostingExtensions
         DekafBuilder builder, object? serviceKey, bool deadLetterConfigured)
         where TService : KafkaConsumerService<TKey, TValue>
     {
+        // Registering the same service type under the same key twice would either be silently
+        // dropped (AddHostedService de-duplicates) or start two competing instances (the
+        // factory path does not) depending on the registration shapes involved — fail loudly
+        // instead. Distinct service keys intentionally remain allowed: that is how one service
+        // class runs multiple instances.
+        var registrationKey = new ConsumerServiceRegistrationKey(typeof(TService), serviceKey);
+        if (builder.Services.Any(descriptor =>
+                descriptor.IsKeyedService &&
+                descriptor.ServiceType == typeof(ConsumerServiceRegistrationMarker) &&
+                Equals(descriptor.ServiceKey, registrationKey)))
+        {
+            throw new InvalidOperationException(
+                $"{typeof(TService).Name} is already registered as a hosted consumer service" +
+                (serviceKey is null ? "" : $" for service key '{serviceKey}'") +
+                ". Each AddConsumerService call starts an independent service instance; " +
+                "use distinct service keys to run the same service class multiple times.");
+        }
+
+        builder.Services.AddKeyedSingleton(registrationKey, ConsumerServiceRegistrationMarker.Instance);
+
         if (serviceKey is null && !deadLetterConfigured)
         {
             builder.Services.AddHostedService<TService>();
@@ -209,6 +229,13 @@ public static class DekafBuilderHostingExtensions
         }
 
         return builder;
+    }
+
+    private sealed record ConsumerServiceRegistrationKey(Type ServiceType, object? ServiceKey);
+
+    private sealed class ConsumerServiceRegistrationMarker
+    {
+        public static readonly ConsumerServiceRegistrationMarker Instance = new();
     }
 
     private static TService CreateService<

@@ -206,6 +206,38 @@ public class AddConsumerServiceTests
     }
 
     [Test]
+    public async Task AddConsumerService_SameServiceTypeSameKeyTwice_ThrowsAtRegistration()
+    {
+        var services = new ServiceCollection();
+        InvalidOperationException? caught = null;
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumerService<TestService, string, string>(c => c
+                .WithBootstrapServers("localhost:9092")
+                .WithGroupId("first"));
+
+            try
+            {
+                // Mixed shape (second registration adds a DLQ) is the hazardous case: without
+                // the guard it would silently start two competing instances.
+                builder.AddConsumerService<TestService, string, string>(
+                    c => c
+                        .WithBootstrapServers("localhost:9092")
+                        .WithGroupId("second"),
+                    dlq => dlq.WithMaxFailures(2));
+            }
+            catch (InvalidOperationException ex)
+            {
+                caught = ex;
+            }
+        });
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.Message).Contains("already registered");
+    }
+
+    [Test]
     public async Task AddConsumerService_SameServiceTypeUnderTwoKeys_BothServicesRegistered()
     {
         var services = new ServiceCollection();
