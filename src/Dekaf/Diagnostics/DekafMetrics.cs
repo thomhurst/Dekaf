@@ -53,6 +53,18 @@ internal static class DekafMetrics
             unit: "{fault}",
             description: "Producer completion-source faults isolated while completing messages.");
 
+    internal static readonly Counter<long> PendingResponseCleanupDeferred =
+        DekafDiagnostics.Meter.CreateCounter<long>(
+            "dekaf.producer.pending_response.cleanup.deferred",
+            unit: "{response}",
+            description: "Pending responses whose pooled arrays remained owned by a send loop after disposal timed out.");
+
+    internal static readonly Counter<long> PendingResponseCleanupRecovered =
+        DekafDiagnostics.Meter.CreateCounter<long>(
+            "dekaf.producer.pending_response.cleanup.recovered",
+            unit: "{response}",
+            description: "Deferred pending-response array cleanups later completed by the send loop; deferred minus recovered is still stranded.");
+
     // Consumer metrics
     internal static readonly Counter<long> MessagesReceived =
         DekafDiagnostics.Meter.CreateCounter<long>(
