@@ -2652,7 +2652,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private void FailTransactionEnrollmentBatch(ReadyBatch batch, int generation, Exception error)
     {
-        FinalizeFailedTransactionEnrollmentRetry(batch);
+        // Each step independently guarded: a finalize (unmute) hiccup must neither skip
+        // failing the batch nor escape into the send loop's outer catch, where it would
+        // tear down the whole sender over a single batch.
+        try
+        {
+            FinalizeFailedTransactionEnrollmentRetry(batch);
+        }
+        catch (Exception finalizeError)
+        {
+            LogBatchCleanupStepFailed(finalizeError, _brokerId);
+        }
+
         try
         {
             FailAndCleanupBatch(batch, generation, error);
@@ -2874,8 +2885,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 finally
                 {
                     // A ??=-allocated lookup (reusable was null) is a throwaway local, so only
-                    // the caller's reused dictionary ever needs clearing.
-                    reusableResponseLookup?.Clear();
+                    // the caller's reused dictionary ever needs clearing. Guarded like every
+                    // other step here so a throw cannot skip the pooled-array returns below.
+                    try { reusableResponseLookup?.Clear(); }
+                    catch (Exception clearEx) { LogBatchCleanupStepFailed(clearEx, _brokerId); }
                     if (responseToReturn is not null)
                     {
                         try { responseToReturn.Return(); }
@@ -3188,7 +3201,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                     }
 
-                    pending.ResponseTask.Abandon();
+                    try { pending.ResponseTask.Abandon(); }
+                    catch (Exception abandonEx) { LogBatchCleanupStepFailed(abandonEx, _brokerId); }
                 }
                 catch
                 {

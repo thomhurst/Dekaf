@@ -1437,6 +1437,76 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TransactionEnrollmentFailure_FailsEntireCarriedOverBacklog(
+        CancellationToken cancellationToken)
+    {
+        // Regression test for the FailPendingTransactionEnrollmentBatches drain: a partition
+        // whose enrollment stays pending accumulates a multi-entry carry-over backlog, and a
+        // late enrollment failure must fail EVERY queued batch (not just the head) and leave
+        // the send loop alive.
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var options = CreateOptions(transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskPool = new ValueTaskSourcePool<RecordMetadata>();
+        var enrollmentError = new TransactionException("Partition enrollment failed.");
+        var partitionPending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Action<Exception?>? enrollmentCompleted = null;
+
+        var sender = CreateSender(
+            connectionPool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            isTransactional: true,
+            tryEnsurePartitionsInTransaction: (batches, _, completed, pendingPartitions, _) =>
+            {
+                pendingPartitions.Add(batches[0].TopicPartition);
+                enrollmentCompleted = completed;
+                partitionPending.TrySetResult();
+                return TransactionPartitionEnrollmentResult.Pending;
+            });
+
+        try
+        {
+            var first = CreateTestBatchWithDelivery(valueTaskPool, "test-topic", 0);
+            sender.Enqueue(first.Batch);
+            await partitionPending.Task.WaitAsync(cancellationToken);
+
+            // Later batches for the pending partition divert straight to carry-over
+            // ('O' diag) without another enrollment attempt, building the backlog.
+            var second = CreateTestBatchWithDelivery(valueTaskPool, "test-topic", 0);
+            var third = CreateTestBatchWithDelivery(valueTaskPool, "test-topic", 0);
+            sender.Enqueue(second.Batch);
+            sender.Enqueue(third.Batch);
+            await WaitUntilAsync(
+                () => second.Batch.DiagTrace.Contains('O') && third.Batch.DiagTrace.Contains('O'),
+                cancellationToken);
+
+            enrollmentCompleted!(enrollmentError);
+
+            await Assert.That(async () => await first.Delivery.WaitAsync(cancellationToken))
+                .ThrowsExactly<TransactionException>()
+                .WithMessage(enrollmentError.Message);
+            await Assert.That(async () => await second.Delivery.WaitAsync(cancellationToken))
+                .ThrowsExactly<TransactionException>()
+                .WithMessage(enrollmentError.Message);
+            await Assert.That(async () => await third.Delivery.WaitAsync(cancellationToken))
+                .ThrowsExactly<TransactionException>()
+                .WithMessage(enrollmentError.Message);
+            await Assert.That(sender.IsAlive).IsTrue();
+            await connectionPool.DidNotReceiveWithAnyArgs()
+                .GetConnectionAsync(default, default);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskPool.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task SendLoop_NonIdempotent_ErrorMutesUntilSamePartitionPipelineDrains(
         CancellationToken cancellationToken)
