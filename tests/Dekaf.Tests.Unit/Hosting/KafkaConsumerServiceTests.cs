@@ -423,10 +423,12 @@ public sealed class KafkaConsumerServiceTests
         await dlqWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await service.StopAsync(CancellationToken.None);
 
-        // Draining would prove the in-doubt record processed; it must be skipped so the
-        // final commit cannot commit the record away without its dead-letter copy.
+        // Draining would prove the in-doubt record processed, and an explicit CommitAsync
+        // vouches for the in-doubt record itself — both must be skipped so the record is
+        // redelivered on restart instead of committed away without its dead-letter copy.
+        // (The consumer's own close path commits proven offsets only, during disposal.)
         await consumer.DidNotReceive().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
-        await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
+        await consumer.DidNotReceive().CommitAsync(Arg.Any<CancellationToken>());
     }
 
     private static async IAsyncEnumerable<ConsumeResult<string, string>> YieldOneThenWait(

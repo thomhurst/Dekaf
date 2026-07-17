@@ -219,7 +219,16 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             }
         }
 
-        // Final offset commit before disposal
+        // Final offset commit before disposal. An explicit CommitAsync vouches for everything
+        // yielded so far, INCLUDING the in-doubt record still being handled — so when shutdown
+        // interrupted a record's failure handling, skip it: the consumer's close path commits
+        // proven offsets only, leaving the interrupted record to be redelivered on restart.
+        if (_hasInDoubtFailedRecord)
+        {
+            LogFinalCommitSkippedForInDoubtRecord();
+            return;
+        }
+
         try
         {
             await _consumer.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -740,6 +749,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Skipping shutdown drain: the consume loop stopped with an in-doubt failed record; draining would mark it processed and commit it away. It will be redelivered on restart.")]
     private partial void LogDrainSkippedForInDoubtRecord();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Skipping the final explicit commit: it would vouch for the in-doubt failed record. The consumer's close commit covers proven offsets only; the record will be redelivered on restart.")]
+    private partial void LogFinalCommitSkippedForInDoubtRecord();
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Started consuming from topics: {Topics}")]
     private partial void LogStartedConsuming(string topics);
