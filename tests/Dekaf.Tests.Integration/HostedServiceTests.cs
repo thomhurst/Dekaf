@@ -290,6 +290,153 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
+    public async Task InterruptedRecord_NotCommitted_RedeliveredOnRestart()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"hosted-indoubt-{Guid.NewGuid():N}";
+        var processed = new ConcurrentBag<string>();
+        var hang = new HangOnceHolder();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(topic, "k1", "ok-1", CancellationToken.None);
+        await producer.ProduceAsync(topic, "k2", "hang-1", CancellationToken.None);
+        await producer.ProduceAsync(topic, "k3", "ok-2", CancellationToken.None);
+
+        await RunInterruptibleHostAsync<InterruptibleConsumerService>(
+            topic, groupId, processed, hang,
+            stopWhen: () => hang.HangStarted.Task.IsCompleted && processed.Contains("ok-1"));
+
+        // First run: ok-1 processed and proven; hang-1 was interrupted mid-ProcessAsync,
+        // so it must NOT have been committed away by shutdown.
+        await Assert.That(processed).Contains("ok-1");
+        await Assert.That(processed).DoesNotContain("hang-1");
+
+        await RunInterruptibleHostAsync<InterruptibleConsumerService>(
+            topic, groupId, processed, hang,
+            stopWhen: () => processed.Contains("hang-1") && processed.Contains("ok-2"));
+
+        // Second run: the interrupted record and its successor are redelivered and processed;
+        // the proven record was committed by the close path and is not reprocessed.
+        await Assert.That(processed).Contains("hang-1");
+        await Assert.That(processed).Contains("ok-2");
+        await Assert.That(processed.Count(v => v == "ok-1")).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ManualCommitMode_StoredOffsetsCommitted_DespiteInterruptedRecord()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"hosted-manual-{Guid.NewGuid():N}";
+        var processed = new ConcurrentBag<string>();
+        var hang = new HangOnceHolder();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.ProduceAsync(topic, "k1", "ok-1", CancellationToken.None);
+        await producer.ProduceAsync(topic, "k2", "hang-1", CancellationToken.None);
+        await producer.ProduceAsync(topic, "k3", "ok-2", CancellationToken.None);
+
+        await RunInterruptibleHostAsync<ManualCommitInterruptibleConsumerService>(
+            topic, groupId, processed, hang,
+            stopWhen: () => hang.HangStarted.Task.IsCompleted && processed.Contains("ok-1"),
+            manualCommitMode: true);
+
+        await Assert.That(processed).Contains("ok-1");
+        await Assert.That(processed).DoesNotContain("hang-1");
+
+        // The final commit must have committed exactly the explicitly stored ok-1 offset (1) —
+        // not the interrupted hang-1 record's offset (2), which auto offset storage would have
+        // staged and vouched for.
+        await using (var offsetProbe = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .BuildAsync())
+        {
+            var committed = await offsetProbe.GetCommittedOffsetAsync(
+                new TopicPartition(topic, 0), CancellationToken.None);
+            await Assert.That(committed).IsEqualTo(1);
+        }
+
+        await RunInterruptibleHostAsync<ManualCommitInterruptibleConsumerService>(
+            topic, groupId, processed, hang,
+            stopWhen: () => processed.Contains("hang-1") && processed.Contains("ok-2"),
+            manualCommitMode: true);
+
+        // Manual mode has no close-path fallback: the service's final commit must have
+        // committed the explicitly stored ok-1 offset despite the interrupted record,
+        // so ok-1 is not reprocessed while hang-1/ok-2 are redelivered.
+        await Assert.That(processed).Contains("hang-1");
+        await Assert.That(processed).Contains("ok-2");
+        await Assert.That(processed.Count(v => v == "ok-1")).IsEqualTo(1);
+    }
+
+    private async Task RunInterruptibleHostAsync<TService>(
+        string topic,
+        string groupId,
+        ConcurrentBag<string> processed,
+        HangOnceHolder hang,
+        Func<bool> stopWhen,
+        bool manualCommitMode = false)
+        where TService : KafkaConsumerService<string, string>
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(processed);
+        builder.Services.AddSingleton(hang);
+        builder.Services.AddSingleton<TestTopicHolder>(new TestTopicHolder(topic));
+        builder.Services.AddDekaf(dekaf =>
+        {
+            dekaf.AddConsumerService<TService, string, string>(c =>
+            {
+                c.WithBootstrapServers(KafkaContainer.BootstrapServers)
+                    .WithGroupId(groupId)
+                    .WithAutoOffsetReset(AutoOffsetReset.Earliest);
+                if (manualCommitMode)
+                {
+                    // Strict manual pattern: explicit StoreOffset only, no auto-staging.
+                    c.WithOffsetCommitMode(OffsetCommitMode.Manual)
+                        .WithAutoOffsetStore(false);
+                }
+            });
+        });
+
+        var host = builder.Build();
+        using var cts = new CancellationTokenSource();
+        var hostTask = host.RunAsync(cts.Token);
+
+        try
+        {
+            await WaitForConditionAsync(stopWhen, TimeSpan.FromSeconds(45));
+        }
+        finally
+        {
+            cts.Cancel();
+            try
+            {
+                await hostTask.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected
+            }
+            catch (TimeoutException)
+            {
+                // Host shutdown can be slow on resource-constrained CI runners
+            }
+            finally
+            {
+                host.Dispose();
+            }
+        }
+    }
+
+    [Test]
     public async Task StopsGracefully_NoExceptions()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -387,6 +534,74 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
             _receivedMessages.Add(result.Value);
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class HangOnceHolder
+    {
+        private int _claimed;
+
+        public TaskCompletionSource HangStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool TryClaim() => Interlocked.Exchange(ref _claimed, 1) == 0;
+    }
+
+    private class InterruptibleConsumerService : KafkaConsumerService<string, string>
+    {
+        private readonly ConcurrentBag<string> _processed;
+        private readonly TestTopicHolder _topicHolder;
+        private readonly HangOnceHolder _hang;
+
+        public InterruptibleConsumerService(
+            IKafkaConsumer<string, string> consumer,
+            ILogger<InterruptibleConsumerService> logger,
+            ConcurrentBag<string> processed,
+            TestTopicHolder topicHolder,
+            HangOnceHolder hang)
+            : base(consumer, logger)
+        {
+            _processed = processed;
+            _topicHolder = topicHolder;
+            _hang = hang;
+        }
+
+        protected override IEnumerable<string> Topics => [_topicHolder.Topic];
+
+        protected override async ValueTask ProcessAsync(
+            ConsumeResult<string, string> result, CancellationToken cancellationToken)
+        {
+            if (result.Value?.StartsWith("hang-", StringComparison.Ordinal) == true && _hang.TryClaim())
+            {
+                _hang.HangStarted.TrySetResult();
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+
+            _processed.Add(result.Value!);
+            OnProcessed(result);
+        }
+
+        protected virtual void OnProcessed(ConsumeResult<string, string> result)
+        {
+        }
+    }
+
+    private sealed class ManualCommitInterruptibleConsumerService : InterruptibleConsumerService
+    {
+        private readonly IKafkaConsumer<string, string> _consumer;
+
+        public ManualCommitInterruptibleConsumerService(
+            IKafkaConsumer<string, string> consumer,
+            ILogger<InterruptibleConsumerService> logger,
+            ConcurrentBag<string> processed,
+            TestTopicHolder topicHolder,
+            HangOnceHolder hang)
+            : base(consumer, logger, processed, topicHolder, hang)
+        {
+            _consumer = consumer;
+        }
+
+        protected override void OnProcessed(ConsumeResult<string, string> result)
+            => _consumer.StoreOffset(result);
     }
 
     private sealed class FailOnMarkerConsumerService : KafkaConsumerService<string, string>

@@ -47,6 +47,16 @@ public static class ServiceCollectionExtensions
 }
 
 /// <summary>
+/// Computes the keyed-DI keys shared between consumer registration and the hosting helpers,
+/// so the key convention cannot drift between the two assemblies.
+/// </summary>
+internal static class DekafConsumerRegistrationKeys
+{
+    internal static object DeadLetterOptionsKey<TKey, TValue>(object? serviceKey) =>
+        serviceKey ?? typeof(IKafkaConsumer<TKey, TValue>);
+}
+
+/// <summary>
 /// Builder for configuring Dekaf services.
 /// </summary>
 public sealed class DekafBuilder
@@ -513,7 +523,8 @@ public sealed class DekafBuilder
             // config can never leak into another service via plain DeadLetterOptions injection.
             // Hosted services registered manually with AddHostedService should resolve via
             // [FromKeyedServices(typeof(IKafkaConsumer<TKey, TValue>))] (or the service key).
-            _services.AddKeyedSingleton(serviceKey ?? typeof(IKafkaConsumer<TKey, TValue>), dlqOptions);
+            _services.AddKeyedSingleton(
+                DekafConsumerRegistrationKeys.DeadLetterOptionsKey<TKey, TValue>(serviceKey), dlqOptions);
         }
 
         return this;

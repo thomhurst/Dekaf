@@ -487,6 +487,53 @@ public sealed class KafkaConsumerServiceTests
     }
 
     [Test]
+    public async Task StopAsync_InDoubtRecordUnderManualCommitMode_StillCommitsStoredOffsets()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>, IConsumerCommitConfiguration>();
+        ((IConsumerCommitConfiguration)consumer).OffsetCommitMode.Returns(OffsetCommitMode.Manual);
+        ((IConsumerCommitConfiguration)consumer).EnableAutoOffsetStore.Returns(false);
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var service = new BlockingProcessConsumerService(consumer, ["orders"]);
+
+        await service.StartAsync(CancellationToken.None);
+        await service.ProcessingStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await service.StopAsync(CancellationToken.None);
+
+        // Strict manual mode (Manual + auto-store off) has no close-path fallback commit and
+        // CommitAsync covers only offsets the application explicitly stored, so the final
+        // commit must still run: skipping it would lose ALL stored offsets. Draining is
+        // still skipped (a pull would prove the in-doubt record).
+        await consumer.DidNotReceive().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+        await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task StopAsync_InDoubtRecordUnderManualCommitWithAutoStore_SkipsFinalCommit()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>, IConsumerCommitConfiguration>();
+        ((IConsumerCommitConfiguration)consumer).OffsetCommitMode.Returns(OffsetCommitMode.Manual);
+        ((IConsumerCommitConfiguration)consumer).EnableAutoOffsetStore.Returns(true);
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var service = new BlockingProcessConsumerService(consumer, ["orders"]);
+
+        await service.StartAsync(CancellationToken.None);
+        await service.ProcessingStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await service.StopAsync(CancellationToken.None);
+
+        // Manual mode with auto offset storage stages delivered records, so the final commit
+        // would vouch for the in-doubt record (verified against a real broker) — skip it.
+        await consumer.DidNotReceive().CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task StopAsync_ProcessAsyncCancelledMidRecord_SkipsDrainAndFinalCommit()
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();

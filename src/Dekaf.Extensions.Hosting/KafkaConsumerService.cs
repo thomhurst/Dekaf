@@ -181,18 +181,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             await foreach (var result in _consumer.ConsumeAsync(stoppingToken).ConfigureAwait(false))
             {
-                try
-                {
-                    await ProcessWithRetriesAsync(result, stoppingToken).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // The record yielded above was not fully handled (e.g. shutdown cancelled its
-                    // awaited DLQ write). Any further pull — including the drain loop — would mark
-                    // it proven and let the final commit discard it, so remember to skip draining.
-                    _hasInDoubtFailedRecord = true;
-                    throw;
-                }
+                await ProcessTrackingInDoubtAsync(result, stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -228,11 +217,22 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             }
         }
 
-        // Final offset commit before disposal. An explicit CommitAsync vouches for everything
-        // yielded so far, INCLUDING the in-doubt record still being handled — so when shutdown
-        // interrupted a record's failure handling, skip it: the consumer's close path commits
-        // proven offsets only, leaving the interrupted record to be redelivered on restart.
-        if (_hasInDoubtFailedRecord)
+        // Final offset commit before disposal. An explicit CommitAsync vouches for the in-doubt
+        // record still being handled whenever the consumer stages positions itself: under auto
+        // commit mode the commit flushes the consumed position, and under manual commit mode
+        // with automatic offset storage the delivered record's offset is already stored
+        // (verified against a real broker: the interrupted record's offset gets committed).
+        // In those configurations skip the commit — proven offsets still commit via the
+        // consumer's close path under auto mode, and redelivery-with-duplicates always beats
+        // committing away a record without its work or dead-letter copy. Only strict manual
+        // mode (Manual + WithAutoOffsetStore(false)) commits exactly what the application
+        // stored, so the commit must run there — the close path has no manual-mode fallback
+        // and skipping would lose every explicitly stored offset.
+        var commitWouldVouchForInDoubtRecord =
+            _consumer is not IConsumerCommitConfiguration commitConfiguration
+            || commitConfiguration.OffsetCommitMode == OffsetCommitMode.Auto
+            || commitConfiguration.EnableAutoOffsetStore;
+        if (_hasInDoubtFailedRecord && commitWouldVouchForInDoubtRecord)
         {
             LogFinalCommitSkippedForInDoubtRecord();
             return;
@@ -274,18 +274,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 }
 
                 drainedCount++;
-                try
-                {
-                    await ProcessWithRetriesAsync(result.Value, drainCts.Token).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Same in-doubt rule as the main consume loop: this drained record was not
-                    // fully handled (e.g. the drain timeout cancelled its awaited DLQ write),
-                    // so the final explicit commit must not vouch for it.
-                    _hasInDoubtFailedRecord = true;
-                    throw;
-                }
+                await ProcessTrackingInDoubtAsync(result.Value, drainCts.Token).ConfigureAwait(false);
 
                 LogDrainProgress(drainedCount);
             }
@@ -377,6 +366,27 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         catch (Exception ex)
         {
             LogConsumerDisposalError(ex);
+        }
+    }
+
+    /// <summary>
+    /// Runs the record through the failure-handling pipeline, flagging it in-doubt if handling
+    /// escapes (e.g. shutdown cancelled its awaited DLQ write, or ProcessAsync honored
+    /// cancellation). An in-doubt record must never become committable: any further pull would
+    /// mark it proven, and an explicit commit under auto mode would vouch for it directly — so
+    /// StopAsync consults this flag to skip draining and the final commit.
+    /// </summary>
+    private async ValueTask ProcessTrackingInDoubtAsync(
+        ConsumeResult<TKey, TValue> result, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ProcessWithRetriesAsync(result, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _hasInDoubtFailedRecord = true;
+            throw;
         }
     }
 

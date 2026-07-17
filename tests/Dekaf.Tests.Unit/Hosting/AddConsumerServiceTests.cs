@@ -235,6 +235,11 @@ public class AddConsumerServiceTests
 
         await Assert.That(caught).IsNotNull();
         await Assert.That(caught!.Message).Contains("already registered");
+
+        // The guard runs before any container mutation, so the rejected call must not have
+        // registered a second consumer whose config would silently win last-registration.
+        await Assert.That(services.Count(d =>
+            d.ServiceType == typeof(IKafkaConsumer<string, string>))).IsEqualTo(1);
     }
 
     [Test]

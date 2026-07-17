@@ -34,6 +34,7 @@ public static class DekafBuilderHostingExtensions
         where TService : KafkaConsumerService<TKey, TValue>
     {
         ArgumentNullException.ThrowIfNull(builder);
+        ReserveConsumerServiceRegistration<TService>(builder, serviceKey: null);
         builder.AddConsumer(configure, configureDeadLetterQueue);
         return RegisterHostedService<TService, TKey, TValue>(
             builder, serviceKey: null, configureDeadLetterQueue is not null);
@@ -61,6 +62,7 @@ public static class DekafBuilderHostingExtensions
         where TService : KafkaConsumerService<TKey, TValue>
     {
         ArgumentNullException.ThrowIfNull(builder);
+        ReserveConsumerServiceRegistration<TService>(builder, serviceKey: null);
         builder.AddConsumer(options, configure, configureDeadLetterQueue);
         return RegisterHostedService<TService, TKey, TValue>(
             builder, serviceKey: null, configureDeadLetterQueue is not null);
@@ -90,6 +92,7 @@ public static class DekafBuilderHostingExtensions
         where TService : KafkaConsumerService<TKey, TValue>
     {
         ArgumentNullException.ThrowIfNull(builder);
+        ReserveConsumerServiceRegistration<TService>(builder, serviceKey: null);
         builder.AddConsumer(configuration, configure, configureDeadLetterQueue);
         return RegisterHostedService<TService, TKey, TValue>(
             builder, serviceKey: null, configureDeadLetterQueue is not null);
@@ -120,6 +123,7 @@ public static class DekafBuilderHostingExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(serviceKey);
+        ReserveConsumerServiceRegistration<TService>(builder, serviceKey);
         builder.AddConsumer(serviceKey, configure, configureDeadLetterQueue);
         return RegisterHostedService<TService, TKey, TValue>(
             builder, serviceKey, configureDeadLetterQueue is not null);
@@ -150,6 +154,7 @@ public static class DekafBuilderHostingExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(serviceKey);
+        ReserveConsumerServiceRegistration<TService>(builder, serviceKey);
         builder.AddConsumer(serviceKey, options, configure, configureDeadLetterQueue);
         return RegisterHostedService<TService, TKey, TValue>(
             builder, serviceKey, configureDeadLetterQueue is not null);
@@ -182,22 +187,23 @@ public static class DekafBuilderHostingExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(serviceKey);
+        ReserveConsumerServiceRegistration<TService>(builder, serviceKey);
         builder.AddConsumer(serviceKey, configuration, configure, configureDeadLetterQueue);
         return RegisterHostedService<TService, TKey, TValue>(
             builder, serviceKey, configureDeadLetterQueue is not null);
     }
 
-    private static DekafBuilder RegisterHostedService<
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService,
-        TKey, TValue>(
-        DekafBuilder builder, object? serviceKey, bool deadLetterConfigured)
-        where TService : KafkaConsumerService<TKey, TValue>
+    /// <summary>
+    /// Rejects a duplicate registration of the same service type under the same service key.
+    /// Called BEFORE any container mutation: registering the same pair twice would either be
+    /// silently dropped (AddHostedService de-duplicates) or start two competing instances (the
+    /// factory path does not), and throwing after AddConsumer ran would leave the survivor
+    /// resolving the rejected call's consumer wiring. Distinct service keys intentionally
+    /// remain allowed: that is how one service class runs multiple instances.
+    /// </summary>
+    private static void ReserveConsumerServiceRegistration<TService>(
+        DekafBuilder builder, object? serviceKey)
     {
-        // Registering the same service type under the same key twice would either be silently
-        // dropped (AddHostedService de-duplicates) or start two competing instances (the
-        // factory path does not) depending on the registration shapes involved — fail loudly
-        // instead. Distinct service keys intentionally remain allowed: that is how one service
-        // class runs multiple instances.
         var registrationKey = new ConsumerServiceRegistrationKey(typeof(TService), serviceKey);
         if (builder.Services.Any(descriptor =>
                 descriptor.IsKeyedService &&
@@ -212,7 +218,14 @@ public static class DekafBuilderHostingExtensions
         }
 
         builder.Services.AddKeyedSingleton(registrationKey, ConsumerServiceRegistrationMarker.Instance);
+    }
 
+    private static DekafBuilder RegisterHostedService<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService,
+        TKey, TValue>(
+        DekafBuilder builder, object? serviceKey, bool deadLetterConfigured)
+        where TService : KafkaConsumerService<TKey, TValue>
+    {
         if (serviceKey is null && !deadLetterConfigured)
         {
             builder.Services.AddHostedService<TService>();
@@ -263,7 +276,7 @@ public static class DekafBuilderHostingExtensions
             }
 
             explicitArguments.Add(serviceProvider.GetRequiredKeyedService<DeadLetterOptions>(
-                serviceKey ?? typeof(IKafkaConsumer<TKey, TValue>)));
+                DekafConsumerRegistrationKeys.DeadLetterOptionsKey<TKey, TValue>(serviceKey)));
         }
 
         var service = ActivatorUtilities.CreateInstance<TService>(serviceProvider, [.. explicitArguments]);
