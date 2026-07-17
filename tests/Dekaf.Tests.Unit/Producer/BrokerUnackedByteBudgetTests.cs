@@ -277,7 +277,7 @@ public sealed class BrokerUnackedByteBudgetTests
                 admissionBlocks,
                 controller.WindowBytes,
                 now,
-                admissionWaitPeakTicks: Seconds(0.00006) * controller.WindowBytes);
+                admissionWaitTicks: Seconds(0.00006) * controller.WindowBytes);
         }
 
         await Assert.That(controller.WindowBytes).IsEqualTo(200);
@@ -317,6 +317,37 @@ public sealed class BrokerUnackedByteBudgetTests
 
         await Assert.That(epochsToSecondProbe).IsGreaterThanOrEqualTo(120);
         await Assert.That(epochsToThirdProbe).IsGreaterThanOrEqualTo(240);
+    }
+
+    [Test]
+    public async Task OverTargetProbeFailures_DoNotBackOffTheSchedule()
+    {
+        var controller = CreateController(latencyGovernorEnabled: true);
+        var now = T0;
+        var admissionBlocks = 0L;
+        _ = controller.CompleteInterval(0, 0, now, 0);
+
+        // Window-independent 50ms delay keeps the target missed forever; sub-floor descents
+        // repeatedly fail their delay-gain requirement.
+        for (var i = 0; i < 4_000 && controller.CapacityProbeFailureCount < 2; i++)
+        {
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: 0.050);
+        }
+        await Assert.That(controller.CapacityProbeFailureCount).IsGreaterThanOrEqualTo(2);
+
+        // While the target is missed, failed experiments are the escape search: the next one
+        // must arrive on the normal schedule, not a 4x/8x backed-off one (run 29552281754
+        // froze the window at the slow-start ceiling for most of a run this way).
+        var epochsToNextProbe = CountEpochsUntilProbe(
+            controller,
+            ref now,
+            ref admissionBlocks,
+            sealToSendSeconds: 0.050);
+        await Assert.That(epochsToNextProbe).IsLessThanOrEqualTo(100);
     }
 
     [Test]
@@ -1182,11 +1213,16 @@ public sealed class BrokerUnackedByteBudgetTests
     private static int CountEpochsUntilProbe(
         BrokerWindowController controller,
         ref long now,
-        ref long admissionBlocks)
+        ref long admissionBlocks,
+        double sealToSendSeconds = 0)
     {
         for (var i = 1; i <= 1_000; i++)
         {
-            _ = DriveControllerEpoch(controller, ref now, ref admissionBlocks);
+            _ = DriveControllerEpoch(
+                controller,
+                ref now,
+                ref admissionBlocks,
+                sealToSendSeconds: sealToSendSeconds);
             if (controller.Phase != BrokerWindowPhase.Steady)
                 return i;
         }
@@ -1239,6 +1275,6 @@ public sealed class BrokerUnackedByteBudgetTests
             admissionBlocks,
             observedOutstandingBytes ?? controller.WindowBytes,
             now,
-            admissionWaitPeakTicks: 0);
+            admissionWaitTicks: 0);
     }
 }

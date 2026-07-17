@@ -70,7 +70,7 @@ internal sealed class BrokerUnackedByteBudget
     private long _budgetBytes;
     private long _generation;
     private long _admissionBlockEvents;
-    private long _admissionWaitPeakTicks;
+    private long _admissionWaitTicks;
     private long _admissionBlockedSinceTimestamp;
     private long _pendingOutstandingPeakBytes;
     private long _minimumRttMicros;
@@ -255,14 +255,16 @@ internal sealed class BrokerUnackedByteBudget
 
     /// <summary>
     /// Records the wait a blocked append actually paid before it was admitted. The per-epoch
-    /// peak feeds the window controller's governed delay, so callers queueing outside the
-    /// window are visible to the same target the in-window pipeline is held to. Multi-writer;
-    /// slow path only (a wait was already paid).
+    /// sum feeds the window controller's governed delay as a load-scaled average, so callers
+    /// queueing outside the window are visible to the same target the in-window pipeline is
+    /// held to. A sum, not a peak: one outlier block must not swamp the paired-experiment
+    /// delay comparison the way a per-epoch maximum did (run 29552281754, A-B-A REGRESSION).
+    /// Multi-writer; slow path only (a wait was already paid).
     /// </summary>
     public void RecordAdmissionWait(long waitTicks)
     {
         if (waitTicks > 0)
-            InterlockedHelper.RatchetUp(ref _admissionWaitPeakTicks, waitTicks);
+            Interlocked.Add(ref _admissionWaitTicks, waitTicks);
     }
 
     /// <summary>
@@ -415,7 +417,7 @@ internal sealed class BrokerUnackedByteBudget
             AdmissionBlockEvents,
             outstandingPeak,
             nowTicks,
-            Interlocked.Exchange(ref _admissionWaitPeakTicks, 0));
+            Interlocked.Exchange(ref _admissionWaitTicks, 0));
         PublishDecision(decision, nowTicks);
         if (!IsOverBudget())
             RecordAdmissionAvailable(nowTicks);

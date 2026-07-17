@@ -45,8 +45,9 @@ internal readonly record struct BrokerWindowDecision(
 /// remains a B-A-B experiment whose goodput guard reverts harmful shrinks, so topologies
 /// whose knee sits high keep their window and only pay a treatment slice per cycle, while
 /// topologies with a low knee descend out of standing queueing delay the target forbids.
-/// Consecutive failed experiments back the probe schedule off exponentially, bounding the
-/// standing-queue tax probes charge to a saturated broker.</item>
+/// Consecutive failed experiments back the probe schedule off exponentially while delay is
+/// on target, bounding the standing-queue tax probes charge to a broker at its knee without
+/// throttling the descent search while the target is missed.</item>
 /// </list>
 /// </summary>
 internal sealed class BrokerWindowController
@@ -113,9 +114,11 @@ internal sealed class BrokerWindowController
     // window (a slow broker, a long link) must not strangle the opening window — only
     // queueing the doubling itself manufactured may end it early.
     private const double SlowStartDelayGrowthFactor = 1.5;
-    // Consecutive failed experiments double the probe interval up to this shift (8x, ~4min):
-    // each failure means the broker is already at its knee, so re-running the same 15s
-    // experiment every cycle only injects periodic queueing the target forbids.
+    // Consecutive failed experiments double the probe interval up to this shift (8x, ~4min),
+    // but only while delay is on target: each on-target failure means the broker is already
+    // at its knee, so re-running the same 15s experiment every cycle only injects periodic
+    // queueing. While the target is missed, failed experiments are the escape search and run
+    // at the normal cadence.
     private const int MaximumProbeBackoffShift = 3;
     // An up-probe treatment whose epoch delay blows past both twice the target and twice the
     // delay observed at probe entry cannot pass the final delay veto; aborting immediately
@@ -147,7 +150,7 @@ internal sealed class BrokerWindowController
     private double _controlledDelayEwmaTicks;
     private double _admissionWaitEwmaTicks;
     private double _slowStartLastDelayEwmaTicks;
-    private long _epochAdmissionWaitPeakTicks;
+    private long _epochAdmissionWaitTicks;
     private double _maximumGoodputBytesPerSecond;
     private long _minimumRttTicks;
     private long _lastAdmissionBlockEvents;
@@ -281,11 +284,9 @@ internal sealed class BrokerWindowController
         long admissionBlockEvents,
         long observedOutstandingBytes,
         long nowTicks,
-        long admissionWaitPeakTicks)
+        long admissionWaitTicks)
     {
-        _epochAdmissionWaitPeakTicks = Math.Max(
-            _epochAdmissionWaitPeakTicks,
-            admissionWaitPeakTicks);
+        _epochAdmissionWaitTicks = SaturatingAdd(_epochAdmissionWaitTicks, admissionWaitTicks);
 
         // Called once per response pass that carried at least one full acknowledgement, so
         // each doubling follows a proven drain of the previous window within one round trip.
@@ -309,14 +310,20 @@ internal sealed class BrokerWindowController
 
         var generationQualified = _epochCurrentGenerationBytes > 0
             && _epochCurrentGenerationBytes >= _epochBytes / 2 + _epochBytes % 2;
-        // The epoch's governed delay adds the worst admission-block wait observed this epoch:
-        // an experiment that merely moves queueing from inside the window to blocked callers
-        // shows no delay gain and is rejected, while one that removes standing queue passes.
-        var epochAdmissionWaitTicks = _epochAdmissionWaitPeakTicks;
-        _admissionWaitEwmaTicks = UpdateEwma(_admissionWaitEwmaTicks, epochAdmissionWaitTicks);
+        // The epoch's governed delay adds the admission-block wait scaled to the epoch's
+        // load: the summed waits spread over one request quantum of traffic, i.e. the average
+        // admission delay a full request's worth of bytes paid. An experiment that merely
+        // moves queueing from inside the window to blocked callers shows no delay gain and is
+        // rejected, while one that removes standing queue passes. A load-scaled sum, not the
+        // epoch peak — a single outlier block swamped the paired delay comparison and vetoed
+        // legitimate descents (run 29552281754, A-B-A REGRESSION).
+        var epochAdmissionDelayTicks = (double)_epochAdmissionWaitTicks
+            * _requestQuantumBytes
+            / Math.Max(_epochBytes, _requestQuantumBytes);
+        _admissionWaitEwmaTicks = UpdateEwma(_admissionWaitEwmaTicks, epochAdmissionDelayTicks);
         var controlledDelayTicks = (generationQualified
             ? _epochCurrentGenerationDelayByteTicks / _epochCurrentGenerationBytes
-            : _controlledDelayEwmaTicks) + epochAdmissionWaitTicks;
+            : _controlledDelayEwmaTicks) + epochAdmissionDelayTicks;
         var admissionPressure = admissionBlockEvents != _lastAdmissionBlockEvents;
         // Occupancy is a demand signal, not a floor. A floor would make the lower-window
         // treatment impossible to test; the 99% goodput guard below reverts a harmful probe
@@ -561,14 +568,18 @@ internal sealed class BrokerWindowController
         // A goodput-preserving descent earns an early retry only while the experiment's own
         // baseline delay missed the target — the instantaneous EWMA flickers on bursts and
         // over-accelerated the walk (run 29513570135). Consecutive failures back the schedule
-        // off exponentially: a broker already at its knee proved the current window right,
-        // and re-running the same experiment every cycle spent 32-42% of broker time inside
-        // probes on run 29541359283.
+        // off exponentially, but only while delay is on target: at the knee, re-running the
+        // same experiment every cycle spent 32-42% of broker time inside probes (run
+        // 29541359283), yet while the target is missed the failed experiments ARE the search
+        // for a way out, and throttling them froze the window at the slow-start ceiling for
+        // most of a run (run 29552281754, A-B-A REGRESSION).
         _epochsUntilProbe = !probingUp
             && succeeded
             && _probeBaselineDelayTicks > _targetDelayTicks
             ? AcceleratedDescentIntervalEpochs
-            : ProbeIntervalEpochs << _consecutiveProbeFailures;
+            : DelayOverTarget
+                ? ProbeIntervalEpochs
+                : ProbeIntervalEpochs << _consecutiveProbeFailures;
         _unqualifiedProbeEpochs = 0;
         ResetProbeExperiment();
         return CurrentDecision(
@@ -700,7 +711,7 @@ internal sealed class BrokerWindowController
         _epochBytes = 0;
         _epochCurrentGenerationBytes = 0;
         _epochCurrentGenerationDelayByteTicks = 0;
-        _epochAdmissionWaitPeakTicks = 0;
+        _epochAdmissionWaitTicks = 0;
         _epochLoaded = false;
     }
 
