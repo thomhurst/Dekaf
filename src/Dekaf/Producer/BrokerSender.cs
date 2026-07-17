@@ -438,6 +438,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _count--;
         }
 
+        /// <summary>Clears one partition's queue in a single pass, keeping the count in sync.</summary>
+        public void ClearQueue(List<BatchReference> queue)
+        {
+            _count -= queue.Count;
+            queue.Clear();
+        }
+
         public bool HasRetry(TopicPartition topicPartition)
         {
             if (!_partitions.TryGetValue(topicPartition, out var queue))
@@ -2588,17 +2595,30 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (!carryOver.Partitions.TryGetValue(topicPartition, out var queue))
                 continue;
 
-            while (queue.Count > 0)
+            // Forward scan + single ClearQueue: repeated RemoveAt(0) would be O(n²), and
+            // the queue can hold a deep retry backlog (bounded by BufferMemory, not
+            // max-in-flight). The per-entry body never throws, so every entry is either
+            // failed here or — if the loop dies catastrophically — still queued for the
+            // loop-exit sweep; the old remove-then-finalize order could drop a batch
+            // (removed but not yet failed) if finalization threw.
+            for (var i = 0; i < queue.Count; i++)
             {
-                var batchReference = queue[0];
-                carryOver.RemoveAt(queue, 0);
+                var batchReference = queue[i];
                 if (!batchReference.IsCurrentIncarnation())
                 {
                     LogStaleBatchInSendSkipped(_instanceId, _brokerId);
                     continue;
                 }
 
-                FinalizeFailedTransactionEnrollmentRetry(batchReference.Batch);
+                try
+                {
+                    FinalizeFailedTransactionEnrollmentRetry(batchReference.Batch);
+                }
+                catch (Exception finalizeError)
+                {
+                    LogBatchCleanupStepFailed(finalizeError, _brokerId);
+                }
+
                 try
                 {
                     FailAndCleanupBatch(batchReference.Batch, batchReference.Generation, error);
@@ -2608,6 +2628,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     LogBatchCleanupStepFailed(cleanupError, _brokerId);
                 }
             }
+
+            carryOver.ClearQueue(queue);
         }
     }
 
