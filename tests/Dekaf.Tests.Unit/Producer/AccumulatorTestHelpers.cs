@@ -24,6 +24,41 @@ internal static class AccumulatorTestHelpers
     }
 
     /// <summary>
+    /// Appends one null-key/null-value record. Returns the raw ValueTask so callers can
+    /// either await it or inspect IsCompleted (a pending result means the append queued
+    /// behind BufferMemory backpressure).
+    /// </summary>
+    public static ValueTask<bool> AppendNullRecordAsync(
+        RecordAccumulator accumulator,
+        string topic,
+        int partition = 0,
+        int partitionCount = 1)
+    {
+        return accumulator.AppendAsync(
+            topic,
+            partition,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null,
+            PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: null,
+            CancellationToken.None,
+            partitionCount);
+    }
+
+    /// <summary>
+    /// Writes a private instance field via reflection.
+    /// </summary>
+    public static void SetPrivateField(object instance, string fieldName, object? value)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"Field '{fieldName}' not found on {instance.GetType().Name}.");
+        field.SetValue(instance, value);
+    }
+
+    /// <summary>
     /// Runs the accumulator's flush-mode batch sweep without waiting for delivery.
     /// </summary>
     public static ValueTask SealAllAsync(RecordAccumulator accumulator)

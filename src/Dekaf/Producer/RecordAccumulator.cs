@@ -1219,6 +1219,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // sealed batches exist.
     private readonly ConcurrentQueue<TopicPartition> _readyPartitions = new();
 
+    // Sealed batches currently resident in partition deques (enqueued, not yet drained).
+    // Maintained by PartitionDeque's add/remove methods so every entry/exit path is
+    // counted by construction. Gates the lost-notification backstop and feeds the
+    // buffer-timeout diagnostics. One Interlocked op per batch, not per message.
+    private long _dispatchQueuedBatchCount;
+
+    // Stopwatch timestamp of the first consecutive idle Ready() pass observed while
+    // deque-resident batches existed; 0 when the last pass was not idle. Sender-thread
+    // only. See RecoverStrandedSealedBatches.
+    private long _dispatchIdleSinceTimestamp;
+
+    // Sustained idle window (1.5 fallback ticks) before rescanning deques for batches
+    // whose ready notification was lost. Time-based rather than pass-counted: wakeups
+    // are signal-driven, so consecutive passes can be microseconds apart and would fire
+    // the rescan during the ordinary seal→publish window.
+    private static readonly long StrandedBatchRescanIdleTicks = Stopwatch.Frequency * 150 / 1000;
+
     // Per-node partition tracking: populated by Ready() with the specific partitions it
     // consumed from _readyPartitions for each node. Used by DrainBatchesForOneNode to
     // re-enqueue only those specific partitions on leader migration (instead of the O(n)
@@ -1361,6 +1378,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private long _pendingAppendDrainRequestVersion;
     private long _pendingAppendDrainEntryCount;
 
+    // Cumulative scan passes across all drain invocations. With self-requests suppressed,
+    // growth is bounded by real drain requests; runaway growth is the livelock signature
+    // (#2207). Exposed for tests via PendingAppendDrainPassCountForTest.
+    private long _pendingAppendDrainPassCount;
+
+    // True while the current thread is the active DrainPendingAppends owner running its
+    // scan. Makes re-entrant self-requests no-ops — see the guard at the top of
+    // DrainPendingAppends (#2207).
+    [ThreadStatic]
+    private static bool t_inPendingAppendDrainScan;
+
     private readonly record struct AdmissionReservation(
         PartitionDeque? Deque,
         BrokerUnackedByteBudget? Budget,
@@ -1383,8 +1411,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Uses a ring-buffer backing array instead of LinkedList to eliminate per-batch
     /// LinkedListNode and HashSet allocations. Typical deques hold 1-3 batches.
     /// </summary>
-    private sealed class PartitionDeque
+    private sealed class PartitionDeque(RecordAccumulator owner)
     {
+        private readonly RecordAccumulator _owner = owner;
         private ReadyBatch?[] _items = new ReadyBatch?[4];
         private int _head;
         private int _count;
@@ -1453,6 +1482,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _items[_head] = null;
             _head = (_head + 1) % _items.Length;
             _count--;
+            Interlocked.Decrement(ref _owner._dispatchQueuedBatchCount);
 
             // Shrink if utilization drops below 25% and array is above minimum capacity.
             // Prevents sticky peak allocation from temporary bursts (e.g., network partition).
@@ -1474,6 +1504,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             EnsureCapacity();
             _items[(_head + _count) % _items.Length] = batch;
             _count++;
+            Interlocked.Increment(ref _owner._dispatchQueuedBatchCount);
         }
 
         /// <summary>Add to front of deque (retry/reenqueue — Java's addFirst).</summary>
@@ -1483,6 +1514,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _head = (_head - 1 + _items.Length) % _items.Length;
             _items[_head] = batch;
             _count++;
+            Interlocked.Increment(ref _owner._dispatchQueuedBatchCount);
         }
 
         /// <summary>Whether the deque contains the specified batch. O(n) linear scan.
@@ -1539,6 +1571,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             _items[(_head + insertAt) % _items.Length] = batch;
             _count++;
+            Interlocked.Increment(ref _owner._dispatchQueuedBatchCount);
         }
 
         private void EnsureCapacity()
@@ -1568,7 +1601,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     private PartitionDeque GetOrCreateDeque(TopicPartition tp)
-        => _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
+        => _partitionDeques.GetOrAdd(tp, static (_, owner) => new PartitionDeque(owner), this);
 
     /// <summary>
     /// Drains the push-based notification queue to find partitions with sendable data.
@@ -1687,10 +1720,87 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 nodePartitions.Add(tp);
         }
 
+        // Lost-notification backstop — see RecoverStrandedSealedBatches. A stranded batch
+        // is recoverable only while deque-resident, so the gate short-circuits on that
+        // count and fires only after a sustained idle window.
+        if (readyNodes.Count == 0
+            && Volatile.Read(ref _dispatchQueuedBatchCount) > 0
+            && _readyPartitions.IsEmpty)
+        {
+            if (_dispatchIdleSinceTimestamp == 0)
+            {
+                _dispatchIdleSinceTimestamp = nowTimestamp;
+            }
+            else if (nowTimestamp - _dispatchIdleSinceTimestamp >= StrandedBatchRescanIdleTicks)
+            {
+                _dispatchIdleSinceTimestamp = nowTimestamp;
+                RecoverStrandedSealedBatches(metadataManager, nowTimestamp);
+            }
+        }
+        else
+        {
+            _dispatchIdleSinceTimestamp = 0;
+        }
+
         // With push-based notifications, the sender wakes on SignalWakeup() from batch
-        // sealing or DeferReenqueue timer expiry. The 100ms fallback is a safety-net poll
-        // in case a notification is missed (e.g., during disposal races).
+        // sealing or DeferReenqueue timer expiry. The 100ms fallback tick re-polls
+        // _readyPartitions and, via the backstop above, rescans the deques themselves when
+        // a notification appears to have been lost.
         return (100, unknownLeadersExist);
+    }
+
+    /// <summary>
+    /// Re-publishes sealed batches whose ready notification was lost. _readyPartitions is
+    /// the sender's only view of sealed batches, so a lost publish would otherwise strand
+    /// its batch until close re-seals the partition (release-gate run 29612262949: a
+    /// sealed first-wave batch sat invisible for the full MaxBlockMs against a healthy
+    /// broker, freezing the partition because ShouldDeferPartialBatchSeal keeps the next
+    /// batch open behind it). Runs only after a sustained idle window with deque-resident
+    /// batches, so steady traffic never pays for the scan. Heads whose next publish has a
+    /// live owner elsewhere (muted → unmute paths, retry backoff → DeferReenqueue timer,
+    /// pre-serialization pending → worker completion publish) are not treated as stranded.
+    /// The Warning captures the stranded state — it is the diagnostic for any
+    /// notification-loss race, so a firing tripwire should be root-caused, not silenced.
+    /// </summary>
+    private void RecoverStrandedSealedBatches(MetadataManager metadataManager, long nowTimestamp)
+    {
+        foreach (var (topicPartition, pd) in _partitionDeques)
+        {
+            if (_mutedPartitions.ContainsKey(topicPartition))
+                continue;
+
+            ReadyBatch? head;
+            int dequeDepth;
+            {
+                using var guard = new SpinLockGuard(ref pd.Lock);
+                head = pd.PeekFirst();
+                dequeDepth = pd.Count;
+            }
+
+            if (head is null)
+                continue;
+
+            if (head.IsRetry && head.RetryNotBefore > nowTimestamp)
+                continue;
+
+            if (!head.IsPreSerialized)
+            {
+                // The pre-serialization worker owns this head's next publish. Re-publish
+                // defensively (Ready keeps unready heads alive) without the tripwire.
+                LogUnserializedSealedBatchRepublished(topicPartition.Topic, topicPartition.Partition);
+                _readyPartitions.Enqueue(topicPartition);
+                continue;
+            }
+
+            var leaderKnown = metadataManager.TryGetCachedPartitionLeader(
+                topicPartition.Topic, topicPartition.Partition) is not null;
+            LogStrandedSealedBatchRecovered(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                dequeDepth,
+                leaderKnown);
+            _readyPartitions.Enqueue(topicPartition);
+        }
     }
 
     /// <summary>
@@ -2042,6 +2152,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </returns>
     internal bool DrainPendingAppends()
     {
+        // Re-entrant requests from the active owner's own scan must not publish a new
+        // request version: every release the scan performs either restores exactly the
+        // pre-attempt state (a failed reserve) or coincides with progress that already
+        // forces another pass. Without this, a failed reserve's admission-slot release
+        // re-requested the drain on every pass — a hot livelock (#2207, run 29612262949:
+        // 2.8M passes at ~7.7k/ms; when the send loop owned the spin, the producer wedged
+        // until max.block.ms because only the send loop could free memory). This is the
+        // admission-side analog of ReleaseMemoryWithoutDrain.
+        if (t_inPendingAppendDrainScan)
+            return true;
+
         // The active owner temporarily moves every candidate out of the concurrent queue
         // while it evaluates admission. An empty queue is therefore conclusive only when
         // no drainer owns that private snapshot.
@@ -2058,10 +2179,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         Interlocked.Increment(ref _pendingAppendDrainEntryCount);
         var ownsDrainGuard = true;
+        var drainPassCount = 0;
+        var drainSpinTripwire = 100_000;
+        t_inPendingAppendDrainScan = true;
         try
         {
             while (true)
             {
+                drainPassCount++;
+                Interlocked.Increment(ref _pendingAppendDrainPassCount);
+                // Livelock tripwire: with self-requests suppressed, pass counts are bounded
+                // by real concurrent requests. A six-digit count means a feedback edge is
+                // back — capture it instead of silently burning a core (#2207). Geometric
+                // spacing keeps a live spin from flooding the log.
+                if (drainPassCount == drainSpinTripwire)
+                {
+                    LogPendingAppendDrainSpinning(drainPassCount, _pendingAppends.Count, Volatile.Read(ref _bufferedBytes));
+                    drainSpinTripwire *= 10;
+                }
                 var drainRequestVersion = Volatile.Read(ref _pendingAppendDrainRequestVersion);
 
                 // Bail if accumulator is being disposed — DisposeAsync will drain the queue.
@@ -2188,6 +2323,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
+            t_inPendingAppendDrainScan = false;
             if (ownsDrainGuard)
             {
                 _blockedPendingPartitions.Clear();
@@ -2691,7 +2827,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.NoInlining)]
     private PartitionDeque GetOrCreateDequeSlow(TopicPartition tp, AccumulatorThreadCache cache)
     {
-        var deque = _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
+        var deque = _partitionDeques.GetOrAdd(tp, static (_, owner) => new PartitionDeque(owner), this);
 
         // Update thread-local cache
         cache.CachedAccumulator = this;
@@ -4378,6 +4514,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal long PendingAppendDrainEntryCountForTest =>
         Volatile.Read(ref _pendingAppendDrainEntryCount);
 
+    internal long PendingAppendDrainPassCountForTest =>
+        Volatile.Read(ref _pendingAppendDrainPassCount);
+
+    /// <summary>Sealed batches resident in partition deques (enqueued, not yet drained).</summary>
+    internal long DispatchQueuedBatchCount => Volatile.Read(ref _dispatchQueuedBatchCount);
+
     /// <summary>
     /// Gets the current buffer utilization as a ratio (0.0 to 1.0+).
     /// Used by adaptive connection scaling to confirm buffer is actually full.
@@ -4548,12 +4690,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <see cref="PendingAppend"/> so both timeout sites report identical diagnostics.
     /// In-flight/unsealed counts distinguish genuine backpressure (batches in the pipeline
     /// still hold memory) from orphaned reservations (buffer full with nothing in flight —
-    /// a refund leak, run 29594249742).
+    /// a refund leak, run 29594249742). Dispatch-queued vs ready-notification counts
+    /// distinguish a batch stranded in the accumulator (queued &gt; 0 with no notification —
+    /// a lost publish, run 29612262949) from one stuck at a broker sender (queued == 0).
     /// </summary>
     internal string BuildBufferTimeoutMessage(int recordSize) =>
         $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
         $"Requested {recordSize} bytes, current usage: {BufferedBytes}/{MaxBufferMemory} bytes, " +
-        $"in-flight batches: {InFlightBatchCount}, unsealed batches: {UnsealedBatchCount}. " +
+        $"in-flight batches: {InFlightBatchCount}, unsealed batches: {UnsealedBatchCount}, " +
+        $"dispatch-queued batches: {DispatchQueuedBatchCount}, ready notifications: {_readyPartitions.Count}. " +
         $"Producer is generating messages faster than the network can send them. " +
         $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.";
 
@@ -6580,6 +6725,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Recovered stranded sealed batch for {Topic}-{Partition}: ready notification was lost (deque depth {DequeDepth}, leaderKnown={LeaderKnown}). Re-published to the sender. This state is the diagnostic for a notification-loss race — root-cause it, do not silence it.")]
+    private partial void LogStrandedSealedBatchRecovered(string topic, int partition, int dequeDepth, bool leaderKnown);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Re-published sealed batch for {Topic}-{Partition} still awaiting pre-serialization")]
+    private partial void LogUnserializedSealedBatchRepublished(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Pending-append drain owner has run {PassCount} scan passes without exiting (queue depth {QueueDepth}, buffered {BufferedBytes} bytes) — a drain-request feedback edge is livelocking the scan (#2207 family). Root-cause the requester; do not silence this.")]
+    private partial void LogPendingAppendDrainSpinning(int passCount, int queueDepth, long bufferedBytes);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Timed out waiting for in-progress append during accumulator disposal for {Topic}-{Partition}; skipping current batch cleanup")]
     private partial void LogAppendInProgressDisposalTimeout(string topic, int partition);
