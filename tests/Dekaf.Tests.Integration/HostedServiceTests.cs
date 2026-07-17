@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Extensions.DependencyInjection;
@@ -377,7 +378,8 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         await Assert.That(processed.Count(v => v == "ok-1")).IsEqualTo(1);
     }
 
-    private async Task RunInterruptibleHostAsync<TService>(
+    private async Task RunInterruptibleHostAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TService>(
         string topic,
         string groupId,
         ConcurrentBag<string> processed,
