@@ -602,6 +602,13 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
             LogMessageRoutedToDeadLetter(result.Topic, result.Partition, result.Offset, dlqTopic);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Shutdown (or drain timeout) cancelled the awaited DLQ write. Propagate so the
+            // record stays in-doubt and is redelivered on restart instead of being committed
+            // away without a durable dead-letter copy.
+            throw;
+        }
         catch (Exception dlqEx)
         {
             await OnDeadLetterRoutingFailedAsync(dlqEx, result, cancellationToken).ConfigureAwait(false);
@@ -646,6 +653,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
             LogMessageRoutedToRetryTopic(result.Topic, result.Partition, result.Offset, retryTopic, delay, failureCount);
             return RetryTopicRouteResult.Routed;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Same as the DLQ path: an awaited retry-topic write cancelled by shutdown must
+            // propagate so the record is redelivered rather than committed away.
+            throw;
         }
         catch (Exception retryEx)
         {

@@ -371,6 +371,36 @@ public sealed class KafkaConsumerServiceTests
     }
 
     [Test]
+    public async Task ProcessWithRetriesAsync_ShutdownCancelsDlqWrite_PropagatesInsteadOfSwallowing()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        using var cts = new CancellationTokenSource();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                cts.Cancel();
+                return ValueTask.FromCanceled<RecordMetadata>(cts.Token);
+            });
+
+        var service = new FailingConsumerService(
+            consumer, ["orders"], deadLetterOptions: new DeadLetterOptions());
+        SetDlqProducer(service, producer);
+
+        OperationCanceledException? caught = null;
+        try
+        {
+            await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), cts.Token);
+        }
+        catch (OperationCanceledException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+    }
+
+    [Test]
     public async Task Constructor_DeadLetterPolicyWithoutOptions_Throws()
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();

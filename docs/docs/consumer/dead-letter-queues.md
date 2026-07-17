@@ -77,7 +77,7 @@ The header keys are available as constants on `DeadLetterHeaders`, so a DLQ insp
 
 ## Delivery Guarantee
 
-By default (`AwaitDelivery = true`), the service awaits the broker's acknowledgment of the DLQ write before moving past the failed record. Combined with the consumer's [at-least-once commit staging](delivery-semantics.md), this means a failed record cannot be committed away before its dead-letter copy is durable — a crash mid-routing redelivers the original record rather than losing it.
+By default (`AwaitDelivery = true`), the service awaits the broker's acknowledgment of the DLQ write before moving past the failed record. Combined with the consumer's [at-least-once commit staging](delivery-semantics.md), this means a failed record cannot be committed away before its dead-letter copy is durable — a crash mid-routing redelivers the original record rather than losing it. The same holds during shutdown: if stopping the service (or the drain timeout) cancels an in-flight DLQ or retry-topic write, the cancellation propagates, the record's offset is never committed, and it is redelivered on restart.
 
 Call `FireAndForget()` (or set `AwaitDelivery = false`) to trade that guarantee for lower per-failure latency: DLQ writes become fire-and-forget, and a crash after the offset commits but before the DLQ write lands can lose the dead-letter copy. This is only worth considering when failures are frequent enough that the extra round-trip matters — for the typical case where dead-lettering is rare, keep the default.
 
