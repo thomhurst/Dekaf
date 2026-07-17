@@ -23,14 +23,14 @@ internal sealed class LazyConsumeHeaders : IReadOnlyList<Header>
         _generation = generation;
     }
 
-    internal static IReadOnlyList<Header>? Create(
+    internal static IReadOnlyList<Header> Create(
         Header[]? pooledHeaders,
         int count,
         PendingFetchData? owner,
         int generation)
     {
         if (pooledHeaders is null || count == 0)
-            return null;
+            return Array.Empty<Header>();
 
         if (owner is null)
             throw new ObjectDisposedException(nameof(Headers), StaleHeadersMessage);

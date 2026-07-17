@@ -397,9 +397,8 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // Assert
         await Assert.That(result).IsNotNull();
         var r = result!.Value;
-        await Assert.That(r.Headers).IsNotNull();
         // >= 2 because TUnit's ActivityListener may inject a traceparent header
-        await Assert.That(r.Headers!.Count).IsGreaterThanOrEqualTo(2);
+        await Assert.That(r.Headers.Count).IsGreaterThanOrEqualTo(2);
 
         var header1 = r.Headers.FirstOrDefault(h => h.Key == "header1");
         await Assert.That(header1.Key).IsNotNull();

@@ -33,19 +33,17 @@ public static class RetryTopicHeaders
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(failureCount);
         RetryTopicOptions.ValidateDelay(delay);
 
-        var sourceTopic = GetSourceTopic(result.Headers) ?? result.Topic;
-        var sourcePartition = GetSourcePartition(result.Headers) ?? result.Partition;
-        var sourceOffset = GetSourceOffset(result.Headers) ?? result.Offset;
-        var originalCount = result.Headers?.Count ?? 0;
-        var headers = new Headers(originalCount + 6);
+        // Hoisted: each Headers access on the readonly struct constructs a new lazy wrapper.
+        var originalHeaders = result.Headers;
+        var sourceTopic = GetSourceTopic(originalHeaders) ?? result.Topic;
+        var sourcePartition = GetSourcePartition(originalHeaders) ?? result.Partition;
+        var sourceOffset = GetSourceOffset(originalHeaders) ?? result.Offset;
+        var headers = new Headers(originalHeaders.Count + 6);
 
-        if (result.Headers is not null)
+        foreach (var header in originalHeaders)
         {
-            foreach (var header in result.Headers)
-            {
-                if (!IsRetryHeader(header.Key))
-                    headers.Add(header);
-            }
+            if (!IsRetryHeader(header.Key))
+                headers.Add(header);
         }
 
         headers.Add(SourceTopicKey, sourceTopic);

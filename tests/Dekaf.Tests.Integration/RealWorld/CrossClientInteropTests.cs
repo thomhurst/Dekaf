@@ -479,10 +479,10 @@ public sealed class CrossClientInteropTests(KafkaTestContainer kafka) : KafkaInt
         await AssertBytesAsync(actual.Value, expected.Value);
 
         var actualHeaders = actual.Headers;
-        await Assert.That(actualHeaders?.Count ?? 0).IsEqualTo(expected.Headers.Count);
+        await Assert.That(actualHeaders.Count).IsEqualTo(expected.Headers.Count);
         for (var i = 0; i < expected.Headers.Count; i++)
         {
-            await Assert.That(actualHeaders![i].Key).IsEqualTo(expected.Headers[i].Key);
+            await Assert.That(actualHeaders[i].Key).IsEqualTo(expected.Headers[i].Key);
             await AssertBytesAsync(actualHeaders[i].GetValueAsArray(), expected.Headers[i].Value);
         }
     }

@@ -101,9 +101,8 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         {
             await Assert.That(msg.Value).Contains("processedAt");
             await Assert.That(msg.Value).Contains("original");
-            await Assert.That(msg.Headers).IsNotNull();
 
-            var sourceHeader = msg.Headers!.First(h => h.Key == "source-topic");
+            var sourceHeader = msg.Headers.First(h => h.Key == "source-topic");
             await Assert.That(sourceHeader.GetValueAsString()).IsEqualTo(inputTopic);
         }
     }
@@ -209,9 +208,8 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         foreach (var msg in dlqMessages)
         {
             await Assert.That(msg.Value).StartsWith("INVALID");
-            await Assert.That(msg.Headers).IsNotNull();
 
-            var errorReason = msg.Headers!.First(h => h.Key == "error-reason");
+            var errorReason = msg.Headers.First(h => h.Key == "error-reason");
             await Assert.That(errorReason.GetValueAsString()).IsEqualTo("Message failed validation");
         }
     }
@@ -256,7 +254,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         await Assert.That(stage1Msg).IsNotNull();
 
         // Forward with additional headers
-        var enrichedHeaders = new Headers(stage1Msg!.Value.Headers!);
+        var enrichedHeaders = new Headers(stage1Msg!.Value.Headers);
         enrichedHeaders.Add("processed-by", "stage-2-enrichment");
         enrichedHeaders.Add("stage", "enrichment");
 
@@ -281,7 +279,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         var stage2Msg = await stage2Consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token);
         await Assert.That(stage2Msg).IsNotNull();
 
-        var finalHeaders = new Headers(stage2Msg!.Value.Headers!);
+        var finalHeaders = new Headers(stage2Msg!.Value.Headers);
         finalHeaders.Add("processed-by", "stage-3-output");
         finalHeaders.Add("stage", "output");
 
@@ -306,7 +304,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         var finalMsg = await finalConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts3.Token);
         await Assert.That(finalMsg).IsNotNull();
 
-        var headers = finalMsg!.Value.Headers!;
+        var headers = finalMsg!.Value.Headers;
         await Assert.That(headers.Where(h => h.Key == "stage").Count()).IsEqualTo(3);
         await Assert.That(headers.Where(h => h.Key == "processed-by").Count()).IsEqualTo(2);
         await Assert.That(headers.FirstOrDefault(h => h.Key == "correlation-id").Key).IsNotNull();

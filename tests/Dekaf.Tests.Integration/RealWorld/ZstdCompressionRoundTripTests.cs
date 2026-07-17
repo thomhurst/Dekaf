@@ -176,8 +176,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(3);
+        await Assert.That(result!.Value.Headers.Count).IsGreaterThanOrEqualTo(3);
 
         var contentType = result.Value.Headers.First(h => h.Key == "content-type");
         await Assert.That(contentType.GetValueAsString()).IsEqualTo("application/json");

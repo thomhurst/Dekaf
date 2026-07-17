@@ -770,10 +770,10 @@ public sealed class InMemoryKafkaCluster
         return hash;
     }
 
-    private static IReadOnlyList<Header>? CopyHeaders(IReadOnlyList<Header>? headers)
+    private static IReadOnlyList<Header> CopyHeaders(IReadOnlyList<Header>? headers)
     {
         if (headers is null || headers.Count == 0)
-            return null;
+            return Array.Empty<Header>();
 
         var copy = new Header[headers.Count];
         for (var i = 0; i < headers.Count; i++)

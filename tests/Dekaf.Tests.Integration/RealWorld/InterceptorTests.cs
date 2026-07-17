@@ -47,9 +47,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Headers).IsNotNull();
-
-        var traceHeader = result.Value.Headers!.First(h => h.Key == "trace-id");
+        var traceHeader = result!.Value.Headers.First(h => h.Key == "trace-id");
         await Assert.That(traceHeader.GetValueAsString()).IsNotNull();
     }
 
@@ -117,7 +115,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        var headers = result!.Value.Headers!.Where(h => h.Key == "interceptor-order").ToList();
+        var headers = result!.Value.Headers.Where(h => h.Key == "interceptor-order").ToList();
         await Assert.That(headers).Count().IsEqualTo(2);
     }
 
@@ -362,8 +360,8 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
 
         public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result)
         {
-            var traceHeader = result.Headers?.FirstOrDefault(h => h.Key == "trace-id");
-            if (traceHeader is { } header && !header.IsValueNull)
+            var header = result.Headers.FirstOrDefault(h => h.Key == "trace-id");
+            if (header.Key is not null && !header.IsValueNull)
             {
                 _seenTraceIds.Add(header.GetValueAsString()!);
             }

@@ -59,7 +59,9 @@ public class ConsumeResultTests
         await Assert.That(result.Partition).IsEqualTo(2);
         await Assert.That(result.Offset).IsEqualTo(500);
         await Assert.That(result.TimestampType).IsEqualTo(TimestampType.NotAvailable);
-        await Assert.That(result.Headers).IsNull();
+        await Assert.That(result.Headers).IsEmpty();
+        // Zero-header results must not allocate: the getter returns the Array.Empty singleton.
+        await Assert.That(ReferenceEquals(result.Headers, Array.Empty<Header>())).IsTrue();
         await Assert.That(result.LeaderEpoch).IsNull();
     }
 
@@ -184,7 +186,7 @@ public class ConsumeResultTests
         pending.EagerParseAll();
         pending.MoveNext();
 
-        var headers = LazyConsumeHeaders.Create(pooledHeaders, 1, pending, pending.HeaderGeneration)!;
+        var headers = LazyConsumeHeaders.Create(pooledHeaders, 1, pending, pending.HeaderGeneration);
         var header = headers[0];
 
         pooledHeaders[0] = new Header("changed", "def"u8.ToArray());
@@ -206,7 +208,7 @@ public class ConsumeResultTests
         pending.EagerParseAll();
         pending.MoveNext();
 
-        var headers = LazyConsumeHeaders.Create(pooledHeaders, 1, pending, pending.HeaderGeneration)!;
+        var headers = LazyConsumeHeaders.Create(pooledHeaders, 1, pending, pending.HeaderGeneration);
         pending.Dispose();
 
         _ = headers.Count;
@@ -241,7 +243,7 @@ public class ConsumeResultTests
             keyDeserializer: null,
             valueDeserializer: null);
 
-        var headers = result.Headers!;
+        var headers = result.Headers;
         var first = headers[0];
         pooledHeaders[0] = new Header("changed", "def"u8.ToArray());
 

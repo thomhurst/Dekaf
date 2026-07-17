@@ -765,7 +765,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                         ? default!
                         : _valueDeserializer.Deserialize(record.Value, t_serializationContext);
 
-                    Header[]? headers = null;
+                    var headers = Array.Empty<Header>();
                     if (record.Headers is not null && record.HeaderCount > 0)
                     {
                         headers = new Header[record.HeaderCount];

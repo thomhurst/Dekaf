@@ -38,23 +38,21 @@ public static class DeadLetterHeaders
         int failureCount,
         bool includeException)
     {
-        var originalCount = result.Headers?.Count ?? 0;
+        // Hoisted: each Headers access on the readonly struct constructs a new lazy wrapper.
+        var originalHeaders = result.Headers;
         var dlqHeaderCount = includeException ? 7 : 5;
-        var headers = new Headers(originalCount + dlqHeaderCount);
+        var headers = new Headers(originalHeaders.Count + dlqHeaderCount);
 
         // Preserve original headers first
-        if (result.Headers is not null)
+        foreach (var header in originalHeaders)
         {
-            foreach (var header in result.Headers)
-            {
-                headers.Add(header);
-            }
+            headers.Add(header);
         }
 
         // Source metadata
-        var sourceTopic = RetryTopicHeaders.GetSourceTopic(result.Headers) ?? result.Topic;
-        var sourcePartition = RetryTopicHeaders.GetSourcePartition(result.Headers) ?? result.Partition;
-        var sourceOffset = RetryTopicHeaders.GetSourceOffset(result.Headers) ?? result.Offset;
+        var sourceTopic = RetryTopicHeaders.GetSourceTopic(originalHeaders) ?? result.Topic;
+        var sourcePartition = RetryTopicHeaders.GetSourcePartition(originalHeaders) ?? result.Partition;
+        var sourceOffset = RetryTopicHeaders.GetSourceOffset(originalHeaders) ?? result.Offset;
         headers.Add(SourceTopicKey, sourceTopic);
         headers.Add(SourcePartitionKey, DeadLetterHeaderFormatting.FormatInt(sourcePartition));
         headers.Add(SourceOffsetKey, DeadLetterHeaderFormatting.FormatLong(sourceOffset));

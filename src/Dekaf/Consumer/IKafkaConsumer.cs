@@ -564,12 +564,12 @@ public readonly struct ConsumeResult<TKey, TValue>
     public TValue Value { get; }
 
     /// <summary>
-    /// The message headers. Returns null if no headers.
+    /// The message headers. Empty if the record has no headers; never null.
     /// Header arrays from consumed record batches are copied lazily on first access; if a
     /// result is retained beyond the consume loop, access this property before the owning
     /// fetch batch is disposed to keep a safe snapshot.
     /// </summary>
-    public IReadOnlyList<Header>? Headers => _headers ?? LazyConsumeHeaders.Create(
+    public IReadOnlyList<Header> Headers => _headers ?? LazyConsumeHeaders.Create(
         _pooledHeaders,
         _pooledHeaderCount,
         _headerOwner,

@@ -50,7 +50,7 @@ public sealed class InMemoryKafkaClusterTests
         await Assert.That(result.Value.Offset).IsEqualTo(0);
         await Assert.That(result.Value.Key).IsEqualTo("order-1");
         await Assert.That(result.Value.Value).IsEqualTo("created");
-        await Assert.That(result.Value.Headers!.Single().GetValueAsString()).IsEqualTo("abc");
+        await Assert.That(result.Value.Headers.Single().GetValueAsString()).IsEqualTo("abc");
         await Assert.That(result.Value.TimestampMs).IsEqualTo(1234);
     }
 

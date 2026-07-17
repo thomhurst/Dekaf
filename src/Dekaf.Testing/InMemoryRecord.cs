@@ -14,7 +14,7 @@ public sealed record InMemoryRecord
     public required bool IsKeyNull { get; init; }
     public required byte[] Value { get; init; }
     public required bool IsValueNull { get; init; }
-    public IReadOnlyList<Header>? Headers { get; init; }
+    public IReadOnlyList<Header> Headers { get; init; } = Array.Empty<Header>();
     public required long TimestampMs { get; init; }
     public DateTimeOffset Timestamp => DateTimeOffset.FromUnixTimeMilliseconds(TimestampMs);
 }
