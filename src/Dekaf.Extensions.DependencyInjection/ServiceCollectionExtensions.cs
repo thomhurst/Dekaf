@@ -507,16 +507,13 @@ public sealed class DekafBuilder
 
             var dlqOptions = dlqBuilder.Build();
 
-            // Keyed registration ties the options to this specific consumer registration so
-            // multiple DLQ-enabled consumers don't collide; AddConsumerService resolves this key.
+            // Keyed-only registration ties the options to this specific consumer registration.
+            // AddConsumerService resolves this key and passes the options to the service's
+            // constructor; a deliberately-absent unkeyed registration means one consumer's DLQ
+            // config can never leak into another service via plain DeadLetterOptions injection.
+            // Hosted services registered manually with AddHostedService should resolve via
+            // [FromKeyedServices(typeof(IKafkaConsumer<TKey, TValue>))] (or the service key).
             _services.AddKeyedSingleton(serviceKey ?? typeof(IKafkaConsumer<TKey, TValue>), dlqOptions);
-
-            if (!isKeyed)
-            {
-                // Unkeyed registration preserved for constructor injection into hosted services
-                // that are registered separately via AddHostedService.
-                _services.AddSingleton(dlqOptions);
-            }
         }
 
         return this;

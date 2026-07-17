@@ -145,19 +145,17 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         await producer.FlushWithTimeoutAsync();
 
         var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(receivedMessages);
+        builder.Services.AddSingleton<TestTopicHolder>(new TestTopicHolder(sourceTopic));
         builder.Services.AddDekaf(dekaf =>
         {
-            dekaf.AddConsumer<string, string>(
+            dekaf.AddConsumerService<RetryTopicConsumerService, string, string>(
                 c => c.WithBootstrapServers(KafkaContainer.BootstrapServers)
                     .WithGroupId(groupId)
                     .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                     .WithFetchMaxWait(TimeSpan.FromMilliseconds(50)),
                 dlq => dlq.WithRetryTopics(retryDelay));
         });
-
-        builder.Services.AddSingleton(receivedMessages);
-        builder.Services.AddSingleton<TestTopicHolder>(new TestTopicHolder(sourceTopic));
-        builder.Services.AddHostedService<RetryTopicConsumerService>();
 
         var host = builder.Build();
         using var cts = new CancellationTokenSource();
@@ -183,6 +181,95 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         {
             cts.Cancel();
 
+            try
+            {
+                await hostTask.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected
+            }
+            catch (TimeoutException)
+            {
+                // Host shutdown can be slow on resource-constrained CI runners
+            }
+            finally
+            {
+                host.Dispose();
+            }
+        }
+    }
+
+    [Test]
+    public async Task FailedMessages_RouteToDeadLetterTopic_WithAwaitedDelivery()
+    {
+        var sourceTopic = await KafkaContainer.CreateTestTopicAsync();
+        var dlqTopic = sourceTopic + ".DLQ";
+        await KafkaContainer.CreateTopicAsync(dlqTopic, partitions: 1);
+
+        var groupId = $"hosted-dlq-{Guid.NewGuid():N}";
+        var receivedMessages = new ConcurrentBag<string>();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(receivedMessages);
+        builder.Services.AddSingleton<TestTopicHolder>(new TestTopicHolder(sourceTopic));
+        builder.Services.AddDekaf(dekaf =>
+        {
+            // Default DeadLetterOptions: MaxFailures = 1, AwaitDelivery = true — this exercises
+            // the awaited-delivery default end-to-end against a real broker.
+            dekaf.AddConsumerService<FailOnMarkerConsumerService, string, string>(
+                c => c.WithBootstrapServers(KafkaContainer.BootstrapServers)
+                    .WithGroupId(groupId)
+                    .WithAutoOffsetReset(AutoOffsetReset.Earliest),
+                dlq => { });
+        });
+
+        var host = builder.Build();
+        using var cts = new CancellationTokenSource();
+        var hostTask = host.RunAsync(cts.Token);
+
+        try
+        {
+            await Task.Delay(2000).ConfigureAwait(false);
+
+            await producer.ProduceAsync(sourceTopic, "k1", "ok-1", CancellationToken.None);
+            await producer.ProduceAsync(sourceTopic, "k2", "fail-1", CancellationToken.None);
+            await producer.ProduceAsync(sourceTopic, "k3", "ok-2", CancellationToken.None);
+
+            await WaitForConditionAsync(
+                () => receivedMessages.Count >= 2,
+                TimeSpan.FromSeconds(45));
+
+            await using var dlqConsumer = await Kafka.CreateConsumer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithGroupId($"dlq-reader-{Guid.NewGuid():N}")
+                .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+                .SubscribeTo(dlqTopic)
+                .BuildAsync();
+
+            using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            ConsumeResult<string, string>? dlqRecord = null;
+            await foreach (var record in dlqConsumer.ConsumeAsync(readCts.Token))
+            {
+                dlqRecord = record;
+                break;
+            }
+
+            await Assert.That(dlqRecord).IsNotNull();
+            await Assert.That(dlqRecord!.Value.Value).IsEqualTo("fail-1");
+            var sourceTopicHeader = dlqRecord.Value.Headers!.First(h => h.Key == DeadLetterHeaders.SourceTopicKey);
+            await Assert.That(sourceTopicHeader.GetValueAsString()).IsEqualTo(sourceTopic);
+            var errorTypeHeader = dlqRecord.Value.Headers!.First(h => h.Key == DeadLetterHeaders.ErrorTypeKey);
+            await Assert.That(errorTypeHeader.GetValueAsString()).IsEqualTo(nameof(InvalidOperationException));
+        }
+        finally
+        {
+            cts.Cancel();
             try
             {
                 await hostTask.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
@@ -298,6 +385,35 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         protected override ValueTask ProcessAsync(ConsumeResult<string, string> result, CancellationToken cancellationToken)
         {
             _receivedMessages.Add(result.Value);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class FailOnMarkerConsumerService : KafkaConsumerService<string, string>
+    {
+        private readonly ConcurrentBag<string> _receivedMessages;
+        private readonly TestTopicHolder _topicHolder;
+
+        public FailOnMarkerConsumerService(
+            IKafkaConsumer<string, string> consumer,
+            ILogger<FailOnMarkerConsumerService> logger,
+            ConcurrentBag<string> receivedMessages,
+            TestTopicHolder topicHolder,
+            DeadLetterOptions deadLetterOptions)
+            : base(consumer, logger, deadLetterOptions)
+        {
+            _receivedMessages = receivedMessages;
+            _topicHolder = topicHolder;
+        }
+
+        protected override IEnumerable<string> Topics => [_topicHolder.Topic];
+
+        protected override ValueTask ProcessAsync(ConsumeResult<string, string> result, CancellationToken cancellationToken)
+        {
+            if (result.Value?.StartsWith("fail-", StringComparison.Ordinal) == true)
+                throw new InvalidOperationException($"Intentional failure for {result.Value}");
+
+            _receivedMessages.Add(result.Value!);
             return ValueTask.CompletedTask;
         }
     }

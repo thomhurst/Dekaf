@@ -27,6 +27,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private readonly Dictionary<TopicPartition, RetryTopicPostponement> _retryTopicPostponements = [];
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
     private int _disposeStarted;
+    private volatile bool _hasInDoubtFailedRecord;
     private static readonly TimeSpan MaxRetryTopicDelayChunk = TimeSpan.FromMilliseconds(int.MaxValue - 1);
 
     /// <summary>
@@ -138,21 +139,25 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Enable raw byte capture and create DLQ producer if configured
-        if (_deadLetterOptions is not null)
+        if (_deadLetterOptions is not null && _consumer is IRawRecordAccessor rawAccessor)
         {
-            if (_consumer is IRawRecordAccessor rawAccessor)
-            {
-                rawAccessor.EnableRawRecordTracking();
-                _dlqProducer = BuildDlqProducer();
-                await _dlqProducer.InitializeAsync(stoppingToken).ConfigureAwait(false);
-            }
-            else
+            rawAccessor.EnableRawRecordTracking();
+            _dlqProducer = BuildDlqProducer();
+
+            // Independent broker round-trips; initialize concurrently.
+            await Task.WhenAll(
+                _dlqProducer.InitializeAsync(stoppingToken).AsTask(),
+                _consumer.InitializeAsync(stoppingToken).AsTask()).ConfigureAwait(false);
+        }
+        else
+        {
+            if (_deadLetterOptions is not null)
             {
                 LogDeadLetterRoutingUnavailable(_consumer.GetType().Name);
             }
-        }
 
-        await _consumer.InitializeAsync(stoppingToken).ConfigureAwait(false);
+            await _consumer.InitializeAsync(stoppingToken).ConfigureAwait(false);
+        }
 
         var subscriptionTopics = BuildSubscriptionTopics();
         _consumer.Subscribe(subscriptionTopics);
@@ -167,7 +172,18 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             await foreach (var result in _consumer.ConsumeAsync(stoppingToken).ConfigureAwait(false))
             {
-                await ProcessWithRetriesAsync(result, stoppingToken).ConfigureAwait(false);
+                try
+                {
+                    await ProcessWithRetriesAsync(result, stoppingToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // The record yielded above was not fully handled (e.g. shutdown cancelled its
+                    // awaited DLQ write). Any further pull — including the drain loop — would mark
+                    // it proven and let the final commit discard it, so remember to skip draining.
+                    _hasInDoubtFailedRecord = true;
+                    throw;
+                }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -188,10 +204,19 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         // First, cancel ExecuteAsync to stop the normal consume loop
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
 
-        // Then drain any remaining buffered messages
+        // Then drain any remaining buffered messages — unless the consume loop stopped with an
+        // in-doubt failed record: draining pulls from the consumer, which would prove that record
+        // processed and let the final commit discard it without a durable DLQ copy.
         if (_serviceOptions.DrainOnShutdown)
         {
-            await DrainBufferedMessagesAsync(cancellationToken).ConfigureAwait(false);
+            if (_hasInDoubtFailedRecord)
+            {
+                LogDrainSkippedForInDoubtRecord();
+            }
+            else
+            {
+                await DrainBufferedMessagesAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
 
         // Final offset commit before disposal
@@ -400,6 +425,23 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     private static int GetNextRetryTopicFailureCount(int previousFailureCount) => previousFailureCount + 1;
 
+    /// <summary>
+    /// Sends a DLQ or retry-topic copy, awaiting broker acknowledgment when
+    /// <see cref="DeadLetterOptions.AwaitDelivery"/> is enabled (the default).
+    /// </summary>
+    private async ValueTask SendRoutedMessageAsync(
+        ProducerMessage<byte[]?, byte[]?> message, CancellationToken cancellationToken)
+    {
+        if (_deadLetterOptions!.AwaitDelivery)
+        {
+            await _dlqProducer!.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await _dlqProducer!.FireAsync(message).ConfigureAwait(false);
+        }
+    }
+
     private bool ShouldRouteToDeadLetter(
         ConsumeResult<TKey, TValue> result,
         Exception exception,
@@ -591,14 +633,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 Headers = headers
             };
 
-            if (_deadLetterOptions.AwaitDelivery)
-            {
-                await _dlqProducer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await _dlqProducer.FireAsync(message).ConfigureAwait(false);
-            }
+            await SendRoutedMessageAsync(message, cancellationToken).ConfigureAwait(false);
 
             LogMessageRoutedToDeadLetter(result.Topic, result.Partition, result.Offset, dlqTopic);
         }
@@ -642,14 +677,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 Headers = headers
             };
 
-            if (_deadLetterOptions?.AwaitDelivery == true)
-            {
-                await _dlqProducer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await _dlqProducer.FireAsync(message).ConfigureAwait(false);
-            }
+            await SendRoutedMessageAsync(message, cancellationToken).ConfigureAwait(false);
 
             LogMessageRoutedToRetryTopic(result.Topic, result.Partition, result.Offset, retryTopic, delay, failureCount);
             return RetryTopicRouteResult.Routed;
@@ -709,6 +737,9 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Message from {Topic}[{Partition}]@{Offset} failed processing {FailureCount} time(s) and was skipped without dead letter routing; the dead letter policy declined it (check MaxFailures against the retry policy's attempt count)")]
     private partial void LogMessageSkippedWithoutDeadLetter(string topic, int partition, long offset, int failureCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Skipping shutdown drain: the consume loop stopped with an in-doubt failed record; draining would mark it processed and commit it away. It will be redelivered on restart.")]
+    private partial void LogDrainSkippedForInDoubtRecord();
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Started consuming from topics: {Topics}")]
     private partial void LogStartedConsuming(string topics);

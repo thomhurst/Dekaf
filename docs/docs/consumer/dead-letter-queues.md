@@ -25,11 +25,11 @@ builder.Services.AddDekaf(dekaf =>
 });
 ```
 
-(The same `dlq` callback is available on `AddConsumer` if you register the consumer and hosted service separately.)
+(The same `dlq` callback is available on `AddConsumer` if you register the consumer and hosted service separately — the options are then registered keyed by `typeof(IKafkaConsumer<TKey, TValue>)` or your service key, so resolve them with `[FromKeyedServices]` in your manually-registered service.)
 
-Options are registered per consumer registration, so multiple DLQ-enabled consumers each get their own configuration. If your service's constructor forgets the `DeadLetterOptions` parameter, `AddConsumerService` fails at service construction with a clear error rather than silently running without dead-lettering.
+Options are registered keyed per consumer registration — never as a plain singleton — so multiple DLQ-enabled consumers each get their own configuration and one consumer's settings can never leak into another service. If your service's constructor forgets the `DeadLetterOptions` parameter, `AddConsumerService` fails at service construction with a clear error rather than silently running without dead-lettering.
 
-This registers a `DeadLetterOptions` singleton, which your service passes to the base constructor:
+`AddConsumerService` hands the registered options to the service's `DeadLetterOptions` constructor parameter, which forwards them to the base constructor:
 
 ```csharp
 public sealed class OrderProcessorService : KafkaConsumerService<string, Order>

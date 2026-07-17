@@ -164,7 +164,7 @@ public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
 }
 ```
 
-`DeadLetterOptions` is registered as a singleton when you pass a DLQ callback to `AddConsumer` (see [Dead Letter Queues](consumer/dead-letter-queues.md#enabling-the-dlq)), so the constructor parameter above resolves automatically.
+When you supply a DLQ callback to `AddConsumerService`, it passes the registered `DeadLetterOptions` into your constructor directly (see [Dead Letter Queues](consumer/dead-letter-queues.md#enabling-the-dlq)). The options are registered keyed per consumer registration — never as a plain singleton — so one consumer's DLQ settings cannot leak into another service. If you wire the hosted service manually with `AddHostedService`, resolve them with `[FromKeyedServices(typeof(IKafkaConsumer<TKey, TValue>))]` (or your service key).
 
 ## Shutdown Behavior
 
@@ -175,7 +175,7 @@ public sealed class OrderProcessorService : KafkaConsumerService<string, Order>
 | `DrainOnShutdown` | `true` | After the consume loop is cancelled, keep processing already-fetched messages until the buffer is empty or the timeout elapses. |
 | `ShutdownTimeout` | 30 seconds | Cap on draining and on consumer disposal. |
 
-The full stop sequence is: cancel the consume loop → drain buffered messages (if enabled) → commit final offsets → flush and dispose the DLQ producer → dispose the consumer. The service implements `IAsyncDisposable`; when registered via `AddHostedService`, the generic host uses the async path automatically, so shutdown never blocks a thread pool thread.
+The full stop sequence is: cancel the consume loop → drain buffered messages (if enabled) → commit final offsets → flush and dispose the DLQ producer → dispose the consumer. One safety exception: if shutdown interrupted a record's failure handling (for example it cancelled an in-flight DLQ write), draining is skipped — pulling more records would mark the interrupted record processed and let the final commit discard it. It stays uncommitted and is redelivered on restart instead. The service implements `IAsyncDisposable`; when registered via `AddHostedService`, the generic host uses the async path automatically, so shutdown never blocks a thread pool thread.
 
 ## Delivery Semantics
 

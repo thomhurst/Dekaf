@@ -46,7 +46,8 @@ public class AddConsumerServiceTests
         });
 
         var provider = services.BuildServiceProvider();
-        var options = provider.GetRequiredService<DeadLetterOptions>();
+        var options = provider.GetRequiredKeyedService<DeadLetterOptions>(
+            typeof(IKafkaConsumer<string, string>));
 
         await Assert.That(options.MaxFailures).IsEqualTo(3);
         await Assert.That(options.BootstrapServers).IsEqualTo("localhost:9092");

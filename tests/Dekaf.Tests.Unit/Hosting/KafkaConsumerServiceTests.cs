@@ -401,6 +401,51 @@ public sealed class KafkaConsumerServiceTests
     }
 
     [Test]
+    public async Task StopAsync_ShutdownCancelsDlqWrite_SkipsDrainSoInDoubtRecordIsNotCommitted()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var dlqWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => new ValueTask<RecordMetadata>(
+                BlockUntilCancelledAsync(dlqWriteStarted, callInfo.ArgAt<CancellationToken>(1))));
+
+        var service = new FailingConsumerService(
+            consumer, ["orders"], deadLetterOptions: new DeadLetterOptions());
+        SetDlqProducer(service, producer);
+
+        await service.StartAsync(CancellationToken.None);
+        await dlqWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await service.StopAsync(CancellationToken.None);
+
+        // Draining would prove the in-doubt record processed; it must be skipped so the
+        // final commit cannot commit the record away without its dead-letter copy.
+        await consumer.DidNotReceive().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+        await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    private static async IAsyncEnumerable<ConsumeResult<string, string>> YieldOneThenWait(
+        ConsumeResult<string, string> result,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        yield return result;
+        await Task.Delay(Timeout.Infinite, cancellationToken);
+    }
+
+    private static async Task<RecordMetadata> BlockUntilCancelledAsync(
+        TaskCompletionSource started, CancellationToken cancellationToken)
+    {
+        started.TrySetResult();
+        await Task.Delay(Timeout.Infinite, cancellationToken);
+        return default;
+    }
+
+    [Test]
     public async Task Constructor_DeadLetterPolicyWithoutOptions_Throws()
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();
