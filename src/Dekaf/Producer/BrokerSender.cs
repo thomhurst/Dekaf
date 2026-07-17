@@ -2020,7 +2020,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     disposedException,
                     recoveredBatches,
                     recoveredBatchSet);
-                RecordDeferredPendingResponseCleanupRecovered();
 
                 while (_loopExitRedeliveries.TryDequeue(out var redelivery))
                 {
@@ -2597,10 +2596,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Forward scan + single ClearQueue: repeated RemoveAt(0) would be O(n²), and
             // the queue can hold a deep retry backlog (bounded by BufferMemory, not
-            // max-in-flight). The per-entry body never throws, so every entry is either
-            // failed here or — if the loop dies catastrophically — still queued for the
-            // loop-exit sweep; the old remove-then-finalize order could drop a batch
-            // (removed but not yet failed) if finalization threw.
+            // max-in-flight). Failing in place before removal also means an escaped
+            // exception leaves unprocessed entries queued for the loop-exit sweep — the
+            // old remove-then-finalize order could drop a batch (removed but not yet
+            // failed) with no cleanup path.
             for (var i = 0; i < queue.Count; i++)
             {
                 var batchReference = queue[i];
@@ -2610,23 +2609,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 }
 
-                try
-                {
-                    FinalizeFailedTransactionEnrollmentRetry(batchReference.Batch);
-                }
-                catch (Exception finalizeError)
-                {
-                    LogBatchCleanupStepFailed(finalizeError, _brokerId);
-                }
-
-                try
-                {
-                    FailAndCleanupBatch(batchReference.Batch, batchReference.Generation, error);
-                }
-                catch (Exception cleanupError)
-                {
-                    LogBatchCleanupStepFailed(cleanupError, _brokerId);
-                }
+                FailTransactionEnrollmentBatch(batchReference.Batch, batchReference.Generation, error);
             }
 
             carryOver.ClearQueue(queue);
@@ -2659,20 +2642,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 continue;
             }
 
-            FinalizeFailedTransactionEnrollmentRetry(batch);
-            try
-            {
-                FailAndCleanupBatch(batch, generation, error);
-            }
-            catch (Exception cleanupError)
-            {
-                LogBatchCleanupStepFailed(cleanupError, _brokerId);
-            }
+            FailTransactionEnrollmentBatch(batch, generation, error);
         }
 
         Array.Clear(batches, writeIdx, count - writeIdx);
         Array.Clear(generations, writeIdx, count - writeIdx);
         count = writeIdx;
+    }
+
+    private void FailTransactionEnrollmentBatch(ReadyBatch batch, int generation, Exception error)
+    {
+        FinalizeFailedTransactionEnrollmentRetry(batch);
+        try
+        {
+            FailAndCleanupBatch(batch, generation, error);
+        }
+        catch (Exception cleanupError)
+        {
+            LogBatchCleanupStepFailed(cleanupError, _brokerId);
+        }
     }
 
     private void FinalizeFailedTransactionEnrollmentRetry(ReadyBatch batch)
@@ -2759,7 +2747,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var batches = pending.Batches;
                 var count = pending.Count;
                 ProduceResponse? responseToReturn = null;
-                Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookupToClear = null;
 
                 try
                 {
@@ -2809,7 +2796,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Reuse caller-provided dictionary to avoid per-response allocation.
                     // The dictionary is cleared after use in ProcessResponseBatches.
                     var responseLookup = reusableResponseLookup;
-                    responseLookupToClear = responseLookup;
                     if (count == 1
                         && batches[0] is { } directBatch
                         && response.TopicCount == 1
@@ -2877,7 +2863,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             directResponse is not null ? 1 : responseLookup?.Count ?? 0, respKeys);
                     }
 
-                    responseLookupToClear = responseLookup;
                     ProcessResponseBatches(pending, directResponse, responseLookup, response.NodeEndpoints,
                         carryOver, cancellationToken, task.Id);
                 }
@@ -2888,8 +2873,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 finally
                 {
-                    try { responseLookupToClear?.Clear(); }
-                    catch (Exception clearEx) { LogBatchCleanupStepFailed(clearEx, _brokerId); }
+                    // A ??=-allocated lookup (reusable was null) is a throwaway local, so only
+                    // the caller's reused dictionary ever needs clearing.
+                    reusableResponseLookup?.Clear();
                     if (responseToReturn is not null)
                     {
                         try { responseToReturn.Return(); }
@@ -3749,6 +3735,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     dataBytes += batch.DataSize;
                 }
 
+                Debug.Assert(count > 0,
+                    "PendingResponse must never be constructed empty — Count == 0 is the claimed-tombstone sentinel (IsClaimed).");
                 var pendingResponse = new PendingResponse(
                     responseTask,
                     batches,
@@ -4684,6 +4672,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Transfers send-loop ownership of an entry to its caller before processing. The default-valued
     /// tombstone makes exit cleanup skip the entry if processing throws before compaction.
+    /// Every claim pass must compact or clear its list before returning to the loop: read-only
+    /// scanners (ComputeNextWakeupMs, IsRequestTimeoutDue) assume tombstone-free lists, and a
+    /// surviving tombstone's RequestStartTime of 0 would read as an always-due timeout. Tombstones
+    /// may only outlive a pass when the escaping exception is killing the send loop itself.
     /// </summary>
     private PendingResponse ClaimPendingResponseAt(int connectionIndex, int index)
     {
@@ -4984,17 +4976,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private void RecordDeferredPendingResponseCleanup(int pendingCount)
     {
-        Interlocked.Exchange(ref _deferredPendingResponseCleanupCount, pendingCount);
-        var tags = new TagList
-        {
-            { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, _brokerId }
-        };
-        Diagnostics.DekafMetrics.PendingResponseCleanupDeferred.Add(pendingCount, tags);
+        Volatile.Write(ref _deferredPendingResponseCleanupCount, pendingCount);
+        Diagnostics.DekafMetrics.PendingResponseCleanupDeferred.Add(pendingCount, BrokerIdTags());
 
-        // Close the race where the send loop completed between the caller's IsCompleted
-        // check and publishing the deferred count.
-        if (_sendLoopTask.IsCompleted)
-            RecordDeferredPendingResponseCleanupRecovered();
+        // Pair the recovered signal with actual loop completion: the loop's finally runs
+        // CleanupPendingResponsesOnLoopExit before its task can complete, so completion
+        // proves the deferred entries were swept. A same-thread IsCompleted re-check is
+        // not enough — the loop can be mid-epilogue (cleanup done, task not yet complete)
+        // when the deferred count is published, which would strand a false "deferred"
+        // reading forever. The continuation is exactly-once via the Exchange in
+        // RecordDeferredPendingResponseCleanupRecovered, and one allocation per deferred
+        // disposal is rare by construction.
+        _ = _sendLoopTask.ContinueWith(
+            static (_, state) => ((BrokerSender)state!).RecordDeferredPendingResponseCleanupRecovered(),
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private void RecordDeferredPendingResponseCleanupRecovered()
@@ -5003,12 +5001,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (recoveredCount == 0)
             return;
 
-        var tags = new TagList
-        {
-            { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, _brokerId }
-        };
-        Diagnostics.DekafMetrics.PendingResponseCleanupRecovered.Add(recoveredCount, tags);
+        Diagnostics.DekafMetrics.PendingResponseCleanupRecovered.Add(recoveredCount, BrokerIdTags());
     }
+
+    private TagList BrokerIdTags() => new()
+    {
+        { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, _brokerId }
+    };
 
     public async ValueTask DisposeAsync()
     {

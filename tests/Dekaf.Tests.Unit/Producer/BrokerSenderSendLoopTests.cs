@@ -927,23 +927,26 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     [NotInParallel("MeterListener")]
     public async Task DeferredPendingResponseCleanup_ReportsDeferredAndRecoveredMetrics()
     {
+        // Resolve instrument names before the listener starts (static-initializer re-entry
+        // landmine — see FireAndForgetDeliveryErrorMetricTests).
+        var deferredName = DekafMetrics.PendingResponseCleanupDeferred.Name;
+        var recoveredName = DekafMetrics.PendingResponseCleanupRecovered.Name;
         var deferredCount = 0L;
         var recoveredCount = 0L;
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
             if (instrument.Meter.Name == DekafDiagnostics.MeterName
-                && (instrument.Name == "dekaf.producer.pending_response.cleanup.deferred"
-                    || instrument.Name == "dekaf.producer.pending_response.cleanup.recovered"))
+                && (instrument.Name == deferredName || instrument.Name == recoveredName))
             {
                 meterListener.EnableMeasurementEvents(instrument);
             }
         };
         listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
         {
-            if (instrument.Name == "dekaf.producer.pending_response.cleanup.deferred")
+            if (instrument.Name == deferredName)
                 Interlocked.Add(ref deferredCount, measurement);
-            else if (instrument.Name == "dekaf.producer.pending_response.cleanup.recovered")
+            else if (instrument.Name == recoveredName)
                 Interlocked.Add(ref recoveredCount, measurement);
         });
         listener.Start();
