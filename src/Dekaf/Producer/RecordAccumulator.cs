@@ -4329,6 +4329,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal int MaxBlockMsOption => _options.MaxBlockMs;
 
     /// <summary>
+    /// Batches currently handed to broker senders. Exposed for <see cref="PendingAppend"/>
+    /// timeout diagnostics: a full buffer with zero in-flight and zero unsealed batches means
+    /// reservations were orphaned (a refund leak), not that the network is slow.
+    /// </summary>
+    internal long InFlightBatchCount => Volatile.Read(ref _inFlightBatchCount);
+
+    /// <summary>Open (not yet sealed) batches. See <see cref="InFlightBatchCount"/>.</summary>
+    internal int UnsealedBatchCount => Volatile.Read(ref _unsealedBatchCount);
+
+    /// <summary>
     /// Atomically updates the maximum buffer memory limit. Used by the global
     /// memory budget for dynamic rebalancing.
     /// Growing the limit signals waiting producers so they re-check immediately.
@@ -4530,11 +4540,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             TimeoutKind.MaxBlock,
             elapsed,
             configured,
-            $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
-            $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{(ulong)Volatile.Read(ref _maxBufferMemory)} bytes. " +
-            $"Producer is generating messages faster than the network can send them. " +
-            $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
+            BuildBufferTimeoutMessage(recordSize));
     }
+
+    /// <summary>
+    /// Builds the buffer-allocation timeout message from live accumulator state. Shared with
+    /// <see cref="PendingAppend"/> so both timeout sites report identical diagnostics.
+    /// In-flight/unsealed counts distinguish genuine backpressure (batches in the pipeline
+    /// still hold memory) from orphaned reservations (buffer full with nothing in flight —
+    /// a refund leak, run 29594249742).
+    /// </summary>
+    internal string BuildBufferTimeoutMessage(int recordSize) =>
+        $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
+        $"Requested {recordSize} bytes, current usage: {BufferedBytes}/{MaxBufferMemory} bytes, " +
+        $"in-flight batches: {InFlightBatchCount}, unsealed batches: {UnsealedBatchCount}. " +
+        $"Producer is generating messages faster than the network can send them. " +
+        $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.";
 
     /// <summary>
     /// Releases reserved buffer memory when a batch is completed/sent.

@@ -75,26 +75,6 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         return (pool, connection);
     }
 
-    private static ReadyBatch CreateTestBatch(
-        ValueTaskSourcePool<RecordMetadata> pool,
-        string topic, int partition, int messageCount = 1)
-    {
-        var batch = new ReadyBatch();
-        var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(messageCount);
-        for (var i = 0; i < messageCount; i++)
-            sources[i] = pool.Rent();
-
-        batch.Initialize(
-            new TopicPartition(topic, partition),
-            new RecordBatch { Records = Array.Empty<Record>() },
-            sources,
-            messageCount,
-            dataSize: 100);
-
-        batch.TrySetMemoryReleased();
-        return batch;
-    }
-
     private static Task WaitForDiagAsync(
         ReadyBatch batch,
         char marker,
@@ -106,29 +86,6 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             () => $"Batch did not reach '{marker}': {batch.DiagTrace}",
             cancellationToken,
             pollInterval: TimeSpan.FromMilliseconds(1));
-
-    private static ProduceResponse CreateSuccessResponse(string topic, int partition, long baseOffset) =>
-        new()
-        {
-            TopicCount = 1,
-            Responses =
-            [
-                new ProduceResponseTopicData
-                {
-                    Name = topic,
-                    PartitionCount = 1,
-                    PartitionResponses =
-                    [
-                        new ProduceResponsePartitionData
-                        {
-                            Index = partition,
-                            ErrorCode = ErrorCode.None,
-                            BaseOffset = baseOffset
-                        }
-                    ]
-                }
-            ]
-        };
 
     private static ProduceResponse CreateRetriableErrorResponse(string topic, int partition) =>
         new()
