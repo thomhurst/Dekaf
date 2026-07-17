@@ -1,4 +1,11 @@
+using System.Buffers;
+using Dekaf.Compression;
+using Dekaf.Metadata;
+using Dekaf.Networking;
+using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -154,4 +161,111 @@ public abstract class ScriptedProduceResponseFixture
         if (failure is not null)
             throw failure;
     }
+
+    /// <summary>
+    /// Creates a minimal ReadyBatch suitable for send loop testing.
+    /// Sets MemoryReleased=true by default to skip accumulator memory tracking; pass
+    /// markMemoryReleased: false for tests that exercise real buffer-memory accounting
+    /// (the caller must then reserve dataSize bytes on the accumulator first).
+    /// </summary>
+    private protected static ReadyBatch CreateTestBatch(
+        ValueTaskSourcePool<RecordMetadata> pool,
+        string topic, int partition, int messageCount = 1,
+        bool markMemoryReleased = true, int dataSize = 100)
+    {
+        var batch = new ReadyBatch();
+        var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(messageCount);
+        for (var i = 0; i < messageCount; i++)
+            sources[i] = pool.Rent();
+
+        batch.Initialize(
+            new TopicPartition(topic, partition),
+            new RecordBatch { Records = Array.Empty<Record>() },
+            sources,
+            messageCount,
+            dataSize: dataSize);
+
+        if (markMemoryReleased)
+        {
+            // Skip accumulator memory tracking in tests
+            batch.TrySetMemoryReleased();
+        }
+
+        return batch;
+    }
+
+    /// <summary>
+    /// Creates a ProduceResponse with success for the given topic/partition.
+    /// </summary>
+    private protected static ProduceResponse CreateSuccessResponse(
+        string topic, int partition, long baseOffset, int throttleTimeMs = 0) =>
+        new()
+        {
+            ThrottleTimeMs = throttleTimeMs,
+            TopicCount = 1,
+            Responses =
+            [
+                new ProduceResponseTopicData
+                {
+                    Name = topic,
+                    PartitionCount = 1,
+                    PartitionResponses =
+                    [
+                        new ProduceResponsePartitionData
+                        {
+                            Index = partition,
+                            ErrorCode = ErrorCode.None,
+                            BaseOffset = baseOffset
+                        }
+                    ]
+                }
+            ]
+        };
+
+    /// <summary>
+    /// Creates a BrokerSender with standard test defaults, reducing constructor boilerplate.
+    /// </summary>
+    private protected static BrokerSender CreateSender(
+        IConnectionPool pool,
+        ProducerOptions options,
+        RecordAccumulator accumulator,
+        Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement,
+        MetadataManager? metadataManager = null,
+        Action<ReadyBatch, int>? rerouteBatch = null,
+        Action<int>? onBrokerThrottle = null,
+        Func<long>? getTimestamp = null,
+        Func<int, CancellationToken, ValueTask>? delayForThrottle = null,
+        Action? onBlockedBucketRequeued = null,
+        Action? onPipelinedResponseAcquired = null,
+        Action? onWaveCoalesceStarted = null,
+        BrokerUnackedByteBudget? unackedBudget = null,
+        int produceApiVersion = 9,
+        bool isTransactional = false,
+        bool usesTransactionV2 = false,
+        Func<ReadyBatch[], int, Action<Exception?>, HashSet<TopicPartition>, HashSet<TopicPartition>,
+            TransactionPartitionEnrollmentResult>?
+            tryEnsurePartitionsInTransaction = null) =>
+        new(
+            brokerId: 1, pool,
+            metadataManager ?? new MetadataManager(pool, options.BootstrapServers),
+            accumulator, options,
+            new CompressionCodecRegistry(),
+            inflightTracker: new PartitionInflightTracker(),
+            getProduceApiVersion: () => produceApiVersion,
+            setProduceApiVersion: _ => { },
+            isTransactional: () => isTransactional,
+            tryEnsurePartitionsInTransaction: tryEnsurePartitionsInTransaction,
+            bumpEpoch: null,
+            getCurrentEpoch: null,
+            rerouteBatch,
+            onAcknowledgement: onAcknowledgement,
+            logger: null,
+            onBrokerThrottle: onBrokerThrottle,
+            getTimestamp: getTimestamp,
+            delayForThrottle: delayForThrottle,
+            onBlockedBucketRequeued: onBlockedBucketRequeued,
+            unackedBudget: unackedBudget,
+            usesTransactionV2: () => usesTransactionV2,
+            onPipelinedResponseAcquired: onPipelinedResponseAcquired,
+            onWaveCoalesceStarted: onWaveCoalesceStarted);
 }

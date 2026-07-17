@@ -258,10 +258,7 @@ internal sealed class PendingAppend : IValueTaskSource<bool>
             TimeoutKind.MaxBlock,
             elapsed,
             configured,
-            $"Failed to allocate buffer within max.block.ms ({accumulator.MaxBlockMsOption}ms). " +
-            $"Requested {_recordSize} bytes, current usage: {accumulator.BufferedBytes}/{accumulator.MaxBufferMemory} bytes. " +
-            $"Producer is generating messages faster than the network can send them. " +
-            $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
+            accumulator.BuildBufferTimeoutMessage(_recordSize));
 
         if (TryFail(exception))
             accumulator.DrainPendingAppendsIfHead(this);

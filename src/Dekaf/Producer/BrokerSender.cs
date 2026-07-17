@@ -170,7 +170,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// at send start (before its first await) — the generations detect batch object
     /// recycling between send and response processing. Ownership of the rented
     /// <paramref name="BatchGenerations"/> and <paramref name="Batches"/> arrays transfers
-    /// to this PendingResponse; they are returned by <see cref="ReturnBatchesArray"/>.
+    /// to this PendingResponse; they are returned by <see cref="TryReturnBatchesArray"/>.
     /// </summary>
     private readonly record struct PendingResponse(
         PipelinedResponse<ProduceResponse> ResponseTask,
@@ -183,6 +183,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         BrokerUnackedByteBudget.DeliverySnapshot DeliverySnapshotAtSend)
     {
         /// <summary>
+        /// One-time-return claim for the rented arrays. Lives in a reference type because
+        /// PendingResponse is a struct copied by value (lists, locals, sweeps) — every copy
+        /// must observe the same claim, or two copies could each return the arrays and
+        /// poison <see cref="ArrayPool{T}.Shared"/> with a double-returned array (#2187:
+        /// a poisoned pool hands the same array to two renters, cross-contaminating requests).
+        /// </summary>
+        private ArrayReturnGuard ReturnGuard { get; } = new();
+
+        /// <summary>
         /// Returns true if the batch at index <paramref name="i"/> is the same incarnation
         /// that was present when this PendingResponse was created.
         /// </summary>
@@ -192,13 +201,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         /// <summary>
         /// Clears batch references and returns pooled arrays to <see cref="ArrayPool{T}.Shared"/>.
-        /// Must be called exactly once per PendingResponse entry — not idempotent due to struct copy semantics.
+        /// Only the first call (across all copies of this struct) returns the arrays; later
+        /// calls are no-ops that return false so the caller can log the breached
+        /// exactly-once cleanup contract instead of double-returning to the pool.
         /// </summary>
-        public void ReturnBatchesArray()
+        public bool TryReturnBatchesArray()
         {
+            if (!ReturnGuard.TryClaim())
+                return false;
+
             ArrayPool<int>.Shared.Return(BatchGenerations);
             ArrayPool<ReadyBatch>.Shared.Return(Batches, clearArray: true);
+            return true;
         }
+    }
+
+    /// <summary>Single-claim flag backing <see cref="PendingResponse.TryReturnBatchesArray"/>.</summary>
+    internal sealed class ArrayReturnGuard
+    {
+        private int _claimed;
+
+        public bool TryClaim() => Interlocked.Exchange(ref _claimed, 1) == 0;
     }
 
     private enum SendLoopEventType : byte
@@ -1992,7 +2015,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     recoveredBatches, recoveredBatchSet);
                         }
                         pr.ResponseTask.Abandon();
-                        pr.ReturnBatchesArray();
+                        ReturnPendingResponseArrays(in pr);
                     }
                     Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
                     var removedBytes = SumEncodedBytes(pendingList);
@@ -2758,7 +2781,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                     }
 
-                    pending.ReturnBatchesArray();
+                    ReturnPendingResponseArrays(in pending);
                     continue;
                 }
 
@@ -2847,7 +2870,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (response is ProduceResponse poolableResponse)
                     poolableResponse.Return();
 
-                pending.ReturnBatchesArray();
+                ReturnPendingResponseArrays(in pending);
             }
 
             // Compact: remove processed entries from the end
@@ -3148,7 +3171,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 pending.ResponseTask.Abandon();
-                pending.ReturnBatchesArray();
+                ReturnPendingResponseArrays(in pending);
             }
 
             // Remove all entries. Response tasks are orphaned — they'll eventually complete
@@ -3680,7 +3703,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
-                    if (!batch.IsCurrentIncarnation(generations[i]))
+                    // A null slot means the array was corrupted by another owner (pool
+                    // poisoning) — an NRE here would skip the memory release of every
+                    // remaining batch in this request, permanently orphaning their
+                    // BufferMemory reservations and starving all future appends.
+                    if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
                     {
                         LogStaleBatchInSendSkipped(_instanceId, _brokerId);
                         batches[i] = null!;
@@ -3856,7 +3883,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         finally
         {
             // The generations snapshot transfers to PendingResponse along with the batches
-            // array; ReturnBatchesArray returns both. On every other path it is owned here.
+            // array; TryReturnBatchesArray returns both. On every other path it is owned here.
             if (!pendingResponseAdded)
             {
                 responseTask.Abandon();
@@ -4812,6 +4839,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _accumulator.OnBatchExitsPipeline(batch);
     }
 
+    /// <summary>
+    /// Sole path for returning a PendingResponse's rented arrays. A duplicate call means two
+    /// cleanup paths both believed they owned the entry (e.g., a stale entry re-processed after
+    /// an exception escaped before list compaction) — previously a silent ArrayPool.Shared
+    /// double-return that poisoned the pool process-wide (#2187, #2195).
+    /// </summary>
+    private void ReturnPendingResponseArrays(in PendingResponse pending)
+    {
+        if (!pending.TryReturnBatchesArray())
+            LogPendingResponseArraysAlreadyReturned(_instanceId, _brokerId);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -4933,7 +4972,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
 
                     pr.ResponseTask.Abandon();
-                    pr.ReturnBatchesArray();
+                    ReturnPendingResponseArrays(in pr);
                 }
 
                 Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
@@ -5583,6 +5622,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] send loop failed")]
     private partial void LogSendLoopFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BS#{InstanceId}[broker {BrokerId}] PendingResponse arrays already returned — duplicate cleanup suppressed (would have double-returned to ArrayPool, #2187)")]
+    private partial void LogPendingResponseArraysAlreadyReturned(int instanceId, int brokerId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] send loop exited unexpectedly — redelivering surviving batches to a replacement sender")]
     private partial void LogSendLoopExitRedelivery(int brokerId);
