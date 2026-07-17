@@ -172,7 +172,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <paramref name="BatchGenerations"/> and <paramref name="Batches"/> arrays transfers
     /// to this PendingResponse; they are returned by <see cref="TryReturnBatchesArray"/>.
     /// </summary>
-    private readonly record struct PendingResponse(
+    internal readonly record struct PendingResponse(
         PipelinedResponse<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
         int[] BatchGenerations,
@@ -3633,7 +3633,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     for (var i = 0; i < count; i++)
                     {
                         var batch = batches[i];
-                        if (!batch.IsCurrentIncarnation(generations[i]))
+                        // Null slot = array corrupted by another owner (pool poisoning); an NRE
+                        // here would skip the completion of every remaining batch in this request.
+                        if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
                         {
                             LogStaleBatchInSendSkipped(_instanceId, _brokerId);
                             batches[i] = null!;

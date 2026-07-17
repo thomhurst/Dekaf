@@ -1,12 +1,8 @@
 using System.Buffers;
-using System.Reflection;
-using Dekaf.Compression;
-using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
-using Dekaf.Protocol.Records;
 
 using NSubstitute;
 
@@ -25,10 +21,6 @@ namespace Dekaf.Tests.Unit.Producer;
 public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponseFixture
 {
     private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(15);
-
-    private static readonly Type PendingResponseType = typeof(BrokerSender).GetNestedType(
-        "PendingResponse",
-        BindingFlags.NonPublic)!;
 
     [Test]
     public async Task ArrayReturnGuard_FirstClaimWins_SecondIsRefused()
@@ -59,25 +51,22 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
     [Test]
     public async Task PendingResponse_TryReturnBatchesArray_SecondCallIsNoOp()
     {
-        // Construct a standalone PendingResponse (never attached to a live sender — reflective
-        // calls into running send loops are forbidden, see #2187) and verify the exactly-once
-        // return contract that all five cleanup paths rely on.
-        var batches = ArrayPool<ReadyBatch>.Shared.Rent(1);
-        var generations = ArrayPool<int>.Shared.Rent(1);
-        var pending = Activator.CreateInstance(
-            PendingResponseType,
-            default(PipelinedResponse<ProduceResponse>),
-            batches,
-            generations,
-            0,
-            0L,
-            0L,
-            0L,
-            default(BrokerUnackedByteBudget.DeliverySnapshot))!;
-        var tryReturn = PendingResponseType.GetMethod("TryReturnBatchesArray")!;
+        // Standalone struct, never attached to a live sender. The claim lives in the
+        // reference-typed guard, so it is shared across every by-value copy — the second
+        // call must no-op even from a different copy.
+        var pending = new BrokerSender.PendingResponse(
+            default,
+            ArrayPool<ReadyBatch>.Shared.Rent(1),
+            ArrayPool<int>.Shared.Rent(1),
+            Count: 0,
+            EncodedBytes: 0,
+            DataBytes: 0,
+            RequestStartTime: 0,
+            default);
+        var copy = pending;
 
-        var first = (bool)tryReturn.Invoke(pending, null)!;
-        var second = (bool)tryReturn.Invoke(pending, null)!;
+        var first = pending.TryReturnBatchesArray();
+        var second = copy.TryReturnBatchesArray();
 
         await Assert.That(first).IsTrue();
         await Assert.That(second).IsFalse();
