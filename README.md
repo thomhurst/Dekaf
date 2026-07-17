@@ -372,8 +372,11 @@ dotnet add package Dekaf.Extensions.Hosting
 ```csharp
 public sealed class OrderProcessor : KafkaConsumerService<string, Order>
 {
-    public OrderProcessor(IKafkaConsumer<string, Order> consumer, ILogger<OrderProcessor> logger)
-        : base(consumer, logger)
+    public OrderProcessor(
+        IKafkaConsumer<string, Order> consumer,
+        ILogger<OrderProcessor> logger,
+        DeadLetterOptions? deadLetterOptions = null)   // forwarded so the DLQ callback below takes effect
+        : base(consumer, logger, deadLetterOptions)
     {
     }
 

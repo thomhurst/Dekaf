@@ -147,6 +147,12 @@ public OrderProcessorService(
 }
 ```
 
+One thing the policy does *not* control: how many local attempts a record gets. That still comes from `MaxFailures` (or an `IRetryPolicy`), so for the `failureCount >= 5` branch above to ever be reached, the DLQ registration must allow five attempts — otherwise the record is skipped (with a warning) after the default single attempt:
+
+```csharp
+dlq => dlq.WithMaxFailures(5)   // align local attempts with the policy's threshold
+```
+
 ## Topic Provisioning
 
 Dekaf does not create DLQ or retry topics. Create them ahead of time (an `orders.DLQ` with the same partition count as `orders` preserves the ability to replay in order), or rely on broker auto-creation if your cluster allows it. Retention on DLQ topics is usually set much longer than the source topic — the whole point is that someone gets to look at these records later.
