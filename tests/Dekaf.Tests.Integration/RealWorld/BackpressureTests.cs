@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 [Category("Backpressure")]
 public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
-    [Test]
+    [Test, NotInParallel]
     public async Task Producer_SmallBufferMemory_AllMessagesDelivered()
     {
         // Arrange - use small buffer memory (1MB) to force backpressure

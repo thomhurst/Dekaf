@@ -13,7 +13,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 [Category("Backpressure")]
 public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
-    [Test]
+    [Test, NotInParallel]
     public async Task BufferFull_ProduceBlocks_UntilBatchSent()
     {
         // Arrange - very small buffer to trigger backpressure quickly
@@ -23,6 +23,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-buffer-blocks")
             .WithBufferMemory(65536) // 64KB buffer
+            .WithMaxBlock(TimeSpan.FromMinutes(2))
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
