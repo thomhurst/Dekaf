@@ -489,6 +489,84 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task ResponseProcessingFailure_WithOtherEntriesPending_CleansUpAllEntries(
+        CancellationToken cancellationToken)
+    {
+        // Regression test for #2195: ProcessCompletedResponses claims the completed entry,
+        // then throws partway through processing it while ANOTHER entry is still pending in
+        // the same connection's list. The claimed entry must be tombstoned (never observed
+        // again by exit cleanup — its pooled arrays were already returned), the surviving
+        // entry must be redelivered, and the pending-response counters must return to zero.
+        var responses = new[]
+        {
+            new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously),
+            new TaskCompletionSource<ProduceResponse>(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var (pool, _) = CreateMockConnection(new Queue<TaskCompletionSource<ProduceResponse>>(responses));
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(maxInFlight: 2, enableIdempotence: true, lingerMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var injectedFailure = new InvalidOperationException("injected response-processing failure");
+        var throwOnThrottleObservation = 0;
+        var allRerouted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reroutedCount = 0;
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, _) => { },
+            rerouteBatch: (batch, _) =>
+            {
+                batch.Fail(injectedFailure);
+                if (Interlocked.Increment(ref reroutedCount) == 2)
+                    allRerouted.TrySetResult();
+            },
+            onBrokerThrottle: _ =>
+            {
+                if (Volatile.Read(ref throwOnThrottleObservation) != 0)
+                    throw injectedFailure;
+            });
+
+        try
+        {
+            var first = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 0);
+            sender.Enqueue(first.Batch);
+            await WaitUntilAsync(() => GetPendingResponseCount(sender) == 1, cancellationToken);
+
+            var second = CreateTestBatchWithDelivery(valueTaskSourcePool, "test-topic", 1);
+            sender.Enqueue(second.Batch);
+            await WaitUntilAsync(() => GetPendingResponseCount(sender) == 2, cancellationToken);
+
+            // Completing the first response makes ProcessCompletedResponses claim its entry
+            // and throw from within processing (via the throttle-observation callback) while
+            // the second entry is still pending in the same connection's list.
+            Volatile.Write(ref throwOnThrottleObservation, 1);
+            responses[0].SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 0));
+            await allRerouted.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(sender.IsAlive).IsFalse();
+            await Assert.That(Volatile.Read(ref reroutedCount)).IsEqualTo(2);
+            await Assert.That(GetPendingResponseCount(sender)).IsEqualTo(0);
+            await Assert.That(GetDeferredPendingResponseCleanupCount(sender)).IsEqualTo(0);
+            await Assert.That(async () => await first.Delivery.WaitAsync(cancellationToken))
+                .ThrowsExactly<InvalidOperationException>()
+                .WithMessage(injectedFailure.Message);
+            await Assert.That(async () => await second.Delivery.WaitAsync(cancellationToken))
+                .ThrowsExactly<InvalidOperationException>()
+                .WithMessage(injectedFailure.Message);
+        }
+        finally
+        {
+            responses[1].TrySetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 0));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Timeout(120_000)]
     public async Task SendLoop_WaveCoalesce_RearmsWhileResponseIsInFlight(
         CancellationToken cancellationToken)

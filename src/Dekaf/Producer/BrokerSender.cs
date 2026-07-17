@@ -192,6 +192,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         private ArrayReturnGuard ReturnGuard { get; } = new();
 
         /// <summary>
+        /// True for the default-valued tombstone left in a pending list by
+        /// <c>ClaimPendingResponseAt</c>. Live entries always have Count &gt; 0
+        /// (SendCoalescedAsync never constructs an empty PendingResponse).
+        /// </summary>
+        public bool IsClaimed => Count == 0;
+
+        /// <summary>
         /// Returns true if the batch at index <paramref name="i"/> is the same incarnation
         /// that was present when this PendingResponse was created.
         /// </summary>
@@ -3081,8 +3088,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// the connection and calls cancelInFlightRequests() for the node.
     /// <para/>
     /// Processing happens synchronously in the single-threaded send loop. Entries are
-    /// removed from the connection's pending list BEFORE processing, so ProcessCompletedResponses
-    /// cannot also process the same batches (eliminating the race condition).
+    /// claimed (tombstoned) in the connection's pending list BEFORE processing, so
+    /// ProcessCompletedResponses cannot also process the same batches (eliminating the
+    /// race condition), and the list is cleared once after the scan.
     /// <para/>
     /// The affected connection is also invalidated so the next send
     /// establishes a fresh connection. Response tasks from the old connection are orphaned —
@@ -3124,9 +3132,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
 
-            while (pendingList.Count > 0)
+            // Claim entries in a single forward scan (preserving per-partition FIFO
+            // redelivery order) and clear the list once at the end. Repeated RemoveAt(0)
+            // would be O(n²) over up to MaxInFlightRequestsPerConnection entries — a
+            // send-loop stall at the worst moment, right as a request timeout fires.
+            for (var entryIdx = 0; entryIdx < pendingList.Count; entryIdx++)
             {
-                var pending = RemovePendingResponseAt(connIdx, 0);
+                var pending = ClaimPendingResponseAt(connIdx, entryIdx);
+                if (pending.IsClaimed)
+                    continue;
                 try
                 {
                     for (var j = 0; j < pending.Count; j++)
@@ -3178,6 +3192,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     ReturnPendingResponseArrays(in pending);
                 }
             }
+
+            pendingList.Clear();
 
             if (_hasMigratingPartitions)
                 CompleteMigrations(connIdx);
@@ -4652,19 +4668,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var pendingList = _pendingResponsesByConnection[connectionIndex];
         var pending = pendingList[index];
         pendingList[index] = default;
-        if (pending.Count == 0)
+        if (pending.IsClaimed)
             return pending;
 
         Interlocked.Decrement(ref _totalPendingResponseCount);
         Interlocked.Add(ref _totalPendingResponseBytes, -pending.EncodedBytes);
         Interlocked.Add(ref _pendingResponseBytesByConnection[connectionIndex], -pending.EncodedBytes);
-        return pending;
-    }
-
-    private PendingResponse RemovePendingResponseAt(int connectionIndex, int index)
-    {
-        var pending = ClaimPendingResponseAt(connectionIndex, index);
-        _pendingResponsesByConnection[connectionIndex].RemoveAt(index);
         return pending;
     }
 
@@ -4674,7 +4683,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         for (var readIndex = 0; readIndex < pendingResponses.Count; readIndex++)
         {
             var pending = pendingResponses[readIndex];
-            if (pending.Count == 0)
+            if (pending.IsClaimed)
                 continue;
 
             pendingResponses[writeIndex++] = pending;
@@ -4704,10 +4713,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
              connectionIndex++)
         {
             var pendingList = _pendingResponsesByConnection[connectionIndex];
-            while (pendingList.Count > 0)
+            // Forward-scan claim + single Clear, as in HandleTimedOutRequests.
+            for (var entryIdx = 0; entryIdx < pendingList.Count; entryIdx++)
             {
-                var pending = RemovePendingResponseAt(connectionIndex, 0);
-                if (pending.Count == 0)
+                var pending = ClaimPendingResponseAt(connectionIndex, entryIdx);
+                if (pending.IsClaimed)
                     continue;
 
                 try
@@ -4740,6 +4750,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     ReturnPendingResponseArrays(in pending);
                 }
             }
+
+            pendingList.Clear();
         }
     }
 
