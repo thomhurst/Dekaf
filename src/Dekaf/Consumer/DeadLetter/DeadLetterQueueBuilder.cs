@@ -8,7 +8,7 @@ public sealed class DeadLetterQueueBuilder
     private string _topicSuffix = ".DLQ";
     private int _maxFailures = 1;
     private bool _includeExceptionInHeaders = true;
-    private bool _awaitDelivery;
+    private bool _awaitDelivery = true;
     private string? _bootstrapServers;
     private Action<ProducerBuilder<byte[]?, byte[]?>>? _configureProducer;
     private readonly List<TimeSpan> _retryTopicDelays = [];
@@ -48,13 +48,24 @@ public sealed class DeadLetterQueueBuilder
     }
 
     /// <summary>
-    /// Awaits DLQ produce acknowledgment instead of fire-and-forget.
-    /// By default, DLQ writes are fire-and-forget for minimal consumer impact.
+    /// Awaits DLQ produce acknowledgment before continuing. This is the default, so a failed
+    /// message cannot be committed away before its dead-letter copy is durable.
     /// </summary>
     /// <returns>The builder instance for method chaining.</returns>
     public DeadLetterQueueBuilder AwaitDelivery()
     {
         _awaitDelivery = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Sends DLQ writes fire-and-forget instead of awaiting acknowledgment.
+    /// Reduces consumer impact, but a crash after commit can lose the dead-letter copy.
+    /// </summary>
+    /// <returns>The builder instance for method chaining.</returns>
+    public DeadLetterQueueBuilder FireAndForget()
+    {
+        _awaitDelivery = false;
         return this;
     }
 

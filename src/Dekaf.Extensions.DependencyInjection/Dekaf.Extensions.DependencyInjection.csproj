@@ -17,6 +17,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Extensions.Hosting" />
     <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />

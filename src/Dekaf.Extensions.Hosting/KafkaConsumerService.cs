@@ -27,6 +27,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private readonly Dictionary<TopicPartition, RetryTopicPostponement> _retryTopicPostponements = [];
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
     private int _disposeStarted;
+    private volatile bool _hasInDoubtFailedRecord;
     private static readonly TimeSpan MaxRetryTopicDelayChunk = TimeSpan.FromMilliseconds(int.MaxValue - 1);
 
     /// <summary>
@@ -43,7 +44,36 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         DeadLetterOptions? deadLetterOptions = null,
         IRetryPolicy? retryPolicy = null,
         KafkaConsumerServiceOptions? serviceOptions = null)
+        : this(consumer, logger, deadLetterOptions, retryPolicy, serviceOptions, deadLetterPolicy: null)
     {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="KafkaConsumerService{TKey, TValue}"/> class.
+    /// </summary>
+    /// <param name="consumer">The Kafka consumer instance.</param>
+    /// <param name="logger">The logger instance.</param>
+    /// <param name="deadLetterOptions">Optional dead letter queue configuration.</param>
+    /// <param name="retryPolicy">Optional retry policy for message processing failures.</param>
+    /// <param name="serviceOptions">Optional shutdown and service behavior configuration.</param>
+    /// <param name="deadLetterPolicy">Optional custom routing policy. Defaults to
+    /// <see cref="DefaultDeadLetterPolicy{TKey, TValue}"/> built from <paramref name="deadLetterOptions"/>.
+    /// Requires <paramref name="deadLetterOptions"/>, which configures the DLQ producer.</param>
+    protected KafkaConsumerService(
+        IKafkaConsumer<TKey, TValue> consumer,
+        ILogger logger,
+        DeadLetterOptions? deadLetterOptions,
+        IRetryPolicy? retryPolicy,
+        KafkaConsumerServiceOptions? serviceOptions,
+        IDeadLetterPolicy<TKey, TValue>? deadLetterPolicy)
+    {
+        if (deadLetterPolicy is not null && deadLetterOptions is null)
+        {
+            throw new ArgumentException(
+                "deadLetterPolicy requires deadLetterOptions, which configures the DLQ producer.",
+                nameof(deadLetterPolicy));
+        }
+
         _consumer = consumer;
         _logger = logger;
         _deadLetterOptions = deadLetterOptions;
@@ -52,9 +82,16 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         _serviceOptions = serviceOptions ?? new KafkaConsumerServiceOptions();
         if (deadLetterOptions is not null)
         {
-            _deadLetterPolicy = new DefaultDeadLetterPolicy<TKey, TValue>(deadLetterOptions);
+            _deadLetterPolicy = deadLetterPolicy ?? new DefaultDeadLetterPolicy<TKey, TValue>(deadLetterOptions);
         }
     }
+
+    /// <summary>
+    /// Gets the dead letter configuration this service was constructed with, if any.
+    /// Used by registration helpers to verify DLQ options registered in DI actually
+    /// reached the base constructor.
+    /// </summary>
+    internal DeadLetterOptions? ConfiguredDeadLetterOptions => _deadLetterOptions;
 
     /// <summary>
     /// Gets the topics to subscribe to.
@@ -106,10 +143,30 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             rawAccessor.EnableRawRecordTracking();
             _dlqProducer = BuildDlqProducer();
-            await _dlqProducer.InitializeAsync(stoppingToken).ConfigureAwait(false);
-        }
 
-        await _consumer.InitializeAsync(stoppingToken).ConfigureAwait(false);
+            // Independent broker round-trips; initialize concurrently. If both fail, surface
+            // the AggregateException so neither root cause is silently dropped.
+            var initialization = Task.WhenAll(
+                _dlqProducer.InitializeAsync(stoppingToken).AsTask(),
+                _consumer.InitializeAsync(stoppingToken).AsTask());
+            try
+            {
+                await initialization.ConfigureAwait(false);
+            }
+            catch when (initialization.Exception?.InnerExceptions.Count > 1)
+            {
+                throw initialization.Exception;
+            }
+        }
+        else
+        {
+            if (_deadLetterOptions is not null)
+            {
+                LogDeadLetterRoutingUnavailable(_consumer.GetType().Name);
+            }
+
+            await _consumer.InitializeAsync(stoppingToken).ConfigureAwait(false);
+        }
 
         var subscriptionTopics = BuildSubscriptionTopics();
         _consumer.Subscribe(subscriptionTopics);
@@ -124,7 +181,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             await foreach (var result in _consumer.ConsumeAsync(stoppingToken).ConfigureAwait(false))
             {
-                await ProcessWithRetriesAsync(result, stoppingToken).ConfigureAwait(false);
+                await ProcessTrackingInDoubtAsync(result, stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -145,13 +202,42 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         // First, cancel ExecuteAsync to stop the normal consume loop
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
 
-        // Then drain any remaining buffered messages
+        // Then drain any remaining buffered messages — unless the consume loop stopped with an
+        // in-doubt failed record: draining pulls from the consumer, which would prove that record
+        // processed and let the final commit discard it without a durable DLQ copy.
         if (_serviceOptions.DrainOnShutdown)
         {
-            await DrainBufferedMessagesAsync(cancellationToken).ConfigureAwait(false);
+            if (_hasInDoubtFailedRecord)
+            {
+                LogDrainSkippedForInDoubtRecord();
+            }
+            else
+            {
+                await DrainBufferedMessagesAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
 
-        // Final offset commit before disposal
+        // Final offset commit before disposal. An explicit CommitAsync vouches for the in-doubt
+        // record still being handled whenever the consumer stages positions itself: under auto
+        // commit mode the commit flushes the consumed position, and under manual commit mode
+        // with automatic offset storage the delivered record's offset is already stored
+        // (verified against a real broker: the interrupted record's offset gets committed).
+        // In those configurations skip the commit — proven offsets still commit via the
+        // consumer's close path under auto mode, and redelivery-with-duplicates always beats
+        // committing away a record without its work or dead-letter copy. Only strict manual
+        // mode (Manual + WithAutoOffsetStore(false)) commits exactly what the application
+        // stored, so the commit must run there — the close path has no manual-mode fallback
+        // and skipping would lose every explicitly stored offset.
+        var commitWouldVouchForInDoubtRecord =
+            _consumer is not IConsumerCommitConfiguration commitConfiguration
+            || commitConfiguration.OffsetCommitMode == OffsetCommitMode.Auto
+            || commitConfiguration.EnableAutoOffsetStore;
+        if (_hasInDoubtFailedRecord && commitWouldVouchForInDoubtRecord)
+        {
+            LogFinalCommitSkippedForInDoubtRecord();
+            return;
+        }
+
         try
         {
             await _consumer.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -188,7 +274,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 }
 
                 drainedCount++;
-                await ProcessWithRetriesAsync(result.Value, drainCts.Token).ConfigureAwait(false);
+                await ProcessTrackingInDoubtAsync(result.Value, drainCts.Token).ConfigureAwait(false);
 
                 LogDrainProgress(drainedCount);
             }
@@ -283,6 +369,27 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
     }
 
+    /// <summary>
+    /// Runs the record through the failure-handling pipeline, flagging it in-doubt if handling
+    /// escapes (e.g. shutdown cancelled its awaited DLQ write, or ProcessAsync honored
+    /// cancellation). An in-doubt record must never become committable: any further pull would
+    /// mark it proven, and an explicit commit under auto mode would vouch for it directly — so
+    /// StopAsync consults this flag to skip draining and the final commit.
+    /// </summary>
+    private async ValueTask ProcessTrackingInDoubtAsync(
+        ConsumeResult<TKey, TValue> result, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ProcessWithRetriesAsync(result, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _hasInDoubtFailedRecord = true;
+            throw;
+        }
+    }
+
     private async ValueTask ProcessWithRetriesAsync(
         ConsumeResult<TKey, TValue> result, CancellationToken stoppingToken)
     {
@@ -344,12 +451,35 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 if (_retryPolicy is null && attempt < maxAttemptsWithoutPolicy)
                     continue;
 
+                if (_deadLetterOptions is not null)
+                {
+                    LogMessageSkippedWithoutDeadLetter(
+                        result.Topic, result.Partition, result.Offset, deadLetterFailureCount);
+                }
+
                 return;
             }
         }
     }
 
     private static int GetNextRetryTopicFailureCount(int previousFailureCount) => previousFailureCount + 1;
+
+    /// <summary>
+    /// Sends a DLQ or retry-topic copy, awaiting broker acknowledgment when
+    /// <see cref="DeadLetterOptions.AwaitDelivery"/> is enabled (the default).
+    /// </summary>
+    private async ValueTask SendRoutedMessageAsync(
+        ProducerMessage<byte[]?, byte[]?> message, CancellationToken cancellationToken)
+    {
+        if (_deadLetterOptions!.AwaitDelivery)
+        {
+            await _dlqProducer!.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await _dlqProducer!.FireAsync(message).ConfigureAwait(false);
+        }
+    }
 
     private bool ShouldRouteToDeadLetter(
         ConsumeResult<TKey, TValue> result,
@@ -542,16 +672,16 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 Headers = headers
             };
 
-            if (_deadLetterOptions.AwaitDelivery)
-            {
-                await _dlqProducer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await _dlqProducer.FireAsync(message).ConfigureAwait(false);
-            }
+            await SendRoutedMessageAsync(message, cancellationToken).ConfigureAwait(false);
 
             LogMessageRoutedToDeadLetter(result.Topic, result.Partition, result.Offset, dlqTopic);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Shutdown (or drain timeout) cancelled the awaited DLQ write. Propagate so the
+            // record stays in-doubt and is redelivered on restart instead of being committed
+            // away without a durable dead-letter copy.
+            throw;
         }
         catch (Exception dlqEx)
         {
@@ -586,17 +716,16 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 Headers = headers
             };
 
-            if (_deadLetterOptions?.AwaitDelivery == true)
-            {
-                await _dlqProducer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await _dlqProducer.FireAsync(message).ConfigureAwait(false);
-            }
+            await SendRoutedMessageAsync(message, cancellationToken).ConfigureAwait(false);
 
             LogMessageRoutedToRetryTopic(result.Topic, result.Partition, result.Offset, retryTopic, delay, failureCount);
             return RetryTopicRouteResult.Routed;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Same as the DLQ path: an awaited retry-topic write cancelled by shutdown must
+            // propagate so the record is redelivered rather than committed away.
+            throw;
         }
         catch (Exception retryEx)
         {
@@ -641,6 +770,18 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error processing message from {Topic}")]
     private partial void LogProcessingError(Exception ex, string? topic);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Dead letter routing is disabled: consumer {ConsumerType} does not support raw record tracking, so failed messages will not be routed despite DeadLetterOptions being configured")]
+    private partial void LogDeadLetterRoutingUnavailable(string consumerType);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Message from {Topic}[{Partition}]@{Offset} failed processing {FailureCount} time(s) and was skipped without dead letter routing; the dead letter policy declined it (check MaxFailures against the retry policy's attempt count)")]
+    private partial void LogMessageSkippedWithoutDeadLetter(string topic, int partition, long offset, int failureCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Skipping shutdown drain: the consume loop stopped with an in-doubt failed record; draining would mark it processed and commit it away. It will be redelivered on restart.")]
+    private partial void LogDrainSkippedForInDoubtRecord();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Skipping the final explicit commit: it would vouch for the in-doubt failed record. The consumer's close commit covers proven offsets only; the record will be redelivered on restart.")]
+    private partial void LogFinalCommitSkippedForInDoubtRecord();
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Started consuming from topics: {Topics}")]
     private partial void LogStartedConsuming(string topics);

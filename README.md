@@ -19,6 +19,7 @@ Unlike libraries that wrap librdkafka, Dekaf is a native .NET implementation wit
 - **Modern .NET** - Built for .NET 10+ with nullable reference types, `IAsyncEnumerable`, and all the good stuff
 - **Native AOT compatible** - Trim-safe and Native AOT ready, verified by CI smoke tests on every build
 - **Simple API** - Intuitive fluent builders that do what you'd expect
+- **Batteries included for services** - Hosted consumer base class with graceful shutdown, retries, retry topics, and dead letter queues built in
 
 ## Getting Started
 
@@ -359,4 +360,44 @@ services.AddDekaf(dekaf =>
 ```
 
 Global interceptors execute before per-instance interceptors, in registration order. They are constructed via `ActivatorUtilities`, so their dependencies are resolved from the DI container.
+
+## Hosted Consumer Services
+
+For background consumers in ASP.NET Core or Worker Service apps, skip the hand-rolled consume loop. `Dekaf.Extensions.Hosting` provides `KafkaConsumerService<TKey, TValue>`, which handles the loop, graceful shutdown (drain + final commit), in-place retries, and optional tiered retry topics and dead letter queue routing — you just override `ProcessAsync`:
+
+```bash
+dotnet add package Dekaf.Extensions.Hosting
+```
+
+```csharp
+public sealed class OrderProcessor : KafkaConsumerService<string, Order>
+{
+    public OrderProcessor(
+        IKafkaConsumer<string, Order> consumer,
+        ILogger<OrderProcessor> logger,
+        DeadLetterOptions? deadLetterOptions = null)   // forwarded so the DLQ callback below takes effect
+        : base(consumer, logger, deadLetterOptions)
+    {
+    }
+
+    protected override IEnumerable<string> Topics => ["orders"];
+
+    protected override async ValueTask ProcessAsync(
+        ConsumeResult<string, Order> result, CancellationToken cancellationToken)
+    {
+        await HandleOrderAsync(result.Value, cancellationToken);
+    }
+}
+
+services.AddDekaf(dekaf =>
+{
+    dekaf.AddConsumerService<OrderProcessor, string, Order>(
+        consumer => consumer
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("orders-service"),
+        dlq => dlq.WithRetryTopics(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30)));  // optional DLQ + retry tiers
+});
+```
+
+Failed messages flow `orders` → `orders-retry-5s` → `orders-retry-30s` → `orders.DLQ`, carrying headers with the source offset and failure details. See the [Hosted Consumer Services](https://thomhurst.github.io/Dekaf/docs/hosted-services) and [Dead Letter Queues](https://thomhurst.github.io/Dekaf/docs/consumer/dead-letter-queues) docs.
 

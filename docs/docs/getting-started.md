@@ -243,17 +243,43 @@ For ASP.NET Core or worker services, add `Dekaf.Extensions.DependencyInjection` 
 }
 ```
 
+Then, instead of writing your own consume loop like the console examples above, subclass `KafkaConsumerService` from `Dekaf.Extensions.Hosting` — it runs the loop for you, with graceful shutdown, error handling, and optional [dead letter queue routing](./consumer/dead-letter-queues):
+
+```csharp
+public sealed class OrderProcessor : KafkaConsumerService<string, string>
+{
+    public OrderProcessor(
+        IKafkaConsumer<string, string> consumer,
+        ILogger<OrderProcessor> logger)
+        : base(consumer, logger)
+    {
+    }
+
+    protected override IEnumerable<string> Topics => ["orders"];
+
+    protected override ValueTask ProcessAsync(
+        ConsumeResult<string, string> result, CancellationToken cancellationToken)
+    {
+        Console.WriteLine($"Received: {result.Key} = {result.Value}");
+        return ValueTask.CompletedTask;
+    }
+}
+```
+
+Register the producer, and the consumer together with its service, in one `AddDekaf` block:
+
 ```csharp
 builder.Services.AddDekaf(dekaf =>
 {
     dekaf.AddProducer<string, string>(
         builder.Configuration.GetSection("Kafka:Producers:Orders"));
 
-    dekaf.AddConsumer<string, string>(
-        builder.Configuration.GetSection("Kafka:Consumers:Orders"),
-        consumer => consumer.SubscribeTo("orders"));
+    dekaf.AddConsumerService<OrderProcessor, string, string>(
+        builder.Configuration.GetSection("Kafka:Consumers:Orders"));
 });
 ```
+
+The service subscribes to its `Topics` itself, so the consumer configuration doesn't need `SubscribeTo`. This is the recommended pattern for background consumers — see [Hosted Consumer Services](./hosted-services) for failure handling, retries, and shutdown behavior.
 
 ## Next Steps
 
@@ -261,6 +287,7 @@ That's the basics. From here:
 
 - **[Producer Guide](./producer/basics)** - Batching, compression, delivery guarantees
 - **[Consumer Guide](./consumer/basics)** - Offset management, consumer groups, rebalancing
+- **[Hosted Consumer Services](./hosted-services)** - The recommended pattern for background consumers: retries, dead letter queues, graceful shutdown
 - **[Dependency Injection](./dependency-injection)** - Register clients in hosted services
 - **[Configuration Presets](./configuration/presets)** - Pre-tuned configs for common scenarios
 - **[Performance Tips](./performance)** - Squeezing out more throughput

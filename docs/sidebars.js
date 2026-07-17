@@ -22,13 +22,16 @@ const sidebars = {
       label: 'Consumer',
       items: [
         'consumer/basics',
+        'consumer/delivery-semantics',
         'consumer/offset-management',
         'consumer/consumer-groups',
         'consumer/partitioned-processing-api',
         'consumer/linq-extensions',
+        'consumer/dead-letter-queues',
         'consumer/manual-assignment',
       ],
     },
+    'hosted-services',
     {
       type: 'category',
       label: 'Configuration',

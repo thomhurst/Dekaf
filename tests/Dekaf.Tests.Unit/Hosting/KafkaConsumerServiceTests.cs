@@ -251,8 +251,8 @@ public sealed class KafkaConsumerServiceTests
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
-        producer.FireAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>())
-            .Returns(ValueTask.CompletedTask);
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
 
         var source = CreateResult("orders", partition: 1, offset: 42);
         var retryHeaders = RetryTopicHeaders.Build(
@@ -279,9 +279,10 @@ public sealed class KafkaConsumerServiceTests
 
         await ProcessWithRetriesAsync(service, retryResult, CancellationToken.None);
 
-        await producer.Received(1).FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+        await producer.Received(1).ProduceAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
             message != null && message.Topic == "orders.DLQ" &&
-            message.Headers!.GetFirstAsString(DeadLetterHeaders.FailureCountKey) == "2"));
+            message.Headers!.GetFirstAsString(DeadLetterHeaders.FailureCountKey) == "2"),
+            Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -289,8 +290,8 @@ public sealed class KafkaConsumerServiceTests
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();
         var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
-        producer.FireAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>())
-            .Returns(ValueTask.CompletedTask);
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
 
         var deadLetterOptions = new DeadLetterOptions
         {
@@ -310,12 +311,277 @@ public sealed class KafkaConsumerServiceTests
 
         await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), CancellationToken.None);
 
-        await producer.Received(1).FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+        await producer.Received(1).ProduceAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
             message != null && message.Topic == "orders-retry-5s" &&
-            message.Headers!.GetFirstAsString(RetryTopicHeaders.FailureCountKey) == "1"));
-        await producer.DidNotReceive().FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
-            message != null && message.Topic == "orders-retry-30s"));
+            message.Headers!.GetFirstAsString(RetryTopicHeaders.FailureCountKey) == "1"),
+            Arg.Any<CancellationToken>());
+        await producer.DidNotReceive().ProduceAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+            message != null && message.Topic == "orders-retry-30s"),
+            Arg.Any<CancellationToken>());
         await Assert.That(service.Errors).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_CustomDeadLetterPolicy_ControlsRoutingAndTopic()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<RecordMetadata>(default(RecordMetadata)));
+
+        var policy = Substitute.For<IDeadLetterPolicy<string, string>>();
+        policy.ShouldDeadLetter(Arg.Any<ConsumeResult<string, string>>(), Arg.Any<Exception>(), Arg.Any<int>())
+            .Returns(true);
+        policy.GetDeadLetterTopic("orders").Returns("poison-messages");
+
+        var service = new FailingConsumerService(
+            consumer, ["orders"],
+            deadLetterOptions: new DeadLetterOptions { MaxFailures = 100 },
+            deadLetterPolicy: policy);
+        SetDlqProducer(service, producer);
+
+        await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), CancellationToken.None);
+
+        await producer.Received(1).ProduceAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+            message != null && message.Topic == "poison-messages"),
+            Arg.Any<CancellationToken>());
+        policy.Received(1).ShouldDeadLetter(Arg.Any<ConsumeResult<string, string>>(),
+            Arg.Any<InvalidOperationException>(), 1);
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_FireAndForget_RoutesToDeadLetterViaFireAsync()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.FireAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>())
+            .Returns(ValueTask.CompletedTask);
+
+        var service = new FailingConsumerService(
+            consumer, ["orders"],
+            deadLetterOptions: new DeadLetterOptions { AwaitDelivery = false });
+        SetDlqProducer(service, producer);
+
+        await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), CancellationToken.None);
+
+        await producer.Received(1).FireAsync(Arg.Is<ProducerMessage<byte[]?, byte[]?>>(message =>
+            message != null && message.Topic == "orders.DLQ"));
+        await producer.DidNotReceive().ProduceAsync(
+            Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ProcessWithRetriesAsync_ShutdownCancelsDlqWrite_PropagatesInsteadOfSwallowing()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        using var cts = new CancellationTokenSource();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                cts.Cancel();
+                return ValueTask.FromCanceled<RecordMetadata>(cts.Token);
+            });
+
+        var service = new FailingConsumerService(
+            consumer, ["orders"], deadLetterOptions: new DeadLetterOptions());
+        SetDlqProducer(service, producer);
+
+        OperationCanceledException? caught = null;
+        try
+        {
+            await ProcessWithRetriesAsync(service, CreateResult("orders", partition: 1, offset: 42), cts.Token);
+        }
+        catch (OperationCanceledException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+    }
+
+    [Test]
+    public async Task StopAsync_ShutdownCancelsDlqWrite_SkipsDrainSoInDoubtRecordIsNotCommitted()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var dlqWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => new ValueTask<RecordMetadata>(
+                BlockUntilCancelledAsync(dlqWriteStarted, callInfo.ArgAt<CancellationToken>(1))));
+
+        var service = new FailingConsumerService(
+            consumer, ["orders"], deadLetterOptions: new DeadLetterOptions());
+        SetDlqProducer(service, producer);
+
+        await service.StartAsync(CancellationToken.None);
+        await dlqWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await service.StopAsync(CancellationToken.None);
+
+        // Draining would prove the in-doubt record processed, and an explicit CommitAsync
+        // vouches for the in-doubt record itself — both must be skipped so the record is
+        // redelivered on restart instead of committed away without its dead-letter copy.
+        // (The consumer's own close path commits proven offsets only, during disposal.)
+        await consumer.DidNotReceive().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+        await consumer.DidNotReceive().CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    private static async IAsyncEnumerable<ConsumeResult<string, string>> YieldOneThenWait(
+        ConsumeResult<string, string> result,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        yield return result;
+        await Task.Delay(Timeout.Infinite, cancellationToken);
+    }
+
+    private static async Task<RecordMetadata> BlockUntilCancelledAsync(
+        TaskCompletionSource started, CancellationToken cancellationToken)
+    {
+        started.TrySetResult();
+        await Task.Delay(Timeout.Infinite, cancellationToken);
+        return default;
+    }
+
+    [Test]
+    public async Task StopAsync_DrainTimeoutCancelsDlqWrite_SkipsFinalCommit()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
+
+        var consumeOneCalls = 0;
+        consumer.ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Interlocked.Increment(ref consumeOneCalls) == 1
+                ? new ValueTask<ConsumeResult<string, string>?>(CreateResult("orders", partition: 1, offset: 42))
+                : new ValueTask<ConsumeResult<string, string>?>((ConsumeResult<string, string>?)null));
+
+        var dlqWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var producer = Substitute.For<IKafkaProducer<byte[]?, byte[]?>>();
+        producer.ProduceAsync(Arg.Any<ProducerMessage<byte[]?, byte[]?>>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo => new ValueTask<RecordMetadata>(
+                BlockUntilCancelledAsync(dlqWriteStarted, callInfo.ArgAt<CancellationToken>(1))));
+
+        var service = new FailingConsumerService(
+            consumer, ["orders"],
+            deadLetterOptions: new DeadLetterOptions(),
+            serviceOptions: new KafkaConsumerServiceOptions
+            {
+                DrainOnShutdown = true,
+                ShutdownTimeout = TimeSpan.FromMilliseconds(500)
+            });
+        SetDlqProducer(service, producer);
+
+        await service.StartAsync(CancellationToken.None);
+        await service.StopAsync(CancellationToken.None);
+
+        // The drain timeout cancelled the drained record's awaited DLQ write, so the final
+        // explicit commit must not vouch for it — the record is redelivered on restart.
+        await dlqWriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await consumer.Received().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+        await consumer.DidNotReceive().CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task StopAsync_InDoubtRecordUnderManualCommitMode_StillCommitsStoredOffsets()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>, IConsumerCommitConfiguration>();
+        ((IConsumerCommitConfiguration)consumer).OffsetCommitMode.Returns(OffsetCommitMode.Manual);
+        ((IConsumerCommitConfiguration)consumer).EnableAutoOffsetStore.Returns(false);
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var service = new BlockingProcessConsumerService(consumer, ["orders"]);
+
+        await service.StartAsync(CancellationToken.None);
+        await service.ProcessingStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await service.StopAsync(CancellationToken.None);
+
+        // Strict manual mode (Manual + auto-store off) has no close-path fallback commit and
+        // CommitAsync covers only offsets the application explicitly stored, so the final
+        // commit must still run: skipping it would lose ALL stored offsets. Draining is
+        // still skipped (a pull would prove the in-doubt record).
+        await consumer.DidNotReceive().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+        await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task StopAsync_InDoubtRecordUnderManualCommitWithAutoStore_SkipsFinalCommit()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>, IConsumerCommitConfiguration>();
+        ((IConsumerCommitConfiguration)consumer).OffsetCommitMode.Returns(OffsetCommitMode.Manual);
+        ((IConsumerCommitConfiguration)consumer).EnableAutoOffsetStore.Returns(true);
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var service = new BlockingProcessConsumerService(consumer, ["orders"]);
+
+        await service.StartAsync(CancellationToken.None);
+        await service.ProcessingStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await service.StopAsync(CancellationToken.None);
+
+        // Manual mode with auto offset storage stages delivered records, so the final commit
+        // would vouch for the in-doubt record (verified against a real broker) — skip it.
+        await consumer.DidNotReceive().CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task StopAsync_ProcessAsyncCancelledMidRecord_SkipsDrainAndFinalCommit()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => YieldOneThenWait(
+                CreateResult("orders", partition: 1, offset: 42),
+                callInfo.ArgAt<CancellationToken>(0)));
+
+        var service = new BlockingProcessConsumerService(consumer, ["orders"]);
+
+        await service.StartAsync(CancellationToken.None);
+        await service.ProcessingStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await service.StopAsync(CancellationToken.None);
+
+        // Shutdown interrupted the record mid-ProcessAsync: per delivery semantics a record
+        // whose processing threw must not be committed, so drain and the vouching commit are
+        // both skipped and the record is redelivered on restart. (Proven offsets still commit
+        // via the consumer's close path during disposal.)
+        await consumer.DidNotReceive().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+        await consumer.DidNotReceive().CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    private sealed class BlockingProcessConsumerService : TestableKafkaConsumerService
+    {
+        public TaskCompletionSource ProcessingStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public BlockingProcessConsumerService(IKafkaConsumer<string, string> consumer, string[] topics)
+            : base(consumer, topics)
+        {
+        }
+
+        protected override async ValueTask ProcessAsync(
+            ConsumeResult<string, string> result, CancellationToken cancellationToken)
+        {
+            ProcessingStarted.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+        }
+    }
+
+    [Test]
+    public async Task Constructor_DeadLetterPolicyWithoutOptions_Throws()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var policy = Substitute.For<IDeadLetterPolicy<string, string>>();
+
+        await Assert.That(() => new FailingConsumerService(
+            consumer, ["orders"], deadLetterPolicy: policy)).Throws<ArgumentException>();
     }
 
     #endregion
@@ -759,8 +1025,11 @@ public sealed class KafkaConsumerServiceTests
             IKafkaConsumer<string, string> consumer,
             string[] topics,
             DeadLetterOptions? deadLetterOptions = null,
-            IRetryPolicy? retryPolicy = null)
-            : base(consumer, topics, deadLetterOptions: deadLetterOptions, retryPolicy: retryPolicy)
+            IRetryPolicy? retryPolicy = null,
+            IDeadLetterPolicy<string, string>? deadLetterPolicy = null,
+            KafkaConsumerServiceOptions? serviceOptions = null)
+            : base(consumer, topics, options: serviceOptions, deadLetterOptions: deadLetterOptions,
+                retryPolicy: retryPolicy, deadLetterPolicy: deadLetterPolicy)
         {
         }
 
@@ -785,8 +1054,9 @@ public sealed class KafkaConsumerServiceTests
             string[] topics,
             KafkaConsumerServiceOptions? options = null,
             DeadLetterOptions? deadLetterOptions = null,
-            IRetryPolicy? retryPolicy = null)
-            : base(consumer, NullLogger.Instance, deadLetterOptions, retryPolicy, options)
+            IRetryPolicy? retryPolicy = null,
+            IDeadLetterPolicy<string, string>? deadLetterPolicy = null)
+            : base(consumer, NullLogger.Instance, deadLetterOptions, retryPolicy, options, deadLetterPolicy)
         {
             _topics = topics;
         }

@@ -33,13 +33,27 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddDekaf(this IServiceCollection services, Action<DekafBuilder> configure)
     {
         var builder = new DekafBuilder(services);
-        configure(builder);
 
-        // Register the initialization hosted service (TryAddEnumerable avoids duplicates if AddDekaf is called multiple times)
+        // Register the initialization hosted service before running the callback: hosted services
+        // start in registration order, so this guarantees all Dekaf clients are initialized before
+        // any hosted consumer service registered inside the callback (e.g. via AddConsumerService)
+        // starts processing. TryAddEnumerable avoids duplicates if AddDekaf is called multiple times.
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, DekafInitializationService>());
+
+        configure(builder);
 
         return services;
     }
+}
+
+/// <summary>
+/// Computes the keyed-DI keys shared between consumer registration and the hosting helpers,
+/// so the key convention cannot drift between the two assemblies.
+/// </summary>
+internal static class DekafConsumerRegistrationKeys
+{
+    internal static object DeadLetterOptionsKey<TKey, TValue>(object? serviceKey) =>
+        serviceKey ?? typeof(IKafkaConsumer<TKey, TValue>);
 }
 
 /// <summary>
@@ -64,6 +78,12 @@ public sealed class DekafBuilder
     {
         _services = services;
     }
+
+    /// <summary>
+    /// Gets the underlying service collection, for registrations that go beyond Dekaf clients
+    /// (e.g. hosted services layered on top of a registered consumer).
+    /// </summary>
+    public IServiceCollection Services => _services;
 
     /// <summary>
     /// Registers a global producer interceptor type that will be applied to all producers.
@@ -496,7 +516,15 @@ public sealed class DekafBuilder
             }
 
             var dlqOptions = dlqBuilder.Build();
-            _services.AddSingleton(dlqOptions);
+
+            // Keyed-only registration ties the options to this specific consumer registration.
+            // AddConsumerService resolves this key and passes the options to the service's
+            // constructor; a deliberately-absent unkeyed registration means one consumer's DLQ
+            // config can never leak into another service via plain DeadLetterOptions injection.
+            // Hosted services registered manually with AddHostedService should resolve via
+            // [FromKeyedServices(typeof(IKafkaConsumer<TKey, TValue>))] (or the service key).
+            _services.AddKeyedSingleton(
+                DekafConsumerRegistrationKeys.DeadLetterOptionsKey<TKey, TValue>(serviceKey), dlqOptions);
         }
 
         return this;

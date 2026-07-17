@@ -513,11 +513,16 @@ public class DependencyInjectionTests
         });
 
         var serviceProvider = services.BuildServiceProvider();
-        var options = serviceProvider.GetRequiredService<DeadLetterOptions>();
+        var options = serviceProvider.GetRequiredKeyedService<DeadLetterOptions>(
+            typeof(IKafkaConsumer<string, string>));
 
         await Assert.That(options.TopicSuffix).IsEqualTo(".dead");
         await Assert.That(options.MaxFailures).IsEqualTo(3);
         await Assert.That(options.BootstrapServers).IsEqualTo("localhost:9092");
+
+        // Deliberately no unkeyed registration: one consumer's DLQ config must never leak
+        // into another service via plain DeadLetterOptions constructor injection.
+        await Assert.That(serviceProvider.GetService<DeadLetterOptions>()).IsNull();
     }
 
     [Test]
@@ -536,7 +541,8 @@ public class DependencyInjectionTests
         });
 
         var serviceProvider = services.BuildServiceProvider();
-        var options = serviceProvider.GetRequiredService<DeadLetterOptions>();
+        var options = serviceProvider.GetRequiredKeyedService<DeadLetterOptions>(
+            typeof(IKafkaConsumer<string, string>));
 
         await Assert.That(options.RetryTopics).IsNotNull();
         await Assert.That(options.RetryTopics!.GetRetryTopic("orders", TimeSpan.FromSeconds(5)))
@@ -781,7 +787,8 @@ public class DependencyInjectionTests
         var provider = services.BuildServiceProvider();
         var consumer = provider.GetRequiredService<IKafkaConsumer<string, string>>();
         var options = GetConsumerOptions(consumer);
-        var deadLetterOptions = provider.GetRequiredService<DeadLetterOptions>();
+        var deadLetterOptions = provider.GetRequiredKeyedService<DeadLetterOptions>(
+            typeof(IKafkaConsumer<string, string>));
 
         await Assert.That(options.BootstrapServers.Count).IsEqualTo(2);
         await Assert.That(options.BootstrapServers[0]).IsEqualTo("broker1:9092");
