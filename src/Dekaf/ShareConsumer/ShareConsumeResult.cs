@@ -35,9 +35,9 @@ public sealed class ShareConsumeResult<TKey, TValue>
     public required TValue Value { get; init; }
 
     /// <summary>
-    /// The message headers, or null if no headers.
+    /// The message headers. Empty if the record has no headers; never null.
     /// </summary>
-    public IReadOnlyList<Header>? Headers { get; init; }
+    public IReadOnlyList<Header> Headers { get; init; } = Array.Empty<Header>();
 
     /// <summary>
     /// The message timestamp as raw Unix milliseconds since epoch.

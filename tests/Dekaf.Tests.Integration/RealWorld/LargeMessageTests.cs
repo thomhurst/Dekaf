@@ -56,8 +56,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         // Assert
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(50);
+        await Assert.That(result!.Value.Headers.Count).IsGreaterThanOrEqualTo(50);
 
         // Verify each header
         for (var i = 0; i < 50; i++)
@@ -111,8 +110,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         // Assert
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Headers).IsNotNull();
-        var header = result.Value.Headers!.First(h => h.Key == "large-header");
+        var header = result!.Value.Headers.First(h => h.Key == "large-header");
         await Assert.That(Encoding.UTF8.GetString(header.Value.Span)).IsEqualTo(largeHeaderValue);
     }
 
@@ -263,9 +261,8 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         var r = result!.Value;
         await Assert.That(r.Key).IsEqualTo(unicodeKey);
         await Assert.That(r.Value).IsEqualTo(unicodeValue);
-        await Assert.That(r.Headers).IsNotNull();
 
-        var header = r.Headers!.First(h => h.Key == "unicode-header");
+        var header = r.Headers.First(h => h.Key == "unicode-header");
         await Assert.That(Encoding.UTF8.GetString(header.Value.Span)).IsEqualTo(unicodeHeaderValue);
     }
 }

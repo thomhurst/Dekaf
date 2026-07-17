@@ -169,8 +169,7 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(3);
+        await Assert.That(result!.Value.Headers.Count).IsGreaterThanOrEqualTo(3);
 
         // Verify the 64KB header
         var largeHeader = result.Value.Headers.First(h => h.Key == "large-header");
@@ -233,8 +232,7 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(headerCount);
+        await Assert.That(result!.Value.Headers.Count).IsGreaterThanOrEqualTo(headerCount);
         await Assert.That(result.Value.Value).IsEqualTo("value-with-many-headers");
 
         // Verify each header value matches (look up by key to tolerate injected tracing headers)
@@ -443,8 +441,7 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo(largeValue);
-        await Assert.That(result.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(4);
+        await Assert.That(result.Value.Headers.Count).IsGreaterThanOrEqualTo(4);
 
         for (var i = 0; i < 4; i++)
         {

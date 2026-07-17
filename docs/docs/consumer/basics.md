@@ -94,7 +94,7 @@ Each message gives you access to:
 | `Offset` | `long` | The offset within the partition |
 | `Timestamp` | `DateTimeOffset` | When the message was produced |
 | `TimestampType` | `TimestampType` | Whether timestamp is create time or log append time |
-| `Headers` | `IReadOnlyList<RecordHeader>?` | Optional message headers |
+| `Headers` | `IReadOnlyList<Header>` | Message headers (empty when the record has none; never null) |
 | `LeaderEpoch` | `int?` | The leader epoch (for exactly-once) |
 
 ## Consuming a Single Message

@@ -268,8 +268,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(1);
+        await Assert.That(result!.Value.Headers.Count).IsGreaterThanOrEqualTo(1);
     }
 
     [Test]
@@ -499,7 +498,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
 
         await Assert.That(result).IsNotNull();
 
-        var consumedHeaders = result!.Value.Headers!;
+        var consumedHeaders = result!.Value.Headers;
         // content-type, version, optional, notempty = 4 headers (absent and empty should be filtered)
         // Count may be higher due to injected tracing headers (e.g. traceparent)
         await Assert.That(consumedHeaders.Count).IsGreaterThanOrEqualTo(4);

@@ -152,7 +152,6 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         {
             await Assert.That(msg.Key).IsEqualTo("key1");
             await Assert.That(msg.Value).IsEqualTo("value1");
-            await Assert.That(msg.Headers).IsNotNull();
             break;
         }
     }

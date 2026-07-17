@@ -102,17 +102,22 @@ When consuming messages, access headers from the `ConsumeResult`:
 ```csharp
 await foreach (var message in consumer.ConsumeAsync(ct))
 {
-    // Headers is IReadOnlyList<RecordHeader>
-    if (message.Headers != null)
+    // Headers is IReadOnlyList<Header> — empty (never null) when the record has no headers
+    foreach (var header in message.Headers)
     {
-        foreach (var header in message.Headers)
-        {
-            Console.WriteLine($"{header.Key}: {header.GetValueString()}");
-        }
+        Console.WriteLine($"{header.Key}: {header.GetValueAsString()}");
     }
 
-    // Or get a specific header
-    var traceId = message.Headers?.FirstOrDefault(h => h.Key == "trace-id")?.GetValueString();
+    // Or get a specific header (loop, not LINQ, to stay allocation-free)
+    string? traceId = null;
+    foreach (var header in message.Headers)
+    {
+        if (header.Key == "trace-id")
+        {
+            traceId = header.GetValueAsString();
+            break;
+        }
+    }
 }
 ```
 

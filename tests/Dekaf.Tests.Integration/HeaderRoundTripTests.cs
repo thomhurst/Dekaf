@@ -43,9 +43,8 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Headers).IsNotNull();
         // >= 2 because TUnit's ActivityListener may inject a traceparent header
-        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(2);
+        await Assert.That(result!.Value.Headers.Count).IsGreaterThanOrEqualTo(2);
 
         var contentType = result.Value.Headers.First(h => h.Key == "content-type");
         await Assert.That(Encoding.UTF8.GetString(contentType.Value.Span)).IsEqualTo("application/json");
@@ -90,7 +89,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        var allTags = result!.Value.Headers!.Where(h => h.Key == "tag").ToList();
+        var allTags = result!.Value.Headers.Where(h => h.Key == "tag").ToList();
         await Assert.That(allTags.Count).IsEqualTo(3);
         await Assert.That(Encoding.UTF8.GetString(allTags[0].Value.Span)).IsEqualTo("value1");
         await Assert.That(Encoding.UTF8.GetString(allTags[1].Value.Span)).IsEqualTo("value2");
@@ -132,10 +131,10 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        var nullHeader = result!.Value.Headers!.First(h => h.Key == "null-header");
+        var nullHeader = result!.Value.Headers.First(h => h.Key == "null-header");
         await Assert.That(nullHeader.IsValueNull).IsTrue();
 
-        var normalHeader = result.Value.Headers!.First(h => h.Key == "normal-header");
+        var normalHeader = result.Value.Headers.First(h => h.Key == "normal-header");
         await Assert.That(Encoding.UTF8.GetString(normalHeader.Value.Span)).IsEqualTo("has-value");
     }
 
@@ -173,7 +172,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        var emptyHeader = result!.Value.Headers!.First(h => h.Key == "empty-header");
+        var emptyHeader = result!.Value.Headers.First(h => h.Key == "empty-header");
         await Assert.That(emptyHeader.IsValueNull).IsFalse();
         await Assert.That(emptyHeader.Value.Length).IsEqualTo(0);
     }
@@ -212,7 +211,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         await Assert.That(result).IsNotNull();
-        var unicodeHeader = result!.Value.Headers!.First(h => h.Key == "unicode");
+        var unicodeHeader = result!.Value.Headers.First(h => h.Key == "unicode");
         await Assert.That(Encoding.UTF8.GetString(unicodeHeader.Value.Span)).IsEqualTo("日本語テスト");
     }
 }
