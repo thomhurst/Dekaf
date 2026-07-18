@@ -1,4 +1,7 @@
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using Dekaf.Consumer;
+using Dekaf.Diagnostics;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
@@ -56,6 +59,51 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         foreach (var result in results)
         {
             await Assert.That(result.Topic).IsEqualTo(topic);
+            await Assert.That(result.Offset).IsGreaterThanOrEqualTo(0);
+        }
+    }
+
+    [Test]
+    [NotInParallel("DekafInstrumentation")]
+    public async Task ProduceAllAsync_WithTracingAndMetricsEnabled_AllDelivered()
+    {
+        // With tracing/metrics active, per-message awaits go through AwaitWithActivity /
+        // AwaitWithMetrics, which must upgrade ProduceAllAsync's inline-continuation request to
+        // asynchronous continuations (instrumentation code must not run on the broker ack
+        // thread). This covers those wrapper paths end-to-end under ProduceAllAsync.
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        using var activityListener = new ActivityListener
+        {
+            ShouldListenTo = static source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            SampleUsingParentId = static (ref ActivityCreationOptions<string> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(activityListener);
+
+        using var meterListener = new MeterListener();
+        meterListener.InstrumentPublished = (instrument, l) =>
+        {
+            if (instrument.Meter.Name == DekafDiagnostics.MeterName)
+                l.EnableMeasurementEvents(instrument);
+        };
+        meterListener.Start();
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var messages = Enumerable.Range(0, 100)
+            .Select(i => ((string?)$"key-{i}", $"value-{i}"))
+            .ToList();
+
+        var results = await producer.ProduceAllAsync(topic, messages)
+            .WaitAsync(TimeSpan.FromSeconds(60));
+
+        await Assert.That(results.Length).IsEqualTo(100);
+        foreach (var result in results)
+        {
             await Assert.That(result.Offset).IsGreaterThanOrEqualTo(0);
         }
     }

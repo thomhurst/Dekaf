@@ -495,27 +495,38 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     public ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
-        => ProduceAsync(message, runContinuationsAsynchronously: true, cancellationToken);
+        => ProduceAsync(message, ProduceContinuationMode.Async, cancellationToken);
 
     internal ValueTask<RecordMetadata> ProduceTransactionAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
-        => ProduceAsync(message, !_options.InlineTransactionCompletions, cancellationToken);
+        => ProduceAsync(
+            message,
+            _options.InlineTransactionCompletions ? ProduceContinuationMode.Inline : ProduceContinuationMode.Async,
+            cancellationToken);
 
     private ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
-        bool runContinuationsAsynchronously,
+        ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
+        // The retry wrapper's continuation runs retry-policy code (classification, delay
+        // computation); ProduceAllAsync's bounded-harvest inline request must not run it on the
+        // broker ack thread. The InlineTransactionCompletions opt-in keeps its documented
+        // inline behavior.
         if (_retryPolicy is not null)
-            return ProduceAsyncWithRetry(message, runContinuationsAsynchronously, cancellationToken);
+        {
+            if (continuationMode == ProduceContinuationMode.InlineWhenDirect)
+                continuationMode = ProduceContinuationMode.Async;
+            return ProduceAsyncWithRetry(message, continuationMode, cancellationToken);
+        }
 
-        return ProduceAsyncCore(message, runContinuationsAsynchronously, cancellationToken);
+        return ProduceAsyncCore(message, continuationMode, cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAsyncCore(
         ProducerMessage<TKey, TValue> message,
-        bool runContinuationsAsynchronously,
+        ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
         ThrowIfProduceCannotStart();
@@ -552,12 +563,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     prepare,
                     message,
                     activity,
-                    runContinuationsAsynchronously,
+                    continuationMode,
                     cancellationToken);
             }
         }
 
-        return ProduceAfterPrepare(message, activity, runContinuationsAsynchronously, cancellationToken);
+        return ProduceAfterPrepare(message, activity, continuationMode, cancellationToken);
     }
 
     // Stops and error-tags a started span when async serializer preparation fails before the
@@ -577,9 +588,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private ValueTask<RecordMetadata> ProduceAfterPrepare(
         ProducerMessage<TKey, TValue> message,
         Activity? activity,
-        bool runContinuationsAsynchronously,
+        ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
+        // AwaitWithActivity/AwaitWithMetrics interpose an async state machine whose continuation
+        // (metric emission, activity export/dispose) runs on the completing thread; ProduceAllAsync's
+        // inline request is only safe for the bare and cancellation awaits, whose continuations are
+        // bounded. Hoisted so the mode and the wrapper choice below can never disagree if a metrics
+        // listener starts mid-call.
+        var metricsEnabled = ProducerMetricsEnabled();
+        if (continuationMode == ProduceContinuationMode.InlineWhenDirect && (activity is not null || metricsEnabled))
+            continuationMode = ProduceContinuationMode.Async;
+        var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
+
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
         if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, out var completion))
@@ -590,7 +611,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 return AwaitWithActivity(completion!, activity, message.Topic, cancellationToken);
             }
-            if (ProducerMetricsEnabled())
+            if (metricsEnabled)
             {
                 return AwaitWithMetrics(completion!, message.Topic, cancellationToken);
             }
@@ -603,14 +624,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
-        return ProduceAsyncSlow(message, activity, runContinuationsAsynchronously, cancellationToken);
+        return ProduceAsyncSlow(message, activity, continuationMode, cancellationToken);
     }
 
     private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
         ValueTask prepare,
         ProducerMessage<TKey, TValue> message,
         Activity? activity,
-        bool runContinuationsAsynchronously,
+        ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
         try
@@ -628,7 +649,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return await ProduceAfterPrepare(
             message,
             activity,
-            runContinuationsAsynchronously,
+            continuationMode,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -683,7 +704,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Headers? headers,
         int? partition,
         DateTimeOffset? timestamp,
-        bool runContinuationsAsynchronously,
+        ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
         if (_retryPolicy is not null || _interceptors is not null || Diagnostics.DekafDiagnostics.Source.HasListeners())
@@ -696,10 +717,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 Headers = headers,
                 Partition = partition,
                 Timestamp = timestamp
-            }, runContinuationsAsynchronously, cancellationToken);
+            }, continuationMode, cancellationToken);
         }
 
-        return ProduceAsyncCore(topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously, cancellationToken);
+        return ProduceAsyncCore(topic, key, value, headers, partition, timestamp, continuationMode, cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAsyncCore(
@@ -709,7 +730,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Headers? headers,
         int? partition,
         DateTimeOffset? timestamp,
-        bool runContinuationsAsynchronously,
+        ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
         ThrowIfProduceCannotStart();
@@ -724,11 +745,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var prepare = PrepareSerializersAsync(topic, key, value, headers, cancellationToken);
             if (!prepare.IsCompletedSuccessfully)
             {
-                return AwaitPrepareThenProduce(prepare, topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously, cancellationToken);
+                return AwaitPrepareThenProduce(prepare, topic, key, value, headers, partition, timestamp, continuationMode, cancellationToken);
             }
         }
 
-        return ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously, cancellationToken);
+        return ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, continuationMode, cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAfterPrepare(
@@ -738,9 +759,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Headers? headers,
         int? partition,
         DateTimeOffset? timestamp,
-        bool runContinuationsAsynchronously,
+        ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
+        // See the message-based ProduceAfterPrepare: the metrics wrapper's continuation must not
+        // run inline on the broker ack thread, and the hoisted check keeps mode and wrapper in sync.
+        var metricsEnabled = ProducerMetricsEnabled();
+        if (continuationMode == ProduceContinuationMode.InlineWhenDirect && metricsEnabled)
+            continuationMode = ProduceContinuationMode.Async;
+        var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
+
         if (TryProduceSyncForAsync(
             topic,
             key,
@@ -753,7 +781,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             // POST-QUEUE: Message appended to batch, committed to being sent
             // Message WILL be delivered, but caller can stop waiting via cancellation token.
-            if (ProducerMetricsEnabled())
+            if (metricsEnabled)
             {
                 return AwaitWithMetrics(completion!, topic, cancellationToken);
             }
@@ -773,7 +801,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             Headers = headers,
             Partition = partition,
             Timestamp = timestamp
-        }, activity: null, runContinuationsAsynchronously, cancellationToken);
+        }, activity: null, continuationMode, cancellationToken);
     }
 
     private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
@@ -784,17 +812,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Headers? headers,
         int? partition,
         DateTimeOffset? timestamp,
-        bool runContinuationsAsynchronously,
+        ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
         await prepare.ConfigureAwait(false);
-        return await ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously, cancellationToken).ConfigureAwait(false);
+        return await ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, continuationMode, cancellationToken).ConfigureAwait(false);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private async ValueTask<RecordMetadata> ProduceAsyncWithRetry(
         ProducerMessage<TKey, TValue> message,
-        bool runContinuationsAsynchronously,
+        ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
         var attempt = 0;
@@ -804,7 +832,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 return await ProduceAsyncCore(
                     message,
-                    runContinuationsAsynchronously,
+                    continuationMode,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (KafkaException ex) when (ex.IsRetriable)
@@ -1016,9 +1044,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private async ValueTask<RecordMetadata> ProduceAsyncSlow(
         ProducerMessage<TKey, TValue> message,
         Activity? activity,
-        bool runContinuationsAsynchronously,
+        ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
+        // See ProduceAfterPrepare: instrumented awaits interpose a state machine that must not
+        // run inline on the broker ack thread. Callers may have gated already, but the slow path
+        // re-checks because a metrics listener can start between their check and this one.
+        var metricsEnabled = ProducerMetricsEnabled();
+        if (continuationMode == ProduceContinuationMode.InlineWhenDirect && (activity is not null || metricsEnabled))
+            continuationMode = ProduceContinuationMode.Async;
+        var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
+
         // Retry fast path - metadata should already be initialized via InitializeAsync()
         if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, out var fastCompletion))
         {
@@ -1026,7 +1062,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 return await AwaitWithActivity(fastCompletion!, activity, message.Topic, cancellationToken).ConfigureAwait(false);
             }
-            if (ProducerMetricsEnabled())
+            if (metricsEnabled)
             {
                 return await AwaitWithMetrics(fastCompletion!, message.Topic, cancellationToken).ConfigureAwait(false);
             }
@@ -1056,7 +1092,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             return await AwaitWithActivity(completion, activity, message.Topic, cancellationToken).ConfigureAwait(false);
         }
-        if (ProducerMetricsEnabled())
+        if (metricsEnabled)
         {
             return await AwaitWithMetrics(completion, message.Topic, cancellationToken).ConfigureAwait(false);
         }
@@ -1629,7 +1665,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         TValue value,
         CancellationToken cancellationToken = default)
     {
-        return ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, runContinuationsAsynchronously: true, cancellationToken);
+        return ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, ProduceContinuationMode.Async, cancellationToken);
     }
 
     ValueTask<RecordMetadata> IProducerFastPath<TKey, TValue>.ProduceAsync(
@@ -1640,7 +1676,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         int? partition,
         DateTimeOffset? timestamp,
         CancellationToken cancellationToken)
-        => ProduceAsync(topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously: true, cancellationToken);
+        => ProduceAsync(topic, key, value, headers, partition, timestamp, ProduceContinuationMode.Async, cancellationToken);
 
     /// <inheritdoc />
     public async Task<RecordMetadata[]> ProduceAllAsync(
@@ -1661,8 +1697,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             try
             {
-                // runContinuationsAsynchronously: false is safe here — see ProduceAllCompletion remarks.
-                completion.Register(i, ProduceAsync(messageList[i], runContinuationsAsynchronously: false, cancellationToken));
+                // InlineWhenDirect: safe because the sole direct continuation is the bounded
+                // harvest; instrumented/retry paths upgrade to Async — see ProduceAllCompletion remarks.
+                completion.Register(i, ProduceAsync(messageList[i], ProduceContinuationMode.InlineWhenDirect, cancellationToken));
             }
             catch (Exception ex)
             {
@@ -1700,8 +1737,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var (key, value) = messageList[i];
             try
             {
-                // runContinuationsAsynchronously: false is safe here — see ProduceAllCompletion remarks.
-                completion.Register(i, ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, runContinuationsAsynchronously: false, cancellationToken));
+                // InlineWhenDirect: safe because the sole direct continuation is the bounded
+                // harvest; instrumented/retry paths upgrade to Async — see ProduceAllCompletion remarks.
+                completion.Register(i, ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, ProduceContinuationMode.InlineWhenDirect, cancellationToken));
             }
             catch (Exception ex)
             {

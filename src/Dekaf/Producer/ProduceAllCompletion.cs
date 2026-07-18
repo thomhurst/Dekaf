@@ -14,7 +14,11 @@ namespace Dekaf.Producer;
 /// zero completes the single aggregate <see cref="IValueTaskSource{T}"/>. Per-message continuations
 /// are bounded (array store + decrement), which is why <c>ProduceAllAsync</c> can produce with
 /// <c>runContinuationsAsynchronously: false</c>: running them inline on the broker sender's ack
-/// path is safe and avoids one thread-pool hop per acked message.
+/// path is safe and avoids one thread-pool hop per acked message. This only holds when the
+/// harvest is the source's direct continuation — the producer upgrades to asynchronous
+/// continuations whenever an instrumented or retry wrapper (<c>AwaitWithMetrics</c>,
+/// <c>AwaitWithActivity</c>, <c>ProduceAsyncWithRetry</c>) interposes its own state machine,
+/// so metric listeners, activity export, and retry-policy code never run on the ack thread.
 /// </para>
 /// <para>
 /// The aggregate continuation always runs asynchronously
