@@ -25,27 +25,67 @@ internal static class OAuthBearerJwtAssertion
         var options = config.JwtBearer
             ?? throw new InvalidOperationException("JWT-bearer OAuth config requires JwtBearer options");
 
-        var clientId = Required(config.ClientId, "OAuth client ID is required");
-        var audience = Required(options.Audience, "JWT-bearer OAuth audience is required");
-        var issuer = string.IsNullOrWhiteSpace(options.Issuer) ? clientId : options.Issuer!;
-        var subject = string.IsNullOrWhiteSpace(options.Subject) ? clientId : options.Subject!;
-        var privateKey = options.PrivateKey
+        return Create(
+            config.ClientId,
+            options.PrivateKey,
+            options.Audience,
+            options.Issuer,
+            options.Subject,
+            options.KeyId,
+            options.AdditionalClaims,
+            options.AssertionLifetime,
+            options.SigningAlgorithm,
+            now);
+    }
+
+    internal static string Create(
+        string clientId,
+        OAuthBearerClientAssertionOptions options,
+        DateTimeOffset now) => Create(
+        clientId,
+        options.PrivateKey,
+        options.Audience,
+        options.Issuer,
+        options.Subject,
+        options.KeyId,
+        options.AdditionalClaims,
+        options.AssertionLifetime,
+        options.SigningAlgorithm,
+        now);
+
+    private static string Create(
+        string clientIdValue,
+        AsymmetricAlgorithm? privateKeyValue,
+        string? audienceValue,
+        string? issuerValue,
+        string? subjectValue,
+        string? keyId,
+        IReadOnlyDictionary<string, object?>? additionalClaims,
+        TimeSpan assertionLifetime,
+        OAuthBearerJwtSigningAlgorithm? signingAlgorithm,
+        DateTimeOffset now)
+    {
+        var clientId = Required(clientIdValue, "OAuth client ID is required");
+        var audience = Required(audienceValue, "JWT-bearer OAuth audience is required");
+        var issuer = string.IsNullOrWhiteSpace(issuerValue) ? clientId : issuerValue!;
+        var subject = string.IsNullOrWhiteSpace(subjectValue) ? clientId : subjectValue!;
+        var privateKey = privateKeyValue
             ?? throw new InvalidOperationException("JWT-bearer OAuth private key is required");
-        if (options.AssertionLifetime <= TimeSpan.Zero)
+        if (assertionLifetime <= TimeSpan.Zero)
             throw new InvalidOperationException("JWT-bearer assertion lifetime must be positive");
 
-        ValidateAdditionalClaims(options.AdditionalClaims);
+        ValidateAdditionalClaims(additionalClaims);
 
-        var algorithm = ResolveAlgorithm(privateKey, options.SigningAlgorithm);
+        var algorithm = ResolveAlgorithm(privateKey, signingAlgorithm);
         var header = Base64UrlJson(writer =>
         {
             writer.WriteString("alg", AlgorithmName(algorithm));
             writer.WriteString("typ", "JWT");
-            if (!string.IsNullOrWhiteSpace(options.KeyId))
-                writer.WriteString("kid", options.KeyId);
+            if (!string.IsNullOrWhiteSpace(keyId))
+                writer.WriteString("kid", keyId);
         });
 
-        var expiresAt = now.Add(options.AssertionLifetime);
+        var expiresAt = now.Add(assertionLifetime);
         var payload = Base64UrlJson(writer =>
         {
             writer.WriteString("iss", issuer);
@@ -55,9 +95,9 @@ internal static class OAuthBearerJwtAssertion
             writer.WriteNumber("exp", expiresAt.ToUnixTimeSeconds());
             writer.WriteString("jti", Guid.NewGuid().ToString("N"));
 
-            if (options.AdditionalClaims is not null)
+            if (additionalClaims is not null)
             {
-                foreach (var (name, value) in options.AdditionalClaims)
+                foreach (var (name, value) in additionalClaims)
                 {
                     WriteAdditionalClaim(writer, name, value);
                 }

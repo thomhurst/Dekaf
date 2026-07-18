@@ -131,7 +131,7 @@ public sealed class OAuthBearerTokenProvider : IDisposable
         };
 
         // If client secret is provided, use HTTP Basic authentication
-        if (!string.IsNullOrEmpty(_config.ClientSecret))
+        if (_config.ClientAssertion is null && !string.IsNullOrEmpty(_config.ClientSecret))
         {
             var credentials = Convert.ToBase64String(
                 Encoding.UTF8.GetBytes($"{_config.ClientId}:{_config.ClientSecret}"));
@@ -217,11 +217,23 @@ public sealed class OAuthBearerTokenProvider : IDisposable
 
     private Dictionary<string, string> BuildClientCredentialsTokenRequestBody()
     {
-        return new Dictionary<string, string>
+        var body = new Dictionary<string, string>
         {
             ["grant_type"] = "client_credentials",
             ["client_id"] = _config.ClientId
         };
+
+        if (_config.ClientAssertion is not null)
+        {
+            body["client_assertion_type"] =
+                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+            body["client_assertion"] = OAuthBearerJwtAssertion.Create(
+                _config.ClientId,
+                _config.ClientAssertion,
+                DateTimeOffset.UtcNow);
+        }
+
+        return body;
     }
 
     private Dictionary<string, string> BuildJwtBearerTokenRequestBody()

@@ -667,6 +667,28 @@ public sealed class ProducerBuilder<TKey, TValue>
         return WithOAuthBearerJwtBearer(options);
     }
 
+    /// <summary>Configures private-key JWT client authentication for <c>client_credentials</c>.</summary>
+    public ProducerBuilder<TKey, TValue> WithOAuthBearerClientAssertion(OAuthBearerClientAssertionOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        var oauthConfig = options.ToOAuthBearerConfig();
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = oauthConfig;
+        _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    /// <summary>Configures private-key JWT client authentication for <c>client_credentials</c>.</summary>
+    public ProducerBuilder<TKey, TValue> WithOAuthBearerClientAssertion(Action<OAuthBearerClientAssertionOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerClientAssertionOptions();
+        configure(options);
+        return WithOAuthBearerClientAssertion(options);
+    }
+
     /// <summary>
     /// Configures OAUTHBEARER authentication using Azure IMDS managed identity.
     /// </summary>
@@ -1988,6 +2010,28 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return WithOAuthBearerJwtBearer(options);
     }
 
+    /// <summary>Configures private-key JWT client authentication for <c>client_credentials</c>.</summary>
+    public ConsumerBuilder<TKey, TValue> WithOAuthBearerClientAssertion(OAuthBearerClientAssertionOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        var oauthConfig = options.ToOAuthBearerConfig();
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = oauthConfig;
+        _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    /// <summary>Configures private-key JWT client authentication for <c>client_credentials</c>.</summary>
+    public ConsumerBuilder<TKey, TValue> WithOAuthBearerClientAssertion(Action<OAuthBearerClientAssertionOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerClientAssertionOptions();
+        configure(options);
+        return WithOAuthBearerClientAssertion(options);
+    }
+
     /// <summary>
     /// Configures OAUTHBEARER authentication using Azure IMDS managed identity.
     /// </summary>
@@ -3163,6 +3207,26 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         var options = new OAuthBearerJwtBearerOptions();
         configure(options);
         return WithOAuthBearerJwtBearer(options);
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerClientAssertion(OAuthBearerClientAssertionOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        var oauthConfig = options.ToOAuthBearerConfig();
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = oauthConfig;
+        _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerClientAssertion(Action<OAuthBearerClientAssertionOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerClientAssertionOptions();
+        configure(options);
+        return WithOAuthBearerClientAssertion(options);
     }
 
     public ShareConsumerBuilder<TKey, TValue> WithOAuthBearerAzureImds(OAuthBearerAzureImdsOptions options)

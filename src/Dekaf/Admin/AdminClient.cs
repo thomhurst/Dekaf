@@ -4953,6 +4953,28 @@ public sealed class AdminClientBuilder
         return WithOAuthBearerJwtBearer(options);
     }
 
+    /// <summary>Configures private-key JWT client authentication for <c>client_credentials</c>.</summary>
+    public AdminClientBuilder WithOAuthBearerClientAssertion(OAuthBearerClientAssertionOptions options)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        ArgumentNullException.ThrowIfNull(options);
+        var oauthConfig = options.ToOAuthBearerConfig();
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = oauthConfig;
+        _oauthTokenProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    /// <summary>Configures private-key JWT client authentication for <c>client_credentials</c>.</summary>
+    public AdminClientBuilder WithOAuthBearerClientAssertion(Action<OAuthBearerClientAssertionOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new OAuthBearerClientAssertionOptions();
+        configure(options);
+        return WithOAuthBearerClientAssertion(options);
+    }
+
     /// <summary>
     /// Configures SASL/OAUTHBEARER authentication using Azure IMDS managed identity.
     /// </summary>

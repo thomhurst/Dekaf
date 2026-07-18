@@ -80,6 +80,90 @@ public sealed class OAuthBearerJwtBearerBuilderTests
     }
 
     [Test]
+    public async Task WithOAuthBearerClientAssertion_ConfiguresEveryClientBuilder()
+    {
+        using var rsa = RSA.Create(2048);
+        var options = CreateClientAssertionOptions(rsa);
+        var producer = Kafka.CreateProducer<string, string>();
+        var consumer = Kafka.CreateConsumer<string, string>();
+        var shareConsumer = Kafka.CreateShareConsumer<string, string>();
+        var admin = Kafka.CreateAdminClient();
+        var client = Kafka.Connect();
+
+        await Assert.That(producer.WithOAuthBearerClientAssertion(options)).IsSameReferenceAs(producer);
+        await Assert.That(consumer.WithOAuthBearerClientAssertion(options)).IsSameReferenceAs(consumer);
+        await Assert.That(shareConsumer.WithOAuthBearerClientAssertion(options)).IsSameReferenceAs(shareConsumer);
+        await Assert.That(admin.WithOAuthBearerClientAssertion(options)).IsSameReferenceAs(admin);
+        await Assert.That(client.WithOAuthBearerClientAssertion(options)).IsSameReferenceAs(client);
+
+        foreach (var builder in new object[] { producer, consumer, shareConsumer, admin, client })
+        {
+            await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.OAuthBearer);
+            await Assert.That(GetOAuthConfig(builder)!.ClientAssertion).IsNotNull();
+        }
+    }
+
+    [Test]
+    public async Task Producer_WithOAuthBearerClientAssertionAction_ReturnsSameBuilder()
+    {
+        using var rsa = RSA.Create(2048);
+        var builder = Kafka.CreateProducer<string, string>();
+
+        var result = builder.WithOAuthBearerClientAssertion(options =>
+        {
+            options.TokenEndpoint = "https://auth.example.test/token";
+            options.ClientId = "client";
+            options.PrivateKey = rsa;
+            options.Audience = "https://auth.example.test/token";
+        });
+
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithOAuthBearerClientAssertion_WhenValidationFails_DoesNotChangeExistingSaslMechanism()
+    {
+        var invalidOptions = new OAuthBearerClientAssertionOptions();
+
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
+            Kafka.CreateProducer<string, string>().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerClientAssertion(invalidOptions));
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
+            Kafka.CreateConsumer<string, string>().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerClientAssertion(invalidOptions));
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
+            Kafka.CreateShareConsumer<string, string>().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerClientAssertion(invalidOptions));
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
+            Kafka.CreateAdminClient().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerClientAssertion(invalidOptions));
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
+            Kafka.Connect().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerClientAssertion(invalidOptions));
+    }
+
+    [Test]
+    [Arguments("grant_type")]
+    [Arguments("client_id")]
+    [Arguments("client_secret")]
+    [Arguments("client_assertion_type")]
+    [Arguments("client_assertion")]
+    public async Task Producer_WithOAuthBearerClientAssertion_ReservedFormParameterThrows(string parameterName)
+    {
+        using var rsa = RSA.Create(2048);
+        var options = CreateClientAssertionOptions(rsa);
+        options.AdditionalParameters = new Dictionary<string, string>
+        {
+            [parameterName] = "override"
+        };
+
+        await Assert.That(() => Kafka.CreateProducer<string, string>()
+                .WithOAuthBearerClientAssertion(options))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("reserved");
+    }
+
+    [Test]
     public async Task Producer_WithOAuthBearerAzureImds_ReturnsSameBuilderAndConfiguresGrant()
     {
         var builder = Kafka.CreateProducer<string, string>();
@@ -186,19 +270,19 @@ public sealed class OAuthBearerJwtBearerBuilderTests
     {
         var invalidOptions = new OAuthBearerJwtBearerOptions();
 
-        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
             Kafka.CreateProducer<string, string>().WithSaslPlain("user", "pass"),
             builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
-        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
             Kafka.CreateConsumer<string, string>().WithSaslPlain("user", "pass"),
             builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
-        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
             Kafka.CreateShareConsumer<string, string>().WithSaslPlain("user", "pass"),
             builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
-        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
             Kafka.CreateAdminClient().WithSaslPlain("user", "pass"),
             builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
-        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
             Kafka.Connect().WithSaslPlain("user", "pass"),
             builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
     }
@@ -217,7 +301,16 @@ public sealed class OAuthBearerJwtBearerBuilderTests
         ClientId = "managed-identity-client"
     };
 
-    private static async Task AssertInvalidJwtBearerDoesNotChangeSaslMechanism<TBuilder>(
+    private static OAuthBearerClientAssertionOptions CreateClientAssertionOptions(
+        AsymmetricAlgorithm privateKey) => new()
+    {
+        TokenEndpoint = "https://auth.example.test/token",
+        ClientId = "client",
+        PrivateKey = privateKey,
+        Audience = "https://auth.example.test/token"
+    };
+
+    private static async Task AssertInvalidOAuthOptionsDoNotChangeSaslMechanism<TBuilder>(
         TBuilder builder,
         Action<TBuilder> configure)
     {
