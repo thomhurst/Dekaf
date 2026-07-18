@@ -118,10 +118,33 @@ public class ProduceAllCompletionTests
 
         completion.Register(0, new ValueTask<RecordMetadata>(Metadata(0)));
         completion.RecordFailure(1, new ObjectDisposedException("producer"));
+        completion.AbortRegistration(1);
 
         var thrown = await Assert.ThrowsAsync<ObjectDisposedException>(
             async () => await completion.WaitAsync());
         await Assert.That(thrown).IsNotNull();
+    }
+
+    [Test]
+    public async Task AbortRegistration_MidLoop_WaitsForInFlightThenFaults()
+    {
+        // Simulates a sync produce throw at index 1 of 4: index 0 is still in flight,
+        // indices 1-3 never register. The aggregate must wait for index 0, then fault.
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var inFlight = pool.Rent();
+
+        var completion = ProduceAllCompletion.Rent(4);
+        completion.Register(0, inFlight.Task);
+        completion.RecordFailure(1, new InvalidOperationException("sync-throw"));
+        completion.AbortRegistration(3);
+
+        var aggregate = completion.WaitAsync();
+        await Assert.That(aggregate.IsCompleted).IsFalse();
+
+        inFlight.SetResult(Metadata(0));
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(async () => await aggregate);
+        await Assert.That(thrown!.Message).IsEqualTo("sync-throw");
     }
 
     [Test]

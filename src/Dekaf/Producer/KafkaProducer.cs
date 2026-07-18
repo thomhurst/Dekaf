@@ -495,18 +495,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     public ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
-    {
-        if (_retryPolicy is not null)
-            return ProduceAsyncWithRetry(message, runContinuationsAsynchronously: true, cancellationToken);
-
-        return ProduceAsyncCore(message, runContinuationsAsynchronously: true, cancellationToken);
-    }
+        => ProduceAsync(message, runContinuationsAsynchronously: true, cancellationToken);
 
     internal ValueTask<RecordMetadata> ProduceTransactionAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
+        => ProduceAsync(message, !_options.InlineTransactionCompletions, cancellationToken);
+
+    private ValueTask<RecordMetadata> ProduceAsync(
+        ProducerMessage<TKey, TValue> message,
+        bool runContinuationsAsynchronously,
+        CancellationToken cancellationToken)
     {
-        var runContinuationsAsynchronously = !_options.InlineTransactionCompletions;
         if (_retryPolicy is not null)
             return ProduceAsyncWithRetry(message, runContinuationsAsynchronously, cancellationToken);
 
@@ -683,6 +683,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Headers? headers,
         int? partition,
         DateTimeOffset? timestamp,
+        bool runContinuationsAsynchronously,
         CancellationToken cancellationToken)
     {
         if (_retryPolicy is not null || _interceptors is not null || Diagnostics.DekafDiagnostics.Source.HasListeners())
@@ -695,10 +696,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 Headers = headers,
                 Partition = partition,
                 Timestamp = timestamp
-            }, cancellationToken);
+            }, runContinuationsAsynchronously, cancellationToken);
         }
 
-        return ProduceAsyncCore(topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously: true, cancellationToken);
+        return ProduceAsyncCore(topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously, cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAsyncCore(
@@ -1628,7 +1629,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         TValue value,
         CancellationToken cancellationToken = default)
     {
-        return ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, cancellationToken);
+        return ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, runContinuationsAsynchronously: true, cancellationToken);
     }
 
     ValueTask<RecordMetadata> IProducerFastPath<TKey, TValue>.ProduceAsync(
@@ -1639,7 +1640,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         int? partition,
         DateTimeOffset? timestamp,
         CancellationToken cancellationToken)
-        => ProduceAsync(topic, key, value, headers, partition, timestamp, cancellationToken);
+        => ProduceAsync(topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously: true, cancellationToken);
 
     /// <inheritdoc />
     public async Task<RecordMetadata[]> ProduceAllAsync(
@@ -1660,7 +1661,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             try
             {
-                completion.Register(i, ProduceForAllAsync(messageList[i], cancellationToken));
+                // runContinuationsAsynchronously: false is safe here — see ProduceAllCompletion remarks.
+                completion.Register(i, ProduceAsync(messageList[i], runContinuationsAsynchronously: false, cancellationToken));
             }
             catch (Exception ex)
             {
@@ -1668,6 +1670,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // registration; already-registered operations still complete before the
                 // aggregate faults, so no pooled completion is abandoned.
                 completion.RecordFailure(i, ex);
+                completion.AbortRegistration(messageList.Count - i);
                 break;
             }
         }
@@ -1697,62 +1700,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var (key, value) = messageList[i];
             try
             {
-                completion.Register(i, ProduceForAllAsync(topic, key, value, cancellationToken));
+                // runContinuationsAsynchronously: false is safe here — see ProduceAllCompletion remarks.
+                completion.Register(i, ProduceAsync(topic, key, value, headers: null, partition: null, timestamp: null, runContinuationsAsynchronously: false, cancellationToken));
             }
             catch (Exception ex)
             {
                 // See the message-list overload: stop registration, let in-flight operations
                 // finish, then surface the failure from the aggregate await.
                 completion.RecordFailure(i, ex);
+                completion.AbortRegistration(messageList.Count - i);
                 break;
             }
         }
 
         return await completion.WaitAsync().ConfigureAwait(false);
-    }
-
-    // ProduceAllAsync produces with runContinuationsAsynchronously: false. The only continuation
-    // attached to each per-message completion is ProduceAllCompletion's bounded harvest (array
-    // store + counter decrement), so running it inline on the broker sender's ack path is safe
-    // and avoids one thread-pool hop per acked message. The aggregate completion still runs its
-    // continuation asynchronously, so user code never executes on the sender loop.
-    private ValueTask<RecordMetadata> ProduceForAllAsync(
-        ProducerMessage<TKey, TValue> message,
-        CancellationToken cancellationToken)
-    {
-        if (_retryPolicy is not null)
-            return ProduceAsyncWithRetry(message, runContinuationsAsynchronously: false, cancellationToken);
-
-        return ProduceAsyncCore(message, runContinuationsAsynchronously: false, cancellationToken);
-    }
-
-    private ValueTask<RecordMetadata> ProduceForAllAsync(
-        string topic,
-        TKey? key,
-        TValue value,
-        CancellationToken cancellationToken)
-    {
-        // Mirrors the private ProduceAsync(topic, ...) dispatch: features that need the full
-        // message object fall back to the message-based path.
-        if (_retryPolicy is not null || _interceptors is not null || Diagnostics.DekafDiagnostics.Source.HasListeners())
-        {
-            return ProduceForAllAsync(new ProducerMessage<TKey, TValue>
-            {
-                Topic = topic,
-                Key = key,
-                Value = value
-            }, cancellationToken);
-        }
-
-        return ProduceAsyncCore(
-            topic,
-            key,
-            value,
-            headers: null,
-            partition: null,
-            timestamp: null,
-            runContinuationsAsynchronously: false,
-            cancellationToken);
     }
 
     public ValueTask FlushAsync(CancellationToken cancellationToken = default)

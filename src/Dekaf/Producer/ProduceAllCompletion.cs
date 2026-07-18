@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
-using Dekaf.Internal;
 
 namespace Dekaf.Producer;
 
@@ -31,8 +30,8 @@ namespace Dekaf.Producer;
 /// </remarks>
 internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
 {
-    private static readonly LockFreeStack<ProduceAllCompletion> s_pool = new(64);
-    private static readonly LockFreeStack<PendingOp> s_opPool = new(4096);
+    private static readonly CompletionPool s_pool = new();
+    private static readonly PendingOpPool s_opPool = new();
 
     private ManualResetValueTaskSourceCore<RecordMetadata[]> _core = new() { RunContinuationsAsynchronously = true };
     private readonly System.Threading.Lock _failureGate = new();
@@ -47,35 +46,30 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
     /// </summary>
     public static ProduceAllCompletion Rent(int count)
     {
-        if (!s_pool.TryPop(out var completion))
-            completion = new ProduceAllCompletion();
-
+        var completion = s_pool.Rent();
         completion._results = new RecordMetadata[count];
-        // Registration guard: WaitAsync drops this extra count once all operations are
-        // registered, so an early inline completion can never observe zero mid-registration.
-        completion._remaining = 1;
+        // count operations plus a registration guard that WaitAsync drops, so an early inline
+        // completion can never observe zero mid-registration. Pre-counting keeps the
+        // registration loop free of interlocked operations.
+        completion._remaining = count + 1;
         return completion;
     }
 
     /// <summary>
     /// Consumes the pending operation's <see cref="ValueTask{T}"/>: harvests inline when already
-    /// completed, otherwise attaches a pooled continuation. Call at most once per index; this is
+    /// completed, otherwise attaches a pooled continuation. Call exactly once per index; this is
     /// the operation's single await for pooled-source purposes.
     /// </summary>
-    public void Register(int index, ValueTask<RecordMetadata> pending)
+    public void Register(int index, in ValueTask<RecordMetadata> pending)
     {
         var awaiter = pending.ConfigureAwait(false).GetAwaiter();
         if (awaiter.IsCompleted)
         {
-            Harvest(index, awaiter, decrement: false);
+            Harvest(index, in awaiter);
             return;
         }
 
-        Interlocked.Increment(ref _remaining);
-
-        if (!s_opPool.TryPop(out var op))
-            op = new PendingOp();
-        op.Attach(this, index, awaiter);
+        s_opPool.Rent().Attach(this, index, in awaiter);
     }
 
     /// <summary>
@@ -95,6 +89,17 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
     }
 
     /// <summary>
+    /// Removes operations that will never be registered because a synchronous produce failure
+    /// aborted the registration loop. <paramref name="unregisteredCount"/> is the number of
+    /// messages (including the one that threw) that will never decrement the counter.
+    /// </summary>
+    public void AbortRegistration(int unregisteredCount)
+    {
+        // Cannot reach zero here: the registration guard from Rent is still held.
+        Interlocked.Add(ref _remaining, -unregisteredCount);
+    }
+
+    /// <summary>
     /// Completes registration and returns the aggregate task. Await exactly once.
     /// </summary>
     public ValueTask<RecordMetadata[]> WaitAsync()
@@ -104,7 +109,7 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
         return new ValueTask<RecordMetadata[]>(this, version);
     }
 
-    private void Harvest(int index, ConfiguredValueTaskAwaitable<RecordMetadata>.ConfiguredValueTaskAwaiter awaiter, bool decrement)
+    private void Harvest(int index, in ConfiguredValueTaskAwaitable<RecordMetadata>.ConfiguredValueTaskAwaiter awaiter)
     {
         try
         {
@@ -115,8 +120,7 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
             RecordFailure(index, ex);
         }
 
-        if (decrement)
-            OnOperationCompleted();
+        OnOperationCompleted();
     }
 
     private void OnOperationCompleted()
@@ -142,12 +146,7 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
         }
         finally
         {
-            _results = null;
-            _firstException = null;
-            _firstExceptionIndex = 0;
-            _remaining = 0;
-            _core.Reset();
-            s_pool.TryPush(this);
+            s_pool.Return(this);
         }
     }
 
@@ -157,9 +156,23 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
     void IValueTaskSource<RecordMetadata[]>.OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
         => _core.OnCompleted(continuation, state, token, flags);
 
+    private sealed class CompletionPool() : ObjectPool<ProduceAllCompletion>(64)
+    {
+        protected override ProduceAllCompletion Create() => new();
+
+        protected override void Reset(ProduceAllCompletion item)
+        {
+            item._results = null;
+            item._firstException = null;
+            item._firstExceptionIndex = 0;
+            item._remaining = 0;
+            item._core.Reset();
+        }
+    }
+
     /// <summary>
-    /// Pooled holder for one in-flight operation's continuation. Returns itself to the pool
-    /// before harvesting so the instance is reusable immediately.
+    /// Pooled holder for one in-flight operation's continuation. Harvests from its own fields
+    /// and only then returns itself to the pool, so the awaiter is never copied to a local.
     /// </summary>
     private sealed class PendingOp
     {
@@ -173,7 +186,7 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
             _run = Run;
         }
 
-        public void Attach(ProduceAllCompletion owner, int index, ConfiguredValueTaskAwaitable<RecordMetadata>.ConfiguredValueTaskAwaiter awaiter)
+        public void Attach(ProduceAllCompletion owner, int index, in ConfiguredValueTaskAwaitable<RecordMetadata>.ConfiguredValueTaskAwaiter awaiter)
         {
             _owner = owner;
             _index = index;
@@ -183,15 +196,21 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
 
         private void Run()
         {
-            var owner = _owner!;
-            var index = _index;
-            var awaiter = _awaiter;
+            _owner!.Harvest(_index, in _awaiter);
+            s_opPool.Return(this);
+        }
 
+        internal void ResetForPool()
+        {
             _owner = null;
             _awaiter = default;
-            s_opPool.TryPush(this);
-
-            owner.Harvest(index, awaiter, decrement: true);
         }
+    }
+
+    private sealed class PendingOpPool() : ObjectPool<PendingOp>(ValueTaskSourcePool.FallbackMaxPoolSize)
+    {
+        protected override PendingOp Create() => new();
+
+        protected override void Reset(PendingOp item) => item.ResetForPool();
     }
 }
