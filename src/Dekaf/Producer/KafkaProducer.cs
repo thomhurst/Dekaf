@@ -698,7 +698,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }, cancellationToken);
         }
 
-        return ProduceAsyncCore(topic, key, value, headers, partition, timestamp, cancellationToken);
+        return ProduceAsyncCore(topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously: true, cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAsyncCore(
@@ -708,6 +708,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Headers? headers,
         int? partition,
         DateTimeOffset? timestamp,
+        bool runContinuationsAsynchronously,
         CancellationToken cancellationToken)
     {
         ThrowIfProduceCannotStart();
@@ -722,11 +723,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var prepare = PrepareSerializersAsync(topic, key, value, headers, cancellationToken);
             if (!prepare.IsCompletedSuccessfully)
             {
-                return AwaitPrepareThenProduce(prepare, topic, key, value, headers, partition, timestamp, cancellationToken);
+                return AwaitPrepareThenProduce(prepare, topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously, cancellationToken);
             }
         }
 
-        return ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, cancellationToken);
+        return ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously, cancellationToken);
     }
 
     private ValueTask<RecordMetadata> ProduceAfterPrepare(
@@ -736,6 +737,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Headers? headers,
         int? partition,
         DateTimeOffset? timestamp,
+        bool runContinuationsAsynchronously,
         CancellationToken cancellationToken)
     {
         if (TryProduceSyncForAsync(
@@ -745,7 +747,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             headers,
             partition,
             timestamp,
-            runContinuationsAsynchronously: true,
+            runContinuationsAsynchronously,
             out var completion))
         {
             // POST-QUEUE: Message appended to batch, committed to being sent
@@ -770,7 +772,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             Headers = headers,
             Partition = partition,
             Timestamp = timestamp
-        }, activity: null, runContinuationsAsynchronously: true, cancellationToken);
+        }, activity: null, runContinuationsAsynchronously, cancellationToken);
     }
 
     private async ValueTask<RecordMetadata> AwaitPrepareThenProduce(
@@ -781,10 +783,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Headers? headers,
         int? partition,
         DateTimeOffset? timestamp,
+        bool runContinuationsAsynchronously,
         CancellationToken cancellationToken)
     {
         await prepare.ConfigureAwait(false);
-        return await ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, cancellationToken).ConfigureAwait(false);
+        return await ProduceAfterPrepare(topic, key, value, headers, partition, timestamp, runContinuationsAsynchronously, cancellationToken).ConfigureAwait(false);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -1652,14 +1655,24 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return [];
         }
 
-        // Convert ValueTask to Task for each message and await all
-        var tasks = new Task<RecordMetadata>[messageList.Count];
+        var completion = ProduceAllCompletion.Rent(messageList.Count);
         for (var i = 0; i < messageList.Count; i++)
         {
-            tasks[i] = ProduceAsync(messageList[i], cancellationToken).AsTask();
+            try
+            {
+                completion.Register(i, ProduceForAllAsync(messageList[i], cancellationToken));
+            }
+            catch (Exception ex)
+            {
+                // Synchronous produce failure (disposed, cancelled, interceptor throw) stops
+                // registration; already-registered operations still complete before the
+                // aggregate faults, so no pooled completion is abandoned.
+                completion.RecordFailure(i, ex);
+                break;
+            }
         }
 
-        return await Task.WhenAll(tasks).ConfigureAwait(false);
+        return await completion.WaitAsync().ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -1678,15 +1691,68 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return [];
         }
 
-        // Convert ValueTask to Task for each message and await all
-        var tasks = new Task<RecordMetadata>[messageList.Count];
+        var completion = ProduceAllCompletion.Rent(messageList.Count);
         for (var i = 0; i < messageList.Count; i++)
         {
             var (key, value) = messageList[i];
-            tasks[i] = ProduceAsync(topic, key, value, cancellationToken).AsTask();
+            try
+            {
+                completion.Register(i, ProduceForAllAsync(topic, key, value, cancellationToken));
+            }
+            catch (Exception ex)
+            {
+                // See the message-list overload: stop registration, let in-flight operations
+                // finish, then surface the failure from the aggregate await.
+                completion.RecordFailure(i, ex);
+                break;
+            }
         }
 
-        return await Task.WhenAll(tasks).ConfigureAwait(false);
+        return await completion.WaitAsync().ConfigureAwait(false);
+    }
+
+    // ProduceAllAsync produces with runContinuationsAsynchronously: false. The only continuation
+    // attached to each per-message completion is ProduceAllCompletion's bounded harvest (array
+    // store + counter decrement), so running it inline on the broker sender's ack path is safe
+    // and avoids one thread-pool hop per acked message. The aggregate completion still runs its
+    // continuation asynchronously, so user code never executes on the sender loop.
+    private ValueTask<RecordMetadata> ProduceForAllAsync(
+        ProducerMessage<TKey, TValue> message,
+        CancellationToken cancellationToken)
+    {
+        if (_retryPolicy is not null)
+            return ProduceAsyncWithRetry(message, runContinuationsAsynchronously: false, cancellationToken);
+
+        return ProduceAsyncCore(message, runContinuationsAsynchronously: false, cancellationToken);
+    }
+
+    private ValueTask<RecordMetadata> ProduceForAllAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        CancellationToken cancellationToken)
+    {
+        // Mirrors the private ProduceAsync(topic, ...) dispatch: features that need the full
+        // message object fall back to the message-based path.
+        if (_retryPolicy is not null || _interceptors is not null || Diagnostics.DekafDiagnostics.Source.HasListeners())
+        {
+            return ProduceForAllAsync(new ProducerMessage<TKey, TValue>
+            {
+                Topic = topic,
+                Key = key,
+                Value = value
+            }, cancellationToken);
+        }
+
+        return ProduceAsyncCore(
+            topic,
+            key,
+            value,
+            headers: null,
+            partition: null,
+            timestamp: null,
+            runContinuationsAsynchronously: false,
+            cancellationToken);
     }
 
     public ValueTask FlushAsync(CancellationToken cancellationToken = default)

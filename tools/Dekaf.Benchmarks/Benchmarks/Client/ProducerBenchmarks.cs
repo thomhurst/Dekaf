@@ -183,17 +183,16 @@ public class ProducerBenchmarks
     [Benchmark]
     public async Task Dekaf_ProduceBatch()
     {
-        var tasks = new List<Task<DekafProducer.RecordMetadata>>(BatchSize);
+        // ProduceAllAsync is the idiomatic batch-produce API: it awaits every message through a
+        // single counting completion instead of allocating a Task per message via AsTask().
+        var messages = new (string? Key, string Value)[BatchSize];
 
-        // .AsTask() per message is required: the pooled ValueTask contract forbids
-        // collecting raw ValueTasks for deferred await (see IKafkaProducer remarks).
         for (var i = 0; i < BatchSize; i++)
         {
-            tasks.Add(_dekafProducer.ProduceAsync(Topic, _keys[i], _messageValue, CancellationToken.None)
-                .AsTask());
+            messages[i] = (_keys[i], _messageValue);
         }
 
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        await _dekafProducer.ProduceAllAsync(Topic, messages).ConfigureAwait(false);
     }
 
     // ===== Fire-and-Forget =====

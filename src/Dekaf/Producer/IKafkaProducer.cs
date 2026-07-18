@@ -25,7 +25,10 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// // Single message - await immediately (recommended)
     /// var metadata = await producer.ProduceAsync(message);
     ///
-    /// // Multiple messages in parallel - convert to Task (recommended)
+    /// // Multiple messages in parallel - ProduceAllAsync (recommended, no per-message Task)
+    /// var results = await producer.ProduceAllAsync(messages);
+    ///
+    /// // Alternatively, convert each ValueTask to Task
     /// var tasks = new List&lt;Task&lt;RecordMetadata&gt;&gt;();
     /// for (int i = 0; i &lt; count; i++)
     ///     tasks.Add(producer.ProduceAsync(message).AsTask());
@@ -131,8 +134,10 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// </summary>
     /// <remarks>
     /// <para>This method is the recommended way to produce multiple messages in parallel.
-    /// It handles the <see cref="ValueTask{TResult}"/> to <see cref="Task{TResult}"/> conversion
-    /// internally, avoiding the error-prone pattern of storing ValueTask instances in collections.</para>
+    /// It awaits each message's <see cref="ValueTask{TResult}"/> internally through a single
+    /// counting completion, avoiding both the error-prone pattern of storing ValueTask instances
+    /// in collections and the per-message <see cref="Task{TResult}"/> allocations of
+    /// <c>AsTask()</c> + <see cref="Task.WhenAll(Task[])"/>.</para>
     /// </remarks>
     /// <param name="messages">The messages to produce.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
