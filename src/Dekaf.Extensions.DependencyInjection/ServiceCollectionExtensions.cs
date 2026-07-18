@@ -812,8 +812,10 @@ internal static class DekafOptionsBinding
         builder.WithDeliveryLatencyTarget(TimeSpan.FromMilliseconds(options.DeliveryLatencyTargetMs));
         builder.WithDeliveryTimeout(TimeSpan.FromMilliseconds(options.DeliveryTimeoutMs));
         builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
-        builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
-        builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
+        if (options.IsReconnectBackoffMsConfigured)
+            builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
+        if (options.IsReconnectBackoffMaxMsConfigured)
+            builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
         builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
         ApplySocketConnectionOptions(
             options.ConnectionTimeout,
@@ -907,8 +909,10 @@ internal static class DekafOptionsBinding
         builder.WithHeartbeatInterval(TimeSpan.FromMilliseconds(options.HeartbeatIntervalMs));
         builder.WithRebalanceTimeout(TimeSpan.FromMilliseconds(options.RebalanceTimeoutMs));
         builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
-        builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
-        builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
+        if (options.IsReconnectBackoffMsConfigured)
+            builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
+        if (options.IsReconnectBackoffMaxMsConfigured)
+            builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
         builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
         ApplySocketConnectionOptions(
             options.ConnectionTimeout,
@@ -968,8 +972,10 @@ internal static class DekafOptionsBinding
         if (options.ClientId is not null)
             builder.WithClientId(options.ClientId);
         builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
-        builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
-        builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
+        if (options.IsReconnectBackoffMsConfigured)
+            builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
+        if (options.IsReconnectBackoffMaxMsConfigured)
+            builder.WithReconnectBackoffMax(TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs));
         builder.WithConnectionsMaxIdle(ToTimeout(options.ConnectionsMaxIdleMs));
         ApplySocketConnectionOptions(
             options.ConnectionTimeout,

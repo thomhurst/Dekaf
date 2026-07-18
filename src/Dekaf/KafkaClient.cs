@@ -82,6 +82,8 @@ public sealed class KafkaClientBuilder
     private int _requestTimeoutMs = 30000;
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
+    private bool _reconnectBackoffConfigured;
+    private bool _reconnectBackoffMaxConfigured;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
@@ -144,6 +146,7 @@ public sealed class KafkaClientBuilder
     /// <summary>
     /// Sets the initial delay before reconnecting to a broker after a connection failure.
     /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to zero to disable the delay.
+    /// When the maximum is not configured, it uses this value and disables exponential growth.
     /// </summary>
     /// <param name="backoff">The reconnect backoff. Cannot be negative.</param>
     public KafkaClientBuilder WithReconnectBackoff(TimeSpan backoff)
@@ -152,6 +155,7 @@ public sealed class KafkaClientBuilder
             backoff,
             nameof(backoff),
             "Reconnect backoff cannot be negative");
+        _reconnectBackoffConfigured = true;
         return this;
     }
 
@@ -166,6 +170,7 @@ public sealed class KafkaClientBuilder
             backoff,
             nameof(backoff),
             "Maximum reconnect backoff cannot be negative");
+        _reconnectBackoffMaxConfigured = true;
         return this;
     }
 
@@ -459,7 +464,11 @@ public sealed class KafkaClientBuilder
         if (_maxConnectionsPerBroker < _connectionsPerBroker)
             throw new InvalidOperationException(
                 $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}).");
-        ReconnectBackoffValidation.ValidateMilliseconds(_reconnectBackoffMs, _reconnectBackoffMaxMs);
+        var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
+            _reconnectBackoffMs,
+            _reconnectBackoffMaxMs,
+            _reconnectBackoffConfigured,
+            _reconnectBackoffMaxConfigured);
 
         GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
 
@@ -469,7 +478,7 @@ public sealed class KafkaClientBuilder
             ClientId = _clientId,
             RequestTimeoutMs = _requestTimeoutMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
-            ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
+            ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             RemoteCertificateValidationCallback = _remoteCertificateValidationCallback,
