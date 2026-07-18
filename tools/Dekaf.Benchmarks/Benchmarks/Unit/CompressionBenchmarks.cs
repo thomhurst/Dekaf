@@ -1,5 +1,6 @@
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
+using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Compression.Snappy;
 
 namespace Dekaf.Benchmarks.Benchmarks.Unit;
@@ -9,7 +10,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// Tests Snappy compression/decompression performance.
 /// </summary>
 [MemoryDiagnoser]
-[ShortRunJob]
+[ThroughputJob]
 public class CompressionBenchmarks
 {
     private readonly SnappyCompressionCodec _codec = new();
@@ -37,23 +38,23 @@ public class CompressionBenchmarks
         _outputBuffer.Clear();
     }
 
-    [IterationSetup]
-    public void IterationSetup()
-    {
-        _outputBuffer.Clear();
-    }
+    // No [IterationSetup]: its presence would force single-invocation iterations
+    // (cold single-shot Tier-0 samples, meaningless statistics for microsecond ops).
+    // Each benchmark clears _outputBuffer itself instead.
 
     // ===== Compression =====
 
     [Benchmark(Description = "Snappy Compress 1KB")]
     public void Snappy_Compress_1KB()
     {
+        _outputBuffer.Clear();
         _codec.Compress(new ReadOnlySequence<byte>(_smallData), _outputBuffer);
     }
 
     [Benchmark(Description = "Snappy Compress 1MB")]
     public void Snappy_Compress_1MB()
     {
+        _outputBuffer.Clear();
         _codec.Compress(new ReadOnlySequence<byte>(_largeData), _outputBuffer);
     }
 
@@ -62,12 +63,14 @@ public class CompressionBenchmarks
     [Benchmark(Description = "Snappy Decompress 1KB")]
     public void Snappy_Decompress_1KB()
     {
+        _outputBuffer.Clear();
         _codec.Decompress(new ReadOnlySequence<byte>(_smallCompressed), _outputBuffer);
     }
 
     [Benchmark(Description = "Snappy Decompress 1MB")]
     public void Snappy_Decompress_1MB()
     {
+        _outputBuffer.Clear();
         _codec.Decompress(new ReadOnlySequence<byte>(_largeCompressed), _outputBuffer);
     }
 

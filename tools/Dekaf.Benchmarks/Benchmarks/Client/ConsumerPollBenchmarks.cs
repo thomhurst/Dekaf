@@ -41,8 +41,8 @@ public class ConsumerPollBenchmarks
             AddJob(Job.Default
                 .WithStrategy(RunStrategy.Throughput)
                 .WithLaunchCount(1)
-                .WithWarmupCount(3)
-                .WithIterationCount(3)
+                .WithWarmupCount(5)
+                .WithIterationCount(10)
                 .WithInvocationCount(PollsPerIteration)
                 .WithUnrollFactor(1));
         }
@@ -97,13 +97,10 @@ public class ConsumerPollBenchmarks
     public void ConfluentIterationSetup()
     {
         _confluentPollConsumer = new Confluent.Kafka.ConsumerBuilder<string, string>(
-            new Confluent.Kafka.ConsumerConfig
-            {
-                BootstrapServers = _kafka.BootstrapServers,
-                ClientId = "confluent-poll-benchmark",
-                GroupId = $"confluent-poll-{Guid.NewGuid():N}",
-                AutoOffsetReset = Confluent.Kafka.AutoOffsetReset.Earliest
-            }).Build();
+            ConfluentBenchmarkConfigs.CreateConsumerConfig(
+                _kafka.BootstrapServers,
+                clientId: "confluent-poll-benchmark",
+                groupId: $"confluent-poll-{Guid.NewGuid():N}")).Build();
         _confluentPollConsumer.Subscribe(_topic);
 
         if (_confluentPollConsumer.Consume(PollTimeout) is null)

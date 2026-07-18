@@ -1,6 +1,7 @@
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
+using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 
@@ -15,10 +16,12 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// the single baseline lives in the Writer category. There is deliberately no
 /// <c>[IterationSetup]</c>: its presence would force single-invocation iterations, which
 /// cannot produce meaningful statistics for nanosecond-scale operations — buffers are
-/// reset inside each benchmark instead.
+/// reset inside each benchmark instead. The Writer and Batch benchmarks exercise
+/// <see cref="ReusableBufferWriter"/> — the writer the production serialization path
+/// actually uses (thread-local buffers in <c>ProducerThreadCache</c>).
 /// </remarks>
 [MemoryDiagnoser]
-[ShortRunJob]
+[ThroughputJob]
 [GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByCategory)]
 [CategoriesColumn]
 public class SerializerBenchmarks
@@ -31,6 +34,11 @@ public class SerializerBenchmarks
     private byte[] _stringBytes = null!;
     private SerializationContext _context;
 
+    // Persistent buffers for ReusableBufferWriter, mirroring the producer's
+    // thread-local KeySerializationBuffer/ValueSerializationBuffer.
+    private byte[]? _reusableKeyBuffer;
+    private byte[]? _reusableValueBuffer;
+
     [GlobalSetup]
     public void Setup()
     {
@@ -39,9 +47,7 @@ public class SerializerBenchmarks
         _mediumString = new string('a', 100);
         _largeString = new string('a', 1000);
 
-        // Pre-created so the batch benchmark's Allocated column reflects the library,
-        // not the benchmark's own key-string interpolation.
-        _batchKeys = [.. Enumerable.Range(0, 100).Select(i => $"key-{i}")];
+        _batchKeys = BenchmarkData.CreateKeys(100);
 
         _context = new SerializationContext
         {
@@ -107,20 +113,22 @@ public class SerializerBenchmarks
 
         for (var i = 0; i < 100; i++)
         {
-            var keyWriter = new PooledBufferWriter(initialCapacity: 64);
+            var keyWriter = new ReusableBufferWriter(ref _reusableKeyBuffer, 64);
             Serializers.String.Serialize(_batchKeys[i], ref keyWriter, keyContext);
             var keyMemory = keyWriter.ToPooledMemory();
+            keyWriter.UpdateBufferRef(ref _reusableKeyBuffer);
 
-            var valueWriter = new PooledBufferWriter(initialCapacity: 256);
+            var valueWriter = new ReusableBufferWriter(ref _reusableValueBuffer, 256);
             Serializers.String.Serialize(_mediumString, ref valueWriter, valueContext);
             var valueMemory = valueWriter.ToPooledMemory();
+            valueWriter.UpdateBufferRef(ref _reusableValueBuffer);
 
             keyMemory.Return();
             valueMemory.Return();
         }
     }
 
-    // ===== PooledBufferWriter vs ArrayBufferWriter =====
+    // ===== ReusableBufferWriter (production path) vs ArrayBufferWriter =====
 
     [BenchmarkCategory("Writer")]
     [Benchmark(Baseline = true, Description = "ArrayBufferWriter + Copy")]
@@ -135,11 +143,12 @@ public class SerializerBenchmarks
     }
 
     [BenchmarkCategory("Writer")]
-    [Benchmark(Description = "PooledBufferWriter Direct")]
-    public void Serialize_PooledBufferWriter()
+    [Benchmark(Description = "ReusableBufferWriter Direct")]
+    public void Serialize_ReusableBufferWriter()
     {
-        var pooledWriter = new PooledBufferWriter(initialCapacity: 256);
-        Serializers.String.Serialize(_mediumString, ref pooledWriter, _context);
-        pooledWriter.ToPooledMemory().Return();
+        var writer = new ReusableBufferWriter(ref _reusableValueBuffer, 256);
+        Serializers.String.Serialize(_mediumString, ref writer, _context);
+        writer.ToPooledMemory().Return();
+        writer.UpdateBufferRef(ref _reusableValueBuffer);
     }
 }

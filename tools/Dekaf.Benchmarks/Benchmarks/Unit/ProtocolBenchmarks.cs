@@ -1,5 +1,6 @@
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
+using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 
@@ -9,14 +10,21 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// Zero-allocation protocol benchmarks for Kafka wire protocol operations.
 /// These benchmarks verify Dekaf's allocation-free design.
 /// </summary>
+/// <remarks>
+/// The RecordBatch write benchmarks reuse a batch built in <c>[GlobalSetup]</c>
+/// (<see cref="RecordBatch.Write"/> does not mutate the batch), and the read benchmarks
+/// return the batch to its pool the way the consumer path does — so the Allocated column
+/// measures the library, not the benchmark's own input construction.
+/// </remarks>
 [MemoryDiagnoser]
-[ShortRunJob]
+[ThroughputJob]
 public class ProtocolBenchmarks
 {
     private ArrayBufferWriter<byte> _buffer = null!;
     private byte[] _int32Data = null!;
     private byte[] _varIntData = null!;
     private byte[] _recordBatchBytes = null!;
+    private RecordBatch _writeBatch = null!;
     private string _testString = null!;
     private string _longString = null!;
 
@@ -63,13 +71,13 @@ public class ProtocolBenchmarks
         };
         batch.Write(tempBuffer);
         _recordBatchBytes = tempBuffer.WrittenSpan.ToArray();
+
+        _writeBatch = CreateTenRecordBatch();
     }
 
-    [IterationSetup]
-    public void IterationSetup()
-    {
-        _buffer.Clear();
-    }
+    // No [IterationSetup]: its presence would force single-invocation iterations
+    // (cold single-shot Tier-0 samples, meaningless statistics for microsecond ops).
+    // Each write benchmark clears _buffer itself; read benchmarks don't use it.
 
     // ===== Write Operations =====
 
@@ -195,20 +203,16 @@ public class ProtocolBenchmarks
     public void WriteRecordBatch()
     {
         _buffer.Clear();
-        var batch = CreateTenRecordBatch();
-
-        batch.Write(_buffer);
+        _writeBatch.Write(_buffer);
     }
 
     [Benchmark(Description = "Write RecordBatch pre-serialized (10 records)")]
     public void WriteRecordBatchPreSerialized()
     {
         _buffer.Clear();
-        var batch = CreateTenRecordBatch();
-
-        batch.PreCompress(CompressionType.None, null);
-        batch.Write(_buffer);
-        batch.ReturnPreCompressedBuffer();
+        _writeBatch.PreCompress(CompressionType.None, null);
+        _writeBatch.Write(_buffer);
+        _writeBatch.ReturnPreCompressedBuffer();
     }
 
     private static RecordBatch CreateTenRecordBatch() => new()
@@ -227,12 +231,13 @@ public class ProtocolBenchmarks
     };
 
     [Benchmark(Description = "Read RecordBatch (10 records)")]
-    public RecordBatch ReadRecordBatch()
+    public long ReadRecordBatch()
     {
         var reader = new KafkaProtocolReader(_recordBatchBytes);
         var batch = RecordBatch.Read(ref reader);
-        batch.Dispose();
-        return batch;
+        var baseOffset = batch.BaseOffset;
+        batch.DisposeAndReturnUnownedConsumerBatch();
+        return baseOffset;
     }
 
     [Benchmark(Description = "Read + Iterate RecordBatch (10 records)")]
@@ -245,7 +250,7 @@ public class ProtocolBenchmarks
         {
             sum += batch.Records[i].OffsetDelta;
         }
-        batch.Dispose();
+        batch.DisposeAndReturnUnownedConsumerBatch();
         return sum;
     }
 }

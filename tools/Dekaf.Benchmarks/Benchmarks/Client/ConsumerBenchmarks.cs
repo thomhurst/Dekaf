@@ -1,6 +1,5 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
-using BenchmarkDotNet.Engines;
 using Dekaf.Benchmarks.Infrastructure;
 using DekafConsumer = Dekaf.Consumer;
 
@@ -21,7 +20,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 /// Single-message poll benchmarks live in <see cref="ConsumerPollBenchmarks"/>.
 /// </remarks>
 [MemoryDiagnoser]
-[SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 3)]
+// Lower counts than the default tier: [IterationSetup] forces single-invocation
+// iterations here, and each one pays a full consumer build + group join (~seconds),
+// so every extra iteration buys exactly one sample at high setup cost.
+[ThroughputJob(warmupCount: 3, iterationCount: 8)]
 [GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByCategory)]
 [CategoriesColumn]
 public class ConsumerBenchmarks
@@ -83,14 +85,11 @@ public class ConsumerBenchmarks
     public void ConfluentIterationSetup()
     {
         _confluentConsumer = new Confluent.Kafka.ConsumerBuilder<string, string>(
-            new Confluent.Kafka.ConsumerConfig
-            {
-                BootstrapServers = _kafka.BootstrapServers,
-                ClientId = "confluent-consumer-benchmark",
-                GroupId = $"confluent-benchmark-{Guid.NewGuid():N}",
-                AutoOffsetReset = Confluent.Kafka.AutoOffsetReset.Earliest,
-                EnableAutoCommit = false
-            }).Build();
+            ConfluentBenchmarkConfigs.CreateConsumerConfig(
+                _kafka.BootstrapServers,
+                clientId: "confluent-consumer-benchmark",
+                groupId: $"confluent-benchmark-{Guid.NewGuid():N}",
+                enableAutoCommit: false)).Build();
         _confluentConsumer.Subscribe(_topic);
 
         // Prime through group join and the first fetch so the timed region starts warm.

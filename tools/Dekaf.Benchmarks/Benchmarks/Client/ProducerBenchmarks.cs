@@ -1,6 +1,5 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
-using BenchmarkDotNet.Engines;
 using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Tooling;
 using DekafProducer = Dekaf.Producer;
@@ -11,8 +10,15 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 /// Producer benchmarks comparing Dekaf vs Confluent.Kafka.
 /// Confluent is marked as baseline for ratio comparison.
 /// </summary>
+/// <remarks>
+/// Message keys are pre-created in <c>[GlobalSetup]</c> so the Allocated column reflects
+/// the clients, not the benchmark's own key-string interpolation. Dekaf ops use the
+/// allocation-optimized <c>ProduceAsync(topic, key, value)</c> / <c>FireAsync(topic, key, value)</c>
+/// overloads — the idiomatic hot-path API — rather than allocating a
+/// <see cref="DekafProducer.ProducerMessage{TKey, TValue}"/> per message.
+/// </remarks>
 [MemoryDiagnoser]
-[SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 3, iterationCount: 3)]
+[ThroughputJob]
 [GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByCategory)]
 [CategoriesColumn]
 public class ProducerBenchmarks
@@ -25,6 +31,7 @@ public class ProducerBenchmarks
     private const string Topic = "benchmark-producer";
     private static readonly TimeSpan QueueFullRetryTimeout = TimeSpan.FromSeconds(30);
     private string _messageValue = null!;
+    private string[] _keys = null!;
 
     [Params(100, 1000)]
     public int MessageSize { get; set; }
@@ -39,6 +46,7 @@ public class ProducerBenchmarks
         await _kafka.CreateTopicAsync(Topic, 3).ConfigureAwait(false);
 
         _messageValue = new string('x', MessageSize);
+        _keys = BenchmarkData.CreateKeys(BatchSize);
 
         _dekafProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
@@ -147,12 +155,8 @@ public class ProducerBenchmarks
     [Benchmark]
     public async Task<DekafProducer.RecordMetadata> Dekaf_ProduceSingle()
     {
-        return await _dekafProducer.ProduceAsync(new DekafProducer.ProducerMessage<string, string>
-        {
-            Topic = Topic,
-            Key = "key",
-            Value = _messageValue
-        }, CancellationToken.None).ConfigureAwait(false);
+        return await _dekafProducer.ProduceAsync(Topic, "key", _messageValue, CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     // ===== Batch Produce =====
@@ -167,7 +171,7 @@ public class ProducerBenchmarks
         {
             tasks.Add(_confluentProducer.ProduceAsync(Topic, new Confluent.Kafka.Message<string, string>
             {
-                Key = $"key-{i}",
+                Key = _keys[i],
                 Value = _messageValue
             }));
         }
@@ -181,14 +185,12 @@ public class ProducerBenchmarks
     {
         var tasks = new List<Task<DekafProducer.RecordMetadata>>(BatchSize);
 
+        // .AsTask() per message is required: the pooled ValueTask contract forbids
+        // collecting raw ValueTasks for deferred await (see IKafkaProducer remarks).
         for (var i = 0; i < BatchSize; i++)
         {
-            tasks.Add(_dekafProducer.ProduceAsync(new DekafProducer.ProducerMessage<string, string>
-            {
-                Topic = Topic,
-                Key = $"key-{i}",
-                Value = _messageValue
-            }, CancellationToken.None).AsTask());
+            tasks.Add(_dekafProducer.ProduceAsync(Topic, _keys[i], _messageValue, CancellationToken.None)
+                .AsTask());
         }
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -202,7 +204,7 @@ public class ProducerBenchmarks
     {
         for (var i = 0; i < BatchSize; i++)
         {
-            ProduceConfluentFireAndForget($"key-{i}", _messageValue);
+            ProduceConfluentFireAndForget(_keys[i], _messageValue);
         }
     }
 
@@ -229,7 +231,7 @@ public class ProducerBenchmarks
     {
         for (var i = 0; i < BatchSize; i++)
         {
-            await _dekafProducer.FireAsync(Topic, $"key-{i}", _messageValue);
+            await _dekafProducer.FireAsync(Topic, _keys[i], _messageValue);
         }
     }
 }

@@ -1,6 +1,7 @@
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
+using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -18,7 +19,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 public class ProducerFireHotPathBenchmarks
 {
     private const string Topic = "producer-fire-hot-path";
-    private static readonly string[] Keys = CreateKeys();
+    private static readonly string[] Keys = BenchmarkData.CreateKeys(10_000);
 
     private KafkaProducer<string, string> _producer = null!;
     private RecordAccumulator _accumulator = null!;
@@ -109,14 +110,6 @@ public class ProducerFireHotPathBenchmarks
                 spinner.SpinOnce();
             }
         }
-    }
-
-    private static string[] CreateKeys()
-    {
-        var keys = new string[10_000];
-        for (var i = 0; i < keys.Length; i++)
-            keys[i] = $"key-{i}";
-        return keys;
     }
 
     private static void SeedMetadata(KafkaProducer<string, string> producer)
