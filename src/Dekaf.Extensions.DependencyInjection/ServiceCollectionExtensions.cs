@@ -803,6 +803,7 @@ internal static class DekafOptionsBinding
         builder.WithLinger(TimeSpan.FromMilliseconds(options.LingerMs));
         builder.WithBatchSize(options.BatchSize);
         builder.WithBufferMemory(options.BufferMemory);
+        builder.WithBufferMemoryAllocationStrategy(options.BufferMemoryAllocationStrategy);
         if (options.EnableIdempotence || options.IsMaxInFlightRequestsPerConnectionConfigured)
             builder.WithMaxInFlightRequestsPerConnection(options.MaxInFlightRequestsPerConnection);
         builder.WithRetries(options.Retries);
@@ -1221,6 +1222,8 @@ internal static class DekafConfigurationBinding
             builder.WithArenaCapacity(arenaCapacity);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.InitialBatchRecordCapacity), out var initialBatchRecordCapacity))
             builder.WithInitialBatchRecordCapacity(initialBatchRecordCapacity);
+        if (TryGetValue<BufferMemoryAllocationStrategy>(configuration, nameof(ProducerOptions.BufferMemoryAllocationStrategy), out var allocationStrategy))
+            builder.WithBufferMemoryAllocationStrategy(allocationStrategy);
         if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(ProducerOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))

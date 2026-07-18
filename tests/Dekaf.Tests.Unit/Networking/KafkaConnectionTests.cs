@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
@@ -182,14 +183,16 @@ public sealed class KafkaConnectionTests
         await Assert.That(segmented).IsTrue();
         try
         {
-            var actual = new byte[prefixLength + encodedRecords.Count + suffixLength];
+            var encodedRecordsLength = checked((int)encodedRecords.Length);
+            var actual = new byte[prefixLength + encodedRecordsLength + suffixLength];
             metadataArray.AsSpan(0, prefixLength).CopyTo(actual);
-            encodedRecords.AsSpan().CopyTo(actual.AsSpan(prefixLength));
+            encodedRecords.CopyTo(actual.AsSpan(prefixLength));
             metadataArray.AsSpan(suffixOffset, suffixLength)
-                .CopyTo(actual.AsSpan(prefixLength + encodedRecords.Count));
+                .CopyTo(actual.AsSpan(prefixLength + encodedRecordsLength));
 
             await Assert.That(actual).IsEquivalentTo(expected);
-            await Assert.That(encodedRecords.Array).IsSameReferenceAs(encodedRecordsBackingArray);
+            MemoryMarshal.TryGetArray(encodedRecords.First, out var firstRecordsSegment);
+            await Assert.That(firstRecordsSegment.Array).IsSameReferenceAs(encodedRecordsBackingArray);
         }
         finally
         {

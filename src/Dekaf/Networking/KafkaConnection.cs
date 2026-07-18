@@ -1397,7 +1397,7 @@ public sealed partial class KafkaConnection :
         short headerVersion,
         out byte[] metadataArray,
         out int prefixLength,
-        out ArraySegment<byte> encodedRecords,
+        out ReadOnlySequence<byte> encodedRecords,
         out int suffixOffset,
         out int suffixLength)
     {
@@ -1442,14 +1442,23 @@ public sealed partial class KafkaConnection :
         if (!batch.TryWriteSegmentedHeader(
                 metadataWriter,
                 partition.Compression,
-                out var encodedRecordsMemory)
-            || !MemoryMarshal.TryGetArray(encodedRecordsMemory, out encodedRecords))
+                out encodedRecords))
         {
             encodedRecords = default;
             return false;
         }
 
-        var segmentedBatchSize = RecordBatch.TotalBatchHeaderSize + encodedRecords.Count;
+        foreach (var segment in encodedRecords)
+        {
+            if (!MemoryMarshal.TryGetArray(segment, out _))
+            {
+                encodedRecords = default;
+                return false;
+            }
+        }
+
+        var encodedRecordsLength = checked((int)encodedRecords.Length);
+        var segmentedBatchSize = RecordBatch.TotalBatchHeaderSize + encodedRecordsLength;
         if (encodedBatchSize != segmentedBatchSize)
         {
             throw new KafkaException(
@@ -1475,7 +1484,7 @@ public sealed partial class KafkaConnection :
                 $"PRODUCE segmented body mismatch: size hint {request.RequestBodySizeHint} but serialized {bodyLength} bytes.");
         }
 
-        var totalLength = checked(metadataWriter.WrittenCount + encodedRecords.Count);
+        var totalLength = checked(metadataWriter.WrittenCount + encodedRecordsLength);
         (metadataArray, _) = metadataWriter.DetachBuffer();
         BinaryPrimitives.WriteInt32BigEndian(metadataArray, totalLength - MessageSizePrefixLength);
         return true;
@@ -1484,7 +1493,7 @@ public sealed partial class KafkaConnection :
     private async Task WriteSegmentedFrameHoldingLockAsync(
         byte[] metadataArray,
         int prefixLength,
-        ArraySegment<byte> encodedRecords,
+        ReadOnlySequence<byte> encodedRecords,
         int suffixOffset,
         int suffixLength)
     {
@@ -1502,20 +1511,25 @@ public sealed partial class KafkaConnection :
                 throw new ObjectDisposedException(nameof(KafkaConnection));
 
             var sender = _scatterGatherSender ??= new SocketScatterGatherSender();
-            var sendSegments = sender.Segments;
-            sendSegments.Add(new ArraySegment<byte>(metadataArray, 0, prefixLength));
-            if (encodedRecords.Count > 0)
-                sendSegments.Add(encodedRecords);
-            if (suffixLength > 0)
-                sendSegments.Add(new ArraySegment<byte>(metadataArray, suffixOffset, suffixLength));
-
-            while (sendSegments.Count > 0)
+            var pendingSegments = sender.PendingSegments;
+            pendingSegments.Add(new ArraySegment<byte>(metadataArray, 0, prefixLength));
+            foreach (var memory in encodedRecords)
             {
+                if (memory.Length > 0 && MemoryMarshal.TryGetArray(memory, out var segment))
+                    pendingSegments.Add(segment);
+            }
+            if (suffixLength > 0)
+                pendingSegments.Add(new ArraySegment<byte>(metadataArray, suffixOffset, suffixLength));
+
+            sender.BeginPendingSend();
+            while (sender.HasPendingSegments)
+            {
+                sender.LoadSendWindow();
                 var bytesSent = await sender.SendAsync(socket).ConfigureAwait(false);
                 if (bytesSent <= 0)
                     throw new IOException("Socket closed while writing a Kafka request frame.");
 
-                ConsumeSentSegments(sendSegments, bytesSent);
+                sender.ConsumeSentBytes(bytesSent);
             }
         }
         catch
@@ -1528,6 +1542,7 @@ public sealed partial class KafkaConnection :
             if (scatterGatherSenderLockHeld)
             {
                 _scatterGatherSender?.Segments.Clear();
+                _scatterGatherSender?.PendingSegments.Clear();
                 SemaphoreHelper.ReleaseSafely(_scatterGatherSenderLock);
             }
 
@@ -3298,7 +3313,10 @@ public sealed partial class KafkaConnection :
 
     private sealed class SocketScatterGatherSender : IValueTaskSource<int>, IDisposable
     {
+        private const int MaximumSegmentsPerSend = 16;
         private readonly SocketAsyncEventArgs _eventArgs = new();
+        private int _pendingSegmentIndex;
+        private int _pendingSegmentOffset;
         private ManualResetValueTaskSourceCore<int> _core = new()
         {
             RunContinuationsAsynchronously = true
@@ -3309,7 +3327,55 @@ public sealed partial class KafkaConnection :
             _eventArgs.Completed += CompleteSend;
         }
 
-        public List<ArraySegment<byte>> Segments { get; } = new(3);
+        public List<ArraySegment<byte>> PendingSegments { get; } = new(MaximumSegmentsPerSend);
+        public List<ArraySegment<byte>> Segments { get; } = new(MaximumSegmentsPerSend);
+
+        public bool HasPendingSegments => _pendingSegmentIndex < PendingSegments.Count;
+
+        public void BeginPendingSend()
+        {
+            _pendingSegmentIndex = 0;
+            _pendingSegmentOffset = 0;
+        }
+
+        public void LoadSendWindow()
+        {
+            Segments.Clear();
+            var end = Math.Min(
+                PendingSegments.Count,
+                _pendingSegmentIndex + MaximumSegmentsPerSend);
+            for (var i = _pendingSegmentIndex; i < end; i++)
+            {
+                var segment = PendingSegments[i];
+                if (i == _pendingSegmentIndex && _pendingSegmentOffset > 0)
+                {
+                    segment = new ArraySegment<byte>(
+                        segment.Array!,
+                        segment.Offset + _pendingSegmentOffset,
+                        segment.Count - _pendingSegmentOffset);
+                }
+
+                Segments.Add(segment);
+            }
+        }
+
+        public void ConsumeSentBytes(int bytesSent)
+        {
+            while (bytesSent > 0)
+            {
+                var segment = PendingSegments[_pendingSegmentIndex];
+                var remaining = segment.Count - _pendingSegmentOffset;
+                if (bytesSent < remaining)
+                {
+                    _pendingSegmentOffset += bytesSent;
+                    return;
+                }
+
+                bytesSent -= remaining;
+                _pendingSegmentIndex++;
+                _pendingSegmentOffset = 0;
+            }
+        }
 
         public ValueTask<int> SendAsync(Socket socket)
         {

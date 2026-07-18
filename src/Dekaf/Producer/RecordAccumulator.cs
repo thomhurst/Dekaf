@@ -2474,12 +2474,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         ProducerOptions.ValidateArenaCapacity(options.BatchSize, options.ArenaCapacity);
+        if (!Enum.IsDefined(options.BufferMemoryAllocationStrategy))
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.BufferMemoryAllocationStrategy,
+                "Unknown buffer memory allocation strategy.");
 
         // Scale pool sizes with BufferMemory/BatchSize to prevent pool exhaustion.
         // Small batches (e.g., 16KB) create high batch churn (~6,250/sec at 100K msg/sec)
         // and need larger pools than the default 256 designed for 1MB batches.
         var poolSize = ComputePoolSize(options);
-        BatchArena.RatchetPoolSize(poolSize);
+        if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full)
+            BatchArena.RatchetPoolSize(poolSize);
+        else
+            IncrementalBatchBuffer.RatchetPoolSize(poolSize * ReadyBatchPoolSizeRatio);
         // ReadyBatch lifecycle spans seal→send→response→cleanup (longer than PartitionBatch),
         // so its pool needs to be larger to avoid exhaustion under sustained throughput.
         _readyBatchPool = new ReadyBatchPool(maxPoolSize: poolSize * ReadyBatchPoolSizeRatio);
@@ -2502,8 +2510,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var preWarmCount = Math.Min(poolSize / 8, 16);
         _readyBatchPool.PreWarm(Math.Min(poolSize, 32));
         _batchPool.PreWarm(preWarmCount);
-        BatchArena.PreWarm(preWarmCount,
-            ProducerOptions.GetEffectiveArenaCapacity(options.BatchSize, options.ArenaCapacity));
+        if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full)
+        {
+            BatchArena.PreWarm(preWarmCount,
+                ProducerOptions.GetEffectiveArenaCapacity(options.BatchSize, options.ArenaCapacity));
+        }
+        else
+        {
+            IncrementalBatchBuffer.PreWarm(
+                Math.Min(poolSize * ReadyBatchPoolSizeRatio, 256),
+                options.BatchSize);
+        }
 
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
@@ -6826,6 +6843,7 @@ internal sealed class PartitionBatch
 
     // Arena holding the encoded record bytes - all records in one contiguous buffer
     private BatchArena? _arena;
+    private IncrementalBatchBuffer? _incrementalBuffer;
 
     private int _recordCount;
 
@@ -6876,8 +6894,7 @@ internal sealed class PartitionBatch
             ? Math.Clamp(options.InitialBatchRecordCapacity, 16, 16384)
             : ComputeInitialRecordCapacity(options.BatchSize);
 
-        // Create arena for append-time record encoding
-        _arena = new BatchArena(GetEffectiveArenaCapacity(options));
+        CreateAppendBuffer(options);
         _recordCount = 0;
 
         // Rent arrays from pool - eliminates List allocations
@@ -6962,12 +6979,13 @@ internal sealed class PartitionBatch
         _options = options;
         _arrayReuseQueue = arrayReuseQueue;
 
-        // Arena was transferred to ReadyBatch by Complete(), so _arena should be null.
-        // This is a no-op but kept for safety.
+        // Append storage was transferred to ReadyBatch by Complete(). These are no-ops
+        // in the normal path but retained for failure safety.
         _arena?.Return();
+        if (_incrementalBuffer is not null)
+            IncrementalBatchBuffer.ReturnToPool(_incrementalBuffer);
 
-        // Rent or create arena for the pooled batch
-        _arena = BatchArena.RentOrCreate(GetEffectiveArenaCapacity(options));
+        CreateAppendBuffer(options);
 
         // The completion sources array was transferred to ReadyBatch by Complete() and is now null.
         // Try to reclaim one from the reuse queue first (returned by ReadyBatch.Cleanup()),
@@ -7007,6 +7025,9 @@ internal sealed class PartitionBatch
     /// Returns null if arena is not available (batch completed or arena full).
     /// </summary>
     public BatchArena? Arena => Volatile.Read(ref _isCompleted) == 0 ? _arena : null;
+
+    internal int RetainedBatchBufferCapacity =>
+        _arena?.Capacity ?? _incrementalBuffer?.RetainedCapacity ?? 0;
 
     public TopicPartition TopicPartition => _topicPartition;
     public int PartitionCount => _partitionCount;
@@ -7089,14 +7110,17 @@ internal sealed class PartitionBatch
     }
 
     internal readonly record struct ReservedRecordAppend(
-        BatchArena Arena,
+        BatchArena? Arena,
+        IncrementalBatchBuffer? IncrementalBuffer,
+        byte[] Buffer,
         int RecordIndex,
         long Timestamp,
         long BaseTimestamp,
         long TimestampDelta,
         int BodySize,
         int EncodedRecordSize,
-        int EncodedOffset);
+        int EncodedOffset,
+        int LogicalOffset);
 
     /// <summary>
     /// Returns the batch creation timestamp from Stopwatch for efficient age comparisons.
@@ -7324,7 +7348,7 @@ internal sealed class PartitionBatch
             return new RecordAppendResult(false);
         }
 
-        if (recordIndex == 0)
+        if (recordIndex == 0 && _incrementalBuffer is null)
         {
             EnsureArenaCanFitFirstRecord(encodedRecordSize);
         }
@@ -7343,7 +7367,24 @@ internal sealed class PartitionBatch
             }
         }
 
-        if (_arena is null || !_arena.TryAllocate(encodedRecordSize, out _, out var encodedOffset))
+        byte[] encodedBuffer;
+        int encodedOffset;
+        int logicalOffset;
+        if (_incrementalBuffer is not null)
+        {
+            _incrementalBuffer.Allocate(
+                encodedRecordSize,
+                out encodedBuffer,
+                out encodedOffset,
+                out logicalOffset);
+        }
+        else if (_arena is not null
+                 && _arena.TryAllocate(encodedRecordSize, out _, out encodedOffset))
+        {
+            encodedBuffer = _arena.Buffer;
+            logicalOffset = encodedOffset;
+        }
+        else
         {
             reservedAppend = default;
             return new RecordAppendResult(false);
@@ -7351,13 +7392,16 @@ internal sealed class PartitionBatch
 
         reservedAppend = new ReservedRecordAppend(
             _arena,
+            _incrementalBuffer,
+            encodedBuffer,
             recordIndex,
             timestamp,
             baseTimestamp,
             timestampDelta,
             bodySize,
             encodedRecordSize,
-            encodedOffset);
+            encodedOffset,
+            logicalOffset);
 
         var firstCompletionSourceInBatch = hasCompletionSource && _completionSourceCount == 0;
         return new RecordAppendResult(
@@ -7387,7 +7431,7 @@ internal sealed class PartitionBatch
         Header[]? headers,
         int headerCount)
     {
-        var encodedRecord = reservedAppend.Arena.Buffer.AsSpan(
+        var encodedRecord = reservedAppend.Buffer.AsSpan(
             reservedAppend.EncodedOffset,
             reservedAppend.EncodedRecordSize);
 
@@ -7426,10 +7470,10 @@ internal sealed class PartitionBatch
         if (recordIndex == 0)
         {
             _baseTimestamp = reservedAppend.BaseTimestamp;
-            _encodedRecordsStart = reservedAppend.EncodedOffset;
+            _encodedRecordsStart = reservedAppend.LogicalOffset;
         }
 
-        Debug.Assert(reservedAppend.EncodedOffset == _encodedRecordsStart + _encodedRecordsLength);
+        Debug.Assert(reservedAppend.LogicalOffset == _encodedRecordsStart + _encodedRecordsLength);
         _encodedRecordsLength += reservedAppend.EncodedRecordSize;
         _maxTimestamp = recordIndex == 0 ? reservedAppend.Timestamp : Math.Max(_maxTimestamp, reservedAppend.Timestamp);
 
@@ -7451,7 +7495,32 @@ internal sealed class PartitionBatch
 
     internal static void CancelReservedAppend(in ReservedRecordAppend reservedAppend)
     {
-        reservedAppend.Arena.TryRewindLastAllocation(reservedAppend.EncodedOffset, reservedAppend.EncodedRecordSize);
+        if (reservedAppend.Arena is not null)
+        {
+            reservedAppend.Arena.TryRewindLastAllocation(
+                reservedAppend.EncodedOffset,
+                reservedAppend.EncodedRecordSize);
+        }
+        else
+        {
+            reservedAppend.IncrementalBuffer?.TryRewindLastAllocation(
+                reservedAppend.LogicalOffset,
+                reservedAppend.EncodedRecordSize);
+        }
+    }
+
+    private void CreateAppendBuffer(ProducerOptions options)
+    {
+        if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Incremental)
+        {
+            _arena = null;
+            _incrementalBuffer = IncrementalBatchBuffer.Rent(options.BatchSize);
+        }
+        else
+        {
+            _incrementalBuffer = null;
+            _arena = BatchArena.RentOrCreate(GetEffectiveArenaCapacity(options));
+        }
     }
 
     private void EnsureArenaCanFitFirstRecord(int encodedRecordSize)
@@ -7559,8 +7628,6 @@ internal sealed class PartitionBatch
         ReadyBatch? readyBatch = null;
         try
         {
-            var encodedRecords = _arena!.GetMemory(_encodedRecordsStart, _encodedRecordsLength);
-
             // Rent from pool to eliminate per-batch RecordBatch class allocation.
             // The batch lives through the send pipeline (1-10ms) and would otherwise
             // survive Gen0 collection, contributing to high Gen1/Gen0 promotion rate.
@@ -7573,8 +7640,17 @@ internal sealed class PartitionBatch
             batch.ProducerEpoch = _producerEpoch;
             batch.BaseSequence = baseSequence;
             batch.Attributes = attributes;
-            batch.SetPreEncodedRecords(encodedRecords);
-            batch.Records = LazyRecordList.Create(encodedRecords, _recordCount);
+            if (_incrementalBuffer is not null)
+            {
+                batch.SetPreEncodedRecords(_incrementalBuffer.AsReadOnlySequence());
+                batch.Records = ProducerRecordCountList.Rent(_recordCount);
+            }
+            else
+            {
+                var encodedRecords = _arena!.GetMemory(_encodedRecordsStart, _encodedRecordsLength);
+                batch.SetPreEncodedRecords(encodedRecords);
+                batch.Records = LazyRecordList.Create(encodedRecords, _recordCount);
+            }
 
             // Rent ReadyBatch from pool or create new if no pool available
             // This eliminates per-batch class allocations at high throughput
@@ -7594,7 +7670,8 @@ internal sealed class PartitionBatch
                 _arrayReuseQueue,
                 _recordCount,
                 _createdStopwatchTimestamp,
-                _options.LingerMs * Stopwatch.Frequency / 1_000);
+                _options.LingerMs * Stopwatch.Frequency / 1_000,
+                _incrementalBuffer);
 
             if (_admissionBudget is { } admissionBudget)
             {
@@ -7624,6 +7701,7 @@ internal sealed class PartitionBatch
             // Null out references - ownership transferred to ReadyBatch
             _completionSources = null!;
             _arena = null;
+            _incrementalBuffer = null;
             _callbacks = null;
         }
         catch
@@ -7702,10 +7780,13 @@ internal sealed class PartitionBatch
 
         // Return arena buffer if present
         _arena?.Return();
+        if (_incrementalBuffer is not null)
+            IncrementalBatchBuffer.ReturnToPool(_incrementalBuffer);
 
         // Null out references to prevent accidental reuse
         _completionSources = null!;
         _arena = null;
+        _incrementalBuffer = null;
 
         if (_callbacks is not null)
         {
@@ -7895,6 +7976,7 @@ internal sealed class ReadyBatch
     // Reuse queue for returning working arrays back to PartitionBatch without ArrayPool round-trip
     private BatchArrayReuseQueue? _arrayReuseQueue;
     private BatchArena? _arena; // Arena holding the batch's encoded record bytes
+    private IncrementalBatchBuffer? _incrementalBuffer;
 
     // Callbacks for Send(message, callback) - inline invocation without ThreadPool
     private Action<RecordMetadata, Exception?>?[]? _callbacks;
@@ -8408,7 +8490,8 @@ internal sealed class ReadyBatch
         BatchArrayReuseQueue? arrayReuseQueue = null,
         int recordCount = 0,
         long createdStopwatchTimestamp = 0,
-        long lingerTicks = 0)
+        long lingerTicks = 0,
+        IncrementalBatchBuffer? incrementalBuffer = null)
     {
         // The generation increment must happen BEFORE the lifecycle flags are cleared.
         // Stale-reference holders validate liveness by reading _returnedToPool first and
@@ -8450,6 +8533,7 @@ internal sealed class ReadyBatch
         AdmissionGeneration = 0;
         UnackedBudgetPipelineTracked = 0;
         _arena = arena;
+        _incrementalBuffer = incrementalBuffer;
         _callbacks = callbacks;
         _callbackCount = callbackCount;
         _arrayReuseQueue = arrayReuseQueue;
@@ -8508,6 +8592,7 @@ internal sealed class ReadyBatch
         DataSize = 0;
         EncodedSize = 0;
         _arena = null;
+        _incrementalBuffer = null;
         _callbacks = null;
         _callbackCount = 0;
         _arrayReuseQueue = null;
@@ -8939,6 +9024,7 @@ internal sealed class ReadyBatch
         var completionSourcesArray = _completionSourcesArray;
         var arrayReuseQueue = _arrayReuseQueue;
         var arena = _arena;
+        var incrementalBuffer = _incrementalBuffer;
         var callbacks = _callbacks;
         var recordBatch = _recordBatch;
 
@@ -8969,6 +9055,11 @@ internal sealed class ReadyBatch
             if (arena is not null)
             {
                 BatchArena.ReturnToPool(arena);
+            }
+
+            if (incrementalBuffer is not null)
+            {
+                IncrementalBatchBuffer.ReturnToPool(incrementalBuffer);
             }
 
             // Return callback array to dedicated pool if present

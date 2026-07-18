@@ -11,6 +11,18 @@ using Dekaf.Telemetry;
 namespace Dekaf.Producer;
 
 /// <summary>
+/// Controls when producer batch storage is allocated.
+/// </summary>
+public enum BufferMemoryAllocationStrategy
+{
+    /// <summary>Allocate the full batch arena when a partition batch is created.</summary>
+    Full,
+
+    /// <summary>Allocate pooled chunks as records are appended.</summary>
+    Incremental
+}
+
+/// <summary>
 /// Configuration options for the Kafka producer.
 /// </summary>
 public sealed class ProducerOptions
@@ -156,6 +168,12 @@ public sealed class ProducerOptions
     /// </para>
     /// </summary>
     public ulong BufferMemory { get; init; } = 256L * 1024 * 1024;
+
+    /// <summary>
+    /// Controls whether each partition batch reserves its full arena immediately or grows
+    /// from pooled chunks as records are appended. Default is <see cref="BufferMemoryAllocationStrategy.Full"/>.
+    /// </summary>
+    public BufferMemoryAllocationStrategy BufferMemoryAllocationStrategy { get; init; }
 
     /// <summary>
     /// True when BufferMemory was auto-tuned from the global memory budget.

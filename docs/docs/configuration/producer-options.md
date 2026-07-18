@@ -75,6 +75,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithLinger(...)` | `LingerMs` | Milliseconds |
 | `WithBatchSize(...)` | `BatchSize` | Bytes |
 | `WithBufferMemory(...)` | `BufferMemory` | Bytes; omit to keep auto-tuning |
+| `WithBufferMemoryAllocationStrategy(...)` | `BufferMemoryAllocationStrategy` | `Full` or `Incremental` |
 | `WithMaxBlock(...)` | `MaxBlockMs` | Milliseconds |
 | `WithDeliveryLatencyTarget(...)` | `DeliveryLatencyTargetMs` | TimeSpan; `TimeSpan.Zero` disables |
 | `WithDeliveryTimeout(...)` | `DeliveryTimeoutMs` | Milliseconds |
@@ -356,6 +357,21 @@ Maximum memory the producer uses for buffering unsent messages:
 
 Default: 2GB. When the buffer is full, `ProduceAsync` and `Send` block until space is freed (controlled by `WithMaxBlockMs`). Increase if profiling shows significant time in backpressure waits; decrease in memory-constrained environments.
 
+### WithBufferMemoryAllocationStrategy
+
+Controls when each partition batch allocates its record storage:
+
+```csharp
+.WithBufferMemoryAllocationStrategy(BufferMemoryAllocationStrategy.Incremental)
+```
+
+`Full` (the default) reserves one contiguous arena when a batch starts. `Incremental` rents
+pooled chunks as records arrive, which substantially reduces retained memory when a producer
+has many active partitions whose batches are only partly filled. Records remain zero-copy:
+compression reads the chunk sequence directly, and unencrypted single-batch sends use TCP
+scatter/gather. `BufferMemory`, batch limits, oversized-record behavior, retries, idempotence,
+and transactions have identical semantics under both strategies.
+
 ### WithDeliveryLatencyTarget
 
 Soft target for per-broker queueing latency (append to broker acknowledgement):
@@ -412,6 +428,7 @@ Enable logging:
 | `WithAdaptiveConnections` | enabled (max 10) | Auto-scale connections under load |
 | `WithoutAdaptiveConnections` | - | Disable adaptive scaling |
 | `WithBufferMemory` | auto-tuned | Max buffer for unsent messages |
+| `WithBufferMemoryAllocationStrategy` | Full | Full arena or pooled incremental chunks |
 | `WithDeliveryLatencyTarget` | 10ms | Per-broker queueing latency target; `TimeSpan.Zero` disables |
 | `WithMaxBlock` | 60000ms | Max time produce calls wait for metadata or buffer space |
 | `WithDeliveryTimeout` | 120000ms | Max time for delivery success or failure |
