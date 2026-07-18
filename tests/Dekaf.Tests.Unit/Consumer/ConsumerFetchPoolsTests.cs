@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using Dekaf.Consumer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 
@@ -13,6 +14,11 @@ public sealed class ConsumerFetchPoolsTests
             "BuildFetchRequestTopics",
             BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("Could not find BuildFetchRequestTopics");
+    private static readonly MethodInfo BuildFetchRequestTopicsForConnectionMethod =
+        typeof(KafkaConsumer<string, string>).GetMethod(
+            "BuildFetchRequestTopicsForConnection",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("Could not find BuildFetchRequestTopicsForConnection");
     private static readonly FieldInfo FetchRequestTemplateCacheField =
         typeof(KafkaConsumer<string, string>).GetField(
             "_fetchRequestTemplateCache",
@@ -173,6 +179,172 @@ public sealed class ConsumerFetchPoolsTests
         await Assert.That(GetFetchRequestTemplateCacheCount(consumer)).IsEqualTo(2);
     }
 
+    [Test]
+    public async Task BuildFetchRequestTopics_RepeatedBuilds_RotatePartitionOrder()
+    {
+        await using var built = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .Build();
+        var consumer = (KafkaConsumer<string, string>)built;
+        var partitions = CreateTemplateCachePartitions();
+
+        var first = InvokeBuildFetchRequestTopics(consumer, partitions);
+        var second = InvokeBuildFetchRequestTopics(consumer, partitions);
+        var third = InvokeBuildFetchRequestTopics(consumer, partitions);
+        var fourth = InvokeBuildFetchRequestTopics(consumer, partitions);
+        try
+        {
+            await Assert.That(GetTopicPartitionOrder(first)).IsEqualTo("topic-a:0,topic-a:1,topic-b:0,topic-b:1");
+            await Assert.That(GetTopicPartitionOrder(second)).IsEqualTo("topic-a:1,topic-a:0,topic-b:0,topic-b:1");
+            await Assert.That(GetTopicPartitionOrder(third)).IsEqualTo("topic-b:0,topic-b:1,topic-a:0,topic-a:1");
+            await Assert.That(GetTopicPartitionOrder(fourth)).IsEqualTo("topic-b:1,topic-b:0,topic-a:0,topic-a:1");
+        }
+        finally
+        {
+            ConsumerFetchPools.ReturnFetchRequestTopics(first);
+            ConsumerFetchPools.ReturnFetchRequestTopics(second);
+            ConsumerFetchPools.ReturnFetchRequestTopics(third);
+            ConsumerFetchPools.ReturnFetchRequestTopics(fourth);
+        }
+    }
+
+    [Test]
+    public async Task BuildFetchRequestTopics_PreferredReplicaBroker_RotatesIndependently()
+    {
+        await using var built = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .Build();
+        var consumer = (KafkaConsumer<string, string>)built;
+        var partitions = new List<TopicPartition>
+        {
+            new("topic-a", 0),
+            new("topic-a", 1),
+            new("topic-a", 2)
+        };
+
+        var brokerOneFirst = InvokeBuildFetchRequestTopics(consumer, partitions, brokerId: 1);
+        var brokerOneSecond = InvokeBuildFetchRequestTopics(consumer, partitions, brokerId: 1);
+        var brokerTwoFirst = InvokeBuildFetchRequestTopics(consumer, partitions, brokerId: 2);
+        try
+        {
+            await Assert.That(GetPartitionOrder(brokerOneFirst)).IsEqualTo("0,1,2");
+            await Assert.That(GetPartitionOrder(brokerOneSecond)).IsEqualTo("1,2,0");
+            await Assert.That(GetPartitionOrder(brokerTwoFirst)).IsEqualTo("0,1,2");
+        }
+        finally
+        {
+            ConsumerFetchPools.ReturnFetchRequestTopics(brokerOneFirst);
+            ConsumerFetchPools.ReturnFetchRequestTopics(brokerOneSecond);
+            ConsumerFetchPools.ReturnFetchRequestTopics(brokerTwoFirst);
+        }
+    }
+
+    [Test]
+    public async Task BuildFetchRequestTopics_PrefetchConnections_RotateIndependently()
+    {
+        await using var built = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .Build();
+        var consumer = (KafkaConsumer<string, string>)built;
+        var partitions = new List<TopicPartition>
+        {
+            new("topic-a", 0),
+            new("topic-a", 1),
+            new("topic-a", 2)
+        };
+
+        var connectionZeroFirst = InvokeBuildFetchRequestTopicsForConnection(consumer, partitions, connectionIndex: 0);
+        var connectionZeroSecond = InvokeBuildFetchRequestTopicsForConnection(consumer, partitions, connectionIndex: 0);
+        var connectionOneFirst = InvokeBuildFetchRequestTopicsForConnection(consumer, partitions, connectionIndex: 1);
+        try
+        {
+            await Assert.That(GetPartitionOrder(connectionZeroFirst)).IsEqualTo("0,1,2");
+            await Assert.That(GetPartitionOrder(connectionZeroSecond)).IsEqualTo("1,2,0");
+            await Assert.That(GetPartitionOrder(connectionOneFirst)).IsEqualTo("0,1,2");
+        }
+        finally
+        {
+            ConsumerFetchPools.ReturnFetchRequestTopics(connectionZeroFirst);
+            ConsumerFetchPools.ReturnFetchRequestTopics(connectionZeroSecond);
+            ConsumerFetchPools.ReturnFetchRequestTopics(connectionOneFirst);
+        }
+    }
+
+    [Test]
+    public async Task BuildFetchRequestTopics_AssignmentChange_ContinuesRoundRobin()
+    {
+        await using var built = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .Build();
+        var consumer = (KafkaConsumer<string, string>)built;
+
+        var original = InvokeBuildFetchRequestTopics(consumer,
+        [
+            new TopicPartition("topic-a", 0),
+            new TopicPartition("topic-a", 1),
+            new TopicPartition("topic-a", 2)
+        ]);
+        var reassigned = InvokeBuildFetchRequestTopics(consumer,
+        [
+            new TopicPartition("topic-b", 10),
+            new TopicPartition("topic-b", 11)
+        ]);
+        try
+        {
+            await Assert.That(GetPartitionOrder(original)).IsEqualTo("0,1,2");
+            await Assert.That(GetPartitionOrder(reassigned)).IsEqualTo("11,10");
+        }
+        finally
+        {
+            ConsumerFetchPools.ReturnFetchRequestTopics(original);
+            ConsumerFetchPools.ReturnFetchRequestTopics(reassigned);
+        }
+    }
+
+    [Test]
+    public async Task BuildFetchRequestTopics_FetchSessionReset_UsesNextRotation()
+    {
+        await using var built = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .Build();
+        var consumer = (KafkaConsumer<string, string>)built;
+        var partitions = new List<TopicPartition>
+        {
+            new("topic-a", 0),
+            new("topic-a", 1),
+            new("topic-a", 2)
+        };
+        var handler = new FetchSessionHandler();
+
+        var initialTopics = InvokeBuildFetchRequestTopics(consumer, partitions);
+        handler.Build(initialTopics, clusterMetadata: null);
+        handler.HandleResponse(new FetchResponse { SessionId = 42, ErrorCode = ErrorCode.None, Responses = [] });
+        ConsumerFetchPools.ReturnFetchRequestTopics(initialTopics);
+
+        var incrementalTopics = InvokeBuildFetchRequestTopics(consumer, partitions);
+        handler.Build(incrementalTopics, clusterMetadata: null);
+        handler.HandleError();
+        ConsumerFetchPools.ReturnFetchRequestTopics(incrementalTopics);
+
+        var resetTopics = InvokeBuildFetchRequestTopics(consumer, partitions);
+        try
+        {
+            var resetBuild = handler.Build(resetTopics, clusterMetadata: null);
+
+            await Assert.That(resetBuild.IsFull).IsTrue();
+            await Assert.That(GetPartitionOrder(resetBuild.Topics)).IsEqualTo("2,0,1");
+        }
+        finally
+        {
+            ConsumerFetchPools.ReturnFetchRequestTopics(resetTopics);
+        }
+    }
+
     private static List<FetchRequestTopic> InvokeBuildFetchRequestTopics(
         KafkaConsumer<string, string> consumer,
         List<TopicPartition> partitions)
@@ -202,6 +374,21 @@ public sealed class ConsumerFetchPoolsTests
             [partitions, startIndex, count, brokerId])!;
     }
 
+    private static List<FetchRequestTopic> InvokeBuildFetchRequestTopicsForConnection(
+        KafkaConsumer<string, string> consumer,
+        List<TopicPartition> partitions,
+        int connectionIndex,
+        int brokerId = 1)
+    {
+        var fetchPositions = (ConcurrentDictionary<TopicPartition, long>)FetchPositionsField.GetValue(consumer)!;
+        for (var i = 0; i < partitions.Count; i++)
+            fetchPositions.TryAdd(partitions[i], 0);
+
+        return (List<FetchRequestTopic>)BuildFetchRequestTopicsForConnectionMethod.Invoke(
+            consumer,
+            [partitions, 0, partitions.Count, brokerId, connectionIndex])!;
+    }
+
     private static int GetFetchRequestTemplateCacheCount(KafkaConsumer<string, string> consumer)
     {
         var cache = FetchRequestTemplateCacheField.GetValue(consumer)
@@ -216,6 +403,13 @@ public sealed class ConsumerFetchPoolsTests
         new("topic-b", 0),
         new("topic-b", 1)
     ];
+
+    private static string GetPartitionOrder(IReadOnlyList<FetchRequestTopic> topics) =>
+        string.Join(',', topics.SelectMany(static topic => topic.Partitions).Select(static partition => partition.Partition));
+
+    private static string GetTopicPartitionOrder(IReadOnlyList<FetchRequestTopic> topics) =>
+        string.Join(',', topics.SelectMany(static topic => topic.Partitions.Select(
+            partition => $"{topic.Topic}:{partition.Partition}")));
 
     private static async Task AssertFetchPoolsRentClearedLists()
     {
