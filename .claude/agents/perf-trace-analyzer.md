@@ -134,13 +134,15 @@ Organize your analysis into these categories:
 
 3. **Check for the Kafka container first.** Don't waste time running stress tests that will fail due to missing Kafka.
 
-4. **Context-aware analysis.** This is a zero-allocation Kafka client library. Any heap allocation in protocol serialization, message production hot paths, or consumption hot paths is a bug. Per-batch allocations are acceptable.
+4. **Zero-tolerance allocation analysis.** This is a zero-allocation Kafka client library — that is a hard correctness gate, not a preference. Any heap allocation in protocol serialization, message production hot paths, or consumption hot paths is a **defect**: report it as a FAIL with the allocating type, call stack, allocation rate, and a concrete elimination strategy (pooling, `ref struct`, `static` lambda, per-batch amortization). Never wave a per-message allocation through as "minor" — at millions of messages per second it dominates. Per-batch allocations (~1000x amortized) are acceptable; classify every finding explicitly as per-message or per-batch. End allocation reports with an explicit verdict: PASS (hot paths clean) or FAIL (list of per-message allocation sites).
 
-5. **Reference the CLAUDE.md guidelines.** When reporting findings, reference the project's performance guidelines:
-   - Hot paths must be allocation-free
+5. **Reference the CLAUDE.md guidelines.** When reporting findings, reference the project's performance guidelines (Prime Directive and Banned Constructs in Hot Paths):
+   - Hot paths must be allocation-free — zero bytes per message
+   - Banned in hot paths: LINQ, capturing lambdas, boxing, string interpolation, interface-typed `foreach`, per-message async state machines, `Task.Run`, per-message locks, exceptions as control flow
    - `ConfigureAwait(false)` is mandatory in library code
    - O(n) operations on hot paths cause hangs
    - Channel-based patterns preferred over locks
+   - Protected metrics (throughput, p50/p99/max latency, CPU/msg, allocations, stability) must never regress without explicit maintainer approval — flag any suspected trade-off, don't rationalize it
 
 6. **If `dotnet trace` is not installed**, install it:
    ```bash

@@ -2,9 +2,19 @@
 
 Dekaf is a high-performance, pure C# Apache Kafka client library for .NET 10+. The project goal is "Taking the Java out of Kafka" - a native, zero-allocation implementation without interop overhead or JVM dependencies.
 
+## Prime Directive: Performance Is the Product
+
+Dekaf's reason to exist is to beat every other Kafka client — including Confluent.Kafka — on throughput, latency, CPU, and allocations, **simultaneously**. There is no "fast enough". These principles bind every agent and every change, and override convenience, style preference, and refactoring taste:
+
+- **Guilty until proven fast.** Any change touching `src/` is presumed to regress performance until benchmark or stress evidence shows otherwise. "It looks harmless" is not evidence; measurement is.
+- **Zero allocation in hot paths is a correctness requirement, not a goal.** A single per-message heap allocation in serialization, produce, or consume paths is a bug on par with data loss: block the change, eliminate the allocation, and prove it with `[MemoryDiagnoser]`.
+- **Protected metrics are never traded without explicit maintainer approval.** Throughput, p50/p99/max latency, CPU per message, allocations, and stability are all protected (Rule 8). An unapproved throughput-for-latency (or any similar) trade is a rejection, not an improvement.
+- **Measure, never assume.** Hot-path changes require before/after benchmark numbers posted in the PR. No numbers means not mergeable.
+- **Convenience never wins in `src/`.** Readability refactors, "simplifications", or modern-idiom rewrites that add allocations, virtual dispatch, boxing, or async overhead to hot paths are regressions and must be rejected — including when proposed by `/simplify` or a reviewer. Push back with the performance rationale instead of complying.
+
 ## Critical Rules
 
-1. **Zero-Allocation in Hot Paths**: Protocol serialization, message production, and consumption paths must not allocate on the heap. Use `ref struct`, `Span<T>`, `IBufferWriter<byte>`, and `ArrayPool<T>`. Profile with BenchmarkDotNet before and after changes.
+1. **Zero-Allocation in Hot Paths (HARD GATE)**: Protocol serialization, message production, and consumption paths must not allocate on the heap — zero bytes per message, verified, not aspirational. Use `ref struct`, `Span<T>`, `IBufferWriter<byte>`, `ArrayPool<T>`, pooled buffers, and synchronous `ValueTask` fast paths. Every hot-path change requires a before/after `[MemoryDiagnoser]` benchmark run with numbers posted in the PR, and the Allocated column for hot-path benchmarks must stay `0 B` (known, explicitly-identified cold-path noise such as the stochastic drainer-behind path in AccumulatorAppend benchmarks is the only exception). See "Banned Constructs in Hot Paths" below.
 
 2. **Modern C# Features Required**: Use nullable reference types, `init` properties, pattern matching, and C# 13 features. Never use older patterns when modern alternatives exist.
 
@@ -42,8 +52,26 @@ Dekaf is a high-performance, pure C# Apache Kafka client library for .NET 10+. T
 **Hot path discipline:**
 - Methods marked `[MethodImpl(MethodImplOptions.AggressiveInlining)]` are performance-critical
 - **NEVER add O(n) operations to hot paths** - This includes dictionary enumeration, collection scans, or cleanup loops
-- Hot path = message serialization, batch append, channel writes
+- Hot path = message serialization, batch append/drain, channel writes, per-message produce/consume, receive/parse loops
 - If a 10-minute test hang occurs, suspect O(n) operations on hot path
+
+### Banned Constructs in Hot Paths
+
+The following are **forbidden** in any hot path (serialization, batch append/drain, channel writes, per-message produce/consume, receive/parse loops). Finding one in a diff is a blocking defect; finding one in existing code is a bug to file or fix:
+
+- **LINQ operators** of any kind — enumerator + delegate allocations per call
+- **Capturing lambdas/closures and non-cached delegates** — use `static` lambdas with explicit state parameters, or cached delegate fields
+- **Boxing** — struct-through-interface calls without generic constraints, non-specialized enum dictionary keys, value types passed to `object`/interpolation
+- **String concatenation, interpolation, `ToString()`, `string.Format`** per message
+- **`params` arrays, `ToArray()`/`ToList()`, iterator methods (`yield return`)**
+- **Enumerator allocations** — `foreach` over interface-typed collections (`IEnumerable<T>`, `IList<T>`); iterate concrete types or use indexed loops
+- **`async`/`await` state machines on the per-message fast path** — provide a synchronous `ValueTask` completion path; a state machine may exist only on the genuinely-async slow path
+- **`Task` where `ValueTask` fits; `Task.Run` or thread-pool hops per message**
+- **Exceptions as control flow**
+- **Locks per message** (`lock`, `SemaphoreSlim`, `Monitor`) — use channels, `Interlocked`, or lock-free structures
+- **O(n) scans, dictionary enumeration, cleanup loops** — already fatal; causes 10-minute CI hangs
+
+If a banned construct seems unavoidable, the operation is not hot-path-eligible: amortize it per-batch, per-connection, or per-epoch, or redesign the data flow. Per-batch is ~1000x cheaper than per-message — move the cost there.
 
 ### Memory Leak Prevention
 
@@ -392,6 +420,8 @@ When making changes, ask:
 3. **Does it have tests?** Unit tests for logic, integration tests for Kafka behavior, benchmarks for performance.
 4. **Does it use modern C#?** Nullable reference types, pattern matching, init properties, records where appropriate.
 5. **Is the API consistent?** Follow existing patterns: builders for configuration, interfaces for contracts, sealed classes for implementations.
+
+When any of these answers conflicts with performance, performance wins. If a requested change (review feedback, simplification, new feature shape) cannot be implemented without regressing a protected metric or allocating in a hot path, do not implement it as asked — state the performance cost with numbers and propose the fast alternative.
 
 ## Architecture Notes
 
