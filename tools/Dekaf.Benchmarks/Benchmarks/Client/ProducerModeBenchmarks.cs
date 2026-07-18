@@ -30,18 +30,10 @@ public class ProducerModeBenchmarks
     private const int BatchCount = 1000;
 
     private string _messageValue = null!;
-    private static readonly string[] PreAllocatedKeys = CreateKeys(BatchCount);
+    private static readonly string[] PreAllocatedKeys = BenchmarkData.CreateKeys(BatchCount);
 
     [Params(100, 1000)]
     public int MessageSize { get; set; }
-
-    private static string[] CreateKeys(int count)
-    {
-        var keys = new string[count];
-        for (var i = 0; i < count; i++)
-            keys[i] = $"key-{i}";
-        return keys;
-    }
 
     [GlobalSetup]
     public async Task Setup()

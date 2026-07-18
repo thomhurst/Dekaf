@@ -985,11 +985,14 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     /// Writes the record batch to the output buffer.
     /// </summary>
     /// <remarks>
-    /// Current encoding requests one contiguous destination span for the CRC field plus
+    /// <para>Current encoding requests one contiguous destination span for the CRC field plus
     /// the CRC-covered batch body. This keeps the array-backed writer path zero-copy and
     /// lets the CRC be backpatched in place, but it means segmented writers must be able
     /// to provide that full span. A streaming writer path would need incremental CRC32C
-    /// calculation while emitting fields and records in smaller segments.
+    /// calculation while emitting fields and records in smaller segments.</para>
+    /// <para>Write does not mutate batch state — the CRC is computed into the output only —
+    /// and may be invoked repeatedly on the same instance. The epoch-bump rewrite path
+    /// (<see cref="WithProducerState"/>) and the benchmarks rely on this.</para>
     /// </remarks>
     /// <returns>
     /// The exact number of bytes written to <paramref name="output"/>. Callers that
