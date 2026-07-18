@@ -4357,19 +4357,11 @@ public sealed class AdminClient : IAdminClient
         => RetryHelper.WithRetryAsync(operation, _metadataManager, cancellationToken);
 
     private bool SupportsApiRange(Protocol.ApiKey apiKey, short lowestSupportedVersion, short highestSupportedVersion)
-    {
-        if (!_metadataManager.HasApiKey(apiKey))
-            return false;
-
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+        => _metadataManager.TryGetNegotiatedApiVersion(
             apiKey,
             lowestSupportedVersion,
-            highestSupportedVersion);
-
-        return apiVersion >= lowestSupportedVersion &&
-               apiVersion <= highestSupportedVersion &&
-               _metadataManager.SupportsApiVersion(apiKey, apiVersion);
-    }
+            highestSupportedVersion,
+            out _);
 
     private static WriteTxnMarkersResponsePartition FindAbortTransactionPartition(
         WriteTxnMarkersResponse response,
