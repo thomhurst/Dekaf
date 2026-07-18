@@ -80,6 +80,73 @@ public sealed class OAuthBearerJwtBearerBuilderTests
     }
 
     [Test]
+    public async Task WithOAuthBearerClientAssertion_ConfiguresEveryClientBuilder()
+    {
+        using var rsa = RSA.Create(2048);
+        var options = CreateClientAssertionOptions(rsa);
+        var producer = Kafka.CreateProducer<string, string>();
+        var consumer = Kafka.CreateConsumer<string, string>();
+        var shareConsumer = Kafka.CreateShareConsumer<string, string>();
+        var admin = Kafka.CreateAdminClient();
+        var client = Kafka.Connect();
+
+        await Assert.That(producer.WithOAuthBearerClientAssertion(options)).IsSameReferenceAs(producer);
+        await Assert.That(consumer.WithOAuthBearerClientAssertion(options)).IsSameReferenceAs(consumer);
+        await Assert.That(shareConsumer.WithOAuthBearerClientAssertion(options)).IsSameReferenceAs(shareConsumer);
+        await Assert.That(admin.WithOAuthBearerClientAssertion(options)).IsSameReferenceAs(admin);
+        await Assert.That(client.WithOAuthBearerClientAssertion(options)).IsSameReferenceAs(client);
+
+        foreach (var builder in new object[] { producer, consumer, shareConsumer, admin, client })
+        {
+            await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.OAuthBearer);
+            await Assert.That(GetOAuthConfig(builder)!.ClientAssertion).IsNotNull();
+        }
+    }
+
+    [Test]
+    public async Task Producer_WithOAuthBearerClientAssertionAction_ReturnsSameBuilder()
+    {
+        using var rsa = RSA.Create(2048);
+        var builder = Kafka.CreateProducer<string, string>();
+
+        var result = builder.WithOAuthBearerClientAssertion(options =>
+        {
+            options.TokenEndpoint = "https://auth.example.test/token";
+            options.ClientId = "client";
+            options.PrivateKey = rsa;
+            options.Audience = "https://auth.example.test/token";
+        });
+
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task Producer_WithOAuthBearerClientAssertion_InvalidOptionsDoNotChangeMechanism()
+    {
+        var builder = Kafka.CreateProducer<string, string>().WithSaslPlain("user", "pass");
+
+        await Assert.That(() => builder.WithOAuthBearerClientAssertion(new OAuthBearerClientAssertionOptions()))
+            .Throws<InvalidOperationException>();
+        await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.Plain);
+    }
+
+    [Test]
+    public async Task Producer_WithOAuthBearerClientAssertion_ReservedFormParameterThrows()
+    {
+        using var rsa = RSA.Create(2048);
+        var options = CreateClientAssertionOptions(rsa);
+        options.AdditionalParameters = new Dictionary<string, string>
+        {
+            ["client_assertion"] = "override"
+        };
+
+        await Assert.That(() => Kafka.CreateProducer<string, string>()
+                .WithOAuthBearerClientAssertion(options))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("reserved");
+    }
+
+    [Test]
     public async Task Producer_WithOAuthBearerAzureImds_ReturnsSameBuilderAndConfiguresGrant()
     {
         var builder = Kafka.CreateProducer<string, string>();
@@ -215,6 +282,15 @@ public sealed class OAuthBearerJwtBearerBuilderTests
     {
         Resource = "api://kafka",
         ClientId = "managed-identity-client"
+    };
+
+    private static OAuthBearerClientAssertionOptions CreateClientAssertionOptions(
+        AsymmetricAlgorithm privateKey) => new()
+    {
+        TokenEndpoint = "https://auth.example.test/token",
+        ClientId = "client",
+        PrivateKey = privateKey,
+        Audience = "https://auth.example.test/token"
     };
 
     private static async Task AssertInvalidJwtBearerDoesNotChangeSaslMechanism<TBuilder>(

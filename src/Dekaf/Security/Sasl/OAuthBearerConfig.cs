@@ -42,6 +42,14 @@ public sealed class OAuthBearerConfig
     public OAuthBearerJwtBearerOptions? JwtBearer { get; init; }
 
     /// <summary>
+    /// Private-key JWT client authentication settings for the
+    /// <see cref="OAuthBearerGrantType.ClientCredentials"/> grant.
+    /// When configured, client assertion authentication takes precedence over
+    /// <see cref="ClientSecret"/> and never falls back to it at runtime.
+    /// </summary>
+    public OAuthBearerClientAssertionOptions? ClientAssertion { get; init; }
+
+    /// <summary>
     /// Azure IMDS managed identity settings. Required when <see cref="GrantType"/> is
     /// <see cref="OAuthBearerGrantType.AzureImds"/>.
     /// </summary>

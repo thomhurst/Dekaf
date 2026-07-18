@@ -278,6 +278,105 @@ public sealed class OAuthBearerTokenProviderTests
     }
 
     [Test]
+    public async Task GetTokenAsync_WithClientAssertion_SendsPrivateKeyJwtAuthentication()
+    {
+        using var rsa = RSA.Create(2048);
+        var handler = new CapturingTokenEndpointHandler();
+        var config = new OAuthBearerClientAssertionOptions
+        {
+            TokenEndpoint = "https://auth.example.test/token",
+            ClientId = "assertion-client",
+            PrivateKey = rsa,
+            Audience = "https://auth.example.test/token",
+            Issuer = "issuer",
+            Subject = "subject",
+            KeyId = "key-2",
+            Scopes = ["kafka:produce"],
+            AdditionalClaims = new Dictionary<string, object?> { ["tenant"] = "alpha" }
+        }.ToOAuthBearerConfig();
+        using var provider = new OAuthBearerTokenProvider(config, new HttpClient(handler));
+
+        _ = await provider.GetTokenAsync();
+
+        var form = handler.Requests.Single();
+        await Assert.That(form["grant_type"]).IsEqualTo("client_credentials");
+        await Assert.That(form["client_id"]).IsEqualTo("assertion-client");
+        await Assert.That(form["client_assertion_type"])
+            .IsEqualTo("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+        await Assert.That(form.ContainsKey("assertion")).IsFalse();
+        await Assert.That(handler.AuthorizationSchemes.Single()).IsNull();
+
+        var parts = form["client_assertion"].Split('.');
+        var payload = DecodeJwtPart(parts[1]);
+        await Assert.That(payload.GetProperty("iss").GetString()).IsEqualTo("issuer");
+        await Assert.That(payload.GetProperty("sub").GetString()).IsEqualTo("subject");
+        await Assert.That(payload.GetProperty("aud").GetString())
+            .IsEqualTo("https://auth.example.test/token");
+        await Assert.That(payload.GetProperty("tenant").GetString()).IsEqualTo("alpha");
+
+        var signingInput = Encoding.ASCII.GetBytes($"{parts[0]}.{parts[1]}");
+        await Assert.That(rsa.VerifyData(
+            signingInput,
+            Base64UrlDecode(parts[2]),
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1)).IsTrue();
+    }
+
+    [Test]
+    public async Task GetTokenAsync_WithClientSecret_PreservesBasicAuthentication()
+    {
+        var handler = new CapturingTokenEndpointHandler();
+        using var provider = new OAuthBearerTokenProvider(new OAuthBearerConfig
+        {
+            TokenEndpointUrl = "https://auth.example.test/token",
+            ClientId = "client",
+            ClientSecret = "secret"
+        }, new HttpClient(handler));
+
+        _ = await provider.GetTokenAsync();
+
+        var form = handler.Requests.Single();
+        await Assert.That(form["grant_type"]).IsEqualTo("client_credentials");
+        await Assert.That(form.ContainsKey("client_assertion")).IsFalse();
+        await Assert.That(handler.AuthorizationSchemes.Single()).IsEqualTo("Basic");
+    }
+
+    [Test]
+    public async Task GetTokenAsync_WhenClientAssertionIsRejected_DoesNotFallBackToSecret()
+    {
+        using var rsa = RSA.Create(2048);
+        var handler = new CapturingTokenEndpointHandler
+        {
+            ResponseStatusCode = HttpStatusCode.Unauthorized
+        };
+        var assertionOptions = new OAuthBearerClientAssertionOptions
+        {
+            TokenEndpoint = "https://auth.example.test/token",
+            ClientId = "client",
+            PrivateKey = rsa,
+            Audience = "https://auth.example.test/token"
+        };
+        var config = new OAuthBearerConfig
+        {
+            TokenEndpointUrl = assertionOptions.TokenEndpoint!,
+            ClientId = assertionOptions.ClientId!,
+            ClientSecret = "must-not-be-used",
+            ClientAssertion = assertionOptions
+        };
+        using var provider = new OAuthBearerTokenProvider(config, new HttpClient(handler));
+
+        await Assert.That(async () =>
+        {
+            _ = await provider.GetTokenAsync();
+        })
+            .Throws<Dekaf.Errors.AuthenticationException>();
+
+        await Assert.That(handler.Requests).Count().IsEqualTo(1);
+        await Assert.That(handler.Requests[0].ContainsKey("client_assertion")).IsTrue();
+        await Assert.That(handler.AuthorizationSchemes.Single()).IsNull();
+    }
+
+    [Test]
     public async Task GetTokenAsync_WithAzureImds_SendsMetadataGetRequest()
     {
         var handler = new CapturingAzureImdsHandler();
@@ -427,7 +526,9 @@ public sealed class OAuthBearerTokenProviderTests
     private sealed class CapturingTokenEndpointHandler : HttpMessageHandler
     {
         public List<IReadOnlyDictionary<string, string>> Requests { get; } = [];
+        public List<string?> AuthorizationSchemes { get; } = [];
         public int ExpiresInSeconds { get; init; } = 3600;
+        public HttpStatusCode ResponseStatusCode { get; init; } = HttpStatusCode.OK;
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -435,10 +536,11 @@ public sealed class OAuthBearerTokenProviderTests
         {
             var body = await request.Content!.ReadAsStringAsync(cancellationToken);
             Requests.Add(ParseForm(body));
+            AuthorizationSchemes.Add(request.Headers.Authorization?.Scheme);
 
             var count = Requests.Count;
             var json = $$"""{"access_token":"access-token-{{count}}","expires_in":{{ExpiresInSeconds}},"sub":"principal-{{count}}"}""";
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(ResponseStatusCode)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json")
             };

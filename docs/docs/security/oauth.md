@@ -86,6 +86,39 @@ the same key object to sign new assertions.
 `byte[]`, nested `IReadOnlyDictionary<string, object?>`, and arrays/enumerables
 of those values. Use `JsonElement` when you need to pass a custom object shape.
 
+## Client Assertion Authentication (KIP-1258)
+
+Use private-key JWT client authentication when the identity provider requires
+`private_key_jwt` but the OAuth grant must remain `client_credentials`:
+
+```csharp
+using System.Security.Cryptography;
+using Dekaf;
+
+var privateKey = RSA.Create();
+privateKey.ImportFromPem(File.ReadAllText("client-key.pem"));
+
+await using var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("kafka.example.com:9092")
+    .UseTls()
+    .WithOAuthBearerClientAssertion(options =>
+    {
+        options.TokenEndpoint = "https://auth.example.com/oauth2/token";
+        options.ClientId = "my-kafka-client";
+        options.PrivateKey = privateKey;
+        options.Audience = "https://auth.example.com/oauth2/token";
+        options.Scopes = ["kafka:produce", "kafka:consume"];
+        options.KeyId = "key-2026-07";
+    })
+    .BuildAsync();
+```
+
+Dekaf posts `grant_type=client_credentials`, `client_assertion_type`, and a freshly
+signed `client_assertion`. It does not send HTTP Basic credentials or fall back to a
+client secret if assertion signing or token retrieval fails. The same builder method
+is available for producers, consumers, share consumers, admin clients, and shared
+`KafkaClient` instances.
+
 ## Azure AD Example
 
 ```csharp
