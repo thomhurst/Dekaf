@@ -573,7 +573,7 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:RetryBackoffMaxMs"] = "250",
             ["Kafka:Producers:Orders:MaxBlockMs"] = "1000",
             ["Kafka:Producers:Orders:DeliveryLatencyTargetMs"] = "17",
-            ["Kafka:Producers:Orders:DeliveryTimeoutMs"] = "2000",
+            ["Kafka:Producers:Orders:DeliveryTimeoutMs"] = "4000",
             ["Kafka:Producers:Orders:RequestTimeoutMs"] = "3000",
             ["Kafka:Producers:Orders:ReconnectBackoffMs"] = "75",
             ["Kafka:Producers:Orders:ReconnectBackoffMaxMs"] = "750",
@@ -622,7 +622,7 @@ public class DependencyInjectionTests
         await Assert.That(options.RetryBackoffMaxMs).IsEqualTo(250);
         await Assert.That(options.MaxBlockMs).IsEqualTo(1000);
         await Assert.That(options.DeliveryLatencyTargetMs).IsEqualTo(17);
-        await Assert.That(options.DeliveryTimeoutMs).IsEqualTo(2000);
+        await Assert.That(options.DeliveryTimeoutMs).IsEqualTo(4000);
         await Assert.That(options.RequestTimeoutMs).IsEqualTo(3000);
         await Assert.That(options.ReconnectBackoffMs).IsEqualTo(75);
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(750);

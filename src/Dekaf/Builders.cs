@@ -1176,6 +1176,16 @@ public sealed class ProducerBuilder<TKey, TValue>
 
         ProducerOptions.ValidateArenaCapacity(_batchSize, _arenaCapacity);
 
+        var deliveryTimeoutMs = _deliveryTimeoutMs ?? 120_000;
+        var requestTimeoutMs = _requestTimeoutMs ?? 30_000;
+        var minimumDeliveryTimeoutMs = (long)requestTimeoutMs + _lingerMs;
+        if (deliveryTimeoutMs < minimumDeliveryTimeoutMs)
+        {
+            throw new InvalidOperationException(
+                $"DeliveryTimeoutMs ({deliveryTimeoutMs}) must be greater than or equal to " +
+                $"RequestTimeoutMs ({requestTimeoutMs}) + LingerMs ({_lingerMs}) = {minimumDeliveryTimeoutMs}.");
+        }
+
         // Java Kafka client enforces acks=all when enable.idempotence=true.
         // With acks=leader, the leader acknowledges before ISR replication completes,
         // which can cause OutOfOrderSequenceNumber on leader failover and makes the
@@ -1215,8 +1225,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             RetryBackoffMaxMs = _retryBackoffMaxMs,
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
             DeliveryLatencyTargetMs = _deliveryLatencyTargetMs ?? 10,
-            DeliveryTimeoutMs = _deliveryTimeoutMs ?? 120000,
-            RequestTimeoutMs = _requestTimeoutMs ?? 30000,
+            DeliveryTimeoutMs = deliveryTimeoutMs,
+            RequestTimeoutMs = requestTimeoutMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
