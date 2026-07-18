@@ -153,7 +153,9 @@ namespace Dekaf.Consumer
                     return false;
                 }
 
-                Protocol.Records.Record record = pending.CurrentRecord;
+                // `record` references pooled batch storage; all reads complete before
+                // control returns to the caller. Do not hold it across MoveNext calls.
+                ref readonly Protocol.Records.Record record = ref pending.CurrentRecord;
 
                 long offset = pending.CurrentBaseOffset + record.OffsetDelta;
                 long timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;

@@ -212,7 +212,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         };
     }
 
-    private bool IsCurrentPollGenerationExpired()
+    private bool IsCurrentPollGenerationExpired() => IsCurrentPollGenerationExpired(Stopwatch.GetTimestamp());
+
+    private bool IsCurrentPollGenerationExpired(long timestamp)
     {
         if (Volatile.Read(ref _maxPollExpiredAtPollVersion) == Volatile.Read(ref _pollVersion))
             return true;
@@ -221,7 +223,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return false;
 
         return _state == CoordinatorState.Stable
-            && Stopwatch.GetTimestamp() - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks;
+            && timestamp - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks;
     }
 
     internal async ValueTask<(TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)>
@@ -286,11 +288,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         && Volatile.Read(ref _fatalHeartbeatException) is null
         && Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0;
 
-    internal bool TryRecordPollFast()
+    internal bool TryRecordPollFast() => TryRecordPollFast(out _);
+
+    /// <summary>
+    /// Records a poll without taking the coordinator lock. <paramref name="timestamp"/>
+    /// is the <see cref="Stopwatch.GetTimestamp"/> value this call read, or 0 when an
+    /// early-out branch never needed one — callers can reuse it to avoid a second read.
+    /// </summary>
+    internal bool TryRecordPollFast(out long timestamp)
     {
         // The fatal can be published after the assignment-currency gate. Surface it here,
         // before either a buffered dequeue or the timeout-bound coordinator lock path.
         ThrowIfFatalHeartbeatException();
+
+        timestamp = 0;
 
         // Heartbeat expiry invokes user callbacks outside _lock. Keep its poll generation
         // unchanged so EnsureActiveGroup cannot rejoin until notification completes.
@@ -303,10 +314,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return true;
         }
 
-        if (IsCurrentPollGenerationExpired())
+        // One timestamp read serves the expiry check, the poll record, and the caller.
+        timestamp = Stopwatch.GetTimestamp();
+        if (IsCurrentPollGenerationExpired(timestamp))
             return false;
 
-        RecordPollIfLossNotificationComplete(Stopwatch.GetTimestamp());
+        RecordPollIfLossNotificationComplete(timestamp);
         return true;
     }
 

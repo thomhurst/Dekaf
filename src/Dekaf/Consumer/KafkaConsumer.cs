@@ -108,6 +108,10 @@ internal sealed class PendingFetchData : IDisposable
     private int _headerGeneration;
     private bool _eagerParsed;
     private bool _hasBufferedCurrent;
+
+    // Only CreateError assigns this; instances carrying an error never parse, so
+    // EagerParseAll may check _eagerParsed before draining it. A second writer would
+    // break that ordering — keep the invariant if one is ever added.
     private ConsumeException? _error;
 
     public string Topic { get; private set; } = null!;
@@ -312,14 +316,29 @@ internal sealed class PendingFetchData : IDisposable
     /// Gets the current record via direct array access, bypassing lazy record-list
     /// indexer overhead (Volatile.Read + disposed check + EnsureParsedUpTo per access).
     /// Safe because EagerParseAll() is called before iteration begins.
+    /// Returns by readonly reference so consume loops avoid copying the ~80-byte
+    /// Record struct per message; the reference is only valid until the next
+    /// MoveNext/Dispose call.
     /// </summary>
-    public Record CurrentRecord
+    public ref readonly Record CurrentRecord
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => _currentRecordsArray is not null
-            ? _currentRecordsArray[_currentRecordsArrayOffset + _recordIndex]
-            : _currentRecords![_recordIndex];
+        get
+        {
+            var array = _currentRecordsArray;
+            if (array is not null)
+                return ref array[_currentRecordsArrayOffset + _recordIndex];
+
+            _fallbackCurrentRecord = _currentRecords![_recordIndex];
+            return ref _fallbackCurrentRecord;
+        }
     }
+
+    // Staging slot for non-array record lists. Kept as a lazy per-access path on purpose:
+    // fault-modelling lists (and any list that throws from its indexer) must fail at the
+    // faulted record so the good prefix is still yielded — an eager per-batch copy would
+    // move the throw ahead of those yields and break mid-batch fault recovery.
+    private Record _fallbackCurrentRecord;
 
     // Cached batch state updated only on batch transitions, amortizing per-record cost.
     // _currentRecordsArray bypasses IReadOnlyList<Record> virtual dispatch + lazy parsing
@@ -383,11 +402,14 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public void EagerParseAll()
     {
-        if (Interlocked.Exchange(ref _error, null) is { } error)
-            throw error;
-
+        // Check _eagerParsed first: it is only set after a successful parse, and _error
+        // is only set on instances that never parse (CreateError), so the order swap is
+        // safe and spares the already-parsed steady state a full-fence Interlocked per poll.
         if (_eagerParsed)
             return;
+
+        if (Interlocked.Exchange(ref _error, null) is { } error)
+            throw error;
 
         AttachParsedRecordSlab(_batches);
 
@@ -422,7 +444,10 @@ internal sealed class PendingFetchData : IDisposable
         _currentRecordsCount = records.Count;
 
         // Cache raw array for direct indexing (bypasses lazy-list indexer overhead).
+        // Lists that resolve to no array (fault-modelling doubles) stay on the lazy
+        // per-access indexer via _fallbackCurrentRecord.
         _currentRecordsArray = batch.GetParsedRecordsArray()
+            ?? records as Record[]
             ?? (records is Protocol.Records.LazyRecordList lazyList ? lazyList.GetParsedArray() : null);
         _currentRecordsArrayOffset = batch.GetParsedRecordsOffset();
 
@@ -640,6 +665,7 @@ internal sealed class PendingFetchData : IDisposable
         _currentRecordsArrayOffset = 0;
         _currentRecords = null;
         _currentRecordsCount = 0;
+        _fallbackCurrentRecord = default;
         _eagerParsed = false;
         _hasBufferedCurrent = false;
         _error = null;
@@ -836,6 +862,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ILoggerFactory? _loggerFactory;
     private readonly ILogger _logger;
 
+    // _subscription is the authoritative store; _subscriptionSnapshot (below) is its
+    // lock-free read side, republished after every mutation. Hot paths must read the
+    // snapshot: ConcurrentDictionary.Count/IsEmpty acquire every stripe lock (issue
+    // #2211). The _paused/_pausedSnapshot pair follows the same split.
     private readonly ConcurrentDictionary<string, byte> _subscription = new();
     private readonly HashSet<TopicPartition> _assignment = [];
     private volatile TopicPartitionSet _assignmentSnapshot = new HashSet<TopicPartition>();
@@ -3728,29 +3758,45 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return bytes;
     }
 
-    public async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneAsync(
+    public ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneAsync(
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
         var timeoutMilliseconds = ValidateConsumeOneTimeout(timeout);
 
+        // Synchronous buffered fast path: no async state machine, so a buffered record
+        // costs one ValueTask wrap instead of builder Start/SetResult plus the state
+        // machine's struct spills (~35% of the per-poll budget, issue #2211). Exceptions
+        // from validation and the buffered drain throw synchronously rather than faulting
+        // the returned ValueTask — the standard idiom for a sync-completing ValueTask method.
         var pollRecorded = false;
         long? bufferedDrainStarted = null;
         if (!RequiresRuntimeTimeoutValidation(timeoutMilliseconds)
             && CanUseBufferedConsumeOneFastPath(cancellationToken))
         {
-            pollRecorded = _coordinator?.TryRecordPollFast() ?? true;
+            long pollTimestamp = 0;
+            pollRecorded = _coordinator?.TryRecordPollFast(out pollTimestamp) ?? true;
             if (pollRecorded)
             {
-                bufferedDrainStarted = Stopwatch.GetTimestamp();
+                // Reuse the coordinator's timestamp read when it took one this poll.
+                bufferedDrainStarted = pollTimestamp != 0 ? pollTimestamp : Stopwatch.GetTimestamp();
                 if (TryConsumeOneFromPendingFetches(out var bufferedResult))
-                    return bufferedResult;
+                    return new ValueTask<ConsumeResult<TKey, TValue>?>(bufferedResult);
 
                 if (TryDequeuePendingEofResult(out var eofResult))
-                    return eofResult;
+                    return new ValueTask<ConsumeResult<TKey, TValue>?>(eofResult);
             }
         }
 
+        return ConsumeOneWithTimeoutAsync(timeout, bufferedDrainStarted, pollRecorded, cancellationToken);
+    }
+
+    private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneWithTimeoutAsync(
+        TimeSpan timeout,
+        long? bufferedDrainStarted,
+        bool pollRecorded,
+        CancellationToken cancellationToken)
+    {
         using var timeoutCts = _ctsPool.Rent();
         timeoutCts.CancelAfter(CalculateRemainingConsumeOneTimeout(timeout, bufferedDrainStarted));
 
@@ -4053,18 +4099,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (!pending.MoveNext())
                             break;
 
-                        var record = pending.CurrentRecord;
+                        ref readonly var record = ref pending.CurrentRecord;
                         offset = pending.CurrentBaseOffset + record.OffsetDelta;
                         var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
                         var timestampType = pending.CurrentTimestampType;
-                        var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
-                                           (record.IsValueNull ? 0 : record.Value.Length);
+                        // Hoist every record field used below: `record` references pooled
+                        // batch storage, and everything past this point (activity listeners,
+                        // deserializers, interceptors) can run user code that Seeks/Assigns
+                        // and recycles that storage.
+                        var keyData = record.Key;
+                        var valueData = record.Value;
+                        var isKeyNull = record.IsKeyNull;
+                        var isValueNull = record.IsValueNull;
+                        var pooledHeaders = record.Headers;
+                        var pooledHeaderCount = record.HeaderCount;
+                        var messageBytes = (isKeyNull ? 0 : keyData.Length) +
+                                           (isValueNull ? 0 : valueData.Length);
 
                         if (hasTraceListeners)
                         {
                             var headers = LazyConsumeHeaders.Create(
-                                record.Headers,
-                                record.HeaderCount,
+                                pooledHeaders,
+                                pooledHeaderCount,
                                 pending,
                                 pending.HeaderGeneration);
                             activity = StartConsumeActivity(pending, headers, offset, messageBytes);
@@ -4077,12 +4133,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             topic: pending.Topic,
                             partition: pending.PartitionIndex,
                             offset: offset,
-                            keyData: record.Key,
-                            isKeyNull: record.IsKeyNull,
-                            valueData: record.Value,
-                            isValueNull: record.IsValueNull,
-                            pooledHeaders: record.Headers,
-                            pooledHeaderCount: record.HeaderCount,
+                            keyData: keyData,
+                            isKeyNull: isKeyNull,
+                            valueData: valueData,
+                            isValueNull: isValueNull,
+                            pooledHeaders: pooledHeaders,
+                            pooledHeaderCount: pooledHeaderCount,
                             headerOwner: pending,
                             timestampMs: timestampMs,
                             timestampType: timestampType,
@@ -4105,8 +4161,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (rawTrackingEnabled)
                         {
-                            _currentRawKey = record.IsKeyNull ? ReadOnlyMemory<byte>.Empty : record.Key;
-                            _currentRawValue = record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value;
+                            _currentRawKey = isKeyNull ? ReadOnlyMemory<byte>.Empty : keyData;
+                            _currentRawValue = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
                         }
 
                         return true;
@@ -5483,7 +5539,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private bool IsManualAssignmentEnsureCurrent()
     {
-        if (_topicFilter is not null || _topicPattern is not null || !_subscription.IsEmpty)
+        // Read the published snapshot, not _subscription: ConcurrentDictionary.IsEmpty
+        // acquires every stripe lock, which dominated the buffered ConsumeOne fast path
+        // (~45% of per-poll CPU, issue #2211). The snapshot is republished after every
+        // subscription mutation, and CanUseBufferedConsumeOneFastPath already keys its
+        // subscription-vs-manual routing off the same snapshot.
+        if (_topicFilter is not null || _topicPattern is not null || _subscriptionSnapshot.Count != 0)
             return false;
 
         var assignmentEnsureVersion = Volatile.Read(ref _assignmentEnsureVersion);
