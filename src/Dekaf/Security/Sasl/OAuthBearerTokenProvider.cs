@@ -191,6 +191,12 @@ public sealed class OAuthBearerTokenProvider : IDisposable
 
     private Dictionary<string, string> BuildTokenRequestBody()
     {
+        if (_config.ClientAssertion is not null)
+        {
+            OAuthBearerClientAssertionOptions.ValidateAdditionalParameters(
+                _config.AdditionalParameters);
+        }
+
         var body = _config.GrantType switch
         {
             OAuthBearerGrantType.ClientCredentials => BuildClientCredentialsTokenRequestBody(),
