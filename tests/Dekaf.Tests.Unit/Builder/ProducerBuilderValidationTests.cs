@@ -147,6 +147,108 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task Build_DeliveryTimeoutEqualToRequestTimeoutPlusLinger_Succeeds()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRequestTimeout(TimeSpan.FromMilliseconds(30_000))
+            .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithDeliveryTimeout(TimeSpan.FromMilliseconds(30_005))
+            .Build();
+
+        await Assert.That(producer).IsNotNull();
+    }
+
+    [Test]
+    public async Task Build_DeliveryTimeoutGreaterThanRequestTimeoutPlusLinger_Succeeds()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRequestTimeout(TimeSpan.FromMilliseconds(30_000))
+            .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithDeliveryTimeout(TimeSpan.FromMilliseconds(30_006))
+            .Build();
+
+        await Assert.That(producer).IsNotNull();
+    }
+
+    [Test]
+    public async Task Build_DeliveryTimeoutBelowRequestTimeoutPlusLinger_ThrowsWithEffectiveValues()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRequestTimeout(TimeSpan.FromMilliseconds(30_000))
+            .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithDeliveryTimeout(TimeSpan.FromMilliseconds(30_004));
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("DeliveryTimeoutMs (30004)")
+            .And.HasMessageContaining("RequestTimeoutMs (30000)")
+            .And.HasMessageContaining("LingerMs (5)")
+            .And.HasMessageContaining("30005");
+    }
+
+    [Test]
+    public async Task Build_HighThroughputProfileUsesEffectiveLingerForDeliveryTimeoutValidation()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRequestTimeout(TimeSpan.FromMilliseconds(30_000))
+            .WithDeliveryTimeout(TimeSpan.FromMilliseconds(30_099))
+            .ForHighThroughput();
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("LingerMs (100)")
+            .And.HasMessageContaining("30100");
+    }
+
+    [Test]
+    public async Task Build_DefaultTimeoutsRemainUnchanged()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+
+        var options = GetOptions(producer);
+
+        await Assert.That(options.DeliveryTimeoutMs).IsEqualTo(120_000);
+        await Assert.That(options.RequestTimeoutMs).IsEqualTo(30_000);
+        await Assert.That(options.LingerMs).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Build_LargeTimeoutsAtValidBoundary_Succeeds()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRequestTimeout(TimeSpan.FromMilliseconds(int.MaxValue - 1L))
+            .WithLinger(TimeSpan.FromMilliseconds(1))
+            .WithDeliveryTimeout(TimeSpan.FromMilliseconds(int.MaxValue))
+            .Build();
+
+        await Assert.That(producer).IsNotNull();
+    }
+
+    [Test]
+    public async Task Build_LargeTimeoutSum_DoesNotOverflow()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRequestTimeout(TimeSpan.FromMilliseconds(int.MaxValue))
+            .WithLinger(TimeSpan.FromMilliseconds(int.MaxValue))
+            .WithDeliveryTimeout(TimeSpan.FromMilliseconds(int.MaxValue));
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("4294967294");
+    }
+
+    [Test]
     public async Task WithBatchSize_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
