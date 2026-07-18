@@ -1091,6 +1091,9 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         if (minMs <= 0 || maxMs <= 0)
             return TimeSpan.Zero;
 
+        if (maxMs <= minMs)
+            return TimeSpan.FromMilliseconds(maxMs);
+
         var exponent = Math.Min(failureCount - 1, 30);
         var baseMs = Math.Min(maxMs, minMs * Math.Pow(2, exponent));
         var randomValue = Math.Clamp(_randomDouble(), 0, 1);
