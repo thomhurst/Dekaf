@@ -121,13 +121,25 @@ public sealed class OAuthBearerJwtBearerBuilderTests
     }
 
     [Test]
-    public async Task Producer_WithOAuthBearerClientAssertion_InvalidOptionsDoNotChangeMechanism()
+    public async Task WithOAuthBearerClientAssertion_WhenValidationFails_DoesNotChangeExistingSaslMechanism()
     {
-        var builder = Kafka.CreateProducer<string, string>().WithSaslPlain("user", "pass");
+        var invalidOptions = new OAuthBearerClientAssertionOptions();
 
-        await Assert.That(() => builder.WithOAuthBearerClientAssertion(new OAuthBearerClientAssertionOptions()))
-            .Throws<InvalidOperationException>();
-        await Assert.That(GetSaslMechanism(builder)).IsEqualTo(SaslMechanism.Plain);
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
+            Kafka.CreateProducer<string, string>().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerClientAssertion(invalidOptions));
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
+            Kafka.CreateConsumer<string, string>().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerClientAssertion(invalidOptions));
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
+            Kafka.CreateShareConsumer<string, string>().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerClientAssertion(invalidOptions));
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
+            Kafka.CreateAdminClient().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerClientAssertion(invalidOptions));
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
+            Kafka.Connect().WithSaslPlain("user", "pass"),
+            builder => builder.WithOAuthBearerClientAssertion(invalidOptions));
     }
 
     [Test]
@@ -253,19 +265,19 @@ public sealed class OAuthBearerJwtBearerBuilderTests
     {
         var invalidOptions = new OAuthBearerJwtBearerOptions();
 
-        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
             Kafka.CreateProducer<string, string>().WithSaslPlain("user", "pass"),
             builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
-        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
             Kafka.CreateConsumer<string, string>().WithSaslPlain("user", "pass"),
             builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
-        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
             Kafka.CreateShareConsumer<string, string>().WithSaslPlain("user", "pass"),
             builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
-        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
             Kafka.CreateAdminClient().WithSaslPlain("user", "pass"),
             builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
-        await AssertInvalidJwtBearerDoesNotChangeSaslMechanism(
+        await AssertInvalidOAuthOptionsDoNotChangeSaslMechanism(
             Kafka.Connect().WithSaslPlain("user", "pass"),
             builder => builder.WithOAuthBearerJwtBearer(invalidOptions));
     }
@@ -293,7 +305,7 @@ public sealed class OAuthBearerJwtBearerBuilderTests
         Audience = "https://auth.example.test/token"
     };
 
-    private static async Task AssertInvalidJwtBearerDoesNotChangeSaslMechanism<TBuilder>(
+    private static async Task AssertInvalidOAuthOptionsDoNotChangeSaslMechanism<TBuilder>(
         TBuilder builder,
         Action<TBuilder> configure)
     {
