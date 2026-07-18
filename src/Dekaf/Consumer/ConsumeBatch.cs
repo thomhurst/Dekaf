@@ -234,7 +234,10 @@ namespace Dekaf.Consumer
                     return false;
                 }
 
-                Protocol.Records.Record record = pending.CurrentRecord;
+                // `record` references pooled batch storage; every read below happens in
+                // constructor-argument evaluation, before the ctor body runs user
+                // deserializers. Do not touch `record` after the constructor call.
+                ref readonly Protocol.Records.Record record = ref pending.CurrentRecord;
 
                 long offset = pending.CurrentBaseOffset + record.OffsetDelta;
                 long timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
