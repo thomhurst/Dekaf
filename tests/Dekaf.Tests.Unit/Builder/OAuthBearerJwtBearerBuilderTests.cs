@@ -143,13 +143,18 @@ public sealed class OAuthBearerJwtBearerBuilderTests
     }
 
     [Test]
-    public async Task Producer_WithOAuthBearerClientAssertion_ReservedFormParameterThrows()
+    [Arguments("grant_type")]
+    [Arguments("client_id")]
+    [Arguments("client_secret")]
+    [Arguments("client_assertion_type")]
+    [Arguments("client_assertion")]
+    public async Task Producer_WithOAuthBearerClientAssertion_ReservedFormParameterThrows(string parameterName)
     {
         using var rsa = RSA.Create(2048);
         var options = CreateClientAssertionOptions(rsa);
         options.AdditionalParameters = new Dictionary<string, string>
         {
-            ["client_assertion"] = "override"
+            [parameterName] = "override"
         };
 
         await Assert.That(() => Kafka.CreateProducer<string, string>()

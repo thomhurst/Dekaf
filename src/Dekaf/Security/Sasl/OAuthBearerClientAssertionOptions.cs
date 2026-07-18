@@ -86,7 +86,11 @@ public sealed class OAuthBearerClientAssertionOptions
         {
             foreach (var name in AdditionalParameters.Keys)
             {
-                if (name is "grant_type" or "client_id" or "client_assertion_type" or "client_assertion")
+                if (name is "grant_type"
+                    or "client_id"
+                    or "client_secret"
+                    or "client_assertion_type"
+                    or "client_assertion")
                 {
                     throw new InvalidOperationException(
                         $"OAuth client-assertion additional parameter '{name}' is reserved");
