@@ -35,6 +35,11 @@ public sealed class AdminClient : IAdminClient
 
     public AdminClient(AdminClientOptions options, ILoggerFactory? loggerFactory = null, MetadataOptions? metadataOptions = null)
     {
+        var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
+            options.ReconnectBackoffMs,
+            options.ReconnectBackoffMaxMs,
+            options.IsReconnectBackoffMsConfigured,
+            options.IsReconnectBackoffMaxMsConfigured);
         _options = options;
         _logger = loggerFactory?.CreateLogger<AdminClient>();
         _ownsResources = true;
@@ -55,7 +60,7 @@ public sealed class AdminClient : IAdminClient
                 TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
-                ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(reconnectBackoffMaxMs),
                 ConnectionsMaxIdleMs = options.ConnectionsMaxIdleMs,
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,

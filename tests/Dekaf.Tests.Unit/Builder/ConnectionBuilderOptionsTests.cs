@@ -1,7 +1,10 @@
 using System.Net.Security;
 using System.Reflection;
 using Dekaf.Admin;
+using Dekaf.Consumer;
 using Dekaf.Networking;
+using Dekaf.Producer;
+using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Builder;
 
@@ -107,6 +110,39 @@ public sealed class ConnectionBuilderOptionsTests
         await AssertFixedReconnectBackoff(GetConnectionOptions(shareConsumer), expected);
         await AssertFixedReconnectBackoff(GetConnectionOptions(admin), expected);
         await AssertFixedReconnectBackoff(GetConnectionOptions(clientProducer), expected);
+    }
+
+    [Test]
+    public async Task DirectClientOptions_WithOnlyReconnectBackoff_UseFixedBackoff()
+    {
+        var expected = TimeSpan.FromMilliseconds(123);
+
+        await using var producer = new KafkaProducer<string, string>(
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                ReconnectBackoffMs = 123
+            },
+            Serializers.String,
+            Serializers.String);
+        await using var consumer = new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "consumer-group",
+                ReconnectBackoffMs = 123
+            },
+            Serializers.String,
+            Serializers.String);
+        await using var admin = new AdminClient(new AdminClientOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ReconnectBackoffMs = 123
+        });
+
+        await AssertFixedReconnectBackoff(GetConnectionOptions(producer), expected);
+        await AssertFixedReconnectBackoff(GetConnectionOptions(consumer), expected);
+        await AssertFixedReconnectBackoff(GetConnectionOptions(admin), expected);
     }
 
     [Test]
