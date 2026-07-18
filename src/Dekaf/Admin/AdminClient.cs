@@ -1532,12 +1532,10 @@ public sealed class AdminClient : IAdminClient
                 Topics = topicOffsets
             };
 
-            // Cap at v7 for admin offset commits — v8+ requires valid MemberId/GenerationId
-            // for group membership validation, which admin operations don't have.
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 Protocol.ApiKey.OffsetCommit,
                 OffsetCommitRequest.LowestSupportedVersion,
-                Math.Min(OffsetCommitRequest.HighestSupportedVersion, (short)7));
+                OffsetCommitRequest.HighestSupportedVersion);
 
             var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
                 request,
