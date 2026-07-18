@@ -32,6 +32,7 @@ public class ProducerBenchmarks
     private static readonly TimeSpan QueueFullRetryTimeout = TimeSpan.FromSeconds(30);
     private string _messageValue = null!;
     private string[] _keys = null!;
+    private (string? Key, string Value)[] _batchMessages = null!;
 
     [Params(100, 1000)]
     public int MessageSize { get; set; }
@@ -47,6 +48,7 @@ public class ProducerBenchmarks
 
         _messageValue = new string('x', MessageSize);
         _keys = BenchmarkData.CreateKeys(BatchSize);
+        _batchMessages = [.. _keys.Select(key => ((string?)key, _messageValue))];
 
         _dekafProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
@@ -183,17 +185,9 @@ public class ProducerBenchmarks
     [Benchmark]
     public async Task Dekaf_ProduceBatch()
     {
-        var tasks = new List<Task<DekafProducer.RecordMetadata>>(BatchSize);
-
-        // .AsTask() per message is required: the pooled ValueTask contract forbids
-        // collecting raw ValueTasks for deferred await (see IKafkaProducer remarks).
-        for (var i = 0; i < BatchSize; i++)
-        {
-            tasks.Add(_dekafProducer.ProduceAsync(Topic, _keys[i], _messageValue, CancellationToken.None)
-                .AsTask());
-        }
-
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        // ProduceAllAsync is the idiomatic batch-produce API: it awaits every message through a
+        // single counting completion instead of allocating a Task per message via AsTask().
+        await _dekafProducer.ProduceAllAsync(Topic, _batchMessages).ConfigureAwait(false);
     }
 
     // ===== Fire-and-Forget =====
