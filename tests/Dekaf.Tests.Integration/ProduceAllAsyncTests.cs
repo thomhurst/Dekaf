@@ -61,6 +61,82 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     }
 
     [Test]
+    public async Task ProduceAllAsync_SyncThrowMidLoop_InFlightStillDeliveredAndExceptionSurfaces()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+
+        // The interceptor cancels the token while message "value-3" is being registered, so a
+        // later iteration's entry cancellation check throws synchronously mid-loop — exercising
+        // ProduceAllAsync's catch block (RecordFailure + AbortRegistration) with real in-flight
+        // registrations. Post-append cancellation stops the wait, not delivery.
+        using var cts = new CancellationTokenSource();
+        var interceptor = new CancelTokenOnValueInterceptor(cts, "value-3");
+
+        await using (var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .AddInterceptor(interceptor)
+            .BuildAsync())
+        {
+            var messages = Enumerable.Range(0, 6)
+                .Select(i => ((string?)$"key-{i}", $"value-{i}"))
+                .ToList();
+
+            await Assert.ThrowsAsync<OperationCanceledException>(
+                async () => await producer.ProduceAllAsync(topic, messages, cts.Token)
+                    .WaitAsync(TimeSpan.FromSeconds(30)));
+
+            // Messages appended before the throw are still delivered in the background.
+            await producer.FlushAsync();
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        string[] required = ["value-0", "value-1", "value-2"];
+        var consumed = new List<string>();
+        using var consumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var draining = false;
+
+        try
+        {
+            await foreach (var result in consumer.ConsumeAsync(consumeCts.Token))
+            {
+                consumed.Add(result.Value!);
+
+                // Once everything registered before the throw has arrived, keep draining briefly
+                // to prove nothing after the aborted registration loop was produced.
+                if (!draining && required.All(consumed.Contains))
+                {
+                    draining = true;
+                    consumeCts.CancelAfter(TimeSpan.FromSeconds(3));
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Drain window elapsed.
+        }
+
+        foreach (var value in required)
+        {
+            await Assert.That(consumed).Contains(value);
+        }
+
+        // "value-3" raced the cancellation and may or may not have been appended; everything
+        // after the synchronous throw must never have been produced.
+        await Assert.That(consumed).DoesNotContain("value-4");
+        await Assert.That(consumed).DoesNotContain("value-5");
+    }
+
+    [Test]
     public async Task ProduceAllAsync_EmptyList_ReturnsEmptyResults()
     {
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -116,6 +192,21 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         for (var i = 0; i < 5; i++)
         {
             await Assert.That(consumed).Contains($"value-{i}");
+        }
+    }
+
+    private sealed class CancelTokenOnValueInterceptor(CancellationTokenSource cts, string triggerValue)
+        : IProducerInterceptor<string, string>
+    {
+        public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message)
+        {
+            if (message.Value == triggerValue)
+                cts.Cancel();
+            return message;
+        }
+
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception)
+        {
         }
     }
 }

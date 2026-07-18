@@ -22,9 +22,11 @@ namespace Dekaf.Producer;
 /// user code awaiting <c>ProduceAllAsync</c> never executes on the sender loop.
 /// </para>
 /// <para>
-/// On failure the exception with the smallest message index wins, matching the
-/// <see cref="Task.WhenAll(Task[])"/> convention of surfacing the first faulted operation in input
-/// order. All registered operations are always observed (their <c>GetResult</c> is invoked), so
+/// On failure a non-cancellation fault always beats an <see cref="OperationCanceledException"/>
+/// (matching <see cref="Task.WhenAll(Task[])"/>, which faults whenever any child faults, even when
+/// other children were cancelled); among exceptions of the same class the smallest message index
+/// wins, surfacing the first failed operation in input order. All registered operations are always
+/// observed (their <c>GetResult</c> is invoked), so
 /// pooled per-message sources are returned to their pool even when the aggregate faults.
 /// </para>
 /// </remarks>
@@ -80,12 +82,28 @@ internal sealed class ProduceAllCompletion : IValueTaskSource<RecordMetadata[]>
     {
         lock (_failureGate)
         {
-            if (_firstException is null || index < _firstExceptionIndex)
+            if (_firstException is null || ShouldReplace(_firstException, _firstExceptionIndex, exception, index))
             {
                 _firstException = exception;
                 _firstExceptionIndex = index;
             }
         }
+    }
+
+    /// <summary>
+    /// Faults beat cancellations (matching <see cref="Task.WhenAll(Task[])"/>, where any faulted
+    /// child makes the aggregate fault regardless of cancelled siblings); within the same class
+    /// the smallest message index wins.
+    /// </summary>
+    private static bool ShouldReplace(Exception current, int currentIndex, Exception candidate, int candidateIndex)
+    {
+        var currentIsCancellation = current is OperationCanceledException;
+        var candidateIsCancellation = candidate is OperationCanceledException;
+
+        if (currentIsCancellation != candidateIsCancellation)
+            return currentIsCancellation;
+
+        return candidateIndex < currentIndex;
     }
 
     /// <summary>

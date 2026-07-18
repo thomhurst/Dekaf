@@ -112,6 +112,65 @@ public class ProduceAllCompletionTests
     }
 
     [Test]
+    public async Task Failure_FaultBeatsLowerIndexCancellation()
+    {
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var completion = ProduceAllCompletion.Rent(3);
+
+        var sources = new PooledValueTaskSource<RecordMetadata>[3];
+        for (var i = 0; i < 3; i++)
+        {
+            sources[i] = pool.Rent();
+            completion.Register(i, sources[i].Task);
+        }
+
+        var aggregate = completion.WaitAsync();
+
+        // A cancelled operation at a lower index must not mask a real delivery fault,
+        // matching Task.WhenAll: any faulted child faults the aggregate.
+        sources[0].SetException(new OperationCanceledException());
+        sources[1].SetResult(Metadata(1));
+        sources[2].SetException(new InvalidOperationException("delivery-failure"));
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(async () => await aggregate);
+        await Assert.That(thrown!.Message).IsEqualTo("delivery-failure");
+    }
+
+    [Test]
+    public async Task Failure_LowerIndexCancellationDoesNotReplaceRecordedFault()
+    {
+        var completion = ProduceAllCompletion.Rent(2);
+
+        // Fault is recorded first; the later-arriving cancellation at a smaller index loses.
+        completion.RecordFailure(1, new InvalidOperationException("fault"));
+        completion.RecordFailure(0, new OperationCanceledException());
+        completion.AbortRegistration(2);
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await completion.WaitAsync());
+        await Assert.That(thrown!.Message).IsEqualTo("fault");
+    }
+
+    [Test]
+    public async Task Failure_AllCancellations_SurfacesCancellation()
+    {
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var completion = ProduceAllCompletion.Rent(2);
+
+        var first = pool.Rent();
+        var second = pool.Rent();
+        completion.Register(0, first.Task);
+        completion.Register(1, second.Task);
+
+        var aggregate = completion.WaitAsync();
+
+        first.SetException(new OperationCanceledException());
+        second.SetException(new OperationCanceledException());
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await aggregate);
+    }
+
+    [Test]
     public async Task RecordFailure_SynchronousThrow_SurfacesFromAggregate()
     {
         var completion = ProduceAllCompletion.Rent(2);
