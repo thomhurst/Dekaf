@@ -5626,14 +5626,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                     // Check for new partitions that need initialization
                     List<TopicPartition>? newPartitions = null;
+                    List<TopicPartition>? reclassifiedPartitions = null;
                     foreach (var partition in coordinatorAssignment)
                     {
-                        if (!_assignment.Contains(partition)
-                            || !_fetchPositions.ContainsKey(partition)
-                            || newlyExpandedPartitions.Contains(partition))
+                        var wasAssigned = _assignment.Contains(partition);
+                        var hadFetchPosition = _fetchPositions.ContainsKey(partition);
+                        var wasNewlyExpanded = newlyExpandedPartitions.Contains(partition);
+                        if (!wasAssigned || !hadFetchPosition || wasNewlyExpanded)
                         {
                             newPartitions ??= new List<TopicPartition>();
                             newPartitions.Add(partition);
+
+                            if (wasAssigned && hadFetchPosition && wasNewlyExpanded)
+                            {
+                                reclassifiedPartitions ??= new List<TopicPartition>();
+                                reclassifiedPartitions.Add(partition);
+                            }
                         }
                     }
 
@@ -5672,6 +5680,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // reinitializing its position. The consume loop owns the actual buffer drain.
                     if (removedPartitions is not null)
                         QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions);
+                    if (reclassifiedPartitions is not null)
+                        QueueCoordinatorRevokedPartitionsForFetchClear(reclassifiedPartitions);
 
                     // Update assignment from coordinator
                     _assignment.Clear();

@@ -693,16 +693,30 @@ public sealed class ConsumerAssignmentFastPathTests
 
         var partition = new TopicPartition("test-topic", 0);
         await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
+        var staleFetchBufferEpoch = GetFetchBufferEpoch(consumer);
+        var stalePendingFetch = CreateFetch(partition: 0, baseOffset: 100, value: "stale-pending");
+        var stalePrefetchedFetch = CreateFetch(partition: 0, baseOffset: 101, value: "stale-prefetched");
+        GetPendingFetches(consumer).Enqueue(stalePendingFetch);
+        await Assert.That(GetPrefetchBuffer(consumer).TryWrite(stalePrefetchedFetch)).IsTrue();
+        SetPrefetchedBytes(
+            consumer,
+            KafkaConsumer<string, string>.EstimatePendingFetchBytes(stalePrefetchedFetch));
 
         var coordinator = GetCoordinator(consumer);
         ProcessCoordinatorAssignment(
             coordinator,
             CreateAssignmentWithNewPartitions([0], [0]));
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        var staleInFlightFetch = CreateFetch(partition: 0, baseOffset: 102, value: "stale-in-flight");
+        await WritePrefetchedItemsAsync(consumer, [staleInFlightFetch], staleFetchBufferEpoch);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
         var (_, _, _, pendingClassifications) =
             await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
 
         await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(0L);
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+        await Assert.That(GetPrefetchBuffer(consumer).TryRead(out _)).IsFalse();
+        await Assert.That(GetPrefetchedBytes(consumer)).IsEqualTo(0L);
         await Assert.That(requestedTimestamps).IsEquivalentTo(
             [TopicPartitionTimestamp.Latest, TopicPartitionTimestamp.Earliest]);
         await Assert.That(pendingClassifications).IsEmpty();
