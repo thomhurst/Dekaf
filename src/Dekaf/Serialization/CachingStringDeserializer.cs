@@ -35,7 +35,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     private int _missesUntilProbe = AdmissionProbeLimit;
     private int _probeRemaining;
     private int _probeHits;
-    private int _reuseProbeAdmissions;
+    private int _reuseProbeFillCredit;
     private int _minimumReuseProbeHits;
     private bool _isReuseProbe;
     private int _bypassRemaining;
@@ -151,13 +151,13 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     {
         if (hit)
             _probeHits++;
-        else if (_isReuseProbe && admitted)
-            _reuseProbeAdmissions++;
+        else if (_isReuseProbe
+                 && admitted
+                 && _reuseProbeFillCredit < _minimumReuseProbeHits - _maxCachedEntries)
+            _reuseProbeFillCredit++;
 
-        // A newly admitted entry could not hit on its first occurrence. Count that fill
-        // once when evaluating a reuse window, without letting primary-probe fills pass.
         if (_isReuseProbe
-            && (long)_probeHits + _reuseProbeAdmissions >= _minimumReuseProbeHits)
+            && (long)_probeHits + _reuseProbeFillCredit >= _minimumReuseProbeHits)
         {
             RestoreCache();
             return;
@@ -217,11 +217,12 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         // prefix, before declaring the retained generation cold.
         _probeRemaining = CalculateReuseProbeLookupCount(_maxCachedEntries);
         _probeHits = 0;
-        _reuseProbeAdmissions = 0;
-        // The extra primary-probe prefix in the lookup window is phase-alignment slack,
-        // not additional traffic that should raise the evidence threshold. Requiring one
-        // cache capacity of hits/admissions keeps the threshold attainable after saturation.
-        _minimumReuseProbeHits = _maxCachedEntries;
+        _reuseProbeFillCredit = 0;
+        _minimumReuseProbeHits = Math.Max(
+            _maxCachedEntries,
+            CalculateMinimumReuseProbeHits(_probeRemaining));
+        // First-seen values cannot hit in this window. Credit only the fixed
+        // phase-alignment slack, never the full cache fill, toward the 10% gate.
         _isReuseProbe = true;
     }
 
@@ -232,6 +233,14 @@ internal sealed class CachingStringDeserializer : ISerde<string>
             / MinimumProbeHits;
         var lookupCount = maximumUsefulCycleLength + ProbeLookupCount;
         return lookupCount >= int.MaxValue ? int.MaxValue : (int)lookupCount;
+    }
+
+    private static int CalculateMinimumReuseProbeHits(int lookupCount)
+    {
+        var minimumHits =
+            ((long)lookupCount * MinimumProbeHits + ProbeLookupCount - 1)
+            / ProbeLookupCount;
+        return minimumHits >= int.MaxValue ? int.MaxValue : (int)minimumHits;
     }
 
     private void StartBypass()

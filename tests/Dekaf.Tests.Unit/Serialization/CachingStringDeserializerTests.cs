@@ -303,6 +303,49 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
+    public async Task ReuseProbe_SmallCacheBelowTenPercentYield_EntersBypass()
+    {
+        const int keyCount = 2_000;
+        var sut = CreateSmallKeyCache();
+        var context = KeyContext();
+
+        for (var i = 0; i < keyCount; i++)
+            sut.Deserialize(ToUtf8($"low-yield-{i}"), context);
+
+        var reuseLookupLimit = CachingStringDeserializer.CalculateReuseProbeLookupCount(ValueCacheMaxEntries);
+        for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
+            sut.Deserialize(ToUtf8($"low-yield-{i % keyCount}"), context);
+
+        await Assert.That(GetInnerModeName(sut)).IsEqualTo("BypassSerde");
+    }
+
+    [Test]
+    public async Task ReuseProbe_CacheFillAndSparseHits_DoNotRestoreCache()
+    {
+        const int sparseHitInterval = 64;
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+        var retained = ToUtf8("sparse-retained");
+        sut.Deserialize(retained, context);
+
+        for (var i = 1; i < CachingStringDeserializer.AdmissionProbeLimit; i++)
+            sut.Deserialize(ToUtf8($"sparse-admission-{i}"), context);
+        for (var i = 0; i < CachingStringDeserializer.ProbeLookupCount; i++)
+            sut.Deserialize(ToUtf8($"sparse-primary-{i}"), context);
+
+        var reuseLookups = CachingStringDeserializer.CalculateReuseProbeLookupCount(KeyCacheMaxEntries);
+        for (var i = 0; i < reuseLookups; i++)
+        {
+            var data = i % sparseHitInterval == 0
+                ? retained
+                : ToUtf8($"sparse-reuse-{i}");
+            sut.Deserialize(data, context);
+        }
+
+        await Assert.That(GetInnerModeName(sut)).IsEqualTo("BypassSerde");
+    }
+
+    [Test]
     public async Task LowCardinalityKeys_RemainCachedPastAdmissionProbeLimit()
     {
         var sut = CreateKeyCache();
