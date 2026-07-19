@@ -141,6 +141,28 @@ var recentConsumer = await Kafka.CreateConsumer<string, string>()
 | `None` | Throw an exception if no offset is committed |
 | `ByDuration` | Start from the first offset at or after `DateTimeOffset.UtcNow - duration` |
 
+### Protecting newly expanded partitions
+
+Kafka 4.4's KIP-1327 can apply a separate reset policy when a topic gains partitions. This
+avoids the blind window where a `Latest` consumer would otherwise skip records written before
+it discovers the new partition:
+
+```csharp
+var consumer = await Kafka.CreateConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("live-orders")
+    .WithAutoOffsetReset(AutoOffsetReset.Latest) // Skip history predating the group
+    .WithAutoOffsetResetNewPartitions(AutoOffsetReset.Earliest) // Read all hot expansion data
+    .BuildAsync();
+```
+
+The new-partition policy is optional and supports `Earliest`, `Latest`, and `ByDuration` (through
+`WithAutoOffsetResetNewPartitionsByDuration`). Committed offsets always win. If a committed offset
+becomes out of range, the base policy is used. Brokers older than Kafka 4.4 omit the classification,
+so Dekaf safely keeps using the base policy until the coordinator supports
+`ConsumerGroupHeartbeat` v2. The option requires group subscription and is rejected for manual
+assignment.
+
 ## Error Handling
 
 Wrap your consume loop in try-catch:

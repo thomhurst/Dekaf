@@ -134,6 +134,20 @@ public sealed class ConsumerOptions
     public TimeSpan? AutoOffsetResetDuration { get; init; }
 
     /// <summary>
+    /// Optional offset reset behavior for partitions that the group coordinator identifies as
+    /// newly expanded through KIP-1327. When unset, <see cref="AutoOffsetReset"/> applies.
+    /// Requires a broker supporting ConsumerGroupHeartbeat v2; older brokers safely use the
+    /// base policy because they omit the new-partition classification.
+    /// </summary>
+    public AutoOffsetReset? AutoOffsetResetNewPartitions { get; init; }
+
+    /// <summary>
+    /// Duration used when <see cref="AutoOffsetResetNewPartitions"/> is
+    /// <see cref="AutoOffsetReset.ByDuration"/>.
+    /// </summary>
+    public TimeSpan? AutoOffsetResetNewPartitionsDuration { get; init; }
+
+    /// <summary>
     /// Fetch minimum bytes.
     /// </summary>
     public int FetchMinBytes { get; init; } = 1;

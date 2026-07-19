@@ -1024,6 +1024,32 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    public async Task AddConsumer_WithNewPartitionByDurationReset_BindsIndependentPolicy()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:Consumers:Orders:BootstrapServers:0"] = "broker1:9092",
+            ["Kafka:Consumers:Orders:GroupId"] = "orders-group",
+            ["Kafka:Consumers:Orders:AutoOffsetReset"] = "Latest",
+            ["Kafka:Consumers:Orders:AutoOffsetResetNewPartitions"] = "by_duration:PT5M"
+        });
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumer<string, string>(configuration.GetSection("Kafka:Consumers:Orders"));
+        });
+
+        var provider = services.BuildServiceProvider();
+        var consumer = provider.GetRequiredService<IKafkaConsumer<string, string>>();
+        var options = GetConsumerOptions(consumer);
+
+        await Assert.That(options.AutoOffsetReset).IsEqualTo(AutoOffsetReset.Latest);
+        await Assert.That(options.AutoOffsetResetNewPartitions).IsEqualTo(AutoOffsetReset.ByDuration);
+        await Assert.That(options.AutoOffsetResetNewPartitionsDuration).IsEqualTo(TimeSpan.FromMinutes(5));
+    }
+
+    [Test]
     public async Task AddConsumer_WithByDurationAutoOffsetResetWithoutDuration_ThrowsInvalidOperationException()
     {
         var services = new ServiceCollection();

@@ -9,7 +9,7 @@ public sealed class ConsumerGroupHeartbeatRequest : IKafkaRequest<ConsumerGroupH
 {
     public static ApiKey ApiKey => ApiKey.ConsumerGroupHeartbeat;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 1;
+    public static short HighestSupportedVersion => 2;
 
     /// <summary>
     /// The group ID.
@@ -113,6 +113,12 @@ public sealed class ConsumerGroupHeartbeatTopicPartitions
     /// </summary>
     public required IReadOnlyList<int> Partitions { get; init; }
 
+    /// <summary>
+    /// The subset of <see cref="Partitions"/> classified by the coordinator as newly expanded
+    /// (v2+ responses only). Empty when the broker does not support KIP-1327.
+    /// </summary>
+    public IReadOnlyList<int> NewPartitions { get; init; } = [];
+
     public void Write(ref KafkaProtocolWriter writer)
     {
         writer.WriteUuid(TopicId);
@@ -122,18 +128,34 @@ public sealed class ConsumerGroupHeartbeatTopicPartitions
         writer.WriteEmptyTaggedFields();
     }
 
-    public static ConsumerGroupHeartbeatTopicPartitions Read(ref KafkaProtocolReader reader)
+    public static ConsumerGroupHeartbeatTopicPartitions Read(ref KafkaProtocolReader reader, short version)
     {
         var topicId = reader.ReadUuid();
         var partitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => r.ReadInt32());
 
-        reader.SkipTaggedFields();
+        IReadOnlyList<int> newPartitions = [];
+        var taggedFieldCount = reader.ReadUnsignedVarInt();
+        for (var i = 0; i < taggedFieldCount; i++)
+        {
+            var tag = reader.ReadUnsignedVarInt();
+            var size = reader.ReadUnsignedVarInt();
+            if (version >= 2 && tag == 0)
+            {
+                newPartitions = reader.ReadCompactArray(
+                    static (ref KafkaProtocolReader r) => r.ReadInt32());
+            }
+            else
+            {
+                reader.Skip(size);
+            }
+        }
 
         return new ConsumerGroupHeartbeatTopicPartitions
         {
             TopicId = topicId,
-            Partitions = partitions
+            Partitions = partitions,
+            NewPartitions = newPartitions
         };
     }
 }

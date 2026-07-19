@@ -1750,6 +1750,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void Assign(params TopicPartition[] partitions)
     {
+        ThrowIfNewPartitionResetUsesManualAssignment();
         _topicFilter = null;
         _topicPattern = null;
         _subscription.Clear();
@@ -1802,6 +1803,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public void IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions)
     {
+        ThrowIfNewPartitionResetUsesManualAssignment();
         // Clear subscription since we're doing manual assignment
         _topicFilter = null;
         _topicPattern = null;
@@ -1837,6 +1839,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         InvalidatePartitionCache();
         InvalidateFetchRequestCache();
+    }
+
+    private void ThrowIfNewPartitionResetUsesManualAssignment()
+    {
+        if (_options.AutoOffsetResetNewPartitions is not null)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(ConsumerOptions.AutoOffsetResetNewPartitions)} requires a consumer group subscription " +
+                "and cannot be used with manual assignment.");
+        }
     }
 
     public void IncrementalUnassign(IEnumerable<TopicPartition> partitions)
@@ -5585,7 +5597,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if ((!_subscription.IsEmpty || topicPattern is not null) && coordinator is not null)
                 {
                     BeforeCoordinatorAssignmentSnapshotForTest?.Invoke();
-                    var (coordinatorAssignment, coordinatorAssignmentVersion, coordinatorRevocations) =
+                    var (
+                        coordinatorAssignment,
+                        coordinatorAssignmentVersion,
+                        coordinatorRevocations,
+                        newlyExpandedPartitions) =
                         await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(cancellationToken)
                             .ConfigureAwait(false);
                     if (coordinatorRevocations is not null)
@@ -5677,7 +5693,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // Initialize positions for new partitions
                     if (newPartitions is { Count: > 0 })
                     {
-                        await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
+                        await InitializePositionsAsync(
+                                newPartitions,
+                                newlyExpandedPartitions,
+                                cancellationToken)
+                            .ConfigureAwait(false);
                     }
 
                     // OffsetFetch recovery can rejoin the group. If that produced a new assignment,
@@ -5767,7 +5787,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private async ValueTask InitializePositionsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
+    private async ValueTask InitializePositionsAsync(
+        List<TopicPartition> partitions,
+        HashSet<TopicPartition> newlyExpandedPartitions,
+        CancellationToken cancellationToken)
     {
         // Fetch committed offsets for all partitions
         var committedOffsets = await _coordinator!.FetchOffsetsAsync(partitions, cancellationToken).ConfigureAwait(false);
@@ -5788,7 +5811,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
             {
                 // No committed offset, use auto offset reset
-                var offset = await GetResetOffsetAsync(partition, cancellationToken).ConfigureAwait(false);
+                var offset = await GetResetOffsetAsync(
+                        partition,
+                        cancellationToken,
+                        newlyExpandedPartitions.Contains(partition))
+                    .ConfigureAwait(false);
                 SetPosition(partition, offset, dirty: false);
                 ClearLastConsumedLeaderEpoch(partition);
                 _fetchPositions[partition] = offset;
@@ -5796,9 +5823,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private async ValueTask<long> GetResetOffsetAsync(TopicPartition partition, CancellationToken cancellationToken)
+    private async ValueTask<long> GetResetOffsetAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken,
+        bool isNewPartition = false)
     {
-        var timestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(_options, DateTimeOffset.UtcNow, partition);
+        var timestamp = AutoOffsetResetStrategy.GetListOffsetsTimestamp(
+            _options,
+            DateTimeOffset.UtcNow,
+            partition,
+            isNewPartition);
         return await ResolveAutoResetOffsetAsync(partition, timestamp, cancellationToken).ConfigureAwait(false);
     }
 

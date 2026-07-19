@@ -214,6 +214,23 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         };
     }
 
+    private static ConsumerGroupHeartbeatAssignment CreateAssignmentWithNewPartitions(
+        Guid topicId,
+        IReadOnlyList<int> partitions,
+        IReadOnlyList<int> newPartitions) => new()
+    {
+        AssignedTopicPartitions =
+        [
+            new ConsumerGroupHeartbeatTopicPartitions
+            {
+                TopicId = topicId,
+                Partitions = partitions,
+                NewPartitions = newPartitions
+            }
+        ],
+        PendingTopicPartitions = []
+    };
+
     private static long GetCoordinatorLongField(ConsumerCoordinator coordinator, string fieldName)
     {
         var field = typeof(ConsumerCoordinator).GetField(
@@ -293,6 +310,22 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_BrokerSupportsV2_UsesV2()
+    {
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 2);
+        SetupSuccessfulConsumerProtocolJoin();
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(), _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Any<ConsumerGroupHeartbeatRequest>(),
+            Arg.Is<short>(version => version == 2),
+            Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -1579,7 +1612,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
         await Assert.That(commitRequestCount).IsEqualTo(0);
 
-        var (_, assignmentVersion, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+        var (_, assignmentVersion, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
             CancellationToken.None);
         coordinator.AcknowledgeAssignmentSync(assignmentVersion);
         await coordinator.CommitOffsetsAsync(
@@ -1634,7 +1667,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             "_maxPollExpiredAtPollVersion",
             GetCoordinatorLongField(coordinator, "_pollVersion"));
 
-        var (_, assignmentVersion, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+        var (_, assignmentVersion, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
             CancellationToken.None);
         coordinator.AcknowledgeAssignmentSync(assignmentVersion);
 
@@ -1661,6 +1694,22 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(coordinator.Assignment).Count().IsEqualTo(2);
         await Assert.That(coordinator.Assignment).Contains(new TopicPartition("test-topic", 0));
         await Assert.That(coordinator.Assignment).Contains(new TopicPartition("test-topic", 1));
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_Assignment_PublishesNewPartitionClassification()
+    {
+        var assignment = CreateAssignmentWithNewPartitions(TestTopicId, [0, 1], [1]);
+        SetupSuccessfulConsumerProtocolJoin(assignment: assignment);
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        var (_, _, _, newlyExpandedPartitions) =
+            await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+
+        await Assert.That(newlyExpandedPartitions).IsEquivalentTo(
+            [new TopicPartition("test-topic", 1)]);
     }
 
     [Test]

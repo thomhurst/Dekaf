@@ -9,7 +9,7 @@ public sealed class ConsumerGroupHeartbeatResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.ConsumerGroupHeartbeat;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 1;
+    public static short HighestSupportedVersion => 2;
 
     /// <summary>
     /// Throttle time in milliseconds.
@@ -107,7 +107,7 @@ public sealed class ConsumerGroupHeartbeatAssignment
         // semantic-only change for the response). Only AssignedTopicPartitions is a positional field.
         // PendingTopicPartitions is not present as a positional field in any version.
         var assignedTopicPartitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r));
+            (ref KafkaProtocolReader r) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r, version));
 
         reader.SkipTaggedFields();
 

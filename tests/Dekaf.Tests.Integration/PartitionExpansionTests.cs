@@ -58,6 +58,60 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
+    [SupportsKafka(440)]
+    public async Task NewPartitionEarliest_WithBaseLatest_ConsumesHotExpansionRecord()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);
+        var groupId = $"kip-1327-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("kip-1327-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("kip-1327-consumer")
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Latest)
+            .WithAutoOffsetResetNewPartitions(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await using var admin = CreateAdminClient();
+
+        consumer.Subscribe(topic);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        while (consumer.Assignment.Count == 0)
+        {
+            _ = await consumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(500), cancellation.Token)
+                .ConfigureAwait(false);
+        }
+
+        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 2 })
+            .ConfigureAwait(false);
+        await WaitForPartitionCountAsync(admin, topic, 2).ConfigureAwait(false);
+
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Partition = 1,
+            Key = "hot-key",
+            Value = "written-before-discovery"
+        }, cancellation.Token).ConfigureAwait(false);
+
+        ConsumeResult<string, string>? hotRecord = null;
+        while (hotRecord is null)
+        {
+            var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), cancellation.Token)
+                .ConfigureAwait(false);
+            if (result is { Partition: 1, Value: "written-before-discovery" })
+                hotRecord = result;
+        }
+
+        await Assert.That(hotRecord.Value.Offset).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ConsumerGroup_DetectsNewPartitions_AfterExpansion()
     {
         // Arrange - create topic with 2 partitions

@@ -55,6 +55,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // all writes replacing the reference entirely (never in-place mutation) — verified at
     // every assignment site: ProcessConsumerGroupAssignment() and DisposeAsync().
     private volatile HashSet<TopicPartition> _assignedPartitions = [];
+    private volatile HashSet<TopicPartition> _newlyExpandedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
     // Serializes user rebalance callbacks without holding the coordinator state lock. This
     // permits callbacks to re-enter consumer APIs while preserving assigned-before-lost order.
@@ -226,7 +227,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             && timestamp - Volatile.Read(ref _lastPollTimestamp) >= _maxPollIntervalStopwatchTicks;
     }
 
-    internal async ValueTask<(TopicPartitionSet Assignment, int Version, HashSet<TopicPartition>? Revocations)>
+    internal async ValueTask<(
+        TopicPartitionSet Assignment,
+        int Version,
+        HashSet<TopicPartition>? Revocations,
+        HashSet<TopicPartition> NewlyExpandedPartitions)>
         GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken cancellationToken)
     {
         while (true)
@@ -243,7 +248,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         (revoked ??= []).Add(partition);
                     }
 
-                    return (_assignedPartitions, Volatile.Read(ref _assignmentVersion), revoked);
+                    return (
+                        _assignedPartitions,
+                        Volatile.Read(ref _assignmentVersion),
+                        revoked,
+                        _newlyExpandedPartitions);
                 }
             }
 
@@ -1117,6 +1126,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         lock (_assignmentStateLock)
         {
             _assignedPartitions = [];
+            _newlyExpandedPartitions = [];
             if (revoked is not null)
             {
                 Interlocked.Increment(ref _assignmentVersion);
@@ -1522,6 +1532,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private ConsumerHeartbeatResult ProcessConsumerGroupAssignment(ConsumerGroupHeartbeatAssignment assignment)
     {
         var newAssignment = new HashSet<TopicPartition>();
+        var newlyExpandedPartitions = new HashSet<TopicPartition>();
 
         foreach (var tp in assignment.AssignedTopicPartitions)
         {
@@ -1535,6 +1546,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             foreach (var partition in tp.Partitions)
             {
                 newAssignment.Add(new TopicPartition(topicInfo.Name, partition));
+            }
+
+            foreach (var partition in tp.NewPartitions)
+            {
+                newlyExpandedPartitions.Add(new TopicPartition(topicInfo.Name, partition));
             }
         }
 
@@ -1564,6 +1580,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
+        var classificationChanged = !_newlyExpandedPartitions.SetEquals(newlyExpandedPartitions);
         TaskCompletionSource<bool>? revocationCommitCompletion = null;
         if (revoked is { Count: > 0 }
             && _options.OffsetCommitMode == OffsetCommitMode.Auto
@@ -1573,13 +1590,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
-        if (changed)
+        if (changed || classificationChanged)
         {
-            NotifyRevoking(revoked);
+            if (changed)
+                NotifyRevoking(revoked);
 
             lock (_assignmentStateLock)
             {
                 _assignedPartitions = newAssignment;
+                _newlyExpandedPartitions = newlyExpandedPartitions;
                 Interlocked.Increment(ref _assignmentVersion);
 
                 if (revoked is not null)
@@ -1588,10 +1607,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     _pendingRevocationCommit = revocationCommitCompletion.Task;
             }
 
-            if (revoked is not null)
+            if (changed && revoked is not null)
                 _onPartitionsRevoked?.Invoke(revoked);
 
-            LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
+            if (changed)
+                LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
         }
 
         return new ConsumerHeartbeatResult(changed, revoked, assigned, revocationCommitCompletion);

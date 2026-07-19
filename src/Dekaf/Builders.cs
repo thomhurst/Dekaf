@@ -1524,6 +1524,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private OffsetStoreTiming _offsetStoreTiming = OffsetStoreTiming.AfterProcessing;
     private AutoOffsetReset _autoOffsetReset = AutoOffsetReset.Latest;
     private TimeSpan? _autoOffsetResetDuration;
+    private AutoOffsetReset? _autoOffsetResetNewPartitions;
+    private TimeSpan? _autoOffsetResetNewPartitionsDuration;
     private int _fetchMinBytes = 1;
     private int _fetchMaxBytes = 52428800;
     private long _fetchBufferMemoryBytes = 100L * 1024 * 1024;
@@ -1820,6 +1822,43 @@ public sealed class ConsumerBuilder<TKey, TValue>
         AutoOffsetResetStrategy.ValidateDuration(duration);
         _autoOffsetReset = AutoOffsetReset.ByDuration;
         _autoOffsetResetDuration = duration;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the KIP-1327 offset reset policy for newly expanded partitions.
+    /// The base policy continues to apply to pre-existing partitions and out-of-range
+    /// committed offsets.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithAutoOffsetResetNewPartitions(AutoOffsetReset autoOffsetReset)
+    {
+        if (autoOffsetReset == AutoOffsetReset.ByDuration)
+        {
+            throw new ArgumentException(
+                "Use WithAutoOffsetResetNewPartitionsByDuration(TimeSpan) to configure duration-based offset reset.",
+                nameof(autoOffsetReset));
+        }
+
+        if (autoOffsetReset == AutoOffsetReset.None)
+        {
+            throw new ArgumentException(
+                "KIP-1327 supports Earliest, Latest, or ByDuration for newly expanded partitions.",
+                nameof(autoOffsetReset));
+        }
+
+        _autoOffsetResetNewPartitions = autoOffsetReset;
+        _autoOffsetResetNewPartitionsDuration = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets a duration-based KIP-1327 offset reset policy for newly expanded partitions.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithAutoOffsetResetNewPartitionsByDuration(TimeSpan duration)
+    {
+        AutoOffsetResetStrategy.ValidateDuration(duration);
+        _autoOffsetResetNewPartitions = AutoOffsetReset.ByDuration;
+        _autoOffsetResetNewPartitionsDuration = duration;
         return this;
     }
 
@@ -2953,6 +2992,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             OffsetStoreTiming = _offsetStoreTiming,
             AutoOffsetReset = _autoOffsetReset,
             AutoOffsetResetDuration = _autoOffsetResetDuration,
+            AutoOffsetResetNewPartitions = _autoOffsetResetNewPartitions,
+            AutoOffsetResetNewPartitionsDuration = _autoOffsetResetNewPartitionsDuration,
             FetchMinBytes = _fetchMinBytes,
             FetchMaxBytes = _fetchMaxBytes,
             FetchBufferMemoryBytes = _fetchBufferMemoryBytes,
