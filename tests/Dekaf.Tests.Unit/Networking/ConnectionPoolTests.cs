@@ -946,6 +946,9 @@ public sealed class ConnectionPoolTests
     {
         const int connectionsPerBroker = 2;
         var attempts = 0;
+        var observedBackoff = new TaskCompletionSource<TimeSpan>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        long timestamp = 0;
         var options = new ConnectionOptions
         {
             ConnectionTimeout = TimeSpan.FromSeconds(30),
@@ -964,7 +967,15 @@ public sealed class ConnectionPoolTests
                         new InvalidOperationException("broker down")));
 
                 return new ValueTask<IKafkaConnection>(CreateConnectedConnection(brokerId, host, port));
-            });
+            },
+            randomDouble: static () => 0.5,
+            reconnectBackoffDelay: (delay, _) =>
+            {
+                observedBackoff.TrySetResult(delay);
+                Interlocked.Add(ref timestamp, (long)(delay.TotalSeconds * Stopwatch.Frequency));
+                return ValueTask.CompletedTask;
+            },
+            timestampProvider: () => Volatile.Read(ref timestamp));
 
         await using (pool)
         {
@@ -973,12 +984,11 @@ public sealed class ConnectionPoolTests
             Func<Task> firstAttempt = () => pool.GetConnectionAsync(1).AsTask();
             await Assert.That(firstAttempt).Throws<InvalidOperationException>();
 
-            var stopwatch = Stopwatch.StartNew();
             var connection = await pool.GetConnectionAsync(1);
-            stopwatch.Stop();
+            var backoff = await observedBackoff.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             await Assert.That(connection.IsConnected).IsTrue();
-            await Assert.That(stopwatch.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(25));
+            await Assert.That(backoff).IsEqualTo(options.ReconnectBackoff);
             await Assert.That(attempts).IsEqualTo(4);
         }
     }
