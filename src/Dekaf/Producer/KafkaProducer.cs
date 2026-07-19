@@ -2704,46 +2704,70 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         string consumerGroupId,
         CancellationToken cancellationToken)
     {
-        // The three-step sequence (AddOffsetsToTxn -> FindCoordinator -> TxnOffsetCommit) is retried
-        // as a unit. If a later step fails, the retry re-executes Step 1 — safe because AddOffsetsToTxn
-        // is idempotent within a transaction epoch. Errors are classified through
-        // TransactionErrorClassifier (the single source of retriability for transactional ops) rather
-        // than RetryHelper, whose IsRetriable predicate does not cover codes like ConcurrentTransactions.
+        // Each path is retried as a unit. TV1 uses AddOffsetsToTxn -> FindCoordinator ->
+        // TxnOffsetCommit v4. TV2 discovers the group coordinator first, then uses v5 to
+        // enroll offsets implicitly when that exact connection supports it. A TV2 broker
+        // connection capped at v4 retains the explicit AddOffsetsToTxn fallback.
         const int maxRetries = 5;
         var tv2 = _currentTransactionUsesTV2;
 
-        for (var attempt = 0; attempt < maxRetries; attempt++)
+        // Materialize once so a lost response can retry safely even when the caller supplied
+        // a single-use enumerable.
+        var topicOffsets = new Dictionary<string, List<TxnOffsetCommitRequestPartition>>();
+        foreach (var offset in offsets)
         {
-            // Step 1: Add offsets to the transaction via the transaction coordinator
-            var addOffsetsRequest = new AddOffsetsToTxnRequest
+            if (!topicOffsets.TryGetValue(offset.Topic, out var list))
             {
-                TransactionalId = _options.TransactionalId!,
-                ProducerId = _producerId,
-                ProducerEpoch = _producerEpoch,
-                GroupId = consumerGroupId
-            };
-
-            var addOffsetsResponse = await SendWithConnectionLeaseAsync<AddOffsetsToTxnRequest, AddOffsetsToTxnResponse>(
-                    _transactionCoordinatorId,
-                    addOffsetsRequest,
-                    cancellationToken,
-                    requireTransactionFeatureMatch: true)
-                .ConfigureAwait(false);
-
-            if (addOffsetsResponse.ErrorCode != ErrorCode.None)
-            {
-                // Retriable -> back off and restart the sequence; fatal/abortable -> throws typed exception.
-                ThrowIfNonRetriableTransactionError(addOffsetsResponse.ErrorCode, "AddOffsetsToTxn", tv2);
-                if (attempt == maxRetries - 1)
-                    break;
-                var retryDelayMs = CalculateRequestRetryBackoff(attempt);
-                if (addOffsetsResponse.ErrorCode == ErrorCode.NotCoordinator)
-                    await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
-                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                continue;
+                list = [];
+                topicOffsets[offset.Topic] = list;
             }
 
-            // Step 2: Find the group coordinator
+            list.Add(new TxnOffsetCommitRequestPartition
+            {
+                PartitionIndex = offset.Partition,
+                CommittedOffset = offset.Offset,
+                CommittedLeaderEpoch = offset.LeaderEpoch
+            });
+        }
+
+        var txnTopics = new List<TxnOffsetCommitRequestTopic>(topicOffsets.Count);
+        foreach (var (topic, partitions) in topicOffsets)
+        {
+            txnTopics.Add(new TxnOffsetCommitRequestTopic
+            {
+                Name = topic,
+                Partitions = partitions
+            });
+        }
+
+        for (var attempt = 0; attempt < maxRetries; attempt++)
+        {
+            // TV1 always performs explicit offset enrollment before coordinator discovery.
+            if (!tv2)
+            {
+                var addOffsetsError = await SendAddOffsetsToTransactionAsync(
+                        consumerGroupId,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (addOffsetsError != ErrorCode.None)
+                {
+                    if (await PrepareAddOffsetsRetryAsync(
+                            addOffsetsError,
+                            attempt,
+                            maxRetries,
+                            tv2,
+                            cancellationToken)
+                        .ConfigureAwait(false))
+                    {
+                        continue;
+                    }
+
+                    break;
+                }
+            }
+
+            // Find the group coordinator. This remains uncached so NotCoordinator retries
+            // refresh only the affected group coordinator information.
             var brokers = _metadataManager.Metadata.GetBrokers();
             var findCoordRequest = new FindCoordinatorRequest
             {
@@ -2781,34 +2805,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 continue;
             }
 
-            // Step 3: Send TxnOffsetCommit to the group coordinator
-            // Group offsets by topic
-            var topicOffsets = new Dictionary<string, List<TxnOffsetCommitRequestPartition>>();
-            foreach (var offset in offsets)
-            {
-                if (!topicOffsets.TryGetValue(offset.Topic, out var list))
-                {
-                    list = [];
-                    topicOffsets[offset.Topic] = list;
-                }
-                list.Add(new TxnOffsetCommitRequestPartition
-                {
-                    PartitionIndex = offset.Partition,
-                    CommittedOffset = offset.Offset,
-                    CommittedLeaderEpoch = offset.LeaderEpoch
-                });
-            }
-
-            var txnTopics = new List<TxnOffsetCommitRequestTopic>(topicOffsets.Count);
-            foreach (var kvp in topicOffsets)
-            {
-                txnTopics.Add(new TxnOffsetCommitRequestTopic
-                {
-                    Name = kvp.Key,
-                    Partitions = kvp.Value
-                });
-            }
-
             var txnOffsetCommitRequest = new TxnOffsetCommitRequest
             {
                 TransactionalId = _options.TransactionalId!,
@@ -2818,12 +2814,62 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 Topics = txnTopics
             };
 
-            var txnOffsetCommitResponse = await SendWithConnectionLeaseAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
-                    coord.NodeId,
-                    txnOffsetCommitRequest,
-                    cancellationToken,
-                    requireTransactionFeatureMatch: true)
-                .ConfigureAwait(false);
+            using var coordinatorLease = await _connectionPool.LeaseConnectionAsync(
+                coord.NodeId,
+                cancellationToken).ConfigureAwait(false);
+            EnsureTransactionFeatureMatch();
+            var coordinatorConnection = coordinatorLease.Connection;
+            var highestAllowedVersion = tv2
+                ? TxnOffsetCommitRequest.HighestSupportedVersion
+                : (short)4;
+            var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+                coordinatorConnection,
+                ApiKey.TxnOffsetCommit,
+                TxnOffsetCommitRequest.LowestSupportedVersion,
+                highestAllowedVersion);
+
+            if (tv2 && txnOffsetCommitVersion < 5)
+            {
+                var addOffsetsError = await SendAddOffsetsToTransactionAsync(
+                        consumerGroupId,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (addOffsetsError != ErrorCode.None)
+                {
+                    if (await PrepareAddOffsetsRetryAsync(
+                            addOffsetsError,
+                            attempt,
+                            maxRetries,
+                            tv2,
+                            cancellationToken)
+                        .ConfigureAwait(false))
+                    {
+                        continue;
+                    }
+
+                    break;
+                }
+            }
+
+            TxnOffsetCommitResponse txnOffsetCommitResponse;
+            try
+            {
+                txnOffsetCommitResponse = await coordinatorConnection
+                    .SendAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
+                        txnOffsetCommitRequest,
+                        txnOffsetCommitVersion,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (
+                attempt < maxRetries - 1
+                && !cancellationToken.IsCancellationRequested
+                && RetryHelper.IsRetriableRequestFailure(ex))
+            {
+                await Task.Delay(CalculateRequestRetryBackoff(attempt), cancellationToken)
+                    .ConfigureAwait(false);
+                continue;
+            }
 
             // Check for errors across all partitions
             ErrorCode? commitError = null;
@@ -2850,13 +2896,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 if (attempt == maxRetries - 1)
                     break;
                 var retryDelayMs = CalculateRequestRetryBackoff(attempt);
-                if (commitError.Value == ErrorCode.NotCoordinator)
-                    await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
-            return; // All three steps succeeded
+            return;
         }
 
         throw new TransactionException(ErrorCode.CoordinatorLoadInProgress,
@@ -2864,6 +2908,45 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             TransactionalId = _options.TransactionalId
         };
+    }
+
+    private async ValueTask<ErrorCode> SendAddOffsetsToTransactionAsync(
+        string consumerGroupId,
+        CancellationToken cancellationToken)
+    {
+        var request = new AddOffsetsToTxnRequest
+        {
+            TransactionalId = _options.TransactionalId!,
+            ProducerId = _producerId,
+            ProducerEpoch = _producerEpoch,
+            GroupId = consumerGroupId
+        };
+
+        var response = await SendWithConnectionLeaseAsync<AddOffsetsToTxnRequest, AddOffsetsToTxnResponse>(
+                _transactionCoordinatorId,
+                request,
+                cancellationToken,
+                requireTransactionFeatureMatch: true)
+            .ConfigureAwait(false);
+        return response.ErrorCode;
+    }
+
+    private async ValueTask<bool> PrepareAddOffsetsRetryAsync(
+        ErrorCode errorCode,
+        int attempt,
+        int maxRetries,
+        bool tv2,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfNonRetriableTransactionError(errorCode, "AddOffsetsToTxn", tv2);
+        if (attempt == maxRetries - 1)
+            return false;
+
+        if (errorCode == ErrorCode.NotCoordinator)
+            await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+
+        await Task.Delay(CalculateRequestRetryBackoff(attempt), cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     /// <inheritdoc />
