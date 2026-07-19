@@ -1322,7 +1322,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             _acks = Acks.All;
         }
 
-        GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
+        if (_clientInfrastructure is null)
+            GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
 
         var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>("key", "WithKeySerializer");
         var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>("value", "WithValueSerializer");

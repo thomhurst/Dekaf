@@ -76,6 +76,19 @@ public sealed class KafkaClientBuilderTests
     }
 
     [Test]
+    public async Task RootClient_Gssapi_CreatesProducerUsingSharedConfiguration()
+    {
+        await using var client = Kafka.Connect("localhost:9092", builder => builder
+            .WithGssapi(new GssapiConfig()));
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var options = GetField<ProducerOptions>(producer, "_options");
+
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.Gssapi);
+        await Assert.That(options.GssapiConfig).IsNull();
+    }
+
+    [Test]
     public async Task RootClient_CreatedConsumer_UsesDefaultAdaptiveMaximumOf4()
     {
         await using var client = Kafka.Connect("localhost:9092");
