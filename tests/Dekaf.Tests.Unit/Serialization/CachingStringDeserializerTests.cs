@@ -177,6 +177,7 @@ public class CachingStringDeserializerTests
         var first = sut.Deserialize(data, context);
         var second = sut.Deserialize(data, context);
 
+        await Assert.That(GetInnerModeName(sut)).IsEqualTo("BypassSerde");
         await Assert.That(ReferenceEquals(first, second)).IsFalse();
     }
 
