@@ -123,6 +123,15 @@ public interface IAdminClient : IAsyncDisposable
     ValueTask DeleteConsumerGroupsAsync(IEnumerable<string> groupIds, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Removes static members, identified by group.instance.id, from a consumer group.
+    /// </summary>
+    ValueTask<RemoveMembersFromConsumerGroupResult> RemoveMembersFromConsumerGroupAsync(
+        string groupId,
+        IEnumerable<ConsumerGroupMemberToRemove> members,
+        RemoveMembersFromConsumerGroupOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists consumer group offsets.
     /// </summary>
     ValueTask<IReadOnlyDictionary<TopicPartition, long>> ListConsumerGroupOffsetsAsync(string groupId, CancellationToken cancellationToken = default);

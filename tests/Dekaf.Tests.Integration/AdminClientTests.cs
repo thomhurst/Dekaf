@@ -873,6 +873,55 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
 
     #endregion
 
+    #region Consumer Group Member Removal Tests
+
+    [Test]
+    public async Task RemoveMembersFromConsumerGroupAsync_RemovesStaticMember()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        var groupId = $"admin-remove-static-{Guid.NewGuid():N}";
+        var instanceId = $"static-instance-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync().ConfigureAwait(false);
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = "value"
+        }).ConfigureAwait(false);
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithGroupInstanceId(instanceId)
+            .WithSessionTimeout(TimeSpan.FromSeconds(30))
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync().ConfigureAwait(false);
+        consumer.Subscribe(topic);
+
+        var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        await Assert.That(consumed).IsNotNull();
+
+        await using var admin = CreateAdminClient();
+        var result = await admin.RemoveMembersFromConsumerGroupAsync(
+            groupId,
+            [new ConsumerGroupMemberToRemove { GroupInstanceId = instanceId }],
+            new RemoveMembersFromConsumerGroupOptions { Reason = "integration test removal" })
+            .ConfigureAwait(false);
+
+        await Assert.That(result.GroupId).IsEqualTo(groupId);
+        await Assert.That(result.Succeeded).IsTrue();
+        await Assert.That(result.Members).Count().IsEqualTo(1);
+        await Assert.That(result.Members[0].GroupInstanceId).IsEqualTo(instanceId);
+        await Assert.That(result.Members[0].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    #endregion
+
     #region Basic Admin Operations Tests
 
     [Test]

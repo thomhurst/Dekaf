@@ -1431,6 +1431,84 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<RemoveMembersFromConsumerGroupResult> RemoveMembersFromConsumerGroupAsync(
+        string groupId,
+        IEnumerable<ConsumerGroupMemberToRemove> members,
+        RemoveMembersFromConsumerGroupOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentNullException.ThrowIfNull(members);
+
+        var memberList = members.ToArray();
+        if (memberList.Length == 0)
+        {
+            throw new ArgumentException("At least one static member is required.", nameof(members));
+        }
+
+        foreach (var member in memberList)
+        {
+            ArgumentNullException.ThrowIfNull(member);
+            ArgumentException.ThrowIfNullOrWhiteSpace(member.GroupInstanceId);
+        }
+
+        if (memberList.Select(static member => member.GroupInstanceId).Distinct(StringComparer.Ordinal).Count() != memberList.Length)
+        {
+            throw new ArgumentException("Static member group.instance.id values must be unique.", nameof(members));
+        }
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        options ??= new RemoveMembersFromConsumerGroupOptions();
+
+        return await WithRetryAsync(async () =>
+        {
+            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                Protocol.ApiKey.LeaveGroup,
+                LeaveGroupRequest.LowestSupportedVersion,
+                LeaveGroupRequest.HighestSupportedVersion);
+            var request = new LeaveGroupRequest
+            {
+                GroupId = groupId,
+                Members = memberList.Select(member => new LeaveGroupRequestMember
+                {
+                    GroupInstanceId = member.GroupInstanceId,
+                    Reason = apiVersion >= 5 ? options.Reason : null
+                }).ToArray()
+            };
+
+            var response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new Errors.GroupException(response.ErrorCode,
+                    $"RemoveMembersFromConsumerGroup failed for group '{groupId}': {response.ErrorCode}")
+                {
+                    GroupId = groupId
+                };
+            }
+
+            return new RemoveMembersFromConsumerGroupResult
+            {
+                GroupId = groupId,
+                Members = response.Members.Select((member, index) => new ConsumerGroupMemberRemovalResult
+                {
+                    MemberId = member.MemberId,
+                    GroupInstanceId = member.GroupInstanceId
+                        ?? (index < memberList.Length ? memberList[index].GroupInstanceId : string.Empty),
+                    ErrorCode = member.ErrorCode
+                }).ToArray()
+            };
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> ListConsumerGroupOffsetsAsync(
         string groupId,
         CancellationToken cancellationToken = default)

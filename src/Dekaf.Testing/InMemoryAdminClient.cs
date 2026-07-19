@@ -199,6 +199,31 @@ public sealed class InMemoryAdminClient : IAdminClient
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask<RemoveMembersFromConsumerGroupResult> RemoveMembersFromConsumerGroupAsync(
+        string groupId,
+        IEnumerable<ConsumerGroupMemberToRemove> members,
+        RemoveMembersFromConsumerGroupOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        ArgumentNullException.ThrowIfNull(members);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        var results = members.Select(member => new ConsumerGroupMemberRemovalResult
+        {
+            GroupInstanceId = member.GroupInstanceId,
+            MemberId = string.Empty,
+            ErrorCode = Protocol.ErrorCode.None
+        }).ToArray();
+
+        return ValueTask.FromResult(new RemoveMembersFromConsumerGroupResult
+        {
+            GroupId = groupId,
+            Members = results
+        });
+    }
+
     public ValueTask<IReadOnlyDictionary<TopicPartition, long>> ListConsumerGroupOffsetsAsync(
         string groupId,
         CancellationToken cancellationToken = default)
