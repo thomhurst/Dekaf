@@ -1,0 +1,116 @@
+﻿Response: Dekaf.Protocol.Messages.ProduceResponse
+API key: Produce (0)
+Version: 13
+Header version: 1
+Body length: 328 bytes
+
+0000: 03 00 11 22 33 44 55 66  77 88 99 AA BB CC DD EE |..."3DUfw.......|
+0010: FF 03 00 00 00 00 00 00  00 00 00 00 00 00 00 2A |...............*|
+0020: 00 00 01 8B CF E5 68 00  00 00 00 00 00 00 00 05 |......h.........|
+0030: 01 00 00 00 00 00 01 00  06 00 00 00 00 00 00 00 |................|
+0040: 2B 00 00 01 8B CF E5 68  01 00 00 00 00 00 00 00 |+......h........|
+0050: 05 02 00 00 00 03 10 72  65 63 6F 72 64 20 72 65 |.......record re|
+0060: 6A 65 63 74 65 64 00 0D  6C 65 61 64 65 72 20 6D |jected..leader m|
+0070: 6F 76 65 64 01 00 08 00  00 00 02 00 00 00 07 00 |oved............|
+0080: 10 21 32 43 54 65 76 87  98 A9 BA CB DC ED FE 0F |.!2CTev.........|
+0090: 03 00 00 00 02 00 00 00  00 00 00 00 00 00 2C 00 |..............,.|
+00A0: 00 01 8B CF E5 68 02 00  00 00 00 00 00 00 05 01 |.....h..........|
+00B0: 00 00 00 00 00 03 00 06  00 00 00 00 00 00 00 2D |...............-|
+00C0: 00 00 01 8B CF E5 68 03  00 00 00 00 00 00 00 05 |......h.........|
+00D0: 02 00 00 00 03 10 72 65  63 6F 72 64 20 72 65 6A |......record rej|
+00E0: 65 63 74 65 64 00 0D 6C  65 61 64 65 72 20 6D 6F |ected..leader mo|
+00F0: 76 65 64 01 00 08 00 00  00 02 00 00 00 07 00 00 |ved.............|
+0100: 00 00 1D 02 00 3D 03 00  00 00 01 11 62 72 6F 6B |.....=......brok|
+0110: 65 72 2D 61 2E 65 78 61  6D 70 6C 65 00 00 23 84 |er-a.example..#.|
+0120: 07 72 61 63 6B 2D 61 00  00 00 00 02 11 62 72 6F |.rack-a......bro|
+0130: 6B 65 72 2D 62 2E 65 78  61 6D 70 6C 65 00 00 23 |ker-b.example..#|
+0140: 85 00 00 09 03 AA BB CC                          |........|
+
+Decoded:
+{
+  "NodeEndpoints": [
+    {
+      "Host": "broker-a.example",
+      "NodeId": 1,
+      "Port": 9092,
+      "Rack": "rack-a"
+    },
+    {
+      "Host": "broker-b.example",
+      "NodeId": 2,
+      "Port": 9093,
+      "Rack": null
+    }
+  ],
+  "Responses": [
+    {
+      "Name": "",
+      "PartitionResponses": [
+        {
+          "BaseOffset": 42,
+          "CurrentLeader": null,
+          "ErrorCode": "None",
+          "ErrorMessage": null,
+          "Index": 0,
+          "LogAppendTimeMs": 1700000000000,
+          "LogStartOffset": 5,
+          "RecordErrors": []
+        },
+        {
+          "BaseOffset": 43,
+          "CurrentLeader": {
+            "LeaderEpoch": 7,
+            "LeaderId": 2
+          },
+          "ErrorCode": "NotLeaderOrFollower",
+          "ErrorMessage": "leader moved",
+          "Index": 1,
+          "LogAppendTimeMs": 1700000000001,
+          "LogStartOffset": 5,
+          "RecordErrors": [
+            {
+              "BatchIndex": 3,
+              "BatchIndexErrorMessage": "record rejected"
+            }
+          ]
+        }
+      ],
+      "TopicId": "00112233-4455-6677-8899-aabbccddeeff"
+    },
+    {
+      "Name": "",
+      "PartitionResponses": [
+        {
+          "BaseOffset": 44,
+          "CurrentLeader": null,
+          "ErrorCode": "None",
+          "ErrorMessage": null,
+          "Index": 2,
+          "LogAppendTimeMs": 1700000000002,
+          "LogStartOffset": 5,
+          "RecordErrors": []
+        },
+        {
+          "BaseOffset": 45,
+          "CurrentLeader": {
+            "LeaderEpoch": 7,
+            "LeaderId": 2
+          },
+          "ErrorCode": "NotLeaderOrFollower",
+          "ErrorMessage": "leader moved",
+          "Index": 3,
+          "LogAppendTimeMs": 1700000000003,
+          "LogStartOffset": 5,
+          "RecordErrors": [
+            {
+              "BatchIndex": 3,
+              "BatchIndexErrorMessage": "record rejected"
+            }
+          ]
+        }
+      ],
+      "TopicId": "10213243-5465-7687-98a9-bacbdcedfe0f"
+    }
+  ],
+  "ThrottleTimeMs": 29
+}

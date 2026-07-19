@@ -4,6 +4,12 @@ using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Unit.Producer;
 
+internal sealed record CapturedProduceRequest(
+    short ApiVersion,
+    string Info,
+    IReadOnlyList<(string Name, Guid TopicId, int Partition)> Topics,
+    IReadOnlyList<object> RecordBatches);
+
 internal sealed class TestKafkaConnection :
     IKafkaConnection,
     IKafkaPipelinedWriteCompletionConnection,
@@ -43,7 +49,7 @@ internal sealed class TestKafkaConnection :
     /// (the sender's scratch request structures are cleared after each send, so the request
     /// object itself cannot be inspected later). Lock the list to read it.
     /// </summary>
-    public List<(string Info, IReadOnlyList<object> RecordBatches)> CapturedProduceRequests { get; } = [];
+    public List<CapturedProduceRequest> CapturedProduceRequests { get; } = [];
 
     public Func<ValueTask<Task<ProduceResponse>>>? SendProducePipelinedAfterWrite { get; set; }
     public IPipelinedResponseSource<ProduceResponse>? PipelinedResponseSource { get; set; }
@@ -161,6 +167,7 @@ internal sealed class TestKafkaConnection :
         if (CaptureProduceRequests && request is ProduceRequest produceRequest)
         {
             var recordBatches = new List<object>();
+            var topics = new List<(string Name, Guid TopicId, int Partition)>();
             var info = new System.Text.StringBuilder();
             for (var t = 0; t < produceRequest.TopicEntryCount; t++)
             {
@@ -168,6 +175,7 @@ internal sealed class TestKafkaConnection :
                 for (var p = 0; p < topic.PartitionEntryCount; p++)
                 {
                     var partition = topic.GetPartitionEntry(p);
+                    topics.Add((topic.Name, topic.TopicId, partition.Index));
                     foreach (var recordBatch in partition.Records)
                     {
                         recordBatches.Add(recordBatch);
@@ -177,7 +185,11 @@ internal sealed class TestKafkaConnection :
             }
 
             lock (CapturedProduceRequests)
-                CapturedProduceRequests.Add((info.ToString(), recordBatches));
+                CapturedProduceRequests.Add(new CapturedProduceRequest(
+                    apiVersion,
+                    info.ToString(),
+                    topics,
+                    recordBatches));
         }
 
         if (PipelinedResponseSource is not null)

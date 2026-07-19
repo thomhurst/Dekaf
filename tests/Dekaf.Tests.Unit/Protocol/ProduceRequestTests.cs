@@ -9,6 +9,69 @@ namespace Dekaf.Tests.Unit.Protocol;
 public sealed class ProduceRequestTests
 {
     [Test]
+    public async Task TopicData_Write_V13_UsesTopicIdInsteadOfName()
+    {
+        var topicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+        var topic = new ProduceRequestTopicData
+        {
+            Name = "must-not-be-written",
+            TopicId = topicId,
+            PartitionData = []
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        topic.Write(ref writer, 13);
+
+        Guid parsedTopicId;
+        int partitionCount;
+        int taggedFields;
+        bool readerEnd;
+        {
+            var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+            parsedTopicId = reader.ReadUuid();
+            partitionCount = reader.ReadUnsignedVarInt();
+            taggedFields = reader.ReadUnsignedVarInt();
+            readerEnd = reader.End;
+        }
+        await Assert.That(parsedTopicId).IsEqualTo(topicId);
+        await Assert.That(partitionCount).IsEqualTo(1);
+        await Assert.That(taggedFields).IsEqualTo(0);
+        await Assert.That(readerEnd).IsTrue();
+    }
+
+    [Test]
+    public async Task TopicData_Write_V12_UsesNameInsteadOfTopicId()
+    {
+        var topic = new ProduceRequestTopicData
+        {
+            Name = "wire-topic",
+            TopicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"),
+            PartitionData = []
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        topic.Write(ref writer, 12);
+
+        string parsedName;
+        int partitionCount;
+        int taggedFields;
+        bool readerEnd;
+        {
+            var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+            parsedName = reader.ReadCompactNonNullableString();
+            partitionCount = reader.ReadUnsignedVarInt();
+            taggedFields = reader.ReadUnsignedVarInt();
+            readerEnd = reader.End;
+        }
+        await Assert.That(parsedName).IsEqualTo("wire-topic");
+        await Assert.That(partitionCount).IsEqualTo(1);
+        await Assert.That(taggedFields).IsEqualTo(0);
+        await Assert.That(readerEnd).IsTrue();
+    }
+
+    [Test]
     public async Task PartitionData_Write_EncodesRecordBatchesWithoutChangingBytes()
     {
         var batches = new[]

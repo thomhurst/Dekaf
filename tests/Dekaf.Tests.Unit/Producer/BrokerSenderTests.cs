@@ -36,6 +36,14 @@ public sealed class BrokerSenderTests
             implicitVersion - 2,
             isTransactional: true,
             usesTransactionV2: false)).IsEqualTo(implicitVersion - 2);
+        await Assert.That(BrokerSender.GetProduceRequestVersion(
+            ProduceRequest.HighestSupportedVersion,
+            isTransactional: true,
+            usesTransactionV2: false)).IsEqualTo(implicitVersion - 1);
+        await Assert.That(BrokerSender.GetProduceRequestVersion(
+            ProduceRequest.HighestSupportedVersion,
+            isTransactional: true,
+            usesTransactionV2: true)).IsEqualTo(ProduceRequest.HighestSupportedVersion);
     }
 
     private static ProducerOptions CreateDefaultOptions() => new()

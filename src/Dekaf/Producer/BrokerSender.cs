@@ -174,13 +174,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Wraps a pipelined response with the batch-generation snapshot the send captured
     /// at send start (before its first await) — the generations detect batch object
     /// recycling between send and response processing. Ownership of the rented
-    /// <paramref name="BatchGenerations"/> and <paramref name="Batches"/> arrays transfers
-    /// to this PendingResponse; they are returned by <see cref="TryReturnBatchesArray"/>.
+    /// <paramref name="BatchGenerations"/>, <paramref name="TopicIds"/>, and
+    /// <paramref name="Batches"/> arrays transfers
+    /// to this PendingResponse; they are returned by <see cref="TryReturnArrays"/>.
     /// </summary>
     internal readonly record struct PendingResponse(
         PipelinedResponse<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
         int[] BatchGenerations,
+        Guid[]? TopicIds,
+        short ApiVersion,
         int Count,
         long EncodedBytes,
         long DataBytes,
@@ -217,18 +220,32 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// calls are no-ops that return false so the caller can log the breached
         /// exactly-once cleanup contract instead of double-returning to the pool.
         /// </summary>
-        public bool TryReturnBatchesArray()
+        public bool TryReturnArrays()
         {
             if (!ReturnGuard.TryClaim())
                 return false;
 
             ArrayPool<int>.Shared.Return(BatchGenerations);
+            if (TopicIds is not null)
+                ArrayPool<Guid>.Shared.Return(TopicIds);
             ArrayPool<ReadyBatch>.Shared.Return(Batches, clearArray: true);
             return true;
         }
     }
 
-    /// <summary>Single-claim flag backing <see cref="PendingResponse.TryReturnBatchesArray"/>.</summary>
+    internal readonly record struct ProduceResponseKey(string Topic, Guid TopicId, int Partition)
+    {
+        public static ProduceResponseKey FromName(string topic, int partition) =>
+            new(topic, Guid.Empty, partition);
+
+        public static ProduceResponseKey FromId(Guid topicId, int partition) =>
+            new(string.Empty, topicId, partition);
+
+        public override string ToString() =>
+            TopicId == Guid.Empty ? $"{Topic}-{Partition}" : $"{TopicId}-{Partition}";
+    }
+
+    /// <summary>Single-claim flag backing <see cref="PendingResponse.TryReturnArrays"/>.</summary>
     internal sealed class ArrayReturnGuard
     {
         private int _claimed;
@@ -1200,7 +1217,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // Pre-allocate reusable response lookup dictionary to avoid per-response allocation.
         // Single-threaded: only accessed by the send loop, cleared after each use.
-        var responseLookup = new Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>();
+        var responseLookup = new Dictionary<ProduceResponseKey, ProduceResponsePartitionData>();
 
         // Pre-allocate reusable ProduceRequest structures.
         // The send loop is single-threaded. Acks.None single-connection sends can be
@@ -2368,9 +2385,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     internal static bool IsMatchingResponsePartition(
         TopicPartition expected,
-        string responseTopic,
+        short apiVersion,
+        Guid expectedTopicId,
+        ProduceResponseTopicData responseTopic,
         int responsePartition)
-        => expected.Topic == responseTopic
+        => (apiVersion >= ProduceRequest.TopicIdVersion
+                ? expectedTopicId == responseTopic.TopicId
+                : expected.Topic == responseTopic.Name)
             && expected.Partition == responsePartition;
 
     internal static (int QuietMicroseconds, int MaximumMicroseconds) SelectWaveCoalesceBounds(int lingerMs)
@@ -2827,7 +2848,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void ProcessCompletedResponses(
         PartitionCarryOver carryOver,
         CancellationToken cancellationToken,
-        Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? reusableResponseLookup = null)
+        Dictionary<ProduceResponseKey, ProduceResponsePartitionData>? reusableResponseLookup = null)
     {
         // CRITICAL: Process responses in FORWARD order (oldest request first).
         // With multi-inflight, R1 and R2 may both complete with errors for the same partition.
@@ -2912,7 +2933,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         && response.Responses[0].PartitionCount == 1
                         && IsMatchingResponsePartition(
                             directBatch.TopicPartition,
-                            response.Responses[0].Name,
+                            pending.ApiVersion,
+                            pending.TopicIds?[0] ?? Guid.Empty,
+                            response.Responses[0],
                             response.Responses[0].PartitionResponses[0].Index))
                     {
                         var partitionResponse = response.Responses[0].PartitionResponses[0];
@@ -2931,9 +2954,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     allPartitionsSucceeded = false;
                                 else
                                     anyPartitionSucceeded = true;
-                                responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
-                                responseLookup[(topicResp.Name, topicResp.PartitionResponses[p].Index)] =
-                                    topicResp.PartitionResponses[p];
+                                responseLookup ??= new Dictionary<ProduceResponseKey, ProduceResponsePartitionData>();
+                                var responseKey = pending.ApiVersion >= ProduceRequest.TopicIdVersion
+                                    ? ProduceResponseKey.FromId(topicResp.TopicId, topicResp.PartitionResponses[p].Index)
+                                    : ProduceResponseKey.FromName(topicResp.Name, topicResp.PartitionResponses[p].Index);
+                                responseLookup[responseKey] = topicResp.PartitionResponses[p];
                             }
                         }
                     }
@@ -2967,7 +2992,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         var respKeys = directResponse is not null
                             ? $"{batches[0].TopicPartition.Topic}-{directResponse.Value.Index}"
                             : responseLookup is not null
-                                ? string.Join(", ", responseLookup.Keys.Select(k => $"{k.Topic}-{k.Partition}"))
+                                ? string.Join(", ", responseLookup.Keys)
                                 : "(empty)";
                         LogProduceResponseProcessed(_instanceId, _brokerId, task.Id, count, batchKeys,
                             directResponse is not null ? 1 : responseLookup?.Count ?? 0, respKeys);
@@ -3039,7 +3064,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void ProcessResponseBatches(
         PendingResponse pending,
         ProduceResponsePartitionData? directResponse,
-        Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup,
+        Dictionary<ProduceResponseKey, ProduceResponsePartitionData>? responseLookup,
         IReadOnlyList<NodeEndpoint> nodeEndpoints,
         PartitionCarryOver carryOver,
         CancellationToken cancellationToken,
@@ -3081,9 +3106,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     foundResponse = true;
                 }
                 else if (responseLookup is not null)
-                    foundResponse = responseLookup.TryGetValue(
-                        (expectedTopic, expectedPartition),
-                        out partitionResponse);
+                {
+                    var expectedKey = pending.ApiVersion >= ProduceRequest.TopicIdVersion
+                        ? ProduceResponseKey.FromId(pending.TopicIds![j], expectedPartition)
+                        : ProduceResponseKey.FromName(expectedTopic, expectedPartition);
+                    foundResponse = responseLookup.TryGetValue(expectedKey, out partitionResponse);
+                }
 
                 if (!foundResponse)
                 {
@@ -3092,7 +3120,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // or contain different topic-partitions than expected.
                     var responseTopicCount = responseLookup?.Count ?? 0;
                     var responseKeys = responseLookup is not null
-                        ? string.Join(", ", responseLookup.Keys.Select(k => $"{k.Topic}-{k.Partition}"))
+                        ? string.Join(", ", responseLookup.Keys)
                         : "(null)";
                     LogNoResponseForPartition(_instanceId, expectedTopic, expectedPartition,
                         responseTopicCount, responseKeys, count, responseTaskId, batch.DiagTrace);
@@ -3676,6 +3704,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // array — catch blocks must NOT return them to ArrayPool, or they will be recycled
         // while PendingResponse still references them (causing cross-request batch contamination).
         var pendingResponseAdded = false;
+        Guid[]? topicIds = null;
         var responseTask = default(PipelinedResponse<ProduceResponse>);
         try
         {
@@ -3782,7 +3811,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             try
             {
                 // Build coalesced ProduceRequest (reuses pre-allocated scratch structures)
-                var request = scratch.Build(batches, generations, count);
+                if (apiVersion >= ProduceRequest.TopicIdVersion)
+                    topicIds = ArrayPool<Guid>.Shared.Rent(count);
+                var request = scratch.Build(batches, generations, topicIds, count, (short)apiVersion, _metadataManager);
                 _accumulator.RecordProduceRequest(_brokerId, count, request.RequestBodySizeHint);
 
                 // Handle Acks.None (fire-and-forget)
@@ -3907,6 +3938,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     responseTask,
                     batches,
                     generations,
+                    topicIds,
+                    (short)apiVersion,
                     count,
                     encodedBytes,
                     dataBytes,
@@ -4110,10 +4143,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         finally
         {
             // The generations snapshot transfers to PendingResponse along with the batches
-            // array; TryReturnBatchesArray returns both. On every other path it is owned here.
+            // arrays; TryReturnArrays returns all snapshots. On every other path they are owned here.
             if (!pendingResponseAdded)
             {
                 responseTask.Abandon();
+                if (topicIds is not null)
+                    ArrayPool<Guid>.Shared.Return(topicIds);
                 ArrayPool<int>.Shared.Return(generations);
             }
         }
@@ -4207,7 +4242,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// ProduceRequest instance each time — callers must not hold references past
         /// the next call.
         /// </summary>
-        public ProduceRequest Build(ReadyBatch[] batches, int[] generations, int count)
+        public ProduceRequest Build(
+            ReadyBatch[] batches,
+            int[] generations,
+            Guid[]? topicIds,
+            int count,
+            short apiVersion,
+            MetadataManager metadataManager)
         {
             // Sort batches by topic name so equal topics are contiguous.
             // Fast-path: skip the O(n log n) sort when count <= 1 or already sorted.
@@ -4276,9 +4317,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 var partCount = runEnd - runStart;
                 var partitionDataStart = partIdx;
+                var topicId = Guid.Empty;
+                if (apiVersion >= ProduceRequest.TopicIdVersion)
+                {
+                    if (topicIds is null
+                        || !metadataManager.TryGetCachedTopicMetadata(topicName, out var topicMetadata)
+                        || topicMetadata is null
+                        || topicMetadata.TopicId == Guid.Empty)
+                    {
+                        throw new KafkaException(
+                            ErrorCode.UnknownTopicId,
+                            $"Produce v{apiVersion} requires a current topic ID for '{topicName}'.");
+                    }
+
+                    topicId = topicMetadata.TopicId;
+                    topicIds.AsSpan(runStart, partCount).Fill(topicId);
+                }
+
                 requestBodySizeHint = checked(
                     requestBodySizeHint +
-                    ProduceRequestSizeCalculator.CompactStringSize(topicName) +
+                    (apiVersion >= ProduceRequest.TopicIdVersion
+                        ? 16
+                        : ProduceRequestSizeCalculator.CompactStringSize(topicName)) +
                     ProduceRequestSizeCalculator.CompactArrayLengthSize(partCount) +
                     1); // Topic tagged fields
 
@@ -4300,6 +4360,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 var topicData = _topicData[topicIdx];
                 topicData.Name = topicName;
+                topicData.TopicId = topicId;
                 topicData.SetPartitionDataScratch(_partitionData, partitionDataStart, partCount);
                 topicIdx++;
 
@@ -4324,6 +4385,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var i = 0; i < _lastTopicCount; i++)
             {
                 _topicData[i].Name = string.Empty;
+                _topicData[i].TopicId = Guid.Empty;
                 _topicData[i].ClearPartitionDataScratch();
             }
             for (var i = 0; i < _lastPartitionCount; i++)
@@ -5208,7 +5270,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         try
         {
-            if (!pending.TryReturnBatchesArray())
+            if (!pending.TryReturnArrays())
                 LogPendingResponseArraysAlreadyReturned(_instanceId, _brokerId);
         }
         catch (Exception returnEx)

@@ -49,7 +49,7 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
     }
 
     [Test]
-    public async Task PendingResponse_TryReturnBatchesArray_SecondCallIsNoOp()
+    public async Task PendingResponse_TryReturnArrays_SecondCallIsNoOp()
     {
         // Standalone struct, never attached to a live sender. The claim lives in the
         // reference-typed guard, so it is shared across every by-value copy — the second
@@ -58,6 +58,8 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
             default,
             ArrayPool<ReadyBatch>.Shared.Rent(1),
             ArrayPool<int>.Shared.Rent(1),
+            TopicIds: null,
+            ApiVersion: 12,
             Count: 0,
             EncodedBytes: 0,
             DataBytes: 0,
@@ -65,8 +67,8 @@ public sealed class PendingResponseArrayOwnershipTests : ScriptedProduceResponse
             default);
         var copy = pending;
 
-        var first = pending.TryReturnBatchesArray();
-        var second = copy.TryReturnBatchesArray();
+        var first = pending.TryReturnArrays();
+        var second = copy.TryReturnArrays();
 
         await Assert.That(first).IsTrue();
         await Assert.That(second).IsFalse();

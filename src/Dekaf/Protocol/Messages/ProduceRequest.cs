@@ -13,7 +13,8 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
 {
     public static ApiKey ApiKey => ApiKey.Produce;
     public static short LowestSupportedVersion => 9;
-    public static short HighestSupportedVersion => 12;
+    public static short HighestSupportedVersion => 13;
+    internal const short TopicIdVersion = 13;
     internal const short ImplicitTransactionPartitionEnrollmentVersion = 12;
 
     /// <summary>
@@ -136,6 +137,11 @@ public sealed class ProduceRequestTopicData
     public string Name { get; internal set; } = string.Empty;
 
     /// <summary>
+    /// Topic ID used instead of <see cref="Name"/> in Produce v13+.
+    /// </summary>
+    public Guid TopicId { get; internal set; }
+
+    /// <summary>
     /// Partition data.
     /// </summary>
     public IReadOnlyList<ProduceRequestPartitionData> PartitionData { get; internal set; } = [];
@@ -192,7 +198,10 @@ public sealed class ProduceRequestTopicData
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        writer.WriteCompactString(Name);
+        if (version >= ProduceRequest.TopicIdVersion)
+            writer.WriteUuid(TopicId);
+        else
+            writer.WriteCompactString(Name);
 
         if (_partitionDataScratch is { } partitionDataScratch)
         {
