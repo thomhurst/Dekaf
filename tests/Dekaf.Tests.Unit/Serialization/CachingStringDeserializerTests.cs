@@ -257,7 +257,7 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
-    public async Task ReuseProbe_CacheFilledDuringWindow_CountsAdmissionsAsReuseEvidence()
+    public async Task ReuseProbe_PreservesFilledCacheAcrossSubsequentSaturatedProbe()
     {
         const int keyCount = 100_000;
         var sut = CreateKeyCache();
@@ -272,10 +272,13 @@ public class CachingStringDeserializerTests
         for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
             sut.Deserialize(ToUtf8($"fill-window-{i % keyCount}"), context);
 
-        var reusedReference = sut.Deserialize(firstKey, context);
+        // Continue the stable cycle through another probe. This time the cache is already
+        // saturated, so preservation must be attainable from hits without admission evidence.
+        for (var i = KeyCacheMaxEntries; i < keyCount + KeyCacheMaxEntries; i++)
+            sut.Deserialize(ToUtf8($"fill-window-{i % keyCount}"), context);
 
         await Assert.That(GetInnerModeName(sut)).IsNotEqualTo("BypassSerde");
-        await Assert.That(ReferenceEquals(firstReference, reusedReference)).IsTrue();
+        await Assert.That(ReferenceEquals(firstReference, sut.Deserialize(firstKey, context))).IsTrue();
     }
 
     [Test]
