@@ -21,6 +21,9 @@ internal static class DeterministicResponseFixtureFactory
             ["ApiVersionsResponse.v3"] = EncodeApiVersionsResponse(version: 3),
             ["ApiVersionsResponse.v4"] = EncodeApiVersionsResponse(version: 4),
             ["ApiVersionsResponse.v5"] = EncodeApiVersionsResponse(version: 5),
+            ["DescribeClusterResponse.v0"] = EncodeDescribeClusterResponse(version: 0),
+            ["DescribeClusterResponse.v1"] = EncodeDescribeClusterResponse(version: 1),
+            ["DescribeClusterResponse.v2"] = EncodeDescribeClusterResponse(version: 2),
             ["DescribeConfigsResponse.v4"] = Encode(WriteDescribeConfigsResponse),
             ["DescribeGroupsResponse.v5"] = Encode(WriteDescribeGroupsResponse),
             ["DescribeGroupsResponse.v6"] = Encode(WriteDescribeGroupsResponseV6),
@@ -44,6 +47,42 @@ internal static class DeterministicResponseFixtureFactory
             ["UpdateFeaturesResponse.v1"] = EncodeUpdateFeaturesResponse(version: 1),
             ["UpdateFeaturesResponse.v2"] = EncodeUpdateFeaturesResponse(version: 2)
         };
+
+    private static byte[] EncodeDescribeClusterResponse(short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(17);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactNullableString(null);
+        if (version >= 1)
+            writer.WriteInt8(2);
+        writer.WriteCompactString("cluster-a");
+        writer.WriteInt32(2);
+        WriteCompactArrayLength(ref writer, 2);
+        WriteDescribeClusterNode(ref writer, version, 1, 19093, "rack-a", isFenced: false);
+        WriteDescribeClusterNode(ref writer, version, 2, 19094, null, isFenced: true);
+        writer.WriteInt32(7);
+        WriteEmptyTaggedFields(ref writer);
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static void WriteDescribeClusterNode(
+        ref KafkaProtocolWriter writer,
+        short version,
+        int nodeId,
+        int port,
+        string? rack,
+        bool isFenced)
+    {
+        writer.WriteInt32(nodeId);
+        writer.WriteCompactString($"controller-{nodeId}");
+        writer.WriteInt32(port);
+        writer.WriteCompactNullableString(rack);
+        if (version >= 2)
+            writer.WriteBoolean(isFenced);
+        WriteEmptyTaggedFields(ref writer);
+    }
 
     private static byte[] EncodeUpdateFeaturesResponse(short version)
     {

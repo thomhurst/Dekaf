@@ -70,6 +70,43 @@ public class AdminClientBuilderTests
         await Assert.That(client).IsNotNull();
     }
 
+    [Test]
+    public async Task Build_WithBootstrapControllers_Succeeds()
+    {
+        await using var client = new AdminClientBuilder()
+            .WithBootstrapControllers("controller1:9093,controller2:9093")
+            .Build();
+
+        var optionsField = typeof(AdminClient).GetField(
+            "_options",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Could not find _options field");
+        var options = (AdminClientOptions)optionsField.GetValue(client)!;
+
+        await Assert.That(options.BootstrapServers).IsEmpty();
+        await Assert.That(options.BootstrapControllers).IsEquivalentTo(["controller1:9093", "controller2:9093"]);
+    }
+
+    [Test]
+    public async Task Build_WithBrokerAndControllerBootstrap_ThrowsInvalidOperationException()
+    {
+        var builder = new AdminClientBuilder()
+            .WithBootstrapServers("broker:9092")
+            .WithBootstrapControllers("controller:9093");
+
+        await Assert.That(builder.Build).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task WithBootstrapControllers_ReturnsSameBuilder()
+    {
+        var builder = new AdminClientBuilder();
+
+        var result = builder.WithBootstrapControllers("controller:9093");
+
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
     #endregion
 
     #region Chaining Tests

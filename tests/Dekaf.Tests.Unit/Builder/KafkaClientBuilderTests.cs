@@ -185,6 +185,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithBootstrapServers("other:9092"))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithBootstrapControllers("controller:9093"))
+            .Throws<InvalidOperationException>();
     }
 
     [Test]
