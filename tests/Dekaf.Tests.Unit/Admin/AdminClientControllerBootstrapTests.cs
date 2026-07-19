@@ -28,6 +28,20 @@ public sealed class AdminClientControllerBootstrapTests
     }
 
     [Test]
+    public async Task DescribeClusterAsync_RefreshesStaleControllerTopology()
+    {
+        await using var context = new ControllerAdminContext(refreshInterval: TimeSpan.Zero);
+        context.EnqueueDiscovery(CreateDiscoveryResponse(activeControllerId: 1));
+
+        var initial = await context.Client.DescribeClusterAsync();
+        var refreshed = await context.Client.DescribeClusterAsync();
+
+        await Assert.That(initial.ControllerId).IsEqualTo(2);
+        await Assert.That(refreshed.ControllerId).IsEqualTo(1);
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task DescribeMetadataQuorumAsync_RoutesToAdvertisedActiveController()
     {
         await using var context = new ControllerAdminContext();
@@ -72,6 +86,35 @@ public sealed class AdminClientControllerBootstrapTests
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnsupportedEndpointType);
         await Assert.That(context.DiscoveryRequests).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task AlterUserScramCredentialsAsync_ControllerBootstrap_RejectsPerKip919()
+    {
+        await using var context = new ControllerAdminContext();
+
+        var exception = await Assert.That(async () =>
+                await context.Client.AlterUserScramCredentialsAsync([]))
+            .Throws<KafkaException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnsupportedEndpointType);
+        await Assert.That(context.DiscoveryRequests).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ControllerMetadataManager_InvalidBootstrapEntry_FailsFast()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = new MetadataManager(pool, []);
+
+        var exception = await Assert.That(() => new ControllerMetadataManager(
+                pool,
+                metadataManager,
+                ["controller-1:9093", "invalid"],
+                TimeSpan.FromMinutes(15)))
+            .Throws<ArgumentException>();
+
+        await Assert.That(exception!.Message).Contains("invalid");
     }
 
     [Test]
@@ -201,7 +244,9 @@ public sealed class AdminClientControllerBootstrapTests
         private readonly MetadataManager _metadataManager;
         private readonly Queue<DescribeClusterResponse> _discoveryResponses = new();
 
-        internal ControllerAdminContext(DescribeClusterResponse? discoveryResponse = null)
+        internal ControllerAdminContext(
+            DescribeClusterResponse? discoveryResponse = null,
+            TimeSpan? refreshInterval = null)
         {
             BootstrapController = CreateConnection("seed", 9093);
             ActiveController = CreateConnection("controller-2", 19094);
@@ -238,7 +283,11 @@ public sealed class AdminClientControllerBootstrapTests
                 },
                 Pool,
                 _metadataManager,
-                ownsResources: true);
+                ownsResources: true,
+                metadataOptions: new MetadataOptions
+                {
+                    MetadataRefreshInterval = refreshInterval ?? TimeSpan.FromMinutes(15)
+                });
         }
 
         internal AdminClient Client { get; }

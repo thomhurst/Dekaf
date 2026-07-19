@@ -14,6 +14,7 @@ internal sealed class ControllerMetadataManager : IDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _versionManager;
     private readonly IReadOnlyList<ControllerEndpoint> _bootstrapEndpoints;
+    private readonly TimeSpan _refreshInterval;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private ControllerMetadataSnapshot _snapshot = ControllerMetadataSnapshot.Empty;
     private int _disposed;
@@ -21,28 +22,42 @@ internal sealed class ControllerMetadataManager : IDisposable
     internal ControllerMetadataManager(
         IConnectionPool connectionPool,
         MetadataManager versionManager,
-        IReadOnlyList<string> bootstrapControllers)
+        IReadOnlyList<string> bootstrapControllers,
+        TimeSpan refreshInterval)
     {
+        if (refreshInterval < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(refreshInterval), "Controller metadata refresh interval must not be negative.");
+
         _connectionPool = connectionPool;
         _versionManager = versionManager;
         _bootstrapEndpoints = ParseEndpoints(bootstrapControllers);
-        if (_bootstrapEndpoints.Count == 0)
-            throw new ArgumentException("At least one valid controller bootstrap endpoint is required.", nameof(bootstrapControllers));
+        _refreshInterval = refreshInterval;
     }
 
     internal ControllerMetadataSnapshot Snapshot => Volatile.Read(ref _snapshot);
 
-    internal ValueTask InitializeAsync(CancellationToken cancellationToken) =>
-        Snapshot.LastRefreshed == default ? RefreshAsync(cancellationToken) : ValueTask.CompletedTask;
+    internal ValueTask InitializeAsync(CancellationToken cancellationToken)
+    {
+        return IsRefreshDue(Snapshot)
+            ? RefreshAsync(force: false, cancellationToken)
+            : ValueTask.CompletedTask;
+    }
 
-    internal async ValueTask RefreshAsync(CancellationToken cancellationToken)
+    internal ValueTask RefreshAsync(CancellationToken cancellationToken) =>
+        RefreshAsync(force: true, cancellationToken);
+
+    private async ValueTask RefreshAsync(bool force, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var snapshot = Snapshot;
+            if (!force && !IsRefreshDue(snapshot))
+                return;
+
             Exception? lastException = null;
-            var endpoints = BuildRefreshEndpoints(Snapshot, _bootstrapEndpoints);
+            var endpoints = BuildRefreshEndpoints(snapshot, _bootstrapEndpoints);
             foreach (var endpoint in endpoints)
             {
                 try
@@ -196,27 +211,40 @@ internal sealed class ControllerMetadataManager : IDisposable
         var endpoints = new List<ControllerEndpoint>(values.Count);
         foreach (var value in values)
         {
+            if (string.IsNullOrWhiteSpace(value))
+                throw InvalidEndpoint(value);
+
             var colon = value.LastIndexOf(':');
             if (colon <= 0 || colon == value.Length - 1)
-                continue;
+                throw InvalidEndpoint(value);
 
 #if NETSTANDARD2_0
             if (!int.TryParse(value.Substring(colon + 1), out var port))
 #else
             if (!int.TryParse(value.AsSpan(colon + 1), out var port))
 #endif
-                continue;
-            if (port is < 0 or > ushort.MaxValue)
-                continue;
+                throw InvalidEndpoint(value);
+            if (port is < 1 or > ushort.MaxValue)
+                throw InvalidEndpoint(value);
 
             var host = value[..colon];
             if (host.Length > 1 && host[0] == '[' && host[^1] == ']')
                 host = host[1..^1];
+            if (string.IsNullOrWhiteSpace(host))
+                throw InvalidEndpoint(value);
+
             endpoints.Add(new ControllerEndpoint(-1, host, port, null));
         }
 
         return endpoints;
     }
+
+    private bool IsRefreshDue(ControllerMetadataSnapshot snapshot) =>
+        snapshot.LastRefreshed == default
+        || DateTimeOffset.UtcNow - snapshot.LastRefreshed >= _refreshInterval;
+
+    private static ArgumentException InvalidEndpoint(string? value) =>
+        new($"Invalid controller bootstrap endpoint '{value}'. Expected host:port.");
 
     private static IReadOnlyList<ControllerEndpoint> BuildRefreshEndpoints(
         ControllerMetadataSnapshot snapshot,

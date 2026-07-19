@@ -99,7 +99,8 @@ public sealed class AdminClient : IAdminClient
             _controllerMetadataManager = new ControllerMetadataManager(
                 _connectionPool,
                 _metadataManager,
-                options.BootstrapControllers);
+                options.BootstrapControllers,
+                metadataOptions.MetadataRefreshInterval);
         }
 
         _telemetryManager = new ClientTelemetryManager(
@@ -115,7 +116,8 @@ public sealed class AdminClient : IAdminClient
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
         ILoggerFactory? loggerFactory = null,
-        bool ownsResources = false)
+        bool ownsResources = false,
+        MetadataOptions? metadataOptions = null)
     {
         ValidateBootstrapOptions(options);
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
@@ -134,7 +136,8 @@ public sealed class AdminClient : IAdminClient
             _controllerMetadataManager = new ControllerMetadataManager(
                 _connectionPool,
                 _metadataManager,
-                options.BootstrapControllers);
+                options.BootstrapControllers,
+                metadataOptions?.MetadataRefreshInterval ?? TimeSpan.FromMinutes(15));
         }
         _telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
@@ -4916,7 +4919,8 @@ public sealed class AdminClient : IAdminClient
         {
             throw;
         }
-        catch (Exception ex) when (RetryHelper.IsRetriableRequestFailure(ex) || ex is InvalidOperationException)
+        catch (Exception ex) when (RetryHelper.IsRetriableRequestFailure(ex)
+                                   || ex is InvalidOperationException and not ObjectDisposedException)
         {
             // Best effort: retain the operation's typed failure if discovery remains unavailable.
         }
