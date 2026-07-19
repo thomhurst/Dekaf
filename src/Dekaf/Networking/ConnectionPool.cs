@@ -176,10 +176,21 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
             endpoint,
             static (_, collector) => new BrokerThrottleState(collector),
             _telemetryMetricCollector);
-        return brokerId >= 0
-            ? _brokerThrottleStates.GetOrAdd(brokerId, endpointState)
-            : endpointState;
+        if (brokerId < 0)
+            return endpointState;
+
+        var brokerState = _brokerThrottleStates.GetOrAdd(brokerId, endpointState);
+        if (!ReferenceEquals(brokerState, endpointState))
+        {
+            brokerState.MergeFrom(endpointState);
+            _bootstrapThrottleStates[endpoint] = brokerState;
+        }
+
+        return brokerState;
     }
+
+    internal BrokerThrottleState GetBrokerThrottleStateForTest(int brokerId, string host, int port) =>
+        GetBrokerThrottleState(brokerId, new EndpointKey(host, port));
 
     private static ConnectionOptions ConfigureSharedOAuthBearerProvider(
         ConnectionOptions options,

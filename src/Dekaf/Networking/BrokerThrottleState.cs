@@ -81,6 +81,40 @@ internal sealed class BrokerThrottleState(ClientTelemetryMetricCollector? teleme
         }
     }
 
+    public void MergeFrom(BrokerThrottleState source)
+    {
+        if (ReferenceEquals(this, source))
+            return;
+
+        var sourceMaximum = Volatile.Read(ref source._maxObservedThrottleTimeMs);
+        var observedMaximum = Volatile.Read(ref _maxObservedThrottleTimeMs);
+        while (sourceMaximum > observedMaximum)
+        {
+            var previous = Interlocked.CompareExchange(
+                ref _maxObservedThrottleTimeMs,
+                sourceMaximum,
+                observedMaximum);
+            if (previous == observedMaximum)
+                break;
+
+            observedMaximum = previous;
+        }
+
+        var sourceDeadline = Volatile.Read(ref source._throttleUntilMs);
+        var currentDeadline = Volatile.Read(ref _throttleUntilMs);
+        while (sourceDeadline > currentDeadline)
+        {
+            var previous = Interlocked.CompareExchange(
+                ref _throttleUntilMs,
+                sourceDeadline,
+                currentDeadline);
+            if (previous == currentDeadline)
+                break;
+
+            currentDeadline = previous;
+        }
+    }
+
     private async ValueTask WaitSlowAsync(
         int initialDelayMs,
         CancellationToken cancellationToken,

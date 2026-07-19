@@ -176,7 +176,26 @@ public sealed class BrokerThrottleStateTests
             .IsEqualTo(20);
     }
 
+    [Test]
+    public async Task RegisterBroker_ChangedEndpointAliasesCanonicalStateAndMergesDeadline()
+    {
+        await using var pool = new ConnectionPool();
+        pool.RegisterBroker(1, "old-host", 9092);
+
+        var canonicalState = pool.GetBrokerThrottleStateForTest(1, "old-host", 9092);
+        canonicalState.Observe(5_000);
+        var changedEndpointState = pool.GetBrokerThrottleStateForTest(-1, "new-host", 9093);
+        changedEndpointState.Observe(10_000);
+
+        pool.RegisterBroker(1, "new-host", 9093);
+
+        var aliasedEndpointState = pool.GetBrokerThrottleStateForTest(-1, "new-host", 9093);
+        await Assert.That(ReferenceEquals(aliasedEndpointState, canonicalState)).IsTrue();
+        await Assert.That(canonicalState.GetRemainingMilliseconds()).IsGreaterThan(9_000);
+    }
+
     private static ClientTelemetryMetric Metric(
         ClientTelemetryMetricSnapshot snapshot,
         string name) => snapshot.Metrics.Single(metric => metric.Name == name);
+
 }
