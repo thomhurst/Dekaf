@@ -5479,145 +5479,158 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // concurrently. Without synchronization, concurrent access to non-thread-safe
         // _assignment HashSet causes NullReferenceException during enumeration.
         // Readers use the volatile _assignmentSnapshot instead of acquiring this lock.
-        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
-        (ConsumerCoordinator Coordinator, HashSet<TopicPartition> Partitions)? unacknowledgedCoordinatorRevocations = null;
-        try
+        while (true)
         {
-            coordinator = _coordinator;
-            if ((!_subscription.IsEmpty || topicPattern is not null) && coordinator is not null)
+            await SemaphoreHelper.AcquireOrThrowDisposedAsync(_assignmentLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
+            (ConsumerCoordinator Coordinator, HashSet<TopicPartition> Partitions)? unacknowledgedCoordinatorRevocations = null;
+            try
             {
-                BeforeCoordinatorAssignmentSnapshotForTest?.Invoke();
-                var (coordinatorAssignment, coordinatorAssignmentVersion, coordinatorRevocations) =
-                    await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(cancellationToken)
-                        .ConfigureAwait(false);
-                if (coordinatorRevocations is not null)
+                coordinator = _coordinator;
+                if ((!_subscription.IsEmpty || topicPattern is not null) && coordinator is not null)
                 {
-                    unacknowledgedCoordinatorRevocations = (coordinator, coordinatorRevocations);
-                }
-
-                // Set equality alone is insufficient: the assignment can change away and back
-                // between polls. Unseen revocations require stale-fetch cleanup and position reset.
-                if (_assignment.SetEquals(coordinatorAssignment)
-                    && coordinatorRevocations is null
-                    && HasInitializedFetchPositions(coordinatorAssignment))
-                {
-                    Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
-                    coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
-                    return;
-                }
-
-                // Check for new partitions that need initialization
-                List<TopicPartition>? newPartitions = null;
-                foreach (var partition in coordinatorAssignment)
-                {
-                    if (!_assignment.Contains(partition) || !_fetchPositions.ContainsKey(partition))
+                    BeforeCoordinatorAssignmentSnapshotForTest?.Invoke();
+                    var (coordinatorAssignment, coordinatorAssignmentVersion, coordinatorRevocations) =
+                        await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                    if (coordinatorRevocations is not null)
                     {
-                        newPartitions ??= new List<TopicPartition>();
-                        newPartitions.Add(partition);
+                        unacknowledgedCoordinatorRevocations = (coordinator, coordinatorRevocations);
                     }
-                }
 
-                // Check for partitions that were removed (for EOF state cleanup)
-                List<TopicPartition>? removedPartitions = null;
-                foreach (var partition in _assignment)
-                {
-                    if (!coordinatorAssignment.Contains(partition))
+                    // Set equality alone is insufficient: the assignment can change away and back
+                    // between polls. Unseen revocations require stale-fetch cleanup and position reset.
+                    if (_assignment.SetEquals(coordinatorAssignment)
+                        && coordinatorRevocations is null
+                        && HasInitializedFetchPositions(coordinatorAssignment))
                     {
-                        removedPartitions ??= new List<TopicPartition>();
-                        removedPartitions.Add(partition);
-                    }
-                }
-
-                if (coordinatorRevocations is not null)
-                {
-                    foreach (var partition in coordinatorRevocations)
-                    {
-                        if (removedPartitions is null || !removedPartitions.Contains(partition))
-                            (removedPartitions ??= []).Add(partition);
-
-                        if (!coordinatorAssignment.Contains(partition))
+                        if (coordinator.AssignmentVersion != coordinatorAssignmentVersion)
                             continue;
 
-                        if (newPartitions is null || !newPartitions.Contains(partition))
-                            (newPartitions ??= []).Add(partition);
+                        Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
+                        coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
+                        return;
                     }
-                }
 
-                if (newPartitions is { Count: > 0 })
-                    LogPartitionsAdded(newPartitions.Count);
-                if (removedPartitions is { Count: > 0 })
-                    LogPartitionsRemoved(removedPartitions.Count);
-
-                // Invalidate in-flight fetches before publishing an ABA reassignment or
-                // reinitializing its position. The consume loop owns the actual buffer drain.
-                if (removedPartitions is not null)
-                    QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions);
-
-                // Update assignment from coordinator
-                _assignment.Clear();
-                foreach (var partition in coordinatorAssignment)
-                {
-                    _assignment.Add(partition);
-                }
-                PublishAssignmentSnapshot();
-                InvalidatePartitionCache();
-                InvalidateFetchRequestCache();
-
-                // Ratchet pool sizes based on actual partition count
-                RatchetConsumerPoolSizes(_assignment.Count);
-
-                // Clean up state for removed partitions
-                if (removedPartitions is not null)
-                {
-                    if (RemovePartitionState(removedPartitions))
-                        PublishPausedSnapshot();
-                }
-
-                // Initialize positions for new partitions
-                if (newPartitions is { Count: > 0 })
-                {
-                    await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
-                }
-
-                Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
-                coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
-                unacknowledgedCoordinatorRevocations = null;
-            }
-            else
-            {
-                if (_assignment.Count > 0)
-                {
-                    // Ratchet pool sizes based on actual partition count (manual assignment)
-                    RatchetConsumerPoolSizes(_assignment.Count);
-
-                    // Manual assignment - initialize positions for partitions that don't have positions yet
-                    List<TopicPartition>? uninitializedPartitions = null;
-                    foreach (var p in _assignment)
+                    // Check for new partitions that need initialization
+                    List<TopicPartition>? newPartitions = null;
+                    foreach (var partition in coordinatorAssignment)
                     {
-                        if (!_fetchPositions.ContainsKey(p))
+                        if (!_assignment.Contains(partition) || !_fetchPositions.ContainsKey(partition))
                         {
-                            uninitializedPartitions ??= new List<TopicPartition>();
-                            uninitializedPartitions.Add(p);
+                            newPartitions ??= new List<TopicPartition>();
+                            newPartitions.Add(partition);
                         }
                     }
 
-                    if (uninitializedPartitions is not null)
+                    // Check for partitions that were removed (for EOF state cleanup)
+                    List<TopicPartition>? removedPartitions = null;
+                    foreach (var partition in _assignment)
                     {
-                        await InitializeManualAssignmentPositionsAsync(uninitializedPartitions, cancellationToken).ConfigureAwait(false);
+                        if (!coordinatorAssignment.Contains(partition))
+                        {
+                            removedPartitions ??= new List<TopicPartition>();
+                            removedPartitions.Add(partition);
+                        }
                     }
+
+                    if (coordinatorRevocations is not null)
+                    {
+                        foreach (var partition in coordinatorRevocations)
+                        {
+                            if (removedPartitions is null || !removedPartitions.Contains(partition))
+                                (removedPartitions ??= []).Add(partition);
+
+                            if (!coordinatorAssignment.Contains(partition))
+                                continue;
+
+                            if (newPartitions is null || !newPartitions.Contains(partition))
+                                (newPartitions ??= []).Add(partition);
+                        }
+                    }
+
+                    if (newPartitions is { Count: > 0 })
+                        LogPartitionsAdded(newPartitions.Count);
+                    if (removedPartitions is { Count: > 0 })
+                        LogPartitionsRemoved(removedPartitions.Count);
+
+                    // Invalidate in-flight fetches before publishing an ABA reassignment or
+                    // reinitializing its position. The consume loop owns the actual buffer drain.
+                    if (removedPartitions is not null)
+                        QueueCoordinatorRevokedPartitionsForFetchClear(removedPartitions);
+
+                    // Update assignment from coordinator
+                    _assignment.Clear();
+                    foreach (var partition in coordinatorAssignment)
+                    {
+                        _assignment.Add(partition);
+                    }
+                    PublishAssignmentSnapshot();
+                    InvalidatePartitionCache();
+                    InvalidateFetchRequestCache();
+
+                    // Ratchet pool sizes based on actual partition count
+                    RatchetConsumerPoolSizes(_assignment.Count);
+
+                    // Clean up state for removed partitions
+                    if (removedPartitions is not null)
+                    {
+                        if (RemovePartitionState(removedPartitions))
+                            PublishPausedSnapshot();
+                    }
+
+                    // Initialize positions for new partitions
+                    if (newPartitions is { Count: > 0 })
+                    {
+                        await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    // OffsetFetch recovery can rejoin the group. If that produced a new assignment,
+                    // synchronize the latest snapshot before publishing this pass as current.
+                    if (coordinator.AssignmentVersion != coordinatorAssignmentVersion)
+                        continue;
+
+                    Volatile.Write(ref _lastCoordinatorAssignmentVersion, coordinatorAssignmentVersion);
+                    coordinator.AcknowledgeAssignmentSync(coordinatorAssignmentVersion);
+                    unacknowledgedCoordinatorRevocations = null;
                 }
+                else
+                {
+                    if (_assignment.Count > 0)
+                    {
+                        // Ratchet pool sizes based on actual partition count (manual assignment)
+                        RatchetConsumerPoolSizes(_assignment.Count);
 
-                Volatile.Write(ref _lastManualAssignmentEnsureVersion, Volatile.Read(ref _assignmentEnsureVersion));
+                        // Manual assignment - initialize positions for partitions that don't have positions yet
+                        List<TopicPartition>? uninitializedPartitions = null;
+                        foreach (var p in _assignment)
+                        {
+                            if (!_fetchPositions.ContainsKey(p))
+                            {
+                                uninitializedPartitions ??= new List<TopicPartition>();
+                                uninitializedPartitions.Add(p);
+                            }
+                        }
+
+                        if (uninitializedPartitions is not null)
+                        {
+                            await InitializeManualAssignmentPositionsAsync(uninitializedPartitions, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
+
+                    Volatile.Write(ref _lastManualAssignmentEnsureVersion, Volatile.Read(ref _assignmentEnsureVersion));
+                }
             }
-        }
-        finally
-        {
-            // Position initialization and assignment-version publication acknowledge the drain.
-            // Restore on failure so the next sync repeats revocation cleanup and initialization.
-            if (unacknowledgedCoordinatorRevocations is { } revocations)
-                revocations.Coordinator.RestoreRevokedPartitionsSinceLastSync(revocations.Partitions);
+            finally
+            {
+                // Position initialization and assignment-version publication acknowledge the drain.
+                // Restore on failure so the next sync repeats revocation cleanup and initialization.
+                if (unacknowledgedCoordinatorRevocations is { } revocations)
+                    revocations.Coordinator.RestoreRevokedPartitionsSinceLastSync(revocations.Partitions);
 
-            SemaphoreHelper.ReleaseSafely(_assignmentLock);
+                SemaphoreHelper.ReleaseSafely(_assignmentLock);
+            }
+
+            return;
         }
     }
 

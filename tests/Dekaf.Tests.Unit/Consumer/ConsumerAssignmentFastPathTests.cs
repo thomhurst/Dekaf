@@ -490,6 +490,31 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task EnsureAssignmentAsync_InitialPositionRejoinRestartsChangedAssignment()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupChangingConsumerGroupHeartbeat(connection);
+        SetupOffsetFetchFailureThenSuccess(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var initialPartition = new TopicPartition("test-topic", 0);
+        var addedPartition = new TopicPartition("test-topic", 1);
+        await Assert.That(consumer.Assignment).Contains(initialPartition);
+        await Assert.That(consumer.Assignment).Contains(addedPartition);
+        await Assert.That(GetFetchPositions(consumer)[initialPartition]).IsEqualTo(10L);
+        await Assert.That(GetFetchPositions(consumer)[addedPartition]).IsEqualTo(20L);
+    }
+
+    [Test]
     public async Task GetCommittedOffsetAsync_StaleMemberEpoch_RejoinsAndRetriesWithUpdatedEpoch()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
