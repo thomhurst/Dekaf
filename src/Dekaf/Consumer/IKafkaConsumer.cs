@@ -1,3 +1,4 @@
+using Dekaf.Errors;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 #if NETSTANDARD2_0
@@ -91,6 +92,10 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <summary>
     /// Consumes messages as an async enumerable.
     /// </summary>
+    /// <remarks>
+    /// This is an intentionally long-lived stream. <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>
+    /// does not apply; use <paramref name="cancellationToken"/> to bound its lifetime.
+    /// </remarks>
     IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -105,6 +110,10 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Position tracking is deferred to batch completion.
     /// Partition EOF events are not surfaced by this method; use <see cref="ConsumeAsync"/> for EOF notification.
     /// </summary>
+    /// <remarks>
+    /// This is an intentionally long-lived stream. <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>
+    /// does not apply; use <paramref name="cancellationToken"/> to bound its lifetime.
+    /// </remarks>
     IAsyncEnumerable<ConsumeBatch<TKey, TValue>> ConsumeBatchAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -113,6 +122,10 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// No deserialization, header copying, interceptors, or tracing overhead.
     /// Partition EOF events are not surfaced by this method; use <see cref="ConsumeAsync"/> for EOF notification.
     /// </summary>
+    /// <remarks>
+    /// This is an intentionally long-lived stream. <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>
+    /// does not apply; use <paramref name="cancellationToken"/> to bound its lifetime.
+    /// </remarks>
     IAsyncEnumerable<ConsumeRawBatch> ConsumeRawBatchAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -132,11 +145,17 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// Commits the offsets of all consumed messages.
     /// Use with OffsetCommitMode.Manual to control when offsets are committed.
     /// </summary>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
     ValueTask CommitAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Commits specific offsets.
     /// </summary>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
     ValueTask CommitAsync(IEnumerable<TopicPartitionOffset> offsets, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -170,6 +189,9 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// </remarks>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A task representing the asynchronous close operation.</returns>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
     ValueTask CloseAsync(CancellationToken cancellationToken = default);
 }
 
@@ -205,6 +227,9 @@ public interface IConsumerPositions
     /// <summary>
     /// Gets the committed offset for a partition.
     /// </summary>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
     ValueTask<long?> GetCommittedOffsetAsync(TopicPartition partition, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -299,6 +324,9 @@ public interface IConsumerOffsets
     /// If the input collection is empty, an empty dictionary is returned.
     /// </returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="timestampsToSearch"/> is null.</exception>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
     /// <remarks>
     /// This method uses the Kafka ListOffsets API (API Key 2).
     /// Special timestamp values: -1 (latest offset), -2 (earliest offset).
@@ -324,6 +352,9 @@ public interface IConsumerOffsets
     /// <param name="topicPartition">The topic partition to query watermarks for.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The current watermark offsets from the cluster.</returns>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
     ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default);

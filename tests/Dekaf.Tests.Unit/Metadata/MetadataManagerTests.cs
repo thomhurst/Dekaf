@@ -744,6 +744,32 @@ public class MetadataManagerTests
     }
 
     [Test]
+    public async Task RefreshMetadataAsync_CallerCancellation_PreservesOperationCanceledException()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        using var cts = new CancellationTokenSource();
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                cts.Cancel();
+                return ValueTask.FromException<IKafkaConnection>(
+                    new OperationCanceledException(call.Arg<CancellationToken>()));
+            });
+
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.None
+            });
+
+        await Assert.That(async () => await manager.RefreshMetadataAsync(cts.Token))
+            .Throws<OperationCanceledException>();
+    }
+
+    [Test]
     public async Task BackgroundRefreshLoop_ObjectDisposedConnection_DoesNotResetInitialized()
     {
         var pool = Substitute.For<IConnectionPool>();

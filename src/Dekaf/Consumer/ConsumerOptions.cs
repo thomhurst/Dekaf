@@ -206,6 +206,17 @@ public sealed class ConsumerOptions
     public int RequestTimeoutMs { get; init; } = 30000;
 
     /// <summary>
+    /// Aggregate timeout in milliseconds for finite consumer API operations.
+    /// Equivalent to Kafka's <c>default.api.timeout.ms</c>. Default is 60 seconds.
+    /// </summary>
+    /// <remarks>
+    /// This bounds the complete operation across metadata lookup, coordinator discovery,
+    /// retries, and multi-broker fan-out. It does not apply to the long-lived
+    /// <c>ConsumeAsync</c>, <c>ConsumeBatchAsync</c>, or <c>ConsumeRawBatchAsync</c> streams.
+    /// </remarks>
+    public int DefaultApiTimeoutMs { get; init; } = 60000;
+
+    /// <summary>
     /// Initial delay in milliseconds for retrying failed broker requests.
     /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
     /// </summary>

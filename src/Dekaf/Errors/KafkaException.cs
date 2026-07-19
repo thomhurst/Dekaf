@@ -179,6 +179,11 @@ public enum TimeoutKind
     /// A consumer group rebalance operation timed out waiting to join or sync with the group.
     /// </summary>
     Rebalance,
+
+    /// <summary>
+    /// A finite client API operation exceeded its aggregate configured timeout.
+    /// </summary>
+    Api,
 }
 
 /// <summary>

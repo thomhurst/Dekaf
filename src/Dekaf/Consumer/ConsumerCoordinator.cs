@@ -1915,9 +1915,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     {
         await SendConsumerProtocolLeaveRequestAsync(cancellationToken).ConfigureAwait(false);
 
-        await StopHeartbeatAsync().ConfigureAwait(false);
+        await StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
 
-        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ResetMemberState();
@@ -1992,7 +1992,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <summary>
     /// Stops the heartbeat background task.
     /// </summary>
-    public async ValueTask StopHeartbeatAsync()
+    public ValueTask StopHeartbeatAsync() => StopHeartbeatAsyncCore(CancellationToken.None);
+
+    internal async ValueTask StopHeartbeatAsyncCore(CancellationToken cancellationToken)
     {
         CancellationTokenSource? cts;
         Task? task;
@@ -2014,7 +2016,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             try
             {
-                await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
             catch
             {

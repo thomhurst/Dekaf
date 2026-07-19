@@ -381,6 +381,7 @@ public class DependencyInjectionTests
             GroupId = "typed-group",
             OffsetStoreTiming = OffsetStoreTiming.OnDelivery,
             FetchMinBytes = 4096,
+            DefaultApiTimeoutMs = 12_345,
             EnableAdaptiveConnections = false,
             UseTls = true,
             SaslMechanism = SaslMechanism.ScramSha256,
@@ -404,6 +405,7 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.GroupId).IsEqualTo("override-group");
         await Assert.That(boundOptions.OffsetStoreTiming).IsEqualTo(OffsetStoreTiming.OnDelivery);
         await Assert.That(boundOptions.FetchMinBytes).IsEqualTo(4096);
+        await Assert.That(boundOptions.DefaultApiTimeoutMs).IsEqualTo(12_345);
         await Assert.That(boundOptions.EnableAdaptiveConnections).IsFalse();
         await Assert.That(boundOptions.UseTls).IsTrue();
         await Assert.That(boundOptions.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha256);
@@ -885,6 +887,7 @@ public class DependencyInjectionTests
             ["Kafka:Consumers:Orders:RebalanceTimeoutMs"] = "45000",
             ["Kafka:Consumers:Orders:IsolationLevel"] = "ReadCommitted",
             ["Kafka:Consumers:Orders:RequestTimeoutMs"] = "15000",
+            ["Kafka:Consumers:Orders:DefaultApiTimeoutMs"] = "25000",
             ["Kafka:Consumers:Orders:ReconnectBackoffMs"] = "80",
             ["Kafka:Consumers:Orders:ReconnectBackoffMaxMs"] = "800",
             ["Kafka:Consumers:Orders:CheckCrcs"] = "true",
@@ -945,6 +948,7 @@ public class DependencyInjectionTests
         await Assert.That(options.RebalanceTimeoutMs).IsEqualTo(45000);
         await Assert.That(options.IsolationLevel).IsEqualTo(IsolationLevel.ReadCommitted);
         await Assert.That(options.RequestTimeoutMs).IsEqualTo(15000);
+        await Assert.That(options.DefaultApiTimeoutMs).IsEqualTo(25000);
         await Assert.That(options.ReconnectBackoffMs).IsEqualTo(80);
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(800);
         await Assert.That(options.CheckCrcs).IsTrue();

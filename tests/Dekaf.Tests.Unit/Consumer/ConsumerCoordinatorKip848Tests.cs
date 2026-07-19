@@ -2650,6 +2650,32 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(coordinator.GenerationId).IsEqualTo(-1);
     }
 
+    [Test]
+    public async Task ConsumerProtocol_LeaveGroup_ObservesCancellationWhileWaitingForStateLock()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(), _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        SetupConsumerGroupHeartbeat();
+        var coordinatorLock = (SemaphoreSlim)typeof(ConsumerCoordinator).GetField(
+            "_lock",
+            BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(coordinator)!;
+
+        await coordinatorLock.WaitAsync(CancellationToken.None);
+        try
+        {
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+            await Assert.That(async () => await coordinator.LeaveGroupAsync(cancellation.Token))
+                .Throws<OperationCanceledException>();
+        }
+        finally
+        {
+            coordinatorLock.Release();
+        }
+    }
+
     #endregion
 
     #region Remote Assignor Tests

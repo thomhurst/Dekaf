@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
@@ -13,6 +14,146 @@ namespace Dekaf.Tests.Integration.NetworkPartition;
 [ClassDataSource<NetworkPartitionKafkaContainer>(Shared = SharedType.PerTestSession)]
 public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
 {
+    [Test]
+    [Timeout(30_000)]
+    public async Task InitializeAsync_PausedBroker_UsesAggregateApiTimeout(
+        CancellationToken cancellationToken)
+    {
+        var configuredTimeout = TimeSpan.FromMilliseconds(750);
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("api-timeout-initialize-consumer")
+            .WithDefaultApiTimeout(configuredTimeout)
+            .WithConnectionTimeout(TimeSpan.FromSeconds(10))
+            .Build();
+
+        await kafka.PauseAsync();
+        try
+        {
+            var startedAt = Stopwatch.GetTimestamp();
+            var exception = await Assert.That(async () =>
+                    await consumer.InitializeAsync(cancellationToken))
+                .Throws<KafkaTimeoutException>();
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+            await AssertApiTimeoutAsync(exception, configuredTimeout, elapsed);
+        }
+        finally
+        {
+            await kafka.TryUnpauseAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task CommitAsync_PausedBroker_UsesAggregateApiTimeout(
+        CancellationToken cancellationToken)
+    {
+        var configuredTimeout = TimeSpan.FromMilliseconds(750);
+        var topic = await kafka.CreateTestTopicAsync();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("api-timeout-commit-consumer")
+            .WithGroupId($"api-timeout-{Guid.NewGuid():N}")
+            .WithDefaultApiTimeout(configuredTimeout)
+            .WithRequestTimeout(TimeSpan.FromSeconds(10))
+            .BuildAsync(cancellationToken);
+
+        await kafka.PauseAsync();
+        try
+        {
+            var startedAt = Stopwatch.GetTimestamp();
+            var exception = await Assert.That(async () =>
+                    await consumer.CommitAsync([new TopicPartitionOffset(topic, 0, 0)], cancellationToken))
+                .Throws<KafkaTimeoutException>();
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+            await AssertApiTimeoutAsync(exception, configuredTimeout, elapsed);
+        }
+        finally
+        {
+            await kafka.TryUnpauseAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task QueryWatermarkOffsetsAsync_PausedBroker_UsesAggregateApiTimeout(
+        CancellationToken cancellationToken)
+    {
+        var configuredTimeout = TimeSpan.FromMilliseconds(750);
+        var topic = await kafka.CreateTestTopicAsync();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("api-timeout-consumer")
+            .WithDefaultApiTimeout(configuredTimeout)
+            .WithRequestTimeout(TimeSpan.FromSeconds(10))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+
+        await kafka.PauseAsync();
+        try
+        {
+            var startedAt = Stopwatch.GetTimestamp();
+            var exception = await Assert.That(async () =>
+                    await consumer.QueryWatermarkOffsetsAsync(new TopicPartition(topic, 0), cancellationToken))
+                .Throws<KafkaTimeoutException>();
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+            await AssertApiTimeoutAsync(exception, configuredTimeout, elapsed);
+        }
+        finally
+        {
+            await kafka.TryUnpauseAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task GetOffsetsForTimesAsync_PausedBroker_UsesAggregateApiTimeout(
+        CancellationToken cancellationToken)
+    {
+        var configuredTimeout = TimeSpan.FromMilliseconds(750);
+        var topic = await kafka.CreateTestTopicAsync();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("api-timeout-offsets-consumer")
+            .WithDefaultApiTimeout(configuredTimeout)
+            .WithRequestTimeout(TimeSpan.FromSeconds(10))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync(cancellationToken);
+
+        await kafka.PauseAsync();
+        try
+        {
+            var startedAt = Stopwatch.GetTimestamp();
+            var exception = await Assert.That(async () =>
+                    await consumer.GetOffsetsForTimesAsync(
+                        [new TopicPartitionTimestamp(topic, 0, TopicPartitionTimestamp.Earliest)],
+                        cancellationToken))
+                .Throws<KafkaTimeoutException>();
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+            await AssertApiTimeoutAsync(exception, configuredTimeout, elapsed);
+        }
+        finally
+        {
+            await kafka.TryUnpauseAsync();
+        }
+    }
+
+    private static async Task AssertApiTimeoutAsync(
+        KafkaTimeoutException? exception,
+        TimeSpan configuredTimeout,
+        TimeSpan elapsed)
+    {
+        await Assert.That(exception).IsNotNull();
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Configured).IsEqualTo(configuredTimeout);
+        await Assert.That(elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(500));
+        await Assert.That(elapsed).IsLessThan(TimeSpan.FromSeconds(5));
+    }
+
     [Test]
     [Timeout(60_000)]
     public async Task Consumer_LatestOffsetResolutionFailure_DoesNotReplayFromZero(

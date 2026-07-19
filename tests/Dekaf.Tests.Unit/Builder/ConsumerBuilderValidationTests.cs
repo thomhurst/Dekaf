@@ -390,6 +390,33 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithDefaultApiTimeout_SetsOptions()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithDefaultApiTimeout(TimeSpan.FromSeconds(12))
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        await Assert.That(options.DefaultApiTimeoutMs).IsEqualTo(12000);
+    }
+
+    [Test]
+    public async Task WithDefaultApiTimeout_OutsideMillisecondRange_ThrowsArgumentOutOfRangeException()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+
+        await Assert.That(() => builder.WithDefaultApiTimeout(TimeSpan.Zero))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithDefaultApiTimeout(TimeSpan.FromMilliseconds(-1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithDefaultApiTimeout(TimeSpan.FromTicks(1)))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithDefaultApiTimeout(TimeSpan.FromMilliseconds((double)int.MaxValue + 1)))
+            .Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
     public async Task UseTls_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();
