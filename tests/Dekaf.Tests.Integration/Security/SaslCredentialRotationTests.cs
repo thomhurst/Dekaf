@@ -33,7 +33,7 @@ public sealed class SaslCredentialRotationTests(SaslKafkaContainer kafka)
         await ProduceAsync(producer, topic, "before-rotation").ConfigureAwait(false);
 
         await kafka.UpsertScramSha256CredentialAsync(userB, passwordB).ConfigureAwait(false);
-        await kafka.DeleteScramSha256CredentialAsync(userA).ConfigureAwait(false);
+        await kafka.DeleteScramSha256CredentialAsync(userA, passwordA).ConfigureAwait(false);
 
         // Revocation does not terminate an already-authenticated broker connection.
         await ProduceAsync(producer, topic, "existing-connection").ConfigureAwait(false);
@@ -72,7 +72,7 @@ public sealed class SaslCredentialRotationTests(SaslKafkaContainer kafka)
         await ProduceAsync(producer, topic, "before-rotation").ConfigureAwait(false);
 
         await kafka.UpsertScramSha256CredentialAsync(userB, passwordB).ConfigureAwait(false);
-        await kafka.DeleteScramSha256CredentialAsync(userA).ConfigureAwait(false);
+        await kafka.DeleteScramSha256CredentialAsync(userA, passwordA).ConfigureAwait(false);
         current.Value = new SaslCredentials(userB, passwordB);
 
         await ((KafkaProducer<string, string>)producer).CloseConnectionsForTestingAsync().ConfigureAwait(false);
@@ -107,7 +107,7 @@ public sealed class SaslCredentialRotationTests(SaslKafkaContainer kafka)
         await ConsumeValueAsync(consumer, "before-rotation").ConfigureAwait(false);
 
         await kafka.UpsertScramSha256CredentialAsync(userB, passwordB).ConfigureAwait(false);
-        await kafka.DeleteScramSha256CredentialAsync(userA).ConfigureAwait(false);
+        await kafka.DeleteScramSha256CredentialAsync(userA, passwordA).ConfigureAwait(false);
         await ProduceWithPlainAsync(topic, "existing-connection").ConfigureAwait(false);
         await ConsumeValueAsync(consumer, "existing-connection").ConfigureAwait(false);
 
@@ -141,7 +141,7 @@ public sealed class SaslCredentialRotationTests(SaslKafkaContainer kafka)
         consumer.Subscribe(topic);
         await ConsumeValueAsync(consumer, "before-revocation").ConfigureAwait(false);
 
-        await kafka.DeleteScramSha256CredentialAsync(user).ConfigureAwait(false);
+        await kafka.DeleteScramSha256CredentialAsync(user, password).ConfigureAwait(false);
         await ProduceWithPlainAsync(topic, "existing-connection").ConfigureAwait(false);
         await ConsumeValueAsync(consumer, "existing-connection").ConfigureAwait(false);
 

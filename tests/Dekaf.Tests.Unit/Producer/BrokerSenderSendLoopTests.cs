@@ -13,6 +13,7 @@ using Dekaf.Protocol;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using Dekaf.Security.Sasl;
 
 using NSubstitute;
 
@@ -35,7 +36,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     public async Task SendLoop_AuthenticationFailure_FailsBatchWithoutRetry(
         CancellationToken cancellationToken)
     {
-        var authenticationFailure = new AuthenticationException("revoked credential");
+        var authenticationFailure = new AuthenticationException(
+            ErrorCode.SaslAuthenticationFailed,
+            "revoked credential");
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns<ValueTask<IKafkaConnection>>(_ =>
@@ -44,7 +47,10 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             .Returns<ValueTask<IKafkaConnection>>(_ =>
                 ValueTask.FromException<IKafkaConnection>(authenticationFailure));
 
-        var options = CreateOptions(deliveryTimeoutMs: 20_000, requestTimeoutMs: 5_000);
+        var options = CreateOptions(
+            deliveryTimeoutMs: 20_000,
+            requestTimeoutMs: 5_000,
+            saslMechanism: SaslMechanism.ScramSha256);
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var acknowledgement = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -705,7 +711,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         bool enableIdempotence = true, int batchSize = 1_048_576,
         long? unackedByteBudgetCapOverride = null, long? scaleCooldownMsOverride = null,
         string? transactionalId = null, int lingerMs = 0,
-        bool enableDeliveryDiagnostics = false) => new()
+        bool enableDeliveryDiagnostics = false,
+        SaslMechanism saslMechanism = SaslMechanism.None) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
@@ -722,7 +729,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             EnableDeliveryDiagnostics = enableDeliveryDiagnostics,
             UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride,
             ScaleCooldownMsOverride = scaleCooldownMsOverride,
-            TransactionalId = transactionalId
+            TransactionalId = transactionalId,
+            SaslMechanism = saslMechanism
         };
 
     /// <summary>

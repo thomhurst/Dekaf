@@ -3090,6 +3090,7 @@ public sealed partial class KafkaConnection :
                 if (authResponse.ErrorCode != ErrorCode.None)
                 {
                     throw new AuthenticationException(
+                        authResponse.ErrorCode,
                         $"SASL authentication failed: {authResponse.ErrorCode}" +
                         (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
                 }
@@ -3121,7 +3122,11 @@ public sealed partial class KafkaConnection :
 
     private ValueTask<ISaslAuthenticator> CreateSaslAuthenticatorAsync(CancellationToken cancellationToken)
     {
-        var provider = _options.SaslCredentialProvider;
+        var provider = _options.SaslMechanism is SaslMechanism.Plain
+            or SaslMechanism.ScramSha256
+            or SaslMechanism.ScramSha512
+            ? _options.SaslCredentialProvider
+            : null;
         return provider is null
             ? new ValueTask<ISaslAuthenticator>(CreateSaslAuthenticator(_options.SaslUsername, _options.SaslPassword))
             : CreateSaslAuthenticatorFromProviderAsync(provider, cancellationToken);
@@ -3132,6 +3137,13 @@ public sealed partial class KafkaConnection :
         CancellationToken cancellationToken)
     {
         var credentials = await provider(cancellationToken).ConfigureAwait(false);
+        if (credentials.Username is null || credentials.Password is null)
+        {
+            throw new AuthenticationException(
+                ErrorCode.SaslAuthenticationFailed,
+                "SASL credential provider returned invalid credentials");
+        }
+
         return CreateSaslAuthenticator(credentials.Username, credentials.Password);
     }
 
@@ -3327,6 +3339,7 @@ public sealed partial class KafkaConnection :
                 if (authResponse.ErrorCode != ErrorCode.None)
                 {
                     throw new AuthenticationException(
+                        authResponse.ErrorCode,
                         $"SASL re-authentication failed: {authResponse.ErrorCode}" +
                         (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
                 }

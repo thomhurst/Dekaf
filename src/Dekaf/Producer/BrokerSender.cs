@@ -15,6 +15,7 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Retry;
+using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Producer;
@@ -3878,11 +3879,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (!pendingResponseAdded)
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
-        catch (AuthenticationException ex)
+        catch (AuthenticationException ex) when (
+            ex.ErrorCode == ErrorCode.SaslAuthenticationFailed
+            && _options.SaslCredentialProvider is null
+            && _options.SaslMechanism is SaslMechanism.Plain
+                or SaslMechanism.ScramSha256
+                or SaslMechanism.ScramSha512)
         {
-            // Authentication failures are fatal for the configured credentials. Retrying the
-            // same credentials until delivery timeout hides the actionable exception and creates
-            // a reconnect storm.
+            // A broker-rejected static PLAIN/SCRAM credential is fatal. Dynamic credential
+            // providers and other authentication-adjacent failures follow the normal retry path.
             _pinnedConnections[connectionIndex] = null;
             LogResponseFailed(ex, _brokerId);
             for (var i = 0; i < count; i++)

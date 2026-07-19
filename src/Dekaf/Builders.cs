@@ -1204,13 +1204,14 @@ public sealed class ProducerBuilder<TKey, TValue>
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig,
         AwsMskIamConfig? awsMskIamConfig = null,
-        bool saslScramTokenAuth = false)
+        bool saslScramTokenAuth = false,
+        Func<CancellationToken, ValueTask<SaslCredentials>>? credentialProvider = null)
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
         _saslUsername = username;
         _saslPassword = password;
-        _saslCredentialProvider = null;
+        _saslCredentialProvider = credentialProvider;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
         _saslScramTokenAuth = saslScramTokenAuth;
@@ -2831,13 +2832,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig,
         AwsMskIamConfig? awsMskIamConfig = null,
-        bool saslScramTokenAuth = false)
+        bool saslScramTokenAuth = false,
+        Func<CancellationToken, ValueTask<SaslCredentials>>? credentialProvider = null)
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
         _saslUsername = username;
         _saslPassword = password;
-        _saslCredentialProvider = null;
+        _saslCredentialProvider = credentialProvider;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
         _saslScramTokenAuth = saslScramTokenAuth;

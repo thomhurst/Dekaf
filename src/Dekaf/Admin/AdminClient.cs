@@ -5419,12 +5419,14 @@ public sealed class AdminClientBuilder
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig,
         AwsMskIamConfig? awsMskIamConfig = null,
-        bool saslScramTokenAuth = false)
+        bool saslScramTokenAuth = false,
+        Func<CancellationToken, ValueTask<SaslCredentials>>? credentialProvider = null)
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = credentialProvider;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
         _saslScramTokenAuth = saslScramTokenAuth;

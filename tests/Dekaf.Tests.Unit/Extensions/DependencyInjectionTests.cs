@@ -160,6 +160,8 @@ public class DependencyInjectionTests
     public async Task AddProducer_WithTypedOptions_BindsOptions()
     {
         var services = new ServiceCollection();
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider =
+            _ => ValueTask.FromResult(new SaslCredentials("rotated-user", "rotated-password"));
         var options = new ProducerOptions
         {
             BootstrapServers = ["broker1:9092"],
@@ -173,7 +175,8 @@ public class DependencyInjectionTests
             SaslMechanism = SaslMechanism.ScramSha512,
             SaslUsername = "producer-user",
             SaslPassword = "producer-password",
-            SaslScramTokenAuth = true
+            SaslScramTokenAuth = true,
+            SaslCredentialProvider = credentialProvider
         };
 
         services.AddDekaf(builder =>
@@ -197,6 +200,7 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("producer-user");
         await Assert.That(boundOptions.SaslPassword).IsEqualTo("producer-password");
         await Assert.That(boundOptions.SaslScramTokenAuth).IsTrue();
+        await Assert.That((object?)boundOptions.SaslCredentialProvider).IsSameReferenceAs(credentialProvider);
     }
 
     [Test]
@@ -368,6 +372,8 @@ public class DependencyInjectionTests
     public async Task AddConsumer_WithTypedOptions_BindsOptions()
     {
         var services = new ServiceCollection();
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider =
+            _ => ValueTask.FromResult(new SaslCredentials("rotated-user", "rotated-password"));
         var options = new ConsumerOptions
         {
             BootstrapServers = ["broker1:9092"],
@@ -380,7 +386,8 @@ public class DependencyInjectionTests
             SaslMechanism = SaslMechanism.ScramSha256,
             SaslUsername = "consumer-user",
             SaslPassword = "consumer-password",
-            SaslScramTokenAuth = true
+            SaslScramTokenAuth = true,
+            SaslCredentialProvider = credentialProvider
         };
 
         services.AddDekaf(builder =>
@@ -403,6 +410,7 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("consumer-user");
         await Assert.That(boundOptions.SaslPassword).IsEqualTo("consumer-password");
         await Assert.That(boundOptions.SaslScramTokenAuth).IsTrue();
+        await Assert.That((object?)boundOptions.SaslCredentialProvider).IsSameReferenceAs(credentialProvider);
     }
 
     [Test]
@@ -472,6 +480,8 @@ public class DependencyInjectionTests
     public async Task AddAdminClient_WithTypedOptions_BindsOptions()
     {
         var services = new ServiceCollection();
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider =
+            _ => ValueTask.FromResult(new SaslCredentials("rotated-user", "rotated-password"));
         var options = new AdminClientOptions
         {
             BootstrapServers = ["broker1:9092"],
@@ -481,7 +491,8 @@ public class DependencyInjectionTests
             SaslMechanism = SaslMechanism.ScramSha512,
             SaslUsername = "admin-user",
             SaslPassword = "admin-password",
-            SaslScramTokenAuth = true
+            SaslScramTokenAuth = true,
+            SaslCredentialProvider = credentialProvider
         };
 
         services.AddDekaf(builder =>
@@ -501,6 +512,7 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("admin-user");
         await Assert.That(boundOptions.SaslPassword).IsEqualTo("admin-password");
         await Assert.That(boundOptions.SaslScramTokenAuth).IsTrue();
+        await Assert.That((object?)boundOptions.SaslCredentialProvider).IsSameReferenceAs(credentialProvider);
     }
 
     #endregion
