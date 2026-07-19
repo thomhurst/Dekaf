@@ -220,6 +220,12 @@ public sealed class ShareConsumerOptions
     public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
 
     /// <summary>
+    /// Whether new broker connections verify the expected cluster and node identity (KIP-1242).
+    /// Default is true.
+    /// </summary>
+    public bool MetadataClusterCheckEnabled { get; init; } = true;
+
+    /// <summary>
     /// Custom retry policy for transient errors.
     /// </summary>
     public IRetryPolicy? RetryPolicy { get; init; }

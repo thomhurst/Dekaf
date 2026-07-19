@@ -105,6 +105,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithSocketSendBufferBytes(...)` | `SocketSendBufferBytes` | Bytes |
 | `WithSocketReceiveBufferBytes(...)` | `SocketReceiveBufferBytes` | Bytes |
 | `WithMetadataRecoveryStrategy(...)` | `MetadataRecoveryStrategy` | `None` or `Rebootstrap` |
+| `WithMetadataClusterCheck(...)` | `MetadataClusterCheckEnabled` | KIP-1242 identity check; default `true`, ignored with `None` recovery |
 | `WithMetadataRecoveryRebootstrapTrigger(...)` | `MetadataRecoveryRebootstrapTriggerMs` | Milliseconds |
 
 Serializers, custom partitioners, interceptors, and retry policies are objects, so configure those in the fluent callback.

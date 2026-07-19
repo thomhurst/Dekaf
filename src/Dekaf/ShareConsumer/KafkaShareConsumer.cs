@@ -106,6 +106,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             options.BootstrapServers,
             new MetadataOptions
             {
+                MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
                 RetryBackoffMs = options.RetryBackoffMs,
                 RetryBackoffMaxMs = options.RetryBackoffMaxMs
             },

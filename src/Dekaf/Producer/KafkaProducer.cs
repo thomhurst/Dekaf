@@ -298,6 +298,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         metadataOptions ??= new MetadataOptions
         {
+            MetadataRecoveryStrategy = options.MetadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
             RetryBackoffMs = options.RetryBackoffMs,
             RetryBackoffMaxMs = options.RetryBackoffMaxMs,
             InitTimeoutMs = options.MaxBlockMs

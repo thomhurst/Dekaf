@@ -20,17 +20,21 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             ClientSoftwareName = "dekaf-test",
             ClientSoftwareVersion = "1.0.0"
         };
+        var version = ((IKafkaCapabilityProvider)connection).Capabilities.NegotiateVersion(
+            ApiKey.ApiVersions,
+            ApiVersionsRequest.LowestSupportedVersion,
+            ApiVersionsRequest.HighestSupportedVersion);
         return await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             request,
-            ApiVersionsRequest.HighestSupportedVersion,
+            version,
             CancellationToken.None);
     }
 
     [Test]
-    public async Task ApiVersionsV4_ExposesZeroMinimumSupportedFeature()
+    public async Task ApiVersions_ExposesZeroMinimumSupportedFeature()
     {
         await using var pool = new ConnectionPool(
-            "api-versions-v4-test",
+            "api-versions-test",
             new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) },
             loggerFactory: null);
         var parts = KafkaContainer.BootstrapServers.Split(':');

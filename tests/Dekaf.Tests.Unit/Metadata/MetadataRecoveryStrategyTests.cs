@@ -251,6 +251,7 @@ public sealed class MetadataRecoveryStrategyTests
         var options = new MetadataOptions();
 
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.Rebootstrap);
+        await Assert.That(options.MetadataClusterCheckEnabled).IsTrue();
     }
 
     [Test]
@@ -328,6 +329,7 @@ public sealed class MetadataRecoveryStrategyTests
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None)
+            .WithMetadataClusterCheck(false)
             .Build();
 
         await Assert.That(producer).IsNotNull();
@@ -350,6 +352,7 @@ public sealed class MetadataRecoveryStrategyTests
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None)
+            .WithMetadataClusterCheck(false)
             .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromSeconds(42))
             .WithMetadataMaxAge(TimeSpan.FromSeconds(7))
             .Build();
@@ -357,6 +360,7 @@ public sealed class MetadataRecoveryStrategyTests
         var options = GetMetadataOptions(producer);
 
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(42000);
         await Assert.That(options.MetadataRefreshInterval).IsEqualTo(TimeSpan.FromSeconds(7));
     }
@@ -398,6 +402,7 @@ public sealed class MetadataRecoveryStrategyTests
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None)
+            .WithMetadataClusterCheck(false)
             .Build();
 
         await Assert.That(consumer).IsNotNull();
@@ -409,6 +414,7 @@ public sealed class MetadataRecoveryStrategyTests
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None)
+            .WithMetadataClusterCheck(false)
             .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromSeconds(42))
             .WithMetadataMaxAge(TimeSpan.FromSeconds(7))
             .Build();
@@ -416,6 +422,7 @@ public sealed class MetadataRecoveryStrategyTests
         var options = GetMetadataOptions(consumer);
 
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(42000);
         await Assert.That(options.MetadataRefreshInterval).IsEqualTo(TimeSpan.FromSeconds(7));
     }
@@ -446,6 +453,7 @@ public sealed class MetadataRecoveryStrategyTests
         await using var admin = new Dekaf.Admin.AdminClientBuilder()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None)
+            .WithMetadataClusterCheck(false)
             .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromSeconds(42))
             .WithMetadataMaxAge(TimeSpan.FromSeconds(7))
             .Build();
@@ -453,8 +461,79 @@ public sealed class MetadataRecoveryStrategyTests
         var options = GetMetadataOptions(admin);
 
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(42000);
         await Assert.That(options.MetadataRefreshInterval).IsEqualTo(TimeSpan.FromSeconds(7));
+    }
+
+    #endregion
+
+    #region KIP-1242 Metadata Cluster Check
+
+    [Test]
+    public async Task ShareConsumerBuilder_MetadataClusterCheck_IsAppliedToMetadataManager()
+    {
+        await using var consumer = Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("group-a")
+            .WithMetadataClusterCheck(false)
+            .Build();
+
+        var options = GetMetadataOptions(consumer);
+
+        await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
+    }
+
+    [Test]
+    public async Task MetadataClusterIdentity_DisabledCheckOmitsIdentityAndRebootstrapSignal()
+    {
+        var identity = new MetadataClusterIdentity();
+        identity.Configure(enabled: false);
+        identity.UpdateClusterId("cluster-a");
+        identity.RequestRebootstrap();
+
+        await Assert.That(identity.GetExpectedBrokerIdentity(7)).IsNull();
+        await Assert.That(identity.TryConsumeRebootstrapRequest()).IsFalse();
+    }
+
+    [Test]
+    public async Task MetadataClusterIdentity_RebootstrapClearsLearnedIdentity()
+    {
+        var identity = new MetadataClusterIdentity();
+        identity.Configure(enabled: true);
+        identity.UpdateClusterId("cluster-a");
+
+        await Assert.That(identity.GetExpectedBrokerIdentity(7))
+            .IsEqualTo(new ExpectedBrokerIdentity("cluster-a", 7));
+
+        identity.RequestRebootstrap();
+
+        await Assert.That(identity.GetExpectedBrokerIdentity(7))
+            .IsEqualTo(new ExpectedBrokerIdentity("cluster-a", 7));
+        await Assert.That(identity.TryConsumeRebootstrapRequest()).IsTrue();
+
+        identity.BeginRebootstrap();
+
+        await Assert.That(identity.GetExpectedBrokerIdentity(7)).IsNull();
+    }
+
+    [Test]
+    public async Task MetadataManager_NoneRecoveryDisablesClusterCheck()
+    {
+        await using var pool = new ConnectionPool();
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.None,
+                MetadataClusterCheckEnabled = true
+            });
+        var identity = GetField<MetadataClusterIdentity>(pool, "_metadataClusterIdentity");
+
+        identity.UpdateClusterId("cluster-a");
+
+        await Assert.That(identity.GetExpectedBrokerIdentity(7)).IsNull();
     }
 
     #endregion

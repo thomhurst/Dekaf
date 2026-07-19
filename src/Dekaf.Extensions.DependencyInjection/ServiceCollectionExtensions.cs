@@ -876,6 +876,7 @@ internal static class DekafOptionsBinding
         builder.WithArenaCapacity(options.ArenaCapacity);
         builder.WithInitialBatchRecordCapacity(options.InitialBatchRecordCapacity);
         builder.WithMetadataRecoveryStrategy(options.MetadataRecoveryStrategy);
+        builder.WithMetadataClusterCheck(options.MetadataClusterCheckEnabled);
         builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
         builder.WithClientDnsLookup(options.ClientDnsLookup);
         if (options.EnableAdaptiveConnections)
@@ -977,6 +978,7 @@ internal static class DekafOptionsBinding
         builder.WithQueuedMaxMessagesKbytes(options.QueuedMaxMessagesKbytes);
         builder.WithIsolationLevel(options.IsolationLevel);
         builder.WithMetadataRecoveryStrategy(options.MetadataRecoveryStrategy);
+        builder.WithMetadataClusterCheck(options.MetadataClusterCheckEnabled);
         builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
         builder.WithClientDnsLookup(options.ClientDnsLookup);
         builder.WithPrefetchPipelineDepth(options.PrefetchPipelineDepth);
@@ -1043,6 +1045,7 @@ internal static class DekafOptionsBinding
         }
 
         builder.WithMetadataRecoveryStrategy(options.MetadataRecoveryStrategy);
+        builder.WithMetadataClusterCheck(options.MetadataClusterCheckEnabled);
         builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
         builder.WithClientDnsLookup(options.ClientDnsLookup);
         foreach (var metric in options.ApplicationMetrics)
@@ -1263,6 +1266,8 @@ internal static class DekafConfigurationBinding
             builder.WithBufferMemoryAllocationStrategy(allocationStrategy);
         if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(ProducerOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
+        if (TryGetValue<bool>(configuration, nameof(ProducerOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))
+            builder.WithMetadataClusterCheck(metadataClusterCheckEnabled);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(ProducerOptions.ClientDnsLookup), out var clientDnsLookup))
@@ -1385,6 +1390,8 @@ internal static class DekafConfigurationBinding
             builder.WithQueuedMaxMessagesKbytes(queuedMaxMessagesKbytes);
         if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(ConsumerOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
+        if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))
+            builder.WithMetadataClusterCheck(metadataClusterCheckEnabled);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(ConsumerOptions.ClientDnsLookup), out var clientDnsLookup))
@@ -1428,6 +1435,8 @@ internal static class DekafConfigurationBinding
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);
         if (TryGetValue<MetadataRecoveryStrategy>(configuration, nameof(AdminClientOptions.MetadataRecoveryStrategy), out var metadataRecoveryStrategy))
             builder.WithMetadataRecoveryStrategy(metadataRecoveryStrategy);
+        if (TryGetValue<bool>(configuration, nameof(AdminClientOptions.MetadataClusterCheckEnabled), out var metadataClusterCheckEnabled))
+            builder.WithMetadataClusterCheck(metadataClusterCheckEnabled);
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.MetadataRecoveryRebootstrapTriggerMs), out var rebootstrapMs))
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(AdminClientOptions.ClientDnsLookup), out var clientDnsLookup))

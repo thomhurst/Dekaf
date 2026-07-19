@@ -155,7 +155,7 @@ public class MetadataManagerTests
         var endpoints = manager.GetEndpointsToTry();
 
         await Assert.That(endpoints.Count).IsEqualTo(1);
-        await Assert.That(endpoints[0]).IsEquivalentTo(("localhost", 9092));
+        await Assert.That(endpoints[0]).IsEquivalentTo((-1, "localhost", 9092));
     }
 
     [Test]
@@ -176,12 +176,12 @@ public class MetadataManagerTests
         await Assert.That(endpoints.Count).IsEqualTo(4);
 
         // First 3 should be known brokers
-        await Assert.That(endpoints[0]).IsEquivalentTo(("broker1", 9092));
-        await Assert.That(endpoints[1]).IsEquivalentTo(("broker2", 9092));
-        await Assert.That(endpoints[2]).IsEquivalentTo(("broker3", 9092));
+        await Assert.That(endpoints[0]).IsEquivalentTo((1, "broker1", 9092));
+        await Assert.That(endpoints[1]).IsEquivalentTo((2, "broker2", 9092));
+        await Assert.That(endpoints[2]).IsEquivalentTo((3, "broker3", 9092));
 
         // Last should be bootstrap server
-        await Assert.That(endpoints[3]).IsEquivalentTo(("localhost", 9092));
+        await Assert.That(endpoints[3]).IsEquivalentTo((-1, "localhost", 9092));
     }
 
     [Test]
@@ -741,6 +741,35 @@ public class MetadataManagerTests
 
         await Assert.That(firstEndpointAttempts).IsEqualTo(1);
         await Assert.That(secondEndpointAttempts).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task RefreshMetadataAsync_KnownBroker_ConnectsByNodeId()
+    {
+        const int brokerId = 7;
+        const string host = "known-broker";
+        const int port = 9093;
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        pool.GetConnectionAsync(brokerId, Arg.Any<CancellationToken>())
+            .Returns(connection);
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(CreateMetadataResponse((brokerId, host, port)));
+
+        await using var manager = new MetadataManager(
+            pool,
+            ["bootstrap:9092"],
+            new MetadataOptions { EnableBackgroundRefresh = false });
+        manager.Metadata.Update(CreateMetadataResponse((brokerId, host, port)));
+        SetMetadataApiVersion(manager);
+
+        await manager.RefreshMetadataAsync();
+
+        await pool.Received(1).GetConnectionAsync(brokerId, Arg.Any<CancellationToken>());
+        await pool.DidNotReceive().GetConnectionAsync(host, port, Arg.Any<CancellationToken>());
     }
 
     [Test]

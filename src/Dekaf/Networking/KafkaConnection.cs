@@ -91,6 +91,7 @@ public sealed partial class KafkaConnection :
     private readonly Func<int, ResponseFrameAdmission> _responseFrameAdmission;
     private readonly Func<Task, TimeSpan, Task> _waitForAbandonedWriteAsync;
     private readonly BrokerThrottleState _brokerThrottleState;
+    private readonly MetadataClusterIdentity? _metadataClusterIdentity;
 
     private Socket? _socket;
     private string? _resolvedTargetHost;
@@ -251,7 +252,8 @@ public sealed partial class KafkaConnection :
         Func<Task, TimeSpan, Task>? waitForAbandonedWriteAsync = null,
         bool responseMemoryAdmissionsEnabled = false,
         BrokerThrottleState? brokerThrottleState = null,
-        Action<KafkaConnectionCapabilities>? capabilitiesObserver = null)
+        Action<KafkaConnectionCapabilities>? capabilitiesObserver = null,
+        MetadataClusterIdentity? metadataClusterIdentity = null)
     {
         _host = host;
         _port = port;
@@ -270,6 +272,7 @@ public sealed partial class KafkaConnection :
         _brokerThrottleState = brokerThrottleState ?? new BrokerThrottleState(telemetryMetricCollector);
         _waitForAbandonedWriteAsync = waitForAbandonedWriteAsync ?? WaitForAbandonedWriteAsync;
         _capabilitiesObserver = capabilitiesObserver;
+        _metadataClusterIdentity = metadataClusterIdentity;
         _receiveTimeoutStopwatchTicks =
             (long)(_options.RequestTimeout.Ticks * (double)Stopwatch.Frequency / TimeSpan.TicksPerSecond);
     }
@@ -309,7 +312,8 @@ public sealed partial class KafkaConnection :
         ClientTelemetryMetricCollector? telemetryMetricCollector = null,
         bool responseMemoryAdmissionsEnabled = false,
         BrokerThrottleState? brokerThrottleState = null,
-        Action<KafkaConnectionCapabilities>? capabilitiesObserver = null)
+        Action<KafkaConnectionCapabilities>? capabilitiesObserver = null,
+        MetadataClusterIdentity? metadataClusterIdentity = null)
         : this(
             host,
             port,
@@ -320,7 +324,8 @@ public sealed partial class KafkaConnection :
             telemetryMetricCollector,
             responseMemoryAdmissionsEnabled: responseMemoryAdmissionsEnabled,
             brokerThrottleState: brokerThrottleState,
-            capabilitiesObserver: capabilitiesObserver)
+            capabilitiesObserver: capabilitiesObserver,
+            metadataClusterIdentity: metadataClusterIdentity)
     {
         BrokerId = brokerId;
         _sharedPipeMemoryPool = sharedPipeMemoryPool;
@@ -632,10 +637,13 @@ public sealed partial class KafkaConnection :
     private async ValueTask<KafkaConnectionCapabilities> NegotiateCapabilitiesAsync(
         CancellationToken cancellationToken)
     {
+        var expectedIdentity = _metadataClusterIdentity?.GetExpectedBrokerIdentity(BrokerId);
         var request = new ApiVersionsRequest
         {
             ClientSoftwareName = "dekaf",
-            ClientSoftwareVersion = typeof(KafkaConnection).Assembly.GetName().Version?.ToString() ?? "0.0.0"
+            ClientSoftwareVersion = typeof(KafkaConnection).Assembly.GetName().Version?.ToString() ?? "0.0.0",
+            ClusterId = expectedIdentity?.ClusterId,
+            NodeId = expectedIdentity?.NodeId ?? -1
         };
 
         ApiVersionsResponse response;
@@ -647,6 +655,8 @@ public sealed partial class KafkaConnection :
                 requireReady: false,
                 cancellationToken).ConfigureAwait(false);
 
+            ThrowIfRebootstrapRequired(response);
+
             if (response.ErrorCode == ErrorCode.UnsupportedVersion)
             {
                 var retryVersion = GetApiVersionsRetryVersion(response);
@@ -655,6 +665,8 @@ public sealed partial class KafkaConnection :
                     retryVersion,
                     requireReady: false,
                     cancellationToken).ConfigureAwait(false);
+
+                ThrowIfRebootstrapRequired(response);
 
                 if (response.ErrorCode == ErrorCode.UnsupportedVersion)
                 {
@@ -673,6 +685,18 @@ public sealed partial class KafkaConnection :
         }
 
         return KafkaConnectionCapabilities.Create(response);
+    }
+
+    private void ThrowIfRebootstrapRequired(ApiVersionsResponse response)
+    {
+        if (response.ErrorCode != ErrorCode.RebootstrapRequired)
+            return;
+
+        _metadataClusterIdentity?.RequestRebootstrap();
+        throw new KafkaException(
+            ErrorCode.RebootstrapRequired,
+            $"Broker {_host}:{_port} rejected the expected cluster or node identity",
+            isRetriable: true);
     }
 
     private short GetApiVersionsRetryVersion(ApiVersionsResponse response)

@@ -17,7 +17,8 @@ public sealed partial class ConnectionPool :
     IConnectionPool,
     IConnectionPoolDiagnostics,
     IBrokerThrottleProvider,
-    IConnectionCapabilityObserverPool
+    IConnectionCapabilityObserverPool,
+    IMetadataClusterIdentityPool
 {
     private const int MaxConnectionReapDiagnosticEvents = 256;
     private static readonly TimeSpan DefaultIdleReapDrainTimeout = TimeSpan.FromSeconds(5);
@@ -59,6 +60,7 @@ public sealed partial class ConnectionPool :
     private readonly Func<int, string, int, int, CancellationToken, ValueTask<IKafkaConnection>>? _connectionFactory;
     private readonly Func<double> _randomDouble;
     private Action<KafkaConnectionCapabilities>? _capabilityObserver;
+    private readonly MetadataClusterIdentity _metadataClusterIdentity = new();
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
@@ -203,6 +205,18 @@ public sealed partial class ConnectionPool :
         ArgumentNullException.ThrowIfNull(observer);
         Volatile.Write(ref _capabilityObserver, observer);
     }
+
+    void IMetadataClusterIdentityPool.ConfigureMetadataClusterCheck(bool enabled)
+        => _metadataClusterIdentity.Configure(enabled);
+
+    void IMetadataClusterIdentityPool.UpdateMetadataClusterId(string? clusterId)
+        => _metadataClusterIdentity.UpdateClusterId(clusterId);
+
+    void IMetadataClusterIdentityPool.BeginMetadataRebootstrap()
+        => _metadataClusterIdentity.BeginRebootstrap();
+
+    bool IMetadataClusterIdentityPool.TryConsumeMetadataRebootstrapRequest()
+        => _metadataClusterIdentity.TryConsumeRebootstrapRequest();
 
     private static ConnectionOptions ConfigureSharedOAuthBearerProvider(
         ConnectionOptions options,
@@ -854,7 +868,8 @@ public sealed partial class ConnectionPool :
                 _telemetryMetricCollector,
                 _responseMemoryAdmissionsEnabled,
                 GetBrokerThrottleState(brokerId, endpoint),
-                Volatile.Read(ref _capabilityObserver));
+                Volatile.Read(ref _capabilityObserver),
+                _metadataClusterIdentity);
 
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1036,7 +1051,8 @@ public sealed partial class ConnectionPool :
                 _telemetryMetricCollector,
                 _responseMemoryAdmissionsEnabled,
                 GetBrokerThrottleState(brokerId, endpoint),
-                Volatile.Read(ref _capabilityObserver));
+                Volatile.Read(ref _capabilityObserver),
+                _metadataClusterIdentity);
 
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 

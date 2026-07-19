@@ -8,7 +8,7 @@ public sealed class ApiVersionsRequest : IKafkaRequest<ApiVersionsResponse>
 {
     public static ApiKey ApiKey => ApiKey.ApiVersions;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 4;
+    public static short HighestSupportedVersion => 5;
 
     /// <summary>
     /// Client software name (v3+).
@@ -19,6 +19,16 @@ public sealed class ApiVersionsRequest : IKafkaRequest<ApiVersionsResponse>
     /// Client software version (v3+).
     /// </summary>
     public string? ClientSoftwareVersion { get; init; }
+
+    /// <summary>
+    /// Expected cluster ID (v5+, KIP-1242). Null while bootstrapping.
+    /// </summary>
+    public string? ClusterId { get; init; }
+
+    /// <summary>
+    /// Expected broker node ID (v5+, KIP-1242). -1 while bootstrapping.
+    /// </summary>
+    public int NodeId { get; init; } = -1;
 
     // ApiVersions is the bootstrap API — the broker always sends the response
     // with header v0 (no tagged fields) regardless of the API version.
@@ -38,6 +48,16 @@ public sealed class ApiVersionsRequest : IKafkaRequest<ApiVersionsResponse>
 
         writer.WriteCompactString(ClientSoftwareName);
         writer.WriteCompactString(ClientSoftwareVersion);
+
+        if (version >= 5)
+        {
+            if ((ClusterId is null) != (NodeId == -1))
+                throw new InvalidOperationException("ApiVersions v5 cluster ID and node ID must be specified together.");
+
+            writer.WriteCompactNullableString(ClusterId);
+            writer.WriteInt32(NodeId);
+        }
+
         writer.WriteEmptyTaggedFields();
     }
 }

@@ -1228,6 +1228,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         metadataOptions ??= new MetadataOptions
         {
+            MetadataRecoveryStrategy = options.MetadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
             RetryBackoffMs = options.RetryBackoffMs,
             RetryBackoffMaxMs = options.RetryBackoffMaxMs
         };

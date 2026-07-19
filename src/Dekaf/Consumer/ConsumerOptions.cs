@@ -457,6 +457,13 @@ public sealed class ConsumerOptions
     public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
 
     /// <summary>
+    /// Whether new broker connections verify the expected cluster and node identity (KIP-1242).
+    /// Default is true; ignored when <see cref="MetadataRecoveryStrategy"/> is
+    /// <see cref="MetadataRecoveryStrategy.None"/>.
+    /// </summary>
+    public bool MetadataClusterCheckEnabled { get; init; } = true;
+
+    /// <summary>
     /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
     /// are unavailable. Only applies when <see cref="MetadataRecoveryStrategy"/> is
     /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.

@@ -72,6 +72,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _maxBlockMs;
     private int? _deliveryLatencyTargetMs;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
+    private bool _metadataClusterCheckEnabled = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private ClientDnsEndpointResolver _dnsResolver = ClientDnsEndpointResolver.Default;
@@ -880,6 +881,16 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Controls KIP-1242 cluster and broker identity checks on new connections.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithMetadataClusterCheck(bool enabled = true)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _metadataClusterCheckEnabled = enabled;
+        return this;
+    }
+
+    /// <summary>
     /// Sets how long to wait before triggering a rebootstrap when all known
     /// brokers are unavailable.
     /// </summary>
@@ -1433,6 +1444,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             OAuthBearerTokenProvider = _oauthTokenProvider,
             AwsMskIamConfig = _awsMskIamConfig,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             DnsResolver = _dnsResolver,
@@ -1453,6 +1465,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         {
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             DnsResolver = _dnsResolver,
@@ -1619,6 +1632,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _queuedMinMessages = 100000;
     private int? _queuedMaxMessagesKbytes;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
+    private bool _metadataClusterCheckEnabled = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private ClientDnsEndpointResolver _dnsResolver = ClientDnsEndpointResolver.Default;
@@ -2572,6 +2586,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Controls KIP-1242 cluster and broker identity checks on new connections.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithMetadataClusterCheck(bool enabled = true)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _metadataClusterCheckEnabled = enabled;
+        return this;
+    }
+
+    /// <summary>
     /// Sets how long to wait before triggering a rebootstrap when all known
     /// brokers are unavailable.
     /// </summary>
@@ -3133,6 +3157,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             IsAutoTuned = _queuedMaxMessagesKbytes is null,
             IsolationLevel = _isolationLevel,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             DnsResolver = _dnsResolver,
@@ -3151,6 +3176,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         {
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             DnsResolver = _dnsResolver,
@@ -3288,6 +3314,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _tcpKeepAliveRetryCount = ConnectionOptions.DefaultTcpKeepAliveRetryCount;
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
+    private bool _metadataClusterCheckEnabled = true;
     private IRetryPolicy? _retryPolicy;
     private readonly List<string> _topicsToSubscribe = [];
 
@@ -3795,6 +3822,16 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Controls KIP-1242 cluster and broker identity checks on new connections.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithMetadataClusterCheck(bool enabled = true)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _metadataClusterCheckEnabled = enabled;
+        return this;
+    }
+
     public ShareConsumerBuilder<TKey, TValue> WithRetryPolicy(IRetryPolicy retryPolicy)
     {
         _retryPolicy = retryPolicy;
@@ -3894,6 +3931,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             ConnectionsPerBroker = _connectionsPerBroker,
             ClientDnsLookup = _clientDnsLookup,
+            MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             RetryPolicy = _retryPolicy
         };
 

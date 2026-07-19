@@ -20,6 +20,7 @@ internal static class DeterministicResponseFixtureFactory
             ["ApiVersionsResponse.v2"] = EncodeApiVersionsResponse(version: 2),
             ["ApiVersionsResponse.v3"] = EncodeApiVersionsResponse(version: 3),
             ["ApiVersionsResponse.v4"] = EncodeApiVersionsResponse(version: 4),
+            ["ApiVersionsResponse.v5"] = EncodeApiVersionsResponse(version: 5),
             ["DescribeConfigsResponse.v4"] = Encode(WriteDescribeConfigsResponse),
             ["DescribeGroupsResponse.v5"] = Encode(WriteDescribeGroupsResponse),
             ["FetchResponse.v16"] = Encode(WriteFetchResponse),
@@ -51,12 +52,12 @@ internal static class DeterministicResponseFixtureFactory
         if (version >= 3)
         {
             WriteCompactArrayLength(ref writer, 1);
-            WriteApiVersionsEntry(ref writer, flexible: true);
+            WriteApiVersionsEntry(ref writer, flexible: true, maxVersion: Math.Max((short)4, version));
         }
         else
         {
             writer.WriteInt32(1);
-            WriteApiVersionsEntry(ref writer, flexible: false);
+            WriteApiVersionsEntry(ref writer, flexible: false, maxVersion: 4);
         }
 
         if (version >= 1)
@@ -77,11 +78,11 @@ internal static class DeterministicResponseFixtureFactory
         return buffer.WrittenSpan.ToArray();
     }
 
-    private static void WriteApiVersionsEntry(ref KafkaProtocolWriter writer, bool flexible)
+    private static void WriteApiVersionsEntry(ref KafkaProtocolWriter writer, bool flexible, short maxVersion)
     {
         writer.WriteInt16((short)ApiKey.ApiVersions);
         writer.WriteInt16(0);
-        writer.WriteInt16(4);
+        writer.WriteInt16(maxVersion);
         if (flexible)
             WriteEmptyTaggedFields(ref writer);
     }
