@@ -442,7 +442,7 @@ public sealed partial class KafkaConnection :
                 var message = string.IsNullOrWhiteSpace(validationFailure)
                     ? $"TLS handshake failed: {authenticationException.Message}"
                     : $"TLS handshake failed: {authenticationException.Message} Certificate validation: {validationFailure}";
-                throw new AuthenticationException(message, authenticationException);
+                throw AuthenticationException.FromTlsHandshake(message, authenticationException);
             }
             networkStream = sslStream;
             _isTls = true;

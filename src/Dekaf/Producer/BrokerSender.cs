@@ -4059,7 +4059,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (!pendingResponseAdded)
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
-        catch (AuthenticationException ex) when (IsFatalAuthenticationFailure(ex))
+        catch (AuthenticationException ex) when (IsFatalAuthenticationFailure(ex, _options))
         {
             // TLS validation cannot succeed without a configuration/trust change, and a
             // broker-rejected static PLAIN/SCRAM credential cannot repair itself. Surface both
@@ -4161,17 +4161,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
     }
 
-    private bool IsFatalAuthenticationFailure(AuthenticationException exception)
+    internal static bool IsFatalAuthenticationFailure(
+        AuthenticationException exception,
+        ProducerOptions options)
     {
         if (exception.ErrorCode == ErrorCode.SaslAuthenticationFailed)
         {
-            return !_options.UsesDynamicSaslCredentials
-                && _options.SaslMechanism is SaslMechanism.Plain
+            return !options.UsesDynamicSaslCredentials
+                && options.SaslMechanism is SaslMechanism.Plain
                     or SaslMechanism.ScramSha256
                     or SaslMechanism.ScramSha512;
         }
 
-        return _options.UseTls || _options.TlsConfig is not null;
+        return exception.IsTlsHandshakeFailure;
     }
 
     private void PrepareDeferredNetworkRetry(ReadyBatch batch, HashSet<string> metadataRefreshTopics)

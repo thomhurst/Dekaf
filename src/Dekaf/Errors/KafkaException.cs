@@ -561,6 +561,8 @@ public sealed class BrokerVersionException : KafkaException
 /// </summary>
 public sealed class AuthenticationException : KafkaException
 {
+    internal bool IsTlsHandshakeFailure { get; }
+
     public AuthenticationException() : base()
     {
     }
@@ -576,6 +578,15 @@ public sealed class AuthenticationException : KafkaException
     public AuthenticationException(ErrorCode errorCode, string message) : base(errorCode, message)
     {
     }
+
+    private AuthenticationException(string message, Exception innerException, bool isTlsHandshakeFailure)
+        : base(message, innerException)
+    {
+        IsTlsHandshakeFailure = isTlsHandshakeFailure;
+    }
+
+    internal static AuthenticationException FromTlsHandshake(string message, Exception innerException)
+        => new(message, innerException, isTlsHandshakeFailure: true);
 }
 
 /// <summary>

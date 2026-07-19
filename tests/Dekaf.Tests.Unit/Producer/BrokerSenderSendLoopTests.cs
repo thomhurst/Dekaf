@@ -81,8 +81,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     public async Task SendLoop_TlsAuthenticationFailure_FailsBatchWithoutRetry(
         CancellationToken cancellationToken)
     {
-        var authenticationFailure = new AuthenticationException(
-            "TLS handshake failed: certificate chain validation failed");
+        var authenticationFailure = AuthenticationException.FromTlsHandshake(
+            "TLS handshake failed: certificate chain validation failed",
+            new System.Security.Authentication.AuthenticationException("certificate rejected"));
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns<ValueTask<IKafkaConnection>>(_ =>
@@ -118,6 +119,19 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
         }
+    }
+
+    [Test]
+    public async Task AuthenticationFailure_FromSaslOverTls_RemainsRetriable()
+    {
+        var authenticationFailure = new AuthenticationException("OAuth token has expired");
+        var options = CreateOptions(
+            saslMechanism: SaslMechanism.OAuthBearer,
+            useTls: true);
+
+        var isFatal = BrokerSender.IsFatalAuthenticationFailure(authenticationFailure, options);
+
+        await Assert.That(isFatal).IsFalse();
     }
 
     [Test]
