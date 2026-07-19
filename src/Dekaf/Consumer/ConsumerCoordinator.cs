@@ -645,10 +645,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 return;
             }
             catch (Exception ex) when (
-                attempt < maxRetries - 1 &&
                 RetryHelper.IsRetriableRequestFailure(ex) &&
                 !cancellationToken.IsCancellationRequested)
             {
+                if (attempt == maxRetries - 1)
+                {
+                    throw new Errors.GroupException(
+                        ErrorCode.CoordinatorNotAvailable,
+                        $"FindCoordinator failed after {maxRetries} retries: {ex.Message}",
+                        ex)
+                    {
+                        GroupId = _options.GroupId
+                    };
+                }
+
                 var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
                 LogCoordinatorNotAvailableRetry(attempt + 1, maxRetries, retryDelayMs);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
