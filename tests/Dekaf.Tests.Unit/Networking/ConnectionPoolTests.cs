@@ -802,6 +802,77 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    [Arguments(0.0, 80.0)]
+    [Arguments(0.5, 100.0)]
+    [Arguments(0.999999, 119.99996)]
+    public async Task CalculateReconnectBackoffDelay_UsesSymmetricTwentyPercentJitter(
+        double randomValue,
+        double expectedMilliseconds)
+    {
+        await using var pool = CreateReconnectBackoffPool(
+            reconnectBackoffMs: 100,
+            reconnectBackoffMaxMs: 1000,
+            randomValue);
+
+        var delay = pool.CalculateReconnectBackoffDelay(failureCount: 1);
+
+        await Assert.That(delay.TotalMilliseconds).IsEqualTo(expectedMilliseconds).Within(0.001);
+    }
+
+    [Test]
+    [Arguments(0.0)]
+    [Arguments(0.5)]
+    [Arguments(0.999999)]
+    public async Task CalculateReconnectBackoffDelay_FixedBackoffDoesNotApplyJitter(double randomValue)
+    {
+        await using var pool = CreateReconnectBackoffPool(
+            reconnectBackoffMs: 123,
+            reconnectBackoffMaxMs: 123,
+            randomValue);
+
+        var delay = pool.CalculateReconnectBackoffDelay(failureCount: 10);
+
+        await Assert.That(delay).IsEqualTo(TimeSpan.FromMilliseconds(123));
+    }
+
+    [Test]
+    public async Task CalculateReconnectBackoffDelay_DefaultsGrowExponentiallyToMaximum()
+    {
+        await using var pool = CreateReconnectBackoffPool(
+            reconnectBackoffMs: 50,
+            reconnectBackoffMaxMs: 1000,
+            randomValue: 0.5);
+
+        var delays = Enumerable.Range(1, 7)
+            .Select(pool.CalculateReconnectBackoffDelay)
+            .ToArray();
+
+        await Assert.That(delays).IsEquivalentTo(new[]
+        {
+            TimeSpan.FromMilliseconds(50),
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(200),
+            TimeSpan.FromMilliseconds(400),
+            TimeSpan.FromMilliseconds(800),
+            TimeSpan.FromMilliseconds(1000),
+            TimeSpan.FromMilliseconds(1000)
+        });
+    }
+
+    [Test]
+    public async Task CalculateReconnectBackoffDelay_CapsJitterAtConfiguredMaximum()
+    {
+        await using var pool = CreateReconnectBackoffPool(
+            reconnectBackoffMs: 100,
+            reconnectBackoffMaxMs: 150,
+            randomValue: 0.999999);
+
+        var delay = pool.CalculateReconnectBackoffDelay(failureCount: 2);
+
+        await Assert.That(delay).IsEqualTo(TimeSpan.FromMilliseconds(150));
+    }
+
+    [Test]
     [NotInParallel]
     public async Task ReplaceConnectionInGroup_DuringReconnectBackoff_RespectsConnectionTimeout()
     {
@@ -919,6 +990,21 @@ public sealed class ConnectionPoolTests
         ClientId = "client",
         ClientSecret = "secret"
     };
+
+    private static ConnectionPool CreateReconnectBackoffPool(
+        int reconnectBackoffMs,
+        int reconnectBackoffMaxMs,
+        double randomValue)
+        => new(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ReconnectBackoff = TimeSpan.FromMilliseconds(reconnectBackoffMs),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(reconnectBackoffMaxMs)
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => throw new InvalidOperationException("Connection not expected"),
+            randomDouble: () => randomValue);
 
     private static OAuthBearerToken CreateOAuthBearerToken() => new()
     {

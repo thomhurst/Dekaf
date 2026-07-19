@@ -35,6 +35,11 @@ public sealed class AdminClient : IAdminClient
 
     public AdminClient(AdminClientOptions options, ILoggerFactory? loggerFactory = null, MetadataOptions? metadataOptions = null)
     {
+        var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
+            options.ReconnectBackoffMs,
+            options.ReconnectBackoffMaxMs,
+            options.IsReconnectBackoffMsConfigured,
+            options.IsReconnectBackoffMaxMsConfigured);
         _options = options;
         _logger = loggerFactory?.CreateLogger<AdminClient>();
         _ownsResources = true;
@@ -55,7 +60,7 @@ public sealed class AdminClient : IAdminClient
                 TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
-                ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(reconnectBackoffMaxMs),
                 ConnectionsMaxIdleMs = options.ConnectionsMaxIdleMs,
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
@@ -4613,11 +4618,36 @@ public sealed class AdminClient : IAdminClient
 /// </summary>
 public sealed class AdminClientOptions
 {
+    private int _reconnectBackoffMs = 50;
+    private int _reconnectBackoffMaxMs = 1000;
+    private bool _isReconnectBackoffMsConfigured;
+    private bool _isReconnectBackoffMaxMsConfigured;
+
     public required IReadOnlyList<string> BootstrapServers { get; init; }
     public string? ClientId { get; init; } = "dekaf-admin";
     public int RequestTimeoutMs { get; init; } = 30000;
-    public int ReconnectBackoffMs { get; init; } = 50;
-    public int ReconnectBackoffMaxMs { get; init; } = 1000;
+    public int ReconnectBackoffMs
+    {
+        get => _reconnectBackoffMs;
+        init
+        {
+            _reconnectBackoffMs = value;
+            _isReconnectBackoffMsConfigured = true;
+        }
+    }
+
+    public int ReconnectBackoffMaxMs
+    {
+        get => _reconnectBackoffMaxMs;
+        init
+        {
+            _reconnectBackoffMaxMs = value;
+            _isReconnectBackoffMaxMsConfigured = true;
+        }
+    }
+
+    internal bool IsReconnectBackoffMsConfigured => _isReconnectBackoffMsConfigured;
+    internal bool IsReconnectBackoffMaxMsConfigured => _isReconnectBackoffMaxMsConfigured;
 
     /// <summary>
     /// Maximum idle time in milliseconds before unused broker connections are closed.
@@ -4739,6 +4769,8 @@ public sealed class AdminClientBuilder
     private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
+    private bool _reconnectBackoffConfigured;
+    private bool _reconnectBackoffMaxConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
@@ -5113,6 +5145,7 @@ public sealed class AdminClientBuilder
     /// <summary>
     /// Sets the initial delay before reconnecting to a broker after a connection failure.
     /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to zero to disable the delay.
+    /// When the maximum is not configured, it uses this value and disables exponential growth.
     /// </summary>
     /// <param name="backoff">The reconnect backoff. Cannot be negative.</param>
     public AdminClientBuilder WithReconnectBackoff(TimeSpan backoff)
@@ -5122,6 +5155,7 @@ public sealed class AdminClientBuilder
             backoff,
             nameof(backoff),
             "Reconnect backoff cannot be negative");
+        _reconnectBackoffConfigured = true;
         return this;
     }
 
@@ -5137,6 +5171,7 @@ public sealed class AdminClientBuilder
             backoff,
             nameof(backoff),
             "Maximum reconnect backoff cannot be negative");
+        _reconnectBackoffMaxConfigured = true;
         return this;
     }
 
@@ -5233,7 +5268,11 @@ public sealed class AdminClientBuilder
     {
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified");
-        ReconnectBackoffValidation.ValidateMilliseconds(_reconnectBackoffMs, _reconnectBackoffMaxMs);
+        var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
+            _reconnectBackoffMs,
+            _reconnectBackoffMaxMs,
+            _reconnectBackoffConfigured,
+            _reconnectBackoffMaxConfigured);
 
         GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
 
@@ -5243,7 +5282,7 @@ public sealed class AdminClientBuilder
             ClientId = _clientId,
             RequestTimeoutMs = _requestTimeoutMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
-            ReconnectBackoffMaxMs = _reconnectBackoffMaxMs,
+            ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             ConnectionTimeout = _connectionTimeout,
             EnableTcpKeepAlive = _enableTcpKeepAlive,

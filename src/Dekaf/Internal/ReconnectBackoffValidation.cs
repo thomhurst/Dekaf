@@ -22,4 +22,18 @@ internal static class ReconnectBackoffValidation
                 "Maximum reconnect backoff must be greater than or equal to reconnect backoff");
         }
     }
+
+    public static int ResolveMaximumMilliseconds(
+        int reconnectBackoffMs,
+        int reconnectBackoffMaxMs,
+        bool reconnectBackoffConfigured,
+        bool reconnectBackoffMaxConfigured)
+    {
+        var effectiveMaximum = reconnectBackoffConfigured && !reconnectBackoffMaxConfigured
+            ? reconnectBackoffMs
+            : reconnectBackoffMaxMs;
+
+        ValidateMilliseconds(reconnectBackoffMs, effectiveMaximum);
+        return effectiveMaximum;
+    }
 }

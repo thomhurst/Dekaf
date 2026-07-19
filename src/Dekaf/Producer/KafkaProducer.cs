@@ -228,6 +228,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ILoggerFactory? loggerFactory,
         MetadataOptions? metadataOptions)
     {
+        var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
+            options.ReconnectBackoffMs,
+            options.ReconnectBackoffMaxMs,
+            options.IsReconnectBackoffMsConfigured,
+            options.IsReconnectBackoffMaxMsConfigured);
         var sharedPoolSizes = PoolSizing.ForSharedPools(
             brokerCount: options.BootstrapServers.Count,
             connectionsPerBroker: options.ConnectionsPerBroker,
@@ -249,7 +254,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
-                ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(reconnectBackoffMaxMs),
                 ConnectionsMaxIdleMs = options.ConnectionsMaxIdleMs,
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,

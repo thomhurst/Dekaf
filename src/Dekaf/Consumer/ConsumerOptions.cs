@@ -57,6 +57,10 @@ public enum OffsetStoreTiming
 /// </summary>
 public sealed class ConsumerOptions
 {
+    private int _reconnectBackoffMs = 50;
+    private int _reconnectBackoffMaxMs = 1000;
+    private bool _isReconnectBackoffMsConfigured;
+    private bool _isReconnectBackoffMaxMsConfigured;
     internal const int DefaultMaxConnectionsPerBroker = 4;
 
     /// <summary>
@@ -192,14 +196,34 @@ public sealed class ConsumerOptions
     /// <summary>
     /// Initial delay in milliseconds before reconnecting to a broker after a connection failure.
     /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to 0 to disable the delay.
+    /// When set without <see cref="ReconnectBackoffMaxMs"/>, the maximum uses this value.
     /// </summary>
-    public int ReconnectBackoffMs { get; init; } = 50;
+    public int ReconnectBackoffMs
+    {
+        get => _reconnectBackoffMs;
+        init
+        {
+            _reconnectBackoffMs = value;
+            _isReconnectBackoffMsConfigured = true;
+        }
+    }
 
     /// <summary>
     /// Maximum delay in milliseconds before reconnecting to a broker after repeated failures.
     /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
     /// </summary>
-    public int ReconnectBackoffMaxMs { get; init; } = 1000;
+    public int ReconnectBackoffMaxMs
+    {
+        get => _reconnectBackoffMaxMs;
+        init
+        {
+            _reconnectBackoffMaxMs = value;
+            _isReconnectBackoffMaxMsConfigured = true;
+        }
+    }
+
+    internal bool IsReconnectBackoffMsConfigured => _isReconnectBackoffMsConfigured;
+    internal bool IsReconnectBackoffMaxMsConfigured => _isReconnectBackoffMaxMsConfigured;
 
     /// <summary>
     /// Maximum idle time in milliseconds before unused broker connections are closed.

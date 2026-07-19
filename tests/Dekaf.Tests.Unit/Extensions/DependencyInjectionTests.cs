@@ -196,6 +196,60 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    public async Task AddProducer_WithTypedOptionsAndOnlyReconnectBackoff_UsesFixedBackoff()
+    {
+        var services = new ServiceCollection();
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["broker1:9092"],
+            ReconnectBackoffMs = 125
+        };
+
+        services.AddDekaf(builder => builder.AddProducer<string, string>(options));
+
+        var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        var boundOptions = GetProducerOptions(producer);
+
+        await Assert.That(boundOptions.ReconnectBackoffMs).IsEqualTo(125);
+        await Assert.That(boundOptions.ReconnectBackoffMaxMs).IsEqualTo(125);
+    }
+
+    [Test]
+    public async Task TypedConsumerAndAdminOptions_WithOnlyReconnectBackoff_UseFixedBackoff()
+    {
+        var services = new ServiceCollection();
+        var consumerOptions = new ConsumerOptions
+        {
+            BootstrapServers = ["broker1:9092"],
+            GroupId = "group",
+            ReconnectBackoffMs = 145
+        };
+        var adminOptions = new AdminClientOptions
+        {
+            BootstrapServers = ["broker1:9092"],
+            ReconnectBackoffMs = 155
+        };
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumer<string, string>(consumerOptions);
+            builder.AddAdminClient(adminOptions);
+        });
+
+        var provider = services.BuildServiceProvider();
+        var consumer = provider.GetRequiredService<IKafkaConsumer<string, string>>();
+        var admin = provider.GetRequiredService<IAdminClient>();
+        var boundConsumerOptions = GetConsumerOptions(consumer);
+        var boundAdminOptions = GetAdminOptions(admin);
+
+        await Assert.That(boundConsumerOptions.ReconnectBackoffMs).IsEqualTo(145);
+        await Assert.That(boundConsumerOptions.ReconnectBackoffMaxMs).IsEqualTo(145);
+        await Assert.That(boundAdminOptions.ReconnectBackoffMs).IsEqualTo(155);
+        await Assert.That(boundAdminOptions.ReconnectBackoffMaxMs).IsEqualTo(155);
+    }
+
+    [Test]
     public async Task AddProducer_WithTypedOptionsAndIdempotenceDisabled_UsesNonIdempotentMaxInFlightDefault()
     {
         var services = new ServiceCollection();
@@ -645,6 +699,60 @@ public class DependencyInjectionTests
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(60000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
+    }
+
+    [Test]
+    public async Task AddProducer_WithConfigurationAndOnlyReconnectBackoff_UsesFixedBackoff()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:BootstrapServers"] = "broker1:9092",
+            ["Kafka:ReconnectBackoffMs"] = "135"
+        });
+
+        services.AddDekaf(builder => builder.AddProducer<string, string>(configuration.GetSection("Kafka")));
+
+        var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredService<IKafkaProducer<string, string>>();
+        var options = GetProducerOptions(producer);
+
+        await Assert.That(options.ReconnectBackoffMs).IsEqualTo(135);
+        await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(135);
+    }
+
+    [Test]
+    public async Task ConsumerAndAdminConfiguration_WithOnlyReconnectBackoff_UseFixedBackoff()
+    {
+        var services = new ServiceCollection();
+        var consumerConfiguration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:BootstrapServers"] = "broker1:9092",
+            ["Kafka:GroupId"] = "group",
+            ["Kafka:ReconnectBackoffMs"] = "165"
+        });
+        var adminConfiguration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Kafka:BootstrapServers"] = "broker1:9092",
+            ["Kafka:ReconnectBackoffMs"] = "175"
+        });
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumer<string, string>(consumerConfiguration.GetSection("Kafka"));
+            builder.AddAdminClient(adminConfiguration.GetSection("Kafka"));
+        });
+
+        var provider = services.BuildServiceProvider();
+        var consumer = provider.GetRequiredService<IKafkaConsumer<string, string>>();
+        var admin = provider.GetRequiredService<IAdminClient>();
+        var consumerOptions = GetConsumerOptions(consumer);
+        var adminOptions = GetAdminOptions(admin);
+
+        await Assert.That(consumerOptions.ReconnectBackoffMs).IsEqualTo(165);
+        await Assert.That(consumerOptions.ReconnectBackoffMaxMs).IsEqualTo(165);
+        await Assert.That(adminOptions.ReconnectBackoffMs).IsEqualTo(175);
+        await Assert.That(adminOptions.ReconnectBackoffMaxMs).IsEqualTo(175);
     }
 
     [Test]

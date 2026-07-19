@@ -51,6 +51,12 @@ internal sealed class StallDetector
         var stalledFor = now - _lastProgressAt;
         if (stalledFor >= _exitAfter && !_exited)
         {
+            if (!_captured)
+            {
+                _captured = true;
+                return StallAction.Capture;
+            }
+
             _exited = true;
             return StallAction.CaptureAndExit;
         }
@@ -490,13 +496,27 @@ internal sealed class ProgressWatchdog : IDisposable
 
     private static void WriteArtifact(string path, string contents)
     {
+        var temporaryPath = path + ".tmp";
         try
         {
-            File.WriteAllText(path, contents);
+            File.WriteAllText(temporaryPath, contents);
+            File.Move(temporaryPath, path, overwrite: true);
         }
         catch (Exception exception)
         {
             Console.Error.WriteLine($"PROGRESS WATCHDOG: failed to write {path}: {exception.Message}");
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(temporaryPath);
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine(
+                    $"PROGRESS WATCHDOG: failed to remove temporary artifact {temporaryPath}: {exception.Message}");
+            }
         }
     }
 

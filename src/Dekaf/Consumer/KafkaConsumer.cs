@@ -1114,6 +1114,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private static (IConnectionPool, MetadataManager, ClientTelemetryMetricCollector) CreateInfrastructure(
         ConsumerOptions options, ILoggerFactory? loggerFactory, MetadataOptions? metadataOptions)
     {
+        var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
+            options.ReconnectBackoffMs,
+            options.ReconnectBackoffMaxMs,
+            options.IsReconnectBackoffMsConfigured,
+            options.IsReconnectBackoffMaxMsConfigured);
         var telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer);
         var connectionPool = new ConnectionPool(
             options.ClientId,
@@ -1129,7 +1134,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
-                ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(reconnectBackoffMaxMs),
                 ConnectionsMaxIdleMs = options.ConnectionsMaxIdleMs,
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,

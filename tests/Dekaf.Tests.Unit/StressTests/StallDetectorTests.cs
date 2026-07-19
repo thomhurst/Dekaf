@@ -50,6 +50,19 @@ public sealed class StallDetectorTests
     }
 
     [Test]
+    public async Task Observe_FirstObservationAfterExitThreshold_CapturesBeforeExit()
+    {
+        var detector = new StallDetector(CaptureAfter, ExitAfter);
+        detector.Reset(messageCount: 42, TimeSpan.Zero);
+
+        var capture = detector.Observe(messageCount: 42, ExitAfter);
+        var exit = detector.Observe(messageCount: 42, ExitAfter);
+
+        await Assert.That(capture).IsEqualTo(StallAction.Capture);
+        await Assert.That(exit).IsEqualTo(StallAction.CaptureAndExit);
+    }
+
+    [Test]
     public async Task Watchdog_Stall_CapturesThreadStacksBeforeProducerDiagnostics()
     {
         var outputDirectory = CreateOutputDirectory();

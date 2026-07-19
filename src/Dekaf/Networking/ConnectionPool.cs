@@ -16,6 +16,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
 {
     private const int MaxConnectionReapDiagnosticEvents = 256;
     private static readonly TimeSpan DefaultIdleReapDrainTimeout = TimeSpan.FromSeconds(5);
+    private static readonly Func<double> SharedRandomDouble = static () => Random.Shared.NextDouble();
     private readonly string? _clientId;
     private readonly ConnectionOptions _connectionOptions;
     private readonly ILoggerFactory? _loggerFactory;
@@ -50,6 +51,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     /// Parameters: brokerId, host, port, index, cancellationToken.
     /// </summary>
     private readonly Func<int, string, int, int, CancellationToken, ValueTask<IKafkaConnection>>? _connectionFactory;
+    private readonly Func<double> _randomDouble;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
@@ -94,7 +96,8 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         ResponseBufferPool responseBufferPool,
         int? pipeMemoryBucketCapacity = null,
         ClientTelemetryMetricCollector? telemetryMetricCollector = null,
-        TimeSpan? idleReapDrainTimeout = null)
+        TimeSpan? idleReapDrainTimeout = null,
+        Func<double>? randomDouble = null)
     {
         _clientId = clientId;
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
@@ -107,6 +110,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         _responseBufferPool = responseBufferPool;
         _telemetryMetricCollector = telemetryMetricCollector;
         _idleReapDrainTimeout = idleReapDrainTimeout ?? DefaultIdleReapDrainTimeout;
+        _randomDouble = randomDouble ?? SharedRandomDouble;
         var bucketCapacity = pipeMemoryBucketCapacity ?? ScaledBucketCapacity(_connectionsPerBroker);
         _sharedPipeMemoryPool = PipeMemoryPool.Create(maxArraysPerBucket: bucketCapacity);
         _currentPipeMemoryBucketCapacity = bucketCapacity;
@@ -122,7 +126,8 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         ConnectionOptions? connectionOptions,
         int connectionsPerBroker,
         Func<int, string, int, int, CancellationToken, ValueTask<IKafkaConnection>> connectionFactory,
-        TimeSpan? idleReapDrainTimeout = null)
+        TimeSpan? idleReapDrainTimeout = null,
+        Func<double>? randomDouble = null)
     {
         _clientId = clientId;
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
@@ -135,6 +140,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         _responseBufferPool = ResponseBufferPool.Default;
         _connectionFactory = connectionFactory;
         _idleReapDrainTimeout = idleReapDrainTimeout ?? DefaultIdleReapDrainTimeout;
+        _randomDouble = randomDouble ?? SharedRandomDouble;
         // No shared pool needed: factory-created connections manage their own pools.
         StartIdleConnectionReaper();
     }
@@ -1078,22 +1084,22 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         LogReconnectBackoffReset(brokerId, host, port);
     }
 
-    private TimeSpan CalculateReconnectBackoffDelay(int failureCount)
+    internal TimeSpan CalculateReconnectBackoffDelay(int failureCount)
     {
         var minMs = _connectionOptions.ReconnectBackoff.TotalMilliseconds;
         var maxMs = _connectionOptions.ReconnectBackoffMax.TotalMilliseconds;
         if (minMs <= 0 || maxMs <= 0)
             return TimeSpan.Zero;
 
+        if (maxMs <= minMs)
+            return TimeSpan.FromMilliseconds(maxMs);
+
         var exponent = Math.Min(failureCount - 1, 30);
         var baseMs = Math.Min(maxMs, minMs * Math.Pow(2, exponent));
-        if (baseMs < maxMs)
-        {
-            var jitterMaxMs = Math.Max(1, (int)Math.Ceiling(baseMs * 0.2));
-            baseMs = Math.Min(maxMs, baseMs + Random.Shared.Next(jitterMaxMs + 1));
-        }
+        var randomValue = Math.Clamp(_randomDouble(), 0, 1);
+        var jitteredMs = baseMs * (0.8 + (randomValue * 0.4));
 
-        return TimeSpan.FromMilliseconds(baseMs);
+        return TimeSpan.FromMilliseconds(Math.Min(maxMs, jitteredMs));
     }
 
     private static long ToStopwatchTicks(TimeSpan delay)
