@@ -470,6 +470,49 @@ public readonly struct ConsumeResult<TKey, TValue>
     {
     }
 
+    /// <summary>
+    /// Creates a ConsumeResult from already-deserialized key and value. Used by the asynchronous
+    /// deserialization path (<see cref="IAsyncDeserializer{T}"/>), where deserialization is awaited
+    /// before the result is constructed and therefore cannot run in this eager constructor.
+    /// </summary>
+    internal ConsumeResult(
+        string topic,
+        int partition,
+        long offset,
+        TKey? key,
+        TValue value,
+        Header[]? pooledHeaders,
+        int pooledHeaderCount,
+        PendingFetchData headerOwner,
+        long timestampMs,
+        TimestampType timestampType,
+        int? leaderEpoch)
+        : this(
+            topic,
+            partition,
+            offset,
+            keyData: default,
+            isKeyNull: true,
+            valueData: default,
+            isValueNull: true,
+            headers: null,
+            pooledHeaders,
+            pooledHeaderCount,
+            headerOwner,
+            headerOwner.HeaderGeneration,
+            timestampMs,
+            timestampType,
+            leaderEpoch,
+            keyDeserializer: null,
+            valueDeserializer: null,
+            isPartitionEof: false)
+    {
+        // The chained call above leaves Key/Value at default (both deserializers are null);
+        // the awaited async deserialization already produced the real values.
+        Key = key;
+        Value = value;
+    }
+
     private ConsumeResult(
         string topic,
         int partition,

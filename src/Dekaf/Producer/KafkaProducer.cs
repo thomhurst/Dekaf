@@ -46,6 +46,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     // synchronous Serialize can run without blocking. Null for the common case (built-in serializers).
     private readonly IAsyncSerializerPreparer<TKey>? _keyPreparer;
     private readonly IAsyncSerializerPreparer<TValue>? _valuePreparer;
+    // Non-null when the user configured an IAsyncSerializer for that component (issue #2309:
+    // serializers that perform per-message I/O, e.g. envelope encryption with short-lived keys).
+    // When either is set, every produce entry point routes to the asynchronous serialization path
+    // before the synchronous fast path is reached; the corresponding sync slot holds a throwing
+    // AsyncOnlySerializerPlaceholder. Null for the common case, costing the fast path one
+    // readonly-bool branch (same shape as the _keyPreparer check above).
+    private readonly IAsyncSerializer<TKey>? _asyncKeySerializer;
+    private readonly IAsyncSerializer<TValue>? _asyncValueSerializer;
+    private readonly bool _hasAsyncSerializers;
     private readonly IPartitioner _partitioner;
     private readonly bool _usesCustomPartitioner;
     private readonly IUniformStickyPartitioner? _uniformStickyPartitioner;
@@ -193,7 +202,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ISerializer<TKey> keySerializer,
         ISerializer<TValue> valueSerializer,
         ILoggerFactory? loggerFactory = null,
-        MetadataOptions? metadataOptions = null)
+        MetadataOptions? metadataOptions = null,
+        IAsyncSerializer<TKey>? asyncKeySerializer = null,
+        IAsyncSerializer<TValue>? asyncValueSerializer = null)
         : this(
             options,
             keySerializer,
@@ -201,7 +212,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             CreateInfrastructure(options, loggerFactory, metadataOptions),
             loggerFactory,
             ownsInfrastructure: true,
-            DekafMemoryBudget.Global)
+            DekafMemoryBudget.Global,
+            asyncKeySerializer: asyncKeySerializer,
+            asyncValueSerializer: asyncValueSerializer)
     {
     }
 
@@ -213,7 +226,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         MetadataManager metadataManager,
         IDekafMemoryBudget memoryBudget,
         ILoggerFactory? loggerFactory = null,
-        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null)
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null,
+        IAsyncSerializer<TKey>? asyncKeySerializer = null,
+        IAsyncSerializer<TValue>? asyncValueSerializer = null)
         : this(
             options,
             keySerializer,
@@ -222,7 +237,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             loggerFactory,
             ownsInfrastructure: false,
             memoryBudget,
-            addPartitionsToTransaction)
+            addPartitionsToTransaction,
+            asyncKeySerializer,
+            asyncValueSerializer)
     {
     }
 
@@ -303,15 +320,24 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ILoggerFactory? loggerFactory,
         bool ownsInfrastructure,
         IDekafMemoryBudget memoryBudget,
-        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null)
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null,
+        IAsyncSerializer<TKey>? asyncKeySerializer = null,
+        IAsyncSerializer<TValue>? asyncValueSerializer = null)
     {
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         _options = options;
         _addPartitionsToTransaction = addPartitionsToTransaction ?? AddPartitionsToTransactionAsync;
-        _keySerializer = keySerializer;
-        _valueSerializer = valueSerializer;
-        _keyPreparer = keySerializer as IAsyncSerializerPreparer<TKey>;
-        _valuePreparer = valueSerializer as IAsyncSerializerPreparer<TValue>;
+        // When an async serializer is configured for a component, its sync slot is forced to the
+        // throwing placeholder here — by construction, not by builder convention — so a direct
+        // constructor caller can never pair an async serializer with a live sync one that would
+        // silently serialize on the sync path.
+        _keySerializer = asyncKeySerializer is null ? keySerializer : AsyncOnlySerializerPlaceholder<TKey>.Instance;
+        _valueSerializer = asyncValueSerializer is null ? valueSerializer : AsyncOnlySerializerPlaceholder<TValue>.Instance;
+        _keyPreparer = _keySerializer as IAsyncSerializerPreparer<TKey>;
+        _valuePreparer = _valueSerializer as IAsyncSerializerPreparer<TValue>;
+        _asyncKeySerializer = asyncKeySerializer;
+        _asyncValueSerializer = asyncValueSerializer;
+        _hasAsyncSerializers = asyncKeySerializer is not null || asyncValueSerializer is not null;
         _memoryBudget = memoryBudget;
         _ownsInfrastructure = ownsInfrastructure;
         _logger = loggerFactory?.CreateLogger<KafkaProducer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaProducer<TKey, TValue>>.Instance;
@@ -561,6 +587,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         var activity = StartPublishActivity(ref message);
 
+        // Async serializers (per-message I/O, issue #2309) cannot run on the synchronous fast
+        // path — divert to the dedicated async-serialization path before any sync serialize.
+        if (_hasAsyncSerializers)
+            return ProduceWithAsyncSerializationAsync(message, activity, continuationMode, cancellationToken);
+
         // If a serializer needs async setup (e.g. a one-time Schema Registry fetch), do it here on the
         // async path so the synchronous serialize never blocks on it. After the first message for a
         // subject this completes synchronously and falls straight through to the fast path below.
@@ -759,6 +790,25 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Check cancellation upfront before any work
         cancellationToken.ThrowIfCancellationRequested();
+
+        // See ProduceAsyncCore(ProducerMessage): async serializers divert before any sync serialize.
+        // This overload is only reached without interceptors/retry/tracing, so no activity exists.
+        if (_hasAsyncSerializers)
+        {
+            return ProduceWithAsyncSerializationAsync(
+                new ProducerMessage<TKey, TValue>
+                {
+                    Topic = topic,
+                    Key = key,
+                    Value = value,
+                    Headers = headers,
+                    Partition = partition,
+                    Timestamp = timestamp
+                },
+                activity: null,
+                continuationMode,
+                cancellationToken);
+        }
 
         // See ProduceAsyncCore(ProducerMessage): resolve any async serializer prerequisite before the
         // synchronous serialize so it never blocks. Steady state completes synchronously and falls through.
@@ -1080,19 +1130,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Retry fast path - metadata should already be initialized via InitializeAsync()
         if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, out var fastCompletion))
         {
-            if (activity is not null)
-            {
-                return await AwaitWithActivity(fastCompletion!, activity, message.Topic, cancellationToken).ConfigureAwait(false);
-            }
-            if (metricsEnabled)
-            {
-                return await AwaitWithMetrics(fastCompletion!, message.Topic, cancellationToken).ConfigureAwait(false);
-            }
-            if (cancellationToken.CanBeCanceled)
-            {
-                return await AwaitWithCancellation(fastCompletion!, cancellationToken).ConfigureAwait(false);
-            }
-            return await fastCompletion!.Task.ConfigureAwait(false);
+            return await AwaitProduceCompletionAsync(fastCompletion!, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
         }
 
         // Topic cache miss — fetch topic metadata inline and produce
@@ -1110,19 +1148,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             completion.TrySetException(ex);
         }
 
-        if (activity is not null)
-        {
-            return await AwaitWithActivity(completion, activity, message.Topic, cancellationToken).ConfigureAwait(false);
-        }
-        if (metricsEnabled)
-        {
-            return await AwaitWithMetrics(completion, message.Topic, cancellationToken).ConfigureAwait(false);
-        }
-        if (cancellationToken.CanBeCanceled)
-        {
-            return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
-        }
-        return await completion.Task.ConfigureAwait(false);
+        return await AwaitProduceCompletionAsync(completion, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1146,6 +1172,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         message = ApplyOnSendInterceptors(message);
 
         var activity = StartPublishActivity(ref message);
+
+        // Async serializers cannot run on the synchronous append path — serialize on the async
+        // path, then enqueue. Delivery errors are observed and logged (fire-and-forget contract).
+        if (_hasAsyncSerializers)
+            return FireWithAsyncSerializationAsync(message, activity, deliveryHandler: null);
 
         // Fast path: try thread-local cached topic metadata first
         var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
@@ -1204,6 +1235,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // so interceptors can inspect/modify the message before serialization.
         if (_interceptors is not null)
             return FireAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
+
+        // Async serializers divert before the synchronous append path (see FireAsync(message)).
+        if (_hasAsyncSerializers)
+        {
+            return FireWithAsyncSerializationAsync(
+                new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value },
+                activity: null,
+                deliveryHandler: null);
+        }
 
         // Fast path: no ProducerMessage allocation, no interceptors, no activity tracing
         var inThreadLocalCache = TryGetCachedTopicInfo(topic, out var topicInfo);
@@ -1568,6 +1608,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
+        // Async serializers divert before the synchronous append path; the delivery handler is
+        // invoked from a background observer when the batch completes (see FireAsync(message)).
+        if (_hasAsyncSerializers)
+            return FireWithAsyncSerializationAsync(message, activity: null, deliveryHandler);
+
         // Fast path: try thread-local cached topic metadata first
         var inThreadLocalCache = TryGetCachedTopicInfo(message.Topic, out var topicInfo);
         if (inThreadLocalCache ||
@@ -1609,10 +1654,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
-        // Fast path: try to get topic metadata from cache synchronously
-        // This avoids async state machine overhead for 99%+ of calls
+        // Fast path: thread-local topic cache (three reference compares), then the metadata
+        // manager's cache; async fetch only on a true miss. The thread-local hit matters for
+        // the async-serialization path (issue #2309), which routes every message through here.
         TopicInfo? topicInfo;
-        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo))
+        if (!TryGetCachedTopicInfo(message.Topic, out topicInfo) &&
+            !_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo))
         {
             // Slow path: cache miss, need async refresh with MaxBlockMs timeout
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1642,43 +1689,77 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             throw NoUsablePartitionsException(message.Topic, topicInfo);
         }
 
-        // Serialize key and value to pooled memory (returned to pool when batch completes)
+        UpdateCachedTopicInfo(message.Topic, topicInfo);
+
+        // Serialize key and value to pooled memory (returned to pool when batch completes).
+        // Async serializers (issue #2309) are awaited per component; a mixed configuration uses
+        // the thread-local sync path for the other component. Key then value sequentially — a
+        // both-async configuration pays two serde round trips per message (accepted; the common
+        // mixed configuration is unaffected).
         var keyIsNull = message.Key is null;
-        var key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
         var valueIsNull = message.Value is null;
-        var value = valueIsNull ? PooledMemory.Null : SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
-
-        // Determine partition
-        var partition = message.Partition
-            ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
-        var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
-            message.Partition, key.Span, keyIsNull, topicInfo.PartitionCount);
-
-        // Get timestamp
-        var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
-        var timestampMs = timestamp.ToUnixTimeMilliseconds();
-
-        // Convert headers with minimal allocations
-        Header[]? pooledHeaderArray = null;
-        var headerCount = 0;
-        if (message.Headers is not null && message.Headers.Count > 0)
+        var key = PooledMemory.Null;
+        var value = PooledMemory.Null;
+        try
         {
-            RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
-        }
+            if (!keyIsNull)
+            {
+                key = _asyncKeySerializer is not null
+                    ? await SerializeToPooledAsync(
+                        _asyncKeySerializer, message.Key!, message.Topic,
+                        SerializationComponent.Key, message.Headers, cancellationToken).ConfigureAwait(false)
+                    : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+            }
 
-        // Enqueue to per-partition-affine worker instead of calling AppendAsync inline.
-        // The worker will call AppendAsync and set the completion source on success/failure.
-        _accumulator.EnqueueAppend(
-            message.Topic,
-            partition,
-            timestampMs,
-            key,
-            value,
-            pooledHeaderArray,
-            headerCount,
-            completion,
-            cancellationToken,
-            batchCompletionPartitionCount);
+            if (!valueIsNull)
+            {
+                value = _asyncValueSerializer is not null
+                    ? await SerializeToPooledAsync(
+                        _asyncValueSerializer, message.Value!, message.Topic,
+                        SerializationComponent.Value, message.Headers, cancellationToken).ConfigureAwait(false)
+                    : SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
+            }
+
+            // Determine partition
+            var partition = message.Partition
+                ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
+            var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
+                message.Partition, key.Span, keyIsNull, topicInfo.PartitionCount);
+
+            // Get timestamp
+            var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
+            var timestampMs = timestamp.ToUnixTimeMilliseconds();
+
+            // Convert headers with minimal allocations
+            Header[]? pooledHeaderArray = null;
+            var headerCount = 0;
+            if (message.Headers is not null && message.Headers.Count > 0)
+            {
+                RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
+            }
+
+            // Enqueue to per-partition-affine worker instead of calling AppendAsync inline.
+            // The worker will call AppendAsync and set the completion source on success/failure.
+            _accumulator.EnqueueAppend(
+                message.Topic,
+                partition,
+                timestampMs,
+                key,
+                value,
+                pooledHeaderArray,
+                headerCount,
+                completion,
+                cancellationToken,
+                batchCompletionPartitionCount);
+        }
+        catch
+        {
+            // EnqueueAppend transfers ownership of the pooled arrays; any failure before that
+            // must return them here.
+            key.Return();
+            value.Return();
+            throw;
+        }
     }
 
     public ValueTask<RecordMetadata> ProduceAsync(
@@ -4033,6 +4114,253 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Copy to right-sized pooled buffer for batch storage
         return writer.ToPooledMemory();
+    }
+
+    /// <summary>
+    /// Produce path used when an <see cref="IAsyncSerializer{T}"/> is configured (issue #2309).
+    /// Reuses <see cref="ProduceInternalAsync"/> (which awaits async serializers per component)
+    /// and ProduceAsyncSlow's completion/instrumentation handling.
+    /// </summary>
+    private async ValueTask<RecordMetadata> ProduceWithAsyncSerializationAsync(
+        ProducerMessage<TKey, TValue> message,
+        Activity? activity,
+        ProduceContinuationMode continuationMode,
+        CancellationToken cancellationToken)
+    {
+        // See ProduceAfterPrepare: instrumented awaits interpose a state machine that must not
+        // run inline on the broker ack thread.
+        var metricsEnabled = ProducerMetricsEnabled();
+        if (continuationMode == ProduceContinuationMode.InlineWhenDirect && (activity is not null || metricsEnabled))
+            continuationMode = ProduceContinuationMode.Async;
+        var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
+
+        var completion = RentCompletion(runContinuationsAsynchronously);
+        try
+        {
+            await ProduceInternalAsync(message, completion, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            completion.TrySetCanceled(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            completion.TrySetException(ex);
+        }
+
+        return await AwaitProduceCompletionAsync(completion, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Shared cold-path tail for awaiting a produce completion with the correct instrumentation
+    /// wrapper. Branch order is load-bearing: activity, then metrics, then bare cancellation.
+    /// </summary>
+    private ValueTask<RecordMetadata> AwaitProduceCompletionAsync(
+        PooledValueTaskSource<RecordMetadata> completion,
+        Activity? activity,
+        bool metricsEnabled,
+        string topic,
+        CancellationToken cancellationToken)
+    {
+        if (activity is not null)
+        {
+            return AwaitWithActivity(completion, activity, topic, cancellationToken);
+        }
+        if (metricsEnabled)
+        {
+            return AwaitWithMetrics(completion, topic, cancellationToken);
+        }
+        if (cancellationToken.CanBeCanceled)
+        {
+            return AwaitWithCancellation(completion, cancellationToken);
+        }
+        return completion.Task;
+    }
+
+    /// <summary>
+    /// Runs an async serializer against a pooled, heap-safe buffer writer and detaches the result
+    /// as <see cref="PooledMemory"/> (returned to the pool when the batch completes).
+    /// </summary>
+    private static async ValueTask<PooledMemory> SerializeToPooledAsync<T>(
+        IAsyncSerializer<T> serializer,
+        T value,
+        string topic,
+        SerializationComponent component,
+        Headers? headers,
+        CancellationToken cancellationToken)
+    {
+        var writer = AsyncSerializationBufferWriter.Rent();
+        try
+        {
+            var context = new SerializationContext
+            {
+                Topic = topic,
+                Component = component,
+                Headers = headers
+            };
+            await serializer.SerializeAsync(value, writer, context, cancellationToken).ConfigureAwait(false);
+            return writer.DetachWrittenMemory();
+        }
+        finally
+        {
+            AsyncSerializationBufferWriter.Return(writer);
+        }
+    }
+
+    /// <summary>
+    /// Fire-and-forget path with async serializers. Serializes on the async path, then appends
+    /// through the accumulator's span/callback machinery — the same delivery-callback mechanism
+    /// the synchronous fire-and-forget path uses, so handler dispatch, backpressure, and
+    /// delivery-error accounting stay unified. The returned ValueTask completes when the message
+    /// is appended (parity with FireAsync's append semantics).
+    /// </summary>
+    private async ValueTask FireWithAsyncSerializationAsync(
+        ProducerMessage<TKey, TValue> message,
+        Activity? activity,
+        Action<RecordMetadata, Exception?>? deliveryHandler)
+    {
+        try
+        {
+            // Metadata: thread-local cache, then manager cache, then bounded fetch
+            // (mirrors FireAsyncSlow).
+            TopicInfo? topicInfo;
+            if (!TryGetCachedTopicInfo(message.Topic, out topicInfo) &&
+                !_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo))
+            {
+                using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
+                try
+                {
+                    topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, timeoutCts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new KafkaTimeoutException(
+                        $"Failed to fetch metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms).");
+                }
+            }
+
+            if (topicInfo is null || topicInfo.PartitionCount == 0)
+            {
+                var metadataException = NoUsablePartitionsException(message.Topic, topicInfo);
+                if (deliveryHandler is null)
+                {
+                    // Parity with FireAsyncSlow: log and drop rather than throw.
+                    LogFireAndForgetMetadataFetchFailed(metadataException, message.Topic);
+                    return;
+                }
+
+                throw metadataException;
+            }
+
+            UpdateCachedTopicInfo(message.Topic, topicInfo);
+
+            var keyIsNull = message.Key is null;
+            var valueIsNull = message.Value is null;
+            var key = PooledMemory.Null;
+            var value = PooledMemory.Null;
+            try
+            {
+                if (!keyIsNull)
+                {
+                    key = _asyncKeySerializer is not null
+                        ? await SerializeToPooledAsync(
+                            _asyncKeySerializer, message.Key!, message.Topic,
+                            SerializationComponent.Key, message.Headers, CancellationToken.None).ConfigureAwait(false)
+                        : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+                }
+
+                if (!valueIsNull)
+                {
+                    value = _asyncValueSerializer is not null
+                        ? await SerializeToPooledAsync(
+                            _asyncValueSerializer, message.Value!, message.Topic,
+                            SerializationComponent.Value, message.Headers, CancellationToken.None).ConfigureAwait(false)
+                        : SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
+                }
+
+                var appendResult = await AppendSerializedToAccumulatorAsync(
+                    message.Topic, key, keyIsNull, value, valueIsNull,
+                    message.Headers, message.Partition, message.Timestamp,
+                    topicInfo, deliveryHandler).ConfigureAwait(false);
+
+                if (!appendResult)
+                    throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
+            finally
+            {
+                // AppendFromSpansAsync copies the record data before any await, so the pooled
+                // serialization arrays are no longer referenced once the append completes.
+                key.Return();
+                value.Return();
+            }
+
+            activity?.SetStatus(ActivityStatusCode.Ok);
+        }
+        catch (KafkaTimeoutException ex) when (deliveryHandler is null)
+        {
+            // Metadata/BufferMemory backpressure timeout must propagate (parity with FireAsync).
+            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (activity is not null) Diagnostics.DekafDiagnostics.RecordException(activity, ex);
+            if (deliveryHandler is not null)
+            {
+                // Pre-append failure: deliver to the callback (parity with ProduceAsyncWithCallbackSlow).
+                try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
+            }
+            else
+            {
+                LogFireAndForgetProduceFailed(ex, message.Topic);
+            }
+        }
+        finally
+        {
+            activity?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Appends already-serialized key/value bytes to the accumulator with an optional delivery
+    /// callback. Non-async so the spans never enter an async frame; AppendFromSpansAsync copies
+    /// the data before any await, so the caller may return the pooled arrays once the returned
+    /// ValueTask completes.
+    /// </summary>
+    private ValueTask<bool> AppendSerializedToAccumulatorAsync(
+        string topic,
+        in PooledMemory key,
+        bool keyIsNull,
+        in PooledMemory value,
+        bool valueIsNull,
+        Headers? headers,
+        int? explicitPartition,
+        DateTimeOffset? timestamp,
+        TopicInfo topicInfo,
+        Action<RecordMetadata, Exception?>? callback)
+    {
+        var keySpan = key.Span;
+        var partition = explicitPartition
+            ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+        var batchCompletionPartitionCount = GetUniformStickyPartitionCount(
+            explicitPartition, keySpan, keyIsNull, topicInfo.PartitionCount);
+        var timestampMs = timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+
+        Header[]? pooledHeaderArray = null;
+        var headerCount = 0;
+        if (headers is not null && headers.Count > 0)
+        {
+            RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
+        }
+
+        // CancellationToken.None is intentional: fire-and-forget callers have no per-call token.
+        // Backpressure is bounded by MaxBlockMs inside ReserveMemoryAsync.
+        return _accumulator.AppendFromSpansAsync(
+            topic, partition, timestampMs,
+            keySpan, keyIsNull,
+            value.Span, valueIsNull,
+            pooledHeaderArray, headerCount, callback, CancellationToken.None, batchCompletionPartitionCount);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

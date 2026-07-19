@@ -888,6 +888,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private readonly IDeserializer<TKey> _keyDeserializer;
     private readonly IDeserializer<TValue> _valueDeserializer;
+    // Non-null when the user configured an IAsyncDeserializer for that component (issue #2309:
+    // deserializers that perform per-record I/O, e.g. envelope decryption with short-lived keys).
+    // When either is set, ConsumeAsync/ConsumeOneAsync await deserialization per record before
+    // constructing the ConsumeResult; the corresponding sync slot holds a throwing
+    // AsyncOnlyDeserializerPlaceholder and ConsumeBatchAsync (synchronous iteration) throws.
+    private readonly IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
+    private readonly IAsyncDeserializer<TValue>? _asyncValueDeserializer;
+    private readonly bool _hasAsyncDeserializers;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly ClientTelemetryMetricCollector _telemetryMetricCollector;
@@ -1106,12 +1114,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
         ILoggerFactory? loggerFactory = null,
-        MetadataOptions? metadataOptions = null)
+        MetadataOptions? metadataOptions = null,
+        IAsyncDeserializer<TKey>? asyncKeyDeserializer = null,
+        IAsyncDeserializer<TValue>? asyncValueDeserializer = null)
         : this(options, keyDeserializer, valueDeserializer,
             CreateInfrastructure(options, loggerFactory, metadataOptions),
             loggerFactory,
             ownsInfrastructure: true,
-            DekafMemoryBudget.Global)
+            DekafMemoryBudget.Global,
+            asyncKeyDeserializer,
+            asyncValueDeserializer)
     {
     }
 
@@ -1145,7 +1157,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         IConnectionPool connectionPool,
         MetadataManager metadataManager,
         IDekafMemoryBudget memoryBudget,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        IAsyncDeserializer<TKey>? asyncKeyDeserializer = null,
+        IAsyncDeserializer<TValue>? asyncValueDeserializer = null)
         : this(options, keyDeserializer, valueDeserializer,
             (
                 connectionPool,
@@ -1154,7 +1168,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 new FetchBufferMemoryPool(options.FetchBufferMemoryBytes)),
             loggerFactory,
             ownsInfrastructure: false,
-            memoryBudget)
+            memoryBudget,
+            asyncKeyDeserializer,
+            asyncValueDeserializer)
     {
     }
 
@@ -1296,7 +1312,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             FetchBufferMemoryPool FetchBufferMemoryPool) infrastructure,
         ILoggerFactory? loggerFactory,
         bool ownsInfrastructure,
-        IDekafMemoryBudget memoryBudget)
+        IDekafMemoryBudget memoryBudget,
+        IAsyncDeserializer<TKey>? asyncKeyDeserializer = null,
+        IAsyncDeserializer<TValue>? asyncValueDeserializer = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ConnectionsPerBroker, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
@@ -1318,8 +1336,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             options.RetryBackoffMs,
             options.RetryBackoffMaxMs);
         _currentQueuedMaxBytes = (long)((ulong)options.QueuedMaxMessagesKbytes * 1024UL);
-        _keyDeserializer = keyDeserializer;
-        _valueDeserializer = valueDeserializer;
+        // When an async deserializer is configured for a component, its sync slot is forced to
+        // the throwing placeholder here — by construction, not by builder convention — so a
+        // direct constructor caller can never pair an async deserializer with a live sync one.
+        _keyDeserializer = asyncKeyDeserializer is null ? keyDeserializer : AsyncOnlyDeserializerPlaceholder<TKey>.Instance;
+        _valueDeserializer = asyncValueDeserializer is null ? valueDeserializer : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
+        _asyncKeyDeserializer = asyncKeyDeserializer;
+        _asyncValueDeserializer = asyncValueDeserializer;
+        _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
 
         // Derive consumer pool sizes from configuration
         // Use 64 as default partition count estimate — covers most workloads.
@@ -1992,6 +2016,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 var hasTraceListeners = Diagnostics.DekafDiagnostics.Source.HasListeners();
                 var hasInterceptors = _interceptors is not null;
                 var rawTrackingEnabled = _rawRecordTrackingEnabled;
+                var hasAsyncDeserializers = _hasAsyncDeserializers;
                 const int pollRefreshRecordInterval = 32;
                 var recordsUntilPollRefresh = pollRefreshRecordInterval;
 
@@ -2067,25 +2092,43 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     previousActivity = activity;
                             }
 
-                            // Create result - deserialization happens eagerly in the constructor.
+                            // Create result - deserialization happens eagerly in the constructor,
+                            // or is awaited here when async deserializers are configured. The record
+                            // memory referenced by `record` stays valid across the await: no user
+                            // code other than the deserializer itself runs on this consumer until
+                            // the result is yielded (see IAsyncDeserializer memory contract).
                             // Exceptions from user deserializers must never be classified as wire corruption.
                             readingProtocolData = false;
-                            nextResult = new ConsumeResult<TKey, TValue>(
-                                topic: pending.Topic,
-                                partition: pending.PartitionIndex,
-                                offset: offset,
-                                keyData: record.Key,
-                                isKeyNull: record.IsKeyNull,
-                                valueData: record.Value,
-                                isValueNull: record.IsValueNull,
-                                pooledHeaders: record.Headers,
-                                pooledHeaderCount: record.HeaderCount,
-                                headerOwner: pending,
-                                timestampMs: timestampMs,
-                                timestampType: timestampType,
-                                leaderEpoch: pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
-                                keyDeserializer: _keyDeserializer,
-                                valueDeserializer: _valueDeserializer);
+                            nextResult = hasAsyncDeserializers
+                                ? await CreateResultWithAsyncDeserializationAsync(
+                                    pending,
+                                    offset,
+                                    record.Key,
+                                    record.IsKeyNull,
+                                    record.Value,
+                                    record.IsValueNull,
+                                    record.Headers,
+                                    record.HeaderCount,
+                                    timestampMs,
+                                    timestampType,
+                                    pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
+                                    cancellationToken).ConfigureAwait(false)
+                                : new ConsumeResult<TKey, TValue>(
+                                    topic: pending.Topic,
+                                    partition: pending.PartitionIndex,
+                                    offset: offset,
+                                    keyData: record.Key,
+                                    isKeyNull: record.IsKeyNull,
+                                    valueData: record.Value,
+                                    isValueNull: record.IsValueNull,
+                                    pooledHeaders: record.Headers,
+                                    pooledHeaderCount: record.HeaderCount,
+                                    headerOwner: pending,
+                                    timestampMs: timestampMs,
+                                    timestampType: timestampType,
+                                    leaderEpoch: pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
+                                    keyDeserializer: _keyDeserializer,
+                                    valueDeserializer: _valueDeserializer);
 
                             if (HasPendingFetchClear(pending.TopicPartition))
                                 break;
@@ -2224,6 +2267,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Volatile.Read(ref _consumerDisposed) != 0)
         {
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+        }
+
+        if (_hasAsyncDeserializers)
+        {
+            throw new NotSupportedException(
+                "ConsumeBatchAsync does not support asynchronous deserializers because batch records " +
+                "are deserialized during synchronous iteration. Use ConsumeAsync or ConsumeOneAsync, " +
+                "or configure synchronous IDeserializer implementations.");
         }
 
         ThrowIfNotInitialized();
@@ -3860,7 +3911,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // the returned ValueTask — the standard idiom for a sync-completing ValueTask method.
         var pollRecorded = false;
         long? bufferedDrainStarted = null;
-        if (!RequiresRuntimeTimeoutValidation(timeoutMilliseconds)
+        // Async deserializers cannot run on the synchronous buffered fast path — the async
+        // drain inside ConsumeOneCoreAsync handles them.
+        if (!_hasAsyncDeserializers
+            && !RequiresRuntimeTimeoutValidation(timeoutMilliseconds)
             && CanUseBufferedConsumeOneFastPath(cancellationToken))
         {
             long pollTimestamp = 0;
@@ -4061,8 +4115,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 }
             }
 
-            if (TryConsumeOneFromPendingFetches(out var result))
+            if (_hasAsyncDeserializers)
+            {
+                var asyncResult = await ConsumeOneFromPendingFetchesAsync(cancellationToken).ConfigureAwait(false);
+                if (asyncResult is not null)
+                    return asyncResult;
+            }
+            else if (TryConsumeOneFromPendingFetches(out var result))
+            {
                 return result;
+            }
 
             if (TryDequeuePendingEofResult(out var eofResult))
                 return eofResult;
@@ -4293,6 +4355,217 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Asynchronous-deserialization sibling of <see cref="TryConsumeOneFromPendingFetches"/>,
+    /// used only when an <see cref="IAsyncDeserializer{T}"/> is configured. Keep the drain
+    /// bookkeeping (poll contract, fetch-clear checks, rewind, metrics, disposal) in sync with
+    /// the synchronous method — the only intended difference is that deserialization is awaited
+    /// before the result is constructed, and interceptors therefore run after that await.
+    /// Returns null when no record is buffered.
+    /// </summary>
+    private async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneFromPendingFetchesAsync(
+        CancellationToken cancellationToken)
+    {
+        var metricsEnabled = Diagnostics.DekafMetrics.MessagesReceived.Enabled
+                             || Diagnostics.DekafMetrics.BytesReceived.Enabled;
+        var hasTraceListeners = Diagnostics.DekafDiagnostics.Source.HasListeners();
+        var hasInterceptors = _interceptors is not null;
+        var rawTrackingEnabled = _rawRecordTrackingEnabled;
+
+        // A new consume call proves the record returned by the previous call was processed
+        // (poll contract), so everything yielded from the head fetch becomes committable.
+        if (_pendingFetches.Count > 0)
+            _pendingFetches.Peek().MarkYieldedProcessed();
+
+        while (_pendingFetches.Count > 0)
+        {
+            if (ClearFetchBufferForPendingCoordinatorRevocations())
+                continue;
+
+            var pending = _pendingFetches.Peek();
+            long? batchProcessingStarted = _adaptiveFetchSizer is not null
+                ? Stopwatch.GetTimestamp() : null;
+
+            EagerParsePendingOrRemove(pending);
+
+            System.Diagnostics.Activity? activity = null;
+            try
+            {
+                while (true)
+                {
+                    var readingProtocolData = true;
+                    var offset = -1L;
+                    try
+                    {
+                        if (!pending.MoveNext())
+                            break;
+
+                        var record = pending.CurrentRecord;
+                        offset = pending.CurrentBaseOffset + record.OffsetDelta;
+                        var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
+                        var timestampType = pending.CurrentTimestampType;
+                        // Hoist every record field used below into locals before the await:
+                        // `record` references pooled batch storage, and the deserializer or an
+                        // interceptor can run user code that Seeks/Assigns and recycles it.
+                        var keyData = record.Key;
+                        var valueData = record.Value;
+                        var isKeyNull = record.IsKeyNull;
+                        var isValueNull = record.IsValueNull;
+                        var pooledHeaders = record.Headers;
+                        var pooledHeaderCount = record.HeaderCount;
+                        var messageBytes = (isKeyNull ? 0 : keyData.Length) +
+                                           (isValueNull ? 0 : valueData.Length);
+
+                        if (hasTraceListeners)
+                        {
+                            var headers = LazyConsumeHeaders.Create(
+                                pooledHeaders,
+                                pooledHeaderCount,
+                                pending,
+                                pending.HeaderGeneration);
+                            activity = StartConsumeActivity(pending, headers, offset, messageBytes);
+                        }
+
+                        // User deserialization begins in this await. Its exceptions must
+                        // propagate even when their type also occurs in protocol codecs.
+                        readingProtocolData = false;
+                        var result = await CreateResultWithAsyncDeserializationAsync(
+                            pending,
+                            offset,
+                            keyData,
+                            isKeyNull,
+                            valueData,
+                            isValueNull,
+                            pooledHeaders,
+                            pooledHeaderCount,
+                            timestampMs,
+                            timestampType,
+                            pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
+                            cancellationToken).ConfigureAwait(false);
+
+                        if (HasPendingFetchClear(pending.TopicPartition))
+                            break;
+
+                        if (hasInterceptors)
+                        {
+                            result = ApplyOnConsumeInterceptors(result);
+
+                            if (HasPendingFetchClear(pending.TopicPartition))
+                                break;
+                        }
+
+                        TrackConsumedPosition(pending, offset, messageBytes);
+
+                        if (rawTrackingEnabled)
+                        {
+                            _currentRawKey = isKeyNull ? ReadOnlyMemory<byte>.Empty : keyData;
+                            _currentRawValue = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
+                        }
+
+                        return result;
+                    }
+                    catch (OperationCanceledException) when (readingProtocolData)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex) when (
+                        readingProtocolData && ProtocolDataErrorClassifier.IsProtocolDataError(ex))
+                    {
+                        LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
+                        break;
+                    }
+                    catch (Exception) when (!readingProtocolData)
+                    {
+                        RewindAfterDeliveryFailure(pending, offset);
+                        throw;
+                    }
+                }
+            }
+            finally
+            {
+                activity?.Dispose();
+            }
+
+            FlushConsumedPositions(pending);
+
+            if (metricsEnabled && pending.MessageCount > 0)
+                EmitFetchMetrics(pending);
+
+            if (batchProcessingStarted.HasValue)
+            {
+                var processingDuration = Stopwatch.GetElapsedTime(batchProcessingStarted.Value);
+                ReportAdaptiveProcessingComplete(processingDuration);
+            }
+
+            DequeuePendingFetch().Dispose();
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Deserializes a record via the configured <see cref="IAsyncDeserializer{T}"/> implementations
+    /// (falling back to the synchronous deserializer for a component without one in mixed
+    /// configurations) and constructs the result from the pre-deserialized values. Null-ness
+    /// semantics mirror the eager ConsumeResult constructor: null keys skip the deserializer,
+    /// null values invoke it with empty data and <c>IsNull = true</c>.
+    /// </summary>
+    private async ValueTask<ConsumeResult<TKey, TValue>> CreateResultWithAsyncDeserializationAsync(
+        PendingFetchData pending,
+        long offset,
+        ReadOnlyMemory<byte> keyData,
+        bool isKeyNull,
+        ReadOnlyMemory<byte> valueData,
+        bool isValueNull,
+        Header[]? pooledHeaders,
+        int pooledHeaderCount,
+        long timestampMs,
+        TimestampType timestampType,
+        int? leaderEpoch,
+        CancellationToken cancellationToken)
+    {
+        var topic = pending.Topic;
+        var partition = pending.PartitionIndex;
+
+        TKey? key = default;
+        if (!isKeyNull)
+        {
+            var keyContext = new SerializationContext
+            {
+                Topic = topic,
+                Component = SerializationComponent.Key,
+                IsNull = false
+            };
+            key = _asyncKeyDeserializer is not null
+                ? await _asyncKeyDeserializer.DeserializeAsync(keyData, keyContext, cancellationToken).ConfigureAwait(false)
+                : _keyDeserializer.Deserialize(keyData, keyContext);
+        }
+
+        var valueContext = new SerializationContext
+        {
+            Topic = topic,
+            Component = SerializationComponent.Value,
+            IsNull = isValueNull
+        };
+        var valueBytes = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
+        var value = _asyncValueDeserializer is not null
+            ? await _asyncValueDeserializer.DeserializeAsync(valueBytes, valueContext, cancellationToken).ConfigureAwait(false)
+            : _valueDeserializer.Deserialize(valueBytes, valueContext);
+
+        return new ConsumeResult<TKey, TValue>(
+            topic,
+            partition,
+            offset,
+            key,
+            value,
+            pooledHeaders,
+            pooledHeaderCount,
+            pending,
+            timestampMs,
+            timestampType,
+            leaderEpoch);
     }
 
     /// <summary>
