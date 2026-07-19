@@ -416,8 +416,9 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
                 CommitStoredOffsets();
 
-            if (options.GroupMembershipOperation != ConsumerGroupMembershipOperation.RemainInGroup)
-                UnregisterConsumerGroupMemberUnderLock();
+            // The in-memory cluster has no broker session timer. Always unregister on close so
+            // RemainInGroup cannot create an immortal member that permanently owns partitions.
+            UnregisterConsumerGroupMemberUnderLock();
             _disposed = true;
         }
 

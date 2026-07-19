@@ -661,6 +661,45 @@ public sealed class InMemoryKafkaClusterTests
     }
 
     [Test]
+    public async Task ConsumerClose_RemainInGroup_DoesNotCreateImmortalInMemoryMember()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        cluster.CreateTopic("close-remain");
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var firstConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "close-remain-group",
+                MemberId = "a-first",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        firstConsumer.Subscribe("close-remain");
+        await Assert.That(firstConsumer.Assignment).Count().IsEqualTo(1);
+
+        await firstConsumer.CloseAsync(new ConsumerCloseOptions
+        {
+            GroupMembershipOperation = ConsumerGroupMembershipOperation.RemainInGroup
+        });
+
+        await producer.ProduceAsync("close-remain", "key", "value");
+        await using var secondConsumer = new InMemoryConsumer<string, string>(
+            cluster,
+            new InMemoryConsumerOptions
+            {
+                GroupId = "close-remain-group",
+                MemberId = "b-second",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            });
+        secondConsumer.Subscribe("close-remain");
+
+        var result = await secondConsumer.ConsumeOneAsync(TimeSpan.FromMilliseconds(50));
+
+        await Assert.That(secondConsumer.Assignment).Count().IsEqualTo(1);
+        await Assert.That(result).IsNotNull();
+    }
+
+    [Test]
     public async Task Consumer_AssignFailureDoesNotLeavePartialState()
     {
         var cluster = new InMemoryKafkaCluster();
