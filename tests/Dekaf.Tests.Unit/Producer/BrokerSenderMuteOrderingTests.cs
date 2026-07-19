@@ -1936,8 +1936,14 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             // Phase 1: enqueue A(p0) and B(p1) — coalesced into send 1
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
-            sender.Enqueue(batchA);
-            sender.Enqueue(batchB);
+            // Predeclare the complete first wave before publishing its separate channel
+            // events. Otherwise the live sender can dispatch A before B is available.
+            var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
+                "_knownPartitions",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+            knownPartitions.Add(batchA.TopicPartition);
+            knownPartitions.Add(batchB.TopicPartition);
+            sender.EnqueueBulk([batchA, batchB]);
 
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
@@ -1945,8 +1951,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             // (maxInFlight=1, so the send loop is waiting for the response)
             var batchC = CreateTestBatch(vtPool, "test-topic", 0);
             var batchD = CreateTestBatch(vtPool, "test-topic", 1);
-            sender.Enqueue(batchC);
-            sender.Enqueue(batchD);
+            sender.EnqueueBulk([batchC, batchD]);
 
             // Complete send 1: p0 fails, p1 succeeds
             // This triggers the muted partition filter on already-coalesced batches
