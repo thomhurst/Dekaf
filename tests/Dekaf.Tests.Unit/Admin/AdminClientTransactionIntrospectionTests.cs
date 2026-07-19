@@ -178,11 +178,12 @@ public sealed class AdminClientTransactionIntrospectionTests
     [Test]
     public async Task DescribeTransactionsAsync_WhenApiKeyMissing_ThrowsBrokerVersionException()
     {
-        var (admin, _) = CreateAdminWithMockConnections(includeDescribeTransactionsApi: false);
+        var (admin, connections) = CreateAdminWithMockConnections(includeDescribeTransactionsApi: false);
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
 
         await Assert.That(async () =>
         {
-            await admin.DescribeTransactionsAsync([]);
+            await admin.DescribeTransactionsAsync(["tx-a"]);
         }).Throws<BrokerVersionException>();
     }
 
@@ -284,7 +285,7 @@ public sealed class AdminClientTransactionIntrospectionTests
 
         await Assert.That(async () =>
         {
-            await admin.DescribeProducersAsync([]);
+            await admin.DescribeProducersAsync([new TopicPartition("orders", 0)]);
         }).Throws<BrokerVersionException>();
     }
 
@@ -480,7 +481,8 @@ public sealed class AdminClientTransactionIntrospectionTests
     [Test]
     public async Task FenceProducersAsync_WhenApiKeyMissing_ThrowsBrokerVersionException()
     {
-        var (admin, _) = CreateAdminWithMockConnections(includeInitProducerIdApi: false);
+        var (admin, connections) = CreateAdminWithMockConnections(includeInitProducerIdApi: false);
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
 
         await Assert.That(async () =>
         {

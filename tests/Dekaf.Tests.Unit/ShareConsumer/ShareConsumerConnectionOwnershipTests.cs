@@ -16,15 +16,15 @@ public sealed class ShareConsumerConnectionOwnershipTests
     public async Task LeaveGroupAsync_HoldsConnectionLeaseThroughRequest()
     {
         var options = CreateOptions();
-        var connection = new LeaseTrackingConnection();
+        var connection = new LeaseTrackingConnection(
+            new ApiVersion(
+                ApiKey.ShareGroupHeartbeat,
+                ShareGroupHeartbeatRequest.LowestSupportedVersion,
+                ShareGroupHeartbeatRequest.HighestSupportedVersion));
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionByIndexAsync(1, 1, Arg.Any<CancellationToken>())
             .Returns(connection);
         await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
-        metadataManager.SetApiVersion(
-            ApiKey.ShareGroupHeartbeat,
-            ShareGroupHeartbeatRequest.LowestSupportedVersion,
-            ShareGroupHeartbeatRequest.HighestSupportedVersion);
         await using var coordinator = new ShareConsumerCoordinator(
             options,
             pool,
@@ -45,10 +45,14 @@ public sealed class ShareConsumerConnectionOwnershipTests
     }
 
     [Test]
-    public async Task SendShareFetchAsync_HoldsConnectionLeaseThroughRequest()
+    public async Task SendShareFetchForPartitionsAsync_HoldsConnectionLeaseThroughRequest()
     {
         var options = CreateOptions();
-        var connection = new LeaseTrackingConnection();
+        var connection = new LeaseTrackingConnection(
+            new ApiVersion(
+                ApiKey.ShareFetch,
+                ShareFetchRequest.LowestSupportedVersion,
+                ShareFetchRequest.HighestSupportedVersion));
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(1, Arg.Any<CancellationToken>()).Returns(connection);
         await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
@@ -59,27 +63,68 @@ public sealed class ShareConsumerConnectionOwnershipTests
             pool,
             metadataManager);
 
-        var method = typeof(KafkaShareConsumer<string, string>).GetMethod(
-            "SendShareFetchAsync",
-            BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var sendTask = (Task)method.Invoke(
-            consumer,
-            [
-                1,
-                new ShareFetchRequest
-                {
-                    GroupId = options.GroupId,
-                    MemberId = "member-1",
-                    Topics = []
-                },
-                (short)0,
-                CancellationToken.None
-            ])!;
+        SetMemberId(consumer, "member-1");
+
+        var sendTask = InvokeSendShareFetchForPartitionsAsync(consumer);
 
         await sendTask;
 
         await Assert.That(connection.LeaseCountDuringSend).IsEqualTo(1);
         await Assert.That(connection.LeaseCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task SendShareFetchForPartitionsAsync_PropagatesBrokerVersionException()
+    {
+        var options = CreateOptions();
+        var connection = new LeaseTrackingConnection(
+            new ApiVersion(
+                ApiKey.Metadata,
+                MetadataRequest.LowestSupportedVersion,
+                MetadataRequest.HighestSupportedVersion));
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(1, Arg.Any<CancellationToken>()).Returns(connection);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        await using var consumer = new KafkaShareConsumer<string, string>(
+            options,
+            Substitute.For<IDeserializer<string>>(),
+            Substitute.For<IDeserializer<string>>(),
+            pool,
+            metadataManager);
+        SetMemberId(consumer, "member-1");
+
+        var sendTask = InvokeSendShareFetchForPartitionsAsync(consumer);
+
+        await Assert.That(async () => await sendTask).Throws<BrokerVersionException>();
+        await Assert.That(connection.LeaseCount).IsEqualTo(0);
+    }
+
+    private static Task InvokeSendShareFetchForPartitionsAsync(
+        KafkaShareConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaShareConsumer<string, string>).GetMethod(
+            "SendShareFetchForPartitionsAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        return (Task)method.Invoke(
+            consumer,
+            [
+                1,
+                new List<TopicPartition> { new("topic", 0) },
+                null,
+                CancellationToken.None
+            ])!;
+    }
+
+    private static void SetMemberId(
+        KafkaShareConsumer<string, string> consumer,
+        string memberId)
+    {
+        var coordinator = typeof(KafkaShareConsumer<string, string>)
+            .GetField("_coordinator", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(consumer)!;
+        typeof(ShareConsumerCoordinator)
+            .GetField("_memberId", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(coordinator, memberId);
     }
 
     private static ShareConsumerOptions CreateOptions() => new()
@@ -89,7 +134,10 @@ public sealed class ShareConsumerConnectionOwnershipTests
         ConnectionsPerBroker = 2
     };
 
-    private sealed class LeaseTrackingConnection : IKafkaConnection, IRetirableKafkaConnection
+    private sealed class LeaseTrackingConnection(params ApiVersion[] versions) :
+        IKafkaConnection,
+        IRetirableKafkaConnection,
+        IKafkaCapabilityProvider
     {
         private int _leaseCount;
         private int _retirementState;
@@ -98,6 +146,12 @@ public sealed class ShareConsumerConnectionOwnershipTests
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
+        public KafkaConnectionCapabilities Capabilities { get; } =
+            KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys = versions
+            });
         public int LeaseCount => Volatile.Read(ref _leaseCount);
         public int LeaseCountDuringSend { get; private set; }
 

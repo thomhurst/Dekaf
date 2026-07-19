@@ -70,7 +70,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _fetchLock = new(1, 1);
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
-    private GroupException? _fatalHeartbeatException;
+    private KafkaException? _fatalHeartbeatException;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
@@ -410,8 +410,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         ThrowIfFatalHeartbeatException();
 
-        if (_state == CoordinatorState.Stable && SubscriptionMatches(topics, subscribedTopicRegex))
-            return;
+        if (_state == CoordinatorState.Stable)
+        {
+            if (SubscriptionMatches(topics, subscribedTopicRegex))
+                return;
+
+            if (subscribedTopicRegex is not null)
+            {
+                using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                    _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken).ConfigureAwait(false);
+                EnsureServerSideRegexSupported(connectionLease.Connection, subscribedTopicRegex);
+            }
+        }
 
         await EnsureActiveGroupConsumerProtocolAsync(topics, subscribedTopicRegex, cancellationToken).ConfigureAwait(false);
     }
@@ -433,7 +443,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             or ErrorCode.CoordinatorNotAvailable
             or ErrorCode.CoordinatorLoadInProgress;
 
-    private async ValueTask StoreFatalHeartbeatExceptionAsync(GroupException exception)
+    private async ValueTask StoreFatalHeartbeatExceptionAsync(KafkaException exception)
     {
         Interlocked.CompareExchange(ref _fatalHeartbeatException, exception, null);
 
@@ -525,6 +535,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             // Use negotiated API version
             var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.FindCoordinator,
                 FindCoordinatorRequest.LowestSupportedVersion,
                 FindCoordinatorRequest.HighestSupportedVersion);
@@ -764,6 +775,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 // Use negotiated API version
                 var offsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
                     ApiKey.OffsetCommit,
                     OffsetCommitRequest.LowestSupportedVersion,
                     OffsetCommitRequest.HighestSupportedVersion);
@@ -890,6 +902,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     // Use negotiated API version
                     var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
+                        connection,
                         ApiKey.OffsetFetch,
                         OffsetFetchRequest.LowestSupportedVersion,
                         OffsetFetchRequest.HighestSupportedVersion);
@@ -1144,6 +1157,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private static void CompleteRevocationCommit(ConsumerHeartbeatResult result)
         => result.RevocationCommitCompletion?.TrySetResult(true);
 
+    private void EnsureServerSideRegexSupported(IKafkaConnection connection, string? subscribedTopicRegex)
+    {
+        if (subscribedTopicRegex is not null &&
+            !_metadataManager.SupportsApiVersion(connection, ApiKey.ConsumerGroupHeartbeat, 1))
+        {
+            throw new BrokerVersionException(
+                "Server-side regex subscriptions require ConsumerGroupHeartbeat v1 " +
+                "(Kafka 4.1 or later). Use Subscribe(Func<string, bool>) for client-side filtering on older brokers.");
+        }
+    }
+
     /// <summary>
     /// Sends a ConsumerGroupHeartbeat request and processes the response.
     /// </summary>
@@ -1171,7 +1195,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                  IsCurrentPollGenerationExpired()))
                 return default;
 
+            if (!_metadataManager.HasApiKey(connection, ApiKey.ConsumerGroupHeartbeat))
+            {
+                throw new BrokerVersionException(
+                    "The target Kafka broker does not support the ConsumerGroupHeartbeat API " +
+                    "(KIP-848, introduced in Kafka 4.0). Dekaf's consumer requires Kafka 4.0 or later.");
+            }
+
+            EnsureServerSideRegexSupported(connection, _subscribedTopicRegex);
+
             var version = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.ConsumerGroupHeartbeat,
                 ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
                 ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
@@ -1543,21 +1577,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         string? subscribedTopicRegex,
         CancellationToken cancellationToken)
     {
-        if (!_metadataManager.HasApiKey(ApiKey.ConsumerGroupHeartbeat))
-        {
-            throw new BrokerVersionException(
-                "The connected Kafka broker does not support the ConsumerGroupHeartbeat API " +
-                "(KIP-848, introduced in Kafka 4.0). Dekaf's consumer requires Kafka 4.0 or later.");
-        }
-
-        if (subscribedTopicRegex is not null &&
-            !_metadataManager.SupportsApiVersion(ApiKey.ConsumerGroupHeartbeat, 1))
-        {
-            throw new BrokerVersionException(
-                "Server-side regex subscriptions require ConsumerGroupHeartbeat v1 " +
-                "(Kafka 4.1 or later). Use Subscribe(Func<string, bool>) for client-side filtering on older brokers.");
-        }
-
         UpdateSubscription(topics, subscribedTopicRegex);
 
         ConsumerHeartbeatResult heartbeatResult = default;
@@ -1656,7 +1675,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
                 catch (Exception ex) when (
                     ex is ObjectDisposedException ||
-                    (ex is Errors.KafkaException ke && ke is not Errors.GroupException && !cancellationToken.IsCancellationRequested))
+                    (ex is Errors.KafkaException ke &&
+                     ke is not Errors.GroupException and not BrokerVersionException &&
+                     !cancellationToken.IsCancellationRequested))
                 {
                     LogCoordinatorConnectionDisposed();
                     MarkCoordinatorUnknown();
@@ -1720,6 +1741,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             catch (Exception ex)
             {
                 LogHeartbeatFailed(ex);
+
+                if (ex is BrokerVersionException brokerVersionException)
+                {
+                    await StoreFatalHeartbeatExceptionAsync(brokerVersionException).ConfigureAwait(false);
+                    break;
+                }
 
                 if (ex is Errors.GroupException ge)
                 {
@@ -1885,6 +1912,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             };
 
             var version = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.ConsumerGroupHeartbeat,
                 ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
                 ConsumerGroupHeartbeatRequest.HighestSupportedVersion);

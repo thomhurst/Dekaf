@@ -27,7 +27,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     }
 
     [Test]
-    public async Task ApiVersions_SuccessfullyNegotiates()
+    public async Task Connection_NegotiatesCapabilitySnapshotBeforeUse()
     {
         // This test verifies that ApiVersions request works and returns supported API versions
         var connectionOptions = new ConnectionOptions
@@ -43,6 +43,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         try
         {
             var connection = await pool.GetConnectionAsync(host, port, CancellationToken.None);
+            var capabilities = ((IKafkaCapabilityProvider)connection).Capabilities;
 
             var response = await SendApiVersionsAsync(connection);
 
@@ -57,6 +58,20 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             await Assert.That(apiKeyIds.Contains(ApiKey.Metadata)).IsTrue();
             await Assert.That(apiKeyIds.Contains(ApiKey.FindCoordinator)).IsTrue();
             await Assert.That(apiKeyIds.Contains(ApiKey.ConsumerGroupHeartbeat)).IsTrue();
+
+            // The physical connection is not exposed until this immutable snapshot exists.
+            await Assert.That(capabilities.HasApi(ApiKey.Produce)).IsTrue();
+            await Assert.That(capabilities.HasApi(ApiKey.Fetch)).IsTrue();
+            await Assert.That(capabilities.HasApi(ApiKey.Metadata)).IsTrue();
+            var brokerMetadata = response.ApiKeys.Single(api => api.ApiKey == ApiKey.Metadata);
+            var expectedMetadataVersion = Math.Min(
+                brokerMetadata.MaxVersion,
+                MetadataRequest.HighestSupportedVersion);
+            await Assert.That(capabilities.NegotiateVersion(
+                    ApiKey.Metadata,
+                    MetadataRequest.LowestSupportedVersion,
+                    MetadataRequest.HighestSupportedVersion))
+                .IsEqualTo(expectedMetadataVersion);
         }
         finally
         {

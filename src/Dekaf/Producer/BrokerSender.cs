@@ -500,7 +500,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly int _maxInFlight;
     private int _totalMaxInFlight;
 
-    // Per-producer shared API version (read via volatile, written via Interlocked)
+    // Compatibility fallback for injected test connections that do not expose a physical
+    // capability snapshot. Production KafkaConnection instances never use these delegates.
     private readonly Func<int> _getProduceApiVersion;
     private readonly Action<int> _setProduceApiVersion;
 
@@ -3016,9 +3017,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (partitionResponse.ErrorCode.IsRetriable()
                         || (partitionResponse.ErrorCode == ErrorCode.ConcurrentTransactions
                             && _isTransactional()
-                            && _usesTransactionV2()
-                            && _getProduceApiVersion()
-                                >= ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion)
+                            && _usesTransactionV2())
                         || partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber
                         || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
                         || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
@@ -3619,7 +3618,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var i = 0; i < count; i++)
                 batches[i].AppendDiag('G');
 
-            var apiVersion = EnsureApiVersion();
+            var apiVersion = EnsureApiVersion(connection);
 
             count = AcquireResourcePins(batches, generations, count);
             if (count == 0)
@@ -3849,6 +3848,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Only return array if PendingResponse was NOT added. If it was, ProcessCompletedResponses
             // owns the array and will return it when processing the (faulted/cancelled) response.
+            if (!pendingResponseAdded)
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+        }
+        catch (BrokerVersionException ex)
+        {
+            // A broker capability mismatch cannot be repaired by retrying the same
+            // partition leader. Surface the negotiated-version failure immediately.
+            for (var i = 0; i < count; i++)
+            {
+                var batch = batches[i];
+                if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
+                    continue;
+
+                FailAndCleanupBatch(batch, ex);
+            }
+
+            scratch.ClearReferences();
+
             if (!pendingResponseAdded)
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
@@ -4135,20 +4152,42 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Ensures API version is negotiated. Thread-safe initialization.
+    /// Selects Produce version from the exact physical connection generation.
     /// </summary>
-    private int EnsureApiVersion()
+    private int EnsureApiVersion(IKafkaConnection connection)
     {
-        var version = _getProduceApiVersion();
-        if (version < 0)
+        int version;
+        if (connection is IKafkaCapabilityProvider)
         {
             version = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.Produce,
                 ProduceRequest.LowestSupportedVersion,
                 ProduceRequest.HighestSupportedVersion);
-            _setProduceApiVersion(version);
-            version = _getProduceApiVersion();
         }
+        else
+        {
+            version = _getProduceApiVersion();
+            if (version < 0)
+            {
+                version = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    ApiKey.Produce,
+                    ProduceRequest.LowestSupportedVersion,
+                    ProduceRequest.HighestSupportedVersion);
+                _setProduceApiVersion(version);
+                version = _getProduceApiVersion();
+            }
+        }
+
+        if (_usesTransactionV2() &&
+            version < ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion)
+        {
+            throw new BrokerVersionException(
+                $"Transaction V2 requires Produce v{ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion} " +
+                $"or later, but broker {_brokerId} negotiated v{version} on this connection.");
+        }
+
         return GetProduceRequestVersion(version, _isTransactional(), _usesTransactionV2());
     }
 

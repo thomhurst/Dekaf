@@ -75,6 +75,7 @@ internal static class ConnectionHelper
 /// </summary>
 public sealed partial class KafkaConnection :
     IKafkaConnection,
+    IKafkaCapabilityProvider,
     IIdleTrackedKafkaConnection,
     IRetirableKafkaConnection,
     IKafkaPipelinedWriteCompletionConnection
@@ -151,6 +152,7 @@ public sealed partial class KafkaConnection :
     private Task? _disposeTask;
     private int _disposed;
     private int _connected;
+    private KafkaConnectionCapabilities? _capabilities;
     private bool _hasReceivedResponse;
     private long _lastUsedTimestampMs = Dekaf.MonotonicClock.GetMilliseconds();
     private readonly SemaphoreSlim _connectLock = new(1, 1);
@@ -169,6 +171,10 @@ public sealed partial class KafkaConnection :
     public string Host => _host;
     public int Port => _port;
     public bool IsConnected => Volatile.Read(ref _disposed) == 0 && Volatile.Read(ref _connected) != 0 && (_socket?.Connected ?? false);
+
+    KafkaConnectionCapabilities IKafkaCapabilityProvider.Capabilities =>
+        Volatile.Read(ref _capabilities)
+        ?? throw new InvalidOperationException("Kafka connection is not ready: ApiVersions negotiation has not completed.");
 
     long IIdleTrackedKafkaConnection.LastUsedTimestampMs => Volatile.Read(ref _lastUsedTimestampMs);
 
@@ -355,6 +361,8 @@ public sealed partial class KafkaConnection :
     {
         LogConnecting(_host, _port);
 
+        Volatile.Write(ref _capabilities, null);
+
         using var connectTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         connectTimeoutCts.CancelAfter(_options.ConnectionTimeout);
         var (socket, targetHost) = await ConnectSocketAsync(connectTimeoutCts.Token).ConfigureAwait(false);
@@ -447,6 +455,10 @@ public sealed partial class KafkaConnection :
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
+
+        var capabilities = await NegotiateCapabilitiesAsync(connectTimeoutCts.Token).ConfigureAwait(false);
+        Volatile.Write(ref _capabilities, capabilities);
+
         Touch();
         Volatile.Write(ref _connected, 1);
         _telemetryMetricCollector?.RecordConnectionCreated();
@@ -511,10 +523,19 @@ public sealed partial class KafkaConnection :
         return socket;
     }
 
-    public async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+    public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => SendAsyncCore<TRequest, TResponse>(request, apiVersion, requireReady: true, cancellationToken);
+
+    private async ValueTask<TResponse> SendAsyncCore<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        bool requireReady,
+        CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
@@ -523,7 +544,7 @@ public sealed partial class KafkaConnection :
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
 
-        if (!IsConnected)
+        if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
             throw new InvalidOperationException("Not connected");
 
         Touch();
@@ -586,6 +607,35 @@ public sealed partial class KafkaConnection :
 
             throw;
         }
+    }
+
+    private async ValueTask<KafkaConnectionCapabilities> NegotiateCapabilitiesAsync(
+        CancellationToken cancellationToken)
+    {
+        var request = new ApiVersionsRequest
+        {
+            ClientSoftwareName = "dekaf",
+            ClientSoftwareVersion = typeof(KafkaConnection).Assembly.GetName().Version?.ToString() ?? "0.0.0"
+        };
+
+        ApiVersionsResponse response;
+        try
+        {
+            response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
+                request,
+                apiVersion: 3,
+                requireReady: false,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException ex)
+        {
+            throw new KafkaException(
+                ErrorCode.RequestTimedOut,
+                $"ApiVersions negotiation timed out for {_host}:{_port}",
+                ex);
+        }
+
+        return KafkaConnectionCapabilities.Create(response);
     }
 
     public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(

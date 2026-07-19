@@ -985,7 +985,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly object _autoCommitStartLock = new();
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
-    private int _fetchApiVersion = -1;
     private readonly ConsumerConnectionScaler? _connectionScaler;
     private int _appliedConnectionCount;
     private Task? _connectionRoutingTransitionTask;
@@ -3015,17 +3014,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             cancellationToken).ConfigureAwait(false);
         var connection = connectionLease.Connection;
 
-        // Ensure API version is negotiated (thread-safe initialization)
-        var apiVersion = _fetchApiVersion;
-        if (apiVersion < 0)
-        {
-            apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.Fetch,
-                FetchRequest.LowestSupportedVersion,
-                FetchRequest.HighestSupportedVersion);
-            Interlocked.CompareExchange(ref _fetchApiVersion, apiVersion, -1);
-            apiVersion = _fetchApiVersion;
-        }
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
+            ApiKey.Fetch,
+            FetchRequest.LowestSupportedVersion,
+            FetchRequest.HighestSupportedVersion);
 
         // Resolve any special offset values — pass index range to avoid GetRange allocation
         await ResolveSpecialOffsetsAsync(partitions, partitionStartIndex, partitionCount, cancellationToken).ConfigureAwait(false);
@@ -5244,6 +5237,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var connection = lease.Connection;
 
             var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.ListOffsets,
                 ListOffsetsRequest.LowestSupportedVersion,
                 ListOffsetsRequest.HighestSupportedVersion);
@@ -5762,6 +5756,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var connection = lease.Connection;
 
             var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.ListOffsets,
                 ListOffsetsRequest.LowestSupportedVersion,
                 ListOffsetsRequest.HighestSupportedVersion);
@@ -6423,17 +6418,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             cancellationToken).ConfigureAwait(false);
         var connection = connectionLease.Connection;
 
-        // Ensure API version is negotiated (thread-safe initialization)
-        var apiVersion = _fetchApiVersion;
-        if (apiVersion < 0)
-        {
-            apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.Fetch,
-                FetchRequest.LowestSupportedVersion,
-                FetchRequest.HighestSupportedVersion);
-            Interlocked.CompareExchange(ref _fetchApiVersion, apiVersion, -1);
-            apiVersion = _fetchApiVersion;
-        }
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
+            ApiKey.Fetch,
+            FetchRequest.LowestSupportedVersion,
+            FetchRequest.HighestSupportedVersion);
 
         // Resolve any special offset values (-1 for end, -2 for beginning) before fetching
         await ResolveSpecialOffsetsAsync(partitions, 0, partitions.Count, cancellationToken).ConfigureAwait(false);
@@ -7884,6 +7873,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var connection = connectionLease.Connection;
 
         var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
             ApiKey.ListOffsets,
             ListOffsetsRequest.LowestSupportedVersion,
             ListOffsetsRequest.HighestSupportedVersion);

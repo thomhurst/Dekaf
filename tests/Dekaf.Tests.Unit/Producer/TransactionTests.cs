@@ -496,6 +496,27 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task CommitAsync_FeatureDriftPreservesFatalState()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch);
+        harness.Producer._preparedTransactionState = PreparedTransactionState.Empty;
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+        SetFinalizedTransactionVersion(harness.Producer, 2);
+
+        var exception = await Assert.That(() => transaction.CommitAsync().AsTask())
+            .Throws<FatalTransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnsupportedVersion);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
+    }
+
+    [Test]
     public async Task CommitAfterRequestWrittenAsync_CallbackFailure_AbandonsResponse()
     {
         var preparedState = new PreparedTransactionState(1001, 4);
@@ -574,16 +595,17 @@ public sealed class TransactionTests
     [Test]
     public async Task InitTransactionsAsync_WithKeepPreparedAndUnsupportedFeature_ThrowsBrokerVersionException()
     {
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .WithTransactionalId("test-txn-id")
-            .Build();
-
-        SetInstanceField(producer, "_initialized", true);
+        await using var harness = BuildPreparedCompletionHarness(
+            new PreparedTransactionState(1001, 4),
+            currentProducerId: 2002,
+            currentProducerEpoch: 9,
+            transactionFeatureVersion: 2);
 
         await Assert.That(async () =>
         {
-            await producer.InitTransactionsAsync(keepPreparedTransaction: true);
+            await harness.Producer.ReinitializeProducerIdAsync(
+                CancellationToken.None,
+                keepPreparedTransaction: true);
         }).Throws<BrokerVersionException>();
     }
 
@@ -651,7 +673,6 @@ public sealed class TransactionTests
             metadataManager,
             DekafMemoryBudget.Global,
             addPartitionsToTransaction: AddPartitions);
-        SetInstanceField(producer, "_produceApiVersion", 12);
         producer._currentTransactionUsesTV2 = true;
         var implicitBatch = CreateEnrollmentBatch("implicit-topic", 0);
         var implicitResult = producer.TryEnsurePartitionsInTransaction(
@@ -880,7 +901,7 @@ public sealed class TransactionTests
     [Test]
     [Arguments(false, (short)2)]
     [Arguments(true, (short)1)]
-    public async Task BeginTransaction_FeatureVersionChanged_RequiresReinitialization(
+    public async Task BeginTransaction_GlobalFeatureVersionChanged_DoesNotOverrideConnectionSnapshot(
         bool initializedWithTV2,
         short finalizedVersion)
     {
@@ -891,13 +912,17 @@ public sealed class TransactionTests
         var kafkaProducer = (KafkaProducer<string, string>)producer;
         kafkaProducer._transactionState = TransactionState.Ready;
         kafkaProducer._currentTransactionUsesTV2 = initializedWithTV2;
+        SetInstanceField(
+            kafkaProducer,
+            "_currentTransactionFeatureVersion",
+            initializedWithTV2 ? (short)2 : (short)1);
         SetFinalizedTransactionVersion(kafkaProducer, finalizedVersion);
 
-        var exception = await Assert.That(() => producer.BeginTransaction())
-            .Throws<InvalidOperationException>();
+        var transaction = producer.BeginTransaction();
 
-        await Assert.That(exception!.Message).Contains("InitTransactionsAsync");
-        await Assert.That(kafkaProducer._transactionState).IsEqualTo(TransactionState.Ready);
+        await Assert.That(kafkaProducer._transactionState).IsEqualTo(TransactionState.InTransaction);
+        kafkaProducer._transactionState = TransactionState.Ready;
+        await transaction.DisposeAsync();
     }
 
     private static ReadyBatch CreateEnrollmentBatch(string topic, int partition)
@@ -928,6 +953,7 @@ public sealed class TransactionTests
         SetInstanceField(producer, "_producerEpoch", (short)5);
         SetFinalizedTransactionVersion(producer, 3);
         producer._currentTransactionUsesTV2 = true;
+        SetInstanceField(producer, "_currentTransactionFeatureVersion", (short)3);
         producer._transactionState = TransactionState.Ready;
         return producer;
     }
@@ -936,7 +962,8 @@ public sealed class TransactionTests
         PreparedTransactionState preparedState,
         long currentProducerId,
         short currentProducerEpoch,
-        ErrorCode endTxnError = ErrorCode.None)
+        ErrorCode endTxnError = ErrorCode.None,
+        short transactionFeatureVersion = 3)
     {
         var connection = new LeaseTrackingConnection(
             preparedState,
@@ -960,6 +987,13 @@ public sealed class TransactionTests
             ApiKey.InitProducerId,
             InitProducerIdRequest.LowestSupportedVersion,
             InitProducerIdRequest.HighestSupportedVersion);
+        SetInstanceField<IReadOnlyList<FinalizedFeature>>(
+            metadataManager,
+            "_finalizedFeatures",
+            [new FinalizedFeature(
+                "transaction.version",
+                transactionFeatureVersion,
+                transactionFeatureVersion)]);
 
         var producer = new KafkaProducer<string, string>(
             new ProducerOptions
@@ -980,6 +1014,7 @@ public sealed class TransactionTests
         SetInstanceField(producer, "_producerEpoch", currentProducerEpoch);
         SetInstanceField(producer, "_transactionCoordinatorId", 1);
         SetInstanceField(producer, "_currentTransactionUsesTV2", true);
+        SetInstanceField(producer, "_currentTransactionFeatureVersion", transactionFeatureVersion);
         producer._preparedTransactionState = preparedState;
         producer._transactionState = TransactionState.PreparedTransaction;
 

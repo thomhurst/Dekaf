@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Runtime.CompilerServices;
 using Dekaf.Errors;
@@ -168,10 +167,20 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     public bool HasApiKey(ApiKey apiKey) => _brokerApiVersions.ContainsKey(apiKey);
 
+    internal bool HasApiKey(IKafkaConnection connection, ApiKey apiKey) =>
+        connection is IKafkaCapabilityProvider provider
+            ? provider.Capabilities.HasApi(apiKey)
+            : HasApiKey(apiKey);
+
     internal bool SupportsApiVersion(ApiKey apiKey, short version) =>
         _brokerApiVersions.TryGetValue(apiKey, out var versions) &&
         versions.MinVersion <= version &&
         versions.MaxVersion >= version;
+
+    internal bool SupportsApiVersion(IKafkaConnection connection, ApiKey apiKey, short version) =>
+        connection is IKafkaCapabilityProvider provider
+            ? provider.Capabilities.SupportsVersion(apiKey, version)
+            : SupportsApiVersion(apiKey, version);
 
     /// <summary>
     /// Seeds a broker API version entry. Internal — used by unit tests to bypass negotiation.
@@ -209,9 +218,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
             return false;
         }
 
-        var lowestUsableVersion = Math.Max(ourMinVersion, brokerVersions.MinVersion);
-        var highestUsableVersion = Math.Min(ourMaxVersion, brokerVersions.MaxVersion);
-        if (lowestUsableVersion > highestUsableVersion)
+        if (!ApiVersionNegotiator.TryNegotiate(
+                brokerVersions.MinVersion,
+                brokerVersions.MaxVersion,
+                ourMinVersion,
+                ourMaxVersion,
+                out var highestUsableVersion))
         {
             negotiatedVersion = default;
             return false;
@@ -222,6 +234,33 @@ public sealed partial class MetadataManager : IAsyncDisposable
         negotiatedVersion = highestUsableVersion;
         return true;
     }
+
+    internal short GetNegotiatedApiVersion(
+        IKafkaConnection connection,
+        ApiKey apiKey,
+        short ourMinVersion,
+        short ourMaxVersion) =>
+        connection is IKafkaCapabilityProvider provider
+            ? provider.Capabilities.NegotiateVersion(apiKey, ourMinVersion, ourMaxVersion)
+            : GetNegotiatedApiVersion(apiKey, ourMinVersion, ourMaxVersion);
+
+    internal bool TryGetNegotiatedApiVersion(
+        IKafkaConnection connection,
+        ApiKey apiKey,
+        short ourMinVersion,
+        short ourMaxVersion,
+        out short negotiatedVersion) =>
+        connection is IKafkaCapabilityProvider provider
+            ? provider.Capabilities.TryNegotiateVersion(
+                apiKey,
+                ourMinVersion,
+                ourMaxVersion,
+                out negotiatedVersion)
+            : TryGetNegotiatedApiVersion(
+                apiKey,
+                ourMinVersion,
+                ourMaxVersion,
+                out negotiatedVersion);
 
     /// <summary>
     /// Gets the highest API version supported by both the broker and client.
@@ -243,35 +282,27 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         if (!_brokerApiVersions.TryGetValue(apiKey, out var brokerVersions))
         {
-            ThrowApiAbsent(apiKey, ourMinVersion, ourMaxVersion);
+            ApiVersionNegotiator.ThrowApiAbsent(apiKey, ourMinVersion, ourMaxVersion);
         }
 
-        var lowestUsableVersion = Math.Max(ourMinVersion, brokerVersions.MinVersion);
-        var highestUsableVersion = Math.Min(ourMaxVersion, brokerVersions.MaxVersion);
-        if (lowestUsableVersion > highestUsableVersion)
+        if (!ApiVersionNegotiator.TryNegotiate(
+                brokerVersions.MinVersion,
+                brokerVersions.MaxVersion,
+                ourMinVersion,
+                ourMaxVersion,
+                out var highestUsableVersion))
         {
-            ThrowDisjointApiRange(apiKey, ourMinVersion, ourMaxVersion, brokerVersions);
+            ApiVersionNegotiator.ThrowDisjointRange(
+                apiKey,
+                brokerVersions.MinVersion,
+                brokerVersions.MaxVersion,
+                ourMinVersion,
+                ourMaxVersion);
         }
 
         _negotiatedVersionCache.TryAdd(cacheKey, highestUsableVersion);
         return highestUsableVersion;
     }
-
-    [DoesNotReturn]
-    private static void ThrowApiAbsent(ApiKey apiKey, short ourMinVersion, short ourMaxVersion) =>
-        throw new BrokerVersionException(
-            $"Broker does not support {apiKey} (API key {(short)apiKey}) for client " +
-            $"[{ourMinVersion}, {ourMaxVersion}]: API absent.");
-
-    [DoesNotReturn]
-    private static void ThrowDisjointApiRange(
-        ApiKey apiKey,
-        short ourMinVersion,
-        short ourMaxVersion,
-        (short MinVersion, short MaxVersion) brokerVersions) =>
-        throw new BrokerVersionException(
-            $"Broker does not support {apiKey} (API key {(short)apiKey}) for client " +
-            $"[{ourMinVersion}, {ourMaxVersion}]: broker [{brokerVersions.MinVersion}, {brokerVersions.MaxVersion}].");
 
     /// <summary>
     /// Returns the max finalized version for a broker feature, or 0 if the feature is not present.
@@ -290,6 +321,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         return 0;
     }
+
+    internal short GetFinalizedFeatureVersion(
+        IKafkaConnection connection,
+        string featureName) =>
+        connection is IKafkaCapabilityProvider provider
+            ? provider.Capabilities.GetFinalizedFeatureVersion(featureName)
+            : GetFinalizedFeatureVersion(featureName);
 
     /// <summary>
     /// Initializes the metadata manager by fetching initial metadata.
@@ -694,11 +732,20 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     .ConfigureAwait(false);
                 var connection = connectionLease.Connection;
 
-                // Negotiate API version if not already done
-                if (_metadataApiVersion < 0)
+                // Production connections negotiate before becoming ready. Keep explicit
+                // negotiation only for injected test connections without a capability snapshot.
+                if (connection is not IKafkaCapabilityProvider && _metadataApiVersion < 0)
                 {
                     await NegotiateApiVersionsAsync(connection, cancellationToken).ConfigureAwait(false);
                 }
+
+                var metadataApiVersion = connection is IKafkaCapabilityProvider
+                    ? GetNegotiatedApiVersion(
+                        connection,
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                    : _metadataApiVersion;
 
                 // Build metadata request
                 var request = topics is null
@@ -707,8 +754,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 var response = await connection.SendAsync<MetadataRequest, MetadataResponse>(
                     request,
-                    _metadataApiVersion,
+                    metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
+
+                UpdateVersionlessCapabilities(connection, metadataApiVersion);
 
                 // KIP-1102: If the broker signals rebootstrap, prefer fresh topology
                 // from re-resolved DNS over the current response's potentially-stale data.
@@ -834,8 +883,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     .ConfigureAwait(false);
                 var connection = connectionLease.Connection;
 
-                // Re-negotiate API versions with new broker
-                await NegotiateApiVersionsAsync(connection, cancellationToken).ConfigureAwait(false);
+                if (connection is not IKafkaCapabilityProvider)
+                    await NegotiateApiVersionsAsync(connection, cancellationToken).ConfigureAwait(false);
+
+                var metadataApiVersion = connection is IKafkaCapabilityProvider
+                    ? GetNegotiatedApiVersion(
+                        connection,
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                    : _metadataApiVersion;
 
                 var request = topics is null
                     ? MetadataRequest.ForAllTopics()
@@ -843,8 +900,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 var response = await connection.SendAsync<MetadataRequest, MetadataResponse>(
                     request,
-                    _metadataApiVersion,
+                    metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
+
+                UpdateVersionlessCapabilities(
+                    connection,
+                    metadataApiVersion,
+                    replaceExisting: true);
 
                 _metadata.Update(response, mergeTopics: topics is not null);
 
@@ -1019,6 +1081,31 @@ public sealed partial class MetadataManager : IAsyncDisposable
         _finalizedFeatures = response.FinalizedFeatures;
 
         LogNegotiatedApiVersion(_metadataApiVersion);
+    }
+
+    private void UpdateVersionlessCapabilities(
+        IKafkaConnection connection,
+        short metadataApiVersion,
+        bool replaceExisting = false)
+    {
+        if ((!replaceExisting && _metadataApiVersion >= 0)
+            || connection is not IKafkaCapabilityProvider provider)
+            return;
+
+        var capabilities = provider.Capabilities;
+        if (replaceExisting)
+            _brokerApiVersions.Clear();
+
+        for (var key = 0; key < capabilities.ApiRangeCount; key++)
+        {
+            var apiKey = (ApiKey)key;
+            if (capabilities.TryGetApiRange(apiKey, out var minVersion, out var maxVersion))
+                _brokerApiVersions[apiKey] = (minVersion, maxVersion);
+        }
+
+        _negotiatedVersionCache.Clear();
+        _finalizedFeatures = capabilities.FinalizedFeatures;
+        _metadataApiVersion = metadataApiVersion;
     }
 
     internal IReadOnlyList<(string Host, int Port)> GetEndpointsToTry()

@@ -266,6 +266,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             Brokers = [new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 }],
             Topics = []
         });
+        SetupFindCoordinator();
 
         await using var coordinator = new ConsumerCoordinator(
             CreateConsumerProtocolOptions(), _connectionPool, noHeartbeatManager);
@@ -3109,11 +3110,68 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     [Test]
     public async Task ConsumerProtocol_ServerSideRegex_BrokerWithoutV1_ThrowsBrokerVersionException()
     {
+        SetupFindCoordinator();
         var options = CreateConsumerProtocolOptions();
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 
         await Assert.That(async () =>
                 await coordinator.EnsureActiveGroupAsync(new HashSet<string>(), "orders-.*", CancellationToken.None))
+            .Throws<BrokerVersionException>()
+            .WithMessageContaining("Kafka 4.1");
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_StableSubscription_RejectsRegexBeforeAcceptingItOnV0Broker()
+    {
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+        SetupConsumerGroupHeartbeat(heartbeatIntervalMs: 60_000);
+
+        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic" },
+            CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        _connection.ClearReceivedCalls();
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
+
+        await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(
+                    new HashSet<string>(),
+                    "orders-.*",
+                    CancellationToken.None))
+            .Throws<BrokerVersionException>()
+            .WithMessageContaining("Kafka 4.1");
+
+        await _connection.DidNotReceive().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Any<ConsumerGroupHeartbeatRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_StableRegex_CapabilityLossDuringHeartbeat_PropagatesToPoll()
+    {
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+        SetupConsumerGroupHeartbeat(heartbeatIntervalMs: 60_000);
+
+        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string>();
+
+        await coordinator.EnsureActiveGroupAsync(topics, "orders-.*", CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+
+        await InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(topics, "orders-.*", CancellationToken.None))
             .Throws<BrokerVersionException>()
             .WithMessageContaining("Kafka 4.1");
     }

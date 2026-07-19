@@ -9,6 +9,10 @@ internal static class KafkaMessageMetadata<TRequest, TResponse>
 #if !NETSTANDARD2_0
     public static ApiKey ApiKey => TRequest.ApiKey;
 
+    public static short LowestSupportedVersion => TRequest.LowestSupportedVersion;
+
+    public static short HighestSupportedVersion => TRequest.HighestSupportedVersion;
+
     public static short GetRequestHeaderVersion(short version) => TRequest.GetRequestHeaderVersion(version);
 
     public static short GetResponseHeaderVersion(short version) => TRequest.GetResponseHeaderVersion(version);
@@ -26,6 +30,10 @@ internal static class KafkaMessageMetadata<TRequest, TResponse>
     private static readonly ReadResponseDelegate s_readResponse = CreateReadResponseDelegate();
 
     public static ApiKey ApiKey { get; } = ReadApiKey();
+
+    public static short LowestSupportedVersion { get; } = ReadVersion(nameof(LowestSupportedVersion));
+
+    public static short HighestSupportedVersion { get; } = ReadVersion(nameof(HighestSupportedVersion));
 
     public static short GetRequestHeaderVersion(short version)
         => s_getRequestHeaderVersion?.Invoke(version) ?? 2;
@@ -49,6 +57,18 @@ internal static class KafkaMessageMetadata<TRequest, TResponse>
         }
 
         return apiKey;
+    }
+
+    private static short ReadVersion(string propertyName)
+    {
+        var property = typeof(TRequest).GetProperty(propertyName, BindingFlags.Public | BindingFlags.Static);
+        if (property is null || property.GetValue(null) is not short version)
+        {
+            throw new InvalidOperationException(
+                $"{typeof(TRequest).FullName} must expose a public static {propertyName} property.");
+        }
+
+        return version;
     }
 
     private static HeaderVersionDelegate? CreateHeaderVersionDelegate(string name)

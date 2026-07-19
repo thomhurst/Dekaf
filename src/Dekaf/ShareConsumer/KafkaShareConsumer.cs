@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -222,11 +223,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             // Group assigned partitions by leader broker
             var partitionsByBroker = GroupPartitionsByLeader(assignment);
 
-            var shareFetchVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.ShareFetch,
-                ShareFetchRequest.LowestSupportedVersion,
-                ShareFetchRequest.HighestSupportedVersion);
-
             // Send fetch requests to all brokers concurrently. Session epochs are per-broker
             // and independent, so parallelism is safe. This avoids waiting for each broker's
             // MaxWaitMs sequentially when partitions span multiple brokers.
@@ -235,25 +231,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
             foreach (var (brokerId, partitions) in partitionsByBroker)
             {
-                var topics = BuildShareFetchTopics(partitions, pendingAcks, shareFetchVersion);
-                var sessionEpoch = _sessionManager.GetSessionEpoch(brokerId);
-                var maxRecords = shareFetchVersion >= 1 ? _options.MaxPollRecords : 0;
-
-                var request = new ShareFetchRequest
-                {
-                    GroupId = _options.GroupId,
-                    MemberId = _coordinator.MemberId!,
-                    ShareSessionEpoch = sessionEpoch,
-                    MaxWaitMs = _options.FetchMaxWaitMs,
-                    MinBytes = _options.FetchMinBytes,
-                    MaxBytes = _options.FetchMaxBytes,
-                    MaxRecords = maxRecords,
-                    BatchSize = maxRecords,
-                    ShareAcquireMode = (sbyte)_options.ShareAcquireMode,
-                    Topics = topics
-                };
-
-                fetchTasks.Add(SendShareFetchAsync(brokerId, request, shareFetchVersion, cancellationToken));
+                fetchTasks.Add(SendShareFetchForPartitionsAsync(brokerId, partitions, pendingAcks, cancellationToken));
             }
 
             await Task.WhenAll(fetchTasks).ConfigureAwait(false);
@@ -392,17 +370,12 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         // Group by broker
         var acksByBroker = GroupAcksByLeader(pendingAcks);
 
-        var shareAckVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.ShareAcknowledge,
-            ShareAcknowledgeRequest.LowestSupportedVersion,
-            ShareAcknowledgeRequest.HighestSupportedVersion);
-
         // Send to all brokers in parallel, collecting per-broker results
         var results = await Task.WhenAll(acksByBroker.Select(async kvp =>
         {
             try
             {
-                await SendAcknowledgeAsync(kvp.Key, kvp.Value, shareAckVersion, cancellationToken)
+                await SendAcknowledgeAsync(kvp.Key, kvp.Value, cancellationToken)
                     .ConfigureAwait(false);
                 return (Acks: kvp.Value, Error: (Exception?)null);
             }
@@ -541,11 +514,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         if (acksByBroker.Count == 0)
             return;
 
-        var shareAckVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.ShareAcknowledge,
-            ShareAcknowledgeRequest.LowestSupportedVersion,
-            ShareAcknowledgeRequest.HighestSupportedVersion);
-
         // Send in the background — best effort, don't block the synchronous caller.
         // Store the task so DisposeAsync can await it before tearing down the connection pool.
         // Chain after any prior release task so DisposeAsync only needs to await the latest reference.
@@ -562,7 +530,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             {
                 try
                 {
-                    await SendAcknowledgeAsync(brokerId, acks, shareAckVersion, CancellationToken.None)
+                    await SendAcknowledgeAsync(brokerId, acks, CancellationToken.None)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -573,20 +541,42 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         });
     }
 
-    private async Task<(int BrokerId, ShareFetchResponse? Response)> SendShareFetchAsync(
-        int brokerId, ShareFetchRequest request, short version, CancellationToken cancellationToken)
+    private async Task<(int BrokerId, ShareFetchResponse? Response)> SendShareFetchForPartitionsAsync(
+        int brokerId,
+        List<TopicPartition> partitions,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? pendingAcks,
+        CancellationToken cancellationToken)
     {
         try
         {
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
                 .ConfigureAwait(false);
             var connection = connectionLease.Connection;
+            var version = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                ApiKey.ShareFetch,
+                ShareFetchRequest.LowestSupportedVersion,
+                ShareFetchRequest.HighestSupportedVersion);
+            var maxRecords = version >= 1 ? _options.MaxPollRecords : 0;
+            var request = new ShareFetchRequest
+            {
+                GroupId = _options.GroupId,
+                MemberId = _coordinator.MemberId!,
+                ShareSessionEpoch = _sessionManager.GetSessionEpoch(brokerId),
+                MaxWaitMs = _options.FetchMaxWaitMs,
+                MinBytes = _options.FetchMinBytes,
+                MaxBytes = _options.FetchMaxBytes,
+                MaxRecords = maxRecords,
+                BatchSize = maxRecords,
+                ShareAcquireMode = (sbyte)_options.ShareAcquireMode,
+                Topics = BuildShareFetchTopics(partitions, pendingAcks, version)
+            };
             var response = (ShareFetchResponse)await connection
                 .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
                 .ConfigureAwait(false);
             return (brokerId, response);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException and not BrokerVersionException)
         {
             LogFetchFailed(brokerId, ex);
             _sessionManager.ResetSession(brokerId);
@@ -602,19 +592,33 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
         var partitionsByBroker = GroupPartitionsByLeader(assignment);
 
-        var shareFetchVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.ShareFetch,
-            ShareFetchRequest.LowestSupportedVersion,
-            ShareFetchRequest.HighestSupportedVersion);
-
         // Send close requests to all brokers in parallel — these are fire-and-forget
         // with MaxWaitMs=0, so there's no reason to wait for each sequentially.
         var closeTasks = new List<Task>(partitionsByBroker.Count);
 
         foreach (var (brokerId, partitions) in partitionsByBroker)
         {
-            var topics = BuildShareFetchTopics(partitions, pendingAcks: null, shareFetchVersion);
+            closeTasks.Add(CloseSessionForBrokerAsync(brokerId, partitions, cancellationToken));
+        }
 
+        await Task.WhenAll(closeTasks).ConfigureAwait(false);
+    }
+
+    private async Task CloseSessionForBrokerAsync(
+        int brokerId,
+        List<TopicPartition> partitions,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
+                .ConfigureAwait(false);
+            var connection = connectionLease.Connection;
+            var version = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                ApiKey.ShareFetch,
+                ShareFetchRequest.LowestSupportedVersion,
+                ShareFetchRequest.HighestSupportedVersion);
             var request = new ShareFetchRequest
             {
                 GroupId = _options.GroupId,
@@ -623,25 +627,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 MaxWaitMs = 0,
                 MinBytes = 0,
                 MaxBytes = 0,
-                MaxRecords = shareFetchVersion >= 1 ? 1 : 0,
+                MaxRecords = version >= 1 ? 1 : 0,
                 ShareAcquireMode = (sbyte)_options.ShareAcquireMode,
-                Topics = topics
+                Topics = BuildShareFetchTopics(partitions, pendingAcks: null, version)
             };
-
-            closeTasks.Add(CloseSessionForBrokerAsync(brokerId, request, shareFetchVersion, cancellationToken));
-        }
-
-        await Task.WhenAll(closeTasks).ConfigureAwait(false);
-    }
-
-    private async Task CloseSessionForBrokerAsync(
-        int brokerId, ShareFetchRequest request, short version, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
-                .ConfigureAwait(false);
-            var connection = connectionLease.Connection;
             await connection.SendAsync<ShareFetchRequest, ShareFetchResponse>(
                 request, version, cancellationToken).ConfigureAwait(false);
         }
@@ -654,7 +643,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     private async Task SendAcknowledgeAsync(
         int brokerId,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> topicAcks,
-        short shareAckVersion,
         CancellationToken cancellationToken)
     {
         var topics = BuildShareAcknowledgeTopics(topicAcks);
@@ -671,6 +659,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
             .ConfigureAwait(false);
         var connection = connectionLease.Connection;
+        var shareAckVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
+            ApiKey.ShareAcknowledge,
+            ShareAcknowledgeRequest.LowestSupportedVersion,
+            ShareAcknowledgeRequest.HighestSupportedVersion);
 
         var response = (ShareAcknowledgeResponse)await connection
             .SendAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(

@@ -136,18 +136,16 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!_metadataManager.HasApiKey(Protocol.ApiKey.ListClientMetricsResources))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support ListClientMetricsResources (API key 74).");
-        }
-
         return await WithRetryAsync<IReadOnlyList<ClientMetricsResourceListing>>(async () =>
         {
             using var connectionLease = await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
+            if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.ListClientMetricsResources))
+                throw new Errors.BrokerVersionException($"Broker {connection.BrokerId} does not support ListClientMetricsResources (API key 74).");
             var request = new ListClientMetricsResourcesRequest();
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.ListClientMetricsResources,
                 ListClientMetricsResourcesRequest.LowestSupportedVersion,
                 ListClientMetricsResourcesRequest.HighestSupportedVersion);
@@ -219,6 +217,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.CreateTopics,
                 CreateTopicsRequest.LowestSupportedVersion,
                 CreateTopicsRequest.HighestSupportedVersion);
@@ -346,6 +345,7 @@ public sealed class AdminClient : IAdminClient
             var controller = controllerLease.Connection;
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.DeleteTopics,
                 DeleteTopicsRequest.LowestSupportedVersion,
                 DeleteTopicsRequest.HighestSupportedVersion);
@@ -513,11 +513,6 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!_metadataManager.HasApiKey(Protocol.ApiKey.DescribeTopicPartitions))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support DescribeTopicPartitions (API key 75).");
-        }
-
         return await WithRetryAsync(async () =>
         {
             var brokers = _metadataManager.Metadata.GetBrokers();
@@ -529,6 +524,9 @@ public sealed class AdminClient : IAdminClient
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
 
             var connection = connectionLease.Connection;
+            if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.DescribeTopicPartitions))
+                throw new Errors.BrokerVersionException($"Broker {connection.BrokerId} does not support DescribeTopicPartitions (API key 75).");
+
             var request = new DescribeTopicPartitionsRequest
             {
                 Topics = topicList.Select(static name => new DescribeTopicPartitionsRequestTopic
@@ -546,6 +544,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.DescribeTopicPartitions,
                 DescribeTopicPartitionsRequest.LowestSupportedVersion,
                 DescribeTopicPartitionsRequest.HighestSupportedVersion);
@@ -669,11 +668,6 @@ public sealed class AdminClient : IAdminClient
         IReadOnlyDictionary<int, List<string>> groupsByCoordinator,
         CancellationToken cancellationToken)
     {
-        if (!_metadataManager.HasApiKey(Protocol.ApiKey.ConsumerGroupDescribe))
-        {
-            return await DescribeConsumerGroupsWithClassicApiAsync(groupsByCoordinator, cancellationToken).ConfigureAwait(false);
-        }
-
         var (descriptions, classicFallbackGroups) = await DescribeConsumerGroupsWithKip848Async(
             groupsByCoordinator,
             cancellationToken).ConfigureAwait(false);
@@ -695,11 +689,6 @@ public sealed class AdminClient : IAdminClient
         IReadOnlyDictionary<int, List<string>> groupsByCoordinator,
         CancellationToken cancellationToken)
     {
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.ConsumerGroupDescribe,
-            ConsumerGroupDescribeRequest.LowestSupportedVersion,
-            ConsumerGroupDescribeRequest.HighestSupportedVersion);
-
         var result = new Dictionary<string, GroupDescription>();
         var classicFallbackGroups = new Dictionary<int, List<string>>();
 
@@ -707,6 +696,17 @@ public sealed class AdminClient : IAdminClient
         {
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
+            if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.ConsumerGroupDescribe))
+            {
+                classicFallbackGroups[coordinatorId] = groups;
+                continue;
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                Protocol.ApiKey.ConsumerGroupDescribe,
+                ConsumerGroupDescribeRequest.LowestSupportedVersion,
+                ConsumerGroupDescribeRequest.HighestSupportedVersion);
 
             var request = new ConsumerGroupDescribeRequest
             {
@@ -782,17 +782,17 @@ public sealed class AdminClient : IAdminClient
         IReadOnlyDictionary<int, List<string>> groupsByCoordinator,
         CancellationToken cancellationToken)
     {
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.DescribeGroups,
-            DescribeGroupsRequest.LowestSupportedVersion,
-            DescribeGroupsRequest.HighestSupportedVersion);
-
         var result = new Dictionary<string, GroupDescription>();
 
         foreach (var (coordinatorId, groups) in groupsByCoordinator)
         {
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                Protocol.ApiKey.DescribeGroups,
+                DescribeGroupsRequest.LowestSupportedVersion,
+                DescribeGroupsRequest.HighestSupportedVersion);
 
             var request = new DescribeGroupsRequest
             {
@@ -855,16 +855,6 @@ public sealed class AdminClient : IAdminClient
                 throw new InvalidOperationException("No brokers available");
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.ListGroups,
-                ListGroupsRequest.LowestSupportedVersion,
-                ListGroupsRequest.HighestSupportedVersion);
-
-            var request = new ListGroupsRequest
-            {
-                StatesFilter = apiVersion >= 4 ? opts.States : null
-            };
-
             // Query all brokers since each only knows about groups it coordinates
             var seenGroupIds = new HashSet<string>();
             var result = new List<GroupListing>();
@@ -873,6 +863,15 @@ public sealed class AdminClient : IAdminClient
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.ListGroups,
+                    ListGroupsRequest.LowestSupportedVersion,
+                    ListGroupsRequest.HighestSupportedVersion);
+                var request = new ListGroupsRequest
+                {
+                    StatesFilter = apiVersion >= 4 ? opts.States : null
+                };
 
                 var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
                     request,
@@ -916,11 +915,6 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!_metadataManager.HasApiKey(Protocol.ApiKey.ListTransactions))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support ListTransactions (API key 66).");
-        }
-
         var opts = options ?? new ListTransactionsOptions();
 
         return await WithRetryAsync(async () =>
@@ -931,33 +925,35 @@ public sealed class AdminClient : IAdminClient
                 throw new InvalidOperationException("No brokers available");
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.ListTransactions,
-                ListTransactionsRequest.LowestSupportedVersion,
-                ListTransactionsRequest.HighestSupportedVersion);
-
-            if (opts.DurationFilterMs >= 0 && apiVersion < 1)
-            {
-                throw new Errors.BrokerVersionException("Broker does not support ListTransactions duration filters (API key 66 v1).");
-            }
-
-            if (!string.IsNullOrEmpty(opts.TransactionalIdPattern) && apiVersion < 2)
-            {
-                throw new Errors.BrokerVersionException("Broker does not support ListTransactions transactional ID pattern filters (API key 66 v2).");
-            }
-
-            var request = new ListTransactionsRequest
-            {
-                StateFilters = opts.StateFilters,
-                ProducerIdFilters = opts.ProducerIdFilters,
-                DurationFilterMs = opts.DurationFilterMs,
-                TransactionalIdPattern = opts.TransactionalIdPattern
-            };
-
             var responses = await Task.WhenAll(brokers.Select(async broker =>
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.ListTransactions,
+                    ListTransactionsRequest.LowestSupportedVersion,
+                    ListTransactionsRequest.HighestSupportedVersion);
+
+                if (opts.DurationFilterMs >= 0 && apiVersion < 1)
+                {
+                    throw new Errors.BrokerVersionException(
+                        $"Broker {broker.NodeId} does not support ListTransactions duration filters (API key 66 v1).");
+                }
+
+                if (!string.IsNullOrEmpty(opts.TransactionalIdPattern) && apiVersion < 2)
+                {
+                    throw new Errors.BrokerVersionException(
+                        $"Broker {broker.NodeId} does not support ListTransactions transactional ID pattern filters (API key 66 v2).");
+                }
+
+                var request = new ListTransactionsRequest
+                {
+                    StateFilters = opts.StateFilters,
+                    ProducerIdFilters = opts.ProducerIdFilters,
+                    DurationFilterMs = opts.DurationFilterMs,
+                    TransactionalIdPattern = opts.TransactionalIdPattern
+                };
                 var response = await connection.SendAsync<ListTransactionsRequest, ListTransactionsResponse>(
                     request,
                     apiVersion,
@@ -1014,11 +1010,6 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!_metadataManager.HasApiKey(Protocol.ApiKey.DescribeTransactions))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support DescribeTransactions (API key 65).");
-        }
-
         var transactionalIdList = transactionalIds.ToList();
         if (transactionalIdList.Count == 0)
         {
@@ -1040,17 +1031,17 @@ public sealed class AdminClient : IAdminClient
                 ids.Add(transactionalId);
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.DescribeTransactions,
-                DescribeTransactionsRequest.LowestSupportedVersion,
-                DescribeTransactionsRequest.HighestSupportedVersion);
-
             var result = new Dictionary<string, TransactionDescription>(StringComparer.Ordinal);
 
             foreach (var (coordinatorId, ids) in idsByCoordinator)
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.DescribeTransactions,
+                    DescribeTransactionsRequest.LowestSupportedVersion,
+                    DescribeTransactionsRequest.HighestSupportedVersion);
                 var request = new DescribeTransactionsRequest
                 {
                     TransactionalIds = ids
@@ -1098,11 +1089,6 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!_metadataManager.HasApiKey(Protocol.ApiKey.DescribeProducers))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support DescribeProducers (API key 61).");
-        }
-
         var partitionList = partitions.ToList();
         if (partitionList.Count == 0)
         {
@@ -1142,17 +1128,17 @@ public sealed class AdminClient : IAdminClient
                 ((List<int>)topicEntry.PartitionIndexes).Add(topicPartition.Partition);
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.DescribeProducers,
-                DescribeProducersRequest.LowestSupportedVersion,
-                DescribeProducersRequest.HighestSupportedVersion);
-
             var result = new Dictionary<TopicPartition, DescribeProducersResultInfo>();
 
             foreach (var (leaderId, topics) in partitionsByLeader)
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.DescribeProducers,
+                    DescribeProducersRequest.LowestSupportedVersion,
+                    DescribeProducersRequest.HighestSupportedVersion);
                 var request = new DescribeProducersRequest
                 {
                     Topics = topics
@@ -1206,14 +1192,6 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!SupportsApiRange(
-            Protocol.ApiKey.InitProducerId,
-            InitProducerIdRequest.LowestSupportedVersion,
-            InitProducerIdRequest.HighestSupportedVersion))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support InitProducerId (API key 22).");
-        }
-
         var transactionalIdList = transactionalIds.ToList();
         if (transactionalIdList.Count == 0)
         {
@@ -1237,17 +1215,20 @@ public sealed class AdminClient : IAdminClient
                 ids.Add(transactionalId);
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.InitProducerId,
-                InitProducerIdRequest.LowestSupportedVersion,
-                InitProducerIdRequest.HighestSupportedVersion);
-
             var result = new Dictionary<string, FenceProducersResultInfo>(StringComparer.Ordinal);
 
             foreach (var (coordinatorId, ids) in idsByCoordinator)
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.InitProducerId))
+                    throw new Errors.BrokerVersionException($"Broker {coordinatorId} does not support InitProducerId (API key 22).");
+
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.InitProducerId,
+                    InitProducerIdRequest.LowestSupportedVersion,
+                    InitProducerIdRequest.HighestSupportedVersion);
 
                 foreach (var transactionalId in ids)
                 {
@@ -1300,14 +1281,6 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!SupportsApiRange(
-            Protocol.ApiKey.WriteTxnMarkers,
-            WriteTxnMarkersRequest.LowestSupportedVersion,
-            WriteTxnMarkersRequest.HighestSupportedVersion))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support WriteTxnMarkers (API key 27).");
-        }
-
         return await WithRetryAsync(async () =>
         {
             var topicPartition = transaction.TopicPartition;
@@ -1317,11 +1290,6 @@ public sealed class AdminClient : IAdminClient
                 throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
                     $"No leader available for {topicPartition.Topic}-{topicPartition.Partition}");
             }
-
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.WriteTxnMarkers,
-                WriteTxnMarkersRequest.LowestSupportedVersion,
-                WriteTxnMarkersRequest.HighestSupportedVersion);
 
             var request = new WriteTxnMarkersRequest
             {
@@ -1348,6 +1316,14 @@ public sealed class AdminClient : IAdminClient
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(leaderNode.NodeId, cancellationToken).ConfigureAwait(false);
 
             var connection = connectionLease.Connection;
+            if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.WriteTxnMarkers))
+                throw new Errors.BrokerVersionException($"Broker {leaderNode.NodeId} does not support WriteTxnMarkers (API key 27).");
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                Protocol.ApiKey.WriteTxnMarkers,
+                WriteTxnMarkersRequest.LowestSupportedVersion,
+                WriteTxnMarkersRequest.HighestSupportedVersion);
             var response = await connection.SendAsync<WriteTxnMarkersRequest, WriteTxnMarkersResponse>(
                 request,
                 apiVersion,
@@ -1396,15 +1372,15 @@ public sealed class AdminClient : IAdminClient
                 groups.Add(groupId);
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.DeleteGroups,
-                DeleteGroupsRequest.LowestSupportedVersion,
-                DeleteGroupsRequest.HighestSupportedVersion);
-
             foreach (var (coordinatorId, groups) in groupsByCoordinator)
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.DeleteGroups,
+                    DeleteGroupsRequest.LowestSupportedVersion,
+                    DeleteGroupsRequest.HighestSupportedVersion);
 
                 var request = new DeleteGroupsRequest
                 {
@@ -1461,6 +1437,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.OffsetFetch,
                 OffsetFetchRequest.LowestSupportedVersion,
                 OffsetFetchRequest.HighestSupportedVersion);
@@ -1538,6 +1515,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.OffsetCommit,
                 OffsetCommitRequest.LowestSupportedVersion,
                 OffsetCommitRequest.HighestSupportedVersion);
@@ -1591,17 +1569,17 @@ public sealed class AdminClient : IAdminClient
                 leaderOffsets.Add((tp, offset));
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.DeleteRecords,
-                DeleteRecordsRequest.LowestSupportedVersion,
-                DeleteRecordsRequest.HighestSupportedVersion);
-
             var result = new Dictionary<TopicPartition, long>();
 
             foreach (var (leaderId, leaderOffsets) in partitionsByLeader)
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.DeleteRecords,
+                    DeleteRecordsRequest.LowestSupportedVersion,
+                    DeleteRecordsRequest.HighestSupportedVersion);
 
                 // Build topics array from offsets grouped by topic
                 var topics = leaderOffsets
@@ -1672,6 +1650,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.CreatePartitions,
                 CreatePartitionsRequest.LowestSupportedVersion,
                 CreatePartitionsRequest.HighestSupportedVersion);
@@ -1746,6 +1725,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.AlterPartitionReassignments,
                 AlterPartitionReassignmentsRequest.LowestSupportedVersion,
                 AlterPartitionReassignmentsRequest.HighestSupportedVersion);
@@ -1815,6 +1795,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.ListPartitionReassignments,
                 ListPartitionReassignmentsRequest.LowestSupportedVersion,
                 ListPartitionReassignmentsRequest.HighestSupportedVersion);
@@ -1926,6 +1907,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.DescribeUserScramCredentials,
                 DescribeUserScramCredentialsRequest.LowestSupportedVersion,
                 DescribeUserScramCredentialsRequest.HighestSupportedVersion);
@@ -2022,6 +2004,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.AlterUserScramCredentials,
                 AlterUserScramCredentialsRequest.LowestSupportedVersion,
                 AlterUserScramCredentialsRequest.HighestSupportedVersion);
@@ -2065,6 +2048,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.DescribeClientQuotas,
                 DescribeClientQuotasRequest.LowestSupportedVersion,
                 DescribeClientQuotasRequest.HighestSupportedVersion);
@@ -2121,6 +2105,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.AlterClientQuotas,
                 AlterClientQuotasRequest.LowestSupportedVersion,
                 AlterClientQuotasRequest.HighestSupportedVersion);
@@ -2261,6 +2246,7 @@ public sealed class AdminClient : IAdminClient
         };
 
         var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            controller,
             Protocol.ApiKey.CreateDelegationToken,
             CreateDelegationTokenRequest.LowestSupportedVersion,
             CreateDelegationTokenRequest.HighestSupportedVersion);
@@ -2304,6 +2290,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.RenewDelegationToken,
                 RenewDelegationTokenRequest.LowestSupportedVersion,
                 RenewDelegationTokenRequest.HighestSupportedVersion);
@@ -2343,6 +2330,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.ExpireDelegationToken,
                 ExpireDelegationTokenRequest.LowestSupportedVersion,
                 ExpireDelegationTokenRequest.HighestSupportedVersion);
@@ -2379,6 +2367,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.DescribeDelegationToken,
                 DescribeDelegationTokenRequest.LowestSupportedVersion,
                 DescribeDelegationTokenRequest.HighestSupportedVersion);
@@ -2515,6 +2504,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.DescribeConfigs,
                 DescribeConfigsRequest.LowestSupportedVersion,
                 DescribeConfigsRequest.HighestSupportedVersion);
@@ -2603,6 +2593,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.AlterConfigs,
                 AlterConfigsRequest.LowestSupportedVersion,
                 AlterConfigsRequest.HighestSupportedVersion);
@@ -2664,6 +2655,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.IncrementalAlterConfigs,
                 IncrementalAlterConfigsRequest.LowestSupportedVersion,
                 IncrementalAlterConfigsRequest.HighestSupportedVersion);
@@ -2719,6 +2711,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.CreateAcls,
                 CreateAclsRequest.LowestSupportedVersion,
                 CreateAclsRequest.HighestSupportedVersion);
@@ -2775,6 +2768,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.DeleteAcls,
                 DeleteAclsRequest.LowestSupportedVersion,
                 DeleteAclsRequest.HighestSupportedVersion);
@@ -2850,6 +2844,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.DescribeAcls,
                 DescribeAclsRequest.LowestSupportedVersion,
                 DescribeAclsRequest.HighestSupportedVersion);
@@ -2933,6 +2928,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.OffsetDelete,
                 OffsetDeleteRequest.LowestSupportedVersion,
                 OffsetDeleteRequest.HighestSupportedVersion);
@@ -3048,6 +3044,7 @@ public sealed class AdminClient : IAdminClient
                 };
 
                 var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
                     Protocol.ApiKey.ListOffsets,
                     ListOffsetsRequest.LowestSupportedVersion,
                     ListOffsetsRequest.HighestSupportedVersion);
@@ -3136,6 +3133,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.ElectLeaders,
                 ElectLeadersRequest.LowestSupportedVersion,
                 ElectLeadersRequest.HighestSupportedVersion);
@@ -3180,16 +3178,12 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!_metadataManager.HasApiKey(Protocol.ApiKey.DescribeQuorum))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support DescribeQuorum (API key 55).");
-        }
-
         return await WithRetryAsync(async () =>
         {
             using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.DescribeQuorum,
                 DescribeQuorumRequest.LowestSupportedVersion,
                 DescribeQuorumRequest.HighestSupportedVersion);
@@ -3269,16 +3263,12 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!_metadataManager.HasApiKey(Protocol.ApiKey.AddRaftVoter))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support AddRaftVoter (API key 80).");
-        }
-
         await WithRetryAsync(async () =>
         {
             using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.AddRaftVoter,
                 AddRaftVoterRequest.LowestSupportedVersion,
                 AddRaftVoterRequest.HighestSupportedVersion);
@@ -3327,16 +3317,12 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!_metadataManager.HasApiKey(Protocol.ApiKey.RemoveRaftVoter))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support RemoveRaftVoter (API key 81).");
-        }
-
         await WithRetryAsync(async () =>
         {
             using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.RemoveRaftVoter,
                 RemoveRaftVoterRequest.LowestSupportedVersion,
                 RemoveRaftVoterRequest.HighestSupportedVersion);
@@ -3368,16 +3354,12 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (!_metadataManager.HasApiKey(Protocol.ApiKey.UnregisterBroker))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support UnregisterBroker (API key 64).");
-        }
-
         await WithRetryAsync(async () =>
         {
             using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
                 Protocol.ApiKey.UnregisterBroker,
                 UnregisterBrokerRequest.LowestSupportedVersion,
                 UnregisterBrokerRequest.HighestSupportedVersion);
@@ -3422,16 +3404,16 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<int, IReadOnlyDictionary<string, LogDirDescription>>>(async () =>
         {
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.DescribeLogDirs,
-                DescribeLogDirsRequest.LowestSupportedVersion,
-                DescribeLogDirsRequest.HighestSupportedVersion);
-
             // Fan out to all requested brokers in parallel.
             var brokerResults = await Task.WhenAll(brokerIdList.Select(async brokerId =>
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.DescribeLogDirs,
+                    DescribeLogDirsRequest.LowestSupportedVersion,
+                    DescribeLogDirsRequest.HighestSupportedVersion);
                 var response = await connection.SendAsync<DescribeLogDirsRequest, DescribeLogDirsResponse>(
                     new DescribeLogDirsRequest { Topics = topicFilters },
                     apiVersion,
@@ -3513,17 +3495,17 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartitionReplica, AlterReplicaLogDirResultInfo>>(async () =>
         {
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.AlterReplicaLogDirs,
-                AlterReplicaLogDirsRequest.LowestSupportedVersion,
-                AlterReplicaLogDirsRequest.HighestSupportedVersion);
-
             // Fan out to all target brokers in parallel.
             var brokerResults = await Task.WhenAll(assignmentsByBroker.Select(async brokerAssignments =>
             {
                 var brokerId = brokerAssignments.Key;
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.AlterReplicaLogDirs,
+                    AlterReplicaLogDirsRequest.LowestSupportedVersion,
+                    AlterReplicaLogDirsRequest.HighestSupportedVersion);
                 var request = new AlterReplicaLogDirsRequest
                 {
                     Dirs = BuildAlterReplicaLogDirsRequestDirs(brokerAssignments)
@@ -3681,15 +3663,15 @@ public sealed class AdminClient : IAdminClient
                 groups.Add(groupId);
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.StreamsGroupDescribe,
-                StreamsGroupDescribeRequest.LowestSupportedVersion,
-                StreamsGroupDescribeRequest.HighestSupportedVersion);
-
             var describeResponses = await Task.WhenAll(groupsByCoordinator.Select(async kvp =>
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(kvp.Key, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.StreamsGroupDescribe,
+                    StreamsGroupDescribeRequest.LowestSupportedVersion,
+                    StreamsGroupDescribeRequest.HighestSupportedVersion);
 
                 var request = new StreamsGroupDescribeRequest
                 {
@@ -3742,21 +3724,20 @@ public sealed class AdminClient : IAdminClient
                 throw new InvalidOperationException("No brokers available");
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.ListGroups,
-                ListGroupsRequest.LowestSupportedVersion,
-                ListGroupsRequest.HighestSupportedVersion);
-
-            var request = new ListGroupsRequest
-            {
-                StatesFilter = apiVersion >= 4 ? opts.States : null,
-                TypesFilter = apiVersion >= 5 ? ["streams"] : null
-            };
-
             var responses = await Task.WhenAll(brokers.Select(async broker =>
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.ListGroups,
+                    ListGroupsRequest.LowestSupportedVersion,
+                    ListGroupsRequest.HighestSupportedVersion);
+                var request = new ListGroupsRequest
+                {
+                    StatesFilter = apiVersion >= 4 ? opts.States : null,
+                    TypesFilter = apiVersion >= 5 ? ["streams"] : null
+                };
 
                 var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
                     request,
@@ -3769,13 +3750,13 @@ public sealed class AdminClient : IAdminClient
                         $"ListStreamsGroups failed on broker {broker.NodeId}: {response.ErrorCode}");
                 }
 
-                return response;
+                return (Response: response, ApiVersion: apiVersion);
             })).ConfigureAwait(false);
 
             var seenGroupIds = new HashSet<string>();
             var result = new List<GroupListing>();
 
-            foreach (var response in responses)
+            foreach (var (response, apiVersion) in responses)
             {
                 foreach (var group in response.Groups)
                 {
@@ -3947,16 +3928,16 @@ public sealed class AdminClient : IAdminClient
                 groups.Add(groupId);
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.ShareGroupDescribe,
-                ShareGroupDescribeRequest.LowestSupportedVersion,
-                ShareGroupDescribeRequest.HighestSupportedVersion);
-
             // Fan out ShareGroupDescribe requests to all coordinators in parallel
             var describeResponses = await Task.WhenAll(groupsByCoordinator.Select(async kvp =>
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(kvp.Key, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.ShareGroupDescribe,
+                    ShareGroupDescribeRequest.LowestSupportedVersion,
+                    ShareGroupDescribeRequest.HighestSupportedVersion);
 
                 var request = new ShareGroupDescribeRequest
                 {
@@ -4030,22 +4011,21 @@ public sealed class AdminClient : IAdminClient
                 throw new InvalidOperationException("No brokers available");
             }
 
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.ListGroups,
-                ListGroupsRequest.LowestSupportedVersion,
-                ListGroupsRequest.HighestSupportedVersion);
-
-            var request = new ListGroupsRequest
-            {
-                StatesFilter = apiVersion >= 4 ? opts.States : null,
-                TypesFilter = apiVersion >= 5 ? ["share"] : null
-            };
-
             // Fan out to all brokers in parallel
             var responses = await Task.WhenAll(brokers.Select(async broker =>
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.ListGroups,
+                    ListGroupsRequest.LowestSupportedVersion,
+                    ListGroupsRequest.HighestSupportedVersion);
+                var request = new ListGroupsRequest
+                {
+                    StatesFilter = apiVersion >= 4 ? opts.States : null,
+                    TypesFilter = apiVersion >= 5 ? ["share"] : null
+                };
 
                 var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
                     request,
@@ -4058,14 +4038,14 @@ public sealed class AdminClient : IAdminClient
                         $"ListShareGroups failed on broker {broker.NodeId}: {response.ErrorCode}");
                 }
 
-                return response;
+                return (Response: response, ApiVersion: apiVersion);
             })).ConfigureAwait(false);
 
             // Merge and deduplicate results
             var seenGroupIds = new HashSet<string>();
             var result = new List<GroupListing>();
 
-            foreach (var response in responses)
+            foreach (var (response, apiVersion) in responses)
             {
                 foreach (var group in response.Groups)
                 {
@@ -4138,6 +4118,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.DescribeShareGroupOffsets,
                 DescribeShareGroupOffsetsRequest.LowestSupportedVersion,
                 DescribeShareGroupOffsetsRequest.HighestSupportedVersion);
@@ -4216,6 +4197,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.AlterShareGroupOffsets,
                 AlterShareGroupOffsetsRequest.LowestSupportedVersion,
                 AlterShareGroupOffsetsRequest.HighestSupportedVersion);
@@ -4278,6 +4260,7 @@ public sealed class AdminClient : IAdminClient
             };
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.DeleteShareGroupOffsets,
                 DeleteShareGroupOffsetsRequest.LowestSupportedVersion,
                 DeleteShareGroupOffsetsRequest.HighestSupportedVersion);
@@ -4358,13 +4341,6 @@ public sealed class AdminClient : IAdminClient
 
     private ValueTask<T> WithRetryAsync<T>(Func<ValueTask<T>> operation, CancellationToken cancellationToken)
         => RetryHelper.WithRetryAsync(operation, _metadataManager, cancellationToken);
-
-    private bool SupportsApiRange(Protocol.ApiKey apiKey, short lowestSupportedVersion, short highestSupportedVersion)
-        => _metadataManager.TryGetNegotiatedApiVersion(
-            apiKey,
-            lowestSupportedVersion,
-            highestSupportedVersion,
-            out _);
 
     private static WriteTxnMarkersResponsePartition FindAbortTransactionPartition(
         WriteTxnMarkersResponse response,
@@ -4478,6 +4454,7 @@ public sealed class AdminClient : IAdminClient
         };
 
         var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
             Protocol.ApiKey.FindCoordinator,
             FindCoordinatorRequest.LowestSupportedVersion,
             FindCoordinatorRequest.HighestSupportedVersion);
@@ -4522,6 +4499,7 @@ public sealed class AdminClient : IAdminClient
         };
 
         var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
             Protocol.ApiKey.FindCoordinator,
             FindCoordinatorRequest.LowestSupportedVersion,
             FindCoordinatorRequest.HighestSupportedVersion);
