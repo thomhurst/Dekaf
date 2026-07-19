@@ -1508,14 +1508,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         _options.TransactionalId is not null))
                 {
                     waveCoalesceArmed = false;
-                    _onWaveCoalesceStarted?.Invoke();
                     var coalescedCountBeforeSpin = coalescedCount;
                     var started = Stopwatch.GetTimestamp();
                     var hardDeadline = started + waveCoalesceMaxTicks;
                     var quietDeadline = Math.Min(started + waveCoalesceQuietTicks, hardDeadline);
-                    while (coalescedCount < maxCoalesce
-                           && coalescedPartitions.Count < _knownPartitions.Count
-                           && Stopwatch.GetTimestamp() < quietDeadline)
+                    _onWaveCoalesceStarted?.Invoke();
+                    // Probe once before consulting the deadline. A queued sibling must not be
+                    // split into a later request solely because this thread was preempted here.
+                    do
                     {
                         cancellationToken.ThrowIfCancellationRequested();
                         if (!eventReader.TryRead(out var evt))
@@ -1552,6 +1552,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             break;
                         }
                     }
+                    while (coalescedCount < maxCoalesce
+                           && coalescedPartitions.Count < _knownPartitions.Count
+                           && Stopwatch.GetTimestamp() < quietDeadline);
 
                     waveCoalesceGate.OnSpinCompleted(
                         coalescedCount > coalescedCountBeforeSpin,

@@ -467,6 +467,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var accumulator = new RecordAccumulator(options);
         var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
         var injectSibling = 0;
+        var expireWaveDeadline = 0;
         var idleWaitCount = 0;
         BrokerSender? sender = null;
         sender = CreateSender(
@@ -477,7 +478,16 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             onWaveCoalesceStarted: () =>
             {
                 if (Volatile.Read(ref injectSibling) != 0)
+                {
                     sender!.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
+                    if (Volatile.Read(ref expireWaveDeadline) != 0)
+                    {
+                        // Expire both zero-linger deadlines after the sibling is queued.
+                        var deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 1_000;
+                        while (Stopwatch.GetTimestamp() < deadline)
+                            Thread.SpinWait(32);
+                    }
+                }
             },
             onIdleWaitStarted: () => Interlocked.Increment(ref idleWaitCount));
 
@@ -501,6 +511,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 cancellationToken);
 
             Volatile.Write(ref injectSibling, 1);
+            Volatile.Write(ref expireWaveDeadline, 1);
             expectedIdleWaitCount = Volatile.Read(ref idleWaitCount) + 1;
             sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
             await WaitUntilAsync(
