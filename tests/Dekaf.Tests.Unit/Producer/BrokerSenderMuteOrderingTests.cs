@@ -1375,23 +1375,35 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     public async Task MultiplePartitionsMuted_IndependentlyBlocked_OtherPartitionsProceed(CancellationToken ct)
     {
         // Send 1: A(p0) + B(p1) + C(p2) → p0 error, p1 error, p2 success
-        // Send 2: A retry(p0) + B retry(p1) → both succeed
+        // Retries may share one request or use one request per partition.
         var tcs1 = new TaskCompletionSource<ProduceResponse>();
-        var tcs2 = new TaskCompletionSource<ProduceResponse>();
-        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
-        responseQueue.Enqueue(tcs1);
-        responseQueue.Enqueue(tcs2);
-
         var sendCount = 0;
-        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
-
-        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        var firstSend = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = new TestKafkaConnection { CaptureProduceRequests = true };
+        connection.SendProducePipelinedAfterWrite = () =>
         {
-            var idx = Interlocked.Increment(ref sendCount) - 1;
-            if (idx < sendSignals.Length)
-                sendSignals[idx].TrySetResult();
-        });
-        ct = GuardUnscriptedSends(ct);
+            if (Interlocked.Increment(ref sendCount) == 1)
+            {
+                firstSend.TrySetResult();
+                return new ValueTask<Task<ProduceResponse>>(tcs1.Task);
+            }
+
+            string requestInfo;
+            lock (connection.CapturedProduceRequests)
+                requestInfo = connection.CapturedProduceRequests[^1].Info;
+
+            var partitions = new List<(int partition, ErrorCode errorCode, long baseOffset)>(2);
+            if (requestInfo.Contains("test-topic-0(", StringComparison.Ordinal))
+                partitions.Add((0, ErrorCode.None, 100));
+            if (requestInfo.Contains("test-topic-1(", StringComparison.Ordinal))
+                partitions.Add((1, ErrorCode.None, 200));
+
+            return new ValueTask<Task<ProduceResponse>>(Task.FromResult(
+                CreateMultiPartitionResponse("test-topic", partitions.ToArray())));
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1422,20 +1434,13 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             sender.Enqueue(batchB);
             sender.Enqueue(batchC);
 
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            await firstSend.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // p0 and p1 fail, p2 succeeds
             tcs1.SetResult(CreateMultiPartitionResponse("test-topic",
                 (0, ErrorCode.NotLeaderOrFollower, -1),
                 (1, ErrorCode.NotLeaderOrFollower, -1),
                 (2, ErrorCode.None, 300)));
-
-            // Wait for retries of p0 and p1
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
-
-            tcs2.SetResult(CreateMultiPartitionResponse("test-topic",
-                (0, ErrorCode.None, 100),
-                (1, ErrorCode.None, 200)));
 
             await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
@@ -1445,6 +1450,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             var retryAcks = ackPartitions.Skip(1).OrderBy(a => a.partition).ToList();
             await Assert.That(retryAcks[0]).IsEqualTo((0, 100L));
             await Assert.That(retryAcks[1]).IsEqualTo((1, 200L));
+            await Assert.That(Volatile.Read(ref sendCount)).IsBetween(2, 3);
         }
         finally
         {
