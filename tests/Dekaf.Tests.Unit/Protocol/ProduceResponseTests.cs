@@ -7,6 +7,39 @@ namespace Dekaf.Tests.Unit.Protocol;
 public class ProduceResponseTests
 {
     [Test]
+    public async Task Read_V13_UsesTopicIdInsteadOfName()
+    {
+        var topicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUnsignedVarInt(2); // one topic
+        writer.WriteUuid(topicId);
+        writer.WriteUnsignedVarInt(1); // empty partitions
+        writer.WriteUnsignedVarInt(0); // topic tagged fields
+        writer.WriteInt32(0);          // throttle time
+        writer.WriteUnsignedVarInt(0); // response tagged fields
+
+        ProduceResponse response;
+        bool readerEnd;
+        {
+            var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+            response = (ProduceResponse)ProduceResponse.Read(ref reader, 13);
+            readerEnd = reader.End;
+        }
+
+        try
+        {
+            await Assert.That(response.Responses[0].TopicId).IsEqualTo(topicId);
+            await Assert.That(response.Responses[0].Name).IsEmpty();
+            await Assert.That(readerEnd).IsTrue();
+        }
+        finally
+        {
+            response.Return();
+        }
+    }
+
+    [Test]
     public async Task Read_InternsRepeatedTopicNames()
     {
         var topicName = "produce-topic-" + Guid.NewGuid().ToString("N");

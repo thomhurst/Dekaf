@@ -1197,7 +1197,7 @@ public class RecordAccumulatorReadyTests
         // Budget exactly one framed batch so the other 2 partitions are skipped.
         // This should re-enqueue notifications for both skipped partitions.
         var firstBatch = PeekFirstReadyBatch(accumulator, "test-topic", partition: 0);
-        var maxRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        var maxRequestSize = ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId: null,
             "test-topic",
             firstBatch.EncodedSize);
@@ -1246,7 +1246,7 @@ public class RecordAccumulatorReadyTests
         var firstBatch = PeekFirstReadyBatch(accumulator, topic, partition: 0);
         var secondBatch = PeekFirstReadyBatch(accumulator, topic, partition: 1);
         var encodedBatchesOnlyBudget = firstBatch.EncodedSize + secondBatch.EncodedSize;
-        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        await Assert.That(ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId: null,
             topic,
             firstBatch.EncodedSize)).IsLessThanOrEqualTo(encodedBatchesOnlyBudget);

@@ -1252,7 +1252,7 @@ public class RecordAccumulatorTests
             timestampDelta: 0,
             offsetDelta: 0,
             valueLength);
-        var maxRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        var maxRequestSize = ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId: null,
             topic,
             encodedBatchSize);
@@ -1286,7 +1286,7 @@ public class RecordAccumulatorTests
         await Assert.That(appended).IsTrue();
         await Assert.That(accumulator.TryDrainBatch(out var readyBatch)).IsTrue();
         await Assert.That(readyBatch!.RecordBatch.GetEncodedSize()).IsEqualTo(encodedBatchSize);
-        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        await Assert.That(ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId: null,
             topic,
             readyBatch.EncodedSize)).IsEqualTo(maxRequestSize);
@@ -1413,14 +1413,33 @@ public class RecordAccumulatorTests
             transactionalId,
             topic);
 
-        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        await Assert.That(ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId,
             topic,
             maxEncodedBatchSize)).IsEqualTo(maxRequestSize);
-        await Assert.That(ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        await Assert.That(ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId,
             topic,
             maxEncodedBatchSize + 1)).IsGreaterThan(maxRequestSize);
+    }
+
+    [Test]
+    public async Task ProduceRequestSizeCalculator_ConservativeTopicField_CoversNamesAndTopicIds()
+    {
+        const string shortTopic = "a";
+        const string longTopic = "topic-name-longer-than-a-topic-id";
+
+        var shortNameFixedSize = ProduceRequestSizeCalculator.GetSingleBatchFixedSize(null, shortTopic);
+        var shortConservativeFixedSize =
+            ProduceRequestSizeCalculator.GetConservativeSingleBatchFixedSize(null, shortTopic);
+        var longNameFixedSize = ProduceRequestSizeCalculator.GetSingleBatchFixedSize(null, longTopic);
+        var longConservativeFixedSize =
+            ProduceRequestSizeCalculator.GetConservativeSingleBatchFixedSize(null, longTopic);
+
+        await Assert.That(shortConservativeFixedSize - shortNameFixedSize)
+            .IsEqualTo(ProduceRequestSizeCalculator.TopicIdSize
+                - ProduceRequestSizeCalculator.CompactStringSize(shortTopic));
+        await Assert.That(longConservativeFixedSize).IsEqualTo(longNameFixedSize);
     }
 
     [Test]
@@ -1431,7 +1450,7 @@ public class RecordAccumulatorTests
         int expectedBatchSize)
     {
         const string topic = "t";
-        var fixedSize = ProduceRequestSizeCalculator.GetSingleBatchFixedSize(
+        var fixedSize = ProduceRequestSizeCalculator.GetConservativeSingleBatchFixedSize(
             transactionalId: null,
             topic);
         var maxRequestSize = fixedSize + available;
@@ -1462,7 +1481,7 @@ public class RecordAccumulatorTests
             timestampDelta: 0,
             offsetDelta: 0,
             valueLength: maxValueLength);
-        var maxRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        var maxRequestSize = ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId: null,
             topic,
             maxEncodedBatchSize);

@@ -112,9 +112,13 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
-    [Arguments(CompressionType.None)]
-    [Arguments(CompressionType.Gzip)]
-    public async Task SingleBatchProduceSegments_MatchContiguousSerialization(CompressionType compression)
+    [Arguments(CompressionType.None, (short)12)]
+    [Arguments(CompressionType.Gzip, (short)12)]
+    [Arguments(CompressionType.None, (short)13)]
+    [Arguments(CompressionType.Gzip, (short)13)]
+    public async Task SingleBatchProduceSegments_MatchContiguousSerialization(
+        CompressionType compression,
+        short apiVersion)
     {
         var recordBytes = "arena-backed-records"u8.ToArray();
         var batch = new RecordBatch
@@ -139,7 +143,11 @@ public sealed class KafkaConnectionTests
             Records = [batch],
             Compression = compression
         };
-        var topic = new ProduceRequestTopicData { Name = "segment-topic" };
+        var topic = new ProduceRequestTopicData
+        {
+            Name = "segment-topic",
+            TopicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff")
+        };
         topic.SetPartitionDataScratch([partition], 0, 1);
         var request = new ProduceRequest
         {
@@ -149,7 +157,6 @@ public sealed class KafkaConnectionTests
         };
         request.SetTopicDataScratch([topic], 1);
 
-        const short apiVersion = 12;
         const int correlationId = 123;
         var headerVersion = KafkaMessageMetadata<ProduceRequest, ProduceResponse>
             .GetRequestHeaderVersion(apiVersion);

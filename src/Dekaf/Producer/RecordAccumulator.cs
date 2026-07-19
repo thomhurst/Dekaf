@@ -4175,7 +4175,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (_singleBatchRequestFixedSizes.TryGetValue(topic, out var fixedSize))
             return fixedSize;
 
-        fixedSize = ProduceRequestSizeCalculator.GetSingleBatchFixedSize(
+        fixedSize = ProduceRequestSizeCalculator.GetConservativeSingleBatchFixedSize(
             _options.TransactionalId,
             topic);
         return _singleBatchRequestFixedSizes.GetOrAdd(topic, fixedSize);

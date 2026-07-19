@@ -80,10 +80,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     public async Task DeliveryLatencyOrigin_SealWithinLinger_UsesSealNotCreation()
     {
         // Sealing within the configured linger: the origin stays the seal, so opted-in
-        // batching delay never reads as queueing to the window governor.
+        // batching delay never reads as queueing to the window governor. Keep the deadline
+        // far beyond any scheduler pause so suite load cannot change the branch under test.
         var readyBatch = CreateReadyBatchSealedAfter(
             creationAgeTicks: Stopwatch.Frequency / 10,
-            lingerMs: 200);
+            lingerMs: 60_000);
 
         try
         {
@@ -261,19 +262,32 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     public async Task IsMatchingResponsePartition_RequiresExactTopicPartition()
     {
         var expected = new TopicPartition("test-topic", 2);
+        var topicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
 
         await Assert.That(BrokerSender.IsMatchingResponsePartition(
             expected,
-            responseTopic: "test-topic",
+            apiVersion: 12,
+            expectedTopicId: Guid.Empty,
+            responseTopic: new ProduceResponseTopicData { Name = "test-topic" },
             responsePartition: 2)).IsTrue();
         await Assert.That(BrokerSender.IsMatchingResponsePartition(
             expected,
-            responseTopic: "test-topic",
+            apiVersion: 12,
+            expectedTopicId: Guid.Empty,
+            responseTopic: new ProduceResponseTopicData { Name = "test-topic" },
             responsePartition: 3)).IsFalse();
         await Assert.That(BrokerSender.IsMatchingResponsePartition(
             expected,
-            responseTopic: "other-topic",
+            apiVersion: 12,
+            expectedTopicId: Guid.Empty,
+            responseTopic: new ProduceResponseTopicData { Name = "other-topic" },
             responsePartition: 2)).IsFalse();
+        await Assert.That(BrokerSender.IsMatchingResponsePartition(
+            expected,
+            apiVersion: 13,
+            expectedTopicId: topicId,
+            responseTopic: new ProduceResponseTopicData { TopicId = topicId },
+            responsePartition: 2)).IsTrue();
     }
 
     [Test]
@@ -987,7 +1001,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         string topic,
         int leaderId,
         int leaderEpoch,
-        int partitionCount = 1) =>
+        int partitionCount = 1,
+        Guid topicId = default) =>
         new()
         {
             Brokers =
@@ -1001,6 +1016,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 {
                     ErrorCode = ErrorCode.None,
                     Name = topic,
+                    TopicId = topicId,
                     Partitions = Enumerable.Range(0, partitionCount)
                         .Select(partition => new PartitionMetadata
                         {
@@ -1014,6 +1030,158 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                 }
             ]
         };
+
+    private static ProduceResponse CreateTopicIdResponse(
+        Guid topicId,
+        int partition,
+        ErrorCode errorCode,
+        long baseOffset = -1) =>
+        new()
+        {
+            TopicCount = 1,
+            Responses =
+            [
+                new ProduceResponseTopicData
+                {
+                    TopicId = topicId,
+                    PartitionCount = 1,
+                    PartitionResponses =
+                    [
+                        new ProduceResponsePartitionData
+                        {
+                            Index = partition,
+                            ErrorCode = errorCode,
+                            BaseOffset = baseOffset
+                        }
+                    ]
+                }
+            ]
+        };
+
+    [Test]
+    [MethodDataSource(nameof(TopicIdRetryErrorCodes))]
+    [Timeout(120_000)]
+    public async Task SendLoop_ProduceV13_TopicIdMismatchRetriesWithRefreshedId(
+        ErrorCode topicIdError,
+        CancellationToken cancellationToken)
+    {
+        const string topic = "topic-id-retry";
+        var oldTopicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+        var newTopicId = Guid.Parse("10213243-5465-7687-98a9-bacbdcedfe0f");
+        var firstResponse = new TaskCompletionSource<ProduceResponse>();
+        var retryResponse = new TaskCompletionSource<ProduceResponse>();
+        var sends = new[]
+        {
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var sendCount = 0;
+        var (pool, connection) = CreateMockConnection(
+            new Queue<TaskCompletionSource<ProduceResponse>>([firstResponse, retryResponse]),
+            () => sends[Interlocked.Increment(ref sendCount) - 1].TrySetResult());
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(retryBackoffMs: 0, retryBackoffMaxMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateLeaderMetadataResponse(topic, 1, 1, topicId: oldTopicId));
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<(TopicPartition TopicPartition, long Offset, Exception? Error)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (topicPartition, offset, _, _, error) =>
+                acknowledged.TrySetResult((topicPartition, offset, error)),
+            metadataManager,
+            produceApiVersion: 13);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, topic, partition: 0));
+            await sends[0].Task.WaitAsync(cancellationToken);
+
+            metadataManager.Metadata.Update(
+                CreateLeaderMetadataResponse(topic, 1, 2, topicId: newTopicId));
+            firstResponse.SetResult(CreateTopicIdResponse(
+                oldTopicId, partition: 0, topicIdError));
+
+            await sends[1].Task.WaitAsync(cancellationToken);
+            retryResponse.SetResult(CreateTopicIdResponse(
+                newTopicId, partition: 0, ErrorCode.None, baseOffset: 42));
+
+            var result = await acknowledged.Task.WaitAsync(cancellationToken);
+            await Assert.That(result.TopicPartition).IsEqualTo(new TopicPartition(topic, 0));
+            await Assert.That(result.Offset).IsEqualTo(42);
+            await Assert.That(result.Error).IsNull();
+            await Assert.That(connection.CapturedProduceRequests.Count).IsEqualTo(2);
+            await Assert.That(connection.CapturedProduceRequests[0].ApiVersion).IsEqualTo((short)13);
+            await Assert.That(connection.CapturedProduceRequests[0].Topics[0].TopicId).IsEqualTo(oldTopicId);
+            await Assert.That(connection.CapturedProduceRequests[1].Topics[0].TopicId).IsEqualTo(newTopicId);
+            await Assert.That(topicIdError.IsRetriable()).IsTrue();
+            await Assert.That(topicIdError.RequiresMetadataRefresh()).IsTrue();
+        }
+        finally
+        {
+            firstResponse.TrySetResult(CreateTopicIdResponse(oldTopicId, 0, ErrorCode.None));
+            retryResponse.TrySetResult(CreateTopicIdResponse(newTopicId, 0, ErrorCode.None));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    public static IEnumerable<ErrorCode> TopicIdRetryErrorCodes()
+    {
+        yield return ErrorCode.UnknownTopicId;
+        yield return ErrorCode.InconsistentTopicId;
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_ProduceV12_FallsBackToTopicNames(
+        CancellationToken cancellationToken)
+    {
+        const string topic = "produce-v12-fallback";
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, connection) = CreateMockConnection(
+            new Queue<TaskCompletionSource<ProduceResponse>>([response]),
+            sent.SetResult);
+        connection.CaptureProduceRequests = true;
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, error) => acknowledged.TrySetResult(error),
+            produceApiVersion: 12);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, topic, partition: 0));
+            await sent.Task.WaitAsync(cancellationToken);
+            response.SetResult(CreateSuccessResponse(topic, partition: 0, baseOffset: 42));
+
+            await Assert.That(await acknowledged.Task.WaitAsync(cancellationToken)).IsNull();
+            await Assert.That(connection.CapturedProduceRequests.Count).IsEqualTo(1);
+            await Assert.That(connection.CapturedProduceRequests[0].ApiVersion).IsEqualTo((short)12);
+            await Assert.That(connection.CapturedProduceRequests[0].Topics[0].Name).IsEqualTo(topic);
+        }
+        finally
+        {
+            response.TrySetResult(CreateSuccessResponse(topic, 0, baseOffset: 42));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
 
     private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken cancellationToken)
     {

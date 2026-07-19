@@ -1,11 +1,14 @@
 using System.Diagnostics;
 using System.Reflection;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
 
@@ -171,7 +174,7 @@ public sealed class ReadyBatchIncarnationTests
         var timestamp = Stopwatch.GetTimestamp();
         var pending = Activator.CreateInstance(
             PendingResponseType,
-            responseTask, batches, generations, 1,
+            responseTask, batches, generations, null, (short)12, 1,
             (long)batch.EncodedSize, (long)batch.DataSize, timestamp,
             default(BrokerUnackedByteBudget.DeliverySnapshot))!;
         var isSameIncarnation = PendingResponseType.GetMethod("IsSameIncarnation")!;
@@ -184,8 +187,10 @@ public sealed class ReadyBatchIncarnationTests
     }
 
     [Test]
-    public async Task ProduceRequestScratch_Build_WhenSortingBatches_PermutesGenerations()
+    public async Task ProduceRequestScratch_BuildV13_SortsBatchesAndResolvesTopicIds()
     {
+        var laterTopicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+        var earlierTopicId = Guid.Parse("10213243-5465-7687-98a9-bacbdcedfe0f");
         var laterTopicBatch = CreateInitializedBatch("z-topic", 0);
         InitializeBatch(laterTopicBatch, "z-topic", 0);
         var earlierTopicBatch = CreateInitializedBatch("a-topic", 1);
@@ -197,12 +202,99 @@ public sealed class ReadyBatchIncarnationTests
             new CompressionCodecRegistry(),
             4)!;
         var build = ProduceRequestScratchType.GetMethod("Build")!;
+        await using var metadataManager = new MetadataManager(
+            Substitute.For<IConnectionPool>(),
+            ["localhost:9092"]);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [],
+            Topics =
+            [
+                CreateTopicMetadata("z-topic", laterTopicId),
+                CreateTopicMetadata("a-topic", earlierTopicId)
+            ]
+        });
+        var topicIds = new Guid[2];
 
-        build.Invoke(scratch, [batches, generations, 2]);
+        var request = (ProduceRequest)build.Invoke(
+            scratch,
+            [batches, generations, topicIds, 2, (short)13, metadataManager])!;
 
         await Assert.That(batches[0]).IsSameReferenceAs(earlierTopicBatch);
         await Assert.That(generations[0]).IsEqualTo(earlierTopicBatch.Generation);
         await Assert.That(batches[1]).IsSameReferenceAs(laterTopicBatch);
         await Assert.That(generations[1]).IsEqualTo(laterTopicBatch.Generation);
+        await Assert.That(topicIds).IsEquivalentTo([earlierTopicId, laterTopicId]);
+        await Assert.That(request.GetTopicEntry(0).Name).IsEqualTo("a-topic");
+        await Assert.That(request.GetTopicEntry(0).TopicId).IsEqualTo(earlierTopicId);
+        await Assert.That(request.GetTopicEntry(1).Name).IsEqualTo("z-topic");
+        await Assert.That(request.GetTopicEntry(1).TopicId).IsEqualTo(laterTopicId);
     }
+
+    [Test]
+    public async Task ProduceRequestScratch_BuildV13_MissingLaterTopicIdClearsPartialReferences()
+    {
+        var knownTopicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+        var knownTopicBatch = CreateInitializedBatch("a-topic", 0);
+        var missingTopicBatch = CreateInitializedBatch("z-topic", 0);
+        var batches = new[] { knownTopicBatch, missingTopicBatch };
+        var generations = new[] { knownTopicBatch.Generation, missingTopicBatch.Generation };
+        var scratch = Activator.CreateInstance(
+            ProduceRequestScratchType,
+            new ProducerOptions { BootstrapServers = ["localhost:9092"] },
+            new CompressionCodecRegistry(),
+            4)!;
+        var build = ProduceRequestScratchType.GetMethod("Build")!;
+        var clearReferences = ProduceRequestScratchType.GetMethod("ClearReferences")!;
+        var recordBatches = (RecordBatch[][])ProduceRequestScratchType.GetField(
+            "_recordBatches",
+            BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(scratch)!;
+        await using var metadataManager = new MetadataManager(
+            Substitute.For<IConnectionPool>(),
+            ["localhost:9092"]);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [],
+            Topics = [CreateTopicMetadata("a-topic", knownTopicId)]
+        });
+
+        TargetInvocationException? thrown = null;
+        try
+        {
+            build.Invoke(
+                scratch,
+                [batches, generations, new Guid[2], 2, (short)13, metadataManager]);
+        }
+        catch (TargetInvocationException exception)
+        {
+            thrown = exception;
+        }
+
+        await Assert.That(thrown?.InnerException).IsTypeOf<KafkaException>();
+        await Assert.That(((KafkaException)thrown!.InnerException!).ErrorCode)
+            .IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(recordBatches[0][0]).IsSameReferenceAs(knownTopicBatch.RecordBatch);
+
+        clearReferences.Invoke(scratch, null);
+
+        await Assert.That(recordBatches[0][0]).IsNull();
+    }
+
+    private static TopicMetadata CreateTopicMetadata(string name, Guid topicId) => new()
+    {
+        ErrorCode = ErrorCode.None,
+        Name = name,
+        TopicId = topicId,
+        Partitions =
+        [
+            new PartitionMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                PartitionIndex = 0,
+                LeaderId = 1,
+                ReplicaNodes = [1],
+                IsrNodes = [1]
+            }
+        ]
+    };
 }

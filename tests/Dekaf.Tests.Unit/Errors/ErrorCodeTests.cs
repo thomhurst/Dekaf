@@ -74,6 +74,7 @@ public class ErrorCodeTests
         yield return ErrorCode.UnstableOffsetCommit;
         yield return ErrorCode.ThrottlingQuotaExceeded;
         yield return ErrorCode.UnknownTopicId;
+        yield return ErrorCode.InconsistentTopicId;
     }
 
     public static IEnumerable<ErrorCode> NonRetriableErrorCodes()
@@ -96,10 +97,10 @@ public class ErrorCodeTests
     }
 
     [Test]
-    public async Task IsRetriable_ExactlyTwentyFourRetriableCodes()
+    public async Task IsRetriable_ExactlyTwentyFiveRetriableCodes()
     {
         var retriableCount = Enum.GetValues<ErrorCode>().Count(e => e.IsRetriable());
-        await Assert.That(retriableCount).IsEqualTo(24);
+        await Assert.That(retriableCount).IsEqualTo(25);
     }
 
     #endregion
@@ -133,6 +134,7 @@ public class ErrorCodeTests
         yield return ErrorCode.FencedLeaderEpoch;
         yield return ErrorCode.UnknownLeaderEpoch;
         yield return ErrorCode.UnknownTopicId;
+        yield return ErrorCode.InconsistentTopicId;
     }
 
     public static IEnumerable<ErrorCode> NonMetadataRefreshErrorCodes()
@@ -147,10 +149,10 @@ public class ErrorCodeTests
     }
 
     [Test]
-    public async Task RequiresMetadataRefresh_ExactlyElevenMetadataCodes()
+    public async Task RequiresMetadataRefresh_ExactlyTwelveMetadataCodes()
     {
         var metadataCount = Enum.GetValues<ErrorCode>().Count(e => e.RequiresMetadataRefresh());
-        await Assert.That(metadataCount).IsEqualTo(11);
+        await Assert.That(metadataCount).IsEqualTo(12);
     }
 
     #endregion

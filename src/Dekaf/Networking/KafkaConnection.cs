@@ -1627,7 +1627,10 @@ public sealed partial class KafkaConnection :
         writer.WriteInt16(request.Acks);
         writer.WriteInt32(request.TimeoutMs);
         writer.WriteUnsignedVarInt(2); // one topic, compact count is item count + 1
-        writer.WriteCompactString(topic.Name);
+        if (apiVersion >= ProduceRequest.TopicIdVersion)
+            writer.WriteUuid(topic.TopicId);
+        else
+            writer.WriteCompactString(topic.Name);
         writer.WriteUnsignedVarInt(2); // one partition
         writer.WriteInt32(partition.Index);
 

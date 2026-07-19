@@ -11,7 +11,7 @@ public sealed class ProduceResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.Produce;
     public static short LowestSupportedVersion => 9;
-    public static short HighestSupportedVersion => 12;
+    public static short HighestSupportedVersion => 13;
 
     private static ProduceResponsePool s_pool = new(maxPoolSize: 64);
     private static readonly Lock s_ratchetLock = new();
@@ -137,6 +137,11 @@ public struct ProduceResponseTopicData
     public string Name { get; internal set; }
 
     /// <summary>
+    /// Topic ID returned instead of <see cref="Name"/> in Produce v13+.
+    /// </summary>
+    public Guid TopicId { get; internal set; }
+
+    /// <summary>
     /// Partition responses. Reusable array — <see cref="PartitionCount"/> indicates valid elements.
     /// </summary>
     public ProduceResponsePartitionData[] PartitionResponses { get; internal set; }
@@ -165,7 +170,16 @@ public struct ProduceResponseTopicData
     /// </summary>
     internal void ReadInto(ref KafkaProtocolReader reader, short version)
     {
-        Name = TopicNameInternCache.Intern(reader.ReadCompactNonNullableString());
+        if (version >= ProduceRequest.TopicIdVersion)
+        {
+            TopicId = reader.ReadUuid();
+            Name = string.Empty;
+        }
+        else
+        {
+            Name = TopicNameInternCache.Intern(reader.ReadCompactNonNullableString());
+            TopicId = Guid.Empty;
+        }
 
         var partitionCount = reader.ReadUnsignedVarInt() - 1;
 

@@ -276,13 +276,16 @@ public class ResponseWireFormatSnapshotTests
 
             if (value is ProduceResponseTopicData topicData)
             {
-                return new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                var normalized = new SortedDictionary<string, object?>(StringComparer.Ordinal)
                 {
                     [nameof(ProduceResponseTopicData.Name)] = topicData.Name,
                     [nameof(ProduceResponseTopicData.PartitionResponses)] = NormalizeValue(
                         (topicData.PartitionResponses ?? []).Take(topicData.PartitionCount).ToArray(),
                         ancestors)
                 };
+                if (topicData.TopicId != Guid.Empty)
+                    normalized[nameof(ProduceResponseTopicData.TopicId)] = topicData.TopicId;
+                return normalized;
             }
 
             if (value is Record record)

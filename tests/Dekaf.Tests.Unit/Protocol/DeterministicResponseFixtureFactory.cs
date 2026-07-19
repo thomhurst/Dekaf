@@ -28,7 +28,8 @@ internal static class DeterministicResponseFixtureFactory
             ["OffsetCommitResponse.v10"] = Encode(WriteOffsetCommitResponseV10),
             ["OffsetFetchResponse.v9"] = Encode(WriteOffsetFetchResponse),
             ["OffsetFetchResponse.v10"] = Encode(WriteOffsetFetchResponseV10),
-            ["ProduceResponse.v12"] = Encode(WriteProduceResponse)
+            ["ProduceResponse.v12"] = Encode(WriteProduceResponseV12),
+            ["ProduceResponse.v13"] = Encode(WriteProduceResponseV13)
         };
 
     private static byte[] Encode(WriteFixture writeFixture)
@@ -159,11 +160,22 @@ internal static class DeterministicResponseFixtureFactory
         WriteEmptyTaggedFields(ref writer);
     }
 
-    private static void WriteProduceResponse(ref KafkaProtocolWriter writer)
+    private static void WriteProduceResponseV12(ref KafkaProtocolWriter writer) =>
+        WriteProduceResponse(ref writer, useTopicIds: false);
+
+    private static void WriteProduceResponseV13(ref KafkaProtocolWriter writer) =>
+        WriteProduceResponse(ref writer, useTopicIds: true);
+
+    private static void WriteProduceResponse(ref KafkaProtocolWriter writer, bool useTopicIds)
     {
         WriteCompactArrayLength(ref writer, 2);
-        WriteProduceTopic(ref writer, "wire-topic", firstPartition: 0);
-        WriteProduceTopic(ref writer, "wire-topic-b", firstPartition: 2);
+        WriteProduceTopic(ref writer, "wire-topic", TopicId, firstPartition: 0, useTopicIds);
+        WriteProduceTopic(
+            ref writer,
+            "wire-topic-b",
+            new Guid("10213243-5465-7687-98a9-bacbdcedfe0f"),
+            firstPartition: 2,
+            useTopicIds);
 
         writer.WriteInt32(29);
         writer.WriteUnsignedVarInt(2);
@@ -174,9 +186,14 @@ internal static class DeterministicResponseFixtureFactory
     private static void WriteProduceTopic(
         ref KafkaProtocolWriter writer,
         string topic,
-        int firstPartition)
+        Guid topicId,
+        int firstPartition,
+        bool useTopicIds)
     {
-        writer.WriteCompactString(topic);
+        if (useTopicIds)
+            writer.WriteUuid(topicId);
+        else
+            writer.WriteCompactString(topic);
         WriteCompactArrayLength(ref writer, 2);
         WriteProducePartition(ref writer, firstPartition, ErrorCode.None, includeRecordError: false);
         WriteProducePartition(

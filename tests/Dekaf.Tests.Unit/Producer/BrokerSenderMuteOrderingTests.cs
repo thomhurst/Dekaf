@@ -279,7 +279,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         for (var i = 0; i < coalescedCount; i++)
         {
             var existingBatch = coalescedBatches[i];
-            coalescedRequestBudgetUsed += ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            coalescedRequestBudgetUsed += ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
                 transactionalId: null,
                 existingBatch.TopicPartition.Topic,
                 existingBatch.EncodedSize);
@@ -1075,7 +1075,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     {
         const string topic = "test-topic";
         const int encodedBatchSize = 100;
-        var maxRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        var maxRequestSize = ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId: null,
             topic,
             encodedBatchSize);
@@ -2018,23 +2018,27 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     [Timeout(30_000)]
     public async Task InFlightWait_MutedPartitionFilter_MovesCoalescedNormalBatchToCarryOver(CancellationToken ct)
     {
-        // With maxInFlight=1:
+        // With maxInFlight=2:
         // Send 1: A(p0) + B(p1) coalesced
-        // While waiting for response, C(p0) + D(p1) arrive and get coalesced for next send
+        // Send 2: X(p0) + Y(p1), while C(p0) + D(p1) enter carry-over
+        // The immediate next iteration coalesces C + D, then waits at the in-flight limit
         // Response arrives: p0 error → p0 muted, p1 success
         // Muted partition filter removes C from coalesced (it's a normal p0 batch on muted partition)
-        // Send 2: A retry(p0) + D(p1) (C was moved to carry-over)
-        // Send 3: C(p0) (after unmute)
+        // Send 3: D(p1), then send 4: A retry(p0), then send 5: C(p0)
         var tcs1 = new TaskCompletionSource<ProduceResponse>();
         var tcs2 = new TaskCompletionSource<ProduceResponse>();
         var tcs3 = new TaskCompletionSource<ProduceResponse>();
+        var tcs4 = new TaskCompletionSource<ProduceResponse>();
+        var tcs5 = new TaskCompletionSource<ProduceResponse>();
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
         responseQueue.Enqueue(tcs1);
         responseQueue.Enqueue(tcs2);
         responseQueue.Enqueue(tcs3);
+        responseQueue.Enqueue(tcs4);
+        responseQueue.Enqueue(tcs5);
 
         var sendCount = 0;
-        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource(), new TaskCompletionSource() };
+        var sendSignals = Enumerable.Range(0, 5).Select(_ => new TaskCompletionSource()).ToArray();
 
         var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
         {
@@ -2043,7 +2047,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 sendSignals[idx].TrySetResult();
         });
         ct = GuardUnscriptedSends(ct);
-        var options = CreateOptions(maxInFlight: 1);
+        var options = CreateOptions(maxInFlight: 2);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
@@ -2051,6 +2055,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var allAcknowledged = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
+        var iterationGate = new TwoIterationGateLogger();
         var sender = CreateSender(pool, options, accumulator, (tp, offset, _, _, ex) =>
         {
             if (ex is null)
@@ -2058,16 +2063,18 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 lock (ackList)
                 {
                     ackList.Add((tp.Partition, offset));
-                    // B(p1) + A retry(p0) + D(p1) + C(p0) = 4
-                    if (ackList.Count >= 4)
+                    // B + X + Y + D + A retry + C = 6
+                    if (ackList.Count >= 6)
                         allAcknowledged.TrySetResult();
                 }
             }
-        });
+        }, logger: iterationGate);
 
         try
         {
-            // Phase 1: enqueue A(p0) and B(p1) — coalesced into send 1
+            await iterationGate.FirstIteration.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+
+            // Phase 1: A/B coalesce into send 1.
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
             // Predeclare the complete first wave before publishing its separate channel
@@ -2078,14 +2085,24 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             knownPartitions.Add(batchA.TopicPartition);
             knownPartitions.Add(batchB.TopicPartition);
             sender.EnqueueBulk([batchA, batchB]);
+            iterationGate.ReleaseFirst();
 
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
-            // Enqueue C(p0) and D(p1) while send 1 is in-flight
-            // (maxInFlight=1, so the send loop is waiting for the response)
+            // Phase 2: X/Y coalesce into send 2. Their same-partition successors C/D
+            // enter carry-over, forcing an immediate third iteration at full capacity.
+            var batchX = CreateTestBatch(vtPool, "test-topic", 0);
+            var batchY = CreateTestBatch(vtPool, "test-topic", 1);
             var batchC = CreateTestBatch(vtPool, "test-topic", 0);
             var batchD = CreateTestBatch(vtPool, "test-topic", 1);
-            sender.EnqueueBulk([batchC, batchD]);
+            sender.EnqueueBulk([batchX, batchY, batchC, batchD]);
+            await iterationGate.SecondIteration.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            iterationGate.ReleaseSecond();
+
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+            // C/D only receive 'C' in the third iteration; their first pass records 'O'.
+            await WaitForDiagAsync(batchC, 'C', TimeSpan.FromSeconds(5), ct);
+            await WaitForDiagAsync(batchD, 'C', TimeSpan.FromSeconds(5), ct);
 
             // Complete send 1: p0 fails, p1 succeeds
             // This triggers the muted partition filter on already-coalesced batches
@@ -2093,34 +2110,95 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 (0, ErrorCode.NotLeaderOrFollower, -1),
                 (1, ErrorCode.None, 200)));
 
-            // Send 2: should include A retry (p0) and D (p1)
-            // C (p0) should be in carry-over because the muted partition filter caught it
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            // Send 3 contains D only. C must have moved back to carry-over.
+            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
 
+            // Free capacity held by send 2 so the A retry can be sent next.
             tcs2.SetResult(CreateMultiPartitionResponse("test-topic",
-                (0, ErrorCode.None, 100),
-                (1, ErrorCode.None, 201)));
+                (0, ErrorCode.None, 110),
+                (1, ErrorCode.None, 210)));
 
-            // Send 3: C(p0) proceeds after unmute
-            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
-            tcs3.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 101));
+            await sendSignals[3].Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            // Free capacity held by D so C can follow the retry after it unmutes p0.
+            tcs3.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 201));
+            await sendSignals[4].Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
 
-            // Verify: exactly 3 sends occurred
-            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(3);
+            tcs4.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
+            tcs5.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 101));
+
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(5);
 
             // Verify ordering: A(p0, offset=100) must come before C(p0, offset=101)
             var p0Acks = ackList.Where(a => a.partition == 0).ToList();
-            await Assert.That(p0Acks).Count().IsEqualTo(2);
-            await Assert.That(p0Acks[0].offset).IsEqualTo(100); // A retry
-            await Assert.That(p0Acks[1].offset).IsEqualTo(101); // C
+            var retryIndex = p0Acks.FindIndex(a => a.offset == 100);
+            var successorIndex = p0Acks.FindIndex(a => a.offset == 101);
+            await Assert.That(retryIndex).IsGreaterThanOrEqualTo(0);
+            await Assert.That(successorIndex).IsGreaterThan(retryIndex);
         }
         finally
         {
+            iterationGate.ReleaseFirst();
+            iterationGate.ReleaseSecond();
+            tcs1.TrySetCanceled(CancellationToken.None);
+            tcs2.TrySetCanceled(CancellationToken.None);
+            tcs3.TrySetCanceled(CancellationToken.None);
+            tcs4.TrySetCanceled(CancellationToken.None);
+            tcs5.TrySetCanceled(CancellationToken.None);
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    private sealed class TwoIterationGateLogger : ILogger
+    {
+        private readonly TaskCompletionSource _firstRelease =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _secondRelease =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _iteration;
+
+        public TaskCompletionSource FirstIteration { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource SecondIteration { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void ReleaseFirst() => _firstRelease.TrySetResult();
+
+        public void ReleaseSecond() => _secondRelease.TrySetResult();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Name != "LogSendLoopIteration"
+                && !formatter(state, exception).Contains("send loop iteration", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            switch (Interlocked.Increment(ref _iteration))
+            {
+                case 1:
+                    FirstIteration.TrySetResult();
+                    _firstRelease.Task.GetAwaiter().GetResult();
+                    break;
+                case 2:
+                    SecondIteration.TrySetResult();
+                    _secondRelease.Task.GetAwaiter().GetResult();
+                    break;
+            }
         }
     }
 
@@ -2137,8 +2215,10 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         public void Arm()
         {
             Volatile.Write(ref _armed, 1);
-            _crashGate.TrySetResult();
+            Release();
         }
+
+        public void Release() => _crashGate.TrySetResult();
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 

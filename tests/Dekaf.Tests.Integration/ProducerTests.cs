@@ -12,6 +12,43 @@ namespace Dekaf.Tests.Integration;
 public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    public async Task Producer_MultiTopicProduce_UsesNegotiatedTopicEncoding()
+    {
+        var firstTopic = await KafkaContainer.CreateTestTopicAsync();
+        var secondTopic = await KafkaContainer.CreateTestTopicAsync();
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-multi-topic-ids")
+            .WithLinger(TimeSpan.FromMilliseconds(10))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var produceTasks = Enumerable.Range(0, 32)
+            .SelectMany(index => new[]
+            {
+                producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = firstTopic,
+                    Key = $"first-{index}",
+                    Value = index.ToString()
+                }, CancellationToken.None).AsTask(),
+                producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = secondTopic,
+                    Key = $"second-{index}",
+                    Value = index.ToString()
+                }, CancellationToken.None).AsTask()
+            })
+            .ToArray();
+
+        var results = await Task.WhenAll(produceTasks).WaitAsync(TimeSpan.FromSeconds(30));
+
+        await Assert.That(results.Count(result => result.Topic == firstTopic)).IsEqualTo(32);
+        await Assert.That(results.Count(result => result.Topic == secondTopic)).IsEqualTo(32);
+        await Assert.That(results.All(static result => result.Offset >= 0)).IsTrue();
+    }
+
+    [Test]
     public async Task Producer_WithIncrementalBatchMemory_ProducesAcrossChunkBoundaries()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
