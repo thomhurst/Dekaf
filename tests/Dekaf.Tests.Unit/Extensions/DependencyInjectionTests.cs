@@ -688,6 +688,7 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:InitialBatchRecordCapacity"] = "32",
             ["Kafka:Producers:Orders:BufferMemoryAllocationStrategy"] = "Incremental",
             ["Kafka:Producers:Orders:MetadataRecoveryStrategy"] = "None",
+            ["Kafka:Producers:Orders:MetadataClusterCheckEnabled"] = "false",
             ["Kafka:Producers:Orders:MetadataRecoveryRebootstrapTriggerMs"] = "60000",
             ["Kafka:Producers:Orders:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly"
         });
@@ -741,6 +742,7 @@ public class DependencyInjectionTests
         await Assert.That(options.BufferMemoryAllocationStrategy)
             .IsEqualTo(BufferMemoryAllocationStrategy.Incremental);
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(60000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
     }
@@ -921,6 +923,7 @@ public class DependencyInjectionTests
             ["Kafka:Consumers:Orders:QueuedMinMessages"] = "1000",
             ["Kafka:Consumers:Orders:QueuedMaxMessagesKbytes"] = "32768",
             ["Kafka:Consumers:Orders:MetadataRecoveryStrategy"] = "None",
+            ["Kafka:Consumers:Orders:MetadataClusterCheckEnabled"] = "false",
             ["Kafka:Consumers:Orders:MetadataRecoveryRebootstrapTriggerMs"] = "90000",
             ["Kafka:Consumers:Orders:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly",
             ["Kafka:Consumers:Orders:PrefetchPipelineDepth"] = "4",
@@ -983,6 +986,7 @@ public class DependencyInjectionTests
         await Assert.That(options.QueuedMaxMessagesKbytes).IsEqualTo(32768);
         await Assert.That(options.IsAutoTuned).IsFalse();
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(90000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
         await Assert.That(options.PrefetchPipelineDepth).IsEqualTo(4);
@@ -1104,6 +1108,7 @@ public class DependencyInjectionTests
             ["Kafka:Admin:SaslPassword"] = "secret",
             ["Kafka:Admin:SaslScramTokenAuth"] = "true",
             ["Kafka:Admin:MetadataRecoveryStrategy"] = "None",
+            ["Kafka:Admin:MetadataClusterCheckEnabled"] = "false",
             ["Kafka:Admin:MetadataRecoveryRebootstrapTriggerMs"] = "120000",
             ["Kafka:Admin:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly"
         });
@@ -1129,6 +1134,7 @@ public class DependencyInjectionTests
         await Assert.That(options.SaslPassword).IsEqualTo("secret");
         await Assert.That(options.SaslScramTokenAuth).IsTrue();
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
+        await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(120000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
     }

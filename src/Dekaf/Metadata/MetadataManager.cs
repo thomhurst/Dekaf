@@ -24,7 +24,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private readonly ClusterMetadata _metadata = new();
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly List<(string Host, int Port)> _bootstrapEndpoints;
-    private List<(string Host, int Port)>? _cachedEndpoints;
+    private List<(int BrokerId, string Host, int Port)>? _cachedEndpoints;
     private int _cachedBrokerHash;
     private readonly object _endpointCacheLock = new();
 
@@ -34,6 +34,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private readonly object _finalizedFeatureLock = new();
     private FinalizedFeatureSnapshot? _finalizedFeatures;
     private string? _finalizedFeatureClusterId;
+    private string? _trustedMetadataClusterId;
     private readonly SemaphoreSlim _initializeLock = new(1, 1);
     private volatile bool _initialized;
     private volatile bool _hasSuccessfulRefresh;
@@ -120,6 +121,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         _connectionPool = connectionPool;
         _options = options ?? new MetadataOptions();
+        ConfigureMetadataClusterCheck(_connectionPool);
         ExponentialRetryBackoff.Validate(_options.RetryBackoffMs, _options.RetryBackoffMaxMs);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<MetadataManager>.Instance;
         if (connectionPool is IConnectionCapabilityObserverPool observerPool)
@@ -160,6 +162,64 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         if (connectionPool is IConnectionCapabilityObserverPool observerPool)
             observerPool.SetConnectionCapabilityObserver(ObserveConnectionCapabilities);
+
+        ConfigureMetadataClusterCheck(connectionPool);
+        UpdateMetadataClusterId(connectionPool, Volatile.Read(ref _trustedMetadataClusterId));
+    }
+
+    private void ConfigureMetadataClusterCheck(IConnectionPool connectionPool)
+    {
+        if (connectionPool is IMetadataClusterIdentityPool identityPool)
+        {
+            identityPool.ConfigureMetadataClusterCheck(
+                _options.MetadataClusterCheckEnabled
+                && _options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap);
+        }
+    }
+
+    private static void UpdateMetadataClusterId(IConnectionPool connectionPool, string? clusterId)
+    {
+        if (connectionPool is IMetadataClusterIdentityPool identityPool)
+            identityPool.UpdateMetadataClusterId(clusterId);
+    }
+
+    private void UpdateMetadataClusterId(string? clusterId)
+    {
+        Volatile.Write(ref _trustedMetadataClusterId, clusterId);
+        UpdateMetadataClusterId(_connectionPool, clusterId);
+        var additionalPool = Volatile.Read(ref _additionalBrokerRegistrationTarget);
+        if (additionalPool is not null)
+            UpdateMetadataClusterId(additionalPool, clusterId);
+    }
+
+    private void BeginMetadataRebootstrap()
+    {
+        Volatile.Write(ref _trustedMetadataClusterId, null);
+        if (_connectionPool is IMetadataClusterIdentityPool identityPool)
+            identityPool.BeginMetadataRebootstrap();
+
+        if (Volatile.Read(ref _additionalBrokerRegistrationTarget) is IMetadataClusterIdentityPool additionalIdentityPool)
+            additionalIdentityPool.BeginMetadataRebootstrap();
+    }
+
+    private bool TryConsumeMetadataRebootstrapRequest()
+    {
+        var requested = _connectionPool is IMetadataClusterIdentityPool identityPool
+                        && identityPool.TryConsumeMetadataRebootstrapRequest();
+        var additionalPool = Volatile.Read(ref _additionalBrokerRegistrationTarget);
+        if (additionalPool is IMetadataClusterIdentityPool additionalIdentityPool)
+            requested |= additionalIdentityPool.TryConsumeMetadataRebootstrapRequest();
+
+        return requested;
+    }
+
+    private void RequestMetadataRebootstrap()
+    {
+        if (_connectionPool is IMetadataClusterIdentityPool identityPool)
+            identityPool.RequestMetadataRebootstrap();
+
+        if (Volatile.Read(ref _additionalBrokerRegistrationTarget) is IMetadataClusterIdentityPool additionalIdentityPool)
+            additionalIdentityPool.RequestMetadataRebootstrap();
     }
 
     /// <summary>
@@ -802,16 +862,30 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private async ValueTask RefreshMetadataInternalAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
     {
         Exception? lastException = null;
+        var retryRequestedRebootstrap = false;
+
+        if (_options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap
+            && TryConsumeMetadataRebootstrapRequest())
+        {
+            if (await ExecuteRebootstrapAsync(topics, cancellationToken).ConfigureAwait(false))
+            {
+                _hasSuccessfulRefresh = true;
+                return;
+            }
+
+            retryRequestedRebootstrap = true;
+        }
 
         // Try each bootstrap server or known broker
         var endpoints = GetEndpointsToTry();
 
-        foreach (var (host, port) in endpoints)
+        foreach (var (brokerId, host, port) in endpoints)
         {
             try
             {
-                using var connectionLease = await _connectionPool.LeaseConnectionAsync(host, port, cancellationToken)
-                    .ConfigureAwait(false);
+                using var connectionLease = brokerId >= 0
+                    ? await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false)
+                    : await _connectionPool.LeaseConnectionAsync(host, port, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
 
                 // Production connections negotiate before becoming ready. Keep explicit
@@ -868,6 +942,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // metadata for other topics. Full-cluster requests replace the snapshot.
                 // This matches the Java client's incremental metadata update behavior.
                 _metadata.Update(response, mergeTopics: topics is not null);
+                if (response.ErrorCode != ErrorCode.RebootstrapRequired)
+                    UpdateMetadataClusterId(response.ClusterId);
 
                 // Register brokers with connection pool
                 foreach (var broker in response.Brokers)
@@ -910,6 +986,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 return;
             }
         }
+
+        if (retryRequestedRebootstrap)
+            RequestMetadataRebootstrap();
 
         throw new InvalidOperationException("Failed to refresh metadata from any broker", lastException);
     }
@@ -958,8 +1037,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     private async ValueTask<bool> ExecuteRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
     {
-        ResetFinalizedFeaturesForRebootstrap();
-
         // Re-resolve DNS for each original bootstrap server
         var newEndpoints = await ResolveBootstrapEndpointsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1004,6 +1081,17 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
 
+                // A freshly resolved endpoint that still reports misrouting is not trusted.
+                // Try another endpoint without adopting its capabilities, metadata, or brokers.
+                if (response.ErrorCode == ErrorCode.RebootstrapRequired)
+                {
+                    LogRebootstrapChainSuppressed();
+                    continue;
+                }
+
+                ResetFinalizedFeaturesForRebootstrap();
+                BeginMetadataRebootstrap();
+
                 UpdateVersionlessCapabilities(
                     connection,
                     metadataApiVersion,
@@ -1015,13 +1103,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     ObserveClusterCapabilities(response.ClusterId, connection);
 
                 _metadata.Update(response, mergeTopics: topics is not null);
-
-                // Surface the condition where the new broker also wants a rebootstrap —
-                // we stop here to prevent an infinite loop, but log it for operators.
-                if (response.ErrorCode == ErrorCode.RebootstrapRequired)
-                {
-                    LogRebootstrapChainSuppressed();
-                }
+                UpdateMetadataClusterId(response.ClusterId);
 
                 foreach (var broker in response.Brokers)
                 {
@@ -1218,7 +1300,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         _metadataApiVersion = metadataApiVersion;
     }
 
-    internal IReadOnlyList<(string Host, int Port)> GetEndpointsToTry()
+    internal IReadOnlyList<(int BrokerId, string Host, int Port)> GetEndpointsToTry()
     {
         // Thread-safe cache check - avoid rebuilding if brokers haven't changed
         lock (_endpointCacheLock)
@@ -1244,7 +1326,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             }
 
             // Build new endpoint list (allocation only when metadata changes)
-            var endpoints = new List<(string Host, int Port)>(
+            var endpoints = new List<(int BrokerId, string Host, int Port)>(
                 currentBrokers.Count + _bootstrapEndpoints.Count);
 
             // First try known brokers, tracking seen endpoints for O(1) dedup
@@ -1254,18 +1336,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
             {
                 var ep = (broker.Host, broker.Port);
                 seen.Add(ep);
-                endpoints.Add(ep);
+                endpoints.Add((broker.NodeId, broker.Host, broker.Port));
             }
 
-            // Then bootstrap servers (skip duplicates — common in single-broker setups
-            // where the advertised listener matches the bootstrap address, avoiding
-            // redundant 30s request timeouts against the same endpoint)
+            // Keep bootstrap servers as immediate fallback when known brokers are down.
+            // KIP-1242 identity validation still rejects a bootstrap address that resolves
+            // to the wrong cluster before that connection becomes usable.
             foreach (var endpoint in _bootstrapEndpoints)
             {
                 if (seen.Add(endpoint))
-                {
-                    endpoints.Add(endpoint);
-                }
+                    endpoints.Add((-1, endpoint.Host, endpoint.Port));
             }
 
             // Update cache with new hash and endpoints
@@ -1533,6 +1613,12 @@ public sealed class MetadataOptions
     /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
     /// </summary>
     public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
+
+    /// <summary>
+    /// Whether new broker connections include the expected cluster and node identity (KIP-1242).
+    /// Disabled when <see cref="MetadataRecoveryStrategy"/> is <see cref="MetadataRecoveryStrategy.None"/>.
+    /// </summary>
+    public bool MetadataClusterCheckEnabled { get; init; } = true;
 
     /// <summary>
     /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers

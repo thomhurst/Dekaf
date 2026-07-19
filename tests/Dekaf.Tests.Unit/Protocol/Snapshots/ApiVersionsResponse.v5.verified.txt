@@ -1,0 +1,32 @@
+﻿Response: Dekaf.Protocol.Messages.ApiVersionsResponse
+API key: ApiVersions (18)
+Version: 5
+Header version: 0
+Body length: 37 bytes
+
+0000: 00 00 02 00 12 00 00 00  05 00 00 00 00 11 01 00 |................|
+0010: 14 02 0E 6B 72 61 66 74  2E 76 65 72 73 69 6F 6E |...kraft.version|
+0020: 00 00 00 01 00                                   |.....|
+
+Decoded:
+{
+  "ApiKeys": [
+    {
+      "ApiKey": "ApiVersions",
+      "MaxVersion": 5,
+      "MinVersion": 0
+    }
+  ],
+  "ErrorCode": "None",
+  "FinalizedFeatures": null,
+  "FinalizedFeaturesEpoch": -1,
+  "SupportedFeatures": [
+    {
+      "MaxVersion": 1,
+      "MinVersion": 0,
+      "Name": "kraft.version"
+    }
+  ],
+  "ThrottleTimeMs": 17,
+  "ZkMigrationReady": false
+}

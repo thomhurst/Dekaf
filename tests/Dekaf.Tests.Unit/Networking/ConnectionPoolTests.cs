@@ -98,6 +98,114 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task GetConnectionAsync_EndpointChanged_ReplacesCachedConnection()
+    {
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var original = await pool.GetConnectionAsync(1);
+
+            pool.RegisterBroker(1, "host-b", 9093);
+            var replacement = await pool.GetConnectionAsync(1);
+
+            await Assert.That(replacement).IsNotSameReferenceAs(original);
+            await Assert.That(replacement.Host).IsEqualTo("host-b");
+            await Assert.That(replacement.Port).IsEqualTo(9093);
+            await original.Received(1).DisposeAsync();
+        }
+    }
+
+    [Test]
+    [NotInParallel]
+    [Timeout(5_000)]
+    public async Task RegisterBroker_EndpointChange_DoesNotRetireFreshReplacement(
+        CancellationToken cancellationToken)
+    {
+        var endpointUpdated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connections = new List<IKafkaConnection>();
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                connections.Add(connection);
+                return ValueTask.FromResult(connection);
+            },
+            brokerEndpointUpdated: () =>
+            {
+                endpointUpdated.TrySetResult();
+                releaseRegistration.Task.GetAwaiter().GetResult();
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var original = await pool.GetConnectionAsync(1, cancellationToken);
+            original.IsConnected.Returns(false);
+
+            var registration = Task.Run(
+                () => pool.RegisterBroker(1, "host-b", 9093),
+                cancellationToken);
+            try
+            {
+                await endpointUpdated.Task.WaitAsync(cancellationToken);
+                var replacement = await pool.GetConnectionAsync(1, cancellationToken);
+
+                releaseRegistration.SetResult();
+                await registration.WaitAsync(cancellationToken);
+
+                await Assert.That(replacement.Host).IsEqualTo("host-b");
+                await replacement.DidNotReceive().DisposeAsync();
+            }
+            finally
+            {
+                releaseRegistration.TrySetResult();
+            }
+        }
+
+        await Assert.That(connections).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task GetConnectionAsync_EndpointChanged_ReplacesCachedConnectionGroup()
+    {
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 2,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var original = await pool.GetConnectionAsync(1);
+
+            pool.RegisterBroker(1, "host-b", 9093);
+            var replacement = await pool.GetConnectionByIndexAsync(1, 0);
+
+            await Assert.That(replacement).IsNotSameReferenceAs(original);
+            await Assert.That(replacement.Host).IsEqualTo("host-b");
+            await Assert.That(replacement.Port).IsEqualTo(9093);
+            await original.Received(1).DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task RegisterBroker_MultipleBrokers_AllRegistered()
     {
         await using var pool = new ConnectionPool("test-client");

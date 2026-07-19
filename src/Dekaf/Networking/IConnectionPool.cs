@@ -75,3 +75,12 @@ internal interface IConnectionCapabilityObserverPool
 {
     void SetConnectionCapabilityObserver(Action<KafkaConnectionCapabilities> observer);
 }
+
+internal interface IMetadataClusterIdentityPool
+{
+    void ConfigureMetadataClusterCheck(bool enabled);
+    void UpdateMetadataClusterId(string? clusterId);
+    void BeginMetadataRebootstrap();
+    void RequestMetadataRebootstrap();
+    bool TryConsumeMetadataRebootstrapRequest();
+}

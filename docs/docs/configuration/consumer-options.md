@@ -116,6 +116,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithOAuthBearer(...)` | `SaslMechanism`, `OAuthBearerConfig` | Use `SaslMechanism: OAuthBearer` |
 | `WithOAuthBearerJwtBearer(...)` | Runtime callback | Signs JWT assertions with RSA/ECDSA keys |
 | `WithMetadataRecoveryStrategy(...)` | `MetadataRecoveryStrategy` | `None` or `Rebootstrap` |
+| `WithMetadataClusterCheck(...)` | `MetadataClusterCheckEnabled` | KIP-1242 identity check; default `true`, ignored with `None` recovery |
 | `WithMetadataRecoveryRebootstrapTrigger(...)` | `MetadataRecoveryRebootstrapTriggerMs` | Milliseconds |
 
 Topics, deserializers, rebalance listeners, interceptors, and retry policies are objects or runtime choices, so configure those in the fluent callback.

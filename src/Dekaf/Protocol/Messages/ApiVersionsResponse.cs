@@ -8,7 +8,7 @@ public sealed class ApiVersionsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.ApiVersions;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 4;
+    public static short HighestSupportedVersion => 5;
 
     public required ErrorCode ErrorCode { get; init; }
     public required IReadOnlyList<ApiVersion> ApiKeys { get; init; }

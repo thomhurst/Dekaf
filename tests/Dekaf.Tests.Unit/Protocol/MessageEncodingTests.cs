@@ -38,6 +38,70 @@ public class MessageEncodingTests
     }
 
     [Test]
+    public async Task ApiVersionsRequest_V5_BootstrapWritesUnspecifiedIdentity()
+    {
+        var actual = SerializeApiVersionsRequest(new ApiVersionsRequest
+        {
+            ClientSoftwareName = "dekaf",
+            ClientSoftwareVersion = "1.0"
+        }, version: 5);
+
+        await Assert.That(actual).IsEquivalentTo(
+        new byte[]
+        {
+            0x06, (byte)'d', (byte)'e', (byte)'k', (byte)'a', (byte)'f',
+            0x04, (byte)'1', (byte)'.', (byte)'0',
+            0x00,
+            0xFF, 0xFF, 0xFF, 0xFF,
+            0x00
+        });
+    }
+
+    [Test]
+    public async Task ApiVersionsRequest_V5_WritesExpectedClusterAndNodeIdentity()
+    {
+        var actual = SerializeApiVersionsRequest(new ApiVersionsRequest
+        {
+            ClientSoftwareName = "dekaf",
+            ClientSoftwareVersion = "1.0",
+            ClusterId = "cluster-a",
+            NodeId = 7
+        }, version: 5);
+
+        var reader = new KafkaProtocolReader(actual);
+        var clientSoftwareName = reader.ReadCompactNonNullableString();
+        var clientSoftwareVersion = reader.ReadCompactNonNullableString();
+        var clusterId = reader.ReadCompactString();
+        var nodeId = reader.ReadInt32();
+        reader.SkipTaggedFields();
+        var remaining = reader.Remaining;
+
+        await Assert.That(clientSoftwareName).IsEqualTo("dekaf");
+        await Assert.That(clientSoftwareVersion).IsEqualTo("1.0");
+        await Assert.That(clusterId).IsEqualTo("cluster-a");
+        await Assert.That(nodeId).IsEqualTo(7);
+        await Assert.That(remaining).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments("cluster-a", -1)]
+    [Arguments(null, 7)]
+    public async Task ApiVersionsRequest_V5_RejectsPartialIdentity(string? clusterId, int nodeId)
+    {
+        var request = new ApiVersionsRequest
+        {
+            ClientSoftwareName = "dekaf",
+            ClientSoftwareVersion = "1.0",
+            ClusterId = clusterId,
+            NodeId = nodeId
+        };
+
+        await Assert.That(() => SerializeApiVersionsRequest(request, version: 5))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("must be specified together");
+    }
+
+    [Test]
     [Arguments((short)0)]
     [Arguments((short)1)]
     [Arguments((short)2)]
@@ -51,6 +115,7 @@ public class MessageEncodingTests
     [Test]
     [Arguments((short)3)]
     [Arguments((short)4)]
+    [Arguments((short)5)]
     public async Task ApiVersionsRequest_FlexibleVersions_RequireClientInfo(short version)
     {
         await Assert.That(() => SerializeApiVersionsRequest(new ApiVersionsRequest(), version))
@@ -315,6 +380,7 @@ public class MessageEncodingTests
     [Arguments((short)2, (short)0)]
     [Arguments((short)3, (short)0)]
     [Arguments((short)4, (short)0)]
+    [Arguments((short)5, (short)0)]
     public async Task ApiVersionsRequest_ResponseHeaderVersion(short apiVersion, short expectedResponseHeader)
     {
         var responseHeaderVersion = ApiVersionsRequest.GetResponseHeaderVersion(apiVersion);

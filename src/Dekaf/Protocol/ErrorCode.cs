@@ -179,6 +179,7 @@ public static class ErrorCodeExtensions
         ErrorCode.ThrottlingQuotaExceeded => true,
         ErrorCode.UnknownTopicId => true,
         ErrorCode.InconsistentTopicId => true,
+        ErrorCode.RebootstrapRequired => true,
         _ => false
     };
 
@@ -199,6 +200,7 @@ public static class ErrorCodeExtensions
         ErrorCode.UnknownLeaderEpoch => true,
         ErrorCode.UnknownTopicId => true,
         ErrorCode.InconsistentTopicId => true,
+        ErrorCode.RebootstrapRequired => true,
         _ => false
     };
 }

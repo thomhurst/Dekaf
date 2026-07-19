@@ -11,6 +11,21 @@ namespace Dekaf.Tests.Unit.Builder;
 public sealed class KafkaClientBuilderTests
 {
     [Test]
+    public async Task RootClient_MetadataClusterCheck_IsAppliedToSharedMetadataManager()
+    {
+        await using var client = new KafkaClientBuilder()
+            .WithBootstrapServers("localhost:9092")
+            .WithMetadataClusterCheck(false)
+            .Build();
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var manager = GetField<MetadataManager>(producer, "_metadataManager");
+        var options = GetField<MetadataOptions>(manager, "_options");
+
+        await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
+    }
+
+    [Test]
     public async Task RootClient_CreatedClients_ShareMetadataAndUseRoleAppropriateConnectionPools()
     {
         await using var client = Kafka.Connect("broker1:9092,broker2:9092");
@@ -187,6 +202,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithMetadataClusterCheck(false))
+            .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithMetadataMaxAge(TimeSpan.FromMinutes(1)))
@@ -217,6 +234,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithMetadataClusterCheck(false))
+            .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithMetadataMaxAge(TimeSpan.FromMinutes(1)))
@@ -244,6 +263,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionsPerBroker(2))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithMetadataClusterCheck(false))
+            .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithRetryBackoff(TimeSpan.FromMilliseconds(100)))
@@ -264,6 +285,8 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateAdminClient().WithSaslPlain("user", "pass"))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithMetadataClusterCheck(false))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();

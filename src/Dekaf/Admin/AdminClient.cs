@@ -79,6 +79,8 @@ public sealed class AdminClient : IAdminClient
 
         metadataOptions ??= new MetadataOptions
         {
+            MetadataRecoveryStrategy = options.MetadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
             RetryBackoffMs = options.RetryBackoffMs,
             RetryBackoffMaxMs = options.RetryBackoffMaxMs
         };
@@ -4855,6 +4857,13 @@ public sealed class AdminClientOptions
     public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
 
     /// <summary>
+    /// Whether new broker connections verify the expected cluster and node identity (KIP-1242).
+    /// Default is true; ignored when <see cref="MetadataRecoveryStrategy"/> is
+    /// <see cref="MetadataRecoveryStrategy.None"/>.
+    /// </summary>
+    public bool MetadataClusterCheckEnabled { get; init; } = true;
+
+    /// <summary>
     /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
     /// are unavailable. Only applies when <see cref="MetadataRecoveryStrategy"/> is
     /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
@@ -4908,6 +4917,7 @@ public sealed class AdminClientBuilder
     private AwsMskIamConfig? _awsMskIamConfig;
     private ILoggerFactory? _loggerFactory;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
+    private bool _metadataClusterCheckEnabled = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private TimeSpan? _metadataMaxAge;
@@ -5263,6 +5273,16 @@ public sealed class AdminClientBuilder
     }
 
     /// <summary>
+    /// Controls KIP-1242 cluster and broker identity checks on new connections.
+    /// </summary>
+    public AdminClientBuilder WithMetadataClusterCheck(bool enabled = true)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _metadataClusterCheckEnabled = enabled;
+        return this;
+    }
+
+    /// <summary>
     /// Sets how long to wait before triggering a rebootstrap when all known
     /// brokers are unavailable.
     /// </summary>
@@ -5505,6 +5525,7 @@ public sealed class AdminClientBuilder
             OAuthBearerTokenProvider = _oauthTokenProvider,
             AwsMskIamConfig = _awsMskIamConfig,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
@@ -5514,6 +5535,7 @@ public sealed class AdminClientBuilder
         {
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             RetryBackoffMs = _retryBackoffMs,

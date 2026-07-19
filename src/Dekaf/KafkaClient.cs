@@ -114,6 +114,7 @@ public sealed class KafkaClientBuilder
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private TimeSpan? _metadataMaxAge;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
+    private bool _metadataClusterCheckEnabled = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private ulong? _memoryBudgetBytes;
@@ -515,6 +516,15 @@ public sealed class KafkaClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Controls KIP-1242 cluster and broker identity checks on new connections.
+    /// </summary>
+    public KafkaClientBuilder WithMetadataClusterCheck(bool enabled = true)
+    {
+        _metadataClusterCheckEnabled = enabled;
+        return this;
+    }
+
     public KafkaClientBuilder WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
         ArgumentOutOfRangeException.ThrowIfGreaterThan(trigger.TotalMilliseconds, int.MaxValue, nameof(trigger));
@@ -595,6 +605,7 @@ public sealed class KafkaClientBuilder
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             MetadataMaxAge = _metadataMaxAge,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             MemoryBudgetBytes = _memoryBudgetBytes,
@@ -639,6 +650,7 @@ internal sealed class KafkaClientOptions
     public int ConnectionsMaxIdleMs { get; init; }
     public TimeSpan? MetadataMaxAge { get; init; }
     public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; }
+    public bool MetadataClusterCheckEnabled { get; init; } = true;
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; }
     public ClientDnsLookup ClientDnsLookup { get; init; }
     public ulong? MemoryBudgetBytes { get; init; }
@@ -725,6 +737,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         {
             MetadataRefreshInterval = options.MetadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = options.MetadataRecoveryStrategy,
+            MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = options.MetadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = options.ClientDnsLookup,
             RetryBackoffMs = options.RetryBackoffMs,
