@@ -1166,7 +1166,8 @@ public sealed partial class ConnectionPool :
         if (failureCount <= 0 || maxMs <= initialMs)
             return TimeSpan.FromMilliseconds(initialMs);
 
-        var exponent = Math.Min(failureCount - 1, 30);
+        // Zero is the initial attempt; after the first failed setup, failureCount is one.
+        var exponent = Math.Min(failureCount, 30);
         var baseMs = initialMs * Math.Pow(2, exponent);
         var randomValue = Math.Clamp(_randomDouble(), 0, 1);
         var jitteredMs = baseMs * (0.8 + (randomValue * 0.4));

@@ -1056,9 +1056,9 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    [Arguments(0.0, 80.0)]
-    [Arguments(0.5, 100.0)]
-    [Arguments(0.999999, 119.99996)]
+    [Arguments(0.0, 160.0)]
+    [Arguments(0.5, 200.0)]
+    [Arguments(0.999999, 239.99992)]
     public async Task CalculateConnectionSetupTimeout_UsesSymmetricTwentyPercentJitter(
         double randomValue,
         double expectedMilliseconds)
@@ -1082,10 +1082,10 @@ public sealed class ConnectionPoolTests
         await Assert.That(timeouts).IsEquivalentTo(new[]
         {
             TimeSpan.FromMilliseconds(100),
-            TimeSpan.FromMilliseconds(100),
             TimeSpan.FromMilliseconds(200),
             TimeSpan.FromMilliseconds(400),
             TimeSpan.FromMilliseconds(800),
+            TimeSpan.FromMilliseconds(1000),
             TimeSpan.FromMilliseconds(1000),
             TimeSpan.FromMilliseconds(1000)
         });
@@ -1142,7 +1142,7 @@ public sealed class ConnectionPoolTests
         await Assert.That(observedTimeouts).IsEquivalentTo(new[]
         {
             TimeSpan.FromMilliseconds(100),
-            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(200),
             TimeSpan.FromMilliseconds(100)
         });
     }
@@ -1170,9 +1170,9 @@ public sealed class ConnectionPoolTests
         await Assert.That(observedTimeouts).IsEquivalentTo(new[]
         {
             TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(200),
             TimeSpan.FromMilliseconds(100),
-            TimeSpan.FromMilliseconds(100),
-            TimeSpan.FromMilliseconds(200)
+            TimeSpan.FromMilliseconds(400)
         });
     }
 
@@ -1201,9 +1201,9 @@ public sealed class ConnectionPoolTests
         await Assert.That(observedTimeouts).IsEquivalentTo(new[]
         {
             TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(200),
             TimeSpan.FromMilliseconds(100),
-            TimeSpan.FromMilliseconds(100),
-            TimeSpan.FromMilliseconds(200)
+            TimeSpan.FromMilliseconds(400)
         });
     }
 
@@ -1230,7 +1230,7 @@ public sealed class ConnectionPoolTests
         await Assert.That(observedTimeouts).IsEquivalentTo(new[]
         {
             TimeSpan.FromMilliseconds(100),
-            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(200),
             TimeSpan.FromMilliseconds(100)
         });
         await Assert.That(GetConnectionSetupTimeoutStateCount(pool)).IsEqualTo(1);
@@ -1272,7 +1272,7 @@ public sealed class ConnectionPoolTests
         {
             TimeSpan.FromMilliseconds(100),
             TimeSpan.FromMilliseconds(100),
-            TimeSpan.FromMilliseconds(100)
+            TimeSpan.FromMilliseconds(200)
         });
     }
 
@@ -1298,9 +1298,9 @@ public sealed class ConnectionPoolTests
         await Assert.That(observedTimeouts).IsEquivalentTo(new[]
         {
             TimeSpan.FromMilliseconds(100),
-            TimeSpan.FromMilliseconds(100),
             TimeSpan.FromMilliseconds(200),
-            TimeSpan.FromMilliseconds(400)
+            TimeSpan.FromMilliseconds(400),
+            TimeSpan.FromMilliseconds(800)
         });
     }
 
