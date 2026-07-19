@@ -388,11 +388,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 }
             }
 
-            if (recordCount < _options.MaxPollRecords && _renewedRecords is { Count: > 0 })
+            var bufferedRecordCount = fetchedRecords?.Count ?? 0;
+            if (recordCount + bufferedRecordCount < _options.MaxPollRecords
+                && _renewedRecords is { Count: > 0 })
             {
                 var renewedRecords = GetActiveRenewedRecords(
                     assignment,
-                    _options.MaxPollRecords - recordCount);
+                    _options.MaxPollRecords - recordCount - bufferedRecordCount);
                 foreach (var renewedRecord in renewedRecords)
                 {
                     Interlocked.Increment(ref _renewedRecordReplayCount);

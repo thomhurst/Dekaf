@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -5,6 +6,7 @@ using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Dekaf.ShareConsumer;
 using NSubstitute;
@@ -153,6 +155,68 @@ public sealed class ShareConsumerRenewalTests
         await Assert.That(ReferenceEquals(poll.Current, record)).IsTrue();
         await Assert.That(fixture.Consumer.AcquisitionLockTimeoutMs).IsEqualTo(30_000);
         await Assert.That(fixture.Consumer.RenewedRecordReplayCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Poll_FetchedRecord_ReservesBudgetBeforeRenewalReplay()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var batch = new RecordBatch
+        {
+            BaseOffset = 100,
+            Records = [new Record { IsKeyNull = true, Value = "new-value"u8.ToArray() }]
+        })
+        {
+            batch.Write(buffer);
+        }
+
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = new ShareFetchResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Responses =
+                [
+                    new ShareFetchResponseTopic
+                    {
+                        TopicId = TopicId,
+                        Partitions =
+                        [
+                            new ShareFetchResponsePartition
+                            {
+                                PartitionIndex = 0,
+                                CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                                RecordBytes = buffer.WrittenMemory,
+                                AcquiredRecords =
+                                [
+                                    new ShareFetchAcquiredRecords
+                                    {
+                                        FirstOffset = 100,
+                                        LastOffset = 100,
+                                        DeliveryCount = 1
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ],
+                NodeEndpoints = []
+            }
+        };
+        await using var fixture = CreateFixture(connection, maxPollRecords: 1);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        fixture.Consumer.Acknowledge(CreateRecord(), AcknowledgeType.Renew);
+        ApplySuccessfulAcknowledgements(fixture.Consumer, RenewalAcknowledgements());
+        FlushPendingAcknowledgements(fixture.Consumer);
+
+        await using var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator();
+        var moved = await poll.MoveNextAsync();
+
+        await Assert.That(moved).IsTrue();
+        await Assert.That(poll.Current.Offset).IsEqualTo(100);
+        var assignment = new HashSet<TopicPartition> { new("topic", 0) };
+        await Assert.That(GetActiveRenewedRecords(fixture.Consumer, assignment)).HasSingleItem();
     }
 
     [Test]
@@ -476,13 +540,15 @@ public sealed class ShareConsumerRenewalTests
 
     private static Fixture CreateFixture(
         CapturingConnection connection,
-        ShareAcknowledgementMode acknowledgementMode = ShareAcknowledgementMode.Explicit)
+        ShareAcknowledgementMode acknowledgementMode = ShareAcknowledgementMode.Explicit,
+        int maxPollRecords = 500)
     {
         var options = new ShareConsumerOptions
         {
             BootstrapServers = ["localhost:9092"],
             GroupId = "share-group",
-            AcknowledgementMode = acknowledgementMode
+            AcknowledgementMode = acknowledgementMode,
+            MaxPollRecords = maxPollRecords
         };
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(1, Arg.Any<CancellationToken>()).Returns(connection);
