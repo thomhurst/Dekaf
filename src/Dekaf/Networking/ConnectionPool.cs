@@ -62,6 +62,7 @@ public sealed partial class ConnectionPool :
     private Action<KafkaConnectionCapabilities>? _capabilityObserver;
     private readonly MetadataClusterIdentity _metadataClusterIdentity = new();
     private readonly Action? _brokerEndpointUpdated;
+    private readonly Action<TimeSpan>? _connectionSetupTimeoutObserver;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
@@ -71,6 +72,9 @@ public sealed partial class ConnectionPool :
     private readonly ConcurrentDictionary<EndpointKey, ReconnectBackoffState> _reconnectBackoffs = new();
     private readonly ConcurrentDictionary<int, BrokerThrottleState> _brokerThrottleStates = new();
     private readonly ConcurrentDictionary<EndpointKey, BrokerThrottleState> _bootstrapThrottleStates = new();
+    // Logical broker + host:port identity is deliberate: DNS IP rotation keeps failure
+    // progression, while brokers and changed advertised endpoints remain isolated.
+    private readonly ConcurrentDictionary<ConnectionSetupKey, ConnectionSetupTimeoutState> _connectionSetupTimeouts = new();
 
     // Multi-connection support: connection groups and round-robin index
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
@@ -119,6 +123,7 @@ public sealed partial class ConnectionPool :
             connectionOptions ?? new ConnectionOptions(),
             out _sharedOAuthBearerTokenProvider);
         ValidateReconnectBackoff(_connectionOptions);
+        ValidateConnectionSetupTimeouts(_connectionOptions);
         _loggerFactory = loggerFactory;
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
@@ -144,13 +149,15 @@ public sealed partial class ConnectionPool :
         Func<int, string, int, int, CancellationToken, ValueTask<IKafkaConnection>> connectionFactory,
         TimeSpan? idleReapDrainTimeout = null,
         Func<double>? randomDouble = null,
-        Action? brokerEndpointUpdated = null)
+        Action? brokerEndpointUpdated = null,
+        Action<TimeSpan>? connectionSetupTimeoutObserver = null)
     {
         _clientId = clientId;
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
             connectionOptions ?? new ConnectionOptions(),
             out _sharedOAuthBearerTokenProvider);
         ValidateReconnectBackoff(_connectionOptions);
+        ValidateConnectionSetupTimeouts(_connectionOptions);
         _loggerFactory = null;
         _logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
@@ -159,6 +166,7 @@ public sealed partial class ConnectionPool :
         _idleReapDrainTimeout = idleReapDrainTimeout ?? DefaultIdleReapDrainTimeout;
         _randomDouble = randomDouble ?? SharedRandomDouble;
         _brokerEndpointUpdated = brokerEndpointUpdated;
+        _connectionSetupTimeoutObserver = connectionSetupTimeoutObserver;
         // No shared pool needed: factory-created connections manage their own pools.
         StartIdleConnectionReaper();
     }
@@ -261,6 +269,7 @@ public sealed partial class ConnectionPool :
             TcpKeepAliveInterval = options.TcpKeepAliveInterval,
             TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
             ConnectionTimeout = options.ConnectionTimeout,
+            ConnectionTimeoutMax = options.ConnectionTimeoutMax,
             RequestTimeout = options.RequestTimeout,
             ReconnectBackoff = options.ReconnectBackoff,
             ReconnectBackoffMax = options.ReconnectBackoffMax,
@@ -283,6 +292,25 @@ public sealed partial class ConnectionPool :
             "Maximum reconnect backoff cannot be negative");
 
         ReconnectBackoffValidation.ValidateMilliseconds(reconnectBackoffMs, reconnectBackoffMaxMs);
+    }
+
+    private static void ValidateConnectionSetupTimeouts(ConnectionOptions options)
+    {
+        ConnectionOptionValidation.ValidatePositiveTimeout(
+            options.ConnectionTimeout,
+            nameof(options),
+            "Connection setup timeout must be positive");
+        ConnectionOptionValidation.ValidatePositiveTimeout(
+            options.ConnectionTimeoutMax,
+            nameof(options),
+            "Maximum connection setup timeout must be positive");
+
+        if (options.ConnectionTimeoutMax < options.ConnectionTimeout)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "Maximum connection setup timeout must be greater than or equal to the initial timeout");
+        }
     }
 
     /// <summary>
@@ -329,6 +357,9 @@ public sealed partial class ConnectionPool :
             if (!_brokers.TryUpdate(brokerId, brokerInfo, previous))
                 continue;
 
+            _connectionSetupTimeouts.TryRemove(
+                new ConnectionSetupKey(brokerId, previous.Host, previous.Port),
+                out _);
             _brokerEndpointUpdated?.Invoke();
             RetireBrokerConnections(brokerId, previous);
             break;
@@ -518,13 +549,6 @@ public sealed partial class ConnectionPool :
         var connections = new IKafkaConnection[initialCount];
         var tasks = new Task<IKafkaConnection>[initialCount];
 
-        using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            timeoutCts.Token);
-
-        var token = linkedCts.Token;
-
         var success = false;
         try
         {
@@ -536,13 +560,13 @@ public sealed partial class ConnectionPool :
                     brokerInfo.Host,
                     brokerInfo.Port,
                     index,
-                    token,
+                    cancellationToken,
                     cancellationToken).AsTask();
             }
 
-            // Add timeout to prevent indefinite hang if connection creation stalls
-            // Similar pattern to RecordAccumulator disposal fix (commit 8f26f05)
-            await Task.WhenAll(tasks).WaitAsync(_connectionOptions.ConnectionTimeout, cancellationToken).ConfigureAwait(false);
+            // Each setup task carries its own adaptive deadline, so the aggregate cannot
+            // hang even though lock and reconnect-backoff waits remain outside that deadline.
+            await Task.WhenAll(tasks).ConfigureAwait(false);
 
             for (var i = 0; i < initialCount; i++)
             {
@@ -551,24 +575,14 @@ public sealed partial class ConnectionPool :
 
             // Atomically set the connection group
             _connectionGroupsById[brokerId] = connections;
-            ResetReconnectBackoff(new EndpointKey(brokerInfo.Host, brokerInfo.Port), brokerId, brokerInfo.Host, brokerInfo.Port);
+            var endpoint = new EndpointKey(brokerInfo.Host, brokerInfo.Port);
+            ResetReconnectBackoff(endpoint, brokerId, brokerInfo.Host, brokerInfo.Port);
+            ResetConnectionSetupTimeout(new ConnectionSetupKey(brokerId, brokerInfo.Host, brokerInfo.Port));
 
             LogCreatedConnectionGroup(initialCount, brokerId);
 
             success = true;
             return connections[0];
-        }
-        catch (TimeoutException)
-        {
-            throw new KafkaException(
-                ErrorCode.RequestTimedOut,
-                $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            throw new KafkaException(
-                ErrorCode.RequestTimedOut,
-                $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
         }
         finally
         {
@@ -617,10 +631,6 @@ public sealed partial class ConnectionPool :
             var existingCount = currentGroup?.Length ?? 0;
             var additionalCount = newCount - existingCount;
 
-            // Create additional connections in parallel with a single timeout mechanism
-            using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
             var tasks = new Task<IKafkaConnection>[additionalCount];
 
             for (var i = 0; i < additionalCount; i++)
@@ -631,7 +641,7 @@ public sealed partial class ConnectionPool :
                     brokerInfo.Host,
                     brokerInfo.Port,
                     index,
-                    linkedCts.Token,
+                    cancellationToken,
                     cancellationToken).AsTask();
             }
 
@@ -655,7 +665,9 @@ public sealed partial class ConnectionPool :
 
             // Atomically swap the connection group
             _connectionGroupsById[brokerId] = newGroup;
-            ResetReconnectBackoff(new EndpointKey(brokerInfo.Host, brokerInfo.Port), brokerId, brokerInfo.Host, brokerInfo.Port);
+            var endpoint = new EndpointKey(brokerInfo.Host, brokerInfo.Port);
+            ResetReconnectBackoff(endpoint, brokerId, brokerInfo.Host, brokerInfo.Port);
+            ResetConnectionSetupTimeout(new ConnectionSetupKey(brokerId, brokerInfo.Host, brokerInfo.Port));
 
             LogScaledConnectionGroup(existingCount, newCount, brokerId);
             return newCount;
@@ -751,19 +763,13 @@ public sealed partial class ConnectionPool :
     {
         // Use a per-(broker,index) SemaphoreSlim instead of Lazy<ValueTask> to avoid
         // capturing a caller-scoped CancellationToken that gets disposed in the caller's finally block.
-        // Each caller creates its own timeout CTS, so no token outlives its CTS.
+        // The adaptive setup attempt creates its timeout CTS only after this lock is acquired,
+        // so lock contention does not consume the socket setup deadline.
         var replacementLock = _connectionReplacementLocks.GetOrAdd(
             (brokerId, index),
             static _ => new SemaphoreSlim(1, 1));
 
-        using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            timeoutCts.Token);
-
-        var token = linkedCts.Token;
-
-        await replacementLock.WaitAsync(token).ConfigureAwait(false);
+        await replacementLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             // Re-check: another caller may have already replaced this connection
@@ -780,14 +786,14 @@ public sealed partial class ConnectionPool :
                 brokerInfo.Host,
                 brokerInfo.Port,
                 index,
-                token,
+                cancellationToken,
                 cancellationToken).ConfigureAwait(false);
 
             // Acquire _scaleLock to protect the array write against concurrent
             // ShrinkConnectionGroupAsync, which may have swapped the array reference.
             bool stored = false;
             IKafkaConnection? oldConnection = null;
-            await _scaleLock.WaitAsync(token).ConfigureAwait(false);
+            await _scaleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 if (_connectionGroupsById.TryGetValue(brokerId, out var connections) && index < connections.Length)
@@ -819,15 +825,11 @@ public sealed partial class ConnectionPool :
                     $"Connection slot {index} for broker {brokerId} was removed by a concurrent shrink");
             }
 
-            ResetReconnectBackoff(new EndpointKey(brokerInfo.Host, brokerInfo.Port), brokerId, brokerInfo.Host, brokerInfo.Port);
+            var endpoint = new EndpointKey(brokerInfo.Host, brokerInfo.Port);
+            ResetReconnectBackoff(endpoint, brokerId, brokerInfo.Host, brokerInfo.Port);
+            ResetConnectionSetupTimeout(new ConnectionSetupKey(brokerId, brokerInfo.Host, brokerInfo.Port));
 
             return connection;
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            throw new KafkaException(
-                ErrorCode.RequestTimedOut,
-                $"Connection replacement timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
         }
         finally
         {
@@ -849,12 +851,18 @@ public sealed partial class ConnectionPool :
             brokerId,
             host,
             port,
-            () => CreateConnectionForGroupCoreAsync(
+            () => RunConnectionSetupAttemptAsync(
                 brokerId,
                 host,
                 port,
-                index,
-                cancellationToken,
+                (setupTimeout, setupCancellationToken) => CreateConnectionForGroupCoreAsync(
+                    brokerId,
+                    host,
+                    port,
+                    index,
+                    setupTimeout,
+                    setupCancellationToken,
+                    callerCancellationToken),
                 callerCancellationToken),
             cancellationToken).ConfigureAwait(false);
     }
@@ -864,6 +872,7 @@ public sealed partial class ConnectionPool :
         string host,
         int port,
         int index,
+        TimeSpan connectionSetupTimeout,
         CancellationToken cancellationToken,
         CancellationToken callerCancellationToken)
     {
@@ -891,7 +900,7 @@ public sealed partial class ConnectionPool :
                 Volatile.Read(ref _capabilityObserver),
                 _metadataClusterIdentity);
 
-            await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            await connection.ConnectAsync(connectionSetupTimeout, cancellationToken).ConfigureAwait(false);
 
             LogCreatedConnectionForGroup(index, brokerId, host, port);
 
@@ -944,19 +953,13 @@ public sealed partial class ConnectionPool :
         var endpoint = new EndpointKey(host, port);
 
         // Use a per-endpoint semaphore to deduplicate concurrent connection creation.
-        // Each caller creates its own timeout CTS, so no token outlives its CTS.
+        // The adaptive setup attempt creates its timeout CTS only after this lock is acquired,
+        // so lock contention does not consume the socket setup deadline.
         // This replaces the previous Lazy<ValueTask> pattern which violated the ValueTask
         // contract (multiple awaiters) and captured a caller-scoped CTS that could be disposed.
         var creationLock = _connectionCreationLocks.GetOrAdd(endpoint, static _ => new SemaphoreSlim(1, 1));
 
-        using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            timeoutCts.Token);
-
-        var token = linkedCts.Token;
-
-        await creationLock.WaitAsync(token).ConfigureAwait(false);
+        await creationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             for (var attempt = 0; attempt < MaxRetries; attempt++)
@@ -978,12 +981,13 @@ public sealed partial class ConnectionPool :
                     catch { /* best-effort cleanup */ }
                 }
 
-                var connection = await CreateConnectionAsync(brokerId, host, port, token, cancellationToken).ConfigureAwait(false);
+                var connection = await CreateConnectionAsync(brokerId, host, port, cancellationToken).ConfigureAwait(false);
 
                 // Verify connection is still valid
                 if (connection.IsConnected)
                 {
                     ResetReconnectBackoff(endpoint, brokerId, host, port);
+                    ResetConnectionSetupTimeout(new ConnectionSetupKey(brokerId, host, port));
                     return connection;
                 }
 
@@ -1000,12 +1004,6 @@ public sealed partial class ConnectionPool :
 
             throw new InvalidOperationException($"Failed to create connection after {MaxRetries} retries");
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            throw new KafkaException(
-                ErrorCode.RequestTimedOut,
-                $"Connection timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} ({host}:{port})");
-        }
         finally
         {
             creationLock.Release();
@@ -1016,8 +1014,7 @@ public sealed partial class ConnectionPool :
         int brokerId,
         string host,
         int port,
-        CancellationToken cancellationToken,
-        CancellationToken callerCancellationToken)
+        CancellationToken cancellationToken)
     {
         var endpoint = new EndpointKey(host, port);
         return await RunWithReconnectBackoffAsync(
@@ -1025,12 +1022,18 @@ public sealed partial class ConnectionPool :
             brokerId,
             host,
             port,
-            () => CreateConnectionCoreAsync(
+            () => RunConnectionSetupAttemptAsync(
                 brokerId,
                 host,
                 port,
-                cancellationToken,
-                callerCancellationToken),
+                (setupTimeout, setupCancellationToken) => CreateConnectionCoreAsync(
+                    brokerId,
+                    host,
+                    port,
+                    setupTimeout,
+                    setupCancellationToken,
+                    cancellationToken),
+                cancellationToken),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1038,6 +1041,7 @@ public sealed partial class ConnectionPool :
         int brokerId,
         string host,
         int port,
+        TimeSpan connectionSetupTimeout,
         CancellationToken cancellationToken,
         CancellationToken callerCancellationToken)
     {
@@ -1074,7 +1078,7 @@ public sealed partial class ConnectionPool :
                 Volatile.Read(ref _capabilityObserver),
                 _metadataClusterIdentity);
 
-            await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            await connection.ConnectAsync(connectionSetupTimeout, cancellationToken).ConfigureAwait(false);
 
             _connectionsByEndpoint[endpoint] = connection;
             if (brokerId >= 0)
@@ -1098,6 +1102,76 @@ public sealed partial class ConnectionPool :
                 RecordReconnectFailure(endpoint, brokerId, host, port);
             throw;
         }
+    }
+
+    private async ValueTask<IKafkaConnection> RunConnectionSetupAttemptAsync(
+        int brokerId,
+        string host,
+        int port,
+        Func<TimeSpan, CancellationToken, ValueTask<IKafkaConnection>> createConnection,
+        CancellationToken callerCancellationToken)
+    {
+        var setupKey = new ConnectionSetupKey(brokerId, host, port);
+        var timeout = GetConnectionSetupTimeout(setupKey);
+        _connectionSetupTimeoutObserver?.Invoke(timeout);
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            callerCancellationToken,
+            timeoutCts.Token);
+
+        try
+        {
+            var connection = await createConnection(timeout, linkedCts.Token).ConfigureAwait(false);
+            if (!connection.IsConnected)
+                RecordConnectionSetupFailure(setupKey);
+            return connection;
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
+        {
+            RecordConnectionSetupFailure(setupKey);
+            throw new KafkaException(
+                ErrorCode.RequestTimedOut,
+                $"Connection setup timeout after {(int)timeout.TotalMilliseconds}ms to broker {brokerId} ({host}:{port})");
+        }
+        catch (Exception) when (!callerCancellationToken.IsCancellationRequested)
+        {
+            RecordConnectionSetupFailure(setupKey);
+            throw;
+        }
+    }
+
+    private TimeSpan GetConnectionSetupTimeout(ConnectionSetupKey setupKey)
+    {
+        if (!_connectionSetupTimeouts.TryGetValue(setupKey, out var state))
+            return _connectionOptions.ConnectionTimeout;
+
+        lock (state.Sync)
+            return CalculateConnectionSetupTimeout(state.FailureCount);
+    }
+
+    private void RecordConnectionSetupFailure(ConnectionSetupKey setupKey)
+    {
+        var state = _connectionSetupTimeouts.GetOrAdd(setupKey, static _ => new ConnectionSetupTimeoutState());
+        lock (state.Sync)
+            state.FailureCount = Math.Min(state.FailureCount + 1, 30);
+    }
+
+    private void ResetConnectionSetupTimeout(ConnectionSetupKey setupKey)
+        => _connectionSetupTimeouts.TryRemove(setupKey, out _);
+
+    internal TimeSpan CalculateConnectionSetupTimeout(int failureCount)
+    {
+        var initialMs = _connectionOptions.ConnectionTimeout.TotalMilliseconds;
+        var maxMs = _connectionOptions.ConnectionTimeoutMax.TotalMilliseconds;
+        if (failureCount <= 0 || maxMs <= initialMs)
+            return TimeSpan.FromMilliseconds(initialMs);
+
+        var exponent = Math.Min(failureCount - 1, 30);
+        var baseMs = initialMs * Math.Pow(2, exponent);
+        var randomValue = Math.Clamp(_randomDouble(), 0, 1);
+        var jitteredMs = baseMs * (0.8 + (randomValue * 0.4));
+
+        return TimeSpan.FromMilliseconds(Math.Min(maxMs, jitteredMs));
     }
 
     private async ValueTask<IKafkaConnection> RunWithReconnectBackoffAsync(
@@ -1724,6 +1798,7 @@ public sealed partial class ConnectionPool :
             _connectionsById.Clear();
             _connectionGroupsById.Clear();
             _reconnectBackoffs.Clear();
+            _connectionSetupTimeouts.Clear();
             _connectionCreationLocks.Clear();
             _connectionReplacementLocks.Clear();
             _groupCreationLocks.Clear();
@@ -1877,7 +1952,14 @@ public sealed partial class ConnectionPool :
         }
     }
 
+    private sealed class ConnectionSetupTimeoutState
+    {
+        public readonly object Sync = new();
+        public int FailureCount;
+    }
+
     private readonly record struct EndpointKey(string Host, int Port);
+    private readonly record struct ConnectionSetupKey(int BrokerId, string Host, int Port);
     private readonly record struct BrokerInfo(int BrokerId, string Host, int Port);
     private readonly record struct IdleConnectionDisposalResult(bool Reaped, bool CanRestore);
 }

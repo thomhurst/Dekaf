@@ -843,6 +843,8 @@ internal static class DekafOptionsBinding
             builder.WithConnectionTimeout,
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
+        if (options.IsConnectionTimeoutMaxConfigured)
+            builder.WithConnectionTimeoutMax(options.ConnectionTimeoutMax);
         builder.WithIdempotence(options.EnableIdempotence);
         builder.WithConnectionsPerBroker(options.ConnectionsPerBroker);
         if (options.TransactionalId is not null)
@@ -959,6 +961,8 @@ internal static class DekafOptionsBinding
             builder.WithConnectionTimeout,
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
+        if (options.IsConnectionTimeoutMaxConfigured)
+            builder.WithConnectionTimeoutMax(options.ConnectionTimeoutMax);
         builder.WithCheckCrcs(options.CheckCrcs);
         ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         ApplyRemoteCertificateValidationCallback(
@@ -1027,6 +1031,8 @@ internal static class DekafOptionsBinding
             builder.WithConnectionTimeout,
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
+        if (options.IsConnectionTimeoutMaxConfigured)
+            builder.WithConnectionTimeoutMax(options.ConnectionTimeoutMax);
         ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         ApplyRemoteCertificateValidationCallback(
             options.RemoteCertificateValidationCallback,
@@ -1236,6 +1242,8 @@ internal static class DekafConfigurationBinding
             builder.WithConnectionTimeout,
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
+        if (TryGetValue<TimeSpan>(configuration, nameof(ProducerOptions.ConnectionTimeoutMax), out var connectionTimeoutMax))
+            builder.WithConnectionTimeoutMax(connectionTimeoutMax);
         if (TryGetValue<bool>(configuration, nameof(ProducerOptions.EnableIdempotence), out var enableIdempotence))
             builder.WithIdempotence(enableIdempotence);
         if (TryGetValue<int>(configuration, nameof(ProducerOptions.ConnectionsPerBroker), out var connectionsPerBroker))
@@ -1384,6 +1392,8 @@ internal static class DekafConfigurationBinding
             builder.WithConnectionTimeout,
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
+        if (TryGetValue<TimeSpan>(configuration, nameof(ConsumerOptions.ConnectionTimeoutMax), out var connectionTimeoutMax))
+            builder.WithConnectionTimeoutMax(connectionTimeoutMax);
         if (TryGetValue<bool>(configuration, nameof(ConsumerOptions.CheckCrcs), out var checkCrcs))
             builder.WithCheckCrcs(checkCrcs);
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
@@ -1443,6 +1453,8 @@ internal static class DekafConfigurationBinding
             builder.WithConnectionTimeout,
             enabled => builder.WithTcpKeepAlive(enabled),
             (time, interval, retryCount) => builder.WithTcpKeepAlive(time, interval, retryCount));
+        if (TryGetValue<TimeSpan>(configuration, nameof(AdminClientOptions.ConnectionTimeoutMax), out var connectionTimeoutMax))
+            builder.WithConnectionTimeoutMax(connectionTimeoutMax);
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);

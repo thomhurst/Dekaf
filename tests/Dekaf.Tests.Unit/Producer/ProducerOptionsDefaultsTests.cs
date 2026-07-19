@@ -55,6 +55,18 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task ConnectionTimeoutMax_WithoutExplicitMaximum_FollowsInitialTimeout()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ConnectionTimeout = TimeSpan.FromSeconds(7)
+        };
+
+        await Assert.That(options.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(7));
+    }
+
+    [Test]
     public async Task LingerMs_DefaultsTo_0()
     {
         var options = CreateOptions();

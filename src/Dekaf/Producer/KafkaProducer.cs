@@ -268,6 +268,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 TlsConfig = options.TlsConfig,
                 RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
                 ConnectionTimeout = options.ConnectionTimeout,
+                ConnectionTimeoutMax = options.ConnectionTimeoutMax,
                 EnableTcpKeepAlive = options.EnableTcpKeepAlive,
                 TcpKeepAliveTime = options.TcpKeepAliveTime,
                 TcpKeepAliveInterval = options.TcpKeepAliveInterval,

@@ -91,6 +91,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private bool _reconnectBackoffMaxConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private TimeSpan _connectionTimeoutMax = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _connectionTimeoutMaxConfigured;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
     private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
     private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
@@ -388,6 +390,23 @@ public sealed class ProducerBuilder<TKey, TValue>
             timeout,
             nameof(timeout),
             "Connection timeout must be positive");
+        if (!_connectionTimeoutMaxConfigured)
+            _connectionTimeoutMax = _connectionTimeout;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum connection setup timeout after consecutive failures.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.max.ms</c>.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithConnectionTimeoutMax(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionTimeoutMax = ConnectionOptionValidation.ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "Maximum connection timeout must be positive");
+        _connectionTimeoutMaxConfigured = true;
         return this;
     }
 
@@ -1423,6 +1442,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             ConnectionTimeout = _connectionTimeout,
+            ConnectionTimeoutMax = _connectionTimeoutMax,
             EnableTcpKeepAlive = _enableTcpKeepAlive,
             TcpKeepAliveTime = _tcpKeepAliveTime,
             TcpKeepAliveInterval = _tcpKeepAliveInterval,
@@ -1669,6 +1689,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private bool _reconnectBackoffMaxConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private TimeSpan _connectionTimeoutMax = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _connectionTimeoutMaxConfigured;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
     private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
     private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
@@ -2760,6 +2782,23 @@ public sealed class ConsumerBuilder<TKey, TValue>
             timeout,
             nameof(timeout),
             "Connection timeout must be positive");
+        if (!_connectionTimeoutMaxConfigured)
+            _connectionTimeoutMax = _connectionTimeout;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum connection setup timeout after consecutive failures.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.max.ms</c>.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithConnectionTimeoutMax(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionTimeoutMax = ConnectionOptionValidation.ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "Maximum connection timeout must be positive");
+        _connectionTimeoutMaxConfigured = true;
         return this;
     }
 
@@ -3162,6 +3201,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             ConnectionTimeout = _connectionTimeout,
+            ConnectionTimeoutMax = _connectionTimeoutMax,
             EnableTcpKeepAlive = _enableTcpKeepAlive,
             TcpKeepAliveTime = _tcpKeepAliveTime,
             TcpKeepAliveInterval = _tcpKeepAliveInterval,
@@ -3342,6 +3382,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private bool _reconnectBackoffMaxConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private TimeSpan _connectionTimeoutMax = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _connectionTimeoutMaxConfigured;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
     private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
     private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
@@ -3554,6 +3596,23 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             timeout,
             nameof(timeout),
             "Connection timeout must be positive");
+        if (!_connectionTimeoutMaxConfigured)
+            _connectionTimeoutMax = _connectionTimeout;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum connection setup timeout after consecutive failures.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.max.ms</c>.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithConnectionTimeoutMax(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionTimeoutMax = ConnectionOptionValidation.ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "Maximum connection timeout must be positive");
+        _connectionTimeoutMaxConfigured = true;
         return this;
     }
 
@@ -3960,6 +4019,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             ConnectionTimeout = _connectionTimeout,
+            ConnectionTimeoutMax = _connectionTimeoutMax,
             EnableTcpKeepAlive = _enableTcpKeepAlive,
             TcpKeepAliveTime = _tcpKeepAliveTime,
             TcpKeepAliveInterval = _tcpKeepAliveInterval,

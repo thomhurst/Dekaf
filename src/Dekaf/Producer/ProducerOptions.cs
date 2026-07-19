@@ -35,6 +35,7 @@ public sealed class ProducerOptions
     private int _reconnectBackoffMaxMs = 1000;
     private bool _isReconnectBackoffMsConfigured;
     private bool _isReconnectBackoffMaxMsConfigured;
+    private TimeSpan? _connectionTimeoutMax;
 
     internal static bool IsBufferMemoryAllocationStrategyDefined(
         BufferMemoryAllocationStrategy strategy)
@@ -109,6 +110,19 @@ public sealed class ProducerOptions
     /// Maximum time allowed for socket connection setup, including TLS/SASL handshakes.
     /// </summary>
     public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+
+    /// <summary>
+    /// Maximum connection setup timeout after consecutive failures. Defaults to
+    /// <see cref="ConnectionTimeout"/> to preserve fixed-timeout behavior.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.max.ms</c>.
+    /// </summary>
+    public TimeSpan ConnectionTimeoutMax
+    {
+        get => _connectionTimeoutMax ?? ConnectionTimeout;
+        init => _connectionTimeoutMax = value;
+    }
+
+    internal bool IsConnectionTimeoutMaxConfigured => _connectionTimeoutMax.HasValue;
 
     /// <summary>
     /// Whether to enable TCP keepalive on broker sockets.

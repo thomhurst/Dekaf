@@ -171,6 +171,8 @@ public class DependencyInjectionTests
             EnableAdaptiveConnections = false,
             ClientRack = "rack-a",
             EnableRackAwarePartitioning = true,
+            ConnectionTimeout = TimeSpan.FromSeconds(7),
+            ConnectionTimeoutMax = TimeSpan.FromSeconds(21),
             UseTls = true,
             SaslMechanism = SaslMechanism.ScramSha512,
             SaslUsername = "producer-user",
@@ -195,6 +197,8 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.EnableAdaptiveConnections).IsFalse();
         await Assert.That(boundOptions.ClientRack).IsEqualTo("rack-a");
         await Assert.That(boundOptions.EnableRackAwarePartitioning).IsTrue();
+        await Assert.That(boundOptions.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(7));
+        await Assert.That(boundOptions.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(21));
         await Assert.That(boundOptions.UseTls).IsTrue();
         await Assert.That(boundOptions.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("producer-user");
@@ -702,6 +706,8 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:RequestTimeoutMs"] = "3000",
             ["Kafka:Producers:Orders:ReconnectBackoffMs"] = "75",
             ["Kafka:Producers:Orders:ReconnectBackoffMaxMs"] = "750",
+            ["Kafka:Producers:Orders:ConnectionTimeout"] = "00:00:07",
+            ["Kafka:Producers:Orders:ConnectionTimeoutMax"] = "00:00:21",
             ["Kafka:Producers:Orders:EnableIdempotence"] = "false",
             ["Kafka:Producers:Orders:ConnectionsPerBroker"] = "3",
             ["Kafka:Producers:Orders:MaxConnectionsPerBroker"] = "6",
@@ -756,6 +762,8 @@ public class DependencyInjectionTests
         await Assert.That(options.RequestTimeoutMs).IsEqualTo(3000);
         await Assert.That(options.ReconnectBackoffMs).IsEqualTo(75);
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(750);
+        await Assert.That(options.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(7));
+        await Assert.That(options.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(21));
         await Assert.That(options.EnableIdempotence).IsFalse();
         await Assert.That(options.ConnectionsPerBroker).IsEqualTo(3);
         await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(6);

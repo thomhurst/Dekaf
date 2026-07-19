@@ -55,6 +55,7 @@ public sealed class AdminClient : IAdminClient
                 TlsConfig = options.TlsConfig,
                 RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
                 ConnectionTimeout = options.ConnectionTimeout,
+                ConnectionTimeoutMax = options.ConnectionTimeoutMax,
                 EnableTcpKeepAlive = options.EnableTcpKeepAlive,
                 TcpKeepAliveTime = options.TcpKeepAliveTime,
                 TcpKeepAliveInterval = options.TcpKeepAliveInterval,
@@ -4733,6 +4734,7 @@ public sealed class AdminClient : IAdminClient
 /// </summary>
 public sealed class AdminClientOptions
 {
+    private TimeSpan? _connectionTimeoutMax;
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private bool _isReconnectBackoffMsConfigured;
@@ -4787,6 +4789,19 @@ public sealed class AdminClientOptions
     /// Maximum time allowed for socket connection setup, including TLS/SASL handshakes.
     /// </summary>
     public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+
+    /// <summary>
+    /// Maximum connection setup timeout after consecutive failures. Defaults to
+    /// <see cref="ConnectionTimeout"/> to preserve fixed-timeout behavior.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.max.ms</c>.
+    /// </summary>
+    public TimeSpan ConnectionTimeoutMax
+    {
+        get => _connectionTimeoutMax ?? ConnectionTimeout;
+        init => _connectionTimeoutMax = value;
+    }
+
+    internal bool IsConnectionTimeoutMaxConfigured => _connectionTimeoutMax.HasValue;
 
     /// <summary>
     /// Whether to enable TCP keepalive on broker sockets.
@@ -4918,6 +4933,8 @@ public sealed class AdminClientBuilder
     private bool _reconnectBackoffMaxConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private TimeSpan _connectionTimeoutMax = ConnectionOptions.DefaultConnectionTimeout;
+    private bool _connectionTimeoutMaxConfigured;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
     private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
     private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
@@ -5441,6 +5458,23 @@ public sealed class AdminClientBuilder
             timeout,
             nameof(timeout),
             "Connection timeout must be positive");
+        if (!_connectionTimeoutMaxConfigured)
+            _connectionTimeoutMax = _connectionTimeout;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum connection setup timeout after consecutive failures.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.max.ms</c>.
+    /// </summary>
+    public AdminClientBuilder WithConnectionTimeoutMax(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _connectionTimeoutMax = ConnectionOptionValidation.ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "Maximum connection timeout must be positive");
+        _connectionTimeoutMaxConfigured = true;
         return this;
     }
 
@@ -5532,6 +5566,7 @@ public sealed class AdminClientBuilder
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             ConnectionTimeout = _connectionTimeout,
+            ConnectionTimeoutMax = _connectionTimeoutMax,
             EnableTcpKeepAlive = _enableTcpKeepAlive,
             TcpKeepAliveTime = _tcpKeepAliveTime,
             TcpKeepAliveInterval = _tcpKeepAliveInterval,

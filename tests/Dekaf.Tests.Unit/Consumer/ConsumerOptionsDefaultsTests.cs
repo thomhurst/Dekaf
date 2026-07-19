@@ -197,6 +197,18 @@ public class ConsumerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task ConnectionTimeoutMax_WithoutExplicitMaximum_FollowsInitialTimeout()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ConnectionTimeout = TimeSpan.FromSeconds(7)
+        };
+
+        await Assert.That(options.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(7));
+    }
+
+    [Test]
     public async Task CheckCrcs_DefaultsTo_True()
     {
         var options = CreateOptions();
