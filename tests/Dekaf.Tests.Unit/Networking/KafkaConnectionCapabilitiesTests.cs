@@ -210,6 +210,90 @@ public class KafkaConnectionCapabilitiesTests
 
         await Assert.That(olderVersion).IsEqualTo((short)14);
         await Assert.That(newerVersion).IsEqualTo((short)16);
+        await Assert.That(((CapabilityConnection)olderConnection).SendCount).IsEqualTo(0);
+        await Assert.That(((CapabilityConnection)newerConnection).SendCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task HeterogeneousBrokers_ConcurrentSendsUseTargetConnectionVersions()
+    {
+        await using var metadata = new MetadataManager(
+            Substitute.For<IConnectionPool>(),
+            ["bootstrap:9092"]);
+        metadata.SetApiVersion(ApiKey.Metadata, 9, 13);
+
+        var releaseSends = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var older = new GenerationConnection(
+            CreateCapabilities(new ApiVersion(ApiKey.Metadata, 9, 11)),
+            releaseSends.Task);
+        var newer = new GenerationConnection(
+            CreateCapabilities(new ApiVersion(ApiKey.Metadata, 9, 13)),
+            releaseSends.Task);
+
+        var olderSend = SendMetadataAsync(metadata, older);
+        var newerSend = SendMetadataAsync(metadata, newer);
+        await Task.WhenAll(older.SendStarted, newer.SendStarted);
+
+        releaseSends.SetResult();
+        await Task.WhenAll(olderSend, newerSend);
+
+        await Assert.That(older.ObservedApiVersion).IsEqualTo((short)11);
+        await Assert.That(newer.ObservedApiVersion).IsEqualTo((short)13);
+    }
+
+    [Test]
+    public async Task ExactConnectionVersionSelection_IsAllocationFreeAndDoesNotSend()
+    {
+        await using var metadata = new MetadataManager(
+            Substitute.For<IConnectionPool>(),
+            ["bootstrap:9092"]);
+        metadata.SetApiVersion(ApiKey.Produce, 3, 13);
+        var connection = new CapabilityConnection(
+            CreateCapabilities(new ApiVersion(ApiKey.Produce, 3, 7)));
+
+        _ = metadata.GetNegotiatedApiVersion(connection, ApiKey.Produce, 3, 13);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var versionSum = 0;
+        for (var i = 0; i < 10_000; i++)
+        {
+            versionSum += metadata.GetNegotiatedApiVersion(
+                connection,
+                ApiKey.Produce,
+                3,
+                13);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        GC.KeepAlive(versionSum);
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(connection.SendCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DisjointTargetRange_FailsBeforeRequestWrite()
+    {
+        await using var metadata = new MetadataManager(
+            Substitute.For<IConnectionPool>(),
+            ["bootstrap:9092"]);
+        var connection = new CapabilityConnection(
+            CreateCapabilities(new ApiVersion(ApiKey.Produce, 0, 2)));
+
+        Func<Task> send = async () =>
+        {
+            var version = metadata.GetNegotiatedApiVersion(
+                connection,
+                ApiKey.Produce,
+                3,
+                13);
+            _ = await connection.SendAsync<ProduceRequest, ProduceResponse>(
+                new ProduceRequest(),
+                version,
+                CancellationToken.None);
+        };
+
+        await Assert.That(send).Throws<BrokerVersionException>();
+        await Assert.That(connection.SendCount).IsEqualTo(0);
     }
 
     [Test]
@@ -356,6 +440,21 @@ public class KafkaConnectionCapabilitiesTests
     private static KafkaConnectionCapabilities CreateCapabilities(params ApiVersion[] versions)
         => KafkaConnectionCapabilities.Create(CreateResponse(versions));
 
+    private static async Task SendMetadataAsync(
+        MetadataManager metadata,
+        GenerationConnection connection)
+    {
+        var version = metadata.GetNegotiatedApiVersion(
+            connection,
+            ApiKey.Metadata,
+            9,
+            13);
+        _ = await connection.SendAsync<MetadataRequest, MetadataResponse>(
+            MetadataRequest.ForAllTopics(),
+            version,
+            CancellationToken.None);
+    }
+
     private static KafkaConnectionCapabilities CreateFeatureCapabilities(
         long epoch,
         params FinalizedFeature[] features)
@@ -387,6 +486,7 @@ public class KafkaConnectionCapabilitiesTests
         public bool IsConnected => true;
         public KafkaConnectionCapabilities Capabilities { get; } = capabilities;
         public short ObservedApiVersion { get; private set; } = -1;
+        public int SendCount { get; private set; }
 
         public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 
@@ -397,6 +497,7 @@ public class KafkaConnectionCapabilitiesTests
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse
         {
+            SendCount++;
             if (request is not MetadataRequest)
                 throw new NotSupportedException();
 
