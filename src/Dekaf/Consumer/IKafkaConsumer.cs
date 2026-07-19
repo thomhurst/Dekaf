@@ -193,6 +193,21 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
     /// </exception>
     ValueTask CloseAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gracefully closes the consumer using the specified group-membership behavior.
+    /// </summary>
+    /// <param name="options">Close options.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the asynchronous close operation.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <see cref="ConsumerCloseOptions.GroupMembershipOperation"/> is invalid.
+    /// </exception>
+    /// <exception cref="KafkaTimeoutException">
+    /// The operation exceeds <see cref="ConsumerOptions.DefaultApiTimeoutMs"/>.
+    /// </exception>
+    ValueTask CloseAsync(ConsumerCloseOptions options, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

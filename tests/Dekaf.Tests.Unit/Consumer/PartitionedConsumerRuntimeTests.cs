@@ -1398,6 +1398,11 @@ public sealed class PartitionedConsumerRuntimeTests
         public ValueTask CloseAsync(CancellationToken cancellationToken = default)
             => ValueTask.CompletedTask;
 
+        public ValueTask CloseAsync(
+            ConsumerCloseOptions options,
+            CancellationToken cancellationToken = default)
+            => ValueTask.CompletedTask;
+
         public ValueTask DisposeAsync()
             => ValueTask.CompletedTask;
 

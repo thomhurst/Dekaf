@@ -2026,7 +2026,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _state = CoordinatorState.Unjoined;
 
             LogMaxPollIntervalExceeded(_options.MaxPollIntervalMs);
-            await SendConsumerProtocolLeaveRequestAsync(cancellationToken).ConfigureAwait(false);
+            await SendConsumerProtocolLeaveRequestAsync(
+                ConsumerGroupMembershipOperation.Default,
+                cancellationToken).ConfigureAwait(false);
             return (true, lost);
         }
         finally
@@ -2071,12 +2073,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     /// <summary>
-    /// KIP-848 leave: sends ConsumerGroupHeartbeat with MemberEpoch=-1 for dynamic members,
-    /// or -2 for static members so the broker keeps the assignment warm.
+    /// KIP-848 leave: sends ConsumerGroupHeartbeat with MemberEpoch=-1 for dynamic or permanently
+    /// departing static members, or -2 for default static-member close so the broker keeps the
+    /// assignment warm.
     /// </summary>
-    private async ValueTask LeaveGroupConsumerProtocolAsync(CancellationToken cancellationToken)
+    private async ValueTask LeaveGroupConsumerProtocolAsync(
+        ConsumerGroupMembershipOperation operation,
+        CancellationToken cancellationToken)
     {
-        await SendConsumerProtocolLeaveRequestAsync(cancellationToken).ConfigureAwait(false);
+        await SendConsumerProtocolLeaveRequestAsync(operation, cancellationToken).ConfigureAwait(false);
 
         await StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
 
@@ -2091,7 +2096,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    private async ValueTask SendConsumerProtocolLeaveRequestAsync(CancellationToken cancellationToken)
+    private async ValueTask SendConsumerProtocolLeaveRequestAsync(
+        ConsumerGroupMembershipOperation operation,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -2104,7 +2111,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 GroupId = _options.GroupId!,
                 MemberId = _memberId!,
-                MemberEpoch = _options.GroupInstanceId is null ? -1 : -2,
+                MemberEpoch = operation == ConsumerGroupMembershipOperation.LeaveGroup ||
+                              _options.GroupInstanceId is null
+                    ? -1
+                    : -2,
                 InstanceId = _options.GroupInstanceId,
             };
 
@@ -2138,7 +2148,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     /// <param name="cancellationToken">Cancellation token.</param>
     public async ValueTask LeaveGroupAsync(CancellationToken cancellationToken = default)
     {
+        await LeaveGroupAsync(ConsumerGroupMembershipOperation.Default, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask LeaveGroupAsync(
+        ConsumerGroupMembershipOperation operation,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Enum.IsDefined(operation))
+            throw new ArgumentOutOfRangeException(nameof(operation), operation, "The group membership operation is invalid.");
+
         if (Volatile.Read(ref _disposed) != 0)
+            return;
+
+        if (operation == ConsumerGroupMembershipOperation.RemainInGroup)
             return;
 
         // Only leave if we're part of a group
@@ -2149,7 +2172,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (_coordinatorId < 0)
             return;
 
-        await LeaveGroupConsumerProtocolAsync(cancellationToken).ConfigureAwait(false);
+        await LeaveGroupConsumerProtocolAsync(operation, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

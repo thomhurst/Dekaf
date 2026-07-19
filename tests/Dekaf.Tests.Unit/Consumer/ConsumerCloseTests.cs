@@ -8,6 +8,41 @@ namespace Dekaf.Tests.Unit.Consumer;
 /// </summary>
 public class ConsumerCloseTests
 {
+    [Test]
+    public async Task ConsumerCloseOptions_DefaultsToKafkaMembershipBehavior()
+    {
+        var options = new ConsumerCloseOptions();
+
+        await Assert.That(options.GroupMembershipOperation)
+            .IsEqualTo(ConsumerGroupMembershipOperation.Default);
+    }
+
+    [Test]
+    public async Task KafkaConsumer_CloseAsync_RejectsInvalidMembershipOperation()
+    {
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-consumer"
+        };
+
+        await using var consumer = new KafkaConsumer<string, string>(
+            options,
+            Serializers.String,
+            Serializers.String);
+
+        var closeOptions = new ConsumerCloseOptions
+        {
+            GroupMembershipOperation = (ConsumerGroupMembershipOperation)int.MaxValue
+        };
+
+        await Assert.That(async () => await consumer.CloseAsync(closeOptions))
+            .Throws<ArgumentOutOfRangeException>();
+
+        // Invalid options are rejected before the consumer transitions to closed.
+        await consumer.CloseAsync();
+    }
+
     #region Consumer CloseAsync Idempotency Tests
 
     [Test]
