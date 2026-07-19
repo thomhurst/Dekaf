@@ -957,6 +957,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), List<PendingFetchData>> _prefetchPendingItemsByBroker = new();
     private readonly BrokerPrefetchScheduler _brokerPrefetchScheduler = new();
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), FetchSessionHandler> _fetchSessions = new();
+    // KIP-74 request-order cursor. KIP-227 rotates incremental-session responses on the broker;
+    // this cursor orders full requests, including session creation and reset, per connection.
+    private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), FetchPartitionOrderState>
+        _fetchPartitionOrderStates = new();
     private readonly StuckFetchPositionTracker _stuckFetchPositionTracker = new(MaxConsecutiveEmptyParsedFetches);
     private readonly PrefetchFailureTracker _prefetchFailureTracker = new(
         MaxRepeatedDeterministicPrefetchFailures,
@@ -3013,7 +3017,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         try
         {
             // Build fetch request — pass index range to avoid GetRange allocation
-            var topicData = BuildFetchRequestTopics(partitions, partitionStartIndex, partitionCount, brokerId);
+            var topicData = BuildFetchRequestTopicsForConnection(
+                partitions,
+                partitionStartIndex,
+                partitionCount,
+                brokerId,
+                connectionIndex);
             FetchSessionBuildResult? fetchSessionBuild = fetchSessionHandler?.Build(topicData, _metadataManager.Metadata);
 
             var request = FetchRequest.Rent();
@@ -6993,10 +7002,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private List<FetchRequestTopic> BuildFetchRequestTopics(
         List<TopicPartition> partitions, int startIndex, int count, int brokerId)
+        => BuildFetchRequestTopicsForConnection(partitions, startIndex, count, brokerId, connectionIndex: 0);
+
+    private List<FetchRequestTopic> BuildFetchRequestTopicsForConnection(
+        List<TopicPartition> partitions, int startIndex, int count, int brokerId, int connectionIndex)
     {
         if (count == 0)
             return ConsumerFetchPools.RentFetchRequestTopicList(0);
 
+        var orderState = _fetchPartitionOrderStates.GetOrAdd(
+            (brokerId, connectionIndex),
+            static _ => new FetchPartitionOrderState());
+        var rotation = orderState.GetAndAdvance();
         var cacheKey = new FetchRequestCacheKey(brokerId, startIndex, count);
 
         // Take snapshots of current state under lock
@@ -7012,20 +7029,34 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (cachedEntry is not null
             && PartitionRangeEquals(partitions, startIndex, count, cachedEntry.Partitions))
         {
+            var cachedRotationStart = cachedEntry.RotationStarts[(int)((uint)rotation % (uint)cachedEntry.RotationStarts.Count)];
             // Cache hit: build a fresh result list with snapshot offsets under lock.
             // Each broker task gets its own FetchRequestPartition objects so that
             // concurrent calls cannot mutate offsets visible to another task.
             // This allocates per fetch cycle (per-batch), not per-message.
-            return BuildFetchResult(
-                cachedEntry.TopicPartitions,
-                _fetchPositions,
-                _adaptiveFetchSizer?.CurrentPartitionFetchBytes,
-                _metadataManager.Metadata,
-                _lastConsumedLeaderEpochs);
+            return cachedRotationStart == default
+                ? BuildFetchResult(
+                    cachedEntry.TopicPartitions,
+                    _fetchPositions,
+                    _adaptiveFetchSizer?.CurrentPartitionFetchBytes,
+                    _metadataManager.Metadata,
+                    _lastConsumedLeaderEpochs)
+                : BuildRotatedFetchResult(
+                    cachedEntry.TopicPartitions,
+                    _fetchPositions,
+                    cachedEntry.TopicOrder,
+                    cachedRotationStart.TopicIndex,
+                    cachedRotationStart.PartitionIndex,
+                    _adaptiveFetchSizer?.CurrentPartitionFetchBytes,
+                    _metadataManager.Metadata,
+                    _lastConsumedLeaderEpochs);
         }
 
         // Cache miss: build fresh structure with TopicPartition stored alongside.
         var topicPartitions = new Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>();
+        var topicIndexes = new Dictionary<string, int>();
+        var topicOrder = new List<string>();
+        var rotationStarts = new List<(int TopicIndex, int PartitionIndex)>(count);
         var rangePartitions = new List<TopicPartition>(count);
 
         var endIndex = startIndex + count;
@@ -7037,7 +7068,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 list = [];
                 topicPartitions[p.Topic] = list;
+                topicIndexes[p.Topic] = topicOrder.Count;
+                topicOrder.Add(p.Topic);
             }
+
+            rotationStarts.Add((topicIndexes[p.Topic], list.Count));
 
             list.Add((
                 new FetchRequestPartition
@@ -7053,12 +7088,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Build result with fresh copies so the caller owns its own FetchRequestPartition
         // instances. The cached dict stores templates; each caller gets independent copies
         // to prevent any shared-state issues with concurrent PrefetchFromBrokerAsync calls.
-        var result = BuildFetchResult(
-            topicPartitions,
-            _fetchPositions,
-            _adaptiveFetchSizer?.CurrentPartitionFetchBytes,
-            _metadataManager.Metadata,
-            _lastConsumedLeaderEpochs);
+        var newRotationStart = rotationStarts[(int)((uint)rotation % (uint)rotationStarts.Count)];
+        var result = newRotationStart == default
+            ? BuildFetchResult(
+                topicPartitions,
+                _fetchPositions,
+                _adaptiveFetchSizer?.CurrentPartitionFetchBytes,
+                _metadataManager.Metadata,
+                _lastConsumedLeaderEpochs)
+            : BuildRotatedFetchResult(
+                topicPartitions,
+                _fetchPositions,
+                topicOrder,
+                newRotationStart.TopicIndex,
+                newRotationStart.PartitionIndex,
+                _adaptiveFetchSizer?.CurrentPartitionFetchBytes,
+                _metadataManager.Metadata,
+                _lastConsumedLeaderEpochs);
 
         // Update cache if this range is new or the cached partition range is stale.
         lock (_fetchCacheLock)
@@ -7068,7 +7114,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 _fetchRequestTemplateCache[cacheKey] = new FetchRequestTemplateCacheEntry(
                     rangePartitions,
-                    topicPartitions);
+                    topicPartitions,
+                    topicOrder,
+                    rotationStarts);
             }
         }
 
@@ -7079,12 +7127,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private sealed class FetchRequestTemplateCacheEntry(
         List<TopicPartition> partitions,
-        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> topicPartitions)
+        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> topicPartitions,
+        List<string> topicOrder,
+        List<(int TopicIndex, int PartitionIndex)> rotationStarts)
     {
         public List<TopicPartition> Partitions { get; } = partitions;
 
         public Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> TopicPartitions { get; }
             = topicPartitions;
+
+        public List<string> TopicOrder { get; } = topicOrder;
+
+        public List<(int TopicIndex, int PartitionIndex)> RotationStarts { get; } = rotationStarts;
+    }
+
+    private sealed class FetchPartitionOrderState
+    {
+        private int _nextRotation = -1;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetAndAdvance() => Interlocked.Increment(ref _nextRotation);
     }
 
     /// <summary>
@@ -7159,6 +7221,107 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         return result;
+    }
+
+    internal static List<FetchRequestTopic> BuildRotatedFetchResult(
+        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> templateDict,
+        ConcurrentDictionary<TopicPartition, long> fetchPositions,
+        List<string> topicOrder,
+        int topicRotation,
+        int partitionRotation,
+        int? adaptivePartitionMaxBytes = null,
+        ClusterMetadata? clusterMetadata = null,
+        ConcurrentDictionary<TopicPartition, int>? lastConsumedLeaderEpochs = null)
+    {
+        var result = ConsumerFetchPools.RentFetchRequestTopicList(templateDict.Count);
+        var topicCount = topicOrder.Count;
+        var topicStart = (int)((uint)topicRotation % (uint)topicCount);
+        for (var topicOffset = 0; topicOffset < topicCount; topicOffset++)
+        {
+            var topic = topicOrder[(topicStart + topicOffset) % topicCount];
+            AddFetchRequestTopic(
+                result,
+                topic,
+                templateDict[topic],
+                fetchPositions,
+                adaptivePartitionMaxBytes,
+                clusterMetadata,
+                lastConsumedLeaderEpochs,
+                partitionRotation);
+        }
+
+        return result;
+    }
+
+    private static void AddFetchRequestTopic(
+        List<FetchRequestTopic> result,
+        string topic,
+        List<(FetchRequestPartition Partition, TopicPartition TopicPartition)> cachedPartitions,
+        ConcurrentDictionary<TopicPartition, long> fetchPositions,
+        int? adaptivePartitionMaxBytes,
+        ClusterMetadata? clusterMetadata,
+        ConcurrentDictionary<TopicPartition, int>? lastConsumedLeaderEpochs,
+        int partitionRotation)
+    {
+        var partitionList = ConsumerFetchPools.RentFetchRequestPartitionList(cachedPartitions.Count);
+        var partitionCount = cachedPartitions.Count;
+        var partitionStart = (int)((uint)partitionRotation % (uint)partitionCount);
+
+        for (var partitionIndex = partitionStart; partitionIndex < partitionCount; partitionIndex++)
+            AddFetchRequestPartition(
+                partitionList,
+                cachedPartitions[partitionIndex],
+                fetchPositions,
+                adaptivePartitionMaxBytes,
+                clusterMetadata,
+                lastConsumedLeaderEpochs);
+
+        for (var partitionIndex = 0; partitionIndex < partitionStart; partitionIndex++)
+            AddFetchRequestPartition(
+                partitionList,
+                cachedPartitions[partitionIndex],
+                fetchPositions,
+                adaptivePartitionMaxBytes,
+                clusterMetadata,
+                lastConsumedLeaderEpochs);
+
+        if (partitionList.Count == 0)
+        {
+            ConsumerFetchPools.ReturnFetchRequestPartitionList(partitionList);
+            return;
+        }
+
+        result.Add(new FetchRequestTopic
+        {
+            Topic = topic,
+            TopicId = clusterMetadata?.GetTopic(topic)?.TopicId ?? Guid.Empty,
+            Partitions = partitionList
+        });
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AddFetchRequestPartition(
+        List<FetchRequestPartition> partitionList,
+        (FetchRequestPartition Partition, TopicPartition TopicPartition) cachedPartition,
+        ConcurrentDictionary<TopicPartition, long> fetchPositions,
+        int? adaptivePartitionMaxBytes,
+        ClusterMetadata? clusterMetadata,
+        ConcurrentDictionary<TopicPartition, int>? lastConsumedLeaderEpochs)
+    {
+        var (template, tp) = cachedPartition;
+        if (!fetchPositions.TryGetValue(tp, out var fetchOffset))
+            return;
+
+        var currentLeaderEpoch = clusterMetadata?.GetPartitionInfo(tp.Topic, tp.Partition)?.LeaderEpoch ?? -1;
+        partitionList.Add(new FetchRequestPartition
+        {
+            Partition = template.Partition,
+            FetchOffset = fetchOffset,
+            CurrentLeaderEpoch = currentLeaderEpoch,
+            LastFetchedEpoch = lastConsumedLeaderEpochs?.GetValueOrDefault(tp, -1) ?? -1,
+            LogStartOffset = template.LogStartOffset,
+            PartitionMaxBytes = adaptivePartitionMaxBytes ?? template.PartitionMaxBytes
+        });
     }
 
     internal static List<ForgottenTopic> BuildForgottenTopicsData(

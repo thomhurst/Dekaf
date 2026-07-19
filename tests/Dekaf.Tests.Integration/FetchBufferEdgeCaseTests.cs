@@ -182,6 +182,69 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    [NotInParallel]
+    public async Task SmallFetchMaxBytes_HotEarlyPartition_DoesNotStarveLaterPartitions(bool enableFetchSessions)
+    {
+        const int partitionCount = 4;
+        const int hotPartitionMessages = 20;
+        const int otherPartitionMessages = 4;
+        const int maxMessagesBeforeAllPartitions = 12;
+        var value = new string('F', 8 * 1024);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var partition = 0; partition < partitionCount; partition++)
+        {
+            var messageCount = partition == 0 ? hotPartitionMessages : otherPartitionMessages;
+            for (var message = 0; message < messageCount; message++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Partition = partition,
+                    Key = $"{partition}-{message}",
+                    Value = value
+                }, CancellationToken.None);
+            }
+        }
+
+        await producer.FlushWithTimeoutAsync();
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithFetchSessions(enableFetchSessions)
+            .WithFetchMaxBytes(1024)
+            .WithMaxPartitionFetchBytes(16 * 1024)
+            .WithFetchMaxWait(TimeSpan.FromMilliseconds(100))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        consumer.Assign(
+            new TopicPartition(topic, 0),
+            new TopicPartition(topic, 1),
+            new TopicPartition(topic, 2),
+            new TopicPartition(topic, 3));
+
+        var observedPartitions = new HashSet<int>();
+        var remainingMessages = maxMessagesBeforeAllPartitions;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var message in consumer.ConsumeAsync(cts.Token))
+        {
+            observedPartitions.Add(message.Partition);
+            if (observedPartitions.Count == partitionCount || --remainingMessages == 0)
+                break;
+        }
+
+        await Assert.That(observedPartitions).Count().IsEqualTo(partitionCount);
+    }
+
+    [Test]
     public async Task VaryingMessageSizes_FetchReturnsConsistently()
     {
         // Arrange - produce messages of wildly varying sizes
