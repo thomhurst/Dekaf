@@ -1450,8 +1450,10 @@ public sealed class AdminClient : IAdminClient
         {
             var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 Protocol.ApiKey.LeaveGroup,
                 LeaveGroupRequest.LowestSupportedVersion,
                 LeaveGroupRequest.HighestSupportedVersion);
@@ -1465,7 +1467,7 @@ public sealed class AdminClient : IAdminClient
                 }).ToArray()
             };
 
-            var response = await connectionLease.Connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
+            var response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
                 request,
                 apiVersion,
                 cancellationToken).ConfigureAwait(false);

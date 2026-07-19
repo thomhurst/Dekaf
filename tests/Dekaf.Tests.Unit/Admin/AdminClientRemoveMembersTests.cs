@@ -13,6 +13,37 @@ public sealed class AdminClientRemoveMembersTests
     private const string GroupId = "orders";
 
     [Test]
+    public async Task RemoveMembers_RejectsEmptyMemberCollection()
+    {
+        var (admin, _) = CreateAdmin(leaveGroupMinVersion: 3, leaveGroupMaxVersion: 5);
+
+        await using (admin)
+        {
+            await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(GroupId, []))
+                .Throws<ArgumentException>()
+                .WithMessageContaining("At least one static member");
+        }
+    }
+
+    [Test]
+    public async Task RemoveMembers_RejectsDuplicateGroupInstanceIds()
+    {
+        var (admin, _) = CreateAdmin(leaveGroupMinVersion: 3, leaveGroupMaxVersion: 5);
+
+        await using (admin)
+        {
+            await Assert.That(async () => await admin.RemoveMembersFromConsumerGroupAsync(
+                    GroupId,
+                    [
+                        new ConsumerGroupMemberToRemove { GroupInstanceId = "worker-a" },
+                        new ConsumerGroupMemberToRemove { GroupInstanceId = "worker-a" }
+                    ]))
+                .Throws<ArgumentException>()
+                .WithMessageContaining("must be unique");
+        }
+    }
+
+    [Test]
     public async Task RemoveMembers_SendsMultipleStaticMembersAndReturnsPartialFailure()
     {
         var (admin, connection) = CreateAdmin(leaveGroupMinVersion: 3, leaveGroupMaxVersion: 5);
