@@ -6,9 +6,13 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class TxnOffsetCommitRequest : IKafkaRequest<TxnOffsetCommitResponse>
 {
+    internal const short TopicIdVersion = 6;
+
     public static ApiKey ApiKey => ApiKey.TxnOffsetCommit;
     public static short LowestSupportedVersion => 3;
-    public static short HighestSupportedVersion => 5;
+    public static short HighestSupportedVersion => TopicIdVersion;
+
+    private int _generationIdOrMemberEpoch = -1;
 
     /// <summary>
     /// The transactional ID.
@@ -31,9 +35,24 @@ public sealed class TxnOffsetCommitRequest : IKafkaRequest<TxnOffsetCommitRespon
     public short ProducerEpoch { get; init; }
 
     /// <summary>
-    /// The generation ID of the consumer group (v3+). Default -1.
+    /// The classic generation ID or consumer-protocol member epoch (v3+). Default -1.
     /// </summary>
-    public int GenerationId { get; init; } = -1;
+    public int GenerationIdOrMemberEpoch
+    {
+        get => _generationIdOrMemberEpoch;
+        init => _generationIdOrMemberEpoch = value;
+    }
+
+    /// <summary>
+    /// The generation ID of the consumer group (v3+). Use
+    /// <see cref="GenerationIdOrMemberEpoch"/> for classic and consumer protocols.
+    /// </summary>
+    [Obsolete($"Use {nameof(GenerationIdOrMemberEpoch)} instead.")]
+    public int GenerationId
+    {
+        get => _generationIdOrMemberEpoch;
+        init => _generationIdOrMemberEpoch = value;
+    }
 
     /// <summary>
     /// The member ID of the consumer (v3+).
@@ -59,7 +78,7 @@ public sealed class TxnOffsetCommitRequest : IKafkaRequest<TxnOffsetCommitRespon
         writer.WriteInt64(ProducerId);
         writer.WriteInt16(ProducerEpoch);
 
-        writer.WriteInt32(GenerationId);
+        writer.WriteInt32(GenerationIdOrMemberEpoch);
         writer.WriteCompactString(MemberId);
         writer.WriteCompactNullableString(GroupInstanceId);
 
@@ -77,12 +96,16 @@ public sealed class TxnOffsetCommitRequest : IKafkaRequest<TxnOffsetCommitRespon
 /// </summary>
 public sealed class TxnOffsetCommitRequestTopic
 {
-    public required string Name { get; init; }
+    public string Name { get; init; } = string.Empty;
+    public Guid TopicId { get; init; }
     public required IReadOnlyList<TxnOffsetCommitRequestPartition> Partitions { get; init; }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        writer.WriteCompactString(Name);
+        if (version >= TxnOffsetCommitRequest.TopicIdVersion)
+            writer.WriteUuid(TopicId);
+        else
+            writer.WriteCompactString(Name);
 
         writer.WriteCompactArray(
             Partitions,

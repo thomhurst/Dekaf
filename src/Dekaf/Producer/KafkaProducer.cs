@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
+using Dekaf.Consumer;
 using Dekaf.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Internal;
@@ -2701,15 +2702,42 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         };
     }
 
-    internal async ValueTask SendOffsetsToTransactionInternalAsync(
+    internal ValueTask SendOffsetsToTransactionInternalAsync(
         IEnumerable<TopicPartitionOffset> offsets,
         string consumerGroupId,
         CancellationToken cancellationToken)
+        => SendOffsetsToTransactionInternalAsync(
+            offsets,
+            consumerGroupId,
+            generationIdOrMemberEpoch: -1,
+            memberId: string.Empty,
+            groupInstanceId: null,
+            cancellationToken);
+
+    internal ValueTask SendOffsetsToTransactionInternalAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        ConsumerGroupMetadata consumerGroupMetadata,
+        CancellationToken cancellationToken)
+        => SendOffsetsToTransactionInternalAsync(
+            offsets,
+            consumerGroupMetadata.GroupId,
+            consumerGroupMetadata.GenerationId,
+            consumerGroupMetadata.MemberId,
+            consumerGroupMetadata.GroupInstanceId,
+            cancellationToken);
+
+    private async ValueTask SendOffsetsToTransactionInternalAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        string consumerGroupId,
+        int generationIdOrMemberEpoch,
+        string memberId,
+        string? groupInstanceId,
+        CancellationToken cancellationToken)
     {
         // Each path is retried as a unit. TV1 uses AddOffsetsToTxn -> FindCoordinator ->
-        // TxnOffsetCommit v4. TV2 discovers the group coordinator first, then uses v5 to
-        // enroll offsets implicitly when that exact connection supports it. A TV2 broker
-        // connection capped at v4 retains the explicit AddOffsetsToTxn fallback.
+        // TxnOffsetCommit v4. TV2 discovers the group coordinator first, then uses v5 or v6
+        // to enroll offsets implicitly when that exact connection supports it. V6 uses
+        // request-local topic IDs; a connection capped at v4 retains explicit enrollment.
         const int maxRetries = 5;
         var tv2 = _currentTransactionUsesTV2;
 
@@ -2728,17 +2756,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 PartitionIndex = offset.Partition,
                 CommittedOffset = offset.Offset,
-                CommittedLeaderEpoch = offset.LeaderEpoch
-            });
-        }
-
-        var txnTopics = new List<TxnOffsetCommitRequestTopic>(topicOffsets.Count);
-        foreach (var (topic, partitions) in topicOffsets)
-        {
-            txnTopics.Add(new TxnOffsetCommitRequestTopic
-            {
-                Name = topic,
-                Partitions = partitions
+                CommittedLeaderEpoch = offset.LeaderEpoch,
+                CommittedMetadata = offset.Metadata
             });
         }
 
@@ -2807,15 +2826,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 continue;
             }
 
-            var txnOffsetCommitRequest = new TxnOffsetCommitRequest
-            {
-                TransactionalId = _options.TransactionalId!,
-                GroupId = consumerGroupId,
-                ProducerId = _producerId,
-                ProducerEpoch = _producerEpoch,
-                Topics = txnTopics
-            };
-
             using var coordinatorLease = await _connectionPool.LeaseConnectionAsync(
                 coord.NodeId,
                 cancellationToken).ConfigureAwait(false);
@@ -2853,6 +2863,34 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 }
             }
 
+            OffsetTopicIdRequestMap? topicIdMap = null;
+            List<TxnOffsetCommitRequestTopic> txnTopics;
+            if (txnOffsetCommitVersion >= TxnOffsetCommitRequest.TopicIdVersion)
+            {
+                (txnTopics, topicIdMap) = await BuildTxnOffsetCommitTopicsAsync(
+                        topicOffsets,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (topicIdMap is null)
+                    txnOffsetCommitVersion = TxnOffsetCommitRequest.TopicIdVersion - 1;
+            }
+            else
+            {
+                txnTopics = BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap: null);
+            }
+
+            var txnOffsetCommitRequest = new TxnOffsetCommitRequest
+            {
+                TransactionalId = _options.TransactionalId!,
+                GroupId = consumerGroupId,
+                ProducerId = _producerId,
+                ProducerEpoch = _producerEpoch,
+                GenerationIdOrMemberEpoch = generationIdOrMemberEpoch,
+                MemberId = memberId,
+                GroupInstanceId = groupInstanceId,
+                Topics = txnTopics
+            };
+
             TxnOffsetCommitResponse txnOffsetCommitResponse;
             try
             {
@@ -2873,23 +2911,48 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 continue;
             }
 
-            // Check for errors across all partitions
             ErrorCode? commitError = null;
             string? commitContext = null;
-            foreach (var topicResult in txnOffsetCommitResponse.Topics)
+            try
             {
-                foreach (var partitionResult in topicResult.Partitions)
+                var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
+                foreach (var topicResult in txnOffsetCommitResponse.Topics)
                 {
-                    if (partitionResult.ErrorCode != ErrorCode.None)
-                    {
-                        commitError = partitionResult.ErrorCode;
-                        commitContext = $"TxnOffsetCommit for {topicResult.Name}-{partitionResult.PartitionIndex}";
-                        break;
-                    }
-                }
+                    var topicName = topicIdMap is null
+                        ? topicResult.Name
+                        : topicIdMap.MatchResponseTopic(
+                            topicResult.TopicId,
+                            responseSnapshot!,
+                            "TxnOffsetCommit",
+                            responseMismatchIsRetriable: true);
 
-                if (commitError.HasValue)
-                    break;
+                    foreach (var partitionResult in topicResult.Partitions)
+                    {
+                        if (partitionResult.ErrorCode != ErrorCode.None)
+                        {
+                            commitError = partitionResult.ErrorCode;
+                            commitContext = $"TxnOffsetCommit for {topicName}-{partitionResult.PartitionIndex}";
+                            break;
+                        }
+                    }
+
+                    if (commitError.HasValue)
+                        break;
+                }
+            }
+            catch (Exception ex) when (
+                attempt < maxRetries - 1
+                && !cancellationToken.IsCancellationRequested
+                && RetryHelper.IsRetriableRequestFailure(ex))
+            {
+                await _metadataManager.RefreshMetadataAsync(
+                        topicOffsets.Keys,
+                        forceRefresh: true,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                await Task.Delay(CalculateRequestRetryBackoff(attempt), cancellationToken)
+                    .ConfigureAwait(false);
+                continue;
             }
 
             if (commitError.HasValue)
@@ -2897,6 +2960,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 ThrowIfNonRetriableTransactionError(commitError.Value, commitContext!, tv2);
                 if (attempt == maxRetries - 1)
                     break;
+                if (commitError.Value.RequiresMetadataRefresh())
+                {
+                    await _metadataManager.RefreshMetadataAsync(
+                            topicOffsets.Keys,
+                            forceRefresh: true,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 var retryDelayMs = CalculateRequestRetryBackoff(attempt);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                 continue;
@@ -2910,6 +2981,70 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             TransactionalId = _options.TransactionalId
         };
+    }
+
+    private async ValueTask<(List<TxnOffsetCommitRequestTopic> Topics, OffsetTopicIdRequestMap? TopicIdMap)>
+        BuildTxnOffsetCommitTopicsAsync(
+            Dictionary<string, List<TxnOffsetCommitRequestPartition>> topicOffsets,
+            CancellationToken cancellationToken)
+    {
+        var requiresRefresh = topicOffsets.Keys.Any(topicName =>
+        {
+            var topic = _metadataManager.Metadata.GetTopic(topicName);
+            return topic is null || topic.TopicId == Guid.Empty;
+        });
+
+        if (requiresRefresh)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_options.MaxBlockMs);
+            try
+            {
+                await _metadataManager.RefreshMetadataAsync(
+                        topicOffsets.Keys,
+                        forceRefresh: true,
+                        timeoutCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return (BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap: null), null);
+            }
+            catch (Exception ex) when (
+                !cancellationToken.IsCancellationRequested
+                && RetryHelper.IsRetriableRequestFailure(ex))
+            {
+                return (BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap: null), null);
+            }
+        }
+
+        var topicIdMap = new OffsetTopicIdRequestMap(_metadataManager.Metadata, topicOffsets.Count);
+        try
+        {
+            return (BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap), topicIdMap);
+        }
+        catch (KafkaException exception) when (exception.ErrorCode == ErrorCode.UnknownTopicId)
+        {
+            return (BuildTxnOffsetCommitTopics(topicOffsets, topicIdMap: null), null);
+        }
+    }
+
+    private static List<TxnOffsetCommitRequestTopic> BuildTxnOffsetCommitTopics(
+        Dictionary<string, List<TxnOffsetCommitRequestPartition>> topicOffsets,
+        OffsetTopicIdRequestMap? topicIdMap)
+    {
+        var topics = new List<TxnOffsetCommitRequestTopic>(topicOffsets.Count);
+        foreach (var (topicName, partitions) in topicOffsets)
+        {
+            topics.Add(new TxnOffsetCommitRequestTopic
+            {
+                Name = topicName,
+                TopicId = topicIdMap?.AddTopic(topicName, "TxnOffsetCommit") ?? Guid.Empty,
+                Partitions = partitions
+            });
+        }
+
+        return topics;
     }
 
     private async ValueTask<ErrorCode> SendAddOffsetsToTransactionAsync(
@@ -5097,6 +5232,27 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         _producer.ThrowIfInPreparedTransaction();
 
         await _producer.SendOffsetsToTransactionInternalAsync(offsets, consumerGroupId, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async ValueTask SendOffsetsToTransactionAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        ConsumerGroupMetadata consumerGroupMetadata,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfProducerDisposed();
+        _producer.ThrowIfFatalTransactionError("Cannot send offsets to transaction");
+
+        if (_committed || _aborted)
+            throw new InvalidOperationException("Transaction is already completed");
+
+        _producer.ThrowIfInPreparedTransaction();
+        ArgumentNullException.ThrowIfNull(consumerGroupMetadata);
+
+        await _producer.SendOffsetsToTransactionInternalAsync(
+                offsets,
+                consumerGroupMetadata,
+                cancellationToken)
             .ConfigureAwait(false);
     }
 

@@ -364,7 +364,7 @@ public sealed class TransactionProtocolTests
             GroupId = "group-flex",
             ProducerId = 500,
             ProducerEpoch = 8,
-            GenerationId = 3,
+            GenerationIdOrMemberEpoch = 3,
             MemberId = "member-1",
             GroupInstanceId = "instance-1",
             Topics =
@@ -587,10 +587,10 @@ public sealed class TransactionProtocolTests
     {
         await Assert.That(TxnOffsetCommitRequest.ApiKey).IsEqualTo(ApiKey.TxnOffsetCommit);
         await Assert.That(TxnOffsetCommitRequest.LowestSupportedVersion).IsEqualTo((short)3);
-        await Assert.That(TxnOffsetCommitRequest.HighestSupportedVersion).IsEqualTo((short)5);
+        await Assert.That(TxnOffsetCommitRequest.HighestSupportedVersion).IsEqualTo((short)6);
         await Assert.That(TxnOffsetCommitResponse.ApiKey).IsEqualTo(ApiKey.TxnOffsetCommit);
         await Assert.That(TxnOffsetCommitResponse.LowestSupportedVersion).IsEqualTo((short)3);
-        await Assert.That(TxnOffsetCommitResponse.HighestSupportedVersion).IsEqualTo((short)5);
+        await Assert.That(TxnOffsetCommitResponse.HighestSupportedVersion).IsEqualTo((short)6);
     }
 
     [Test]

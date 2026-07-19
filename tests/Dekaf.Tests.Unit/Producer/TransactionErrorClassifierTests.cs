@@ -39,6 +39,8 @@ public sealed class TransactionErrorClassifierTests
     [Arguments(ErrorCode.CoordinatorNotAvailable)]
     [Arguments(ErrorCode.NotCoordinator)]
     [Arguments(ErrorCode.ConcurrentTransactions)]
+    [Arguments(ErrorCode.UnknownTopicId)]
+    [Arguments(ErrorCode.UnknownTopicOrPartition)]
     public async Task Retriable_ReturnsRetriable_RegardlessOfTv2(ErrorCode errorCode)
     {
         var v1 = TransactionErrorClassifier.Classify(errorCode, tv2: false);
@@ -52,6 +54,16 @@ public sealed class TransactionErrorClassifierTests
     public async Task InvalidProducerIdMapping_Abortable_InV1()
     {
         var result = TransactionErrorClassifier.Classify(ErrorCode.InvalidProducerIdMapping, tv2: false);
+        await Assert.That(result).IsEqualTo(TransactionErrorClassification.Abortable);
+    }
+
+    [Test]
+    [Arguments(ErrorCode.GroupIdNotFound)]
+    [Arguments(ErrorCode.StaleMemberEpoch)]
+    public async Task Kip1319MembershipErrors_AreAbortable(ErrorCode errorCode)
+    {
+        var result = TransactionErrorClassifier.Classify(errorCode, tv2: true);
+
         await Assert.That(result).IsEqualTo(TransactionErrorClassification.Abortable);
     }
 

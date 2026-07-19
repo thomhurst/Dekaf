@@ -1591,7 +1591,9 @@ public sealed class AdminClient : IAdminClient
             Partitions = g.Select(o => new OffsetCommitRequestPartition
             {
                 PartitionIndex = o.Partition,
-                CommittedOffset = o.Offset
+                CommittedOffset = o.Offset,
+                CommittedLeaderEpoch = o.LeaderEpoch,
+                CommittedMetadata = o.Metadata
             }).ToList()
         }).ToList();
 

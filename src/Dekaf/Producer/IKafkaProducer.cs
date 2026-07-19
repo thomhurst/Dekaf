@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Dekaf.Networking;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
@@ -552,6 +553,14 @@ public interface ITransaction<TKey, TValue> : IAsyncDisposable
     ValueTask SendOffsetsToTransactionAsync(
         IEnumerable<TopicPartitionOffset> offsets,
         string consumerGroupId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Sends offsets and current consumer membership to the transaction for exactly-once semantics.
+    /// </summary>
+    ValueTask SendOffsetsToTransactionAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        ConsumerGroupMetadata consumerGroupMetadata,
         CancellationToken cancellationToken = default);
 }
 

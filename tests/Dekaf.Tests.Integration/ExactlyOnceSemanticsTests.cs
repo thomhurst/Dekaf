@@ -73,7 +73,9 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : Transa
 
             // Atomically commit consumer offsets as part of the transaction
             var offsets = new[] { new TopicPartitionOffset(msg.Topic, msg.Partition, msg.Offset + 1) };
-            await txn.SendOffsetsToTransactionAsync(offsets, consumerGroupId);
+            var groupMetadata = consumer.ConsumerGroupMetadata
+                ?? throw new InvalidOperationException("Consumer group metadata was unavailable after assignment.");
+            await txn.SendOffsetsToTransactionAsync(offsets, groupMetadata);
             await txn.CommitAsync();
 
             processedCount++;

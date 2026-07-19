@@ -824,7 +824,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     {
                         PartitionIndex = offset.Partition,
                         CommittedOffset = offset.Offset,
-                        CommittedLeaderEpoch = offset.LeaderEpoch
+                        CommittedLeaderEpoch = offset.LeaderEpoch,
+                        CommittedMetadata = offset.Metadata
                     });
                 }
 
