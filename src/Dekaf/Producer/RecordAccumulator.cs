@@ -361,7 +361,7 @@ internal static class ProducerDataPool
 /// Dedicated <see cref="ArrayPool{T}"/> instances for producer batch container arrays.
 /// <para/>
 /// <b>Why not <see cref="ArrayPool{T}.Shared"/>?</b>
-/// Batch container arrays (<c>PooledValueTaskSource[]</c>, <c>Header[]</c>, <c>Action[]</c>)
+/// Batch container arrays (<c>PooledValueTaskSource[]</c>, <c>int[]</c>, <c>Header[]</c>, <c>Action[]</c>)
 /// are rented on the producer/accumulator thread during batch creation but returned on
 /// BrokerSender LongRunning threads during
 /// <see cref="ReadyBatch.Cleanup"/>. <c>ArrayPool&lt;T&gt;.Shared</c> uses TLS-based caching
@@ -397,6 +397,10 @@ internal static class ProducerContainerPools
     internal static readonly ArrayPool<PooledValueTaskSource<RecordMetadata>> CompletionSources =
         ArrayPool<PooledValueTaskSource<RecordMetadata>>.Create(
             maxArrayLength: MaxRecordArrayLength, maxArraysPerBucket: 16);
+
+    /// <summary>Pool for sparse delivery record-index arrays.</summary>
+    internal static readonly ArrayPool<int> DeliveryIndexes =
+        ArrayPool<int>.Create(maxArrayLength: MaxRecordArrayLength, maxArraysPerBucket: 16);
 
     /// <summary>Pool for Header[] arrays (per-message headers).</summary>
     internal static ArrayPool<Header> Headers => s_headers.Pool;
@@ -7040,10 +7044,17 @@ internal sealed class PartitionBatch
     // Zero-allocation array management: use pooled arrays instead of List<T>
     private PooledValueTaskSource<RecordMetadata>[] _completionSources;
     private int _completionSourceCount;
+    // Dense prefixes need no index array; only delivery records after the first gap are tracked.
+    private int _completionSourceDenseCount;
+    private int[]? _completionSourceIndexes;
+    private int _completionSourceIndexCount;
 
     // Callbacks for Send(message, callback) - stored directly in batch for inline invocation
     private Action<RecordMetadata, Exception?>?[]? _callbacks;
     private int _callbackCount;
+    private int _callbackDenseCount;
+    private int[]? _callbackIndexes;
+    private int _callbackIndexCount;
 
     private long _baseTimestamp;
     private long _maxTimestamp;
@@ -7165,7 +7176,11 @@ internal sealed class PartitionBatch
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
         _recordCount = 0;
         _completionSourceCount = 0;
+        _completionSourceDenseCount = 0;
+        _completionSourceIndexCount = 0;
         _callbackCount = 0;
+        _callbackDenseCount = 0;
+        _callbackIndexCount = 0;
         _baseTimestamp = 0;
         _maxTimestamp = 0;
         _encodedRecordsStart = 0;
@@ -7217,6 +7232,11 @@ internal sealed class PartitionBatch
         // and those messages would be lost when Reset() is later called.
         _recordCount = 0;
         _completionSourceCount = 0;
+        _completionSourceDenseCount = 0;
+        _completionSourceIndexCount = 0;
+        _callbackCount = 0;
+        _callbackDenseCount = 0;
+        _callbackIndexCount = 0;
         _baseTimestamp = 0;
         _maxTimestamp = 0;
         _encodedRecordsStart = 0;
@@ -7754,6 +7774,12 @@ internal sealed class PartitionBatch
         _completionSources[recordIndex] = completionSource!;
         if (completionSource is not null)
         {
+            TrackDeliveryIndex(
+                recordIndex,
+                _completionSourceCount,
+                ref _completionSourceDenseCount,
+                ref _completionSourceIndexes,
+                ref _completionSourceIndexCount);
             _completionSourceCount++;
             ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
         }
@@ -7762,6 +7788,12 @@ internal sealed class PartitionBatch
             _callbacks[recordIndex] = callback;
         if (callback is not null)
         {
+            TrackDeliveryIndex(
+                recordIndex,
+                _callbackCount,
+                ref _callbackDenseCount,
+                ref _callbackIndexes,
+                ref _callbackIndexCount);
             _callbackCount++;
         }
 
@@ -7901,6 +7933,34 @@ internal sealed class PartitionBatch
         array = newArray;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void TrackDeliveryIndex(
+        int recordIndex,
+        int deliveryCount,
+        ref int denseCount,
+        ref int[]? sparseIndexes,
+        ref int sparseCount)
+    {
+        if (recordIndex == deliveryCount)
+            return;
+
+        if (sparseIndexes is null)
+        {
+            denseCount = deliveryCount;
+            sparseIndexes = ProducerContainerPools.DeliveryIndexes.Rent(16);
+        }
+        else if (sparseCount >= sparseIndexes.Length)
+        {
+            GrowArray(
+                ref sparseIndexes,
+                sparseCount,
+                sparseCount + 1,
+                ProducerContainerPools.DeliveryIndexes);
+        }
+
+        sparseIndexes[sparseCount++] = recordIndex;
+    }
+
     /// <summary>
     /// Checks if this batch should be flushed based on linger time and pending completions.
     /// Uses volatile read instead of locking since this is a read-only check.
@@ -8021,7 +8081,13 @@ internal sealed class PartitionBatch
                 _arrayReuseQueue,
                 _createdStopwatchTimestamp,
                 _options.LingerMs * Stopwatch.Frequency / 1_000,
-                _incrementalBuffer);
+                _incrementalBuffer,
+                completionSourceDenseCount: _completionSourceIndexes is null
+                    ? _completionSourceCount
+                    : _completionSourceDenseCount,
+                completionSourceIndexes: _completionSourceIndexes,
+                callbackDenseCount: _callbackIndexes is null ? _callbackCount : _callbackDenseCount,
+                callbackIndexes: _callbackIndexes);
 
             if (_admissionBudget is { } admissionBudget)
             {
@@ -8050,9 +8116,11 @@ internal sealed class PartitionBatch
 
             // Null out references - ownership transferred to ReadyBatch
             _completionSources = null!;
+            _completionSourceIndexes = null;
             _arena = null;
             _incrementalBuffer = null;
             _callbacks = null;
+            _callbackIndexes = null;
         }
         catch
         {
@@ -8079,31 +8147,42 @@ internal sealed class PartitionBatch
 
         if (_completionSourceCount > 0 && _completionSources is not null)
         {
-            for (var i = 0; i < _recordCount; i++)
+            for (var deliveryIndex = 0; deliveryIndex < _completionSourceCount; deliveryIndex++)
             {
-                if (_completionSources[i] is { } source)
+                var recordIndex = _completionSourceIndexes is null
+                                  || deliveryIndex < _completionSourceDenseCount
+                    ? deliveryIndex
+                    : _completionSourceIndexes![deliveryIndex - _completionSourceDenseCount];
+                if (_completionSources[recordIndex] is { } source)
                     PooledCompletionSource.TrySetException(source, exception);
             }
         }
 
         if (_callbackCount > 0 && _callbacks is not null)
         {
-            for (var i = 0; i < _recordCount; i++)
+            for (var deliveryIndex = 0; deliveryIndex < _callbackCount; deliveryIndex++)
             {
-                var callback = _callbacks[i];
+                var recordIndex = _callbackIndexes is null || deliveryIndex < _callbackDenseCount
+                    ? deliveryIndex
+                    : _callbackIndexes![deliveryIndex - _callbackDenseCount];
+                var callback = _callbacks[recordIndex];
                 if (callback is null)
                     continue;
 
                 try { ProducerCallbackContext.Invoke(callback, default, exception); }
                 catch { }
-                _callbacks[i] = null;
+                _callbacks[recordIndex] = null;
             }
         }
 
         ReturnBatchArraysToPool();
         _recordCount = 0;
         _completionSourceCount = 0;
+        _completionSourceDenseCount = 0;
+        _completionSourceIndexCount = 0;
         _callbackCount = 0;
+        _callbackDenseCount = 0;
+        _callbackIndexCount = 0;
         _encodedRecordsStart = 0;
         _encodedRecordsLength = 0;
         _estimatedSize = 0;
@@ -8124,7 +8203,11 @@ internal sealed class PartitionBatch
         ReturnBatchArraysToPool();
         _recordCount = 0;
         _completionSourceCount = 0;
+        _completionSourceDenseCount = 0;
+        _completionSourceIndexCount = 0;
         _callbackCount = 0;
+        _callbackDenseCount = 0;
+        _callbackIndexCount = 0;
         _encodedRecordsStart = 0;
         _encodedRecordsLength = 0;
         _estimatedSize = 0;
@@ -8149,6 +8232,8 @@ internal sealed class PartitionBatch
         // clearArray: false for internal tracking arrays - they will be overwritten on next use
         if (_completionSources is not null)
             ProducerContainerPools.CompletionSources.Return(_completionSources, clearArray: false);
+        if (_completionSourceIndexes is not null)
+            ProducerContainerPools.DeliveryIndexes.Return(_completionSourceIndexes, clearArray: false);
 
         // Return arena buffer if present
         _arena?.Return();
@@ -8157,6 +8242,7 @@ internal sealed class PartitionBatch
 
         // Null out references to prevent accidental reuse
         _completionSources = null!;
+        _completionSourceIndexes = null;
         _arena = null;
         _incrementalBuffer = null;
 
@@ -8164,6 +8250,11 @@ internal sealed class PartitionBatch
         {
             ProducerContainerPools.Callbacks.Return(_callbacks, clearArray: true);
             _callbacks = null;
+        }
+        if (_callbackIndexes is not null)
+        {
+            ProducerContainerPools.DeliveryIndexes.Return(_callbackIndexes, clearArray: false);
+            _callbackIndexes = null;
         }
     }
 
@@ -8340,6 +8431,8 @@ internal sealed class ReadyBatch
     // Working arrays from accumulator (pooled) - mutable for pooling
     private PooledValueTaskSource<RecordMetadata>[]? _completionSourcesArray;
     private int _completionSourcesCount;
+    private int _completionSourceDenseCount;
+    private int[]? _completionSourceIndexes;
 
     // Total records sealed into this batch, captured at Initialize because the
     // RecordBatch's record list may already be recycled when Fail needs the count.
@@ -8353,12 +8446,26 @@ internal sealed class ReadyBatch
     // Callbacks for Send(message, callback) - inline invocation without ThreadPool
     private Action<RecordMetadata, Exception?>?[]? _callbacks;
     private int _callbackCount;
+    private int _callbackDenseCount;
+    private int[]? _callbackIndexes;
 
     internal PooledValueTaskSource<RecordMetadata>? GetCompletionSource(int recordIndex)
         => _completionSourcesArray?[recordIndex];
 
     internal Action<RecordMetadata, Exception?>? GetCallback(int recordIndex)
         => _callbacks?[recordIndex];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int GetCompletionSourceRecordIndex(int deliveryIndex)
+        => deliveryIndex < _completionSourceDenseCount
+            ? deliveryIndex
+            : _completionSourceIndexes![deliveryIndex - _completionSourceDenseCount];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int GetCallbackRecordIndex(int deliveryIndex)
+        => deliveryIndex < _callbackDenseCount
+            ? deliveryIndex
+            : _callbackIndexes![deliveryIndex - _callbackDenseCount];
 
     internal bool IsSplitBatch { get; private set; }
 
@@ -8893,7 +9000,11 @@ internal sealed class ReadyBatch
         BatchArrayReuseQueue? arrayReuseQueue = null,
         long createdStopwatchTimestamp = 0,
         long lingerTicks = 0,
-        IncrementalBatchBuffer? incrementalBuffer = null)
+        IncrementalBatchBuffer? incrementalBuffer = null,
+        int completionSourceDenseCount = -1,
+        int[]? completionSourceIndexes = null,
+        int callbackDenseCount = -1,
+        int[]? callbackIndexes = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(recordCount, completionSourcesCount);
         ArgumentOutOfRangeException.ThrowIfLessThan(recordCount, callbackCount);
@@ -8928,6 +9039,10 @@ internal sealed class ReadyBatch
         _recordBatch = recordBatch;
         _completionSourcesArray = completionSourcesArray;
         _completionSourcesCount = completionSourcesCount;
+        _completionSourceDenseCount = completionSourceDenseCount >= 0
+            ? completionSourceDenseCount
+            : completionSourcesCount;
+        _completionSourceIndexes = completionSourceIndexes;
         // Captured at seal time because the RecordBatch's record list may be recycled or
         // never materialized by the time a (possibly stale) Fail needs the count.
         _recordCount = recordCount;
@@ -8941,6 +9056,8 @@ internal sealed class ReadyBatch
         _incrementalBuffer = incrementalBuffer;
         _callbacks = callbacks;
         _callbackCount = callbackCount;
+        _callbackDenseCount = callbackDenseCount >= 0 ? callbackDenseCount : callbackCount;
+        _callbackIndexes = callbackIndexes;
         _arrayReuseQueue = arrayReuseQueue;
         StopwatchSealedTicks = Stopwatch.GetTimestamp();
         StopwatchCreatedTicks = createdStopwatchTimestamp > 0
@@ -8975,9 +9092,10 @@ internal sealed class ReadyBatch
                     $"Batch recycled without completing delivery — this indicates a bug in the producer pipeline " +
                     $"(tp={_topicPartition}, sendCompleted={Volatile.Read(ref _sendCompleted)}, " +
                     $"completed={Volatile.Read(ref _completed)}, trace={DiagTrace})");
-                for (var i = 0; i < _recordCount; i++)
+                for (var deliveryIndex = 0; deliveryIndex < _completionSourcesCount; deliveryIndex++)
                 {
-                    if (_completionSourcesArray[i] is { } source
+                    var recordIndex = GetCompletionSourceRecordIndex(deliveryIndex);
+                    if (_completionSourcesArray[recordIndex] is { } source
                         && PooledCompletionSource.TrySetException(source, orphanedException))
                         failedCount++;
                 }
@@ -8997,12 +9115,16 @@ internal sealed class ReadyBatch
         _recordBatch = null!;
         _completionSourcesArray = null;
         _completionSourcesCount = 0;
+        _completionSourceDenseCount = 0;
+        _completionSourceIndexes = null;
         DataSize = 0;
         EncodedSize = 0;
         _arena = null;
         _incrementalBuffer = null;
         _callbacks = null;
         _callbackCount = 0;
+        _callbackDenseCount = 0;
+        _callbackIndexes = null;
         _arrayReuseQueue = null;
         InflightEntry = null;
         var orphanedBudget = Interlocked.Exchange(ref UnackedBudget, null);
@@ -9071,14 +9193,15 @@ internal sealed class ReadyBatch
 #if DEBUG
                 var completedCount = 0;
 #endif
-                for (var i = 0; i < _recordCount; i++)
+                for (var deliveryIndex = 0; deliveryIndex < _completionSourcesCount; deliveryIndex++)
                 {
-                    var source = _completionSourcesArray[i];
+                    var recordIndex = GetCompletionSourceRecordIndex(deliveryIndex);
+                    var source = _completionSourcesArray[recordIndex];
                     if (source is not null && PooledCompletionSource.TrySetResult(source, new RecordMetadata
                     {
                         Topic = _topicPartition.Topic,
                         Partition = _topicPartition.Partition,
-                        Offset = baseOffset + i,
+                        Offset = baseOffset + recordIndex,
                         Timestamp = timestamp
                     }))
                     {
@@ -9096,9 +9219,10 @@ internal sealed class ReadyBatch
             // Callbacks are invoked on the sender thread, so they must be non-blocking
             if (_callbackCount > 0 && _callbacks is not null)
             {
-                for (var i = 0; i < _recordCount; i++)
+                for (var deliveryIndex = 0; deliveryIndex < _callbackCount; deliveryIndex++)
                 {
-                    var callback = _callbacks[i];
+                    var recordIndex = GetCallbackRecordIndex(deliveryIndex);
+                    var callback = _callbacks[recordIndex];
                     if (callback is not null)
                     {
                         try
@@ -9109,7 +9233,7 @@ internal sealed class ReadyBatch
                                 {
                                     Topic = _topicPartition.Topic,
                                     Partition = _topicPartition.Partition,
-                                    Offset = baseOffset + i,
+                                    Offset = baseOffset + recordIndex,
                                     Timestamp = timestamp
                                 },
                                 null);
@@ -9119,7 +9243,7 @@ internal sealed class ReadyBatch
                             // Swallow callback exceptions - don't crash sender loop
                             // User callbacks are responsible for their own error handling
                         }
-                        _callbacks[i] = null; // Clear for pool reuse
+                        _callbacks[recordIndex] = null; // Clear for pool reuse
                     }
                 }
             }
@@ -9244,9 +9368,10 @@ internal sealed class ReadyBatch
 #if DEBUG
                 var failedCount = 0;
 #endif
-                for (var i = 0; i < _recordCount; i++)
+                for (var deliveryIndex = 0; deliveryIndex < _completionSourcesCount; deliveryIndex++)
                 {
-                    var source = _completionSourcesArray[i];
+                    var recordIndex = GetCompletionSourceRecordIndex(deliveryIndex);
+                    var source = _completionSourcesArray[recordIndex];
                     if (source is not null && PooledCompletionSource.TrySetException(source, exception))
                     {
 #if DEBUG
@@ -9262,9 +9387,10 @@ internal sealed class ReadyBatch
             // Invoke callbacks with exception - NO ThreadPool scheduling
             if (_callbackCount > 0 && _callbacks is not null)
             {
-                for (var i = 0; i < _recordCount; i++)
+                for (var deliveryIndex = 0; deliveryIndex < _callbackCount; deliveryIndex++)
                 {
-                    var callback = _callbacks[i];
+                    var recordIndex = GetCallbackRecordIndex(deliveryIndex);
+                    var callback = _callbacks[recordIndex];
                     if (callback is not null)
                     {
                         try
@@ -9275,7 +9401,7 @@ internal sealed class ReadyBatch
                         {
                             // Swallow callback exceptions - don't crash during failure handling
                         }
-                        _callbacks[i] = null; // Clear for pool reuse
+                        _callbacks[recordIndex] = null; // Clear for pool reuse
                     }
                 }
             }
@@ -9458,10 +9584,12 @@ internal sealed class ReadyBatch
             return;
 
         var completionSourcesArray = _completionSourcesArray;
+        var completionSourceIndexes = _completionSourceIndexes;
         var arrayReuseQueue = _arrayReuseQueue;
         var arena = _arena;
         var incrementalBuffer = _incrementalBuffer;
         var callbacks = _callbacks;
+        var callbackIndexes = _callbackIndexes;
         var recordBatch = _recordBatch;
 
         try
@@ -9485,6 +9613,8 @@ internal sealed class ReadyBatch
                     ProducerContainerPools.CompletionSources.Return(completionSourcesArray, clearArray: false);
                 }
             }
+            if (completionSourceIndexes is not null)
+                ProducerContainerPools.DeliveryIndexes.Return(completionSourceIndexes, clearArray: false);
 
             // Return arena to pool for reuse (arena-based path)
             // This avoids allocating a new BatchArena object on each batch recycle
@@ -9503,6 +9633,8 @@ internal sealed class ReadyBatch
             {
                 ProducerContainerPools.Callbacks.Return(callbacks, clearArray: true);
             }
+            if (callbackIndexes is not null)
+                ProducerContainerPools.DeliveryIndexes.Return(callbackIndexes, clearArray: false);
 
             // Return pre-compressed buffer and RecordBatch to pool.
             // ReturnPreCompressedBuffer() releases the producer-pool buffer, then ReturnToPool()
