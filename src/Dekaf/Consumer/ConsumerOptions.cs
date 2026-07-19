@@ -380,6 +380,12 @@ public sealed class ConsumerOptions
     public IRebalanceListener? RebalanceListener { get; init; }
 
     /// <summary>
+    /// Rebalance listener that receives a callback-scoped restricted consumer view.
+    /// </summary>
+    /// <remarks>Takes precedence over <see cref="RebalanceListener"/> when both are set.</remarks>
+    public IConsumerAwareRebalanceListener? ConsumerAwareRebalanceListener { get; init; }
+
+    /// <summary>
     /// Socket send buffer size in bytes. Set to 0 to use system default.
     /// </summary>
     public int SocketSendBufferBytes { get; init; }
