@@ -1,0 +1,13 @@
+﻿Request: Dekaf.Protocol.Messages.LeaveGroupRequest
+API key: LeaveGroup (13)
+Version: 3
+Header version: 1
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 71 bytes (67-byte payload)
+
+0000: 00 00 00 43 00 0D 00 03  10 20 30 40 00 0E 64 65 |...C..... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 0A 77 69 |kaf-snapshot..wi|
+0020: 72 65 2D 67 72 6F 75 70  00 00 00 01 00 0D 77 69 |re-group......wi|
+0030: 72 65 2D 6D 65 6D 62 65  72 69 64 00 0A 77 69 72 |re-memberid..wir|
+0040: 65 2D 67 72 6F 75 70                             |e-group|

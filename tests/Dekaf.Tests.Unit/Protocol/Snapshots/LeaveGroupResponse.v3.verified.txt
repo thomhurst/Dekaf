@@ -1,0 +1,14 @@
+﻿Response: Dekaf.Protocol.Messages.LeaveGroupResponse
+API key: LeaveGroup (13)
+Version: 3
+Header version: 0
+Body length: 10 bytes
+
+0000: 00 00 00 00 00 00 00 00  00 00                   |..........|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "Members": [],
+  "ThrottleTimeMs": 0
+}
