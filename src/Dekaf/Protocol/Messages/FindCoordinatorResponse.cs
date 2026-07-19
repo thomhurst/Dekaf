@@ -8,7 +8,7 @@ public sealed class FindCoordinatorResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.FindCoordinator;
     public static short LowestSupportedVersion => 4;
-    public static short HighestSupportedVersion => 5;
+    public static short HighestSupportedVersion => 6;
 
     /// <summary>
     /// Throttle time in milliseconds.

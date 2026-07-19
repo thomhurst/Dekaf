@@ -1,0 +1,66 @@
+﻿Response: Dekaf.Protocol.Messages.DescribeGroupsResponse
+API key: DescribeGroups (15)
+Version: 6
+Header version: 1
+Body length: 247 bytes
+
+0000: 00 00 00 2F 03 00 00 00  0B 77 69 72 65 2D 67 72 |.../.....wire-gr|
+0010: 6F 75 70 07 53 74 61 62  6C 65 09 63 6F 6E 73 75 |oup.Stable.consu|
+0020: 6D 65 72 13 63 6F 6F 70  65 72 61 74 69 76 65 2D |mer.cooperative-|
+0030: 73 74 69 63 6B 79 03 09  6D 65 6D 62 65 72 2D 61 |sticky..member-a|
+0040: 0B 69 6E 73 74 61 6E 63  65 2D 61 10 63 6C 69 65 |.instance-a.clie|
+0050: 6E 74 2D 6D 65 6D 62 65  72 2D 61 0B 2F 31 32 37 |nt-member-a./127|
+0060: 2E 30 2E 30 2E 31 05 01  23 45 67 05 89 AB CD EF |.0.0.1..#Eg.....|
+0070: 00 09 6D 65 6D 62 65 72  2D 62 00 10 63 6C 69 65 |..member-b..clie|
+0080: 6E 74 2D 6D 65 6D 62 65  72 2D 62 0B 2F 31 32 37 |nt-member-b./127|
+0090: 2E 30 2E 30 2E 31 05 01  23 45 67 05 89 AB CD EF |.0.0.1..#Eg.....|
+00A0: 00 00 00 1F FF 00 00 45  1A 54 68 65 20 67 72 6F |.......E.The gro|
+00B0: 75 70 20 64 6F 65 73 20  6E 6F 74 20 65 78 69 73 |up does not exis|
+00C0: 74 2E 0D 77 69 72 65 2D  67 72 6F 75 70 2D 62 05 |t..wire-group-b.|
+00D0: 44 65 61 64 09 63 6F 6E  73 75 6D 65 72 13 63 6F |Dead.consumer.co|
+00E0: 6F 70 65 72 61 74 69 76  65 2D 73 74 69 63 6B 79 |operative-sticky|
+00F0: 01 00 00 1F FF 00 00                             |.......|
+
+Decoded:
+{
+  "Groups": [
+    {
+      "AuthorizedOperations": 8191,
+      "ErrorCode": "None",
+      "ErrorMessage": null,
+      "GroupId": "wire-group",
+      "GroupState": "Stable",
+      "Members": [
+        {
+          "ClientHost": "/127.0.0.1",
+          "ClientId": "client-member-a",
+          "GroupInstanceId": "instance-a",
+          "MemberAssignment": "89ABCDEF",
+          "MemberId": "member-a",
+          "MemberMetadata": "01234567"
+        },
+        {
+          "ClientHost": "/127.0.0.1",
+          "ClientId": "client-member-b",
+          "GroupInstanceId": null,
+          "MemberAssignment": "89ABCDEF",
+          "MemberId": "member-b",
+          "MemberMetadata": "01234567"
+        }
+      ],
+      "ProtocolData": "cooperative-sticky",
+      "ProtocolType": "consumer"
+    },
+    {
+      "AuthorizedOperations": 8191,
+      "ErrorCode": "GroupIdNotFound",
+      "ErrorMessage": "The group does not exist.",
+      "GroupId": "wire-group-b",
+      "GroupState": "Dead",
+      "Members": [],
+      "ProtocolData": "cooperative-sticky",
+      "ProtocolType": "consumer"
+    }
+  ],
+  "ThrottleTimeMs": 47
+}

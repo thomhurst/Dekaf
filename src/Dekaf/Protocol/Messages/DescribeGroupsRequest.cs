@@ -8,7 +8,7 @@ public sealed class DescribeGroupsRequest : IKafkaRequest<DescribeGroupsResponse
 {
     public static ApiKey ApiKey => ApiKey.DescribeGroups;
     public static short LowestSupportedVersion => 5;
-    public static short HighestSupportedVersion => 5;
+    public static short HighestSupportedVersion => 6;
 
     /// <summary>
     /// The group IDs to describe.
@@ -24,7 +24,7 @@ public sealed class DescribeGroupsRequest : IKafkaRequest<DescribeGroupsResponse
     {
         writer.WriteCompactArray(
             Groups,
-            (ref KafkaProtocolWriter w, string g) => w.WriteCompactString(g));
+            static (ref KafkaProtocolWriter w, string g) => w.WriteCompactString(g));
 
         writer.WriteBoolean(IncludeAuthorizedOperations);
 

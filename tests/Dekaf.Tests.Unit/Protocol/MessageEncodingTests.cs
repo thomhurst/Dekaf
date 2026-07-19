@@ -331,6 +331,46 @@ public class MessageEncodingTests
     }
 
     [Test]
+    public async Task FindCoordinatorRequest_V6_ShareKey_UsesKafkaUuidText()
+    {
+        var topicId = new Guid("00112233-4455-6677-8899-aabbccddeeff");
+        var request = FindCoordinatorRequest.ForSharePartition("group:with:colons", topicId, 7);
+        var key = request.Key;
+        await Assert.That(key).IsEqualTo("group:with:colons:ABEiM0RVZneImaq7zN3u_w:7");
+        await Assert.That(request.KeyType).IsEqualTo(CoordinatorType.Share);
+
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        request.Write(ref writer, version: 6);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var keyType = reader.ReadInt8();
+        var keyCount = reader.ReadUnsignedVarInt();
+        var decodedKey = reader.ReadCompactString();
+        reader.SkipTaggedFields();
+        var readerEnd = reader.End;
+
+        await Assert.That(keyType).IsEqualTo((sbyte)CoordinatorType.Share);
+        await Assert.That(keyCount).IsEqualTo(2);
+        await Assert.That(decodedKey).IsEqualTo(key);
+        await Assert.That(readerEnd).IsTrue();
+    }
+
+    [Test]
+    [Arguments("", "00112233-4455-6677-8899-aabbccddeeff", 0)]
+    [Arguments("group", "00000000-0000-0000-0000-000000000000", 0)]
+    [Arguments("group", "00112233-4455-6677-8899-aabbccddeeff", -1)]
+    public void FindCoordinatorRequest_ShareKey_RejectsInvalidParts(
+        string groupId,
+        string topicId,
+        int partition)
+    {
+        Assert.Throws<ArgumentException>(() =>
+            FindCoordinatorRequest.BuildShareCoordinatorKey(groupId, Guid.Parse(topicId), partition));
+    }
+
+    [Test]
     public async Task FindCoordinatorResponse_V4_BatchFormat_CanBeParsed()
     {
         // Construct a v4+ response with Coordinators array

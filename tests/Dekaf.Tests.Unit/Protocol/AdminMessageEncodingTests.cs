@@ -549,6 +549,35 @@ public class AdminMessageEncodingTests
         var response = (DescribeGroupsResponse)DescribeGroupsResponse.Read(ref reader, version: 5);
 
         await Assert.That(response.Groups[0].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(response.Groups[0].ErrorMessage).IsNull();
+    }
+
+    [Test]
+    public async Task DescribeGroupsResponse_V6_GroupIdNotFound_ReadsErrorMessage()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        writer.WriteUnsignedVarInt(2);
+        writer.WriteInt16((short)ErrorCode.GroupIdNotFound);
+        writer.WriteCompactString("The group does not exist.");
+        writer.WriteCompactString("missing-group");
+        writer.WriteCompactString(string.Empty);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteUnsignedVarInt(1);
+        writer.WriteInt32(int.MinValue);
+        writer.WriteEmptyTaggedFields();
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (DescribeGroupsResponse)DescribeGroupsResponse.Read(ref reader, version: 6);
+        var readerEnd = reader.End;
+
+        await Assert.That(response.Groups[0].ErrorCode).IsEqualTo(ErrorCode.GroupIdNotFound);
+        await Assert.That(response.Groups[0].ErrorMessage).IsEqualTo("The group does not exist.");
+        await Assert.That(response.Groups[0].GroupId).IsEqualTo("missing-group");
+        await Assert.That(readerEnd).IsTrue();
     }
 
     [Test]

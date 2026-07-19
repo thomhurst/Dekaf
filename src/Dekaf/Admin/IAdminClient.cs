@@ -29,6 +29,14 @@ public interface IAdminClient : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Lists typed configuration resources available in the cluster.
+    /// Requires ListConfigResources v1 (KIP-1142).
+    /// </summary>
+    ValueTask<IReadOnlyList<ConfigResourceListing>> ListConfigResourcesAsync(
+        ListConfigResourcesOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates topics.
     /// </summary>
     ValueTask CreateTopicsAsync(IEnumerable<NewTopic> topics, CreateTopicsOptions? options = null, CancellationToken cancellationToken = default);
@@ -571,11 +579,31 @@ public sealed class ListClientMetricsResourcesOptions
 }
 
 /// <summary>
+/// Options for ListConfigResources.
+/// </summary>
+public sealed class ListConfigResourcesOptions
+{
+    /// <summary>
+    /// Resource types to return. An empty list requests every broker-supported type.
+    /// </summary>
+    public IReadOnlyList<ConfigResourceType> ResourceTypes { get; init; } = [];
+}
+
+/// <summary>
 /// Client metrics configuration resource listing.
 /// </summary>
 public sealed class ClientMetricsResourceListing
 {
     public required string Name { get; init; }
+}
+
+/// <summary>
+/// Typed configuration resource listing.
+/// </summary>
+public sealed class ConfigResourceListing
+{
+    public required string Name { get; init; }
+    public ConfigResourceType Type { get; init; }
 }
 
 /// <summary>

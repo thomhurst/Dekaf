@@ -1,0 +1,29 @@
+﻿Response: Dekaf.Protocol.Messages.ListConfigResourcesResponse
+API key: ListClientMetricsResources (74)
+Version: 1
+Header version: 1
+Body length: 40 bytes
+
+0000: 00 00 00 13 00 00 04 07  6F 72 64 65 72 73 02 00 |........orders..|
+0010: 0A 61 6E 61 6C 79 74 69  63 73 10 00 09 70 61 79 |.analytics...pay|
+0020: 6D 65 6E 74 73 20 00 00                          |ments ..|
+
+Decoded:
+{
+  "ConfigResources": [
+    {
+      "Name": "orders",
+      "ResourceType": 2
+    },
+    {
+      "Name": "analytics",
+      "ResourceType": 16
+    },
+    {
+      "Name": "payments",
+      "ResourceType": 32
+    }
+  ],
+  "ErrorCode": "None",
+  "ThrottleTimeMs": 19
+}

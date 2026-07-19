@@ -1,0 +1,24 @@
+﻿Response: Dekaf.Protocol.Messages.FindCoordinatorResponse
+API key: FindCoordinator (10)
+Version: 6
+Header version: 1
+Body length: 48 bytes
+
+0000: 00 00 00 0D 02 0F 77 69  72 65 2D 73 68 61 72 65 |......wire-share|
+0010: 2D 6B 65 79 00 00 00 03  0F 62 72 6F 6B 65 72 2E |-key.....broker.|
+0020: 65 78 61 6D 70 6C 65 00  00 23 84 00 00 00 00 00 |example..#......|
+
+Decoded:
+{
+  "Coordinators": [
+    {
+      "ErrorCode": "None",
+      "ErrorMessage": null,
+      "Host": "broker.example",
+      "Key": "wire-share-key",
+      "NodeId": 3,
+      "Port": 9092
+    }
+  ],
+  "ThrottleTimeMs": 13
+}

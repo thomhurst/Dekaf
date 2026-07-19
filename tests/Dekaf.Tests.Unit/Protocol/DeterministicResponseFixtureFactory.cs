@@ -23,10 +23,13 @@ internal static class DeterministicResponseFixtureFactory
             ["ApiVersionsResponse.v5"] = EncodeApiVersionsResponse(version: 5),
             ["DescribeConfigsResponse.v4"] = Encode(WriteDescribeConfigsResponse),
             ["DescribeGroupsResponse.v5"] = Encode(WriteDescribeGroupsResponse),
+            ["DescribeGroupsResponse.v6"] = Encode(WriteDescribeGroupsResponseV6),
             ["DescribeTransactionsResponse.v1"] = Encode(WriteDescribeTransactionsResponseV1),
             ["FetchResponse.v16"] = Encode(WriteFetchResponse),
             ["FetchResponse.v17"] = Encode(WriteFetchResponse),
             ["FetchResponse.v18"] = Encode(WriteFetchResponse),
+            ["FindCoordinatorResponse.v6"] = Encode(WriteFindCoordinatorResponse),
+            ["ListConfigResourcesResponse.v1"] = Encode(WriteListConfigResourcesResponse),
             ["ListOffsetsResponse.v8"] = Encode(WriteListOffsetsResponse),
             ["ListOffsetsResponse.v9"] = Encode(WriteListOffsetsResponse),
             ["ListOffsetsResponse.v10"] = Encode(WriteListOffsetsResponse),
@@ -590,13 +593,37 @@ internal static class DeterministicResponseFixtureFactory
         WriteEmptyTaggedFields(ref writer);
     }
 
+    private static void WriteDescribeGroupsResponseV6(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(47);
+        WriteCompactArrayLength(ref writer, 2);
+        WriteDescribeGroup(
+            ref writer,
+            "wire-group",
+            ErrorCode.None,
+            includeMembers: true,
+            includeErrorMessage: true);
+        WriteDescribeGroup(
+            ref writer,
+            "wire-group-b",
+            ErrorCode.GroupIdNotFound,
+            includeMembers: false,
+            includeErrorMessage: true,
+            errorMessage: "The group does not exist.");
+        WriteEmptyTaggedFields(ref writer);
+    }
+
     private static void WriteDescribeGroup(
         ref KafkaProtocolWriter writer,
         string groupId,
         ErrorCode errorCode,
-        bool includeMembers)
+        bool includeMembers,
+        bool includeErrorMessage = false,
+        string? errorMessage = null)
     {
         writer.WriteInt16((short)errorCode);
+        if (includeErrorMessage)
+            writer.WriteCompactString(errorMessage);
         writer.WriteCompactString(groupId);
         writer.WriteCompactString(includeMembers ? "Stable" : "Dead");
         writer.WriteCompactString("consumer");
@@ -610,6 +637,41 @@ internal static class DeterministicResponseFixtureFactory
         }
 
         writer.WriteInt32(0x1FFF);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteFindCoordinatorResponse(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(13);
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteCompactString("wire-share-key");
+        writer.WriteInt32(3);
+        writer.WriteCompactString("broker.example");
+        writer.WriteInt32(9092);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactString(null);
+        WriteEmptyTaggedFields(ref writer);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteListConfigResourcesResponse(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(19);
+        writer.WriteInt16((short)ErrorCode.None);
+        WriteCompactArrayLength(ref writer, 3);
+        WriteConfigResource(ref writer, "orders", resourceType: 2);
+        WriteConfigResource(ref writer, "analytics", resourceType: 16);
+        WriteConfigResource(ref writer, "payments", resourceType: 32);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteConfigResource(
+        ref KafkaProtocolWriter writer,
+        string resourceName,
+        sbyte resourceType)
+    {
+        writer.WriteCompactString(resourceName);
+        writer.WriteInt8(resourceType);
         WriteEmptyTaggedFields(ref writer);
     }
 

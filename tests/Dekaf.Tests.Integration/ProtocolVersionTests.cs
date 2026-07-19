@@ -474,7 +474,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     }
 
     [Test]
-    public async Task FindCoordinator_SupportsV4Format()
+    public async Task FindCoordinator_SupportsV6Format()
     {
         var connectionOptions = new ConnectionOptions
         {
