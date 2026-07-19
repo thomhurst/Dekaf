@@ -397,6 +397,55 @@ public sealed class DekafBuilder
     }
 
     /// <summary>
+    /// Adds a producer configured from an <see cref="IConfiguration"/> section shaped like
+    /// Confluent.Kafka <c>ProducerConfig</c>. Fluent configuration runs after translation.
+    /// </summary>
+    /// <remarks>
+    /// This adapter does not reference Confluent.Kafka. Settings without an exact Dekaf
+    /// equivalent are rejected instead of being silently ignored.
+    /// </remarks>
+    /// <param name="configuration">The Confluent <c>ProducerConfig</c> JSON section.</param>
+    /// <param name="configure">Optional additional producer configuration.</param>
+    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
+    public DekafBuilder AddProducerFromConfluentConfig<TKey, TValue>(
+        IConfiguration configuration,
+        Action<ProducerBuilder<TKey, TValue>>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return AddProducer<TKey, TValue>(producer =>
+        {
+            ConfluentConfigurationBinding.ApplyProducer(configuration, producer);
+            configure?.Invoke(producer);
+        });
+    }
+
+    /// <summary>
+    /// Adds a keyed producer configured from an <see cref="IConfiguration"/> section shaped
+    /// like Confluent.Kafka <c>ProducerConfig</c>. Fluent configuration runs after translation.
+    /// </summary>
+    /// <param name="serviceKey">Key used to resolve the producer through keyed DI.</param>
+    /// <param name="configuration">The Confluent <c>ProducerConfig</c> JSON section.</param>
+    /// <param name="configure">Optional additional producer configuration.</param>
+    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
+    public DekafBuilder AddProducerFromConfluentConfig<TKey, TValue>(
+        object serviceKey,
+        IConfiguration configuration,
+        Action<ProducerBuilder<TKey, TValue>>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return AddProducer<TKey, TValue>(serviceKey, producer =>
+        {
+            ConfluentConfigurationBinding.ApplyProducer(configuration, producer);
+            configure?.Invoke(producer);
+        });
+    }
+
+    /// <summary>
     /// Adds a consumer to the service collection.
     /// </summary>
     /// <param name="configure">Configures the full consumer builder surface.</param>
