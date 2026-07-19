@@ -170,17 +170,16 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
             ? state.GetRemainingMilliseconds()
             : 0;
 
-    private BrokerThrottleState GetBrokerThrottleState(
-        int brokerId,
-        EndpointKey endpoint) => brokerId >= 0
-            ? _brokerThrottleStates.GetOrAdd(
-                brokerId,
-                static (_, collector) => new BrokerThrottleState(collector),
-                _telemetryMetricCollector)
-            : _bootstrapThrottleStates.GetOrAdd(
-                endpoint,
-                static (_, collector) => new BrokerThrottleState(collector),
-                _telemetryMetricCollector);
+    private BrokerThrottleState GetBrokerThrottleState(int brokerId, EndpointKey endpoint)
+    {
+        var endpointState = _bootstrapThrottleStates.GetOrAdd(
+            endpoint,
+            static (_, collector) => new BrokerThrottleState(collector),
+            _telemetryMetricCollector);
+        return brokerId >= 0
+            ? _brokerThrottleStates.GetOrAdd(brokerId, endpointState)
+            : endpointState;
+    }
 
     private static ConnectionOptions ConfigureSharedOAuthBearerProvider(
         ConnectionOptions options,
@@ -270,6 +269,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     public void RegisterBroker(int brokerId, string host, int port)
     {
         _brokers[brokerId] = new BrokerInfo(brokerId, host, port);
+        GetBrokerThrottleState(brokerId, new EndpointKey(host, port));
         LogRegisteredBroker(brokerId, host, port);
     }
 

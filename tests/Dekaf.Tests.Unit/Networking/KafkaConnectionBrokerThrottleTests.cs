@@ -161,6 +161,72 @@ public sealed class KafkaConnectionBrokerThrottleTests
 
     [Test]
     [Timeout(10_000)]
+    public async Task BootstrapThrottle_SurvivesBrokerRegistrationAndReconnect(
+        CancellationToken cancellationToken)
+    {
+        const int throttleTimeMs = 300;
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var secondConnectionAccepted = new TaskCompletionSource<long>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSecondConnection = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var serverTask = Task.Run(async () =>
+        {
+            using var firstSocket = await listener.AcceptSocketAsync(cancellationToken);
+            await using var firstStream = new NetworkStream(firstSocket, ownsSocket: false);
+            await CompleteApiVersionsRequestAsync(firstStream, 0, cancellationToken);
+            await CompleteApiVersionsRequestAsync(firstStream, throttleTimeMs, cancellationToken);
+
+            using var secondSocket = await listener.AcceptSocketAsync(cancellationToken);
+            secondConnectionAccepted.TrySetResult(Stopwatch.GetTimestamp());
+            await using var secondStream = new NetworkStream(secondSocket, ownsSocket: false);
+            using var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var handshakeTask = CompleteApiVersionsRequestAsync(secondStream, 0, handshakeCts.Token);
+            var completed = await Task.WhenAny(handshakeTask, releaseSecondConnection.Task);
+            if (completed == handshakeTask)
+                await handshakeTask;
+
+            await releaseSecondConnection.Task.WaitAsync(cancellationToken);
+            handshakeCts.Cancel();
+            try { await handshakeTask; }
+            catch (OperationCanceledException) when (handshakeCts.IsCancellationRequested) { }
+        }, cancellationToken);
+
+        await using var pool = new ConnectionPool(
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionsMaxIdleMs = 0,
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            });
+        var bootstrapConnection = await pool.GetConnectionAsync("127.0.0.1", port, cancellationToken);
+        _ = await bootstrapConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+            new ApiVersionsRequest(),
+            3,
+            cancellationToken);
+        await Assert.That(await pool.ReapIdleConnectionsAsync()).IsEqualTo(1);
+
+        pool.RegisterBroker(1, "127.0.0.1", port);
+        var reconnectStarted = Stopwatch.GetTimestamp();
+        var leaseTask = pool.LeaseConnectionAsync(1, cancellationToken).AsTask();
+        var earlyProgress = await Task.WhenAny(
+            secondConnectionAccepted.Task,
+            Task.Delay(100, cancellationToken));
+        await Assert.That(earlyProgress).IsNotSameReferenceAs(secondConnectionAccepted.Task);
+
+        using var lease = await leaseTask;
+        var acceptedAt = await secondConnectionAccepted.Task;
+        var elapsedMs = (acceptedAt - reconnectStarted) * 1000d / Stopwatch.Frequency;
+        await Assert.That(elapsedMs).IsGreaterThanOrEqualTo(200);
+        releaseSecondConnection.TrySetResult();
+        await serverTask;
+    }
+
+    [Test]
+    [Timeout(10_000)]
     public async Task SharedThrottle_BlocksEveryClientRequestPathBeforeWrite(
         CancellationToken cancellationToken)
     {
