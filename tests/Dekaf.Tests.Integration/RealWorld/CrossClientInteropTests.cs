@@ -55,10 +55,15 @@ public sealed class CrossClientInteropTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         using var consumer = CreateConfluentConsumer();
+        var topicPartition = new ConfluentKafka.TopicPartition(topic, ExpectedPartition);
+        var watermarks = consumer.QueryWatermarkOffsets(
+            topicPartition,
+            TimeSpan.FromSeconds(30));
+        await Assert.That(watermarks.Low.Value).IsEqualTo(0);
+        await Assert.That(watermarks.High.Value).IsEqualTo(expectedRecords.Length);
         consumer.Assign(new ConfluentKafka.TopicPartitionOffset(
-            topic,
-            ExpectedPartition,
-            ConfluentKafka.Offset.Beginning));
+            topicPartition,
+            watermarks.Low));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         foreach (var expected in expectedRecords)
