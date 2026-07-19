@@ -24,15 +24,22 @@ internal static class AutoOffsetResetStrategy
             AutoOffsetReset.ByDuration => GetByDurationTimestamp(duration, now),
             AutoOffsetReset.None => throw new KafkaException(
                 ErrorCode.OffsetOutOfRange,
-                GetOffsetResetNoneMessage(partition)),
+                GetOffsetResetNoneMessage(partition, options.GroupId)),
             _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {policy}")
         };
     }
 
-    private static string GetOffsetResetNoneMessage(TopicPartition? partition) =>
-        partition is { } tp
-            ? $"No committed offset for {tp.Topic}-{tp.Partition} and auto.offset.reset is 'none'"
-            : "No committed offset and auto.offset.reset is 'none'";
+    private static string GetOffsetResetNoneMessage(TopicPartition? partition, string? groupId) =>
+        (partition, groupId) switch
+        {
+            ({ } tp, { Length: > 0 } group) =>
+                $"No committed offset for group '{group}', partition {tp.Topic}-{tp.Partition} and auto.offset.reset is 'none'",
+            ({ } tp, _) =>
+                $"No committed offset for {tp.Topic}-{tp.Partition} and auto.offset.reset is 'none'",
+            (_, { Length: > 0 } group) =>
+                $"No committed offset for group '{group}' and auto.offset.reset is 'none'",
+            _ => "No committed offset and auto.offset.reset is 'none'"
+        };
 
     public static long GetByDurationTimestamp(TimeSpan? duration, DateTimeOffset now)
     {

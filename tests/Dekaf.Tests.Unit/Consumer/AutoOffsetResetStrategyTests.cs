@@ -36,11 +36,12 @@ public class AutoOffsetResetStrategyTests
     }
 
     [Test]
-    public async Task GetListOffsetsTimestamp_NoneIncludesPartitionInExceptionMessage()
+    public async Task GetListOffsetsTimestamp_NoneIncludesGroupAndPartitionInExceptionMessage()
     {
         var options = new ConsumerOptions
         {
             BootstrapServers = ["localhost:9092"],
+            GroupId = "orders-group",
             AutoOffsetReset = AutoOffsetReset.None
         };
 
@@ -49,7 +50,8 @@ public class AutoOffsetResetStrategyTests
                 DateTimeOffset.Parse("2026-07-02T12:00:00Z"),
                 new TopicPartition("orders", 5)))
             .Throws<KafkaException>()
-            .WithMessageContaining("orders-5");
+            .WithMessageContaining("orders-group")
+            .And.WithMessageContaining("orders-5");
     }
 
     [Test]
