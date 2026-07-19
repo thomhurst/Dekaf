@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Dekaf.Internal;
 using Dekaf.Metadata;
@@ -26,6 +27,7 @@ public sealed class AdminClient : IAdminClient
     private readonly AdminClientOptions _options;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
+    private readonly ControllerMetadataManager? _controllerMetadataManager;
     private readonly ClientTelemetryMetricCollector _telemetryMetricCollector;
     private readonly ClientTelemetryManager _telemetryManager;
     private readonly ILogger<AdminClient>? _logger;
@@ -35,6 +37,7 @@ public sealed class AdminClient : IAdminClient
 
     public AdminClient(AdminClientOptions options, ILoggerFactory? loggerFactory = null, MetadataOptions? metadataOptions = null)
     {
+        ValidateBootstrapOptions(options);
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
             options.ReconnectBackoffMs,
@@ -91,6 +94,13 @@ public sealed class AdminClient : IAdminClient
             options.BootstrapServers,
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
+        if (options.BootstrapControllers.Count > 0)
+        {
+            _controllerMetadataManager = new ControllerMetadataManager(
+                _connectionPool,
+                _metadataManager,
+                options.BootstrapControllers);
+        }
 
         _telemetryManager = new ClientTelemetryManager(
             _connectionPool,
@@ -107,11 +117,25 @@ public sealed class AdminClient : IAdminClient
         ILoggerFactory? loggerFactory = null,
         bool ownsResources = false)
     {
+        ValidateBootstrapOptions(options);
         ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         _options = options;
         _logger = loggerFactory?.CreateLogger<AdminClient>();
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
+        if (options.BootstrapControllers.Count > 0)
+        {
+            if (!ownsResources)
+            {
+                throw new InvalidOperationException(
+                    "Controller bootstrap endpoints require an independently owned AdminClient connection pool.");
+            }
+
+            _controllerMetadataManager = new ControllerMetadataManager(
+                _connectionPool,
+                _metadataManager,
+                options.BootstrapControllers);
+        }
         _telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Admin);
         _telemetryMetricCollector.RegisterMetricsForSubscription(options.ApplicationMetrics);
         _telemetryManager = new ClientTelemetryManager(
@@ -123,6 +147,24 @@ public sealed class AdminClient : IAdminClient
     }
 
     public ClusterMetadata Metadata => _metadataManager.Metadata;
+
+    private static void ValidateBootstrapOptions(AdminClientOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.BootstrapServers.Count == 0 && options.BootstrapControllers.Count == 0)
+        {
+            throw new ArgumentException(
+                "Bootstrap servers or controllers must be specified.",
+                nameof(options));
+        }
+
+        if (options.BootstrapServers.Count > 0 && options.BootstrapControllers.Count > 0)
+        {
+            throw new ArgumentException(
+                "Bootstrap servers and bootstrap controllers are mutually exclusive.",
+                nameof(options));
+        }
+    }
 
     /// <inheritdoc />
     public void RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
@@ -267,7 +309,7 @@ public sealed class AdminClient : IAdminClient
         await WithRetryAsync(async () =>
         {
             var isRetryAttempt = createMayHaveApplied;
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreateTopics, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new CreateTopicsRequest
@@ -409,7 +451,7 @@ public sealed class AdminClient : IAdminClient
         await WithRetryAsync(async () =>
         {
             var isRetryAttempt = deleteMayHaveApplied;
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DeleteTopics, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
@@ -645,6 +687,26 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
+        if (_controllerMetadataManager is { } controllerMetadataManager)
+        {
+            ControllerMetadataManager.EnsureSupported(Protocol.ApiKey.DescribeCluster);
+            var snapshot = controllerMetadataManager.Snapshot;
+            return new ClusterDescription
+            {
+                ClusterId = snapshot.ClusterId,
+                ControllerId = snapshot.ActiveControllerId,
+                Nodes = snapshot.Controllers.Values
+                    .Select(static node => new BrokerNode
+                    {
+                        NodeId = node.NodeId,
+                        Host = node.Host,
+                        Port = node.Port,
+                        Rack = node.Rack
+                    })
+                    .ToArray()
+            };
+        }
+
         return new ClusterDescription
         {
             ClusterId = _metadataManager.Metadata.ClusterId,
@@ -660,7 +722,9 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync(async () =>
         {
-            using var connectionLease = await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            using var connectionLease = _controllerMetadataManager is null
+                ? await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false)
+                : await LeaseControllerAsync(Protocol.ApiKey.ApiVersions, cancellationToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 connection,
@@ -672,8 +736,12 @@ public sealed class AdminClient : IAdminClient
                 {
                     ClientSoftwareName = "dekaf",
                     ClientSoftwareVersion = typeof(AdminClient).Assembly.GetName().Version?.ToString() ?? "0.0.0",
-                    ClusterId = apiVersion >= 5 ? _metadataManager.Metadata.ClusterId : null,
-                    NodeId = apiVersion >= 5 ? connection.BrokerId : -1
+                    ClusterId = apiVersion >= 5
+                        ? _controllerMetadataManager?.Snapshot.ClusterId ?? _metadataManager.Metadata.ClusterId
+                        : null,
+                    NodeId = apiVersion >= 5
+                        ? _controllerMetadataManager?.Snapshot.ActiveControllerId ?? connection.BrokerId
+                        : -1
                 },
                 apiVersion,
                 cancellationToken).ConfigureAwait(false);
@@ -745,7 +813,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<string, FeatureUpdateResultInfo>>(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.UpdateFeatures, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 controller,
@@ -1966,7 +2034,7 @@ public sealed class AdminClient : IAdminClient
         await WithRetryAsync(async () =>
         {
             var isRetryAttempt = createPartitionsMayHaveApplied;
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreatePartitions, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new CreatePartitionsRequest
@@ -2039,7 +2107,7 @@ public sealed class AdminClient : IAdminClient
         await WithRetryAsync(async () =>
         {
             var isRetryAttempt = alterMayHaveApplied;
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AlterPartitionReassignments, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new AlterPartitionReassignmentsRequest
@@ -2110,7 +2178,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, PartitionReassignment>>(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.ListPartitionReassignments, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new ListPartitionReassignmentsRequest
@@ -2223,7 +2291,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>>(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DescribeUserScramCredentials, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new DescribeUserScramCredentialsRequest
@@ -2319,7 +2387,7 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AlterUserScramCredentials, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new AlterUserScramCredentialsRequest
@@ -2363,7 +2431,9 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<ClientQuotaEntity, IReadOnlyDictionary<string, double>>>(async () =>
         {
-            using var connectionLease = await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await LeaseBrokerOrControllerConnectionAsync(
+                Protocol.ApiKey.DescribeClientQuotas,
+                cancellationToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
 
             var request = new DescribeClientQuotasRequest
@@ -2420,7 +2490,9 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            using var connectionLease = await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await LeaseBrokerOrControllerConnectionAsync(
+                Protocol.ApiKey.AlterClientQuotas,
+                cancellationToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
 
             var request = new AlterClientQuotasRequest
@@ -2538,6 +2610,13 @@ public sealed class AdminClient : IAdminClient
 
     private async ValueTask<KafkaConnectionLease> LeaseAnyBrokerConnectionAsync(CancellationToken cancellationToken)
     {
+        if (_controllerMetadataManager is not null)
+        {
+            throw new KafkaException(
+                Protocol.ErrorCode.UnsupportedEndpointType,
+                "This Admin API requires broker bootstrap endpoints and cannot use controller bootstrap endpoints.");
+        }
+
         var brokers = _metadataManager.Metadata.GetBrokers();
         if (brokers.Count == 0)
         {
@@ -2545,6 +2624,52 @@ public sealed class AdminClient : IAdminClient
         }
 
         return await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private ValueTask<KafkaConnectionLease> LeaseBrokerOrControllerConnectionAsync(
+        Protocol.ApiKey apiKey,
+        CancellationToken cancellationToken) =>
+        _controllerMetadataManager is null
+            ? LeaseAnyBrokerConnectionAsync(cancellationToken)
+            : LeaseControllerAsync(apiKey, cancellationToken);
+
+    private async ValueTask<KafkaConnectionLease> LeaseConfigEndpointAsync(
+        IEnumerable<ConfigResource> resources,
+        Protocol.ApiKey apiKey,
+        CancellationToken cancellationToken)
+    {
+        if (_controllerMetadataManager is null)
+            return await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        ControllerMetadataManager.EnsureSupported(apiKey);
+        int? requestedControllerId = null;
+        foreach (var resource in resources)
+        {
+            if (resource.Type != ConfigResourceType.BrokerLogger)
+                continue;
+
+            if (!int.TryParse(resource.Name, out var controllerId))
+            {
+                throw new ArgumentException(
+                    $"BrokerLogger resource '{resource.Name}' must identify a controller node ID.",
+                    nameof(resources));
+            }
+
+            if (requestedControllerId is { } existingControllerId && existingControllerId != controllerId)
+            {
+                throw new ArgumentException(
+                    "One controller-bootstrap config request cannot target multiple controller log endpoints.",
+                    nameof(resources));
+            }
+
+            requestedControllerId = controllerId;
+        }
+
+        return requestedControllerId is { } targetControllerId
+            ? await _controllerMetadataManager.LeaseControllerAsync(targetControllerId, apiKey, cancellationToken)
+                .ConfigureAwait(false)
+            : await _controllerMetadataManager.LeaseActiveControllerAsync(apiKey, cancellationToken)
+                .ConfigureAwait(false);
     }
 
     public async ValueTask<DelegationToken> CreateDelegationTokenAsync(
@@ -2561,7 +2686,7 @@ public sealed class AdminClient : IAdminClient
         var maxLifetimeMs = ToKafkaMilliseconds(maxLifetime, nameof(maxLifetime));
 
         // CreateDelegationToken has no client idempotency key; do not auto-retry after the broker may have minted a token.
-        using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+        using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreateDelegationToken, cancellationToken).ConfigureAwait(false);
         var controller = controllerLease.Connection;
         var request = new CreateDelegationTokenRequest
         {
@@ -2606,7 +2731,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<DateTimeOffset>(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.RenewDelegationToken, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var request = new RenewDelegationTokenRequest
             {
@@ -2646,7 +2771,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<DateTimeOffset>(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.ExpireDelegationToken, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var request = new ExpireDelegationTokenRequest
             {
@@ -2684,7 +2809,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyList<DelegationToken>>(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DescribeDelegationToken, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var request = new DescribeDelegationTokenRequest
             {
@@ -2805,14 +2930,10 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>>>(async () =>
         {
-            // Any broker can handle DescribeConfigs
-            var brokers = _metadataManager.Metadata.GetBrokers();
-            if (brokers.Count == 0)
-            {
-                throw new InvalidOperationException("No brokers available");
-            }
-
-            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await LeaseConfigEndpointAsync(
+                resourceList,
+                Protocol.ApiKey.DescribeConfigs,
+                cancellationToken).ConfigureAwait(false);
 
             var connection = connectionLease.Connection;
 
@@ -2891,14 +3012,10 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            // Any broker can handle AlterConfigs
-            var brokers = _metadataManager.Metadata.GetBrokers();
-            if (brokers.Count == 0)
-            {
-                throw new InvalidOperationException("No brokers available");
-            }
-
-            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await LeaseConfigEndpointAsync(
+                configs.Keys,
+                Protocol.ApiKey.AlterConfigs,
+                cancellationToken).ConfigureAwait(false);
 
             var connection = connectionLease.Connection;
 
@@ -2952,14 +3069,10 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            // Any broker can handle IncrementalAlterConfigs
-            var brokers = _metadataManager.Metadata.GetBrokers();
-            if (brokers.Count == 0)
-            {
-                throw new InvalidOperationException("No brokers available");
-            }
-
-            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+            using var connectionLease = await LeaseConfigEndpointAsync(
+                configs.Keys,
+                Protocol.ApiKey.IncrementalAlterConfigs,
+                cancellationToken).ConfigureAwait(false);
 
             var connection = connectionLease.Connection;
 
@@ -3027,7 +3140,7 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.CreateAcls, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new CreateAclsRequest
@@ -3084,7 +3197,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyList<AclBinding>>(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DeleteAcls, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new DeleteAclsRequest
@@ -3154,7 +3267,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyList<AclBinding>>(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DescribeAcls, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new DescribeAclsRequest
@@ -3482,7 +3595,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>>(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.ElectLeaders, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
 
             var request = new ElectLeadersRequest
@@ -3540,7 +3653,7 @@ public sealed class AdminClient : IAdminClient
 
         return await WithRetryAsync(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.DescribeQuorum, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 controller,
@@ -3625,7 +3738,7 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.AddRaftVoter, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 controller,
@@ -3679,7 +3792,7 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.RemoveRaftVoter, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 controller,
@@ -3716,7 +3829,7 @@ public sealed class AdminClient : IAdminClient
 
         await WithRetryAsync(async () =>
         {
-            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            using var controllerLease = await LeaseControllerAsync(Protocol.ApiKey.UnregisterBroker, cancellationToken).ConfigureAwait(false);
             var controller = controllerLease.Connection;
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 controller,
@@ -4665,8 +4778,17 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
+    private async ValueTask EnsureInitializedAsync(
+        CancellationToken cancellationToken,
+        [CallerMemberName] string operation = "")
     {
+        if (_controllerMetadataManager is { } controllerMetadataManager)
+        {
+            EnsureControllerOperationSupported(operation);
+            await controllerMetadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         if (_metadataManager.Metadata.LastRefreshed == default)
         {
             await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -4697,20 +4819,117 @@ public sealed class AdminClient : IAdminClient
     }
 
     private ValueTask WithRetryAsync(Func<ValueTask> operation, CancellationToken cancellationToken)
-        => RetryHelper.WithRetryAsync(
-            operation,
-            _metadataManager,
-            cancellationToken,
-            _options.RetryBackoffMs,
-            _options.RetryBackoffMaxMs);
+        => _controllerMetadataManager is null
+            ? RetryHelper.WithRetryAsync(
+                operation,
+                _metadataManager,
+                cancellationToken,
+                _options.RetryBackoffMs,
+                _options.RetryBackoffMaxMs)
+            : WithControllerRetryAsync(operation, cancellationToken);
 
     private ValueTask<T> WithRetryAsync<T>(Func<ValueTask<T>> operation, CancellationToken cancellationToken)
-        => RetryHelper.WithRetryAsync(
-            operation,
-            _metadataManager,
-            cancellationToken,
+        => _controllerMetadataManager is null
+            ? RetryHelper.WithRetryAsync(
+                operation,
+                _metadataManager,
+                cancellationToken,
+                _options.RetryBackoffMs,
+                _options.RetryBackoffMaxMs)
+            : WithControllerRetryAsync(operation, cancellationToken);
+
+    private async ValueTask WithControllerRetryAsync(
+        Func<ValueTask> operation,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await operation().ConfigureAwait(false);
+                return;
+            }
+            catch (Exception ex) when (RetryHelper.IsRetriableRequestFailure(ex) && attempt < RetryHelper.MaxRetries)
+            {
+                await RefreshControllerForRetryAsync(cancellationToken).ConfigureAwait(false);
+                await DelayForRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static void EnsureControllerOperationSupported(string operation)
+    {
+        if (operation is nameof(DescribeClusterAsync)
+            or nameof(DescribeFeaturesAsync)
+            or nameof(UpdateFeaturesAsync)
+            or nameof(AlterPartitionReassignmentsAsync)
+            or nameof(ListPartitionReassignmentsAsync)
+            or nameof(DescribeUserScramCredentialsAsync)
+            or nameof(DescribeClientQuotasAsync)
+            or nameof(AlterClientQuotasAsync)
+            or nameof(DescribeDelegationTokensAsync)
+            or nameof(DescribeConfigsAsync)
+            or nameof(AlterConfigsAsync)
+            or nameof(IncrementalAlterConfigsAsync)
+            or nameof(CreateAclsAsync)
+            or nameof(DeleteAclsAsync)
+            or nameof(DescribeAclsAsync)
+            or nameof(ElectLeadersAsync)
+            or nameof(DescribeMetadataQuorumAsync)
+            or nameof(AddRaftVoterAsync)
+            or nameof(RemoveRaftVoterAsync)
+            or nameof(UnregisterBrokerAsync))
+        {
+            return;
+        }
+
+        throw new KafkaException(
+            Protocol.ErrorCode.UnsupportedEndpointType,
+            $"Admin operation {operation} is not supported when using controller bootstrap endpoints.");
+    }
+
+    private async ValueTask<T> WithControllerRetryAsync<T>(
+        Func<ValueTask<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await operation().ConfigureAwait(false);
+            }
+            catch (Exception ex) when (RetryHelper.IsRetriableRequestFailure(ex) && attempt < RetryHelper.MaxRetries)
+            {
+                await RefreshControllerForRetryAsync(cancellationToken).ConfigureAwait(false);
+                await DelayForRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async ValueTask RefreshControllerForRetryAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _controllerMetadataManager!.RefreshAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (RetryHelper.IsRetriableRequestFailure(ex) || ex is InvalidOperationException)
+        {
+            // Best effort: retain the operation's typed failure if discovery remains unavailable.
+        }
+    }
+
+    private ValueTask DelayForRetryAsync(int attempt, CancellationToken cancellationToken)
+    {
+        var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
             _options.RetryBackoffMs,
-            _options.RetryBackoffMaxMs);
+            _options.RetryBackoffMaxMs,
+            attempt + 1);
+        return new ValueTask(Task.Delay(delayMs, cancellationToken));
+    }
 
     private static WriteTxnMarkersResponsePartition FindAbortTransactionPartition(
         WriteTxnMarkersResponse response,
@@ -4739,8 +4958,16 @@ public sealed class AdminClient : IAdminClient
             $"WriteTxnMarkers response did not include {topicPartition.Topic}-{topicPartition.Partition} for producer {transaction.ProducerId}.");
     }
 
-    private async ValueTask<KafkaConnectionLease> LeaseControllerAsync(CancellationToken cancellationToken)
+    private async ValueTask<KafkaConnectionLease> LeaseControllerAsync(
+        Protocol.ApiKey apiKey,
+        CancellationToken cancellationToken)
     {
+        if (_controllerMetadataManager is { } controllerMetadataManager)
+        {
+            return await controllerMetadataManager.LeaseActiveControllerAsync(apiKey, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         var controllerId = _metadataManager.Metadata.ControllerId;
         if (controllerId < 0)
         {
@@ -4955,6 +5182,7 @@ public sealed class AdminClient : IAdminClient
 
         if (_ownsResources)
         {
+            _controllerMetadataManager?.Dispose();
             await _metadataManager.DisposeAsync().ConfigureAwait(false);
             await _connectionPool.DisposeAsync().ConfigureAwait(false);
         }
@@ -4972,7 +5200,8 @@ public sealed class AdminClientOptions
     private bool _isReconnectBackoffMsConfigured;
     private bool _isReconnectBackoffMaxMsConfigured;
 
-    public required IReadOnlyList<string> BootstrapServers { get; init; }
+    public IReadOnlyList<string> BootstrapServers { get; init; } = [];
+    public IReadOnlyList<string> BootstrapControllers { get; init; } = [];
     public string? ClientId { get; init; } = "dekaf-admin";
     public int RequestTimeoutMs { get; init; } = 30000;
 
@@ -5145,6 +5374,7 @@ public sealed class AdminClientBuilder
 {
     private readonly KafkaClientInfrastructure? _clientInfrastructure;
     private IReadOnlyList<string> _bootstrapServers = [];
+    private IReadOnlyList<string> _bootstrapControllers = [];
     private string? _clientId;
     private int _requestTimeoutMs = 30000;
     private int _retryBackoffMs = 100;
@@ -5206,6 +5436,27 @@ public sealed class AdminClientBuilder
     {
         ThrowIfClientOwnedBootstrap();
         _bootstrapServers = BootstrapServerList.FromValues(servers);
+        return this;
+    }
+
+    /// <summary>
+    /// Configures KRaft controller bootstrap endpoints for direct controller administration (KIP-919).
+    /// This setting is mutually exclusive with <see cref="WithBootstrapServers(string)"/>.
+    /// </summary>
+    public AdminClientBuilder WithBootstrapControllers(string controllers)
+    {
+        ThrowIfClientOwnedBootstrap();
+        _bootstrapControllers = BootstrapServerList.FromCommaSeparated(controllers);
+        return this;
+    }
+
+    /// <summary>
+    /// Configures KRaft controller bootstrap endpoints for direct controller administration (KIP-919).
+    /// </summary>
+    public AdminClientBuilder WithBootstrapControllers(params string[] controllers)
+    {
+        ThrowIfClientOwnedBootstrap();
+        _bootstrapControllers = BootstrapServerList.FromValues(controllers);
         return this;
     }
 
@@ -5772,8 +6023,13 @@ public sealed class AdminClientBuilder
 
     public IAdminClient Build()
     {
-        if (_bootstrapServers.Count == 0)
-            throw new InvalidOperationException("Bootstrap servers must be specified");
+        if (_bootstrapServers.Count == 0 && _bootstrapControllers.Count == 0)
+            throw new InvalidOperationException("Bootstrap servers or controllers must be specified");
+        if (_bootstrapServers.Count > 0 && _bootstrapControllers.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Bootstrap servers and bootstrap controllers are mutually exclusive.");
+        }
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
             _reconnectBackoffMs,
             _reconnectBackoffMaxMs,
@@ -5786,6 +6042,7 @@ public sealed class AdminClientBuilder
         var options = new AdminClientOptions
         {
             BootstrapServers = _bootstrapServers,
+            BootstrapControllers = _bootstrapControllers,
             ClientId = _clientId,
             RequestTimeoutMs = _requestTimeoutMs,
             RetryBackoffMs = _retryBackoffMs,

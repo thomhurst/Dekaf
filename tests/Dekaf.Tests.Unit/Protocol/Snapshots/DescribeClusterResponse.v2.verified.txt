@@ -1,0 +1,39 @@
+﻿Response: Dekaf.Protocol.Messages.DescribeClusterResponse
+API key: DescribeCluster (60)
+Version: 2
+Header version: 1
+Body length: 82 bytes
+
+0000: 00 00 00 11 00 00 00 02  0A 63 6C 75 73 74 65 72 |.........cluster|
+0010: 2D 61 00 00 00 02 03 00  00 00 01 0D 63 6F 6E 74 |-a..........cont|
+0020: 72 6F 6C 6C 65 72 2D 31  00 00 4A 95 07 72 61 63 |roller-1..J..rac|
+0030: 6B 2D 61 00 00 00 00 00  02 0D 63 6F 6E 74 72 6F |k-a.......contro|
+0040: 6C 6C 65 72 2D 32 00 00  4A 96 00 01 00 00 00 00 |ller-2..J.......|
+0050: 07 00                                            |..|
+
+Decoded:
+{
+  "ClusterAuthorizedOperations": 7,
+  "ClusterId": "cluster-a",
+  "ControllerId": 2,
+  "EndpointType": "Controller",
+  "ErrorCode": "None",
+  "ErrorMessage": null,
+  "Nodes": [
+    {
+      "Host": "controller-1",
+      "IsFenced": false,
+      "NodeId": 1,
+      "Port": 19093,
+      "Rack": "rack-a"
+    },
+    {
+      "Host": "controller-2",
+      "IsFenced": true,
+      "NodeId": 2,
+      "Port": 19094,
+      "Rack": null
+    }
+  ],
+  "ThrottleTimeMs": 17
+}

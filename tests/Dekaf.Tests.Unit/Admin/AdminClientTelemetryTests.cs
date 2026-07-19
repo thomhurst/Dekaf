@@ -51,7 +51,9 @@ public sealed class AdminClientTelemetryTests
 
     private static async ValueTask InvokeEnsureInitializedAsync(AdminClient client)
     {
-        var result = (ValueTask)EnsureInitializedMethod.Invoke(client, [CancellationToken.None])!;
+        var result = (ValueTask)EnsureInitializedMethod.Invoke(
+            client,
+            [CancellationToken.None, nameof(EnsureInitializedAsync_AttemptsTelemetryStartOnlyOnceAfterFailure)])!;
         await result.ConfigureAwait(false);
     }
 }
