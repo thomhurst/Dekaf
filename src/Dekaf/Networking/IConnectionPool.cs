@@ -70,3 +70,8 @@ internal interface IConnectionPoolDiagnostics
 
     int GetMaxObservedBrokerThrottleTimeMs();
 }
+
+internal interface IConnectionCapabilityObserverPool
+{
+    void SetConnectionCapabilityObserver(Action<KafkaConnectionCapabilities> observer);
+}

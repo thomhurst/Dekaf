@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
+using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Errors;
 using Dekaf.Protocol;
@@ -317,17 +318,23 @@ public class KafkaConnectionCapabilityHandshakeTests
 
         var serverTask = Task.Run(async () =>
         {
-            await ServeGenerationAsync(
+            await ServeFeatureGenerationAsync(
                 listener,
                 releaseFirstGeneration.Task,
-                cancellationToken,
-                new ApiVersion(ApiKey.Metadata, 9, 12),
-                new ApiVersion(ApiKey.Produce, 3, 7));
-            await ServeGenerationAsync(
+                finalizedFeaturesEpoch: 1,
+                transactionVersion: 1,
+                [
+                    new ApiVersion(ApiKey.Metadata, 9, 12),
+                    new ApiVersion(ApiKey.Produce, 3, 7)
+                ],
+                cancellationToken);
+            await ServeFeatureGenerationAsync(
                 listener,
                 releaseSecondGeneration.Task,
-                cancellationToken,
-                new ApiVersion(ApiKey.Metadata, 9, 13));
+                finalizedFeaturesEpoch: 2,
+                transactionVersion: 2,
+                [new ApiVersion(ApiKey.Metadata, 9, 13)],
+                cancellationToken);
         }, cancellationToken);
 
         await using var pool = new ConnectionPool(connectionOptions: new ConnectionOptions
@@ -335,10 +342,27 @@ public class KafkaConnectionCapabilityHandshakeTests
             ReconnectBackoff = TimeSpan.Zero,
             ReconnectBackoffMax = TimeSpan.Zero
         });
+        await using var metadata = new MetadataManager(
+            pool,
+            [$"127.0.0.1:{port}"],
+            new MetadataOptions { EnableBackgroundRefresh = false });
+        metadata.ObserveClusterCapabilities(
+            "cluster-a",
+            KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys = [],
+                FinalizedFeaturesEpoch = 0,
+                FinalizedFeatures = [new FinalizedFeature("transaction.version", 0, 0)]
+            }));
 
         var firstConnection = await pool.GetConnectionAsync("127.0.0.1", port, cancellationToken);
         var firstCapabilities = ((IKafkaCapabilityProvider)firstConnection).Capabilities;
         await Assert.That(firstCapabilities.NegotiateVersion(ApiKey.Produce, 3, 13)).IsEqualTo((short)7);
+        await Assert.That(metadata.TryGetFinalizedFeatureVersion(
+            "transaction.version",
+            out var firstFeatureVersion)).IsTrue();
+        await Assert.That(firstFeatureVersion).IsEqualTo((short)1);
 
         releaseFirstGeneration.SetResult();
         await WaitUntilAsync(() => !firstConnection.IsConnected, cancellationToken);
@@ -350,6 +374,10 @@ public class KafkaConnectionCapabilityHandshakeTests
         await Assert.That(secondCapabilities.NegotiateVersion(ApiKey.Metadata, 9, 13)).IsEqualTo((short)13);
         await Assert.That(() => secondCapabilities.NegotiateVersion(ApiKey.Produce, 3, 13))
             .Throws<BrokerVersionException>();
+        await Assert.That(metadata.TryGetFinalizedFeatureVersion(
+            "transaction.version",
+            out var secondFeatureVersion)).IsTrue();
+        await Assert.That(secondFeatureVersion).IsEqualTo((short)2);
 
         Parallel.For(0, 10_000, _ =>
         {
@@ -425,6 +453,28 @@ public class KafkaConnectionCapabilityHandshakeTests
         await releaseConnection.WaitAsync(cancellationToken);
     }
 
+    private static async Task ServeFeatureGenerationAsync(
+        TcpListener listener,
+        Task releaseConnection,
+        long finalizedFeaturesEpoch,
+        short transactionVersion,
+        IReadOnlyList<ApiVersion> versions,
+        CancellationToken cancellationToken)
+    {
+        using var socket = await listener.AcceptSocketAsync(cancellationToken);
+        await using var stream = new NetworkStream(socket, ownsSocket: false);
+        var request = await ReadFrameAsync(stream, cancellationToken);
+        var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
+        await stream.WriteAsync(
+            BuildFeatureResponse(
+                correlationId,
+                finalizedFeaturesEpoch,
+                transactionVersion,
+                versions),
+            cancellationToken);
+        await releaseConnection.WaitAsync(cancellationToken);
+    }
+
     private static async Task WaitUntilAsync(
         Func<bool> predicate,
         CancellationToken cancellationToken)
@@ -451,11 +501,31 @@ public class KafkaConnectionCapabilityHandshakeTests
         int correlationId,
         ErrorCode errorCode,
         params ApiVersion[] versions)
+        => BuildResponseCore(correlationId, errorCode, null, null, versions);
+
+    private static byte[] BuildFeatureResponse(
+        int correlationId,
+        long finalizedFeaturesEpoch,
+        short transactionVersion,
+        IReadOnlyList<ApiVersion> versions)
+        => BuildResponseCore(
+            correlationId,
+            ErrorCode.None,
+            finalizedFeaturesEpoch,
+            transactionVersion,
+            versions);
+
+    private static byte[] BuildResponseCore(
+        int correlationId,
+        ErrorCode errorCode,
+        long? finalizedFeaturesEpoch,
+        short? transactionVersion,
+        IReadOnlyList<ApiVersion> versions)
     {
         var body = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(body);
         writer.WriteInt16((short)errorCode);
-        writer.WriteUnsignedVarInt(versions.Length + 1);
+        writer.WriteUnsignedVarInt(versions.Count + 1);
         foreach (var version in versions)
         {
             writer.WriteInt16((short)version.ApiKey);
@@ -465,7 +535,29 @@ public class KafkaConnectionCapabilityHandshakeTests
         }
 
         writer.WriteInt32(0);
-        writer.WriteEmptyTaggedFields();
+        if (finalizedFeaturesEpoch is null)
+        {
+            writer.WriteEmptyTaggedFields();
+        }
+        else
+        {
+            writer.WriteUnsignedVarInt(2);
+            writer.WriteUnsignedVarInt(1);
+            writer.WriteUnsignedVarInt(sizeof(long));
+            writer.WriteInt64(finalizedFeaturesEpoch.Value);
+
+            var features = new ArrayBufferWriter<byte>();
+            var featureWriter = new KafkaProtocolWriter(features);
+            featureWriter.WriteUnsignedVarInt(2);
+            featureWriter.WriteCompactString("transaction.version");
+            featureWriter.WriteInt16(transactionVersion!.Value);
+            featureWriter.WriteInt16(0);
+            featureWriter.WriteEmptyTaggedFields();
+
+            writer.WriteUnsignedVarInt(2);
+            writer.WriteUnsignedVarInt(features.WrittenCount);
+            writer.WriteRawBytes(features.WrittenSpan);
+        }
 
         var frame = new byte[sizeof(int) + sizeof(int) + body.WrittenCount];
         BinaryPrimitives.WriteInt32BigEndian(frame, frame.Length - sizeof(int));

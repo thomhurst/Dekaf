@@ -901,7 +901,7 @@ public sealed class TransactionTests
     [Test]
     [Arguments(false, (short)2)]
     [Arguments(true, (short)1)]
-    public async Task BeginTransaction_GlobalFeatureVersionChanged_DoesNotOverrideConnectionSnapshot(
+    public async Task BeginTransaction_FeatureVersionChangedBetweenTransactions_UsesNewSnapshot(
         bool initializedWithTV2,
         short finalizedVersion)
     {
@@ -921,6 +921,11 @@ public sealed class TransactionTests
         var transaction = producer.BeginTransaction();
 
         await Assert.That(kafkaProducer._transactionState).IsEqualTo(TransactionState.InTransaction);
+        await Assert.That(kafkaProducer._currentTransactionUsesTV2)
+            .IsEqualTo(finalizedVersion >= 2);
+        await Assert.That(GetInstanceField<short>(
+            kafkaProducer,
+            "_currentTransactionFeatureVersion")).IsEqualTo(finalizedVersion);
         kafkaProducer._transactionState = TransactionState.Ready;
         await transaction.DisposeAsync();
     }
@@ -987,13 +992,7 @@ public sealed class TransactionTests
             ApiKey.InitProducerId,
             InitProducerIdRequest.LowestSupportedVersion,
             InitProducerIdRequest.HighestSupportedVersion);
-        SetInstanceField<IReadOnlyList<FinalizedFeature>>(
-            metadataManager,
-            "_finalizedFeatures",
-            [new FinalizedFeature(
-                "transaction.version",
-                transactionFeatureVersion,
-                transactionFeatureVersion)]);
+        PublishFinalizedTransactionVersion(metadataManager, transactionFeatureVersion);
 
         var producer = new KafkaProducer<string, string>(
             new ProducerOptions
@@ -1023,11 +1022,28 @@ public sealed class TransactionTests
 
     private static void SetFinalizedTransactionVersion(KafkaProducer<string, string> producer, short version)
     {
-        var metadataManager = GetInstanceField<object>(producer, "_metadataManager");
-        SetInstanceField<IReadOnlyList<FinalizedFeature>>(
-            metadataManager,
-            "_finalizedFeatures",
-            [new FinalizedFeature("transaction.version", version, version)]);
+        var metadataManager = GetInstanceField<MetadataManager>(producer, "_metadataManager");
+        PublishFinalizedTransactionVersion(metadataManager, version);
+    }
+
+    private static long s_finalizedFeatureEpoch;
+
+    private static void PublishFinalizedTransactionVersion(
+        MetadataManager metadataManager,
+        short version)
+    {
+        metadataManager.ObserveClusterCapabilities(
+            "cluster-a",
+            KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys = [],
+                FinalizedFeaturesEpoch = Interlocked.Increment(ref s_finalizedFeatureEpoch),
+                FinalizedFeatures =
+                [
+                    new FinalizedFeature("transaction.version", version, version)
+                ]
+            }));
     }
 
     private static void SetInstanceField<T>(object target, string name, T value)
