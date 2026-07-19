@@ -76,7 +76,7 @@ public sealed class RetryHelperTests
     public async Task CancellationDuringBackoff_StopsRetrying()
     {
         await using var metadataManager = CreateUnavailableMetadataManager();
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(20));
+        using var cancellation = new CancellationTokenSource();
         var attempts = 0;
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
@@ -90,6 +90,11 @@ public sealed class RetryHelperTests
                 cancellation.Token,
                 retryBackoffMs: 1000,
                 retryBackoffMaxMs: 1000,
+                onRetry: _ =>
+                {
+                    cancellation.Cancel();
+                    return ValueTask.CompletedTask;
+                },
                 maxRetries: 3));
 
         await Assert.That(attempts).IsEqualTo(1);
