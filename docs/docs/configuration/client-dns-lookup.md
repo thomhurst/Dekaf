@@ -32,9 +32,22 @@ var consumer = new ConsumerBuilder<string, string>()
 
 DNS is resolved on every reconnect, so changes in broker DNS records are picked up without recreating the client.
 
+## Bootstrap resolution deadline
+
+KIP-909 gives initial bootstrap DNS failures a separate retry budget. A transient host-not-found response does not consume the metadata initialization retry cap or timeout. Dekaf retries with the configured reconnect backoff until one bootstrap name resolves, cancellation/disposal occurs, or the bootstrap deadline expires.
+
+```csharp
+var producer = new ProducerBuilder<string, string>()
+    .WithBootstrapServers("kafka.example.com:9092")
+    .WithBootstrapResolveTimeout(TimeSpan.FromMinutes(2))
+    .Build();
+```
+
+The default is 120000ms (2 minutes). Expiry throws the non-retriable `BootstrapResolutionException`, whose `UnresolvedBootstrapServers` property identifies the failed bootstrap endpoints. One resolvable name is sufficient when multiple bootstrap names are configured. `Build()` remains network-free; `BuildAsync()` and `InitializeAsync()` perform and retry the first network bootstrap.
+
 ## Configuration
 
-`ClientDnsLookup` can be configured on root clients, producers, consumers, share consumers, and admin clients. It also binds from `appsettings.json` by enum name:
+`ClientDnsLookup` and `BootstrapResolveTimeoutMs` can be configured on root clients, producers, consumers, share consumers, and admin clients. Producer, consumer, and admin options also bind from `appsettings.json`:
 
 ```json
 {
@@ -42,7 +55,8 @@ DNS is resolved on every reconnect, so changes in broker DNS records are picked 
     "Producers": {
       "Orders": {
         "BootstrapServers": "kafka.example.com:9092",
-        "ClientDnsLookup": "UseAllDnsIps"
+        "ClientDnsLookup": "UseAllDnsIps",
+        "BootstrapResolveTimeoutMs": 120000
       }
     }
   }

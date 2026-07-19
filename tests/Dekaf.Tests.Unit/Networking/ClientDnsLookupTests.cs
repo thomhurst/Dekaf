@@ -96,6 +96,58 @@ public sealed class ClientDnsLookupTests
         await Assert.That(endpoints[0].Address).IsEqualTo(IPAddress.Loopback);
     }
 
+    [Test]
+    public async Task KafkaConnection_ConnectAsync_DnsFailure_PreservesResolutionContext()
+    {
+        await using var connection = new KafkaConnection(
+            "missing.example",
+            9092,
+            options: new ConnectionOptions
+            {
+                DnsResolver = new ClientDnsEndpointResolver(new ThrowingDnsLookup())
+            });
+
+        var exception = await Assert.That(() => connection.ConnectAsync().AsTask())
+            .Throws<DnsResolutionException>();
+
+        await Assert.That(exception!.Host).IsEqualTo("missing.example");
+        await Assert.That(exception.Port).IsEqualTo(9092);
+        await Assert.That(exception.InnerException).IsTypeOf<SocketException>();
+    }
+
+    [Test]
+    public async Task KafkaConnection_ConnectAsync_SlowDnsConnectionDeadline_IsResolutionFailure()
+    {
+        await using var connection = new KafkaConnection(
+            "slow.example",
+            9092,
+            options: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromMilliseconds(10),
+                DnsResolver = new ClientDnsEndpointResolver(new BlockingDnsLookup())
+            });
+
+        await Assert.That(() => connection.ConnectAsync().AsTask())
+            .Throws<DnsResolutionException>();
+    }
+
+    [Test]
+    public async Task KafkaConnection_ConnectAsync_CallerCancelsDns_PreservesCancellation()
+    {
+        await using var connection = new KafkaConnection(
+            "slow.example",
+            9092,
+            options: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromSeconds(5),
+                DnsResolver = new ClientDnsEndpointResolver(new BlockingDnsLookup())
+            });
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(10));
+
+        await Assert.That(() => connection.ConnectAsync(cts.Token).AsTask())
+            .Throws<OperationCanceledException>();
+    }
+
     private static async Task<Socket> AcceptAndCompleteHandshakeAsync(TcpListener listener)
     {
         var socket = await listener.AcceptSocketAsync();
@@ -159,6 +211,30 @@ public sealed class ClientDnsLookupTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(_hostEntry);
+        }
+    }
+
+    private sealed class ThrowingDnsLookup : IDnsLookup
+    {
+        public ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken) =>
+            ValueTask.FromException<IPAddress[]>(new SocketException((int)SocketError.HostNotFound));
+
+        public ValueTask<IPHostEntry> GetHostEntryAsync(string host, CancellationToken cancellationToken) =>
+            ValueTask.FromException<IPHostEntry>(new SocketException((int)SocketError.HostNotFound));
+    }
+
+    private sealed class BlockingDnsLookup : IDnsLookup
+    {
+        public async ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return [];
+        }
+
+        public async ValueTask<IPHostEntry> GetHostEntryAsync(string host, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return new IPHostEntry();
         }
     }
 }

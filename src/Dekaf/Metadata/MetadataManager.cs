@@ -39,6 +39,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private volatile bool _initialized;
     private volatile bool _hasSuccessfulRefresh;
     private int _initializationAttempt;
+    private long _bootstrapResolutionStartedAt;
     private int _disposed;
     private readonly CancellationTokenSource _disposalCts = new();
     private readonly object _backgroundRefreshGate = new();
@@ -122,6 +123,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         _connectionPool = connectionPool;
         _options = options ?? new MetadataOptions();
         ConfigureMetadataClusterCheck(_connectionPool);
+        ArgumentOutOfRangeException.ThrowIfNegative(_options.BootstrapResolveTimeoutMs);
         ExponentialRetryBackoff.Validate(_options.RetryBackoffMs, _options.RetryBackoffMaxMs);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<MetadataManager>.Instance;
         if (connectionPool is IConnectionCapabilityObserverPool observerPool)
@@ -479,7 +481,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     private bool IsFatalMetadataError(Exception ex)
     {
-        if (ex is BrokerVersionException or AuthenticationException or AuthorizationException)
+        if (ex is BrokerVersionException
+            or AuthenticationException
+            or AuthorizationException
+            or BootstrapResolutionException)
             return true;
 
         // KafkaConnection instances can be disposed independently during pool churn. Only the
@@ -507,31 +512,62 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposalCts.Token);
             var initializationToken = linkedCts.Token;
-            var startedAt = Stopwatch.GetTimestamp();
+            var metadataStartedAt = Stopwatch.GetTimestamp();
+            var metadataFailureCount = 0;
+            var bootstrapFailureCount = 0;
 
             try
             {
-                for (var attempt = 0; ; attempt++)
+                while (true)
                 {
-                    Volatile.Write(ref _initializationAttempt, attempt + 1);
+                    Volatile.Write(
+                        ref _initializationAttempt,
+                        metadataFailureCount + bootstrapFailureCount + 1);
                     try
                     {
                         await RefreshMetadataAsync(initializationToken).ConfigureAwait(false);
                         break;
                     }
+                    catch (BootstrapResolutionPendingException ex) when (!initializationToken.IsCancellationRequested)
+                    {
+                        var bootstrapStartedAt = GetOrStartBootstrapResolutionTimer();
+                        var elapsed = Stopwatch.GetElapsedTime(bootstrapStartedAt);
+                        var remainingMs = _options.BootstrapResolveTimeoutMs - elapsed.TotalMilliseconds;
+                        if (remainingMs <= 0)
+                        {
+                            LogBootstrapResolutionExpired(elapsed.TotalMilliseconds);
+                            throw new BootstrapResolutionException(
+                                ex.UnresolvedBootstrapServers,
+                                TimeSpan.FromMilliseconds(_options.BootstrapResolveTimeoutMs),
+                                ex.InnerException ?? ex);
+                        }
+
+                        var backoffMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                            _options.RetryBackoffMs,
+                            _options.RetryBackoffMaxMs,
+                            ++bootstrapFailureCount);
+                        LogBootstrapResolutionRetry(ex, bootstrapFailureCount, backoffMs);
+                        await Task.Delay((int)Math.Min(backoffMs, remainingMs), initializationToken)
+                            .ConfigureAwait(false);
+
+                        // DNS resolution has its own KIP-909 budget. Once it recovers, connection,
+                        // authentication, and metadata failures receive their full normal budget.
+                        metadataFailureCount = 0;
+                        metadataStartedAt = Stopwatch.GetTimestamp();
+                    }
                     catch (Exception ex) when (!IsFatalMetadataError(ex) && !initializationToken.IsCancellationRequested)
                     {
-                        if (attempt >= _options.MaxInitRetries)
+                        if (metadataFailureCount >= _options.MaxInitRetries)
                         {
-                            LogMetadataInitializationAbandoned(ex, attempt + 1);
+                            LogMetadataInitializationAbandoned(ex, metadataFailureCount + 1);
                             throw;
                         }
 
-                        var elapsed = Stopwatch.GetElapsedTime(startedAt);
+                        var elapsed = Stopwatch.GetElapsedTime(metadataStartedAt);
                         var remainingMs = _options.InitTimeoutMs - elapsed.TotalMilliseconds;
                         if (remainingMs <= 0)
                         {
-                            LogMetadataInitializationAbandoned(ex, attempt + 1);
+                            LogMetadataInitializationAbandoned(ex, metadataFailureCount + 1);
                             throw new KafkaTimeoutException(
                                 TimeoutKind.Metadata,
                                 elapsed,
@@ -544,8 +580,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
                         var backoffMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                             _options.RetryBackoffMs,
                             _options.RetryBackoffMaxMs,
-                            attempt + 1);
-                        LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
+                            ++metadataFailureCount);
+                        LogMetadataInitializationFailed(ex, metadataFailureCount, backoffMs);
                         await Task.Delay((int)Math.Min(backoffMs, remainingMs), initializationToken).ConfigureAwait(false);
                     }
                 }
@@ -863,6 +899,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         Exception? lastException = null;
         var retryRequestedRebootstrap = false;
+        List<string>? unresolvedBootstrapServers = null;
+        var sawNonDnsFailure = false;
 
         if (_options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap
             && TryConsumeMetadataRebootstrapRequest())
@@ -973,7 +1011,22 @@ public sealed partial class MetadataManager : IAsyncDisposable
             {
                 LogMetadataRefreshFailed(ex, host, port);
                 lastException = ex;
+                if (!_hasSuccessfulRefresh && IsDnsResolutionFailure(ex))
+                {
+                    (unresolvedBootstrapServers ??= []).Add($"{host}:{port}");
+                }
+                else
+                {
+                    sawNonDnsFailure = true;
+                }
             }
+        }
+
+        if (!_hasSuccessfulRefresh
+            && unresolvedBootstrapServers is not null
+            && !sawNonDnsFailure)
+        {
+            throw new BootstrapResolutionPendingException(unresolvedBootstrapServers, lastException!);
         }
 
         // All known endpoints failed - try rebootstrap if configured
@@ -991,6 +1044,45 @@ public sealed partial class MetadataManager : IAsyncDisposable
             RequestMetadataRebootstrap();
 
         throw new InvalidOperationException("Failed to refresh metadata from any broker", lastException);
+    }
+
+    private long GetOrStartBootstrapResolutionTimer()
+    {
+        var startedAt = Volatile.Read(ref _bootstrapResolutionStartedAt);
+        if (startedAt != 0)
+            return startedAt;
+
+        var now = Stopwatch.GetTimestamp();
+        var existing = Interlocked.CompareExchange(ref _bootstrapResolutionStartedAt, now, 0);
+        return existing == 0 ? now : existing;
+    }
+
+    private static bool IsDnsResolutionFailure(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is DnsResolutionException)
+                return true;
+
+            if (current is AggregateException aggregateException)
+            {
+                foreach (var innerException in aggregateException.InnerExceptions)
+                {
+                    if (IsDnsResolutionFailure(innerException))
+                        return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private sealed class BootstrapResolutionPendingException(
+        IReadOnlyList<string> unresolvedBootstrapServers,
+        Exception innerException)
+        : Exception("No bootstrap server DNS name could be resolved.", innerException)
+    {
+        public IReadOnlyList<string> UnresolvedBootstrapServers { get; } = unresolvedBootstrapServers;
     }
 
     /// <summary>
@@ -1492,6 +1584,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Warning, Message = "Metadata initialization failed after {AttemptCount} attempts")]
     private partial void LogMetadataInitializationAbandoned(Exception ex, int attemptCount);
 
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Bootstrap DNS resolution attempt {Attempt} failed; retrying in {BackoffMs}ms")]
+    private partial void LogBootstrapResolutionRetry(Exception ex, int attempt, long backoffMs);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Unable to resolve any bootstrap server after {ElapsedMs}ms")]
+    private partial void LogBootstrapResolutionExpired(double elapsedMs);
+
     [LoggerMessage(Level = LogLevel.Debug, Message = "Refreshed metadata: {BrokerCount} brokers, {TopicCount} topics")]
     private partial void LogMetadataRefreshed(int brokerCount, int topicCount);
 
@@ -1591,6 +1689,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
 /// </summary>
 public sealed class MetadataOptions
 {
+    /// <summary>
+    /// Maximum time in milliseconds spent retrying initial bootstrap DNS resolution.
+    /// This KIP-909 budget is independent of metadata initialization and request timeouts.
+    /// Default is 120000 (2 minutes).
+    /// </summary>
+    public int BootstrapResolveTimeoutMs { get; init; } = 120000;
+
     /// <summary>
     /// Interval for background metadata refresh.
     /// Metadata is never considered stale - it refreshes periodically and swaps in silently.

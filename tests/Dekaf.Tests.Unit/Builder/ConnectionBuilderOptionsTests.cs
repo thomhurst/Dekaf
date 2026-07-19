@@ -196,6 +196,55 @@ public sealed class ConnectionBuilderOptionsTests
     }
 
     [Test]
+    public async Task Builders_WithBootstrapResolveTimeout_PreserveCommonSetting()
+    {
+        var timeout = TimeSpan.FromSeconds(7);
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithBootstrapResolveTimeout(timeout)
+            .Build();
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("consumer-group")
+            .WithBootstrapResolveTimeout(timeout)
+            .Build();
+        await using var shareConsumer = Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("share-group")
+            .WithBootstrapResolveTimeout(timeout)
+            .Build();
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers("localhost:9092")
+            .WithBootstrapResolveTimeout(timeout)
+            .Build();
+        await using var client = Kafka.Connect("localhost:9092", builder => builder
+            .WithBootstrapResolveTimeout(timeout));
+        await using var clientProducer = client.CreateProducer<string, string>().Build();
+
+        await AssertBootstrapResolveTimeout(GetPrivateOptions<ProducerOptions>(producer), 7000);
+        await AssertBootstrapResolveTimeout(GetPrivateOptions<ConsumerOptions>(consumer), 7000);
+        await AssertBootstrapResolveTimeout(GetPrivateOptions<Dekaf.ShareConsumer.ShareConsumerOptions>(shareConsumer), 7000);
+        await AssertBootstrapResolveTimeout(GetPrivateOptions<AdminClientOptions>(admin), 7000);
+        await AssertBootstrapResolveTimeout(GetPrivateOptions<ProducerOptions>(clientProducer), 7000);
+    }
+
+    [Test]
+    public async Task ClientOptions_BootstrapResolveTimeout_DefaultsTo120000()
+    {
+        await AssertBootstrapResolveTimeout(new ProducerOptions { BootstrapServers = ["localhost:9092"] }, 120000);
+        await AssertBootstrapResolveTimeout(new ConsumerOptions { BootstrapServers = ["localhost:9092"] }, 120000);
+        await AssertBootstrapResolveTimeout(
+            new Dekaf.ShareConsumer.ShareConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "share-group"
+            },
+            120000);
+        await AssertBootstrapResolveTimeout(new AdminClientOptions { BootstrapServers = ["localhost:9092"] }, 120000);
+    }
+
+    [Test]
     public async Task BuilderConnectionOptions_CanDisableTcpKeepAlive()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
@@ -223,6 +272,8 @@ public sealed class ConnectionBuilderOptionsTests
             .Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => builder.WithRemoteCertificateValidationCallback(null!))
             .Throws<ArgumentNullException>();
+        await Assert.That(() => builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(-1)))
+            .Throws<ArgumentOutOfRangeException>();
     }
 
     private static async Task AssertConnectionOptions(
@@ -267,5 +318,11 @@ public sealed class ConnectionBuilderOptionsTests
         var maximum = (int)optionsType.GetProperty("RetryBackoffMaxMs")!.GetValue(options)!;
         await Assert.That(initial).IsEqualTo(123);
         await Assert.That(maximum).IsEqualTo(456);
+    }
+
+    private static async Task AssertBootstrapResolveTimeout(object options, int expected)
+    {
+        var value = (int)options.GetType().GetProperty("BootstrapResolveTimeoutMs")!.GetValue(options)!;
+        await Assert.That(value).IsEqualTo(expected);
     }
 }

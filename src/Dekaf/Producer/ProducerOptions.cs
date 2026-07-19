@@ -621,6 +621,12 @@ public sealed class ProducerOptions
     /// </summary>
     public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
 
+    /// <summary>
+    /// Maximum time in milliseconds spent retrying initial bootstrap DNS resolution.
+    /// Equivalent to Kafka's <c>bootstrap.resolve.timeout.ms</c>. Default is 120000.
+    /// </summary>
+    public int BootstrapResolveTimeoutMs { get; init; } = 120000;
+
     internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
 
     /// <summary>

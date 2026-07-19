@@ -108,7 +108,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             {
                 MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
                 RetryBackoffMs = options.RetryBackoffMs,
-                RetryBackoffMaxMs = options.RetryBackoffMaxMs
+                RetryBackoffMaxMs = options.RetryBackoffMaxMs,
+                BootstrapResolveTimeoutMs = options.BootstrapResolveTimeoutMs
             },
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 

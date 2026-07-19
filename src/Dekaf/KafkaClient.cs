@@ -117,6 +117,7 @@ public sealed class KafkaClientBuilder
     private bool _metadataClusterCheckEnabled = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
+    private int _bootstrapResolveTimeoutMs = 120000;
     private ulong? _memoryBudgetBytes;
     private ILoggerFactory? _loggerFactory;
 
@@ -541,6 +542,18 @@ public sealed class KafkaClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the KIP-909 deadline for resolving an initial bootstrap server DNS name.
+    /// </summary>
+    public KafkaClientBuilder WithBootstrapResolveTimeout(TimeSpan timeout)
+    {
+        _bootstrapResolveTimeoutMs = ConnectionOptionValidation.ToNonNegativeMilliseconds(
+            timeout,
+            nameof(timeout),
+            "Bootstrap resolution timeout cannot be negative");
+        return this;
+    }
+
     public KafkaClientBuilder WithMemoryBudget(ulong bytes)
     {
         ArgumentOutOfRangeException.ThrowIfZero(bytes);
@@ -608,6 +621,7 @@ public sealed class KafkaClientBuilder
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
+            BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
             MemoryBudgetBytes = _memoryBudgetBytes,
             LoggerFactory = _loggerFactory
         };
@@ -653,6 +667,7 @@ internal sealed class KafkaClientOptions
     public bool MetadataClusterCheckEnabled { get; init; } = true;
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; }
     public ClientDnsLookup ClientDnsLookup { get; init; }
+    public int BootstrapResolveTimeoutMs { get; init; } = 120000;
     public ulong? MemoryBudgetBytes { get; init; }
     public ILoggerFactory? LoggerFactory { get; init; }
 }
@@ -675,6 +690,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         int producerMaxConnectionsPerBroker,
         int retryBackoffMs,
         int retryBackoffMaxMs,
+        int bootstrapResolveTimeoutMs,
         SaslMechanism saslMechanism,
         bool usesDynamicSaslCredentials)
     {
@@ -689,6 +705,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         ProducerMaxConnectionsPerBroker = producerMaxConnectionsPerBroker;
         RetryBackoffMs = retryBackoffMs;
         RetryBackoffMaxMs = retryBackoffMaxMs;
+        BootstrapResolveTimeoutMs = bootstrapResolveTimeoutMs;
         SaslMechanism = saslMechanism;
         UsesDynamicSaslCredentials = usesDynamicSaslCredentials;
     }
@@ -704,6 +721,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
     public int ProducerMaxConnectionsPerBroker { get; }
     public int RetryBackoffMs { get; }
     public int RetryBackoffMaxMs { get; }
+    public int BootstrapResolveTimeoutMs { get; }
     public SaslMechanism SaslMechanism { get; }
     public bool UsesDynamicSaslCredentials { get; }
 
@@ -740,6 +758,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = options.MetadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = options.ClientDnsLookup,
+            BootstrapResolveTimeoutMs = options.BootstrapResolveTimeoutMs,
             RetryBackoffMs = options.RetryBackoffMs,
             RetryBackoffMaxMs = options.RetryBackoffMaxMs
         };
@@ -763,6 +782,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             options.ProducerMaxConnectionsPerBroker,
             options.RetryBackoffMs,
             options.RetryBackoffMaxMs,
+            options.BootstrapResolveTimeoutMs,
             options.SaslMechanism,
             options.SaslCredentialProvider is not null);
     }

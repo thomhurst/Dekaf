@@ -78,6 +78,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithBootstrapServers(...)` | `BootstrapServers` | Server list (prefer `params string[]` in code; comma-separated string and JSON arrays are also supported) |
 | `WithClientId(...)` | `ClientId` | String |
 | `WithClientDnsLookup(...)` | `ClientDnsLookup` | `UseAllDnsIps` or `ResolveCanonicalBootstrapServersOnly` |
+| `WithBootstrapResolveTimeout(...)` | `BootstrapResolveTimeoutMs` | Milliseconds; default 120000 |
 | `WithGroupId(...)` | `GroupId` | String |
 | `WithGroupInstanceId(...)` | `GroupInstanceId` | String |
 | `WithGroupRemoteAssignor(...)` | `GroupRemoteAssignor` | Common values: `uniform`, `range` |
@@ -423,6 +424,7 @@ For transactional reads:
 | `WithBootstrapServers` | (required) | Broker addresses |
 | `WithClientId` | "dekaf-consumer" | Client identifier |
 | `WithClientDnsLookup` | UseAllDnsIps | DNS lookup mode |
+| `WithBootstrapResolveTimeout` | 120000ms | Initial bootstrap DNS retry deadline |
 | `WithGroupId` | null | Consumer group ID |
 | `WithGroupInstanceId` | null | Static membership ID |
 | `WithOffsetCommitMode` | Auto | Offset management mode |

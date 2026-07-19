@@ -258,6 +258,40 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    public async Task TypedClientOptions_PreserveBootstrapResolveTimeout()
+    {
+        var services = new ServiceCollection();
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(new ProducerOptions
+            {
+                BootstrapServers = ["broker1:9092"],
+                BootstrapResolveTimeoutMs = 11000
+            });
+            builder.AddConsumer<string, string>(new ConsumerOptions
+            {
+                BootstrapServers = ["broker1:9092"],
+                GroupId = "group",
+                BootstrapResolveTimeoutMs = 12000
+            });
+            builder.AddAdminClient(new AdminClientOptions
+            {
+                BootstrapServers = ["broker1:9092"],
+                BootstrapResolveTimeoutMs = 13000
+            });
+        });
+
+        await using var provider = services.BuildServiceProvider();
+
+        await Assert.That(GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>())
+            .BootstrapResolveTimeoutMs).IsEqualTo(11000);
+        await Assert.That(GetConsumerOptions(provider.GetRequiredService<IKafkaConsumer<string, string>>())
+            .BootstrapResolveTimeoutMs).IsEqualTo(12000);
+        await Assert.That(GetAdminOptions(provider.GetRequiredService<IAdminClient>())
+            .BootstrapResolveTimeoutMs).IsEqualTo(13000);
+    }
+
+    [Test]
     public async Task AddProducer_WithTypedOptionsAndIdempotenceDisabled_UsesNonIdempotentMaxInFlightDefault()
     {
         var services = new ServiceCollection();
@@ -690,7 +724,8 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:MetadataRecoveryStrategy"] = "None",
             ["Kafka:Producers:Orders:MetadataClusterCheckEnabled"] = "false",
             ["Kafka:Producers:Orders:MetadataRecoveryRebootstrapTriggerMs"] = "60000",
-            ["Kafka:Producers:Orders:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly"
+            ["Kafka:Producers:Orders:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly",
+            ["Kafka:Producers:Orders:BootstrapResolveTimeoutMs"] = "11000"
         });
 
         services.AddDekaf(builder =>
@@ -745,6 +780,7 @@ public class DependencyInjectionTests
         await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(60000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
+        await Assert.That(options.BootstrapResolveTimeoutMs).IsEqualTo(11000);
     }
 
     [Test]
@@ -926,6 +962,7 @@ public class DependencyInjectionTests
             ["Kafka:Consumers:Orders:MetadataClusterCheckEnabled"] = "false",
             ["Kafka:Consumers:Orders:MetadataRecoveryRebootstrapTriggerMs"] = "90000",
             ["Kafka:Consumers:Orders:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly",
+            ["Kafka:Consumers:Orders:BootstrapResolveTimeoutMs"] = "12000",
             ["Kafka:Consumers:Orders:PrefetchPipelineDepth"] = "4",
             ["Kafka:Consumers:Orders:ConnectionsPerBroker"] = "2",
             ["Kafka:Consumers:Orders:EnableAdaptiveConnections"] = "false",
@@ -989,6 +1026,7 @@ public class DependencyInjectionTests
         await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(90000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
+        await Assert.That(options.BootstrapResolveTimeoutMs).IsEqualTo(12000);
         await Assert.That(options.PrefetchPipelineDepth).IsEqualTo(4);
         await Assert.That(options.ConnectionsPerBroker).IsEqualTo(2);
         await Assert.That(options.EnableAdaptiveConnections).IsFalse();
@@ -1110,7 +1148,8 @@ public class DependencyInjectionTests
             ["Kafka:Admin:MetadataRecoveryStrategy"] = "None",
             ["Kafka:Admin:MetadataClusterCheckEnabled"] = "false",
             ["Kafka:Admin:MetadataRecoveryRebootstrapTriggerMs"] = "120000",
-            ["Kafka:Admin:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly"
+            ["Kafka:Admin:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly",
+            ["Kafka:Admin:BootstrapResolveTimeoutMs"] = "13000"
         });
 
         services.AddDekaf(builder =>
@@ -1137,6 +1176,7 @@ public class DependencyInjectionTests
         await Assert.That(options.MetadataClusterCheckEnabled).IsFalse();
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(120000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);
+        await Assert.That(options.BootstrapResolveTimeoutMs).IsEqualTo(13000);
     }
 
     #endregion

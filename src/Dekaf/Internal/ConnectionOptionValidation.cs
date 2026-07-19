@@ -11,6 +11,15 @@ internal static class ConnectionOptionValidation
         return timeout;
     }
 
+    public static int ToNonNegativeMilliseconds(TimeSpan timeout, string paramName, string message)
+    {
+        if (timeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(paramName, message);
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, paramName);
+        return (int)timeout.TotalMilliseconds;
+    }
+
     public static void ValidateTcpKeepAlive(TimeSpan time, TimeSpan interval, int retryCount)
     {
         ValidatePositiveTimeout(time, nameof(time), "TCP keepalive time must be positive");

@@ -187,6 +187,63 @@ public enum TimeoutKind
 }
 
 /// <summary>
+/// Exception thrown when no bootstrap server name can be resolved before the configured
+/// KIP-909 bootstrap resolution deadline. This error is non-retriable.
+/// </summary>
+public sealed class BootstrapResolutionException : KafkaException
+{
+    /// <summary>
+    /// Creates a bootstrap resolution exception.
+    /// </summary>
+    public BootstrapResolutionException(
+        IReadOnlyList<string> unresolvedBootstrapServers,
+        TimeSpan timeout)
+        : base(CreateMessage(unresolvedBootstrapServers, timeout))
+    {
+        UnresolvedBootstrapServers = CopyServers(unresolvedBootstrapServers);
+        Timeout = timeout;
+    }
+
+    /// <summary>
+    /// Creates a bootstrap resolution exception with the last DNS failure.
+    /// </summary>
+    public BootstrapResolutionException(
+        IReadOnlyList<string> unresolvedBootstrapServers,
+        TimeSpan timeout,
+        Exception innerException)
+        : base(CreateMessage(unresolvedBootstrapServers, timeout), innerException)
+    {
+        UnresolvedBootstrapServers = CopyServers(unresolvedBootstrapServers);
+        Timeout = timeout;
+    }
+
+    /// <summary>
+    /// Bootstrap server endpoints that remained unresolved.
+    /// </summary>
+    public IReadOnlyList<string> UnresolvedBootstrapServers { get; }
+
+    /// <summary>
+    /// Configured bootstrap DNS resolution timeout.
+    /// </summary>
+    public TimeSpan Timeout { get; }
+
+    private static ReadOnlyCollection<string> CopyServers(IReadOnlyList<string> unresolvedBootstrapServers)
+        => new(unresolvedBootstrapServers.ToArray());
+
+    private static string CreateMessage(IReadOnlyList<string> unresolvedBootstrapServers, TimeSpan timeout)
+    {
+        ArgumentNullException.ThrowIfNull(unresolvedBootstrapServers);
+        if (unresolvedBootstrapServers.Count == 0)
+            throw new ArgumentException("At least one unresolved bootstrap server is required.", nameof(unresolvedBootstrapServers));
+        if (timeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Bootstrap resolution timeout cannot be negative.");
+
+        return $"Could not resolve bootstrap server DNS within {timeout.TotalMilliseconds}ms: " +
+               string.Join(", ", unresolvedBootstrapServers);
+    }
+}
+
+/// <summary>
 /// Exception thrown when a Kafka operation times out.
 /// Provides structured context about the kind of timeout, how long elapsed,
 /// and what the configured timeout was.

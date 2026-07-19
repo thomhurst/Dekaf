@@ -82,6 +82,14 @@ internal sealed class ClientDnsEndpointResolver
 
 internal readonly record struct ClientDnsEndpoint(IPAddress Address, int Port, string TargetHost);
 
+internal sealed class DnsResolutionException(string host, int port, Exception? innerException = null)
+    : Exception($"DNS resolution failed for host '{host}:{port}'.", innerException)
+{
+    public string Host { get; } = host;
+
+    public int Port { get; } = port;
+}
+
 internal interface IDnsLookup
 {
     ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken);

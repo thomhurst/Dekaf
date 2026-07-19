@@ -82,7 +82,8 @@ public sealed class AdminClient : IAdminClient
             MetadataRecoveryStrategy = options.MetadataRecoveryStrategy,
             MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
             RetryBackoffMs = options.RetryBackoffMs,
-            RetryBackoffMaxMs = options.RetryBackoffMaxMs
+            RetryBackoffMaxMs = options.RetryBackoffMaxMs,
+            BootstrapResolveTimeoutMs = options.BootstrapResolveTimeoutMs
         };
         _metadataManager = new MetadataManager(
             _connectionPool,
@@ -4877,6 +4878,12 @@ public sealed class AdminClientOptions
     public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
 
     /// <summary>
+    /// Maximum time in milliseconds spent retrying initial bootstrap DNS resolution.
+    /// Equivalent to Kafka's <c>bootstrap.resolve.timeout.ms</c>. Default is 120000.
+    /// </summary>
+    public int BootstrapResolveTimeoutMs { get; init; } = 120000;
+
+    /// <summary>
     /// Application metrics registered for broker telemetry subscriptions.
     /// </summary>
     public IReadOnlyList<ApplicationTelemetryMetric> ApplicationMetrics { get; init; } = [];
@@ -4920,6 +4927,7 @@ public sealed class AdminClientBuilder
     private bool _metadataClusterCheckEnabled = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
+    private int _bootstrapResolveTimeoutMs = 120000;
     private TimeSpan? _metadataMaxAge;
     private readonly Dictionary<string, ApplicationTelemetryMetric> _applicationMetrics = new(StringComparer.Ordinal);
 
@@ -4934,6 +4942,7 @@ public sealed class AdminClientBuilder
         _loggerFactory = clientInfrastructure.LoggerFactory;
         _retryBackoffMs = clientInfrastructure.RetryBackoffMs;
         _retryBackoffMaxMs = clientInfrastructure.RetryBackoffMaxMs;
+        _bootstrapResolveTimeoutMs = clientInfrastructure.BootstrapResolveTimeoutMs;
     }
 
     public AdminClientBuilder WithBootstrapServers(string servers)
@@ -5305,6 +5314,19 @@ public sealed class AdminClientBuilder
     }
 
     /// <summary>
+    /// Sets the KIP-909 deadline for resolving an initial bootstrap server DNS name.
+    /// </summary>
+    public AdminClientBuilder WithBootstrapResolveTimeout(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _bootstrapResolveTimeoutMs = ConnectionOptionValidation.ToNonNegativeMilliseconds(
+            timeout,
+            nameof(timeout),
+            "Bootstrap resolution timeout cannot be negative");
+        return this;
+    }
+
+    /// <summary>
     /// Sets the maximum age of metadata before it is refreshed.
     /// This controls how frequently the client refreshes its view of the cluster topology.
     /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
@@ -5528,6 +5550,7 @@ public sealed class AdminClientBuilder
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
+            BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
             ApplicationMetrics = _applicationMetrics.Count > 0 ? _applicationMetrics.Values.ToArray() : []
         };
 
@@ -5538,6 +5561,7 @@ public sealed class AdminClientBuilder
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
+            BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
             RetryBackoffMs = _retryBackoffMs,
             RetryBackoffMaxMs = _retryBackoffMaxMs
         };
