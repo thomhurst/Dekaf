@@ -27,10 +27,9 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     private readonly ISerde<string> _bypassSerde;
     private readonly int _configuredMaxCachedBytes;
     private readonly int _maxCachedEntries;
-    private readonly ConcurrentDictionary<Hash128Key, string> _cache = new();
+    private CacheGeneration _cache = new();
     private ISerde<string> _inner;
     private int _maxCachedBytes;
-    private int _cacheCount;
     private int _admissionsRemaining = AdmissionProbeLimit;
     private int _probeRemaining;
     private int _probeHits;
@@ -74,20 +73,22 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     {
         var span = data.Span;
         var hash = ComputeHash(span);
+        var cache = Volatile.Read(ref _cache);
 
-        if (_cache.TryGetValue(hash, out var cachedValue))
+        if (cache.Entries.TryGetValue(hash, out var cachedValue))
             return cachedValue;
 
         var result = _inner.Deserialize(data, context);
 
         // Soft cap: concurrent threads may each read count < max and add simultaneously,
         // transiently overshooting by the number of racing threads. Bounded and acceptable.
-        if (Volatile.Read(ref _cacheCount) < _maxCachedEntries)
+        if (Volatile.Read(ref cache.Count) < _maxCachedEntries)
         {
-            if (_cache.TryAdd(hash, result))
+            if (cache.Entries.TryAdd(hash, result))
             {
-                Interlocked.Increment(ref _cacheCount);
-                ObserveAdmission();
+                Interlocked.Increment(ref cache.Count);
+                if (ReferenceEquals(cache, Volatile.Read(ref _cache)))
+                    ObserveAdmission();
             }
         }
 
@@ -115,17 +116,18 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     private string DeserializeWhileProbing(ReadOnlyMemory<byte> data, SerializationContext context)
     {
         var hash = ComputeHash(data.Span);
-        if (_cache.TryGetValue(hash, out var cachedValue))
+        var cache = Volatile.Read(ref _cache);
+        if (cache.Entries.TryGetValue(hash, out var cachedValue))
         {
             ObserveProbeLookup(hit: true);
             return cachedValue;
         }
 
         var result = _configuredInner.Deserialize(data, context);
-        if (Volatile.Read(ref _cacheCount) < _maxCachedEntries)
+        if (Volatile.Read(ref cache.Count) < _maxCachedEntries)
         {
-            if (_cache.TryAdd(hash, result))
-                Interlocked.Increment(ref _cacheCount);
+            if (cache.Entries.TryAdd(hash, result))
+                Interlocked.Increment(ref cache.Count);
         }
 
         ObserveProbeLookup(hit: false);
@@ -201,10 +203,9 @@ internal sealed class CachingStringDeserializer : ISerde<string>
 
     private void StartBypass()
     {
-        // A full reuse window without a hit means the retained entries are cold. Drop them
-        // before bypassing so the next probe has capacity to learn a new repetitive set.
-        _cache.Clear();
-        Volatile.Write(ref _cacheCount, 0);
+        // A full reuse window without a hit means the retained entries are cold. Retire
+        // the generation in O(1); clearing every entry here would stall Deserialize.
+        Interlocked.Exchange(ref _cache, new CacheGeneration());
         _bypassRemaining = BypassInterval;
         _inner = _bypassSerde;
     }
@@ -227,6 +228,12 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     }
 
     private readonly record struct Hash128Key(ulong Low, ulong High);
+
+    private sealed class CacheGeneration
+    {
+        public readonly ConcurrentDictionary<Hash128Key, string> Entries = new();
+        public int Count;
+    }
 
     private sealed class ProbeSerde(CachingStringDeserializer owner) : ISerde<string>
     {

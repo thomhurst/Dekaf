@@ -53,8 +53,12 @@ public class CachingStringDeserializerTests
             "_cache",
             BindingFlags.NonPublic | BindingFlags.Instance)
             ?? throw new InvalidOperationException("_cache field not found.");
+        var entriesField = cacheField.FieldType.GetField(
+            "Entries",
+            BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("Cache entries field not found.");
 
-        var keyType = cacheField.FieldType.GetGenericArguments()[0];
+        var keyType = entriesField.FieldType.GetGenericArguments()[0];
 
         var keyWords = keyType
             .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
