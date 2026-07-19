@@ -2067,6 +2067,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         // the try block (CS1626), so we build the result first then yield below.
                         var readingProtocolData = true;
                         var offset = -1L;
+                        var runningInterceptor = false;
                         try
                         {
                             if (!pending.MoveNext())
@@ -2152,7 +2153,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             // Uses hoisted hasInterceptors to skip method call when no interceptors
                             if (hasInterceptors)
                             {
+                                runningInterceptor = true;
                                 nextResult = ApplyOnConsumeInterceptors(nextResult);
+                                runningInterceptor = false;
 
                                 // An interceptor can run long enough for background prefetch to
                                 // publish a divergence reset. Do not mark that stale record consumed.
@@ -2186,9 +2189,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                             break;
                         }
-                        catch (Exception) when (!readingProtocolData)
+                        catch (Exception ex) when (!readingProtocolData)
                         {
-                            RewindAfterDeliveryFailure(pending, offset);
+                            ThrowAfterDeliveryFailure(
+                                pending, offset, runningInterceptor, hasAsyncDeserializers, ex);
                             throw;
                         }
 
@@ -4260,6 +4264,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     var readingProtocolData = true;
                     var offset = -1L;
+                    var runningInterceptor = false;
                     try
                     {
                         if (!pending.MoveNext())
@@ -4317,7 +4322,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (hasInterceptors)
                         {
+                            runningInterceptor = true;
                             result = ApplyOnConsumeInterceptors(result);
+                            runningInterceptor = false;
 
                             if (HasPendingFetchClear(pending.TopicPartition))
                                 break;
@@ -4343,9 +4350,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         LogRecordParsingError(ex, pending.Topic, pending.PartitionIndex);
                         break;
                     }
-                    catch (Exception) when (!readingProtocolData)
+                    catch (Exception ex) when (!readingProtocolData)
                     {
-                        RewindAfterDeliveryFailure(pending, offset);
+                        ThrowAfterDeliveryFailure(
+                            pending, offset, runningInterceptor, hasAsyncDeserializers: false, ex);
                         throw;
                     }
                 }
@@ -4527,6 +4535,38 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// semantics mirror the eager ConsumeResult constructor: null keys skip the deserializer,
     /// null values invoke it with empty data and <c>IsNull = true</c>.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ThrowAfterDeliveryFailure(
+        PendingFetchData pending,
+        long offset,
+        bool runningInterceptor,
+        bool hasAsyncDeserializers,
+        Exception exception)
+    {
+        if (!runningInterceptor && !hasAsyncDeserializers && exception is not OperationCanceledException)
+        {
+            ref readonly var record = ref pending.CurrentRecord;
+            exception = ConsumeResult<TKey, TValue>.CreateDeserializationException(
+                ConsumeResult<TKey, TValue>.LastDeserializationOrigin,
+                pending.Topic,
+                pending.PartitionIndex,
+                offset,
+                pending.CurrentBaseTimestamp + record.TimestampDelta,
+                pending.CurrentTimestampType,
+                record.Key,
+                record.IsKeyNull,
+                record.Value,
+                record.IsValueNull,
+                headers: null,
+                record.Headers,
+                record.HeaderCount,
+                exception);
+        }
+
+        RewindAfterDeliveryFailure(pending, offset);
+        ExceptionDispatchInfo.Capture(exception).Throw();
+    }
+
     private async ValueTask<ConsumeResult<TKey, TValue>> CreateResultWithAsyncDeserializationAsync(
         PendingFetchData pending,
         long offset,
@@ -4553,9 +4593,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 Component = SerializationComponent.Key,
                 IsNull = false
             };
-            key = _asyncKeyDeserializer is not null
-                ? await _asyncKeyDeserializer.DeserializeAsync(keyData, keyContext, cancellationToken).ConfigureAwait(false)
-                : _keyDeserializer.Deserialize(keyData, keyContext);
+            try
+            {
+                key = _asyncKeyDeserializer is not null
+                    ? await _asyncKeyDeserializer.DeserializeAsync(keyData, keyContext, cancellationToken).ConfigureAwait(false)
+                    : _keyDeserializer.Deserialize(keyData, keyContext);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new RecordDeserializationException(
+                    DeserializationExceptionOrigin.Key,
+                    new TopicPartition(topic, partition),
+                    offset,
+                    timestampMs,
+                    timestampType,
+                    keyData,
+                    isKeyNull,
+                    valueData,
+                    isValueNull,
+                    pooledHeaders,
+                    pooledHeaderCount,
+                    ex);
+            }
         }
 
         var valueContext = new SerializationContext
@@ -4565,9 +4624,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             IsNull = isValueNull
         };
         var valueBytes = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
-        var value = _asyncValueDeserializer is not null
-            ? await _asyncValueDeserializer.DeserializeAsync(valueBytes, valueContext, cancellationToken).ConfigureAwait(false)
-            : _valueDeserializer.Deserialize(valueBytes, valueContext);
+        TValue value;
+        try
+        {
+            value = _asyncValueDeserializer is not null
+                ? await _asyncValueDeserializer.DeserializeAsync(valueBytes, valueContext, cancellationToken).ConfigureAwait(false)
+                : _valueDeserializer.Deserialize(valueBytes, valueContext);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new RecordDeserializationException(
+                DeserializationExceptionOrigin.Value,
+                new TopicPartition(topic, partition),
+                offset,
+                timestampMs,
+                timestampType,
+                keyData,
+                isKeyNull,
+                valueData,
+                isValueNull,
+                pooledHeaders,
+                pooledHeaderCount,
+                ex);
+        }
 
         return new ConsumeResult<TKey, TValue>(
             topic,

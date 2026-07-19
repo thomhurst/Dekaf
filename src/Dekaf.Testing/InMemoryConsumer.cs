@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Serialization;
 using Dekaf.Telemetry;
 
@@ -711,20 +712,41 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
     private ConsumeResult<TKey, TValue> ToConsumeResult(TopicPartition topicPartition, InMemoryRecord record)
     {
-        return new ConsumeResult<TKey, TValue>(
-            topic: topicPartition.Topic,
-            partition: topicPartition.Partition,
-            offset: record.Offset,
-            keyData: record.Key,
-            isKeyNull: record.IsKeyNull,
-            valueData: record.Value,
-            isValueNull: record.IsValueNull,
-            headers: record.Headers,
-            timestampMs: record.TimestampMs,
-            timestampType: TimestampType.CreateTime,
-            leaderEpoch: null,
-            keyDeserializer: _keyDeserializer,
-            valueDeserializer: _valueDeserializer);
+        try
+        {
+            return new ConsumeResult<TKey, TValue>(
+                topic: topicPartition.Topic,
+                partition: topicPartition.Partition,
+                offset: record.Offset,
+                keyData: record.Key,
+                isKeyNull: record.IsKeyNull,
+                valueData: record.Value,
+                isValueNull: record.IsValueNull,
+                headers: record.Headers,
+                timestampMs: record.TimestampMs,
+                timestampType: TimestampType.CreateTime,
+                leaderEpoch: null,
+                keyDeserializer: _keyDeserializer,
+                valueDeserializer: _valueDeserializer);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw ConsumeResult<TKey, TValue>.CreateDeserializationException(
+                ConsumeResult<TKey, TValue>.LastDeserializationOrigin,
+                topicPartition.Topic,
+                topicPartition.Partition,
+                record.Offset,
+                record.TimestampMs,
+                TimestampType.CreateTime,
+                record.Key,
+                record.IsKeyNull,
+                record.Value,
+                record.IsValueNull,
+                record.Headers,
+                pooledHeaders: null,
+                pooledHeaderCount: 0,
+                ex);
+        }
     }
 
     private void ReplaceAssignment(IEnumerable<TopicPartition> partitions)

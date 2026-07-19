@@ -1,5 +1,8 @@
 using System.Buffers;
+using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Consumer.DeadLetter;
+using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 
@@ -182,8 +185,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             {
                 // Should not reach here - exception expected before yield
             }
-        }).Throws<InvalidOperationException>()
-          .WithMessage("Deserializer intentionally threw for test");
+        }).Throws<RecordDeserializationException>();
     }
 
     [Test]
@@ -191,6 +193,8 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         // Arrange - produce two messages: one that triggers the error and one normal
         var topic = await KafkaContainer.CreateTestTopicAsync();
+        var deadLetterTopic = await KafkaContainer.CreateTestTopicAsync();
+        var failedTimestamp = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_123L);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -203,7 +207,11 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
         {
             Topic = topic,
             Key = "key-bad",
-            Value = ThrowingValueDeserializer.TriggerValue
+            Value = ThrowingValueDeserializer.TriggerValue,
+            Timestamp = failedTimestamp,
+            Headers = new Headers()
+                .Add("trace-id", "abc123")
+                .Add("nullable", (byte[]?)null)
         }, CancellationToken.None);
 
         // Message 2: normal message
@@ -227,7 +235,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
 
         // First consume attempt - should throw on the bad message
         using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var caughtException = false;
+        RecordDeserializationException? caughtException = null;
 
         try
         {
@@ -236,12 +244,43 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
                 // Should throw before yielding
             }
         }
-        catch (InvalidOperationException)
+        catch (RecordDeserializationException exception)
         {
-            caughtException = true;
+            caughtException = exception;
         }
 
-        await Assert.That(caughtException).IsTrue();
+        await Assert.That(caughtException).IsNotNull();
+        var failedRecord = caughtException!;
+        await Assert.That(failedRecord.Origin).IsEqualTo(DeserializationExceptionOrigin.Value);
+        await Assert.That(failedRecord.TopicPartition).IsEqualTo(tp);
+        await Assert.That(failedRecord.Offset).IsEqualTo(0L);
+        await Assert.That(failedRecord.Timestamp).IsEqualTo(failedTimestamp);
+        await Assert.That(failedRecord.KeyData).IsEquivalentTo("key-bad"u8.ToArray());
+        await Assert.That(failedRecord.ValueData)
+            .IsEquivalentTo(Encoding.UTF8.GetBytes(ThrowingValueDeserializer.TriggerValue));
+        await Assert.That(failedRecord.Headers[0].Key).IsEqualTo("trace-id");
+        await Assert.That(failedRecord.Headers[1].IsValueNull).IsTrue();
+        await Assert.That(failedRecord.InnerException).IsTypeOf<InvalidOperationException>();
+
+        await using (var deadLetterProducer = await Kafka.CreateProducer<byte[]?, byte[]?>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-deser-dlq")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync())
+        {
+            var deadLetterMetadata = await deadLetterProducer.ProduceAsync(
+                new ProducerMessage<byte[]?, byte[]?>
+                {
+                    Topic = deadLetterTopic,
+                    Key = failedRecord.KeyData,
+                    Value = failedRecord.ValueData,
+                    Timestamp = failedRecord.Timestamp,
+                    Headers = DeadLetterHeaders.Build(failedRecord, 1, includeException: true)
+                },
+                CancellationToken.None);
+
+            await Assert.That(deadLetterMetadata.Offset).IsEqualTo(0L);
+        }
 
         // Seek past the bad message to offset 1 (the normal message)
         consumer.Seek(new TopicPartitionOffset(topic, 0, 1));

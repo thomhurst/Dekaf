@@ -1,5 +1,6 @@
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
+using Dekaf.Errors;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Consumer.DeadLetter;
@@ -108,6 +109,30 @@ public class DeadLetterHeadersTests
         await Assert.That(headers.GetFirstAsString(DeadLetterHeaders.SourceTopicKey)).IsEqualTo("orders");
         await Assert.That(headers.GetFirstAsString(DeadLetterHeaders.SourcePartitionKey)).IsEqualTo("3");
         await Assert.That(headers.GetFirstAsString(DeadLetterHeaders.SourceOffsetKey)).IsEqualTo("99");
+    }
+
+    [Test]
+    public async Task BuildHeaders_FromDeserializationException_PreservesFailedRecordContext()
+    {
+        var exception = new RecordDeserializationException(
+            DeserializationExceptionOrigin.Value,
+            new TopicPartition("orders", 3),
+            99,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            TimestampType.CreateTime,
+            keyData: null,
+            valueData: new byte[] { 1, 2, 3 },
+            headers: [new Header("trace-id", "abc123"u8.ToArray())],
+            new InvalidDataException("bad value"));
+
+        var headers = DeadLetterHeaders.Build(exception, 2, includeException: true);
+
+        await Assert.That(headers.GetFirstAsString("trace-id")).IsEqualTo("abc123");
+        await Assert.That(headers.GetFirstAsString(DeadLetterHeaders.SourceTopicKey)).IsEqualTo("orders");
+        await Assert.That(headers.GetFirstAsString(DeadLetterHeaders.SourcePartitionKey)).IsEqualTo("3");
+        await Assert.That(headers.GetFirstAsString(DeadLetterHeaders.SourceOffsetKey)).IsEqualTo("99");
+        await Assert.That(headers.GetFirstAsString(DeadLetterHeaders.ErrorTypeKey))
+            .IsEqualTo(nameof(RecordDeserializationException));
     }
 
     private static ConsumeResult<string, string> CreateTestConsumeResult(

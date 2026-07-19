@@ -583,6 +583,54 @@ public readonly struct ConsumeResult<TKey, TValue>
         }
     }
 
+    internal static DeserializationExceptionOrigin LastDeserializationOrigin
+        => t_serializationContext.Component == SerializationComponent.Key
+            ? DeserializationExceptionOrigin.Key
+            : DeserializationExceptionOrigin.Value;
+
+    internal static RecordDeserializationException CreateDeserializationException(
+        DeserializationExceptionOrigin origin,
+        string topic,
+        int partition,
+        long offset,
+        long timestampMs,
+        TimestampType timestampType,
+        ReadOnlyMemory<byte> keyData,
+        bool isKeyNull,
+        ReadOnlyMemory<byte> valueData,
+        bool isValueNull,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaders,
+        int pooledHeaderCount,
+        Exception innerException)
+    {
+        var topicPartition = new TopicPartition(topic, partition);
+        return headers is not null
+            ? new RecordDeserializationException(
+                origin,
+                topicPartition,
+                offset,
+                timestampMs,
+                timestampType,
+                isKeyNull ? (ReadOnlyMemory<byte>?)null : keyData,
+                isValueNull ? (ReadOnlyMemory<byte>?)null : valueData,
+                headers,
+                innerException)
+            : new RecordDeserializationException(
+                origin,
+                topicPartition,
+                offset,
+                timestampMs,
+                timestampType,
+                keyData,
+                isKeyNull,
+                valueData,
+                isValueNull,
+                pooledHeaders,
+                pooledHeaderCount,
+                innerException);
+    }
+
     /// <summary>
     /// Creates a partition EOF result (no message data).
     /// This is primarily used internally by the consumer when EnablePartitionEof is true.
