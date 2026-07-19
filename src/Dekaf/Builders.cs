@@ -1330,6 +1330,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
+            DnsResolver = _dnsResolver,
             // Java parity: initial metadata blocks up to max.block.ms, retrying throughout.
             InitTimeoutMs = options.MaxBlockMs
         };
@@ -1476,6 +1477,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
+    private ClientDnsEndpointResolver _dnsResolver = ClientDnsEndpointResolver.Default;
     private readonly List<string> _topicsToSubscribe = [];
     private string? _topicPatternToSubscribe;
     private TimeSpan? _metadataMaxAge;
@@ -2325,6 +2327,13 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    internal ConsumerBuilder<TKey, TValue> WithDnsResolver(ClientDnsEndpointResolver resolver)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _dnsResolver = resolver;
+        return this;
+    }
+
     /// <summary>
     /// Sets the maximum age of metadata before it is refreshed.
     /// This controls how frequently the client refreshes its view of the cluster topology.
@@ -2807,6 +2816,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
+            DnsResolver = _dnsResolver,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
             RetryPolicy = _retryPolicy,
             PrefetchPipelineDepth = _prefetchPipelineDepth,
@@ -2823,7 +2833,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
-            ClientDnsLookup = _clientDnsLookup
+            ClientDnsLookup = _clientDnsLookup,
+            DnsResolver = _dnsResolver
         };
 
         var consumer = _clientInfrastructure is null
