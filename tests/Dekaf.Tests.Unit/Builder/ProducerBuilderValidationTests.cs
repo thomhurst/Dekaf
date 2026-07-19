@@ -355,6 +355,29 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithClientRackAndRackAwarePartitioning_SetOptions()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithClientRack("rack-a")
+            .WithRackAwarePartitioning()
+            .Build();
+
+        var options = GetOptions(producer);
+
+        await Assert.That(options.ClientRack).IsEqualTo("rack-a");
+        await Assert.That(options.EnableRackAwarePartitioning).IsTrue();
+    }
+
+    [Test]
+    public async Task WithClientRack_WhenNull_ThrowsArgumentNullException()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+
+        await Assert.That(() => builder.WithClientRack(null!)).Throws<ArgumentNullException>();
+    }
+
+    [Test]
     public async Task UseTls_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();

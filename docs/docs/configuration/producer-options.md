@@ -94,6 +94,8 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithAdaptivePartitioning(...)` | `EnableAdaptivePartitioning` | Boolean; Kafka `partitioner.adaptive.partitioning.enable` |
 | `WithPartitionerAvailabilityTimeout(...)` | `PartitionerAvailabilityTimeoutMs` | Milliseconds; Kafka `partitioner.availability.timeout.ms` |
 | `WithPartitionerIgnoreKeys(...)` | `IgnorePartitionerKeys` | Boolean; Kafka `partitioner.ignore.keys` |
+| `WithClientRack(...)` | `ClientRack` | String; Kafka `client.rack` |
+| `WithRackAwarePartitioning(...)` | `EnableRackAwarePartitioning` | Boolean; Kafka `partitioner.rack.aware` |
 | `UseTls(...)` | `UseTls`, `TlsConfig` | `TlsConfig` can bind certificate path fields |
 | `WithRemoteCertificateValidationCallback(...)` | Runtime callback | Custom TLS certificate validation |
 | `WithSaslPlain(...)` / `WithSaslScramSha512(...)` | `SaslMechanism`, `SaslUsername`, `SaslPassword` | `SaslMechanism` values match the enum names |
@@ -204,7 +206,7 @@ Control how messages are assigned to partitions:
 .WithPartitioner(PartitionerType.Fnv1ARandom)      // librdkafka/Sarama-compatible
 ```
 
-The built-in default and sticky partitioners use KIP-794 behavior for sticky records: they stay on a partition until at least `BatchSize` bytes have been produced to it. Adaptive partitioning is enabled by default and weights new sticky choices away from partitions with queued batches. Set `.WithAdaptivePartitioning(false)` for uniform switching, `.WithPartitionerAvailabilityTimeout(...)` to exclude backed-up partitions after a timeout, or `.WithPartitionerIgnoreKeys()` to use sticky partitioning even when records have keys.
+The built-in default and sticky partitioners use KIP-794 behavior for sticky records: they stay on a partition until at least `BatchSize` bytes have been produced to it. Adaptive partitioning is enabled by default and weights new sticky choices away from partitions with queued batches. Set `.WithAdaptivePartitioning(false)` for uniform switching, `.WithPartitionerAvailabilityTimeout(...)` to exclude backed-up partitions after a timeout, or `.WithPartitionerIgnoreKeys()` to use sticky partitioning even when records have keys. KIP-1123 rack-aware partitioning is opt-in with `.WithClientRack("rack-a").WithRackAwarePartitioning()`. It prefers local partition leaders and falls back to all leaders when none are usable; uneven rack placement can therefore produce an uneven partition distribution.
 
 ## Transactions
 
@@ -421,6 +423,8 @@ Enable logging:
 | `WithAdaptivePartitioning` | true | Adapt sticky partition choices to queued broker load |
 | `WithPartitionerAvailabilityTimeout` | 0ms | Exclude backed-up partitions after timeout; 0 disables |
 | `WithPartitionerIgnoreKeys` | false | Ignore keys for built-in sticky partitioning |
+| `WithClientRack` | null | Producer rack for rack-aware partitioning |
+| `WithRackAwarePartitioning` | false | Prefer partition leaders in the producer rack |
 | `WithConnectionsPerBroker` | 1 | TCP connections per broker |
 | `WithConnectionsMaxIdle` | 540000ms | Close unused broker connections; `Timeout.InfiniteTimeSpan` disables |
 | `WithConnectionTimeout` | 30000ms | Socket connection setup timeout |

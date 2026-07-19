@@ -31,6 +31,17 @@ internal static class StickyPartitionerTestHelpers
 
 public class DefaultPartitionerTests
 {
+    private const string Topic = "test-topic";
+
+    [Test]
+    public async Task BuiltInPartitioners_PreserveLegacyConstructorSignatures()
+    {
+        var parameterTypes = new[] { typeof(int), typeof(bool), typeof(int), typeof(bool) };
+
+        await Assert.That(typeof(DefaultPartitioner).GetConstructor(parameterTypes)).IsNotNull();
+        await Assert.That(typeof(StickyPartitioner).GetConstructor(parameterTypes)).IsNotNull();
+    }
+
     [Test]
     public async Task Partition_WithNullKey_ReturnsValidPartition()
     {
@@ -134,6 +145,189 @@ public class DefaultPartitionerTests
     }
 
     [Test]
+    public async Task RackAwarePartitioning_SelectsOnlyLocalLeaders()
+    {
+        var partitioner = CreateRackAwarePartitioner(stickyBatchSize: 1);
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        uniform.SetRackLocalPartitionsProvider(static (_, _, _) => [0, 2]);
+
+        var selected = new HashSet<int>();
+        for (var i = 0; i < 20; i++)
+        {
+            var partition = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 4);
+            selected.Add(partition);
+            uniform.OnRecordAppended(Topic, partition, bytes: 1, partitionCount: 4);
+        }
+
+        await Assert.That(selected).Contains(0);
+        await Assert.That(selected).Contains(2);
+        await Assert.That(selected).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task RackAwarePartitioning_UnevenLocalLeadersRotateUniformly()
+    {
+        var partitioner = CreateRackAwarePartitioner(stickyBatchSize: 1);
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        uniform.SetRackLocalPartitionsProvider(static (_, _, _) => [0, 9]);
+        var selections = new int[10];
+
+        for (var i = 0; i < 100; i++)
+        {
+            var partition = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 10);
+            selections[partition]++;
+            uniform.OnRecordAppended(Topic, partition, bytes: 1, partitionCount: 10);
+        }
+
+        await Assert.That(selections[0]).IsEqualTo(50);
+        await Assert.That(selections[9]).IsEqualTo(50);
+    }
+
+    [Test]
+    public async Task RackAwarePartitioning_StaleRackSnapshotFallsBackSafely()
+    {
+        var partitioner = CreateRackAwarePartitioner(
+            stickyBatchSize: 1,
+            adaptivePartitioning: true);
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        uniform.SetRackLocalPartitionsProvider(static (_, _, partitionCount) =>
+            partitionCount == 3 ? [0, 2] : []);
+        uniform.SetPartitionQueueByteProvider(static (_, _) => 0);
+
+        var partition = partitioner.Partition(
+            Topic,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            partitionCount: 2);
+
+        await Assert.That(partition).IsIn(0, 1);
+    }
+
+    [Test]
+    public async Task RackAwarePartitioning_PreservesKeyHashing()
+    {
+        var partitioner = CreateRackAwarePartitioner();
+        ((IUniformStickyPartitioner)partitioner).SetRackLocalPartitionsProvider(static (_, _, _) => [0]);
+        var key = "keyed-record"u8;
+
+        var partition = partitioner.Partition(Topic, key, keyIsNull: false, partitionCount: 4);
+
+        await Assert.That(partition).IsEqualTo(Murmur2.Partition(key, 4));
+    }
+
+    [Test]
+    public async Task RackAwarePartitioning_WhenIgnoreKeys_SelectsLocalLeader()
+    {
+        var partitioner = CreateRackAwarePartitioner(ignoreKeys: true);
+        ((IUniformStickyPartitioner)partitioner).SetRackLocalPartitionsProvider(static (_, _, _) => [2]);
+
+        var partition = partitioner.Partition(Topic, "keyed-record"u8, keyIsNull: false, partitionCount: 4);
+
+        await Assert.That(partition).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task RackAwarePartitioning_WithoutLocalMetadata_FallsBackToAllPartitions()
+    {
+        var partitioner = CreateRackAwarePartitioner(stickyBatchSize: 1);
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        uniform.SetRackLocalPartitionsProvider(static (_, _, _) => []);
+        StickyPartitionerTestHelpers.SetCounter(partitioner, uint.MaxValue);
+
+        var selected = new HashSet<int>();
+        for (var i = 0; i < 3; i++)
+        {
+            var partition = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 3);
+            selected.Add(partition);
+            uniform.OnRecordAppended(Topic, partition, bytes: 1, partitionCount: 3);
+        }
+
+        await Assert.That(selected).Count().IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task RackAwarePartitioning_WhenLocalLeaderUnavailable_FallsBackGlobally()
+    {
+        var partitioner = CreateRackAwarePartitioner(
+            stickyBatchSize: 1,
+            adaptivePartitioning: true,
+            availabilityTimeoutMs: 1);
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        uniform.SetRackLocalPartitionsProvider(static (_, _, _) => [0]);
+        var localLeaderBackedUp = false;
+        uniform.SetPartitionQueueByteProvider(
+            (_, partition) => partition == 0 && localLeaderBackedUp ? 1024 : 0);
+
+        var initial = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 3);
+        await Assert.That(initial).IsEqualTo(0);
+        localLeaderBackedUp = true;
+        uniform.OnRecordAppended(Topic, initial, bytes: 1, partitionCount: 3);
+        Thread.Sleep(5);
+        uniform.OnRecordAppended(Topic, initial, bytes: 1, partitionCount: 3);
+
+        var fallback = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 3);
+
+        await Assert.That(fallback).IsNotEqualTo(0);
+    }
+
+    [Test]
+    public async Task RackAwarePartitioning_LeaderRackChangeUpdatesEligiblePartition()
+    {
+        var racks = new[] { "rack-a", "rack-b" };
+        var partitioner = CreateRackAwarePartitioner(stickyBatchSize: 1);
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        var initialLocalPartitions = new[] { 0 };
+        var updatedLocalPartitions = new[] { 1 };
+        uniform.SetRackLocalPartitionsProvider(
+            (_, _, _) => racks[0] == "rack-a" ? initialLocalPartitions : updatedLocalPartitions);
+
+        var initial = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 2);
+        await Assert.That(initial).IsEqualTo(0);
+        racks[0] = "rack-b";
+        racks[1] = "rack-a";
+        uniform.OnRecordAppended(Topic, initial, bytes: 1, partitionCount: 2);
+
+        var updated = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 2);
+
+        await Assert.That(updated).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task RackAwarePartitioning_WhenDisabled_DoesNotFilterPartitions()
+    {
+        var partitioner = new DefaultPartitioner(
+            stickyBatchSize: 1,
+            adaptivePartitioning: false,
+            availabilityTimeoutMs: 0,
+            ignoreKeys: false,
+            rackAwarePartitioning: false,
+            clientRack: "rack-a");
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        uniform.SetRackLocalPartitionsProvider(static (_, _, _) => [0]);
+        StickyPartitionerTestHelpers.SetCounter(partitioner, uint.MaxValue);
+
+        var first = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 3);
+        uniform.OnRecordAppended(Topic, first, bytes: 1, partitionCount: 3);
+        var second = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 3);
+
+        await Assert.That(first).IsEqualTo(0);
+        await Assert.That(second).IsEqualTo(1);
+    }
+
+    private static DefaultPartitioner CreateRackAwarePartitioner(
+        int stickyBatchSize = int.MaxValue,
+        bool adaptivePartitioning = false,
+        int availabilityTimeoutMs = 0,
+        bool ignoreKeys = false) =>
+        new(
+            stickyBatchSize,
+            adaptivePartitioning,
+            availabilityTimeoutMs,
+            ignoreKeys,
+            rackAwarePartitioning: true,
+            clientRack: "rack-a");
+
+    [Test]
     public async Task Partition_NearUIntMaxValue_NeverReturnsNegative()
     {
         var partitioner = new DefaultPartitioner();
@@ -173,6 +367,24 @@ public class DefaultPartitionerTests
 
 public class StickyPartitionerTests
 {
+    [Test]
+    public async Task RackAwarePartitioning_SelectsLocalLeader()
+    {
+        const string topic = "test-topic";
+        var partitioner = new StickyPartitioner(
+            stickyBatchSize: int.MaxValue,
+            adaptivePartitioning: false,
+            availabilityTimeoutMs: 0,
+            ignoreKeys: false,
+            rackAwarePartitioning: true,
+            clientRack: "rack-a");
+        ((IUniformStickyPartitioner)partitioner).SetRackLocalPartitionsProvider(static (_, _, _) => [1]);
+
+        var partition = partitioner.Partition(topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 3);
+
+        await Assert.That(partition).IsEqualTo(1);
+    }
+
     [Test]
     public async Task Partition_WithNullKey_ReturnsValidPartition()
     {

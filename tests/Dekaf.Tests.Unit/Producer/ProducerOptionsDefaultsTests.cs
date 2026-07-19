@@ -181,6 +181,15 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task RackAwarePartitioning_DefaultsToDisabledWithoutClientRack()
+    {
+        var options = CreateOptions();
+
+        await Assert.That(options.EnableRackAwarePartitioning).IsFalse();
+        await Assert.That(options.ClientRack).IsNull();
+    }
+
+    [Test]
     public async Task UseTls_DefaultsTo_False()
     {
         var options = CreateOptions();
