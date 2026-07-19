@@ -200,7 +200,12 @@ internal sealed class CachingStringDeserializer : ISerde<string>
 
     private void StartReuseProbe()
     {
-        _probeRemaining = _maxCachedEntries;
+        // The primary probe may consume the beginning of a near-capacity cycle before
+        // reuse observation starts. Include that window so the probe can reach entries
+        // cached before the primary probe instead of retiring a high-yield generation.
+        _probeRemaining = _maxCachedEntries > int.MaxValue - ProbeLookupCount
+            ? int.MaxValue
+            : _maxCachedEntries + ProbeLookupCount;
         _probeHits = 0;
         _isReuseProbe = true;
     }
