@@ -9,6 +9,21 @@ namespace Dekaf.Tests.Unit.Producer;
 public class IncrementalBatchBufferTests
 {
     [Test]
+    public async Task ChunkPoolSize_ScalesByChunksPerLiveBatch()
+    {
+        const int liveBatchCount = 256;
+        const int batchSize = 1024 * 1024;
+
+        var poolSize = IncrementalBatchBuffer.ComputeChunkPoolSize(liveBatchCount, batchSize);
+        var partialChunkPoolSize = IncrementalBatchBuffer.ComputeChunkPoolSize(
+            liveBatchCount,
+            IncrementalBatchBuffer.MaximumChunkSize + 1);
+
+        await Assert.That(poolSize).IsEqualTo(liveBatchCount * 64);
+        await Assert.That(partialChunkPoolSize).IsEqualTo(liveBatchCount * 2);
+    }
+
+    [Test]
     public async Task IncrementalStrategy_AllocatesStorageAsRecordsArrive()
     {
         var incremental = new PartitionBatch(

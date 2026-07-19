@@ -13,9 +13,11 @@ internal sealed class IncrementalBatchBuffer
     internal const int MaximumChunkSize = 16 * 1024;
 
     private const int BufferPoolSize = 1024;
-    private const int SegmentPoolSize = 8192;
+    private const int InitialSegmentPoolSize = 8192;
     private static readonly LockFreeStack<IncrementalBatchBuffer> s_buffers = new(BufferPoolSize);
-    private static readonly LockFreeStack<ChunkSegment> s_segments = new(SegmentPoolSize);
+    private static readonly Lock s_segmentPoolLock = new();
+    private static LockFreeStack<ChunkSegment> s_segments = new(InitialSegmentPoolSize);
+    private static int s_segmentPoolCapacity = InitialSegmentPoolSize;
     private static readonly RatchetableArrayPool<byte> s_chunkArrays = new(
         maxArrayLength: 4 * 1024 * 1024,
         initialArraysPerBucket: BatchArena.DefaultPoolSize);
@@ -32,8 +34,21 @@ internal sealed class IncrementalBatchBuffer
 
     internal int Length => _length;
 
-    internal static void RatchetPoolSize(int arraysPerBucket) =>
-        s_chunkArrays.RatchetBucketCapacity(Math.Min(BufferPoolSize, arraysPerBucket));
+    internal static void RatchetPoolSize(int liveBatchCount, int batchSize)
+    {
+        var chunkPoolSize = ComputeChunkPoolSize(liveBatchCount, batchSize);
+        s_chunkArrays.RatchetBucketCapacity(chunkPoolSize);
+        RatchetSegmentPoolSize(chunkPoolSize);
+    }
+
+    internal static int ComputeChunkPoolSize(int liveBatchCount, int batchSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(liveBatchCount);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(batchSize);
+        var chunkSize = GetChunkSize(batchSize);
+        var chunksPerBatch = Math.Max(1, ((long)batchSize + chunkSize - 1) / chunkSize);
+        return checked((int)Math.Min((long)liveBatchCount * chunksPerBatch, int.MaxValue));
+    }
 
     internal static void PreWarm(int count, int batchSize)
     {
@@ -166,9 +181,29 @@ internal sealed class IncrementalBatchBuffer
     private static int GetChunkSize(int batchSize) =>
         Math.Clamp(Math.Min(MaximumChunkSize, batchSize), MinimumChunkSize, MaximumChunkSize);
 
+    private static void RatchetSegmentPoolSize(int capacity)
+    {
+        if (capacity <= Volatile.Read(ref s_segmentPoolCapacity))
+            return;
+
+        lock (s_segmentPoolLock)
+        {
+            if (capacity <= s_segmentPoolCapacity)
+                return;
+
+            var current = Volatile.Read(ref s_segments);
+            var replacement = new LockFreeStack<ChunkSegment>(capacity);
+            while (current.TryPop(out var segment))
+                replacement.TryPush(segment);
+
+            Volatile.Write(ref s_segments, replacement);
+            Volatile.Write(ref s_segmentPoolCapacity, capacity);
+        }
+    }
+
     private static ChunkSegment RentSegment(int capacity)
     {
-        if (!s_segments.TryPop(out var segment))
+        if (!Volatile.Read(ref s_segments).TryPop(out var segment))
             segment = new ChunkSegment();
 
         segment.Initialize(s_chunkArrays.Pool.Rent(capacity));
@@ -179,7 +214,7 @@ internal sealed class IncrementalBatchBuffer
     {
         var buffer = segment.Release();
         s_chunkArrays.Pool.Return(buffer, clearArray: false);
-        s_segments.TryPush(segment);
+        Volatile.Read(ref s_segments).TryPush(segment);
     }
 
     private void ReturnChunks()

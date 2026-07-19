@@ -2487,7 +2487,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Full)
             BatchArena.RatchetPoolSize(poolSize);
         else
-            IncrementalBatchBuffer.RatchetPoolSize(poolSize * ReadyBatchPoolSizeRatio);
+            IncrementalBatchBuffer.RatchetPoolSize(
+                poolSize * ReadyBatchPoolSizeRatio,
+                options.BatchSize);
         // ReadyBatch lifecycle spans seal→send→response→cleanup (longer than PartitionBatch),
         // so its pool needs to be larger to avoid exhaustion under sustained throughput.
         _readyBatchPool = new ReadyBatchPool(maxPoolSize: poolSize * ReadyBatchPoolSizeRatio);

@@ -1551,25 +1551,6 @@ public sealed partial class KafkaConnection :
         }
     }
 
-    internal static void ConsumeSentSegments(List<ArraySegment<byte>> segments, int bytesSent)
-    {
-        while (bytesSent > 0)
-        {
-            var segment = segments[0];
-            if (bytesSent < segment.Count)
-            {
-                segments[0] = new ArraySegment<byte>(
-                    segment.Array!,
-                    segment.Offset + bytesSent,
-                    segment.Count - bytesSent);
-                return;
-            }
-
-            bytesSent -= segment.Count;
-            segments.RemoveAt(0);
-        }
-    }
-
     /// <summary>
     /// Writes one complete frame while holding the write lock, then releases the lock and
     /// returns the serialization buffer. The socket write is deliberately not cancellable:
@@ -3311,9 +3292,9 @@ public sealed partial class KafkaConnection :
         }
     }
 
-    private sealed class SocketScatterGatherSender : IValueTaskSource<int>, IDisposable
+    internal sealed class SocketScatterGatherSender : IValueTaskSource<int>, IDisposable
     {
-        private const int MaximumSegmentsPerSend = 16;
+        internal const int MaximumSegmentsPerSend = 16;
         private readonly SocketAsyncEventArgs _eventArgs = new();
         private int _pendingSegmentIndex;
         private int _pendingSegmentOffset;
