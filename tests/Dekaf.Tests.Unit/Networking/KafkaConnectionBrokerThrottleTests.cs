@@ -46,13 +46,13 @@ public sealed class KafkaConnectionBrokerThrottleTests
         await second.ConnectAsync(cancellationToken);
 
         _ = await first.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-            new ApiVersionsRequest(),
+            CreateApiVersionsRequest(),
             3,
             cancellationToken);
 
         var followUpStarted = Stopwatch.GetTimestamp();
         var followUpTask = second.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-            new ApiVersionsRequest(),
+            CreateApiVersionsRequest(),
             3,
             cancellationToken);
 
@@ -92,7 +92,7 @@ public sealed class KafkaConnectionBrokerThrottleTests
         throttleState.Observe(10_000);
 
         var sendTask = connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-            new ApiVersionsRequest(),
+            CreateApiVersionsRequest(),
             3,
             CancellationToken.None);
         await Task.Delay(50, cancellationToken);
@@ -143,7 +143,7 @@ public sealed class KafkaConnectionBrokerThrottleTests
         pool.RegisterBroker(1, "127.0.0.1", port);
         var firstConnection = await pool.GetConnectionAsync(1, cancellationToken);
         _ = await firstConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-            new ApiVersionsRequest(),
+            CreateApiVersionsRequest(),
             3,
             cancellationToken);
 
@@ -204,7 +204,7 @@ public sealed class KafkaConnectionBrokerThrottleTests
             });
         var bootstrapConnection = await pool.GetConnectionAsync("127.0.0.1", port, cancellationToken);
         _ = await bootstrapConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
-            new ApiVersionsRequest(),
+            CreateApiVersionsRequest(),
             3,
             cancellationToken);
         await Assert.That(await pool.ReapIdleConnectionsAsync()).IsEqualTo(1);
@@ -321,6 +321,12 @@ public sealed class KafkaConnectionBrokerThrottleTests
         await Assert.That(unrelatedWait.IsCompletedSuccessfully).IsTrue();
         await unrelatedWait;
     }
+
+    private static ApiVersionsRequest CreateApiVersionsRequest() => new()
+    {
+        ClientSoftwareName = "dekaf-tests",
+        ClientSoftwareVersion = "1.0"
+    };
 
     private static KafkaConnection CreateConnection(int port, BrokerThrottleState throttleState) =>
         new(
