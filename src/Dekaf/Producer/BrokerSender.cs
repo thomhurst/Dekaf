@@ -2479,7 +2479,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var generation = generations[readIdx];
             if (!batch.TryAcquireResourcePin(generation))
             {
-                LogStaleBatchInSendSkipped(_instanceId, _brokerId);
+                if (!_accumulator.TryCleanupFailedPreSerializationBatch(batch, generation))
+                    LogStaleBatchInSendSkipped(_instanceId, _brokerId);
                 continue;
             }
 

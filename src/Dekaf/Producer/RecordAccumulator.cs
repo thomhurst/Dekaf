@@ -2796,6 +2796,38 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Releases accounting and pool ownership for a sender-owned batch that failed during
+    /// pre-serialization. The cleanup pin keeps the expected incarnation stable while this
+    /// path claims the sole pool return.
+    /// </summary>
+    internal bool TryCleanupFailedPreSerializationBatch(ReadyBatch batch, int expectedGeneration)
+    {
+        if (!batch.TryAcquireCleanupPin(expectedGeneration))
+            return false;
+
+        var returnClaimed = false;
+        try
+        {
+            returnClaimed = batch.IsSendCompleted && TryClaimReadyBatchReturn(batch);
+            if (returnClaimed)
+            {
+                try { ReleaseBatchMemory(batch); }
+                catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
+                try { OnBatchExitsPipeline(batch); }
+                catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
+            }
+        }
+        finally
+        {
+            batch.ReleaseResourcePin();
+        }
+
+        if (returnClaimed)
+            CompleteClaimedReadyBatchReturn(batch);
+        return returnClaimed;
+    }
+
+    /// <summary>
     /// Publishes completion of generation-safe terminal bookkeeping and returns the batch
     /// without touching it after a racing return owner can recycle it.
     /// </summary>
@@ -9030,6 +9062,29 @@ internal sealed class ReadyBatch
             if (Interlocked.CompareExchange(ref _activeResourcePins, current + 1, current) == current)
             {
                 if (IsCurrentIncarnation(expectedGeneration) && Volatile.Read(ref _cleanedUp) == 0)
+                    return true;
+
+                ReleaseResourcePin();
+                return false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Pins a terminal batch whose payload cleanup has started. This is reserved for the
+    /// cold owner-cleanup path; normal serialization pins must continue rejecting cleaned batches.
+    /// </summary>
+    internal bool TryAcquireCleanupPin(int expectedGeneration)
+    {
+        while (true)
+        {
+            if (!IsCurrentIncarnation(expectedGeneration))
+                return false;
+
+            var current = Volatile.Read(ref _activeResourcePins);
+            if (Interlocked.CompareExchange(ref _activeResourcePins, current + 1, current) == current)
+            {
+                if (IsCurrentIncarnation(expectedGeneration))
                     return true;
 
                 ReleaseResourcePin();
