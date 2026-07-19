@@ -1032,8 +1032,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     /// <summary>
     /// Shared rebootstrap execution: re-resolves bootstrap DNS and attempts metadata fetch from new endpoints.
-    /// Intentionally does not re-check the response for <see cref="ErrorCode.RebootstrapRequired"/>
-    /// to prevent infinite recursion when the new broker also signals rebootstrap.
+    /// Re-checks newly resolved endpoints for <see cref="ErrorCode.RebootstrapRequired"/> and
+    /// advances to the next endpoint without recursively triggering another rebootstrap.
     /// </summary>
     private async ValueTask<bool> ExecuteRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
     {
@@ -1090,7 +1090,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 }
 
                 ResetFinalizedFeaturesForRebootstrap();
-                BeginMetadataRebootstrap();
 
                 UpdateVersionlessCapabilities(
                     connection,
