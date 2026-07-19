@@ -27,6 +27,28 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     }
 
     [Test]
+    public async Task ApiVersionsV4_ExposesZeroMinimumSupportedFeature()
+    {
+        await using var pool = new ConnectionPool(
+            "api-versions-v4-test",
+            new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) },
+            loggerFactory: null);
+        var parts = KafkaContainer.BootstrapServers.Split(':');
+        var connection = await pool.GetConnectionAsync(
+            parts[0],
+            int.Parse(parts[1]),
+            CancellationToken.None);
+
+        var response = await SendApiVersionsAsync(connection);
+        var apiVersionsRange = response.ApiKeys.Single(version => version.ApiKey == ApiKey.ApiVersions);
+
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(apiVersionsRange.MaxVersion).IsGreaterThanOrEqualTo((short)4);
+        await Assert.That(response.SupportedFeatures).IsNotNull();
+        await Assert.That(response.SupportedFeatures!.Any(feature => feature.MinVersion == 0)).IsTrue();
+    }
+
+    [Test]
     public async Task Connection_NegotiatesCapabilitySnapshotBeforeUse()
     {
         // This test verifies that ApiVersions request works and returns supported API versions

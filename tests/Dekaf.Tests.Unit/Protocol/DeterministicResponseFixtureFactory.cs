@@ -14,6 +14,11 @@ internal static class DeterministicResponseFixtureFactory
     internal static IReadOnlyDictionary<string, byte[]> CreateAll() =>
         new SortedDictionary<string, byte[]>(StringComparer.Ordinal)
         {
+            ["ApiVersionsResponse.v0"] = EncodeApiVersionsResponse(version: 0),
+            ["ApiVersionsResponse.v1"] = EncodeApiVersionsResponse(version: 1),
+            ["ApiVersionsResponse.v2"] = EncodeApiVersionsResponse(version: 2),
+            ["ApiVersionsResponse.v3"] = EncodeApiVersionsResponse(version: 3),
+            ["ApiVersionsResponse.v4"] = EncodeApiVersionsResponse(version: 4),
             ["DescribeConfigsResponse.v4"] = Encode(WriteDescribeConfigsResponse),
             ["DescribeGroupsResponse.v5"] = Encode(WriteDescribeGroupsResponse),
             ["FetchResponse.v16"] = Encode(WriteFetchResponse),
@@ -29,6 +34,52 @@ internal static class DeterministicResponseFixtureFactory
         var writer = new KafkaProtocolWriter(buffer);
         writeFixture(ref writer);
         return buffer.WrittenSpan.ToArray();
+    }
+
+    private static byte[] EncodeApiVersionsResponse(short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt16(version == 0
+            ? (short)ErrorCode.UnsupportedVersion
+            : (short)ErrorCode.None);
+
+        if (version >= 3)
+        {
+            WriteCompactArrayLength(ref writer, 1);
+            WriteApiVersionsEntry(ref writer, flexible: true);
+        }
+        else
+        {
+            writer.WriteInt32(1);
+            WriteApiVersionsEntry(ref writer, flexible: false);
+        }
+
+        if (version >= 1)
+            writer.WriteInt32(17);
+
+        if (version >= 3)
+        {
+            writer.WriteUnsignedVarInt(1);
+            writer.WriteUnsignedVarInt(0); // SupportedFeatures tag.
+            writer.WriteUnsignedVarInt(20);
+            WriteCompactArrayLength(ref writer, 1);
+            writer.WriteCompactString("kraft.version");
+            writer.WriteInt16(version >= 4 ? (short)0 : (short)1);
+            writer.WriteInt16(1);
+            WriteEmptyTaggedFields(ref writer);
+        }
+
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    private static void WriteApiVersionsEntry(ref KafkaProtocolWriter writer, bool flexible)
+    {
+        writer.WriteInt16((short)ApiKey.ApiVersions);
+        writer.WriteInt16(0);
+        writer.WriteInt16(4);
+        if (flexible)
+            WriteEmptyTaggedFields(ref writer);
     }
 
     private static void WriteMetadataResponse(ref KafkaProtocolWriter writer)

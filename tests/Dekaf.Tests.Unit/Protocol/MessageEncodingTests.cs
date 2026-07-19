@@ -13,17 +13,16 @@ public class MessageEncodingTests
     #region ApiVersions Request Tests
 
     [Test]
-    public async Task ApiVersionsRequest_V3_WithClientInfo()
+    [Arguments((short)3)]
+    [Arguments((short)4)]
+    public async Task ApiVersionsRequest_FlexibleVersions_WriteClientInfo(short version)
     {
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new KafkaProtocolWriter(buffer);
-
         var request = new ApiVersionsRequest
         {
             ClientSoftwareName = "dekaf",
             ClientSoftwareVersion = "1.0"
         };
-        request.Write(ref writer, version: 3);
+        var actual = SerializeApiVersionsRequest(request, version);
 
         var expected = new List<byte>();
         // ClientSoftwareName: COMPACT_STRING "dekaf" (length+1=6)
@@ -35,7 +34,28 @@ public class MessageEncodingTests
         // Empty tagged fields
         expected.Add(0x00);
 
-        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(expected.ToArray());
+        await Assert.That(actual).IsEquivalentTo(expected.ToArray());
+    }
+
+    [Test]
+    [Arguments((short)0)]
+    [Arguments((short)1)]
+    [Arguments((short)2)]
+    public async Task ApiVersionsRequest_LegacyVersions_HaveEmptyBody(short version)
+    {
+        var actual = SerializeApiVersionsRequest(new ApiVersionsRequest(), version);
+
+        await Assert.That(actual).IsEmpty();
+    }
+
+    [Test]
+    [Arguments((short)3)]
+    [Arguments((short)4)]
+    public async Task ApiVersionsRequest_FlexibleVersions_RequireClientInfo(short version)
+    {
+        await Assert.That(() => SerializeApiVersionsRequest(new ApiVersionsRequest(), version))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("Client software name");
     }
 
     #endregion
@@ -162,6 +182,58 @@ public class MessageEncodingTests
         await Assert.That(response.ThrottleTimeMs).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task ApiVersionsResponse_V4_PreservesZeroMinimumSupportedFeature()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteUnsignedVarInt(1); // Empty ApiKeys compact array.
+        writer.WriteInt32(0);
+        writer.WriteUnsignedVarInt(1); // One root tagged field.
+        writer.WriteUnsignedVarInt(0); // SupportedFeatures.
+
+        var feature = new ArrayBufferWriter<byte>();
+        var featureWriter = new KafkaProtocolWriter(feature);
+        featureWriter.WriteUnsignedVarInt(2); // One compact-array entry.
+        featureWriter.WriteCompactString("kraft.version");
+        featureWriter.WriteInt16(0);
+        featureWriter.WriteInt16(1);
+        featureWriter.WriteEmptyTaggedFields();
+        writer.WriteUnsignedVarInt(feature.WrittenCount);
+        writer.WriteRawBytes(feature.WrittenSpan);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ApiVersionsResponse)ApiVersionsResponse.Read(ref reader, version: 4);
+
+        var supportedFeature = response.SupportedFeatures!.Single();
+        await Assert.That(supportedFeature.Name).IsEqualTo("kraft.version");
+        await Assert.That(supportedFeature.MinVersion).IsEqualTo((short)0);
+        await Assert.That(supportedFeature.MaxVersion).IsEqualTo((short)1);
+    }
+
+    [Test]
+    public async Task ApiVersionsResponse_UnsupportedVersion_UsesV0Schema()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt16((short)ErrorCode.UnsupportedVersion);
+        writer.WriteInt32(1);
+        writer.WriteInt16((short)ApiKey.ApiVersions);
+        writer.WriteInt16(0);
+        writer.WriteInt16(3);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ApiVersionsResponse)ApiVersionsResponse.Read(ref reader, version: 4);
+
+        await Assert.That(reader.End).IsTrue();
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.UnsupportedVersion);
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(0);
+        await Assert.That(response.ApiKeys).IsEquivalentTo([
+            new ApiVersion(ApiKey.ApiVersions, 0, 3)
+        ]);
+    }
+
     #endregion
 
     #region FindCoordinator Tests
@@ -238,7 +310,11 @@ public class MessageEncodingTests
     #region Header Version Tests
 
     [Test]
+    [Arguments((short)0, (short)0)]
+    [Arguments((short)1, (short)0)]
+    [Arguments((short)2, (short)0)]
     [Arguments((short)3, (short)0)]
+    [Arguments((short)4, (short)0)]
     public async Task ApiVersionsRequest_ResponseHeaderVersion(short apiVersion, short expectedResponseHeader)
     {
         var responseHeaderVersion = ApiVersionsRequest.GetResponseHeaderVersion(apiVersion);
@@ -247,6 +323,14 @@ public class MessageEncodingTests
     }
 
     #endregion
+
+    private static byte[] SerializeApiVersionsRequest(ApiVersionsRequest request, short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        request.Write(ref writer, version);
+        return buffer.WrittenSpan.ToArray();
+    }
 
     private static IEnumerable<string> IteratorTopics()
     {

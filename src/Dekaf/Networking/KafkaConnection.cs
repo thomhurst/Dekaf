@@ -13,6 +13,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
 using Dekaf.Internal;
+using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -623,9 +624,26 @@ public sealed partial class KafkaConnection :
         {
             response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
                 request,
-                apiVersion: 3,
+                ApiVersionsRequest.HighestSupportedVersion,
                 requireReady: false,
                 cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode == ErrorCode.UnsupportedVersion)
+            {
+                var retryVersion = GetApiVersionsRetryVersion(response);
+                response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
+                    request,
+                    retryVersion,
+                    requireReady: false,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.ErrorCode == ErrorCode.UnsupportedVersion)
+                {
+                    throw new BrokerVersionException(
+                        $"Broker {_host}:{_port} rejected ApiVersions fallback v{retryVersion}; " +
+                        "negotiation is limited to one retry.");
+                }
+            }
         }
         catch (TimeoutException ex)
         {
@@ -636,6 +654,53 @@ public sealed partial class KafkaConnection :
         }
 
         return KafkaConnectionCapabilities.Create(response);
+    }
+
+    private short GetApiVersionsRetryVersion(ApiVersionsResponse response)
+    {
+        ApiVersion? brokerRange = null;
+        foreach (var apiVersion in response.ApiKeys)
+        {
+            if (apiVersion.ApiKey != ApiKey.ApiVersions)
+                continue;
+
+            if (brokerRange is not null)
+            {
+                throw new BrokerVersionException(
+                    $"Broker {_host}:{_port} returned duplicate ApiVersions ranges in an " +
+                    "UNSUPPORTED_VERSION response.");
+            }
+
+            brokerRange = apiVersion;
+        }
+
+        if (brokerRange is not { } range || range.MinVersion > range.MaxVersion)
+        {
+            throw new BrokerVersionException(
+                $"Broker {_host}:{_port} returned no valid ApiVersions range in an " +
+                "UNSUPPORTED_VERSION response.");
+        }
+
+        if (!ApiVersionNegotiator.TryNegotiate(
+                range.MinVersion,
+                range.MaxVersion,
+                ApiVersionsRequest.LowestSupportedVersion,
+                ApiVersionsRequest.HighestSupportedVersion,
+                out var retryVersion))
+        {
+            throw new BrokerVersionException(
+                $"Broker {_host}:{_port} supports ApiVersions [{range.MinVersion}, {range.MaxVersion}], " +
+                $"but Dekaf supports [{ApiVersionsRequest.LowestSupportedVersion}, " +
+                $"{ApiVersionsRequest.HighestSupportedVersion}].");
+        }
+
+        if (retryVersion == ApiVersionsRequest.HighestSupportedVersion)
+        {
+            throw new BrokerVersionException(
+                $"Broker {_host}:{_port} rejected ApiVersions v{retryVersion} but reported it as supported.");
+        }
+
+        return retryVersion;
     }
 
     public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
