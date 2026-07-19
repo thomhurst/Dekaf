@@ -279,7 +279,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         for (var i = 0; i < coalescedCount; i++)
         {
             var existingBatch = coalescedBatches[i];
-            coalescedRequestBudgetUsed += ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            coalescedRequestBudgetUsed += ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
                 transactionalId: null,
                 existingBatch.TopicPartition.Topic,
                 existingBatch.EncodedSize);
@@ -1075,7 +1075,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     {
         const string topic = "test-topic";
         const int encodedBatchSize = 100;
-        var maxRequestSize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+        var maxRequestSize = ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
             transactionalId: null,
             topic,
             encodedBatchSize);
@@ -2051,6 +2051,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         var allAcknowledged = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
+        var startGate = new ThrowOnArmedIterationLogger();
         var sender = CreateSender(pool, options, accumulator, (tp, offset, _, _, ex) =>
         {
             if (ex is null)
@@ -2063,10 +2064,12 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                         allAcknowledged.TrySetResult();
                 }
             }
-        });
+        }, logger: startGate);
 
         try
         {
+            await startGate.FirstIteration.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+
             // Phase 1: enqueue A(p0) and B(p1) — coalesced into send 1
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
@@ -2078,6 +2081,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             knownPartitions.Add(batchA.TopicPartition);
             knownPartitions.Add(batchB.TopicPartition);
             sender.EnqueueBulk([batchA, batchB]);
+            startGate.Release();
 
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
@@ -2096,7 +2100,6 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             // Send 2: should include A retry (p0) and D (p1)
             // C (p0) should be in carry-over because the muted partition filter caught it
             await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
-
             tcs2.SetResult(CreateMultiPartitionResponse("test-topic",
                 (0, ErrorCode.None, 100),
                 (1, ErrorCode.None, 201)));
@@ -2118,6 +2121,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         }
         finally
         {
+            startGate.Release();
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
@@ -2137,8 +2141,10 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         public void Arm()
         {
             Volatile.Write(ref _armed, 1);
-            _crashGate.TrySetResult();
+            Release();
         }
+
+        public void Release() => _crashGate.TrySetResult();
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
