@@ -1394,7 +1394,9 @@ public sealed class ConnectionPoolTests
             connectionOptions: new ConnectionOptions
             {
                 ConnectionTimeout = TimeSpan.FromMilliseconds(20),
-                ConnectionTimeoutMax = TimeSpan.FromMilliseconds(20),
+                // Keep the overall operation deadline distinct so this test exercises
+                // disposal of a connection that completes after the per-attempt timeout.
+                ConnectionTimeoutMax = TimeSpan.FromSeconds(1),
                 ReconnectBackoff = TimeSpan.Zero,
                 ReconnectBackoffMax = TimeSpan.Zero
             },
@@ -1408,7 +1410,8 @@ public sealed class ConnectionPoolTests
                 }
 
                 return freshConnection;
-            });
+            },
+            randomDouble: static () => 0.5);
 
         Func<Task> firstAttempt = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
         await Assert.That(firstAttempt).Throws<KafkaException>()
