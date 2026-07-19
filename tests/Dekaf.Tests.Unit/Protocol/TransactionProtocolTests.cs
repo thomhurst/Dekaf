@@ -587,7 +587,10 @@ public sealed class TransactionProtocolTests
     {
         await Assert.That(TxnOffsetCommitRequest.ApiKey).IsEqualTo(ApiKey.TxnOffsetCommit);
         await Assert.That(TxnOffsetCommitRequest.LowestSupportedVersion).IsEqualTo((short)3);
-        await Assert.That(TxnOffsetCommitRequest.HighestSupportedVersion).IsEqualTo((short)4);
+        await Assert.That(TxnOffsetCommitRequest.HighestSupportedVersion).IsEqualTo((short)5);
+        await Assert.That(TxnOffsetCommitResponse.ApiKey).IsEqualTo(ApiKey.TxnOffsetCommit);
+        await Assert.That(TxnOffsetCommitResponse.LowestSupportedVersion).IsEqualTo((short)3);
+        await Assert.That(TxnOffsetCommitResponse.HighestSupportedVersion).IsEqualTo((short)5);
     }
 
     [Test]

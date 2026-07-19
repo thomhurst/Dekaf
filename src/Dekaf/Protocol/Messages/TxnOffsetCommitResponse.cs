@@ -7,7 +7,7 @@ public sealed class TxnOffsetCommitResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.TxnOffsetCommit;
     public static short LowestSupportedVersion => 3;
-    public static short HighestSupportedVersion => 4;
+    public static short HighestSupportedVersion => 5;
 
     /// <summary>
     /// Throttle time in milliseconds.

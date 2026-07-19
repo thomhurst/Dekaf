@@ -8,7 +8,7 @@ public sealed class TxnOffsetCommitRequest : IKafkaRequest<TxnOffsetCommitRespon
 {
     public static ApiKey ApiKey => ApiKey.TxnOffsetCommit;
     public static short LowestSupportedVersion => 3;
-    public static short HighestSupportedVersion => 4;
+    public static short HighestSupportedVersion => 5;
 
     /// <summary>
     /// The transactional ID.
