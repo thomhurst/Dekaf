@@ -13,20 +13,39 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [ShortRunJob]
 public class FetchRequestBuildBenchmarks
 {
+    private const int TopicCount = 4;
     private const int PartitionCount = 100;
 
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new();
     private readonly Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>
         _templates = [];
+    private readonly Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>
+        _multiTopicTemplates = [];
     private readonly List<string> _topicOrder = ["fetch-ordering"];
+    private readonly List<string> _multiTopicOrder = [];
 
     [GlobalSetup]
     public void Setup()
     {
-        var partitions = new List<(FetchRequestPartition, TopicPartition)>(PartitionCount);
-        for (var partition = 0; partition < PartitionCount; partition++)
+        _templates.Add("fetch-ordering", CreatePartitions("fetch-ordering", PartitionCount));
+
+        var partitionsPerTopic = PartitionCount / TopicCount;
+        for (var topicIndex = 0; topicIndex < TopicCount; topicIndex++)
         {
-            var topicPartition = new TopicPartition("fetch-ordering", partition);
+            var topic = $"fetch-ordering-{topicIndex}";
+            _multiTopicOrder.Add(topic);
+            _multiTopicTemplates.Add(topic, CreatePartitions(topic, partitionsPerTopic));
+        }
+    }
+
+    private List<(FetchRequestPartition Partition, TopicPartition TopicPartition)> CreatePartitions(
+        string topic,
+        int count)
+    {
+        var partitions = new List<(FetchRequestPartition, TopicPartition)>(count);
+        for (var partition = 0; partition < count; partition++)
+        {
+            var topicPartition = new TopicPartition(topic, partition);
             _fetchPositions[topicPartition] = partition;
             partitions.Add((
                 new FetchRequestPartition
@@ -38,7 +57,7 @@ public class FetchRequestBuildBenchmarks
                 topicPartition));
         }
 
-        _templates.Add("fetch-ordering", partitions);
+        return partitions;
     }
 
     [Benchmark(OperationsPerInvoke = PartitionCount)]
@@ -63,10 +82,29 @@ public class FetchRequestBuildBenchmarks
             _fetchPositions,
             _topicOrder,
             topicRotation: 0,
-            firstTopicPartitionRotation: 37);
+            partitionRotation: 37);
         try
         {
             return topics[0].Partitions.Count;
+        }
+        finally
+        {
+            ConsumerFetchPools.ReturnFetchRequestTopics(topics);
+        }
+    }
+
+    [Benchmark(OperationsPerInvoke = PartitionCount)]
+    public int BuildMultiTopicRotatedCachedFetchRequest()
+    {
+        var topics = KafkaConsumer<string, string>.BuildRotatedFetchResult(
+            _multiTopicTemplates,
+            _fetchPositions,
+            _multiTopicOrder,
+            topicRotation: 1,
+            partitionRotation: 7);
+        try
+        {
+            return topics.Count;
         }
         finally
         {

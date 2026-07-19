@@ -7181,7 +7181,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ConcurrentDictionary<TopicPartition, long> fetchPositions,
         List<string> topicOrder,
         int topicRotation,
-        int firstTopicPartitionRotation,
+        int partitionRotation,
         int? adaptivePartitionMaxBytes = null,
         ClusterMetadata? clusterMetadata = null,
         ConcurrentDictionary<TopicPartition, int>? lastConsumedLeaderEpochs = null)
@@ -7200,7 +7200,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 adaptivePartitionMaxBytes,
                 clusterMetadata,
                 lastConsumedLeaderEpochs,
-                topicOffset == 0 ? firstTopicPartitionRotation : 0);
+                partitionRotation);
         }
 
         return result;

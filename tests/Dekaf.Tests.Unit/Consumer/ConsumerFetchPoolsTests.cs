@@ -196,9 +196,9 @@ public sealed class ConsumerFetchPoolsTests
         try
         {
             await Assert.That(GetTopicPartitionOrder(first)).IsEqualTo("topic-a:0,topic-a:1,topic-b:0,topic-b:1");
-            await Assert.That(GetTopicPartitionOrder(second)).IsEqualTo("topic-a:1,topic-a:0,topic-b:0,topic-b:1");
+            await Assert.That(GetTopicPartitionOrder(second)).IsEqualTo("topic-a:1,topic-a:0,topic-b:1,topic-b:0");
             await Assert.That(GetTopicPartitionOrder(third)).IsEqualTo("topic-b:0,topic-b:1,topic-a:0,topic-a:1");
-            await Assert.That(GetTopicPartitionOrder(fourth)).IsEqualTo("topic-b:1,topic-b:0,topic-a:0,topic-a:1");
+            await Assert.That(GetTopicPartitionOrder(fourth)).IsEqualTo("topic-b:1,topic-b:0,topic-a:1,topic-a:0");
         }
         finally
         {
