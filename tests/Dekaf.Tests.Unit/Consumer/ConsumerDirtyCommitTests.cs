@@ -548,7 +548,7 @@ public sealed class ConsumerDirtyCommitTests
         metadataManager.SetApiVersion(
             ApiKey.OffsetCommit,
             OffsetCommitRequest.LowestSupportedVersion,
-            OffsetCommitRequest.HighestSupportedVersion);
+            9);
 
         return new KafkaConsumer<string, string>(
             new ConsumerOptions

@@ -7,7 +7,7 @@ public sealed class OffsetCommitResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.OffsetCommit;
     public static short LowestSupportedVersion => 8;
-    public static short HighestSupportedVersion => 9;
+    public static short HighestSupportedVersion => OffsetCommitRequest.TopicIdVersion;
 
     /// <summary>
     /// Throttle time in milliseconds.
@@ -39,12 +39,16 @@ public sealed class OffsetCommitResponse : IKafkaResponse
 /// </summary>
 public sealed class OffsetCommitResponseTopic
 {
-    public required string Name { get; init; }
+    public string Name { get; init; } = string.Empty;
+    public Guid TopicId { get; init; }
     public required IReadOnlyList<OffsetCommitResponsePartition> Partitions { get; init; }
 
     public static OffsetCommitResponseTopic Read(ref KafkaProtocolReader reader, short version)
     {
-        var name = reader.ReadCompactNonNullableString();
+        var name = version >= OffsetCommitRequest.TopicIdVersion
+            ? string.Empty
+            : reader.ReadCompactNonNullableString();
+        var topicId = version >= OffsetCommitRequest.TopicIdVersion ? reader.ReadUuid() : Guid.Empty;
         var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponsePartition.Read(ref r, v), version);
 
         reader.SkipTaggedFields();
@@ -52,6 +56,7 @@ public sealed class OffsetCommitResponseTopic
         return new OffsetCommitResponseTopic
         {
             Name = name,
+            TopicId = topicId,
             Partitions = partitions
         };
     }

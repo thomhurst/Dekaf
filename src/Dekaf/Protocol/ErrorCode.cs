@@ -177,6 +177,7 @@ public static class ErrorCodeExtensions
         ErrorCode.EligibleLeadersNotAvailable => true,
         ErrorCode.UnstableOffsetCommit => true,
         ErrorCode.ThrottlingQuotaExceeded => true,
+        ErrorCode.UnknownTopicId => true,
         _ => false
     };
 
@@ -195,6 +196,7 @@ public static class ErrorCodeExtensions
         ErrorCode.NotController => true,
         ErrorCode.FencedLeaderEpoch => true,
         ErrorCode.UnknownLeaderEpoch => true,
+        ErrorCode.UnknownTopicId => true,
         _ => false
     };
 }

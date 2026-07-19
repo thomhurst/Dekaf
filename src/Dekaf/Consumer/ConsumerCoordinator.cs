@@ -761,6 +761,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     .ConfigureAwait(false);
                 var connection = connectionLease.Connection;
 
+                var offsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    ApiKey.OffsetCommit,
+                    OffsetCommitRequest.LowestSupportedVersion,
+                    OffsetCommitRequest.HighestSupportedVersion);
+
                 // Group offsets by topic using pooled dictionary to avoid allocations
                 // Clear existing Lists before clearing the dictionary to reuse List instances
                 foreach (var list in _commitTopicGroups.Values)
@@ -785,12 +791,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 RemoveEmptyTopicGroups(_commitTopicGroups);
 
+                OffsetTopicIdRequestMap? topicIdMap = offsetCommitVersion >= OffsetCommitRequest.TopicIdVersion
+                    ? new OffsetTopicIdRequestMap(_metadataManager.Metadata, _commitTopicGroups.Count)
+                    : null;
                 var topicOffsets = new List<OffsetCommitRequestTopic>(_commitTopicGroups.Count);
                 foreach (var kvp in _commitTopicGroups)
                 {
                     topicOffsets.Add(new OffsetCommitRequestTopic
                     {
                         Name = kvp.Key,
+                        TopicId = topicIdMap?.AddTopic(kvp.Key, "OffsetCommit") ?? Guid.Empty,
                         Partitions = kvp.Value
                     });
                 }
@@ -804,28 +814,26 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     Topics = topicOffsets
                 };
 
-                // Use negotiated API version
-                var offsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
-                    connection,
-                    ApiKey.OffsetCommit,
-                    OffsetCommitRequest.LowestSupportedVersion,
-                    OffsetCommitRequest.HighestSupportedVersion);
-
                 ThrowIfMaxPollIntervalExpired();
                 var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
                     request,
                     offsetCommitVersion,
                     cancellationToken).ConfigureAwait(false);
 
+                var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
+
                 // Check for errors
                 foreach (var topic in response.Topics)
                 {
+                    var topicName = topicIdMap is null
+                        ? topic.Name
+                        : topicIdMap.MatchResponseTopic(topic.TopicId, responseSnapshot!, "OffsetCommit");
                     foreach (var partition in topic.Partitions)
                     {
                         if (partition.ErrorCode != ErrorCode.None)
                         {
                             throw new Errors.GroupException(partition.ErrorCode,
-                                $"OffsetCommit failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                                $"OffsetCommit failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}")
                             {
                                 GroupId = _options.GroupId
                             };
@@ -887,6 +895,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         .ConfigureAwait(false);
                     var connection = connectionLease.Connection;
 
+                    var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
+                        connection,
+                        ApiKey.OffsetFetch,
+                        OffsetFetchRequest.LowestSupportedVersion,
+                        OffsetFetchRequest.HighestSupportedVersion);
+
                     // Group partitions by topic using pooled dictionary to avoid allocations
                     // Clear existing Lists before clearing the dictionary to reuse List instances
                     foreach (var list in _fetchTopicGroups.Values)
@@ -906,12 +920,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     RemoveEmptyTopicGroups(_fetchTopicGroups);
 
+                    OffsetTopicIdRequestMap? topicIdMap = offsetFetchVersion >= OffsetFetchRequest.TopicIdVersion
+                        ? new OffsetTopicIdRequestMap(_metadataManager.Metadata, _fetchTopicGroups.Count)
+                        : null;
                     var topicPartitions = new List<OffsetFetchRequestTopic>(_fetchTopicGroups.Count);
                     foreach (var kvp in _fetchTopicGroups)
                     {
                         topicPartitions.Add(new OffsetFetchRequestTopic
                         {
                             Name = kvp.Key,
+                            TopicId = topicIdMap?.AddTopic(kvp.Key, "OffsetFetch") ?? Guid.Empty,
                             PartitionIndexes = kvp.Value
                         });
                     }
@@ -932,17 +950,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         ]
                     };
 
-                    // Use negotiated API version
-                    var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
-                        connection,
-                        ApiKey.OffsetFetch,
-                        OffsetFetchRequest.LowestSupportedVersion,
-                        OffsetFetchRequest.HighestSupportedVersion);
-
                     var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
                         request,
                         offsetFetchVersion,
                         operationToken).ConfigureAwait(false);
+
+                    var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
 
                     // Check top-level error (v6-v7)
                     if (response.ErrorCode != ErrorCode.None)
@@ -1005,12 +1018,15 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                             foreach (var topic in group.Topics)
                             {
+                                var topicName = topicIdMap is null
+                                    ? topic.Name
+                                    : topicIdMap.MatchResponseTopic(topic.TopicId, responseSnapshot!, "OffsetFetch");
                                 foreach (var partition in topic.Partitions)
                                 {
                                     if (partition.ErrorCode != ErrorCode.None)
                                     {
                                         throw new GroupException(partition.ErrorCode,
-                                            $"OffsetFetch failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                                            $"OffsetFetch failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}")
                                         {
                                             GroupId = _options.GroupId
                                         };
@@ -1018,9 +1034,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                                     if (partition.CommittedOffset >= 0)
                                     {
-                                        result[new TopicPartition(topic.Name, partition.PartitionIndex)] =
+                                        result[new TopicPartition(topicName, partition.PartitionIndex)] =
                                             new TopicPartitionOffset(
-                                                topic.Name,
+                                                topicName,
                                                 partition.PartitionIndex,
                                                 partition.CommittedOffset,
                                                 partition.CommittedLeaderEpoch);

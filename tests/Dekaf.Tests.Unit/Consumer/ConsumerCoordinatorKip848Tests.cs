@@ -2182,7 +2182,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     public async Task CommitOffsetsAsync_RemovesEmptyPooledTopicGroups()
     {
         SetupFindCoordinator();
-        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, OffsetCommitRequest.LowestSupportedVersion, OffsetCommitRequest.HighestSupportedVersion);
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
 
         var topicSnapshots = new List<(string Name, int PartitionCount)[]>();
         _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
@@ -2217,7 +2217,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     [Test]
     public async Task FetchOffsetsAsync_RemovesEmptyPooledTopicGroups()
     {
-        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, OffsetFetchRequest.LowestSupportedVersion, OffsetFetchRequest.HighestSupportedVersion);
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
         SetupSuccessfulConsumerProtocolJoin();
 
         var topicSnapshots = new List<(string Name, int PartitionCount)[]>();
@@ -2250,6 +2250,228 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(topicSnapshots[1].Length).IsEqualTo(1);
         await Assert.That(topicSnapshots[1][0].Name).IsEqualTo("beta");
         await Assert.That(topicSnapshots[1][0].PartitionCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_V10_UsesTopicIdFromRequestSnapshot()
+    {
+        SetupFindCoordinator();
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 10, 10);
+
+        OffsetCommitRequest? capturedRequest = null;
+        short capturedVersion = -1;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                capturedRequest = callInfo.ArgAt<OffsetCommitRequest>(0);
+                capturedVersion = callInfo.ArgAt<short>(1);
+                return ValueTask.FromResult(new OffsetCommitResponse
+                {
+                    Topics =
+                    [
+                        new OffsetCommitResponseTopic
+                        {
+                            TopicId = TestTopicId,
+                            Partitions =
+                            [
+                                new OffsetCommitResponsePartition
+                                {
+                                    PartitionIndex = 0,
+                                    ErrorCode = ErrorCode.None
+                                }
+                            ]
+                        }
+                    ]
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 0, 42)],
+            CancellationToken.None);
+
+        await Assert.That(capturedVersion).IsEqualTo((short)10);
+        await Assert.That(capturedRequest).IsNotNull();
+        await Assert.That(capturedRequest!.Topics[0].TopicId).IsEqualTo(TestTopicId);
+    }
+
+    [Test]
+    public async Task CommitOffsetsAsync_V10_MissingTopicId_RefreshesBeforeSend()
+    {
+        SetupFindCoordinator();
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 10, 10);
+        _metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 }
+            ],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    Name = "test-topic",
+                    TopicId = Guid.Empty,
+                    ErrorCode = ErrorCode.None,
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            PartitionIndex = 0,
+                            LeaderId = 0,
+                            ErrorCode = ErrorCode.None,
+                            ReplicaNodes = [0],
+                            IsrNodes = [0]
+                        }
+                    ]
+                }
+            ]
+        });
+
+        _connectionPool.GetConnectionAsync(
+                "localhost",
+                9092,
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(_connection));
+        _connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            }));
+
+        var metadataRequestCount = 0;
+        _connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                Interlocked.Increment(ref metadataRequestCount);
+                return ValueTask.FromResult(new MetadataResponse
+                {
+                    Brokers =
+                    [
+                        new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 }
+                    ],
+                    Topics =
+                    [
+                        new TopicMetadata
+                        {
+                            Name = "test-topic",
+                            TopicId = TestTopicId,
+                            ErrorCode = ErrorCode.None,
+                            Partitions =
+                            [
+                                new PartitionMetadata
+                                {
+                                    PartitionIndex = 0,
+                                    LeaderId = 0,
+                                    ErrorCode = ErrorCode.None,
+                                    ReplicaNodes = [0],
+                                    IsrNodes = [0]
+                                }
+                            ]
+                        }
+                    ]
+                });
+            });
+
+        OffsetCommitRequest? capturedRequest = null;
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                capturedRequest = callInfo.ArgAt<OffsetCommitRequest>(0);
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 0, 42)],
+            CancellationToken.None);
+
+        await Assert.That(metadataRequestCount).IsEqualTo(1);
+        await Assert.That(capturedRequest).IsNotNull();
+        await Assert.That(capturedRequest!.Topics[0].TopicId).IsEqualTo(TestTopicId);
+    }
+
+    [Test]
+    public async Task FetchOffsetsAsync_V10_MapsResponseTopicIdToName()
+    {
+        _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 10, 10);
+        SetupSuccessfulConsumerProtocolJoin();
+
+        OffsetFetchRequest? capturedRequest = null;
+        short capturedVersion = -1;
+        _connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                capturedRequest = callInfo.ArgAt<OffsetFetchRequest>(0);
+                capturedVersion = callInfo.ArgAt<short>(1);
+                return ValueTask.FromResult(new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = "test-group",
+                            ErrorCode = ErrorCode.None,
+                            Topics =
+                            [
+                                new OffsetFetchResponseTopic
+                                {
+                                    TopicId = TestTopicId,
+                                    Partitions =
+                                    [
+                                        new OffsetFetchResponsePartition
+                                        {
+                                            PartitionIndex = 0,
+                                            CommittedOffset = 42,
+                                            CommittedLeaderEpoch = 3,
+                                            ErrorCode = ErrorCode.None
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        var result = await coordinator.FetchOffsetsAsync(
+            [new TopicPartition("test-topic", 0)],
+            CancellationToken.None);
+
+        await Assert.That(capturedVersion).IsEqualTo((short)10);
+        await Assert.That(capturedRequest).IsNotNull();
+        await Assert.That(capturedRequest!.Groups![0].Topics![0].TopicId).IsEqualTo(TestTopicId);
+        await Assert.That(result[new TopicPartition("test-topic", 0)].Offset).IsEqualTo(42);
     }
 
     [Test]

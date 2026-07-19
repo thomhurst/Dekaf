@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Unit.Protocol;
 internal static class DeterministicResponseFixtureFactory
 {
     private static readonly Guid TopicId = new("00112233-4455-6677-8899-aabbccddeeff");
+    private static readonly Guid TopicIdB = new("10213243-5465-7687-98a9-bacbdcedfe0f");
 
     internal static IReadOnlyDictionary<string, byte[]> CreateAll() =>
         new SortedDictionary<string, byte[]>(StringComparer.Ordinal)
@@ -24,7 +25,9 @@ internal static class DeterministicResponseFixtureFactory
             ["FetchResponse.v16"] = Encode(WriteFetchResponse),
             ["ListOffsetsResponse.v8"] = Encode(WriteListOffsetsResponse),
             ["MetadataResponse.v13"] = Encode(WriteMetadataResponse),
+            ["OffsetCommitResponse.v10"] = Encode(WriteOffsetCommitResponseV10),
             ["OffsetFetchResponse.v9"] = Encode(WriteOffsetFetchResponse),
+            ["OffsetFetchResponse.v10"] = Encode(WriteOffsetFetchResponseV10),
             ["ProduceResponse.v12"] = Encode(WriteProduceResponse)
         };
 
@@ -98,7 +101,7 @@ internal static class DeterministicResponseFixtureFactory
         WriteMetadataTopic(
             ref writer,
             "wire-topic-b",
-            new Guid("10213243-5465-7687-98a9-bacbdcedfe0f"),
+            TopicIdB,
             ErrorCode.UnknownTopicOrPartition,
             firstPartition: 2);
 
@@ -364,6 +367,46 @@ internal static class DeterministicResponseFixtureFactory
         WriteEmptyTaggedFields(ref writer);
     }
 
+    private static void WriteOffsetFetchResponseV10(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(41);
+        WriteCompactArrayLength(ref writer, 2);
+        WriteOffsetFetchGroupV10(ref writer, "wire-group", ErrorCode.None, committedOffset: 42);
+        WriteOffsetFetchGroupV10(ref writer, "wire-group-b", ErrorCode.NotCoordinator, committedOffset: -1);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteOffsetCommitResponseV10(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(43);
+        WriteCompactArrayLength(ref writer, 2);
+        WriteOffsetCommitTopicV10(ref writer, TopicId, firstPartition: 0);
+        WriteOffsetCommitTopicV10(ref writer, TopicIdB, firstPartition: 2);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteOffsetCommitTopicV10(
+        ref KafkaProtocolWriter writer,
+        Guid topicId,
+        int firstPartition)
+    {
+        writer.WriteUuid(topicId);
+        WriteCompactArrayLength(ref writer, 2);
+        WriteOffsetCommitPartition(ref writer, firstPartition, ErrorCode.None);
+        WriteOffsetCommitPartition(ref writer, firstPartition + 1, ErrorCode.NotCoordinator);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteOffsetCommitPartition(
+        ref KafkaProtocolWriter writer,
+        int partition,
+        ErrorCode errorCode)
+    {
+        writer.WriteInt32(partition);
+        writer.WriteInt16((short)errorCode);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
     private static void WriteOffsetFetchGroup(
         ref KafkaProtocolWriter writer,
         string groupId,
@@ -378,12 +421,38 @@ internal static class DeterministicResponseFixtureFactory
         WriteEmptyTaggedFields(ref writer);
     }
 
+    private static void WriteOffsetFetchGroupV10(
+        ref KafkaProtocolWriter writer,
+        string groupId,
+        ErrorCode groupError,
+        long committedOffset)
+    {
+        writer.WriteCompactString(groupId);
+        WriteCompactArrayLength(ref writer, 2);
+        WriteOffsetFetchTopicV10(ref writer, TopicId, committedOffset);
+        WriteOffsetFetchTopicV10(ref writer, TopicIdB, committedOffset + 10);
+        writer.WriteInt16((short)groupError);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
     private static void WriteOffsetFetchTopic(
         ref KafkaProtocolWriter writer,
         string topic,
         long committedOffset)
     {
         writer.WriteCompactString(topic);
+        WriteCompactArrayLength(ref writer, 2);
+        WriteOffsetFetchPartition(ref writer, 0, committedOffset, ErrorCode.None);
+        WriteOffsetFetchPartition(ref writer, 1, committedOffset + 1, ErrorCode.OffsetOutOfRange);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteOffsetFetchTopicV10(
+        ref KafkaProtocolWriter writer,
+        Guid topicId,
+        long committedOffset)
+    {
+        writer.WriteUuid(topicId);
         WriteCompactArrayLength(ref writer, 2);
         WriteOffsetFetchPartition(ref writer, 0, committedOffset, ErrorCode.None);
         WriteOffsetFetchPartition(ref writer, 1, committedOffset + 1, ErrorCode.OffsetOutOfRange);

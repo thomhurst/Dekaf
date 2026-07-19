@@ -1,0 +1,46 @@
+﻿Response: Dekaf.Protocol.Messages.OffsetCommitResponse
+API key: OffsetCommit (8)
+Version: 10
+Header version: 1
+Body length: 70 bytes
+
+0000: 00 00 00 2B 03 00 11 22  33 44 55 66 77 88 99 AA |...+..."3DUfw...|
+0010: BB CC DD EE FF 03 00 00  00 00 00 00 00 00 00 00 |................|
+0020: 01 00 10 00 00 10 21 32  43 54 65 76 87 98 A9 BA |......!2CTev....|
+0030: CB DC ED FE 0F 03 00 00  00 02 00 00 00 00 00 00 |................|
+0040: 03 00 10 00 00 00                                |......|
+
+Decoded:
+{
+  "ThrottleTimeMs": 43,
+  "Topics": [
+    {
+      "Name": "",
+      "Partitions": [
+        {
+          "ErrorCode": "None",
+          "PartitionIndex": 0
+        },
+        {
+          "ErrorCode": "NotCoordinator",
+          "PartitionIndex": 1
+        }
+      ],
+      "TopicId": "00112233-4455-6677-8899-aabbccddeeff"
+    },
+    {
+      "Name": "",
+      "Partitions": [
+        {
+          "ErrorCode": "None",
+          "PartitionIndex": 2
+        },
+        {
+          "ErrorCode": "NotCoordinator",
+          "PartitionIndex": 3
+        }
+      ],
+      "TopicId": "10213243-5465-7687-98a9-bacbdcedfe0f"
+    }
+  ]
+}

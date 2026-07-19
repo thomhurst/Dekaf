@@ -1,0 +1,129 @@
+﻿Response: Dekaf.Protocol.Messages.OffsetFetchResponse
+API key: OffsetFetch (9)
+Version: 10
+Header version: 1
+Body length: 350 bytes
+
+0000: 00 00 00 29 03 0B 77 69  72 65 2D 67 72 6F 75 70 |...)..wire-group|
+0010: 03 00 11 22 33 44 55 66  77 88 99 AA BB CC DD EE |..."3DUfw.......|
+0020: FF 03 00 00 00 00 00 00  00 00 00 00 00 2A 00 00 |.............*..|
+0030: 00 07 0B 6D 65 74 61 64  61 74 61 2D 30 00 00 00 |...metadata-0...|
+0040: 00 00 00 01 00 00 00 00  00 00 00 2B 00 00 00 07 |...........+....|
+0050: 0B 6D 65 74 61 64 61 74  61 2D 31 00 01 00 00 10 |.metadata-1.....|
+0060: 21 32 43 54 65 76 87 98  A9 BA CB DC ED FE 0F 03 |!2CTev..........|
+0070: 00 00 00 00 00 00 00 00  00 00 00 34 00 00 00 07 |...........4....|
+0080: 0B 6D 65 74 61 64 61 74  61 2D 30 00 00 00 00 00 |.metadata-0.....|
+0090: 00 01 00 00 00 00 00 00  00 35 00 00 00 07 0B 6D |.........5.....m|
+00A0: 65 74 61 64 61 74 61 2D  31 00 01 00 00 00 00 00 |etadata-1.......|
+00B0: 0D 77 69 72 65 2D 67 72  6F 75 70 2D 62 03 00 11 |.wire-group-b...|
+00C0: 22 33 44 55 66 77 88 99  AA BB CC DD EE FF 03 00 |"3DUfw..........|
+00D0: 00 00 00 FF FF FF FF FF  FF FF FF 00 00 00 07 0B |................|
+00E0: 6D 65 74 61 64 61 74 61  2D 30 00 00 00 00 00 00 |metadata-0......|
+00F0: 01 00 00 00 00 00 00 00  00 00 00 00 07 0B 6D 65 |..............me|
+0100: 74 61 64 61 74 61 2D 31  00 01 00 00 10 21 32 43 |tadata-1.....!2C|
+0110: 54 65 76 87 98 A9 BA CB  DC ED FE 0F 03 00 00 00 |Tev.............|
+0120: 00 00 00 00 00 00 00 00  09 00 00 00 07 0B 6D 65 |..............me|
+0130: 74 61 64 61 74 61 2D 30  00 00 00 00 00 00 01 00 |tadata-0........|
+0140: 00 00 00 00 00 00 0A 00  00 00 07 0B 6D 65 74 61 |............meta|
+0150: 64 61 74 61 2D 31 00 01  00 00 00 10 00 00       |data-1........|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "Groups": [
+    {
+      "ErrorCode": "None",
+      "GroupId": "wire-group",
+      "Topics": [
+        {
+          "Name": "",
+          "Partitions": [
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 42,
+              "ErrorCode": "None",
+              "Metadata": "metadata-0",
+              "PartitionIndex": 0
+            },
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 43,
+              "ErrorCode": "OffsetOutOfRange",
+              "Metadata": "metadata-1",
+              "PartitionIndex": 1
+            }
+          ],
+          "TopicId": "00112233-4455-6677-8899-aabbccddeeff"
+        },
+        {
+          "Name": "",
+          "Partitions": [
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 52,
+              "ErrorCode": "None",
+              "Metadata": "metadata-0",
+              "PartitionIndex": 0
+            },
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 53,
+              "ErrorCode": "OffsetOutOfRange",
+              "Metadata": "metadata-1",
+              "PartitionIndex": 1
+            }
+          ],
+          "TopicId": "10213243-5465-7687-98a9-bacbdcedfe0f"
+        }
+      ]
+    },
+    {
+      "ErrorCode": "NotCoordinator",
+      "GroupId": "wire-group-b",
+      "Topics": [
+        {
+          "Name": "",
+          "Partitions": [
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": -1,
+              "ErrorCode": "None",
+              "Metadata": "metadata-0",
+              "PartitionIndex": 0
+            },
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 0,
+              "ErrorCode": "OffsetOutOfRange",
+              "Metadata": "metadata-1",
+              "PartitionIndex": 1
+            }
+          ],
+          "TopicId": "00112233-4455-6677-8899-aabbccddeeff"
+        },
+        {
+          "Name": "",
+          "Partitions": [
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 9,
+              "ErrorCode": "None",
+              "Metadata": "metadata-0",
+              "PartitionIndex": 0
+            },
+            {
+              "CommittedLeaderEpoch": 7,
+              "CommittedOffset": 10,
+              "ErrorCode": "OffsetOutOfRange",
+              "Metadata": "metadata-1",
+              "PartitionIndex": 1
+            }
+          ],
+          "TopicId": "10213243-5465-7687-98a9-bacbdcedfe0f"
+        }
+      ]
+    }
+  ],
+  "ThrottleTimeMs": 41,
+  "Topics": null
+}

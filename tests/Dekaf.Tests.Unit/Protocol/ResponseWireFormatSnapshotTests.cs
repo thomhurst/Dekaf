@@ -324,6 +324,34 @@ public class ResponseWireFormatSnapshotTests
                 };
             }
 
+            if (value is OffsetCommitResponseTopic offsetCommitTopic)
+            {
+                var normalized = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    [nameof(OffsetCommitResponseTopic.Name)] = offsetCommitTopic.Name,
+                    [nameof(OffsetCommitResponseTopic.Partitions)] = NormalizeValue(
+                        offsetCommitTopic.Partitions,
+                        ancestors)
+                };
+                if (offsetCommitTopic.TopicId != Guid.Empty)
+                    normalized[nameof(OffsetCommitResponseTopic.TopicId)] = offsetCommitTopic.TopicId;
+                return normalized;
+            }
+
+            if (value is OffsetFetchResponseTopic offsetFetchTopic)
+            {
+                var normalized = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    [nameof(OffsetFetchResponseTopic.Name)] = offsetFetchTopic.Name,
+                    [nameof(OffsetFetchResponseTopic.Partitions)] = NormalizeValue(
+                        offsetFetchTopic.Partitions,
+                        ancestors)
+                };
+                if (offsetFetchTopic.TopicId != Guid.Empty)
+                    normalized[nameof(OffsetFetchResponseTopic.TopicId)] = offsetFetchTopic.TopicId;
+                return normalized;
+            }
+
             var trackReference = !type.IsValueType;
             if (trackReference && !ancestors.Add(value))
             {
