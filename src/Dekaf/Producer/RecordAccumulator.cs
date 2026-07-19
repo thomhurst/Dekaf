@@ -7622,7 +7622,13 @@ internal sealed class PartitionBatch
         }
         if (hasCallback || _callbacks is not null)
         {
-            _callbacks ??= ProducerContainerPools.Callbacks.Rent(_initialRecordCapacity);
+            if (_callbacks is null)
+            {
+                _callbacks = ProducerContainerPools.Callbacks.Rent(_initialRecordCapacity);
+                // A callback array can have been returned uncleared by GrowArray. Records
+                // appended before this batch's first callback never wrote their slots.
+                Array.Clear(_callbacks, 0, Math.Min(recordIndex, _callbacks.Length));
+            }
             if (recordIndex >= _callbacks.Length)
             {
                 GrowArray(
