@@ -272,7 +272,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 throw;
             }
 
-            // Process responses sequentially — yielding records and tracking acks
+            // Process every response before yielding. Session epochs and inline
+            // acknowledgements must advance even when an earlier broker fills the poll budget.
             var recordCount = 0;
             List<ShareConsumeResult<TKey, TValue>>? fetchedRecords = _renewedRecords is null
                 ? null
@@ -280,9 +281,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
             foreach (var fetchTask in fetchTasks)
             {
-                if ((fetchedRecords?.Count ?? recordCount) >= _options.MaxPollRecords)
-                    break;
-
                 var (brokerId, version, response, sentAcks) = fetchTask.Result;
 
                 if (response is null)
@@ -299,11 +297,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                         response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
                     {
                         _sessionManager.ResetSession(brokerId);
-                        ClearRenewedRecordsForBroker(brokerId);
                         // Note: _ackTracker may still hold pending acks from the now-invalid session.
                         // On next CommitAsync those acks will be sent with epoch 0 (new session).
-                        // The broker will reject them if the old record locks have expired, which is
-                        // safe — CommitAsync will re-queue the failed acks for retry.
+                        // Keep renewal state so a re-queued Renew can activate the record after the
+                        // new session accepts it.
                     }
                     RequeueAcknowledgements(sentAcks);
                     continue;
@@ -332,6 +329,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 {
                     ApplySuccessfulAcknowledgements(sentAcks);
                 }
+            }
+
+            // Parse records only after all broker bookkeeping is complete. This second broker scan
+            // is per poll, not per message, and avoids buffering records when no renewal is active.
+            foreach (var fetchTask in fetchTasks)
+            {
+                var (_, _, response, _) = fetchTask.Result;
+                if (response is null || response.ErrorCode != ErrorCode.None)
+                    continue;
 
                 // Process partition responses
                 foreach (var topicResponse in response.Responses)
@@ -447,6 +453,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         ThrowIfDisposed();
         ThrowIfNotInitialized();
 
+        await CommitCoreAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask CommitCoreAsync(CancellationToken cancellationToken)
+    {
         if (!_ackTracker.HasPending)
             return;
 
@@ -508,7 +519,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         {
             try
             {
-                await CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitCoreAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -700,7 +711,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
                 LogFetchFailed(brokerId, ex);
                 _sessionManager.ResetSession(brokerId);
-                ClearRenewedRecordsForBroker(brokerId);
                 return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks);
             }
         }
@@ -808,7 +818,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                         or ErrorCode.InvalidShareSessionEpoch)
                     {
                         _sessionManager.ResetSession(brokerId);
-                        ClearRenewedRecordsForBroker(brokerId);
                     }
                     else
                     {
@@ -1397,32 +1406,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     }
 
     private void ClearRenewedRecords() => _renewedRecords = null;
-
-    private void ClearRenewedRecordsForBroker(int brokerId)
-    {
-        if (_renewedRecords is null)
-            return;
-
-        List<RenewedRecordKey>? removed = null;
-        foreach (var key in _renewedRecords.Keys)
-        {
-            var leader = _metadataManager.Metadata.GetPartitionLeader(key.Topic, key.Partition);
-            if (leader?.NodeId != brokerId)
-                continue;
-
-            removed ??= [];
-            removed.Add(key);
-        }
-
-        if (removed is null)
-            return;
-
-        foreach (var key in removed)
-            _renewedRecords.Remove(key);
-
-        if (_renewedRecords.Count == 0)
-            _renewedRecords = null;
-    }
 
     /// <summary>
     /// Groups acknowledgement data by leader broker.

@@ -160,48 +160,9 @@ public sealed class ShareConsumerRenewalTests
     [Test]
     public async Task Poll_FetchedRecord_ReservesBudgetBeforeRenewalReplay()
     {
-        var buffer = new ArrayBufferWriter<byte>();
-        using (var batch = new RecordBatch
-        {
-            BaseOffset = 100,
-            Records = [new Record { IsKeyNull = true, Value = "new-value"u8.ToArray() }]
-        })
-        {
-            batch.Write(buffer);
-        }
-
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
         {
-            ShareFetchResponse = new ShareFetchResponse
-            {
-                ErrorCode = ErrorCode.None,
-                Responses =
-                [
-                    new ShareFetchResponseTopic
-                    {
-                        TopicId = TopicId,
-                        Partitions =
-                        [
-                            new ShareFetchResponsePartition
-                            {
-                                PartitionIndex = 0,
-                                CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
-                                RecordBytes = buffer.WrittenMemory,
-                                AcquiredRecords =
-                                [
-                                    new ShareFetchAcquiredRecords
-                                    {
-                                        FirstOffset = 100,
-                                        LastOffset = 100,
-                                        DeliveryCount = 1
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ],
-                NodeEndpoints = []
-            }
+            ShareFetchResponse = CreateFetchResponse(partition: 0, offset: 100)
         };
         await using var fixture = CreateFixture(connection, maxPollRecords: 1);
         PrepareForPoll(fixture.Consumer);
@@ -217,6 +178,41 @@ public sealed class ShareConsumerRenewalTests
         await Assert.That(poll.Current.Offset).IsEqualTo(100);
         var assignment = new HashSet<TopicPartition> { new("topic", 0) };
         await Assert.That(GetActiveRenewedRecords(fixture.Consumer, assignment)).HasSingleItem();
+    }
+
+    [Test]
+    public async Task Poll_MaxPollRecords_ProcessesEveryBrokerResponse()
+    {
+        var firstConnection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = CreateFetchResponse(partition: 0, offset: 100)
+        };
+        var secondConnection = new CapturingConnection(ApiKey.ShareFetch, 2, brokerId: 2)
+        {
+            ShareFetchResponse = new ShareFetchResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Responses = [],
+                NodeEndpoints = []
+            }
+        };
+        await using var fixture = CreateFixture(
+            firstConnection,
+            maxPollRecords: 1,
+            secondConnection: secondConnection);
+        PrepareForPoll(
+            fixture.Consumer,
+            new TopicPartition("topic", 0),
+            new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+
+        await using var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator();
+        var moved = await poll.MoveNextAsync();
+
+        await Assert.That(moved).IsTrue();
+        await Assert.That(poll.Current.Offset).IsEqualTo(100);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 1)).IsEqualTo(1);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(1);
     }
 
     [Test]
@@ -392,7 +388,7 @@ public sealed class ShareConsumerRenewalTests
     }
 
     [Test]
-    public async Task Poll_SessionLoss_ClearsRenewedRecords()
+    public async Task Poll_SessionLoss_PreservesRenewalForRetry()
     {
         using var cancellation = new CancellationTokenSource();
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
@@ -411,73 +407,16 @@ public sealed class ShareConsumerRenewalTests
         fixture.Consumer.Subscribe("topic");
         var record = CreateRecord();
         fixture.Consumer.Acknowledge(record, AcknowledgeType.Renew);
-        ApplySuccessfulAcknowledgements(fixture.Consumer, RenewalAcknowledgements());
-        fixture.Consumer.Acknowledge(record, AcknowledgeType.Renew);
 
         await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
         var moved = await poll.MoveNextAsync();
 
         await Assert.That(moved).IsFalse();
-        await Assert.That(GetActiveRenewedRecords(fixture.Consumer, assignment)).IsEmpty();
-    }
-
-    [Test]
-    public async Task BrokerSessionLoss_ClearsOnlyBrokerRenewedRecords()
-    {
-        var connection = new CapturingConnection(ApiKey.ShareFetch, 2);
-        await using var fixture = CreateFixture(connection);
-        fixture.MetadataManager.Metadata.Update(new MetadataResponse
-        {
-            Brokers =
-            [
-                new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9092 },
-                new BrokerMetadata { NodeId = 2, Host = "broker-2", Port = 9092 }
-            ],
-            Topics =
-            [
-                new TopicMetadata
-                {
-                    ErrorCode = ErrorCode.None,
-                    Name = "topic",
-                    TopicId = TopicId,
-                    Partitions =
-                    [
-                        new PartitionMetadata
-                        {
-                            ErrorCode = ErrorCode.None,
-                            PartitionIndex = 0,
-                            LeaderId = 1,
-                            ReplicaNodes = [1],
-                            IsrNodes = [1]
-                        },
-                        new PartitionMetadata
-                        {
-                            ErrorCode = ErrorCode.None,
-                            PartitionIndex = 1,
-                            LeaderId = 2,
-                            ReplicaNodes = [2],
-                            IsrNodes = [2]
-                        }
-                    ]
-                }
-            ]
-        });
-        var first = CreateRecord(partition: 0, offset: 40);
-        var second = CreateRecord(partition: 1, offset: 41);
-        fixture.Consumer.Acknowledge(first, AcknowledgeType.Renew);
-        fixture.Consumer.Acknowledge(second, AcknowledgeType.Renew);
-        ApplySuccessfulAcknowledgements(fixture.Consumer, RenewalAcknowledgementsForBothPartitions());
-
-        InvokePrivate(fixture.Consumer, "ClearRenewedRecordsForBroker", 1);
-
-        var assignment = new HashSet<TopicPartition>
-        {
-            new("topic", 0),
-            new("topic", 1)
-        };
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsTrue();
+        ApplySuccessfulAcknowledgements(fixture.Consumer, RenewalAcknowledgements());
         var active = GetActiveRenewedRecords(fixture.Consumer, assignment);
         await Assert.That(active).HasSingleItem();
-        await Assert.That(active[0].Partition).IsEqualTo(1);
+        await Assert.That(ReferenceEquals(active[0], record)).IsTrue();
     }
 
     [Test]
@@ -538,10 +477,32 @@ public sealed class ShareConsumerRenewalTests
         await Assert.That(GetActiveRenewedRecords(fixture.Consumer, assignment)).IsEmpty();
     }
 
+    [Test]
+    public async Task Dispose_FlushesPendingAcknowledgements()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2)
+        {
+            ShareAcknowledgeResponse = new ShareAcknowledgeResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Responses = [],
+                NodeEndpoints = []
+            }
+        };
+        await using var fixture = CreateFixture(connection);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(), AcknowledgeType.Accept);
+
+        await fixture.Consumer.DisposeAsync();
+
+        await Assert.That(connection.ShareAcknowledgeRequest).IsNotNull();
+    }
+
     private static Fixture CreateFixture(
         CapturingConnection connection,
         ShareAcknowledgementMode acknowledgementMode = ShareAcknowledgementMode.Explicit,
-        int maxPollRecords = 500)
+        int maxPollRecords = 500,
+        CapturingConnection? secondConnection = null)
     {
         var options = new ShareConsumerOptions
         {
@@ -552,10 +513,18 @@ public sealed class ShareConsumerRenewalTests
         };
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(1, Arg.Any<CancellationToken>()).Returns(connection);
+        if (secondConnection is not null)
+            pool.GetConnectionAsync(2, Arg.Any<CancellationToken>()).Returns(secondConnection);
         var metadataManager = new MetadataManager(pool, options.BootstrapServers);
         metadataManager.Metadata.Update(new MetadataResponse
         {
-            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Brokers = secondConnection is null
+                ? [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }]
+                :
+                [
+                    new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 },
+                    new BrokerMetadata { NodeId = 2, Host = "localhost", Port = 9093 }
+                ],
             Topics =
             [
                 new TopicMetadata
@@ -577,9 +546,9 @@ public sealed class ShareConsumerRenewalTests
                         {
                             ErrorCode = ErrorCode.None,
                             PartitionIndex = 1,
-                            LeaderId = 1,
-                            ReplicaNodes = [1],
-                            IsrNodes = [1]
+                            LeaderId = secondConnection is null ? 1 : 2,
+                            ReplicaNodes = [secondConnection is null ? 1 : 2],
+                            IsrNodes = [secondConnection is null ? 1 : 2]
                         }
                     ]
                 }
@@ -593,6 +562,48 @@ public sealed class ShareConsumerRenewalTests
             metadataManager);
         SetMemberId(consumer, "member-1");
         return new Fixture(consumer, metadataManager);
+    }
+
+    private static ShareFetchResponse CreateFetchResponse(int partition, long offset)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using var batch = new RecordBatch
+        {
+            BaseOffset = offset,
+            Records = [new Record { IsKeyNull = true, Value = "new-value"u8.ToArray() }]
+        };
+        batch.Write(buffer);
+
+        return new ShareFetchResponse
+        {
+            ErrorCode = ErrorCode.None,
+            Responses =
+            [
+                new ShareFetchResponseTopic
+                {
+                    TopicId = TopicId,
+                    Partitions =
+                    [
+                        new ShareFetchResponsePartition
+                        {
+                            PartitionIndex = partition,
+                            CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                            RecordBytes = buffer.WrittenMemory,
+                            AcquiredRecords =
+                            [
+                                new ShareFetchAcquiredRecords
+                                {
+                                    FirstOffset = offset,
+                                    LastOffset = offset,
+                                    DeliveryCount = 1
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ],
+            NodeEndpoints = []
+        };
     }
 
     private static Dictionary<TopicPartition, List<AcknowledgementBatchData>> RenewalAcknowledgements()
@@ -811,11 +822,14 @@ public sealed class ShareConsumerRenewalTests
         }
     }
 
-    private sealed class CapturingConnection(ApiKey apiKey, short maximumVersion) :
+    private sealed class CapturingConnection(
+        ApiKey apiKey,
+        short maximumVersion,
+        int brokerId = 1) :
         IKafkaConnection,
         IKafkaCapabilityProvider
     {
-        public int BrokerId => 1;
+        public int BrokerId => brokerId;
         public string Host => "localhost";
         public int Port => 9092;
         public bool IsConnected => true;
