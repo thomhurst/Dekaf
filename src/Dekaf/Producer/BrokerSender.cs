@@ -761,6 +761,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// no ambient context (e.g. <c>AsyncLocal</c>, <c>SecurityContext</c>) needs to flow.
     /// </remarks>
     private readonly Action _responseCompletionCallback;
+    private readonly Action _senderRetryReadyCallback;
     private int _disposed;
     private int _deferredPendingResponseCleanupCount;
 
@@ -880,6 +881,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
             _anyResponseCompleted.Signal();
         };
+        _senderRetryReadyCallback = _anyResponseCompleted.Signal;
         _cts = new CancellationTokenSource();
         _retainedConnectionGroupPool = connectionPool as ConnectionPool;
         try
@@ -3077,7 +3079,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             CompleteInflightEntry(batch);
                             var splitRetries = _accumulator.SplitForSenderRetry(
                                 batch,
-                                pending.BatchGenerations[j]);
+                                pending.BatchGenerations[j],
+                                _senderRetryReadyCallback);
                             if (splitRetries is not null)
                             {
                                 // ProcessCompletedResponses walks requests oldest-first. Put

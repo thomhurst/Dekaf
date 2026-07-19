@@ -2059,20 +2059,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// The source delivery deadline and idempotent sequence range are retained.
     /// </summary>
     internal bool SplitAndReenqueue(ReadyBatch source, int expectedGeneration)
-        => SplitBatch(source, expectedGeneration, reenqueue: true) is not null;
+        => SplitBatch(source, expectedGeneration, reenqueue: true, senderWakeup: null) is not null;
 
     /// <summary>
     /// KIP-126 split used for a broker rejection. Returns the ordered children to the
     /// owning sender instead of publishing them through the accumulator, so they can
     /// enter the sender's retry deque ahead of newer in-flight retries.
     /// </summary>
-    internal List<ReadyBatch>? SplitForSenderRetry(ReadyBatch source, int expectedGeneration)
-        => SplitBatch(source, expectedGeneration, reenqueue: false);
+    internal List<ReadyBatch>? SplitForSenderRetry(
+        ReadyBatch source,
+        int expectedGeneration,
+        Action senderWakeup)
+        => SplitBatch(source, expectedGeneration, reenqueue: false, senderWakeup);
 
     private List<ReadyBatch>? SplitBatch(
         ReadyBatch source,
         int expectedGeneration,
-        bool reenqueue)
+        bool reenqueue,
+        Action? senderWakeup)
     {
         if (source.RecordCount <= 1 || !source.TryAcquireResourcePin(expectedGeneration))
             return null;
@@ -2139,7 +2143,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 else
                     child.SetPreSerializationTask(reenqueue
                         ? CreatePreSerializationTask(child)
-                        : CreateSenderRetryPreSerializationTask(child));
+                        : CreateSenderRetryPreSerializationTask(child, senderWakeup!));
                 splitBatches.Add(child);
             }
         }
@@ -2207,14 +2211,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (reenqueue)
                 StartPreSerialization(child);
             else
-                StartSenderRetryPreSerialization(child);
+                StartSenderRetryPreSerialization(child, senderWakeup!);
         }
 
         Diagnostics.DekafMetrics.BatchSplits.Add(1, new TagList
         {
             { Diagnostics.DekafDiagnostics.MessagingDestinationName, splitBatches[0].TopicPartition.Topic }
         });
-        SignalWakeup();
+        if (reenqueue)
+            SignalWakeup();
         return splitBatches;
     }
 
@@ -4590,11 +4595,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         readyBatch.StartPreSerializationTask();
     }
 
-    private void StartSenderRetryPreSerialization(ReadyBatch readyBatch)
+    private static void StartSenderRetryPreSerialization(ReadyBatch readyBatch, Action senderWakeup)
     {
         if (readyBatch.IsPreSerialized)
         {
-            SignalWakeup();
+            senderWakeup();
             return;
         }
 
@@ -4615,16 +4620,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             TaskCreationOptions.DenyChildAttach);
     }
 
-    private Task CreateSenderRetryPreSerializationTask(ReadyBatch readyBatch)
+    private Task CreateSenderRetryPreSerializationTask(ReadyBatch readyBatch, Action senderWakeup)
     {
         var generation = readyBatch.Generation;
         return new Task(
             static state =>
             {
                 var workItem = (SenderRetryPreSerializationWorkItem)state!;
-                workItem.Accumulator.PreSerializeSenderRetryBatch(workItem.Batch, workItem.Generation);
+                workItem.Accumulator.PreSerializeSenderRetryBatch(
+                    workItem.Batch,
+                    workItem.Generation,
+                    workItem.SenderWakeup);
             },
-            new SenderRetryPreSerializationWorkItem(this, readyBatch, generation),
+            new SenderRetryPreSerializationWorkItem(this, readyBatch, generation, senderWakeup),
             CancellationToken.None,
             TaskCreationOptions.DenyChildAttach);
     }
@@ -4635,10 +4643,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             PublishSealedBatch(readyBatch);
     }
 
-    private void PreSerializeSenderRetryBatch(ReadyBatch readyBatch, int generation)
+    private void PreSerializeSenderRetryBatch(ReadyBatch readyBatch, int generation, Action senderWakeup)
     {
         if (PrepareBatchForPublish(readyBatch, generation) && readyBatch.IsCurrentIncarnation(generation))
-            SignalWakeup();
+            senderWakeup();
     }
 
     private sealed class PreSerializationWorkItem(
@@ -4656,13 +4664,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private sealed class SenderRetryPreSerializationWorkItem(
         RecordAccumulator accumulator,
         ReadyBatch batch,
-        int generation)
+        int generation,
+        Action senderWakeup)
     {
         public RecordAccumulator Accumulator { get; } = accumulator;
 
         public ReadyBatch Batch { get; } = batch;
 
         public int Generation { get; } = generation;
+
+        public Action SenderWakeup { get; } = senderWakeup;
     }
 
     /// <summary>

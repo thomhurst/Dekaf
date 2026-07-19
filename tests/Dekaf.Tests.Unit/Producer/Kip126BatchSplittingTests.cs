@@ -247,7 +247,7 @@ public sealed class Kip126BatchSplittingTests
     }
 
     [Test]
-    public async Task SplitForSenderRetry_ReturnsOrderedChildrenWithoutAccumulatorPublish()
+    public async Task SplitForSenderRetry_SignalsSenderWhenCompressedChildrenAreReady()
     {
         const string topic = "sender-retry-split";
         var options = new ProducerOptions
@@ -255,7 +255,7 @@ public sealed class Kip126BatchSplittingTests
             BootstrapServers = ["localhost:9092"],
             BatchSize = 1000,
             BufferMemory = 1024 * 1024,
-            CompressionType = CompressionType.None,
+            CompressionType = CompressionType.Gzip,
             LingerMs = 0
         };
         var sourceBuilder = new PartitionBatch(new TopicPartition(topic, 0), options);
@@ -271,12 +271,20 @@ public sealed class Kip126BatchSplittingTests
 
         await using var accumulator = new RecordAccumulator(options, new CompressionCodecRegistry());
         await using var metadataManager = AccumulatorTestHelpers.CreateMetadataManager(topic, partitionCount: 1);
-        var children = accumulator.SplitForSenderRetry(source, source.Generation)!;
+        var senderWakeups = 0;
+        var children = accumulator.SplitForSenderRetry(
+            source,
+            source.Generation,
+            () => Interlocked.Increment(ref senderWakeups))!;
         try
         {
+            foreach (var child in children)
+                child.WaitForPreSerializationIfStarted();
+
             await Assert.That(children).Count().IsGreaterThan(1);
             await Assert.That(children.All(static child => child.IsPreSerialized)).IsTrue();
             await Assert.That(children.Sum(static child => child.RecordCount)).IsEqualTo(8);
+            await Assert.That(senderWakeups).IsEqualTo(children.Count);
 
             var expectedSequence = 40;
             foreach (var child in children)
