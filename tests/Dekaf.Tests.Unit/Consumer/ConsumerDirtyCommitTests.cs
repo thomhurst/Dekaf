@@ -79,6 +79,54 @@ public sealed class ConsumerDirtyCommitTests
     }
 
     [Test]
+    public async Task CommitAsync_Parameterless_UsesDefaultApiTimeout()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            onOffsetCommitAsync: static async token => await Task.Delay(Timeout.InfiniteTimeSpan, token),
+            defaultApiTimeoutMs: 100);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+
+        var exception = await Assert.That(async () => await consumer.CommitAsync())
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(100));
+    }
+
+    [Test]
+    public async Task CommitAsync_WhenOperationFailsAfterDeadline_PreservesOriginalException()
+    {
+        var requests = new List<OffsetCommitRequest>();
+        await using var consumer = CreateConsumer(
+            requests,
+            ErrorCode.None,
+            onOffsetCommitAsync: static async token =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new KafkaException(ErrorCode.InvalidCommitOffsetSize, "commit failed");
+                }
+            },
+            defaultApiTimeoutMs: 100);
+        consumer.StoreOffset(new TopicPartitionOffset("topic-a", 0, 10));
+
+        var exception = await Assert.That(async () => await consumer.CommitAsync())
+            .Throws<KafkaException>()
+            .WithMessage("commit failed");
+
+        await Assert.That(exception).IsTypeOf<KafkaException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.InvalidCommitOffsetSize);
+        await Assert.That(exception.IsRetriable).IsFalse();
+    }
+
+    [Test]
     public async Task CommitAsync_AfterNonDirtyPositionReset_DoesNotCommitStaleDirtyOffset()
     {
         var requests = new List<OffsetCommitRequest>();
@@ -474,7 +522,8 @@ public sealed class ConsumerDirtyCommitTests
         bool enableAutoOffsetStore = true,
         Action<CancellationToken>? onOffsetCommit = null,
         int rebalanceTimeoutMs = 60_000,
-        Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null)
+        Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null,
+        int defaultApiTimeoutMs = 60_000)
         => CreateConsumer(
             requests,
             new Queue<ErrorCode>([responseError]),
@@ -482,7 +531,8 @@ public sealed class ConsumerDirtyCommitTests
             enableAutoOffsetStore,
             onOffsetCommit,
             rebalanceTimeoutMs,
-            onOffsetCommitAsync);
+            onOffsetCommitAsync,
+            defaultApiTimeoutMs);
 
     private static KafkaConsumer<string, string> CreateConsumer(
         List<OffsetCommitRequest> requests,
@@ -491,7 +541,8 @@ public sealed class ConsumerDirtyCommitTests
         bool enableAutoOffsetStore = true,
         Action<CancellationToken>? onOffsetCommit = null,
         int rebalanceTimeoutMs = 60_000,
-        Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null)
+        Func<CancellationToken, ValueTask>? onOffsetCommitAsync = null,
+        int defaultApiTimeoutMs = 60_000)
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -557,7 +608,8 @@ public sealed class ConsumerDirtyCommitTests
                 GroupId = "group-a",
                 OffsetCommitMode = offsetCommitMode,
                 EnableAutoOffsetStore = enableAutoOffsetStore,
-                RebalanceTimeoutMs = rebalanceTimeoutMs
+                RebalanceTimeoutMs = rebalanceTimeoutMs,
+                DefaultApiTimeoutMs = defaultApiTimeoutMs
             },
             Serializers.String,
             Serializers.String,

@@ -4319,15 +4319,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
+        // Explicit commit: the caller vouches for everything yielded so far, including
+        // a record still being processed.
+        FlushActiveConsumedPosition();
+
+        if (_coordinator is null)
+            return;
+
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
-            // Explicit commit: the caller vouches for everything yielded so far, including
-            // a record still being processed.
-            FlushActiveConsumedPosition();
             await CommitStoredOffsetsAsync(apiTimeout.Token).ConfigureAwait(false);
         }
-        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
         {
             throw apiTimeout.CreateTimeoutException(nameof(CommitAsync), ex);
         }
@@ -4476,7 +4480,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             // Invoke OnCommit interceptors
             InvokeOnCommitInterceptors(offsetsList);
         }
-        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
         {
             throw apiTimeout.CreateTimeoutException(nameof(CommitAsync), ex);
         }
@@ -4522,7 +4526,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 return offset;
             }
         }
-        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
         {
             throw apiTimeout.CreateTimeoutException(nameof(GetCommittedOffsetAsync), ex);
         }
@@ -5383,7 +5387,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
         {
             throw apiTimeout.CreateTimeoutException(nameof(QueryWatermarkOffsetsAsync), ex);
         }
@@ -5421,7 +5425,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 SemaphoreHelper.ReleaseSafely(_initLock);
             }
         }
-        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
         {
             throw apiTimeout.CreateTimeoutException(nameof(InitializeAsync), ex);
         }
@@ -7734,7 +7738,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             await CloseAsyncCore(apiTimeout.Token).ConfigureAwait(false);
             apiTimeout.Token.ThrowIfCancellationRequested();
         }
-        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
         {
             throw apiTimeout.CreateTimeoutException(nameof(CloseAsync), ex);
         }
@@ -7984,7 +7988,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
         {
             throw apiTimeout.CreateTimeoutException(nameof(GetOffsetsForTimesAsync), ex);
         }

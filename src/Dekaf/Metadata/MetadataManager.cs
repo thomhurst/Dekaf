@@ -800,6 +800,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 return;
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex) when (IsFatalMetadataError(ex))
             {
                 throw; // No other broker will resolve this — surface the real cause.
@@ -935,6 +939,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 ResetAllBrokersUnavailableTimestamp();
 
                 return true;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex) when (IsFatalMetadataError(ex))
             {
