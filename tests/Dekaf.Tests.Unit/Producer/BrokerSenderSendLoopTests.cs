@@ -1906,8 +1906,15 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             var batch1 = CreateTestBatch(vtPool, "test-topic", 0);
             var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
 
-            sender.Enqueue(batch1);
-            sender.Enqueue(batch2);
+            // The first batch teaches the live sender only one known partition. Predeclare
+            // the complete test wave so it waits for both separately queued bulk events
+            // instead of dispatching whichever event wins the startup race.
+            var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
+                "_knownPartitions",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+            knownPartitions.Add(batch1.TopicPartition);
+            knownPartitions.Add(batch2.TopicPartition);
+            sender.EnqueueBulk([batch1, batch2]);
 
             // Wait for the send loop to send the coalesced request
             await requestSent.Task.WaitAsync(cancellationToken);
