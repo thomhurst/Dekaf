@@ -318,7 +318,7 @@ public sealed class TopicRecreationIntegrationTests(KafkaTestContainer kafka) : 
 
     private static async Task WaitForAssignmentAsync(
         IKafkaConsumer<string, string> consumer,
-        Func<IReadOnlySet<TopicPartition>, bool> predicate,
+        Func<IReadOnlyCollection<TopicPartition>, bool> predicate,
         CancellationToken cancellationToken)
     {
         while (!predicate(consumer.Assignment))
