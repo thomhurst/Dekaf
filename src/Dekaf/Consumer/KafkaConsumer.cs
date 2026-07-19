@@ -915,7 +915,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // #2211). The _paused/_pausedSnapshot pair follows the same split.
     private readonly ConcurrentDictionary<string, byte> _subscription = new();
     private readonly HashSet<TopicPartition> _assignment = [];
-    private volatile TopicPartitionSet _assignmentSnapshot = new HashSet<TopicPartition>();
+    private volatile HashSet<TopicPartition> _assignmentSnapshot = [];
     private readonly ConcurrentDictionary<TopicPartition, byte> _paused = new();
     private volatile StringSet _subscriptionSnapshot = new HashSet<string>();
     private volatile TopicPartitionSet _pausedSnapshot = new HashSet<TopicPartition>();
@@ -6917,22 +6917,33 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
-    private async ValueTask HandleTopicIdentityChangesAsync(
+    private ValueTask HandleTopicIdentityChangesAsync(
         CancellationToken cancellationToken,
         string? rejectedTopic = null,
         Guid rejectedTopicId = default)
     {
         var metadataSnapshot = _metadataManager.Metadata.CaptureSnapshot();
         if (ReferenceEquals(metadataSnapshot, Volatile.Read(ref _observedTopicIdentitySnapshot)))
-            return;
+            return ValueTask.CompletedTask;
 
+        return HandleTopicIdentityChangesSlowAsync(
+            rejectedTopic,
+            rejectedTopicId,
+            cancellationToken);
+    }
+
+    private async ValueTask HandleTopicIdentityChangesSlowAsync(
+        string? rejectedTopic,
+        Guid rejectedTopicId,
+        CancellationToken cancellationToken)
+    {
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(
             _topicIdentityLock,
             nameof(KafkaConsumer<TKey, TValue>),
             cancellationToken).ConfigureAwait(false);
         try
         {
-            metadataSnapshot = _metadataManager.Metadata.CaptureSnapshot();
+            var metadataSnapshot = _metadataManager.Metadata.CaptureSnapshot();
             if (ReferenceEquals(metadataSnapshot, Volatile.Read(ref _observedTopicIdentitySnapshot)))
                 return;
 
@@ -6944,9 +6955,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             Dictionary<string, (Guid Previous, Guid Current)>? changedTopics = null;
+            var assignedTopics = new HashSet<string>(StringComparer.Ordinal);
             var assignment = _assignmentSnapshot;
             foreach (var partition in assignment)
             {
+                assignedTopics.Add(partition.Topic);
+
                 if (!metadataSnapshot.Topics.TryGetValue(partition.Topic, out var topicInfo) ||
                     topicInfo.TopicId == Guid.Empty)
                 {
@@ -6965,6 +6979,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     _observedTopicIds[partition.Topic] = topicInfo.TopicId;
                 }
             }
+            PruneObservedTopicIds(assignedTopics);
 
             if (changedTopics is not null)
             {
@@ -6981,37 +6996,63 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 InvalidatePartitionCache();
                 InvalidateFetchRequestCache();
                 var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
+                Task[]? resetTasks = null;
+                var resetTaskCount = 0;
 
-                foreach (var partition in recreatedPartitions)
+                try
                 {
-                    ClearStoredOffset(partition);
-                    _pendingRebalanceSeeks.TryRemove(partition, out _);
-                    _committed.TryRemove(partition, out _);
-                    _highWatermarks.TryRemove(partition, out _);
-                    _watermarks.TryRemove(partition, out _);
-                    _eofEmitted.TryRemove(partition, out _);
-
-                    var topicInfo = metadataSnapshot.Topics[partition.Topic];
-                    if ((uint)partition.Partition >= (uint)topicInfo.PartitionCount)
+                    foreach (var partition in recreatedPartitions)
                     {
-                        _positions.TryRemove(partition, out _);
-                        _fetchPositions.TryRemove(partition, out _);
-                        ClearLastConsumedLeaderEpoch(partition);
-                        continue;
+                        ClearStoredOffset(partition);
+                        _pendingRebalanceSeeks.TryRemove(partition, out _);
+                        _committed.TryRemove(partition, out _);
+                        _highWatermarks.TryRemove(partition, out _);
+                        _watermarks.TryRemove(partition, out _);
+                        _eofEmitted.TryRemove(partition, out _);
+
+                        var topicInfo = metadataSnapshot.Topics[partition.Topic];
+                        if ((uint)partition.Partition >= (uint)topicInfo.PartitionCount)
+                        {
+                            _positions.TryRemove(partition, out _);
+                            _fetchPositions.TryRemove(partition, out _);
+                            ClearLastConsumedLeaderEpoch(partition);
+                            continue;
+                        }
+
+                        var identities = changedTopics[partition.Topic];
+                        var reset = ResetOffsetOutOfRangeAsync(
+                            partition,
+                            fetchBufferEpoch,
+                            cancellationToken);
+                        if (reset.IsCompletedSuccessfully)
+                        {
+                            reset.GetAwaiter().GetResult();
+                            LogTopicIdentityReset(partition, identities);
+                            continue;
+                        }
+
+                        resetTasks ??= ArrayPool<Task>.Shared.Rent(recreatedPartitions.Count);
+                        resetTasks[resetTaskCount++] = CompleteTopicIdentityResetAsync(
+                            reset,
+                            partition,
+                            identities);
                     }
 
-                    await ResetOffsetOutOfRangeAsync(
-                        partition,
-                        fetchBufferEpoch,
-                        cancellationToken).ConfigureAwait(false);
-                    var identities = changedTopics[partition.Topic];
-                    var fetchPosition = _fetchPositions.GetValueOrDefault(partition, long.MinValue);
-                    LogTopicIdentityReset(
-                        partition.Topic,
-                        partition.Partition,
-                        identities.Previous,
-                        identities.Current,
-                        fetchPosition);
+#if NETSTANDARD2_0
+                    if (resetTaskCount > 0)
+                        await Task.WhenAll(resetTasks!.Take(resetTaskCount)).ConfigureAwait(false);
+#else
+                    if (resetTaskCount > 0)
+                    {
+                        await Task.WhenAll(
+                            new ReadOnlySpan<Task>(resetTasks!, 0, resetTaskCount)).ConfigureAwait(false);
+                    }
+#endif
+                }
+                finally
+                {
+                    if (resetTasks is not null)
+                        ArrayPool<Task>.Shared.Return(resetTasks, clearArray: true);
                 }
 
                 foreach (var (topic, identities) in changedTopics)
@@ -7024,6 +7065,47 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             SemaphoreHelper.ReleaseSafely(_topicIdentityLock);
         }
+    }
+
+    private void PruneObservedTopicIds(HashSet<string> assignedTopics)
+    {
+        List<string>? removedTopics = null;
+        foreach (var topic in _observedTopicIds.Keys)
+        {
+            if (assignedTopics.Contains(topic))
+                continue;
+
+            removedTopics ??= [];
+            removedTopics.Add(topic);
+        }
+
+        if (removedTopics is null)
+            return;
+
+        foreach (var topic in removedTopics)
+            _observedTopicIds.Remove(topic);
+    }
+
+    private async Task CompleteTopicIdentityResetAsync(
+        ValueTask reset,
+        TopicPartition partition,
+        (Guid Previous, Guid Current) identities)
+    {
+        await reset.ConfigureAwait(false);
+        LogTopicIdentityReset(partition, identities);
+    }
+
+    private void LogTopicIdentityReset(
+        TopicPartition partition,
+        (Guid Previous, Guid Current) identities)
+    {
+        var fetchPosition = _fetchPositions.GetValueOrDefault(partition, long.MinValue);
+        LogTopicIdentityReset(
+            partition.Topic,
+            partition.Partition,
+            identities.Previous,
+            identities.Current,
+            fetchPosition);
     }
 
     private bool IsPartitionBrokerCacheValid(PartitionBrokerCacheEntry cached, long now)

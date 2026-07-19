@@ -2990,7 +2990,9 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
             });
 
-        var options = CreateConsumerProtocolOptions();
+        var options = CreateConsumerProtocolOptions(
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         SetCoordinatorLongField(

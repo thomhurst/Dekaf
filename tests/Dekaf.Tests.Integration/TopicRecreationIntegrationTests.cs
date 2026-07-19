@@ -6,6 +6,7 @@ using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Integration;
 
+[NotInParallel]
 [Category("Resilience")]
 public sealed class TopicRecreationIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
@@ -103,6 +104,7 @@ public sealed class TopicRecreationIntegrationTests(KafkaTestContainer kafka) : 
             new TopicPartitionOffset(topic, partition: 0, offset: 3, leaderEpoch: -1)
         ], cancellationToken).ConfigureAwait(false);
 
+        consumer.Pause(partition);
         var oldTopicId = await GetTopicIdAsync(admin, topic, cancellationToken).ConfigureAwait(false);
         _ = await RecreateTopicAsync(admin, topic, oldTopicId, partitions: 1, cancellationToken)
             .ConfigureAwait(false);
@@ -111,6 +113,7 @@ public sealed class TopicRecreationIntegrationTests(KafkaTestContainer kafka) : 
             .ConfigureAwait(false);
         await ProduceAsync(newProducer, topic, partition: 0, "new-before-reset-1", cancellationToken)
             .ConfigureAwait(false);
+        consumer.Resume(partition);
 
         await WaitForPositionWithoutRecordsAsync(consumer, partition, expectedPosition: 2, cancellationToken)
             .ConfigureAwait(false);

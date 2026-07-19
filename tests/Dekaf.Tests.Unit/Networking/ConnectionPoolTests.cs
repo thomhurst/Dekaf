@@ -1198,7 +1198,10 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    public async Task ConnectionSetupTimeout_CancelsStalledAttemptAtEffectiveDeadline()
+    [NotInParallel]
+    [Timeout(5_000)]
+    public async Task ConnectionSetupTimeout_CancelsStalledAttemptAtEffectiveDeadline(
+        CancellationToken cancellationToken)
     {
         await using var pool = new ConnectionPool(
             clientId: "test-client",
@@ -1217,7 +1220,7 @@ public sealed class ConnectionPoolTests
             },
             randomDouble: static () => 0.5);
 
-        Func<Task> connect = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
+        Func<Task> connect = () => pool.GetConnectionAsync("broker-a", 9092, cancellationToken).AsTask();
 
         await Assert.That(connect).Throws<KafkaException>()
             .WithMessageContaining("Connection setup timeout after 20ms");
