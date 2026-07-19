@@ -101,7 +101,10 @@ public class LockFreeStackTests
         await Assert.That(stack.Count).IsEqualTo(1);
     }
 
+    // A dedicated thread isolates ExecutionContext, but not process-wide runtime work
+    // triggered by parallel tests. Give the exact allocation counter a quiet test window.
     [Test]
+    [NotInParallel]
     public async Task TryPush_TryPop_DoNotAllocateInSteadyState()
     {
         Task<long> allocationProbe;
