@@ -331,6 +331,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         private readonly Dictionary<TopicPartition, List<BatchReference>> _partitions = new();
         private int _count;
         private bool _mayContainUnreadyBatch;
+        private TopicPartition _readdedPrefixPartition;
+        private int _readdedPrefixCount;
+        private bool _hasReaddedPrefix;
 
         public int Count => _count;
         public Dictionary<TopicPartition, List<BatchReference>> Partitions => _partitions;
@@ -374,6 +377,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             GetOrCreateQueue(batchRef.Batch.TopicPartition).Insert(0, batchRef);
             _count++;
             _mayContainUnreadyBatch |= !batchRef.Batch.IsPreSerialized;
+        }
+
+        /// <summary>
+        /// Re-adds an older wire-ready prefix entry before the unready suffix that blocked it.
+        /// Multiple re-adds retain their original drain order.
+        /// </summary>
+        public void ReAddBeforeUnreadySuffix(BatchReference batchRef)
+        {
+            var queue = GetOrCreateQueue(batchRef.Batch.TopicPartition);
+            if (!_hasReaddedPrefix || _readdedPrefixPartition != batchRef.Batch.TopicPartition)
+            {
+                _readdedPrefixPartition = batchRef.Batch.TopicPartition;
+                _readdedPrefixCount = 0;
+                _hasReaddedPrefix = true;
+            }
+
+            queue.Insert(_readdedPrefixCount++, batchRef);
+            _count++;
         }
 
         /// <summary>
@@ -426,6 +447,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// </summary>
         public void DrainTo(List<BatchReference> destination)
         {
+            if (_hasReaddedPrefix)
+                _hasReaddedPrefix = false;
+
             if (!_mayContainUnreadyBatch)
             {
                 foreach (var kvp in _partitions)
@@ -1391,7 +1415,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var i = 0; i < drainList.Count; i++)
                 {
                     CoalesceBatch(drainList[i], coalescedBatches, coalescedGenerations, ref coalescedCount,
-                        ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver);
+                        ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver,
+                        fromCarryOver: true);
                 }
 
                 // Read from the event channel lazily during coalescing (like main reads
@@ -1414,7 +1439,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             var carryBefore = carryOver.Count;
                             channelReads++;
                             CoalesceBatch(evt.GetBatchReference(), coalescedBatches, coalescedGenerations, ref coalescedCount,
-                                ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver);
+                                ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver,
+                                fromCarryOver: false);
                             if (carryOver.Count > carryBefore)
                             {
                                 channelCarryOvers++;
@@ -1488,7 +1514,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         {
                             var countBefore = coalescedCount;
                             CoalesceBatch(evt.GetBatchReference(), coalescedBatches, coalescedGenerations, ref coalescedCount,
-                                ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver);
+                                ref coalescedRequestBudgetUsed, coalescedPartitions, carryOver,
+                                fromCarryOver: false);
                             if (coalescedCount > countBefore)
                             {
                                 var now = Stopwatch.GetTimestamp();
@@ -2169,7 +2196,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ref int coalescedCount,
         ref long coalescedRequestBudgetUsed,
         HashSet<TopicPartition> coalescedPartitions,
-        PartitionCarryOver carryOver)
+        PartitionCarryOver carryOver,
+        bool fromCarryOver)
     {
         // Batch may have been returned to pool or re-rented by a racing owner before
         // the send loop sees this reference. Skip silently; the original owner already
@@ -2212,7 +2240,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Check backoff — carry over if backoff hasn't elapsed
             if (batch.RetryNotBefore > 0 && now < batch.RetryNotBefore)
             {
-                carryOver.Add(batchRef);
+                RequeueBatch(carryOver, batchRef, fromCarryOver);
                 return;
             }
 
@@ -2221,7 +2249,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // that same-connection pipeline drains, then order the retry before new work.
             if (!_isIdempotent && HasPendingResponseForPartition(batch.TopicPartition))
             {
-                carryOver.Add(batchRef);
+                RequeueBatch(carryOver, batchRef, fromCarryOver);
                 return;
             }
 
@@ -2256,6 +2284,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     coalescedCount,
                     coalescedRequestBudgetUsed,
                     carryOver,
+                    fromCarryOver,
                     out var batchRequestBodySize))
                 return;
 
@@ -2263,7 +2292,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 // Same partition already in this request (shouldn't happen — only one
                 // retry per partition at a time). Carry over as safety net.
-                carryOver.Add(batchRef);
+                RequeueBatch(carryOver, batchRef, fromCarryOver);
                 return;
             }
 
@@ -2286,7 +2315,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             batch.AppendDiag('O');
-            carryOver.Add(batchRef);
+            RequeueBatch(carryOver, batchRef, fromCarryOver);
             return;
         }
 
@@ -2296,6 +2325,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 coalescedCount,
                 coalescedRequestBudgetUsed,
                 carryOver,
+                fromCarryOver,
                 out var normalBatchRequestBodySize))
             return;
 
@@ -2303,7 +2333,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (!coalescedPartitions.Add(batch.TopicPartition))
         {
             batch.AppendDiag('O');
-            carryOver.Add(batchRef);
+            RequeueBatch(carryOver, batchRef, fromCarryOver);
             return;
         }
 
@@ -2402,6 +2432,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int coalescedCount,
         long coalescedRequestBudgetUsed,
         PartitionCarryOver carryOver,
+        bool fromCarryOver,
         out int batchRequestBodySize)
     {
         batchRequestBodySize = 0;
@@ -2422,8 +2453,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var batch = batchRef.Batch;
         batch.AppendDiag('O');
-        carryOver.Add(batchRef);
+        RequeueBatch(carryOver, batchRef, fromCarryOver);
         return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void RequeueBatch(
+        PartitionCarryOver carryOver,
+        BatchReference batchRef,
+        bool fromCarryOver)
+    {
+        if (fromCarryOver)
+            carryOver.ReAddBeforeUnreadySuffix(batchRef);
+        else
+            carryOver.Add(batchRef);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

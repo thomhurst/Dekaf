@@ -272,7 +272,8 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         ref int coalescedCount,
         HashSet<TopicPartition> coalescedPartitions,
         object carryOver,
-        int? capturedGeneration = null)
+        int? capturedGeneration = null,
+        bool fromCarryOver = false)
     {
         var coalescedRequestBudgetUsed = 0L;
         for (var i = 0; i < coalescedCount; i++)
@@ -292,7 +293,8 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             coalescedCount,
             coalescedRequestBudgetUsed,
             coalescedPartitions,
-            carryOver
+            carryOver,
+            fromCarryOver
         };
 
         CoalesceBatchMethod.Invoke(sender, args);
@@ -986,6 +988,85 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task CoalesceBatch_BackoffReadyPrefix_StaysAheadOfUnreadySuffix()
+    {
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        var (pool, _) = CreateMockConnection(responseQueue);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            var olderRetry = CreateTestBatch(sourcePool, "test-topic", partition: 0);
+            var unreadySplit = CreateTestBatch(
+                sourcePool,
+                "test-topic",
+                partition: 0,
+                markPreSerialized: false);
+            olderRetry.IsRetry = true;
+            olderRetry.RetryNotBefore = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            unreadySplit.IsRetry = true;
+
+            var carryOver = new BrokerSender.PartitionCarryOver();
+            carryOver.AddAfterRetries(new BrokerSender.BatchReference(olderRetry, olderRetry.Generation));
+            carryOver.AddAfterRetries(new BrokerSender.BatchReference(unreadySplit, unreadySplit.Generation));
+            var drained = new List<BrokerSender.BatchReference>();
+            carryOver.DrainTo(drained);
+            var coalescedBatches = new ReadyBatch[4];
+            var coalescedGenerations = new int[4];
+            var coalescedCount = 0;
+            var coalescedPartitions = new HashSet<TopicPartition>();
+
+            InvokeCoalesceBatch(
+                sender,
+                olderRetry,
+                coalescedBatches,
+                coalescedGenerations,
+                ref coalescedCount,
+                coalescedPartitions,
+                carryOver,
+                fromCarryOver: true);
+
+            unreadySplit.MarkPreSerialized();
+            drained.Clear();
+            carryOver.DrainTo(drained);
+
+            await Assert.That(coalescedCount).IsEqualTo(0);
+            await Assert.That(drained).Count().IsEqualTo(2);
+            await Assert.That(ReferenceEquals(drained[0].Batch, olderRetry)).IsTrue();
+            await Assert.That(ReferenceEquals(drained[1].Batch, unreadySplit)).IsTrue();
+
+            // Repeated all-ready drain/requeue cycles must reset the prefix insertion cursor.
+            carryOver.Add(new BrokerSender.BatchReference(olderRetry, olderRetry.Generation));
+            for (var i = 0; i < 2; i++)
+            {
+                drained.Clear();
+                carryOver.DrainTo(drained);
+                await Assert.That(drained).Count().IsEqualTo(1);
+                InvokeCoalesceBatch(
+                    sender,
+                    drained[0].Batch,
+                    coalescedBatches,
+                    coalescedGenerations,
+                    ref coalescedCount,
+                    coalescedPartitions,
+                    carryOver,
+                    fromCarryOver: true);
+            }
+
+            await Assert.That(carryOver.Count).IsEqualTo(1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await sourcePool.DisposeAsync();
         }
     }
 
