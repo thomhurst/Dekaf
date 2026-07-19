@@ -1,6 +1,9 @@
 using System.Net;
 using System.Net.Sockets;
 using Dekaf.Admin;
+using Dekaf.Networking;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -149,6 +152,127 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         await WaitForTopicAssignmentAsync(admin, topic, [1, 2, 3]).ConfigureAwait(false);
         return topic;
     }
+
+    public async Task<string> CreateDistributedReplicatedTopicAsync(
+        int partitionCount = 6,
+        int minInSyncReplicas = 2,
+        int? excludedLeaderId = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(partitionCount, 1);
+        if (excludedLeaderId is < 1 or > 3)
+            throw new ArgumentOutOfRangeException(nameof(excludedLeaderId));
+
+        var topic = $"distributed-{Guid.NewGuid():N}";
+        var eligibleLeaders = Enumerable.Range(1, 3)
+            .Where(nodeId => nodeId != excludedLeaderId)
+            .ToArray();
+        var assignments = Enumerable.Range(0, partitionCount)
+            .ToDictionary(
+                static partition => partition,
+                partition =>
+                {
+                    var leader = eligibleLeaders[partition % eligibleLeaders.Length];
+                    return (IReadOnlyList<int>)[leader, .. Enumerable.Range(1, 3).Where(id => id != leader)];
+                });
+        await using var admin = CreateAdminClient();
+
+        await admin.CreateTopicsAsync([
+            new NewTopic
+            {
+                Name = topic,
+                NumPartitions = -1,
+                ReplicationFactor = -1,
+                ReplicaAssignments = assignments,
+                Configs = new Dictionary<string, string>
+                {
+                    ["min.insync.replicas"] = minInSyncReplicas.ToString()
+                }
+            }
+        ]).ConfigureAwait(false);
+
+        await WaitForTopicAssignmentAsync(admin, topic, assignments).ConfigureAwait(false);
+        return topic;
+    }
+
+    public async Task<int> FindGroupCoordinatorIdAsync(
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var pool = new ConnectionPool(
+            $"coordinator-probe-{Guid.NewGuid():N}",
+            new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(5) },
+            loggerFactory: null);
+        Exception? lastFailure = null;
+
+        for (var attempt = 0; attempt < 60; attempt++)
+        {
+            foreach (var port in _hostPorts)
+            {
+                try
+                {
+                    var connection = await pool.GetConnectionAsync(
+                        "127.0.0.1",
+                        port,
+                        cancellationToken).ConfigureAwait(false);
+                    var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                        new FindCoordinatorRequest
+                        {
+                            Key = groupId,
+                            KeyType = CoordinatorType.Group
+                        },
+                        FindCoordinatorRequest.HighestSupportedVersion,
+                        cancellationToken).ConfigureAwait(false);
+                    var coordinator = response.Coordinators.SingleOrDefault();
+                    if (coordinator is not null && coordinator.ErrorCode == ErrorCode.None)
+                        return coordinator.NodeId;
+
+                    lastFailure = new InvalidOperationException(
+                        $"FindCoordinator failed for group '{groupId}': " +
+                        $"{coordinator?.ErrorCode.ToString() ?? "empty response"}.");
+                }
+                catch (Exception exception) when (
+                    exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                {
+                    lastFailure = exception;
+                }
+            }
+
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException(
+            $"No broker resolved a coordinator for group '{groupId}'.",
+            lastFailure);
+    }
+
+    public async Task<int> GetGroupCoordinatorIdAsync(
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var admin = CreateAdminClient();
+        var groups = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken)
+            .ConfigureAwait(false);
+        if (!groups.TryGetValue(groupId, out var group) || group.CoordinatorId is not { } coordinatorId)
+        {
+            throw new InvalidOperationException(
+                $"DescribeConsumerGroups did not return a coordinator for group '{groupId}'.");
+        }
+
+        return coordinatorId;
+    }
+
+    public Task<int> WaitForGroupCoordinatorChangeAsync(
+        string groupId,
+        int previousCoordinatorId,
+        CancellationToken cancellationToken = default) =>
+        PollUntilAsync(
+            token => GetGroupCoordinatorIdAsync(groupId, token),
+            coordinatorId => coordinatorId >= 0 && coordinatorId != previousCoordinatorId,
+            maxAttempts: 90,
+            delay: TimeSpan.FromMilliseconds(500),
+            timeoutMessage:
+                $"Group '{groupId}' did not move from coordinator {previousCoordinatorId}.",
+            cancellationToken: cancellationToken);
 
     public async Task<string> CreateUncleanElectionTopicAsync()
     {
@@ -316,6 +440,30 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         CancellationToken cancellationToken = default)
     {
         await WaitForTopicAssignmentAsync(admin, topic, [1, 2], cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task WaitForTopicAssignmentAsync(
+        IAdminClient admin,
+        string topic,
+        IReadOnlyDictionary<int, IReadOnlyList<int>> expectedAssignments,
+        CancellationToken cancellationToken = default)
+    {
+        _ = await PollUntilAsync(
+            async token =>
+            {
+                var descriptions = await admin.DescribeTopicsAsync([topic], token).ConfigureAwait(false);
+                return descriptions[topic].Partitions;
+            },
+            partitions => partitions.Count == expectedAssignments.Count
+                && partitions.All(partition =>
+                    expectedAssignments.TryGetValue(partition.PartitionIndex, out var expectedReplicas)
+                    && expectedReplicas.Contains(partition.LeaderId)
+                    && partition.ReplicaNodes.SequenceEqual(expectedReplicas)
+                    && expectedReplicas.All(partition.IsrNodes.Contains)),
+            maxAttempts: 60,
+            delay: TimeSpan.FromMilliseconds(500),
+            timeoutMessage: $"Topic '{topic}' did not get expected distributed assignment.",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task WaitForTopicAssignmentAsync(
