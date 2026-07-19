@@ -2137,7 +2137,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (sourceBaseSequence >= 0)
                     child.RecordBatch.BaseSequence = checked(sourceBaseSequence + childStartIndex);
                 child.PreserveDeliveryTimeline(source);
-                child.MarkAsSplitBatch(childMaxRecordSize);
+                child.MarkAsSplitBatch(childMaxRecordSize, isRetry: !reenqueue);
                 if (_options.CompressionType == CompressionType.None)
                     PrepareBatchForPublish(child, child.Generation);
                 else
@@ -8553,11 +8553,11 @@ internal sealed class ReadyBatch
 
     internal double ObservedCompressionRatio { get; set; } = 1.0;
 
-    internal void MarkAsSplitBatch(int maxRecordSize)
+    internal void MarkAsSplitBatch(int maxRecordSize, bool isRetry)
     {
         IsSplitBatch = true;
         MaxRecordSize = maxRecordSize;
-        IsRetry = true;
+        IsRetry = isRetry;
     }
 
     // In-flight tracker entry for coordinated retry with multiple in-flight batches per partition.

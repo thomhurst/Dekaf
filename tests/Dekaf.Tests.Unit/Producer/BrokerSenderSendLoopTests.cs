@@ -295,6 +295,43 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    public async Task SenderRetryReady_WakesNoPendingCarryOverWait(CancellationToken cancellationToken)
+    {
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(
+            Substitute.For<IConnectionPool>(),
+            options,
+            accumulator,
+            static (_, _, _, _, _) => { });
+
+        try
+        {
+            var waitMethod = typeof(BrokerSender).GetMethod(
+                "WaitForNoPendingCarryOverAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var senderRetryReady = (Action)typeof(BrokerSender).GetField(
+                "_senderRetryReadyCallback",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+            var wait = (ValueTask)waitMethod.Invoke(
+                sender,
+                [10_000, cancellationToken])!;
+            var waitTask = wait.AsTask();
+
+            await Assert.That(waitTask.IsCompleted).IsFalse();
+
+            senderRetryReady();
+
+            await waitTask;
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task SelectWaveCoalesceBounds_ScalesWithLingerAndRetainsHardCaps()
     {
         var zeroLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 0);

@@ -283,7 +283,7 @@ public sealed class Kip126BatchSplittingTests
 
         var source = sourceBuilder.Complete()!;
         source.RecordBatch.BaseSequence = 40;
-        source.MarkAsSplitBatch(maxRecordSize: 128);
+        source.MarkAsSplitBatch(maxRecordSize: 128, isRetry: true);
         source.MarkPreSerialized();
         source.TrySetMemoryReleased();
 
@@ -375,6 +375,7 @@ public sealed class Kip126BatchSplittingTests
         while (drainedRecords < recordCount)
         {
             var child = await DrainOneAsync(accumulator, metadataManager);
+            await Assert.That(child.IsRetry).IsFalse();
             drainedRecords += child.RecordCount;
             childCount++;
             CompleteAndReturn(accumulator, child, drainedRecords - child.RecordCount);

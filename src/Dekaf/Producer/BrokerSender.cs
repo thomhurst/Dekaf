@@ -1997,7 +1997,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var wakeupMs = ComputeNextWakeupMs(carryOver);
                     if (wakeupMs > 0)
                     {
-                        await Task.Delay(Math.Min(wakeupMs, 100), cancellationToken).ConfigureAwait(false);
+                        await WaitForNoPendingCarryOverAsync(wakeupMs, cancellationToken)
+                            .ConfigureAwait(false);
                     }
                 }
             }
@@ -3569,6 +3570,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Throws OperationCanceledException only on shutdown (via RegisterShutdownToken).
         await _anyResponseCompleted.WaitAsync(timeoutMs).ConfigureAwait(false);
     }
+
+    private ValueTask WaitForNoPendingCarryOverAsync(
+        int wakeupMs,
+        CancellationToken cancellationToken) =>
+        WaitForAnyResponseAsync(Math.Min(wakeupMs, 100), cancellationToken);
 
     internal static bool ShouldPublishResponseReadyEvent(int totalMaxInFlight)
         => totalMaxInFlight > 1;
