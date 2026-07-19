@@ -178,6 +178,7 @@ public static class ErrorCodeExtensions
         ErrorCode.UnstableOffsetCommit => true,
         ErrorCode.ThrottlingQuotaExceeded => true,
         ErrorCode.UnknownTopicId => true,
+        ErrorCode.InconsistentTopicId => true,
         _ => false
     };
 
@@ -197,6 +198,7 @@ public static class ErrorCodeExtensions
         ErrorCode.FencedLeaderEpoch => true,
         ErrorCode.UnknownLeaderEpoch => true,
         ErrorCode.UnknownTopicId => true,
+        ErrorCode.InconsistentTopicId => true,
         _ => false
     };
 }

@@ -1059,8 +1059,10 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         };
 
     [Test]
+    [MethodDataSource(nameof(TopicIdRetryErrorCodes))]
     [Timeout(120_000)]
-    public async Task SendLoop_ProduceV13_UnknownTopicIdRetriesWithRefreshedId(
+    public async Task SendLoop_ProduceV13_TopicIdMismatchRetriesWithRefreshedId(
+        ErrorCode topicIdError,
         CancellationToken cancellationToken)
     {
         const string topic = "topic-id-retry";
@@ -1103,7 +1105,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             metadataManager.Metadata.Update(
                 CreateLeaderMetadataResponse(topic, 1, 2, topicId: newTopicId));
             firstResponse.SetResult(CreateTopicIdResponse(
-                oldTopicId, partition: 0, ErrorCode.UnknownTopicId));
+                oldTopicId, partition: 0, topicIdError));
 
             await sends[1].Task.WaitAsync(cancellationToken);
             retryResponse.SetResult(CreateTopicIdResponse(
@@ -1117,8 +1119,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             await Assert.That(connection.CapturedProduceRequests[0].ApiVersion).IsEqualTo((short)13);
             await Assert.That(connection.CapturedProduceRequests[0].Topics[0].TopicId).IsEqualTo(oldTopicId);
             await Assert.That(connection.CapturedProduceRequests[1].Topics[0].TopicId).IsEqualTo(newTopicId);
-            await Assert.That(ErrorCode.UnknownTopicId.IsRetriable()).IsTrue();
-            await Assert.That(ErrorCode.UnknownTopicId.RequiresMetadataRefresh()).IsTrue();
+            await Assert.That(topicIdError.IsRetriable()).IsTrue();
+            await Assert.That(topicIdError.RequiresMetadataRefresh()).IsTrue();
         }
         finally
         {
@@ -1128,6 +1130,12 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             await accumulator.DisposeAsync();
             await valueTaskSourcePool.DisposeAsync();
         }
+    }
+
+    public static IEnumerable<ErrorCode> TopicIdRetryErrorCodes()
+    {
+        yield return ErrorCode.UnknownTopicId;
+        yield return ErrorCode.InconsistentTopicId;
     }
 
     [Test]
