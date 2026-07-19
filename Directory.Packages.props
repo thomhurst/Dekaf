@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <DekafPackageVersion Condition="'$(DekafPackageVersion)' == ''">1.7.0</DekafPackageVersion>
+    <DekafPackageVersion Condition="'$(DekafPackageVersion)' == ''">1.8.0</DekafPackageVersion>
   </PropertyGroup>
 
   <ItemGroup>
