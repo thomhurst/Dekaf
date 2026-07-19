@@ -65,6 +65,35 @@ Register `ISerializer<T>` and `IDeserializer<T>` in DI when your application use
 
 Use Testcontainers or another real broker for protocol compatibility and integration coverage.
 
+## Protocol capability regression tests
+
+Physical-connection API negotiation has deterministic coverage for heterogeneous brokers,
+reconnect generations, `ApiVersions` fallback, finalized-feature epochs, concurrent replacement,
+and handshake disposal. Run the focused cross-platform suite with:
+
+```bash
+dotnet run --project tests/Dekaf.Tests.Unit/Dekaf.Tests.Unit.csproj \
+  --framework net10.0 -- \
+  --treenode-filter "/*/*/(KafkaConnectionCapabilitiesTests|KafkaConnectionCapabilityHandshakeTests)/*"
+```
+
+Run the capability creation and lookup benchmarks with:
+
+```bash
+dotnet run --configuration Release \
+  --project tools/Dekaf.Benchmarks/Dekaf.Benchmarks.csproj -- \
+  --filter "*ApiVersionNegotiationBenchmarks*"
+```
+
+The ready-connection send path performs an O(1), allocation-free packed-array lookup and no
+network call. Mandatory negotiation adds one `ApiVersions` request/response round trip when a
+physical connection is created. A broker that rejects v4 adds one v3 fallback round trip. Snapshot
+creation happens once per physical connection generation and is measured separately from lookup.
+
+The release integration matrix retains Kafka 4.0.2 as the compatibility floor and Kafka 4.3.1 as
+the current release, with intermediate 4.1.2 and 4.2.1 coverage. NativeAOT release gates cover the
+4.0.2 floor and 4.3.1 current release.
+
 ## NativeAOT smoke validation
 
 CI runs a `NativeAOT Smoke` pull-request job for the supported `linux-x64`

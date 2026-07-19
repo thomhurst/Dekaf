@@ -65,6 +65,58 @@ public class KafkaConnectionCapabilityHandshakeTests
     }
 
     [Test]
+    [Timeout(15_000)]
+    public async Task DisposeDuringCapabilityHandshake_NeverPublishesReadyConnection(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var requestReceived = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var serverTask = Task.Run(async () =>
+        {
+            using var socket = await listener.AcceptSocketAsync(cancellationToken);
+            await using var stream = new NetworkStream(socket, ownsSocket: false);
+            _ = await ReadFrameAsync(stream, cancellationToken);
+            requestReceived.SetResult();
+
+            var buffer = new byte[1];
+            try
+            {
+                var bytesRead = await stream.ReadAsync(buffer, cancellationToken);
+                await Assert.That(bytesRead).IsEqualTo(0);
+            }
+            catch (IOException)
+            {
+                // Windows commonly reports the intentional client-side abort as a reset.
+            }
+        }, cancellationToken);
+
+        var connection = new KafkaConnection(1, "127.0.0.1", port);
+        var connectTask = connection.ConnectAsync(cancellationToken).AsTask();
+        await requestReceived.Task.WaitAsync(cancellationToken);
+
+        await connection.DisposeAsync();
+        Exception? connectException = null;
+        try
+        {
+            await connectTask;
+        }
+        catch (Exception exception)
+        {
+            connectException = exception;
+        }
+
+        await serverTask;
+        await Assert.That(connectException).IsNotNull();
+        await Assert.That(connection.IsConnected).IsFalse();
+        await Assert.That(() => ((IKafkaCapabilityProvider)connection).Capabilities)
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     [Timeout(5_000)]
     public async Task ConnectAsync_WhenV5IsUnsupported_RetriesBrokerSupportedVersionOnSameConnection(
         CancellationToken cancellationToken)
