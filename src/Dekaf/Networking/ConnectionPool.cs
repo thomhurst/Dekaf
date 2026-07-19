@@ -579,6 +579,7 @@ public sealed partial class ConnectionPool :
             for (var i = 0; i < initialCount; i++)
             {
                 connections[i] = await tasks[i].ConfigureAwait(false);
+                ThrowIfGroupConnectionDisconnected(connections[i], brokerId);
             }
 
             // Atomically set the connection group
@@ -619,6 +620,19 @@ public sealed partial class ConnectionPool :
             }
         }
     }
+
+    private static void ThrowIfGroupConnectionDisconnected(
+        IKafkaConnection connection,
+        int brokerId)
+    {
+        if (!connection.IsConnected)
+            throw CreateDisconnectedGroupConnectionException(brokerId);
+    }
+
+    private static KafkaException CreateDisconnectedGroupConnectionException(int brokerId) =>
+        new(
+            ErrorCode.NetworkException,
+            $"Broker {brokerId} disconnected during connection group setup.");
 
     public async ValueTask<int> ScaleConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default)
     {
@@ -666,6 +680,11 @@ public sealed partial class ConnectionPool :
             try
             {
                 await Task.WhenAll(tasks).ConfigureAwait(false);
+                for (var i = 0; i < additionalCount; i++)
+                {
+                    var connection = await tasks[i].ConfigureAwait(false);
+                    ThrowIfGroupConnectionDisconnected(connection, brokerId);
+                }
             }
             catch
             {
@@ -808,6 +827,20 @@ public sealed partial class ConnectionPool :
                 index,
                 cancellationToken,
                 cancellationToken).ConfigureAwait(false);
+
+            if (!connection.IsConnected)
+            {
+                try { await connection.DisposeAsync().ConfigureAwait(false); }
+                catch { /* best-effort cleanup of a disconnected replacement */ }
+
+                var disconnectedEndpoint = new EndpointKey(brokerInfo.Host, brokerInfo.Port);
+                RecordReconnectFailure(
+                    disconnectedEndpoint,
+                    brokerId,
+                    brokerInfo.Host,
+                    brokerInfo.Port);
+                throw CreateDisconnectedGroupConnectionException(brokerId);
+            }
 
             // Acquire _scaleLock to protect the array write against concurrent
             // ShrinkConnectionGroupAsync, which may have swapped the array reference.

@@ -1536,6 +1536,38 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ConnectionSetupTimeout_DisconnectedGroupAdvancesOncePerRound()
+    {
+        var observedTimeouts = new ConcurrentQueue<TimeSpan>();
+        await using var pool = CreateConnectionSetupTimeoutPool(
+            randomValue: 0.5,
+            connectionFactory: static (brokerId, host, port, _, _) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                connection.IsConnected.Returns(false);
+                return new ValueTask<IKafkaConnection>(connection);
+            },
+            timeoutObserver: observedTimeouts.Enqueue,
+            connectionsPerBroker: 2);
+        pool.RegisterBroker(1, "broker-a", 9092);
+
+        for (var round = 0; round < 2; round++)
+        {
+            Func<Task> connect = () => pool.GetConnectionAsync(1).AsTask();
+            var exception = await Assert.That(connect).Throws<KafkaException>();
+            await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NetworkException);
+        }
+
+        await Assert.That(observedTimeouts).IsEquivalentTo(new[]
+        {
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(200),
+            TimeSpan.FromMilliseconds(200)
+        });
+    }
+
+    [Test]
     public async Task ConnectionCreationLock_ContentionRemainsBoundedByInitialTimeout()
     {
         var factoryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1570,6 +1602,65 @@ public sealed class ConnectionPoolTests
 
         try { await lockHolder; }
         catch { /* Only the contending caller's bounded wait is under test. */ }
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task ReplaceConnectionInGroup_DisconnectedReplacementPreservesSetupBackoff()
+    {
+        const int connectionsPerBroker = 2;
+        var observedTimeouts = new ConcurrentQueue<TimeSpan>();
+        var initialConnectionsRemaining = connectionsPerBroker;
+        var replacementAttempts = 0;
+        var options = new ConnectionOptions
+        {
+            ConnectionTimeout = TimeSpan.FromMilliseconds(100),
+            ConnectionTimeoutMax = TimeSpan.FromMilliseconds(400),
+            ReconnectBackoff = TimeSpan.Zero,
+            ReconnectBackoffMax = TimeSpan.Zero
+        };
+
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: options,
+            connectionsPerBroker: connectionsPerBroker,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                if (Interlocked.Decrement(ref initialConnectionsRemaining) < 0
+                    && Interlocked.Increment(ref replacementAttempts) == 1)
+                {
+                    connection.IsConnected.Returns(false);
+                }
+
+                return new ValueTask<IKafkaConnection>(connection);
+            },
+            randomDouble: static () => 0.5,
+            connectionSetupTimeoutObserver: observedTimeouts.Enqueue);
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+
+            await pool.GetConnectionAsync(1);
+            var oldConnection = await pool.GetConnectionByIndexAsync(1, 0);
+            oldConnection.IsConnected.Returns(false);
+
+            Func<Task> failedReplacement = () => pool.GetConnectionByIndexAsync(1, 0).AsTask();
+            var exception = await Assert.That(failedReplacement).Throws<KafkaException>();
+            await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.NetworkException);
+
+            var replacement = await pool.GetConnectionByIndexAsync(1, 0);
+            await Assert.That(replacement.IsConnected).IsTrue();
+        }
+
+        await Assert.That(observedTimeouts).IsEquivalentTo(new[]
+        {
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(200)
+        });
     }
 
     [Test]
