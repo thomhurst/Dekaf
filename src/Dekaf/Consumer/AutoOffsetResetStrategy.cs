@@ -4,17 +4,28 @@ namespace Dekaf.Consumer;
 
 internal static class AutoOffsetResetStrategy
 {
-    public static long GetListOffsetsTimestamp(ConsumerOptions options, DateTimeOffset now, TopicPartition? partition = null)
+    public static long GetListOffsetsTimestamp(
+        ConsumerOptions options,
+        DateTimeOffset now,
+        TopicPartition? partition = null,
+        bool isNewPartition = false)
     {
-        return options.AutoOffsetReset switch
+        var policy = isNewPartition && options.AutoOffsetResetNewPartitions is { } newPartitionPolicy
+            ? newPartitionPolicy
+            : options.AutoOffsetReset;
+        var duration = isNewPartition && options.AutoOffsetResetNewPartitions is not null
+            ? options.AutoOffsetResetNewPartitionsDuration
+            : options.AutoOffsetResetDuration;
+
+        return policy switch
         {
             AutoOffsetReset.Earliest => -2,
             AutoOffsetReset.Latest => -1,
-            AutoOffsetReset.ByDuration => GetByDurationTimestamp(options.AutoOffsetResetDuration, now),
+            AutoOffsetReset.ByDuration => GetByDurationTimestamp(duration, now),
             AutoOffsetReset.None => throw new KafkaException(
                 ErrorCode.OffsetOutOfRange,
                 GetOffsetResetNoneMessage(partition)),
-            _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {options.AutoOffsetReset}")
+            _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {policy}")
         };
     }
 
@@ -46,6 +57,31 @@ internal static class AutoOffsetResetStrategy
             }
 
             ValidateDuration(options.AutoOffsetResetDuration.Value);
+        }
+
+        if (options.AutoOffsetResetNewPartitions == AutoOffsetReset.None)
+        {
+            throw new InvalidOperationException(
+                $"{nameof(ConsumerOptions.AutoOffsetResetNewPartitions)} does not support {nameof(AutoOffsetReset.None)}. " +
+                "Use Earliest, Latest, or ByDuration.");
+        }
+
+        if (options.AutoOffsetResetNewPartitions == AutoOffsetReset.ByDuration)
+        {
+            if (options.AutoOffsetResetNewPartitionsDuration is null)
+            {
+                throw new InvalidOperationException(
+                    $"{nameof(ConsumerOptions.AutoOffsetResetNewPartitionsDuration)} must be set when " +
+                    $"{nameof(ConsumerOptions.AutoOffsetResetNewPartitions)} is {nameof(AutoOffsetReset.ByDuration)}.");
+            }
+
+            ValidateDuration(options.AutoOffsetResetNewPartitionsDuration.Value);
+        }
+
+        if (options.AutoOffsetResetNewPartitions is not null && string.IsNullOrWhiteSpace(options.GroupId))
+        {
+            throw new InvalidOperationException(
+                $"{nameof(ConsumerOptions.AutoOffsetResetNewPartitions)} requires a consumer group subscription.");
         }
     }
 

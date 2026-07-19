@@ -913,6 +913,16 @@ internal static class DekafOptionsBinding
             builder.WithAutoOffsetResetByDuration(options.AutoOffsetResetDuration ?? TimeSpan.Zero);
         else
             builder.WithAutoOffsetReset(options.AutoOffsetReset);
+        if (options.AutoOffsetResetNewPartitions == AutoOffsetReset.ByDuration)
+        {
+            var duration = options.AutoOffsetResetNewPartitionsDuration
+                ?? throw new InvalidOperationException(
+                    $"{nameof(ConsumerOptions.AutoOffsetResetNewPartitionsDuration)} is required when " +
+                    $"{nameof(ConsumerOptions.AutoOffsetResetNewPartitions)} is {nameof(AutoOffsetReset.ByDuration)}.");
+            builder.WithAutoOffsetResetNewPartitionsByDuration(duration);
+        }
+        else if (options.AutoOffsetResetNewPartitions is { } newPartitionPolicy)
+            builder.WithAutoOffsetResetNewPartitions(newPartitionPolicy);
         builder.WithFetchMinBytes(options.FetchMinBytes);
         builder.WithFetchMaxBytes(options.FetchMaxBytes);
         builder.WithMaxPartitionFetchBytes(options.MaxPartitionFetchBytes);
@@ -1287,7 +1297,12 @@ internal static class DekafConfigurationBinding
             builder.WithAutoOffsetStore(enableAutoOffsetStore);
         if (TryGetValue<OffsetStoreTiming>(configuration, nameof(ConsumerOptions.OffsetStoreTiming), out var offsetStoreTiming))
             builder.WithOffsetStoreTiming(offsetStoreTiming);
-        if (TryGetAutoOffsetReset(configuration, out var autoOffsetReset, out var autoOffsetResetDuration))
+        if (TryGetAutoOffsetReset(
+                configuration,
+                nameof(ConsumerOptions.AutoOffsetReset),
+                nameof(ConsumerOptions.AutoOffsetResetDuration),
+                out var autoOffsetReset,
+                out var autoOffsetResetDuration))
         {
             if (autoOffsetReset == AutoOffsetReset.ByDuration)
             {
@@ -1296,6 +1311,22 @@ internal static class DekafConfigurationBinding
             else
             {
                 builder.WithAutoOffsetReset(autoOffsetReset);
+            }
+        }
+        if (TryGetAutoOffsetReset(
+                configuration,
+                nameof(ConsumerOptions.AutoOffsetResetNewPartitions),
+                nameof(ConsumerOptions.AutoOffsetResetNewPartitionsDuration),
+                out var newPartitionAutoOffsetReset,
+                out var newPartitionAutoOffsetResetDuration))
+        {
+            if (newPartitionAutoOffsetReset == AutoOffsetReset.ByDuration)
+            {
+                builder.WithAutoOffsetResetNewPartitionsByDuration(newPartitionAutoOffsetResetDuration!.Value);
+            }
+            else
+            {
+                builder.WithAutoOffsetResetNewPartitions(newPartitionAutoOffsetReset);
             }
         }
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.FetchMinBytes), out var fetchMinBytes))
@@ -1591,12 +1622,14 @@ internal static class DekafConfigurationBinding
 
     private static bool TryGetAutoOffsetReset(
         IConfiguration configuration,
+        string policyKey,
+        string durationKey,
         out AutoOffsetReset autoOffsetReset,
         out TimeSpan? duration)
     {
         duration = null;
 
-        var section = configuration.GetSection(nameof(ConsumerOptions.AutoOffsetReset));
+        var section = configuration.GetSection(policyKey);
         if (!section.Exists())
         {
             autoOffsetReset = default;
@@ -1610,7 +1643,7 @@ internal static class DekafConfigurationBinding
             autoOffsetReset = AutoOffsetReset.ByDuration;
             duration = ParseDuration(
                 rawValue["by_duration:".Length..],
-                nameof(ConsumerOptions.AutoOffsetReset));
+                policyKey);
             return true;
         }
 
@@ -1626,14 +1659,14 @@ internal static class DekafConfigurationBinding
 
         if (autoOffsetReset == AutoOffsetReset.ByDuration)
         {
-            var durationSection = configuration.GetSection(nameof(ConsumerOptions.AutoOffsetResetDuration));
+            var durationSection = configuration.GetSection(durationKey);
             if (!durationSection.Exists())
             {
                 throw new InvalidOperationException(
-                    $"{nameof(ConsumerOptions.AutoOffsetResetDuration)} is required when {nameof(ConsumerOptions.AutoOffsetReset)} is {nameof(AutoOffsetReset.ByDuration)}.");
+                    $"{durationKey} is required when {policyKey} is {nameof(AutoOffsetReset.ByDuration)}.");
             }
 
-            duration = ParseDuration(durationSection.Value, nameof(ConsumerOptions.AutoOffsetResetDuration));
+            duration = ParseDuration(durationSection.Value, durationKey);
         }
 
         return true;

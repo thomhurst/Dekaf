@@ -315,6 +315,56 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithAutoOffsetResetNewPartitions_SetsOptions()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("orders-group")
+            .WithAutoOffsetResetNewPartitions(AutoOffsetReset.Earliest)
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        await Assert.That(options.AutoOffsetResetNewPartitions).IsEqualTo(AutoOffsetReset.Earliest);
+        await Assert.That(options.AutoOffsetResetNewPartitionsDuration).IsNull();
+    }
+
+    [Test]
+    public async Task WithAutoOffsetResetNewPartitionsByDuration_SetsOptions()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("orders-group")
+            .WithAutoOffsetResetNewPartitionsByDuration(TimeSpan.FromMinutes(5))
+            .Build();
+
+        var options = GetConsumerOptions(consumer);
+        await Assert.That(options.AutoOffsetResetNewPartitions).IsEqualTo(AutoOffsetReset.ByDuration);
+        await Assert.That(options.AutoOffsetResetNewPartitionsDuration).IsEqualTo(TimeSpan.FromMinutes(5));
+    }
+
+    [Test]
+    public async Task WithAutoOffsetResetNewPartitions_None_ThrowsArgumentException()
+    {
+        var builder = Kafka.CreateConsumer<string, string>();
+
+        await Assert.That(() => builder.WithAutoOffsetResetNewPartitions(AutoOffsetReset.None))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task AutoOffsetResetNewPartitions_ManualAssignment_ThrowsInvalidOperationException()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("orders-group")
+            .WithAutoOffsetResetNewPartitions(AutoOffsetReset.Earliest)
+            .Build();
+
+        await Assert.That(() => consumer.Assign(new TopicPartition("orders", 0)))
+            .Throws<InvalidOperationException>();
+    }
+
+    [Test]
     public async Task WithMaxPollRecords_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();

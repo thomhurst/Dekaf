@@ -214,6 +214,23 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         };
     }
 
+    private static ConsumerGroupHeartbeatAssignment CreateAssignmentWithNewPartitions(
+        Guid topicId,
+        IReadOnlyList<int> partitions,
+        IReadOnlyList<int> newPartitions) => new()
+    {
+        AssignedTopicPartitions =
+        [
+            new ConsumerGroupHeartbeatTopicPartitions
+            {
+                TopicId = topicId,
+                Partitions = partitions,
+                NewPartitions = newPartitions
+            }
+        ],
+        PendingTopicPartitions = []
+    };
+
     private static long GetCoordinatorLongField(ConsumerCoordinator coordinator, string fieldName)
     {
         var field = typeof(ConsumerCoordinator).GetField(
@@ -293,6 +310,22 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_BrokerSupportsV2_UsesV2()
+    {
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 2);
+        SetupSuccessfulConsumerProtocolJoin();
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(), _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Any<ConsumerGroupHeartbeatRequest>(),
+            Arg.Is<short>(version => version == 2),
+            Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -1579,7 +1612,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FencedMemberEpoch);
         await Assert.That(commitRequestCount).IsEqualTo(0);
 
-        var (_, assignmentVersion, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+        var (_, assignmentVersion, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
             CancellationToken.None);
         coordinator.AcknowledgeAssignmentSync(assignmentVersion);
         await coordinator.CommitOffsetsAsync(
@@ -1634,7 +1667,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             "_maxPollExpiredAtPollVersion",
             GetCoordinatorLongField(coordinator, "_pollVersion"));
 
-        var (_, assignmentVersion, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+        var (_, assignmentVersion, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
             CancellationToken.None);
         coordinator.AcknowledgeAssignmentSync(assignmentVersion);
 
@@ -1661,6 +1694,122 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await Assert.That(coordinator.Assignment).Count().IsEqualTo(2);
         await Assert.That(coordinator.Assignment).Contains(new TopicPartition("test-topic", 0));
         await Assert.That(coordinator.Assignment).Contains(new TopicPartition("test-topic", 1));
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_Assignment_PublishesNewPartitionClassification()
+    {
+        var assignment = CreateAssignmentWithNewPartitions(TestTopicId, [0, 1], [1]);
+        SetupSuccessfulConsumerProtocolJoin(assignment: assignment);
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        var (_, _, _, newlyExpandedPartitions) =
+            await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+
+        await Assert.That(newlyExpandedPartitions).IsEquivalentTo(
+            [new TopicPartition("test-topic", 1)]);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_NewPartitionClassification_PersistsUntilInitializationAcknowledged()
+    {
+        SetupFindCoordinator();
+        var heartbeatCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref heartbeatCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = count,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = count == 1
+                        ? CreateAssignmentWithNewPartitions(TestTopicId, [0, 1], [1])
+                        : CreateAssignment(TestTopicId, 0, 1)
+                });
+            });
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000),
+            _connectionPool,
+            _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        var (_, firstVersion, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+            CancellationToken.None);
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+        var (_, secondVersion, _, classifications) =
+            await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+
+        var expandedPartition = new TopicPartition("test-topic", 1);
+        await Assert.That(secondVersion).IsEqualTo(firstVersion);
+        await Assert.That(classifications).IsEquivalentTo([expandedPartition]);
+
+        coordinator.AcknowledgeInitializedPartitions([expandedPartition], secondVersion);
+        var (_, acknowledgedVersion, _, acknowledgedClassifications) =
+            await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+
+        await Assert.That(acknowledgedVersion).IsEqualTo(firstVersion);
+        await Assert.That(acknowledgedClassifications).IsEmpty();
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_StaleInitializationCannotAcknowledgeNewerClassification()
+    {
+        SetupFindCoordinator();
+        var heartbeatCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref heartbeatCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = count,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = count == 1
+                        ? CreateAssignmentWithNewPartitions(TestTopicId, [0, 1], [1])
+                        : CreateAssignmentWithNewPartitions(TestTopicId, [0, 1], [0, 1])
+                });
+            });
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000),
+            _connectionPool,
+            _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+        var (_, staleVersion, _, _) = await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(
+            CancellationToken.None);
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+        var (_, currentVersion, _, currentClassifications) =
+            await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+
+        var partition = new TopicPartition("test-topic", 1);
+        coordinator.AcknowledgeInitializedPartitions([partition], staleVersion);
+        var (_, _, _, afterStaleAcknowledgement) =
+            await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+
+        await Assert.That(currentVersion).IsGreaterThan(staleVersion);
+        await Assert.That(currentClassifications).IsEquivalentTo(
+            [new TopicPartition("test-topic", 0), partition]);
+        await Assert.That(afterStaleAcknowledgement).IsEquivalentTo(currentClassifications);
+
+        coordinator.AcknowledgeInitializedPartitions([partition], currentVersion);
+        var (_, _, _, afterCurrentAcknowledgement) =
+            await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+
+        await Assert.That(afterCurrentAcknowledgement).IsEquivalentTo(
+            [new TopicPartition("test-topic", 0)]);
     }
 
     [Test]

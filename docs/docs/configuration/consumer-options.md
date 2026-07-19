@@ -87,6 +87,8 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithAutoCommitInterval(...)` | `AutoCommitIntervalMs` | Milliseconds |
 | `WithAutoOffsetReset(...)` | `AutoOffsetReset` | `Latest`, `Earliest`, `None` |
 | `WithAutoOffsetResetByDuration(...)` | `AutoOffsetReset`, `AutoOffsetResetDuration` | Use `AutoOffsetReset: ByDuration` plus a duration, or Kafka-style `by_duration:PT24H` |
+| `WithAutoOffsetResetNewPartitions(...)` | `AutoOffsetResetNewPartitions` | Optional KIP-1327 policy for newly-expanded partitions; `Latest` or `Earliest` |
+| `WithAutoOffsetResetNewPartitionsByDuration(...)` | `AutoOffsetResetNewPartitions`, `AutoOffsetResetNewPartitionsDuration` | Optional independent duration policy for newly-expanded partitions |
 | `WithFetchMinBytes(...)` | `FetchMinBytes` | Bytes |
 | `WithFetchMaxBytes(...)` | `FetchMaxBytes` | Bytes |
 | `WithFetchBufferMemory(...)` | `FetchBufferMemoryBytes` | Aggregate raw Fetch response bytes; default 100 MiB |
@@ -218,6 +220,15 @@ or Kafka's ISO-8601 form:
   "AutoOffsetReset": "by_duration:PT24H"
 }
 ```
+
+For KIP-1327 brokers, newly-expanded partitions can use an independent policy:
+
+```csharp
+.WithAutoOffsetResetNewPartitions(AutoOffsetReset.Earliest)
+.WithAutoOffsetResetNewPartitionsByDuration(TimeSpan.FromHours(1))
+```
+
+Use `AutoOffsetResetNewPartitions` and `AutoOffsetResetNewPartitionsDuration` for configuration binding. If unset, newly-expanded partitions use the base policy above. Committed offsets still take precedence.
 
 ## Fetch Settings
 
