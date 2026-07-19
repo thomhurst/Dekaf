@@ -19,6 +19,8 @@ internal static class KafkaMessageMetadata<TRequest, TResponse>
 
     public static TResponse ReadResponse(ref KafkaProtocolReader reader, short version)
         => (TResponse)TResponse.Read(ref reader, version);
+
+    public static int GetThrottleTimeMs(TResponse response) => response.ThrottleTimeMs;
 #else
     private delegate short HeaderVersionDelegate(short version);
     private delegate IKafkaResponse ReadResponseDelegate(ref KafkaProtocolReader reader, short version);
@@ -28,6 +30,7 @@ internal static class KafkaMessageMetadata<TRequest, TResponse>
     private static readonly HeaderVersionDelegate? s_getResponseHeaderVersion =
         CreateHeaderVersionDelegate(nameof(GetResponseHeaderVersion));
     private static readonly ReadResponseDelegate s_readResponse = CreateReadResponseDelegate();
+    private static readonly Func<TResponse, int> s_getThrottleTimeMs = CreateThrottleTimeDelegate();
 
     public static ApiKey ApiKey { get; } = ReadApiKey();
 
@@ -43,6 +46,8 @@ internal static class KafkaMessageMetadata<TRequest, TResponse>
 
     public static TResponse ReadResponse(ref KafkaProtocolReader reader, short version)
         => (TResponse)s_readResponse(ref reader, version);
+
+    public static int GetThrottleTimeMs(TResponse response) => s_getThrottleTimeMs(response);
 
     private static ApiKey ReadApiKey()
     {
@@ -101,6 +106,17 @@ internal static class KafkaMessageMetadata<TRequest, TResponse>
         }
 
         return (ReadResponseDelegate)Delegate.CreateDelegate(typeof(ReadResponseDelegate), method);
+    }
+
+    private static Func<TResponse, int> CreateThrottleTimeDelegate()
+    {
+        var getter = typeof(TResponse).GetProperty(
+            "ThrottleTimeMs",
+            BindingFlags.Public | BindingFlags.Instance)?.GetMethod;
+
+        return getter is null
+            ? static _ => 0
+            : (Func<TResponse, int>)Delegate.CreateDelegate(typeof(Func<TResponse, int>), getter);
     }
 #endif
 }

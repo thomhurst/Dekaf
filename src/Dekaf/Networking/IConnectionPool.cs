@@ -67,4 +67,6 @@ public interface IConnectionPool : IAsyncDisposable
 internal interface IConnectionPoolDiagnostics
 {
     IReadOnlyList<ConnectionReapDiagnostic> GetConnectionReapDiagnosticsSnapshot();
+
+    int GetMaxObservedBrokerThrottleTimeMs();
 }

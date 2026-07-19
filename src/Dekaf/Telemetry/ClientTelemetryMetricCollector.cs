@@ -40,10 +40,14 @@ internal static class ClientTelemetryMetricNames
     public const string ProducerConnectionCreationTotal = "org.apache.kafka.producer.connection.creation.total";
     public const string ProducerNodeRequestLatencyAvg = "org.apache.kafka.producer.node.request.latency.avg";
     public const string ProducerNodeRequestLatencyMax = "org.apache.kafka.producer.node.request.latency.max";
+    public const string ProducerProduceThrottleTimeAvg = "org.apache.kafka.producer.produce.throttle.time.avg";
+    public const string ProducerProduceThrottleTimeMax = "org.apache.kafka.producer.produce.throttle.time.max";
 
     public const string ConsumerConnectionCreationTotal = "org.apache.kafka.consumer.connection.creation.total";
     public const string ConsumerNodeRequestLatencyAvg = "org.apache.kafka.consumer.node.request.latency.avg";
     public const string ConsumerNodeRequestLatencyMax = "org.apache.kafka.consumer.node.request.latency.max";
+    public const string ConsumerFetchThrottleTimeAvg = "org.apache.kafka.consumer.fetch.manager.fetch.throttle.time.avg";
+    public const string ConsumerFetchThrottleTimeMax = "org.apache.kafka.consumer.fetch.manager.fetch.throttle.time.max";
 }
 
 internal sealed class ClientTelemetryMetricCollector
@@ -58,23 +62,34 @@ internal sealed class ClientTelemetryMetricCollector
     private readonly string? _connectionCreationTotalName;
     private readonly string? _nodeRequestLatencyAvgName;
     private readonly string? _nodeRequestLatencyMaxName;
+    private readonly string? _brokerThrottleTimeAvgName;
+    private readonly string? _brokerThrottleTimeMaxName;
+    private readonly BrokerThrottleMeasurements _brokerThrottleMeasurements = new();
 
     private long _connectionCreationTotal;
     private long _connectionCreationDelta;
 
     public ClientTelemetryMetricCollector(ClientTelemetryClientRole role)
     {
-        (_connectionCreationTotalName, _nodeRequestLatencyAvgName, _nodeRequestLatencyMaxName) = role switch
+        (_connectionCreationTotalName,
+            _nodeRequestLatencyAvgName,
+            _nodeRequestLatencyMaxName,
+            _brokerThrottleTimeAvgName,
+            _brokerThrottleTimeMaxName) = role switch
         {
             ClientTelemetryClientRole.Producer => (
                 ClientTelemetryMetricNames.ProducerConnectionCreationTotal,
                 ClientTelemetryMetricNames.ProducerNodeRequestLatencyAvg,
-                ClientTelemetryMetricNames.ProducerNodeRequestLatencyMax),
+                ClientTelemetryMetricNames.ProducerNodeRequestLatencyMax,
+                ClientTelemetryMetricNames.ProducerProduceThrottleTimeAvg,
+                ClientTelemetryMetricNames.ProducerProduceThrottleTimeMax),
             ClientTelemetryClientRole.Consumer => (
                 ClientTelemetryMetricNames.ConsumerConnectionCreationTotal,
                 ClientTelemetryMetricNames.ConsumerNodeRequestLatencyAvg,
-                ClientTelemetryMetricNames.ConsumerNodeRequestLatencyMax),
-            ClientTelemetryClientRole.Admin => (null, null, null),
+                ClientTelemetryMetricNames.ConsumerNodeRequestLatencyMax,
+                ClientTelemetryMetricNames.ConsumerFetchThrottleTimeAvg,
+                ClientTelemetryMetricNames.ConsumerFetchThrottleTimeMax),
+            ClientTelemetryClientRole.Admin => (null, null, null, null, null),
             _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unsupported telemetry client role")
         };
     }
@@ -120,6 +135,17 @@ internal sealed class ClientTelemetryMetricCollector
         RecordRequestLatencyTicks(brokerId, elapsedTimestampTicks);
     }
 
+    public void RecordBrokerThrottle(int throttleTimeMs)
+    {
+        if (throttleTimeMs < 0)
+            return;
+
+        _brokerThrottleMeasurements.Record(throttleTimeMs);
+    }
+
+    internal int MaxObservedBrokerThrottleTimeMs =>
+        (int)Math.Min(_brokerThrottleMeasurements.MaxObserved, int.MaxValue);
+
     internal void RecordRequestLatency(int brokerId, TimeSpan elapsed)
     {
         if (brokerId < 0)
@@ -145,10 +171,16 @@ internal sealed class ClientTelemetryMetricCollector
             IsRequested(_nodeRequestLatencyAvgName, requestedMetrics);
         var includeRequestLatencyMax = _nodeRequestLatencyMaxName is not null &&
             IsRequested(_nodeRequestLatencyMaxName, requestedMetrics);
+        var includeBrokerThrottleTimeAvg = _brokerThrottleTimeAvgName is not null &&
+            IsRequested(_brokerThrottleTimeAvgName, requestedMetrics);
+        var includeBrokerThrottleTimeMax = _brokerThrottleTimeMaxName is not null &&
+            IsRequested(_brokerThrottleTimeMaxName, requestedMetrics);
 
         var capacity = (includeConnectionCreationTotal ? 1 : 0) +
             ((includeRequestLatencyAvg ? 1 : 0) + (includeRequestLatencyMax ? 1 : 0)) *
             Math.Max(1, _nodeRequestLatencies.Count) +
+            (includeBrokerThrottleTimeAvg ? 1 : 0) +
+            (includeBrokerThrottleTimeMax ? 1 : 0) +
             _applicationMetrics.Count;
         var metrics = new List<ClientTelemetryMetric>(capacity);
 
@@ -202,6 +234,34 @@ internal sealed class ClientTelemetryMetricCollector
                         ClientTelemetryMetricKind.Gauge,
                         StopwatchTicksToMilliseconds(snapshot.MaxTimestampTicks),
                         attributes));
+                }
+            }
+        }
+
+        if (includeBrokerThrottleTimeAvg || includeBrokerThrottleTimeMax)
+        {
+            var snapshot = subscription.DeltaTemporality
+                ? _brokerThrottleMeasurements.CollectDelta()
+                : _brokerThrottleMeasurements.CollectCumulative();
+
+            if (snapshot.Count != 0)
+            {
+                if (includeBrokerThrottleTimeAvg)
+                {
+                    metrics.Add(new ClientTelemetryMetric(
+                        _brokerThrottleTimeAvgName!,
+                        ClientTelemetryMetricKind.Gauge,
+                        snapshot.Total / (double)snapshot.Count,
+                        EmptyAttributes));
+                }
+
+                if (includeBrokerThrottleTimeMax)
+                {
+                    metrics.Add(new ClientTelemetryMetric(
+                        _brokerThrottleTimeMaxName!,
+                        ClientTelemetryMetricKind.Gauge,
+                        snapshot.Max,
+                        EmptyAttributes));
                 }
             }
         }
@@ -334,6 +394,56 @@ internal sealed class ClientTelemetryMetricCollector
         long Count,
         long TotalTimestampTicks,
         long MaxTimestampTicks);
+
+    private readonly record struct BrokerThrottleSnapshot(long Count, long Total, long Max);
+
+    private sealed class BrokerThrottleMeasurements
+    {
+        private long _count;
+        private long _total;
+        private long _max;
+        private long _deltaCount;
+        private long _deltaTotal;
+        private long _deltaMax;
+
+        public long MaxObserved => Volatile.Read(ref _max);
+
+        public void Record(int throttleTimeMs)
+        {
+            Interlocked.Increment(ref _count);
+            Interlocked.Add(ref _total, throttleTimeMs);
+            AtomicMax(ref _max, throttleTimeMs);
+
+            Interlocked.Increment(ref _deltaCount);
+            Interlocked.Add(ref _deltaTotal, throttleTimeMs);
+            AtomicMax(ref _deltaMax, throttleTimeMs);
+        }
+
+        public BrokerThrottleSnapshot CollectCumulative() =>
+            new(
+                Volatile.Read(ref _count),
+                Volatile.Read(ref _total),
+                Volatile.Read(ref _max));
+
+        public BrokerThrottleSnapshot CollectDelta() =>
+            new(
+                Interlocked.Exchange(ref _deltaCount, 0),
+                Interlocked.Exchange(ref _deltaTotal, 0),
+                Interlocked.Exchange(ref _deltaMax, 0));
+
+        private static void AtomicMax(ref long target, long value)
+        {
+            var current = Volatile.Read(ref target);
+            while (value > current)
+            {
+                var original = Interlocked.CompareExchange(ref target, value, current);
+                if (original == current)
+                    return;
+
+                current = original;
+            }
+        }
+    }
 
     private sealed class NodeRequestLatency
     {

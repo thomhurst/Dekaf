@@ -750,10 +750,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private long _lastUnackedBlockObserved;
     private long _lastUnackedBlockObservedMs;
 
-    // Broker quota throttling is scoped per broker, not per connection. A positive
-    // ProduceResponse.ThrottleTimeMs pauses every connection owned by this BrokerSender.
-    // Zero is the common fast path and leaves this sentinel at zero.
-    private long _brokerThrottleUntilTimestamp;
+    // Compatibility fallback for custom IConnectionPool implementations that do not expose
+    // the shared networking throttle state. Dekaf's ConnectionPool always uses the shared path.
+    private long _fallbackBrokerThrottleUntilTimestamp;
 
     // Tracks distinct partitions this broker has seen, used to skip MicroLinger when all
     // known partitions are already coalesced (e.g., single-partition topics).
@@ -2782,8 +2781,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         UnmutePartition(batch.TopicPartition);
     }
 
-    private void ObserveBrokerThrottle(int throttleTimeMs)
+    private void ObserveBrokerThrottleFallback(int throttleTimeMs)
     {
+        if (_connectionPool is IBrokerThrottleProvider)
+            return;
+
         _onBrokerThrottle?.Invoke(throttleTimeMs);
 
         if (throttleTimeMs <= 0)
@@ -2796,19 +2798,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ? long.MaxValue
             : now + delayTicks;
 
-        if (throttleUntil > _brokerThrottleUntilTimestamp)
-            _brokerThrottleUntilTimestamp = throttleUntil;
+        if (throttleUntil > _fallbackBrokerThrottleUntilTimestamp)
+            _fallbackBrokerThrottleUntilTimestamp = throttleUntil;
     }
 
     private int GetRemainingBrokerThrottleMs()
     {
-        if (_brokerThrottleUntilTimestamp == 0)
+        if (_connectionPool is IBrokerThrottleProvider throttleProvider)
+            return throttleProvider.GetRemainingBrokerThrottleMilliseconds(_brokerId);
+
+        if (_fallbackBrokerThrottleUntilTimestamp == 0)
             return 0;
 
-        var remainingTicks = _brokerThrottleUntilTimestamp - _getTimestamp();
+        var remainingTicks = _fallbackBrokerThrottleUntilTimestamp - _getTimestamp();
         if (remainingTicks <= 0)
         {
-            _brokerThrottleUntilTimestamp = 0;
+            _fallbackBrokerThrottleUntilTimestamp = 0;
             return 0;
         }
 
@@ -2899,7 +2904,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     var response = task.GetResult();
                     responseToReturn = response;
-                    ObserveBrokerThrottle(response.ThrottleTimeMs);
+                    ObserveBrokerThrottleFallback(response.ThrottleTimeMs);
                     var allPartitionsSucceeded = true;
                     var anyPartitionSucceeded = false;
                     ProduceResponsePartitionData? directResponse = null;

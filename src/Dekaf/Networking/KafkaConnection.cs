@@ -90,6 +90,7 @@ public sealed partial class KafkaConnection :
     private readonly bool _responseMemoryAdmissionsEnabled;
     private readonly Func<int, ResponseFrameAdmission> _responseFrameAdmission;
     private readonly Func<Task, TimeSpan, Task> _waitForAbandonedWriteAsync;
+    private readonly BrokerThrottleState _brokerThrottleState;
 
     private Socket? _socket;
     private string? _resolvedTargetHost;
@@ -247,7 +248,8 @@ public sealed partial class KafkaConnection :
         ResponseBufferPool responseBufferPool,
         ClientTelemetryMetricCollector? telemetryMetricCollector = null,
         Func<Task, TimeSpan, Task>? waitForAbandonedWriteAsync = null,
-        bool responseMemoryAdmissionsEnabled = false)
+        bool responseMemoryAdmissionsEnabled = false,
+        BrokerThrottleState? brokerThrottleState = null)
     {
         _host = host;
         _port = port;
@@ -263,6 +265,7 @@ public sealed partial class KafkaConnection :
         _responseMemoryAdmissionsEnabled = responseMemoryAdmissionsEnabled;
         _responseFrameAdmission = GetResponseFrameAdmission;
         _telemetryMetricCollector = telemetryMetricCollector;
+        _brokerThrottleState = brokerThrottleState ?? new BrokerThrottleState(telemetryMetricCollector);
         _waitForAbandonedWriteAsync = waitForAbandonedWriteAsync ?? WaitForAbandonedWriteAsync;
         _receiveTimeoutStopwatchTicks =
             (long)(_options.RequestTimeout.Ticks * (double)Stopwatch.Frequency / TimeSpan.TicksPerSecond);
@@ -301,7 +304,8 @@ public sealed partial class KafkaConnection :
         ResponseBufferPool responseBufferPool,
         PipeMemoryPool? sharedPipeMemoryPool = null,
         ClientTelemetryMetricCollector? telemetryMetricCollector = null,
-        bool responseMemoryAdmissionsEnabled = false)
+        bool responseMemoryAdmissionsEnabled = false,
+        BrokerThrottleState? brokerThrottleState = null)
         : this(
             host,
             port,
@@ -310,7 +314,8 @@ public sealed partial class KafkaConnection :
             logger,
             responseBufferPool,
             telemetryMetricCollector,
-            responseMemoryAdmissionsEnabled: responseMemoryAdmissionsEnabled)
+            responseMemoryAdmissionsEnabled: responseMemoryAdmissionsEnabled,
+            brokerThrottleState: brokerThrottleState)
     {
         BrokerId = brokerId;
         _sharedPipeMemoryPool = sharedPipeMemoryPool;
@@ -540,10 +545,18 @@ public sealed partial class KafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        using var operation = TrackOperation();
-
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
+        if (Volatile.Read(ref _retirementState) >= 2)
+            throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
+
+        if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
+            throw new InvalidOperationException("Not connected");
+
+        await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
+            .ConfigureAwait(false);
+
+        using var operation = TrackOperation();
 
         if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
             throw new InvalidOperationException("Not connected");
@@ -738,10 +751,18 @@ public sealed partial class KafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        using var operation = TrackOperation();
-
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
+        if (Volatile.Read(ref _retirementState) >= 2)
+            throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
+
+        if (!IsConnected)
+            throw new InvalidOperationException("Not connected");
+
+        await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
+            .ConfigureAwait(false);
+
+        using var operation = TrackOperation();
 
         if (!IsConnected)
             throw new InvalidOperationException("Not connected");
@@ -842,10 +863,18 @@ public sealed partial class KafkaConnection :
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        using var operation = TrackOperation();
-
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
+        if (Volatile.Read(ref _retirementState) >= 2)
+            throw new ObjectDisposedException(nameof(KafkaConnection), "Connection has been retired");
+
+        if (!IsConnected)
+            throw new InvalidOperationException("Not connected");
+
+        await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
+            .ConfigureAwait(false);
+
+        using var operation = TrackOperation();
 
         if (!IsConnected)
             throw new InvalidOperationException("Not connected");
@@ -1069,6 +1098,7 @@ public sealed partial class KafkaConnection :
                     _apiVersion,
                     pending.CheckCrcs,
                     pending.TakeResponseMemoryReservation());
+                connection.ObserveBrokerThrottle<TRequest, TResponse>(response, _apiVersion);
 
                 connection.Touch();
                 connection._telemetryMetricCollector?.RecordRequestLatency(
@@ -1312,11 +1342,13 @@ public sealed partial class KafkaConnection :
 
             LogResponseReceived(correlationId);
 
-            return ParsePipelinedResponse<TRequest, TResponse>(
+            var response = ParsePipelinedResponse<TRequest, TResponse>(
                 pooledBuffer,
                 apiVersion,
                 pending.CheckCrcs,
                 pending.TakeResponseMemoryReservation());
+            ObserveBrokerThrottle<TRequest, TResponse>(response, apiVersion);
+            return response;
         }
         finally
         {
@@ -1348,6 +1380,22 @@ public sealed partial class KafkaConnection :
         {
             pooledBuffer.Dispose();
             reservation?.Dispose();
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ObserveBrokerThrottle<TRequest, TResponse>(
+        TResponse response,
+        short apiVersion)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        if (BrokerThrottlePolicy.ShouldClientThrottle(
+                KafkaMessageMetadata<TRequest, TResponse>.ApiKey,
+                apiVersion))
+        {
+            _brokerThrottleState.Observe(
+                KafkaMessageMetadata<TRequest, TResponse>.GetThrottleTimeMs(response));
         }
     }
 
