@@ -1,0 +1,10 @@
+﻿Request: Dekaf.Protocol.Messages.ApiVersionsRequest
+API key: ApiVersions (18)
+Version: 2
+Header version: 1
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 28 bytes (24-byte payload)
+
+0000: 00 00 00 18 00 12 00 02  10 20 30 40 00 0E 64 65 |......... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74             |kaf-snapshot|

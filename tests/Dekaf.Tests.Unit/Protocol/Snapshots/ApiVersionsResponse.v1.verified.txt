@@ -1,0 +1,24 @@
+﻿Response: Dekaf.Protocol.Messages.ApiVersionsResponse
+API key: ApiVersions (18)
+Version: 1
+Header version: 0
+Body length: 16 bytes
+
+0000: 00 00 00 00 00 01 00 12  00 00 00 04 00 00 00 11 |................|
+
+Decoded:
+{
+  "ApiKeys": [
+    {
+      "ApiKey": "ApiVersions",
+      "MaxVersion": 4,
+      "MinVersion": 0
+    }
+  ],
+  "ErrorCode": "None",
+  "FinalizedFeatures": null,
+  "FinalizedFeaturesEpoch": -1,
+  "SupportedFeatures": null,
+  "ThrottleTimeMs": 17,
+  "ZkMigrationReady": false
+}

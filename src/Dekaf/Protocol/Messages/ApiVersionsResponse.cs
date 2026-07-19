@@ -7,8 +7,8 @@ namespace Dekaf.Protocol.Messages;
 public sealed class ApiVersionsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.ApiVersions;
-    public static short LowestSupportedVersion => 3;
-    public static short HighestSupportedVersion => 3;
+    public static short LowestSupportedVersion => 0;
+    public static short HighestSupportedVersion => 4;
 
     public required ErrorCode ErrorCode { get; init; }
     public required IReadOnlyList<ApiVersion> ApiKeys { get; init; }
@@ -37,40 +37,49 @@ public sealed class ApiVersionsResponse : IKafkaResponse
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
         var errorCode = (ErrorCode)reader.ReadInt16();
+        // KIP-511 is the one Kafka response allowed to use a different schema than
+        // the request: an unsupported ApiVersions request is always answered as v0.
+        var wireVersion = errorCode == ErrorCode.UnsupportedVersion ? (short)0 : version;
+        var flexible = wireVersion >= 3;
 
-        var apiKeys = reader.ReadCompactArray((ref KafkaProtocolReader r) => ReadApiVersion(ref r));
+        var apiKeys = flexible
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r) => ReadApiVersion(ref r, flexible: true))
+            : reader.ReadArray(static (ref KafkaProtocolReader r) => ReadApiVersion(ref r, flexible: false));
 
-        var throttleTimeMs = reader.ReadInt32();
+        var throttleTimeMs = wireVersion >= 1 ? reader.ReadInt32() : 0;
 
         IReadOnlyList<SupportedFeature>? supportedFeatures = null;
         var finalizedFeaturesEpoch = -1L;
         IReadOnlyList<FinalizedFeature>? finalizedFeatures = null;
         var zkMigrationReady = false;
 
-        var numTaggedFields = reader.ReadUnsignedVarInt();
-        for (var i = 0; i < numTaggedFields; i++)
+        if (flexible)
         {
-            var tag = reader.ReadUnsignedVarInt();
-            var size = reader.ReadUnsignedVarInt();
-            switch (tag)
+            var numTaggedFields = reader.ReadUnsignedVarInt();
+            for (var i = 0; i < numTaggedFields; i++)
             {
-                case 0:
-                    supportedFeatures = reader.ReadCompactArray(
-                        (ref KafkaProtocolReader r) => ReadSupportedFeature(ref r));
-                    break;
-                case 1:
-                    finalizedFeaturesEpoch = reader.ReadInt64();
-                    break;
-                case 2:
-                    finalizedFeatures = reader.ReadCompactArray(
-                        (ref KafkaProtocolReader r) => ReadFinalizedFeature(ref r));
-                    break;
-                case 3:
-                    zkMigrationReady = reader.ReadUInt8() != 0;
-                    break;
-                default:
-                    reader.Skip(size);
-                    break;
+                var tag = reader.ReadUnsignedVarInt();
+                var size = reader.ReadUnsignedVarInt();
+                switch (tag)
+                {
+                    case 0:
+                        supportedFeatures = reader.ReadCompactArray(
+                            static (ref KafkaProtocolReader r) => ReadSupportedFeature(ref r));
+                        break;
+                    case 1:
+                        finalizedFeaturesEpoch = reader.ReadInt64();
+                        break;
+                    case 2:
+                        finalizedFeatures = reader.ReadCompactArray(
+                            static (ref KafkaProtocolReader r) => ReadFinalizedFeature(ref r));
+                        break;
+                    case 3:
+                        zkMigrationReady = reader.ReadUInt8() != 0;
+                        break;
+                    default:
+                        reader.Skip(size);
+                        break;
+                }
             }
         }
 
@@ -86,12 +95,13 @@ public sealed class ApiVersionsResponse : IKafkaResponse
         };
     }
 
-    private static ApiVersion ReadApiVersion(ref KafkaProtocolReader reader)
+    private static ApiVersion ReadApiVersion(ref KafkaProtocolReader reader, bool flexible)
     {
         var apiKey = (ApiKey)reader.ReadInt16();
         var minVersion = reader.ReadInt16();
         var maxVersion = reader.ReadInt16();
-        reader.SkipTaggedFields();
+        if (flexible)
+            reader.SkipTaggedFields();
         return new ApiVersion(apiKey, minVersion, maxVersion);
     }
 

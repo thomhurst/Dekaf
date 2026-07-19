@@ -44,10 +44,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private readonly ConcurrentDictionary<string, Lazy<Task<TopicInfo?>>> _pendingTopicFetches = new();
 
-    // ApiVersions bootstrap MUST use v3: Kafka 4.0+ requires the flexible request header (v2),
-    // but the broker always sends the ApiVersions response with header v0 regardless of version.
-    // Using a named constant prevents silent breakage if LowestSupportedVersion is bumped later.
-    private const short ApiVersionsBootstrapVersion = 3;
     private const int BootstrapWarningAttempt = 6;
 
     // Rebootstrap recovery state
@@ -1025,11 +1021,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private async ValueTask NegotiateApiVersionsAsync(IKafkaConnection connection, CancellationToken cancellationToken)
     {
-        // Use ApiVersions v3 for bootstrapping — Kafka 4.0+ is required,
-        // and the request/response header versions must match the flexible protocol
-        // format that ApiVersionsRequest declares for v3.
-        // ClientSoftwareName/Version are mandatory for v3 — the broker rejects empty values
-        // with INVALID_REQUEST.
+        // Production connections negotiate during physical connection setup. This path exists
+        // only for injected connections without a capability snapshot and still starts at the
+        // highest locally supported stable version.
         var request = new ApiVersionsRequest
         {
             ClientSoftwareName = "dekaf",
@@ -1038,7 +1032,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             request,
-            ApiVersionsBootstrapVersion,
+            ApiVersionsRequest.HighestSupportedVersion,
             cancellationToken).ConfigureAwait(false);
 
         if (response.ErrorCode != ErrorCode.None)
