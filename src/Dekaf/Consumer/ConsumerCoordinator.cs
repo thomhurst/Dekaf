@@ -1955,6 +1955,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 break;
             }
+            catch (Exception) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
             catch (Exception ex)
             {
                 LogHeartbeatFailed(ex);
