@@ -1,0 +1,13 @@
+﻿Request: Dekaf.Protocol.Messages.ListOffsetsRequest
+API key: ListOffsets (2)
+Version: 11
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 69 bytes (65-byte payload)
+
+0000: 00 00 00 41 00 02 00 0B  10 20 30 40 00 0E 64 65 |...A..... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 00 00 00 |kaf-snapshot....|
+0020: 11 01 02 0A 77 69 72 65  2D 6E 61 6D 65 02 00 00 |....wire-name...|
+0030: 00 02 00 00 00 03 00 00  01 8B CF E5 68 00 00 00 |............h...|
+0040: 00 00 75 30 00                                   |..u0.|

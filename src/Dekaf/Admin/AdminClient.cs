@@ -3113,12 +3113,13 @@ public sealed class AdminClient : IAdminClient
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var opts = options ?? new ListOffsetsOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
         var specList = specs.ToList();
 
         return await WithRetryAsync(async () =>
         {
             // Get partition leaders from metadata and group specs by leader
-            var partitionsByLeader = new Dictionary<int, List<ListOffsetsRequestTopic>>();
+            var requestsByLeader = new Dictionary<int, ListOffsetsLeaderRequest>();
 
             foreach (var spec in specList)
             {
@@ -3130,14 +3131,21 @@ public sealed class AdminClient : IAdminClient
                 }
 
                 var leaderId = leaderNode.NodeId;
+                var query = GetListOffsetsQuery(spec);
 
-                if (!partitionsByLeader.TryGetValue(leaderId, out var leaderTopics))
+                if (!requestsByLeader.TryGetValue(leaderId, out var leaderRequest))
                 {
-                    leaderTopics = [];
-                    partitionsByLeader[leaderId] = leaderTopics;
+                    leaderRequest = new ListOffsetsLeaderRequest();
+                    requestsByLeader[leaderId] = leaderRequest;
                 }
 
-                var topicEntry = leaderTopics.FirstOrDefault(t => t.Name == spec.TopicPartition.Topic);
+                if (query.MinimumVersion > leaderRequest.MinimumVersion)
+                {
+                    leaderRequest.MinimumVersion = query.MinimumVersion;
+                    leaderRequest.RequiredSpec = spec.Spec;
+                }
+
+                var topicEntry = leaderRequest.Topics.FirstOrDefault(t => t.Name == spec.TopicPartition.Topic);
                 if (topicEntry is null)
                 {
                     topicEntry = new ListOffsetsRequestTopic
@@ -3145,36 +3153,46 @@ public sealed class AdminClient : IAdminClient
                         Name = spec.TopicPartition.Topic,
                         Partitions = new List<ListOffsetsRequestPartition>()
                     };
-                    leaderTopics.Add(topicEntry);
+                    leaderRequest.Topics.Add(topicEntry);
                 }
 
                 ((List<ListOffsetsRequestPartition>)topicEntry.Partitions).Add(new ListOffsetsRequestPartition
                 {
                     PartitionIndex = spec.TopicPartition.Partition,
-                    Timestamp = GetTimestampForSpec(spec)
+                    CurrentLeaderEpoch = _metadataManager.Metadata
+                        .GetPartitionInfo(spec.TopicPartition.Topic, spec.TopicPartition.Partition)
+                        ?.LeaderEpoch ?? -1,
+                    Timestamp = query.Timestamp
                 });
             }
 
             var result = new Dictionary<TopicPartition, ListOffsetsResultInfo>();
 
             // Send requests to each leader
-            foreach (var (leaderId, topics) in partitionsByLeader)
+            foreach (var (leaderId, leaderRequest) in requestsByLeader)
             {
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
                 var connection = connectionLease.Connection;
-
-                var request = new ListOffsetsRequest
-                {
-                    ReplicaId = -1, // Consumer request
-                    IsolationLevel = opts.IsolationLevel,
-                    Topics = topics
-                };
 
                 var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                     connection,
                     Protocol.ApiKey.ListOffsets,
                     ListOffsetsRequest.LowestSupportedVersion,
                     ListOffsetsRequest.HighestSupportedVersion);
+                if (apiVersion < leaderRequest.MinimumVersion)
+                {
+                    throw new Errors.BrokerVersionException(
+                        $"Broker {leaderId} supports ListOffsets through v{apiVersion}, but " +
+                        $"OffsetSpec.{leaderRequest.RequiredSpec} requires v{leaderRequest.MinimumVersion} or later.");
+                }
+
+                var request = new ListOffsetsRequest
+                {
+                    ReplicaId = -1, // Consumer request
+                    IsolationLevel = opts.IsolationLevel,
+                    Topics = leaderRequest.Topics,
+                    TimeoutMs = opts.TimeoutMs
+                };
 
                 var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
                     request,
@@ -3207,17 +3225,34 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
-    private static long GetTimestampForSpec(TopicPartitionOffsetSpec spec)
+    private static ListOffsetsQuery GetListOffsetsQuery(TopicPartitionOffsetSpec spec)
     {
         return spec.Spec switch
         {
-            OffsetSpec.Earliest => -2,
-            OffsetSpec.Latest => -1,
-            OffsetSpec.MaxTimestamp => -3,
-            OffsetSpec.Timestamp => spec.Timestamp ?? throw new ArgumentException("Timestamp must be specified when using OffsetSpec.Timestamp"),
+            OffsetSpec.Earliest => new(ListOffsetsTimestamp.Earliest, ListOffsetsSpecVersion.EarliestOrLatest),
+            OffsetSpec.Latest => new(ListOffsetsTimestamp.Latest, ListOffsetsSpecVersion.EarliestOrLatest),
+            OffsetSpec.MaxTimestamp => new(ListOffsetsTimestamp.MaxTimestamp, ListOffsetsSpecVersion.MaxTimestamp),
+            OffsetSpec.Timestamp => new(
+                spec.Timestamp ?? throw new ArgumentException(
+                    "Timestamp must be specified when using OffsetSpec.Timestamp"),
+                ListOffsetsSpecVersion.EarliestOrLatest),
+            OffsetSpec.EarliestLocal => new(ListOffsetsTimestamp.EarliestLocal, ListOffsetsSpecVersion.EarliestLocal),
+            OffsetSpec.LatestTiered => new(ListOffsetsTimestamp.LatestTiered, ListOffsetsSpecVersion.LatestTiered),
+            OffsetSpec.EarliestPendingUpload => new(
+                ListOffsetsTimestamp.EarliestPendingUpload,
+                ListOffsetsSpecVersion.EarliestPendingUpload),
             _ => throw new ArgumentOutOfRangeException(nameof(spec), spec.Spec, "Unknown OffsetSpec")
         };
     }
+
+    private sealed class ListOffsetsLeaderRequest
+    {
+        internal List<ListOffsetsRequestTopic> Topics { get; } = [];
+        internal short MinimumVersion { get; set; } = ListOffsetsRequest.LowestSupportedVersion;
+        internal OffsetSpec RequiredSpec { get; set; }
+    }
+
+    private readonly record struct ListOffsetsQuery(long Timestamp, short MinimumVersion);
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>> ElectLeadersAsync(
         ElectionType electionType,

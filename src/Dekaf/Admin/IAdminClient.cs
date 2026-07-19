@@ -904,7 +904,22 @@ public enum OffsetSpec
     /// <summary>
     /// Query by timestamp. Use with TopicPartitionOffsetSpec.Timestamp.
     /// </summary>
-    Timestamp
+    Timestamp = 3,
+
+    /// <summary>
+    /// The earliest offset retained in the leader's local log.
+    /// </summary>
+    EarliestLocal,
+
+    /// <summary>
+    /// The highest offset stored in remote tiered storage.
+    /// </summary>
+    LatestTiered,
+
+    /// <summary>
+    /// The earliest offset pending upload to remote tiered storage.
+    /// </summary>
+    EarliestPendingUpload
 }
 
 /// <summary>
