@@ -1122,6 +1122,52 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    [NotInParallel]
+    [Timeout(5_000)]
+    public async Task ConnectionSetupTimeout_GroupRoundBoundsReconnectGateWait(
+        CancellationToken cancellationToken)
+    {
+        var attempts = 0;
+        var options = new ConnectionOptions
+        {
+            ConnectionTimeout = TimeSpan.FromMilliseconds(20),
+            ConnectionTimeoutMax = TimeSpan.FromMilliseconds(20),
+            ReconnectBackoff = TimeSpan.Zero,
+            ReconnectBackoffMax = TimeSpan.Zero
+        };
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: options,
+            connectionsPerBroker: 3,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                    throw new InvalidOperationException("broker down");
+
+                return ValueTask.FromResult(CreateConnectedConnection(brokerId, host, port));
+            });
+
+        Func<Task> establishReconnectState = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
+        await Assert.That(establishReconnectState).Throws<InvalidOperationException>();
+        var attemptGate = await AssertSingleReconnectBackoffGate(pool);
+        await attemptGate.WaitAsync(cancellationToken);
+        try
+        {
+            pool.RegisterBroker(1, "broker-a", 9092);
+
+            Func<Task> createGroup = () => pool.GetConnectionAsync(1, cancellationToken).AsTask();
+            var exception = await Assert.That(createGroup).Throws<KafkaException>();
+
+            await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+            await Assert.That(attempts).IsEqualTo(1);
+        }
+        finally
+        {
+            attemptGate.Release();
+        }
+    }
+
+    [Test]
     public async Task CalculateConnectionSetupTimeout_GrowsExponentiallyAndCapsAtMaximum()
     {
         await using var pool = CreateConnectionSetupTimeoutPool(randomValue: 0.5);

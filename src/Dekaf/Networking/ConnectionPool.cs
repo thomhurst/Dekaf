@@ -553,6 +553,8 @@ public sealed partial class ConnectionPool :
         // KIP-601 progression is per broker setup round, not per physical connection.
         // Every sibling uses one jittered snapshot; the outer catch advances it once.
         var setupTimeout = GetConnectionSetupTimeout(setupKey);
+        using var setupRoundCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var setupRoundToken = setupRoundCts.Token;
 
         var success = false;
         try
@@ -565,16 +567,21 @@ public sealed partial class ConnectionPool :
                     brokerInfo.Host,
                     brokerInfo.Port,
                     index,
-                    cancellationToken,
-                    cancellationToken,
+                    setupRoundToken,
+                    setupRoundToken,
                     setupTimeout,
                     recordFailure: false).AsTask();
             }
 
-            // RunConnectionSetupAttemptAsync applies a hard Task.WaitAsync deadline around
-            // each setup, so factory/auth code that ignores cancellation cannot stall the
-            // aggregate. Deadlines stay per attempt so lock and reconnect waits remain outside.
-            await Task.WhenAll(tasks).ConfigureAwait(false);
+            await WaitForConnectionGroupSetupAsync(
+                    tasks,
+                    setupTimeout,
+                    setupRoundCts,
+                    brokerId,
+                    brokerInfo.Host,
+                    brokerInfo.Port,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             for (var i = 0; i < initialCount; i++)
             {
@@ -621,6 +628,28 @@ public sealed partial class ConnectionPool :
         }
     }
 
+    private static async ValueTask WaitForConnectionGroupSetupAsync(
+        Task<IKafkaConnection>[] tasks,
+        TimeSpan setupTimeout,
+        CancellationTokenSource setupRoundCts,
+        int brokerId,
+        string host,
+        int port,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.WhenAll(tasks)
+                .WaitAsync(setupTimeout, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            setupRoundCts.Cancel();
+            throw CreateConnectionSetupTimeoutException(setupTimeout, brokerId, host, port);
+        }
+    }
+
     private static void ThrowIfGroupConnectionDisconnected(
         IKafkaConnection connection,
         int brokerId)
@@ -660,6 +689,8 @@ public sealed partial class ConnectionPool :
             var endpoint = new EndpointKey(brokerInfo.Host, brokerInfo.Port);
             // Scale-up is one logical setup round even when it creates several siblings.
             var setupTimeout = GetConnectionSetupTimeout(setupKey);
+            using var setupRoundCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var setupRoundToken = setupRoundCts.Token;
 
             var tasks = new Task<IKafkaConnection>[additionalCount];
 
@@ -671,15 +702,23 @@ public sealed partial class ConnectionPool :
                     brokerInfo.Host,
                     brokerInfo.Port,
                     index,
-                    cancellationToken,
-                    cancellationToken,
+                    setupRoundToken,
+                    setupRoundToken,
                     setupTimeout,
                     recordFailure: false).AsTask();
             }
 
             try
             {
-                await Task.WhenAll(tasks).ConfigureAwait(false);
+                await WaitForConnectionGroupSetupAsync(
+                        tasks,
+                        setupTimeout,
+                        setupRoundCts,
+                        brokerId,
+                        brokerInfo.Host,
+                        brokerInfo.Port,
+                        cancellationToken)
+                    .ConfigureAwait(false);
                 for (var i = 0; i < additionalCount; i++)
                 {
                     var connection = await tasks[i].ConfigureAwait(false);
