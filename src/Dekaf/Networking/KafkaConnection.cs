@@ -85,6 +85,8 @@ public sealed partial class KafkaConnection :
     private readonly ILogger _logger;
     private readonly ConnectionOptions _options;
     private readonly ResponseBufferPool _responseBufferPool;
+    private readonly bool _responseMemoryAdmissionsEnabled;
+    private readonly Func<int, ResponseFrameAdmission> _responseFrameAdmission;
     private readonly Func<Task, TimeSpan, Task> _waitForAbandonedWriteAsync;
 
     private Socket? _socket;
@@ -237,7 +239,8 @@ public sealed partial class KafkaConnection :
         ILogger<KafkaConnection>? logger,
         ResponseBufferPool responseBufferPool,
         ClientTelemetryMetricCollector? telemetryMetricCollector = null,
-        Func<Task, TimeSpan, Task>? waitForAbandonedWriteAsync = null)
+        Func<Task, TimeSpan, Task>? waitForAbandonedWriteAsync = null,
+        bool responseMemoryAdmissionsEnabled = false)
     {
         _host = host;
         _port = port;
@@ -250,6 +253,8 @@ public sealed partial class KafkaConnection :
         _timeoutCtsPool = new CancellationTokenSourcePool(connectionSizes.CancellationTokenSources);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConnection>.Instance;
         _responseBufferPool = responseBufferPool;
+        _responseMemoryAdmissionsEnabled = responseMemoryAdmissionsEnabled;
+        _responseFrameAdmission = GetResponseFrameAdmission;
         _telemetryMetricCollector = telemetryMetricCollector;
         _waitForAbandonedWriteAsync = waitForAbandonedWriteAsync ?? WaitForAbandonedWriteAsync;
         _receiveTimeoutStopwatchTicks =
@@ -288,8 +293,17 @@ public sealed partial class KafkaConnection :
         ILogger<KafkaConnection>? logger,
         ResponseBufferPool responseBufferPool,
         PipeMemoryPool? sharedPipeMemoryPool = null,
-        ClientTelemetryMetricCollector? telemetryMetricCollector = null)
-        : this(host, port, clientId, options, logger, responseBufferPool, telemetryMetricCollector)
+        ClientTelemetryMetricCollector? telemetryMetricCollector = null,
+        bool responseMemoryAdmissionsEnabled = false)
+        : this(
+            host,
+            port,
+            clientId,
+            options,
+            logger,
+            responseBufferPool,
+            telemetryMetricCollector,
+            responseMemoryAdmissionsEnabled: responseMemoryAdmissionsEnabled)
     {
         BrokerId = brokerId;
         _sharedPipeMemoryPool = sharedPipeMemoryPool;
@@ -519,11 +533,15 @@ public sealed partial class KafkaConnection :
 
         await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
         var pending = _pendingRequestPool.Rent();
+        var responseMemoryPool = request is FetchRequest fetchRequest
+            ? fetchRequest.ResponseMemoryPool
+            : null;
         pending.Initialize(
             responseHeaderVersion,
             cancellationToken,
             registerCancellation: false,
-            checkCrcs: request is FetchRequest { CheckCrcs: true });
+            checkCrcs: request is FetchRequest { CheckCrcs: true },
+            responseMemoryPool: responseMemoryPool);
         try
         {
             AddPendingRequest(correlationId, pending);
@@ -724,6 +742,9 @@ public sealed partial class KafkaConnection :
 
         await ReservePendingRequestSlotAsync(cancellationToken).ConfigureAwait(false);
         var pending = _pendingRequestPool.Rent();
+        var responseMemoryPool = request is FetchRequest fetchRequest
+            ? fetchRequest.ResponseMemoryPool
+            : null;
         // The pipelined wrapper performs bounded internal parsing, then only signals the
         // sender. Resume it in the receive dispatch frame to avoid a ThreadPool round trip.
         pending.Initialize(
@@ -731,7 +752,8 @@ public sealed partial class KafkaConnection :
             cancellationToken,
             registerCancellation: false,
             checkCrcs: request is FetchRequest { CheckCrcs: true },
-            runContinuationsAsynchronously: false);
+            runContinuationsAsynchronously: false,
+            responseMemoryPool: responseMemoryPool);
         try
         {
             AddPendingRequest(correlationId, pending);
@@ -930,7 +952,8 @@ public sealed partial class KafkaConnection :
                 response = ParsePipelinedResponse<TRequest, TResponse>(
                     pooledBuffer,
                     _apiVersion,
-                    pending.CheckCrcs);
+                    pending.CheckCrcs,
+                    pending.TakeResponseMemoryReservation());
 
                 connection.Touch();
                 connection._telemetryMetricCollector?.RecordRequestLatency(
@@ -1177,7 +1200,8 @@ public sealed partial class KafkaConnection :
             return ParsePipelinedResponse<TRequest, TResponse>(
                 pooledBuffer,
                 apiVersion,
-                pending.CheckCrcs);
+                pending.CheckCrcs,
+                pending.TakeResponseMemoryReservation());
         }
         finally
         {
@@ -1188,12 +1212,17 @@ public sealed partial class KafkaConnection :
     private static TResponse ParsePipelinedResponse<TRequest, TResponse>(
         PooledResponseBuffer pooledBuffer,
         short apiVersion,
-        bool checkCrcs)
+        bool checkCrcs,
+        IResponseMemoryReservation? reservation)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
         if (KafkaMessageMetadata<TRequest, TResponse>.ApiKey == ApiKey.Fetch)
-            return ParseFetchResponse<TRequest, TResponse>(pooledBuffer, apiVersion, checkCrcs);
+            return ParseFetchResponse<TRequest, TResponse>(
+                pooledBuffer,
+                apiVersion,
+                checkCrcs,
+                reservation);
 
         try
         {
@@ -1203,17 +1232,19 @@ public sealed partial class KafkaConnection :
         finally
         {
             pooledBuffer.Dispose();
+            reservation?.Dispose();
         }
     }
 
     internal static TResponse ParseFetchResponse<TRequest, TResponse>(
         PooledResponseBuffer pooledBuffer,
         short apiVersion,
-        bool checkCrcs = false)
+        bool checkCrcs = false,
+        IResponseMemoryReservation? reservation = null)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        var memoryOwner = pooledBuffer.TransferOwnership();
+        var memoryOwner = pooledBuffer.TransferOwnership(reservation);
         using var parsingScope = ResponseParsingContext.SetPooledMemory(memoryOwner, checkCrcs);
 
         try
@@ -1792,6 +1823,12 @@ public sealed partial class KafkaConnection :
         if (frameReader is null)
             return;
 
+        if (_responseMemoryAdmissionsEnabled)
+        {
+            await ReceiveBoundedLoopAsync(frameReader, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         LogReceiveLoopStarted(_host, _port);
 
         try
@@ -1833,7 +1870,7 @@ public sealed partial class KafkaConnection :
                     break;
                 }
 
-                DispatchResponse(frame.CorrelationId, frame.Buffer);
+                DispatchResponse(frame.CorrelationId, frame.Buffer, reservation: null);
             }
 
             // While loop exited normally (no exception thrown, so no catch block runs).
@@ -1870,6 +1907,80 @@ public sealed partial class KafkaConnection :
         }
     }
 
+    // Intentionally separate from ReceiveLoopAsync: the producer receive loop must not pay
+    // a per-frame admission branch, larger frame carrier, or reservation handoff.
+    private async Task ReceiveBoundedLoopAsync(
+        ResponseFrameReader frameReader,
+        CancellationToken cancellationToken)
+    {
+        LogReceiveLoopStarted(_host, _port);
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                BoundedResponseFrame frame;
+                try
+                {
+                    frame = await frameReader
+                        .ReadBoundedFrameAsync(_responseFrameAdmission)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception) when (ConsumeReceiveTimeoutExpired())
+                {
+                    throw CreateReceiveTimeoutException();
+                }
+
+                if (frame.IsEndOfStream)
+                {
+                    LogReceiveLoopCompleted(_host, _port);
+                    MarkDisposed();
+                    FailAllPendingRequests(new KafkaException(
+                        "Connection closed by remote peer (EOF)"));
+                    break;
+                }
+
+                if (frame.IsDiscarded)
+                {
+                    DispatchDiscardedResponse(frame.CorrelationId);
+                    continue;
+                }
+
+                DispatchResponse(frame.CorrelationId, frame.Buffer, frame.Reservation);
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                MarkDisposed();
+                FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            MarkDisposed();
+            FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
+        }
+        catch (Exception ex)
+        {
+            if (!_hasReceivedResponse)
+                LogReceiveLoopEndedBeforeFirstResponse(ex, _host, _port);
+            else
+                LogReceiveLoopError(ex);
+
+            MarkDisposed();
+            FailAllPendingRequests(ex);
+        }
+        finally
+        {
+            DisarmReceiveTimeout();
+            frameReader.Dispose();
+        }
+    }
+
     /// <summary>
     /// Invoked by <see cref="ResponseFrameReader"/> after every successful source read.
     /// Extends the receive-timeout deadline on byte progress (a large frame arriving
@@ -1896,27 +2007,60 @@ public sealed partial class KafkaConnection :
             $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
     }
 
-    private void DispatchResponse(int correlationId, PooledResponseBuffer responseData)
+    private void DispatchResponse(
+        int correlationId,
+        PooledResponseBuffer responseData,
+        IResponseMemoryReservation? reservation)
     {
         LogReceivedResponse(correlationId, responseData.Length);
 
         if (TryGetPendingRequest(correlationId, out var pending))
         {
             _hasReceivedResponse = true;
-            if (!pending.Request.TryComplete(pending.Version, responseData))
+            if (!pending.Request.TryComplete(pending.Version, responseData, reservation))
+            {
                 responseData.Dispose();
+                reservation?.Dispose();
+            }
         }
         else if (_cancelledCorrelationIds.TryRemove(correlationId))
         {
             _hasReceivedResponse = true;
             LogLateResponseForCancelledRequest(correlationId);
             responseData.Dispose();
+            reservation?.Dispose();
         }
         else
         {
             LogUnknownCorrelationId(correlationId);
             responseData.Dispose();
+            reservation?.Dispose();
         }
+    }
+
+    private ResponseFrameAdmission GetResponseFrameAdmission(int correlationId)
+    {
+        if (!TryGetPendingRequest(correlationId, out var pending))
+            return ResponseFrameAdmission.Discarded;
+
+        if (!pending.Request.TryGetResponseMemoryPool(pending.Version, out var memoryPool))
+            return ResponseFrameAdmission.Discarded;
+
+        return memoryPool is null
+            ? ResponseFrameAdmission.Unrestricted
+            : new ResponseFrameAdmission(memoryPool, Discard: false);
+    }
+
+    private void DispatchDiscardedResponse(int correlationId)
+    {
+        if (_cancelledCorrelationIds.TryRemove(correlationId))
+        {
+            _hasReceivedResponse = true;
+            LogLateResponseForCancelledRequest(correlationId);
+            return;
+        }
+
+        LogUnknownCorrelationId(correlationId);
     }
 
     private ValueTask ReservePendingRequestSlotAsync(CancellationToken cancellationToken)
@@ -4197,7 +4341,12 @@ internal readonly struct PooledResponseBuffer : IDisposable
     private readonly int _offset;
     private readonly ResponseBufferPool? _pool;
 
-    public PooledResponseBuffer(byte[] buffer, int length, bool isPooled, int offset = 0, ResponseBufferPool? pool = null)
+    public PooledResponseBuffer(
+        byte[] buffer,
+        int length,
+        bool isPooled,
+        int offset = 0,
+        ResponseBufferPool? pool = null)
     {
         _buffer = buffer;
         _nativeBuffer = null;
@@ -4207,7 +4356,10 @@ internal readonly struct PooledResponseBuffer : IDisposable
         _pool = pool;
     }
 
-    internal PooledResponseBuffer(NativeResponseBuffer buffer, int length, int offset = 0)
+    internal PooledResponseBuffer(
+        NativeResponseBuffer buffer,
+        int length,
+        int offset = 0)
     {
         _buffer = null;
         _nativeBuffer = buffer;
@@ -4233,19 +4385,28 @@ internal readonly struct PooledResponseBuffer : IDisposable
     public PooledResponseBuffer Slice(int additionalOffset)
     {
         return _nativeBuffer is not null
-            ? new PooledResponseBuffer(_nativeBuffer, Length - additionalOffset, _offset + additionalOffset)
-            : new PooledResponseBuffer(_buffer!, Length - additionalOffset, IsPooled, _offset + additionalOffset, _pool);
+            ? new PooledResponseBuffer(
+                _nativeBuffer,
+                Length - additionalOffset,
+                _offset + additionalOffset)
+            : new PooledResponseBuffer(
+                _buffer!,
+                Length - additionalOffset,
+                IsPooled,
+                _offset + additionalOffset,
+                _pool);
     }
 
     /// <summary>
     /// Transfers ownership of this buffer to a new PooledResponseMemory instance.
     /// After calling this, the buffer should NOT be disposed via this struct.
     /// </summary>
-    public PooledResponseMemory TransferOwnership()
+    public PooledResponseMemory TransferOwnership(
+        IResponseMemoryReservation? reservation = null)
     {
         return _nativeBuffer is not null
-            ? PooledResponseMemory.Create(_nativeBuffer, Length, _offset)
-            : PooledResponseMemory.Create(_buffer!, Length, IsPooled, _offset, _pool);
+            ? PooledResponseMemory.Create(_nativeBuffer, Length, _offset, reservation)
+            : PooledResponseMemory.Create(_buffer!, Length, IsPooled, _offset, _pool, reservation);
     }
 
     public void Dispose()
@@ -4277,19 +4438,30 @@ internal sealed class PooledResponseMemory : IPooledMemory
     private bool _isPooled;
     private int _offset;
     private ResponseBufferPool? _pool;
+    private IResponseMemoryReservation? _reservation;
     private int _pooled;
     private int _disposed = 1;
 
     private PooledResponseMemory() { }
 
-    internal static PooledResponseMemory Create(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool = null)
+    internal static PooledResponseMemory Create(
+        byte[] buffer,
+        int length,
+        bool isPooled,
+        int offset,
+        ResponseBufferPool? pool = null,
+        IResponseMemoryReservation? reservation = null)
     {
         var memory = s_pool.Rent();
-        memory.Initialize(buffer, length, isPooled, offset, pool, pooled: true);
+        memory.Initialize(buffer, length, isPooled, offset, pool, reservation, pooled: true);
         return memory;
     }
 
-    internal static PooledResponseMemory Create(NativeResponseBuffer buffer, int length, int offset)
+    internal static PooledResponseMemory Create(
+        NativeResponseBuffer buffer,
+        int length,
+        int offset,
+        IResponseMemoryReservation? reservation = null)
     {
         var memory = s_pool.Rent();
         memory._buffer = null;
@@ -4298,12 +4470,20 @@ internal sealed class PooledResponseMemory : IPooledMemory
         memory._isPooled = true;
         memory._offset = offset;
         memory._pool = null;
+        memory._reservation = reservation;
         memory._pooled = 1;
         Volatile.Write(ref memory._disposed, 0);
         return memory;
     }
 
-    private void Initialize(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool, bool pooled)
+    private void Initialize(
+        byte[] buffer,
+        int length,
+        bool isPooled,
+        int offset,
+        ResponseBufferPool? pool,
+        IResponseMemoryReservation? reservation,
+        bool pooled)
     {
         _buffer = buffer;
         _nativeBuffer = null;
@@ -4311,6 +4491,7 @@ internal sealed class PooledResponseMemory : IPooledMemory
         _isPooled = isPooled;
         _offset = offset;
         _pool = pool;
+        _reservation = reservation;
         _pooled = pooled ? 1 : 0;
         Volatile.Write(ref _disposed, 0);
     }
@@ -4328,11 +4509,19 @@ internal sealed class PooledResponseMemory : IPooledMemory
 
         var buffer = Interlocked.Exchange(ref _buffer, null);
         var nativeBuffer = Interlocked.Exchange(ref _nativeBuffer, null);
-        nativeBuffer?.Return();
-        if (_isPooled && buffer is not null)
+        var reservation = Interlocked.Exchange(ref _reservation, null);
+        try
         {
-            Debug.Assert(_pool is not null, "Pooled buffer must have a non-null pool reference");
-            _pool!.Pool.Return(buffer);
+            nativeBuffer?.Return();
+            if (_isPooled && buffer is not null)
+            {
+                Debug.Assert(_pool is not null, "Pooled buffer must have a non-null pool reference");
+                _pool!.Pool.Return(buffer);
+            }
+        }
+        finally
+        {
+            reservation?.Dispose();
         }
 
         if (Volatile.Read(ref _pooled) != 0)
@@ -4351,6 +4540,7 @@ internal sealed class PooledResponseMemory : IPooledMemory
             item._isPooled = false;
             item._offset = 0;
             item._pool = null;
+            item._reservation = null;
             item._pooled = 0;
             Volatile.Write(ref item._disposed, 1);
         }
@@ -4434,6 +4624,8 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     private CancellationTokenRegistration _cancellationRegistration;
     private CancellationToken _cancellationToken;
     private bool _checkCrcs;
+    private IResponseMemoryPool? _responseMemoryPool;
+    private IResponseMemoryReservation? _responseMemoryReservation;
     private int _state; // High 16 bits = core version; low 16 bits = State*
 
     /// <summary>
@@ -4444,11 +4636,13 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         CancellationToken cancellationToken,
         bool registerCancellation = true,
         bool checkCrcs = false,
-        bool runContinuationsAsynchronously = true)
+        bool runContinuationsAsynchronously = true,
+        IResponseMemoryPool? responseMemoryPool = null)
     {
         _responseHeaderVersion = responseHeaderVersion;
         _cancellationToken = cancellationToken;
         _checkCrcs = checkCrcs;
+        _responseMemoryPool = responseMemoryPool;
         _core.RunContinuationsAsynchronously = runContinuationsAsynchronously;
         _state = CreateState(_core.Version, StatePending);
 
@@ -4506,18 +4700,41 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
 
     public bool CheckCrcs => _checkCrcs;
 
+    public bool TryGetResponseMemoryPool(
+        short expectedVersion,
+        out IResponseMemoryPool? responseMemoryPool)
+    {
+        if (Volatile.Read(ref _state) != CreateState(expectedVersion, StatePending))
+        {
+            responseMemoryPool = null;
+            return false;
+        }
+
+        responseMemoryPool = _responseMemoryPool;
+        return true;
+    }
+
+    public IResponseMemoryReservation? TakeResponseMemoryReservation() =>
+        Interlocked.Exchange(ref _responseMemoryReservation, null);
+
     /// <summary>
     /// Attempts to complete the request with response data.
     /// Returns false if already completed (cancelled or failed).
     /// </summary>
     public bool TryComplete(PooledResponseBuffer pooledBuffer)
-        => TryComplete(_core.Version, pooledBuffer);
+        => TryComplete(_core.Version, pooledBuffer, reservation: null);
 
     /// <summary>
     /// Attempts to complete the request with response data for the captured version.
     /// Returns false if the request was already completed or reused.
     /// </summary>
     public bool TryComplete(short expectedVersion, PooledResponseBuffer pooledBuffer)
+        => TryComplete(expectedVersion, pooledBuffer, reservation: null);
+
+    internal bool TryComplete(
+        short expectedVersion,
+        PooledResponseBuffer pooledBuffer,
+        IResponseMemoryReservation? reservation)
     {
         // Atomically claim the completing state
         if (!TryClaimCompletion(expectedVersion))
@@ -4531,6 +4748,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         // calling SetResult/SetException.
         PooledResponseBuffer result = default;
         Exception? parseException = null;
+        _responseMemoryReservation = reservation;
 
         try
         {
@@ -4539,6 +4757,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         catch (Exception ex)
         {
             pooledBuffer.Dispose();
+            Interlocked.Exchange(ref _responseMemoryReservation, null)?.Dispose();
             parseException = ex;
         }
 
@@ -4721,6 +4940,8 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         _cancellationRegistration = default;
         _cancellationToken = default;
         _checkCrcs = false;
+        _responseMemoryPool = null;
+        Interlocked.Exchange(ref _responseMemoryReservation, null)?.Dispose();
 
         // Reset the core for reuse
         _core.Reset();

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 
@@ -163,6 +164,7 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithFetchMaxBytes(fetchMaxBytes)
+            .WithFetchBufferMemory(2 * 1024)
             .WithMaxPartitionFetchBytes(oversizedRecordSize * 2)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
@@ -242,6 +244,69 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         }
 
         await Assert.That(observedPartitions).Count().IsEqualTo(partitionCount);
+    }
+
+    [Test]
+    public async Task FetchBufferMemory_BoundsPipelinedResponsesAndRecordsDepletion()
+    {
+        const int messageCount = 18;
+        const int messageSize = 12_000;
+        const long fetchBufferBytes = 64 * 1024;
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
+        var groupId = $"bounded-fetch-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < messageCount; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = new string('X', messageSize),
+                Partition = i % 3
+            }, CancellationToken.None);
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithFetchMaxBytes(32 * 1024)
+            .WithFetchBufferMemory(fetchBufferBytes)
+            .WithMaxPartitionFetchBytes(32 * 1024)
+            .WithPrefetchPipelineDepth(5)
+            .WithConnectionsPerBroker(2)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        var concreteConsumer = (KafkaConsumer<string, string>)consumer;
+        var pool = (FetchBufferMemoryPool)typeof(KafkaConsumer<string, string>)
+            .GetField("_fetchBufferMemoryPool", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(concreteConsumer)!;
+
+        using var consumeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var first = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), consumeTimeout.Token);
+        await Assert.That(first).IsNotNull();
+
+        var depletionDeadline = Stopwatch.GetTimestamp() + (5 * Stopwatch.Frequency);
+        while (pool.DepletedDurationSeconds == 0 && Stopwatch.GetTimestamp() < depletionDeadline)
+            await Task.Delay(10, consumeTimeout.Token);
+
+        using (var coordinatorTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            await consumer.CommitAsync(coordinatorTimeout.Token);
+
+        var messages = await ConsumeMessagesAsync(consumer, messageCount - 1);
+
+        await Assert.That(messages).Count().IsEqualTo(messageCount - 1);
+        await Assert.That(pool.UsedBytes).IsLessThanOrEqualTo(fetchBufferBytes);
+        await Assert.That(pool.DepletedDurationSeconds).IsGreaterThan(0);
     }
 
     [Test]

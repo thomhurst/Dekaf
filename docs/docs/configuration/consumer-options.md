@@ -50,6 +50,7 @@ builder.Services.AddDekaf(dekaf =>
         "OffsetCommitMode": "Manual",
         "FetchMinBytes": 1024,
         "FetchMaxBytes": 52428800,
+        "FetchBufferMemoryBytes": 104857600,
         "FetchMaxWaitMs": 200,
         "MaxPollRecords": 500,
         "UseTls": true
@@ -88,6 +89,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithAutoOffsetResetByDuration(...)` | `AutoOffsetReset`, `AutoOffsetResetDuration` | Use `AutoOffsetReset: ByDuration` plus a duration, or Kafka-style `by_duration:PT24H` |
 | `WithFetchMinBytes(...)` | `FetchMinBytes` | Bytes |
 | `WithFetchMaxBytes(...)` | `FetchMaxBytes` | Bytes |
+| `WithFetchBufferMemory(...)` | `FetchBufferMemoryBytes` | Aggregate raw Fetch response bytes; default 100 MiB |
 | `WithMaxPartitionFetchBytes(...)` | `MaxPartitionFetchBytes` | Bytes |
 | `WithFetchMaxWait(...)` | `FetchMaxWaitMs` | Milliseconds |
 | `WithFetchSessions(...)` | `EnableFetchSessions` | Boolean |
@@ -234,10 +236,18 @@ Control how data is fetched from brokers:
 ```csharp
 .WithFetchMinBytes(1024)
 .WithFetchMaxBytes(50 * 1024 * 1024)
+.WithFetchBufferMemory(100L * 1024 * 1024)
 .WithMaxPartitionFetchBytes(4 * 1024 * 1024)
 .WithFetchMaxWait(TimeSpan.FromMilliseconds(200))
 .WithFetchSessions(enabled: true)
 ```
+
+`WithFetchBufferMemory` bounds the exact aggregate bytes held by raw Fetch responses
+across brokers and pipelined requests. It must be at least the configured `FetchMaxBytes`.
+An adaptive or oversized first-batch response larger than the limit is admitted only when
+it is the sole reservation. Coordinator responses do not consume this budget. Observe current pressure through
+`dekaf.consumer.fetch_buffer.used_bytes`, `free_bytes`,
+`depleted_percent`, and `depleted_duration`.
 
 ## Session Settings
 
@@ -410,6 +420,7 @@ For transactional reads:
 | `WithAutoOffsetReset`, `WithAutoOffsetResetByDuration` | Latest | Start position |
 | `WithFetchMinBytes` | 1 | Minimum fetch bytes |
 | `WithFetchMaxBytes` | 52428800 | Maximum total fetch bytes |
+| `WithFetchBufferMemory` | 104857600 | Aggregate queued and in-flight raw Fetch response limit |
 | `WithMaxPartitionFetchBytes` | 1048576 | Maximum fetch bytes per partition |
 | `WithFetchMaxWait` | 200ms | Maximum fetch wait |
 | `WithFetchSessions` | true | Enable incremental fetch sessions |

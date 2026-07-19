@@ -76,6 +76,13 @@ public class ConsumerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task FetchBufferMemoryBytes_DefaultsTo_100MiB()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.FetchBufferMemoryBytes).IsEqualTo(100L * 1024 * 1024);
+    }
+
+    [Test]
     public async Task MaxPartitionFetchBytes_DefaultsTo_1MB()
     {
         var options = CreateOptions();

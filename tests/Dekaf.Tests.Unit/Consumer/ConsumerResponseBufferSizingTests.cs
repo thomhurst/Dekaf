@@ -9,6 +9,16 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class ConsumerResponseBufferSizingTests
 {
     [Test]
+    public async Task QueuedPrefetchBudget_DoesNotRaiseConfiguredLimit()
+    {
+        var configured = 64UL * 1024 * 1024;
+
+        var effective = KafkaConsumer<string, string>.CalculatePrefetchMaxBytes(configured);
+
+        await Assert.That(effective).IsEqualTo(64L * 1024 * 1024);
+    }
+
+    [Test]
     public async Task MaximumPayload_StaticSizing_IncludesOneOversizedPartitionBatch()
     {
         var options = new ConsumerOptions

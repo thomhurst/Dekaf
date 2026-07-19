@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.Versioning;
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Networking;
 
@@ -43,6 +44,107 @@ public sealed class ResponseFrameReaderTests
             await Assert.That(result.CorrelationId).IsEqualTo(expectedId);
             await AssertPayloadAsync(result, expectedSize);
         }
+    }
+
+    [Test]
+    public async Task ReadFrameAsync_FetchAdmissionsBoundExactAggregateFrameMemory()
+    {
+        using var pool = new FetchBufferMemoryPool(100);
+        var chunk = Concat(
+            BuildFrame(correlationId: 1, payloadSize: 60),
+            BuildFrame(correlationId: 2, payloadSize: 50));
+        using var stream = new ScriptedReadStream([chunk]);
+        using var reader = ResponseFrameTestHelpers.CreateReader(stream);
+        ResponseFrameAdmission GetAdmission(int _) => new(pool, Discard: false);
+
+        var first = await reader.ReadBoundedFrameAsync(GetAdmission);
+        await Assert.That(pool.UsedBytes).IsEqualTo(60);
+
+        var secondRead = reader.ReadBoundedFrameAsync(GetAdmission).AsTask();
+        await Assert.That(secondRead.IsCompleted).IsFalse();
+
+        first.Buffer.Dispose();
+        first.Reservation?.Dispose();
+        var second = await secondRead.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(pool.UsedBytes).IsEqualTo(50);
+
+        second.Buffer.Dispose();
+        second.Reservation?.Dispose();
+        await Assert.That(pool.UsedBytes).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ReadBoundedFrameAsync_AbortCancelsMemoryAdmissionWait()
+    {
+        using var pool = new FetchBufferMemoryPool(100);
+        using var existing = await pool.ReserveAsync(100, CancellationToken.None);
+        var frame = BuildFrame(correlationId: 1, payloadSize: 60);
+        using var stream = new ScriptedReadStream([frame]);
+        using var reader = ResponseFrameTestHelpers.CreateReader(stream);
+
+        var read = reader.ReadBoundedFrameAsync(
+            _ => new ResponseFrameAdmission(pool, Discard: false)).AsTask();
+        await Assert.That(read.IsCompleted).IsFalse();
+
+        reader.Abort();
+
+        await Assert.That(async () => await read).Throws<OperationCanceledException>();
+        await Assert.That(pool.UsedBytes).IsEqualTo(100);
+    }
+
+    [Test]
+    public async Task ReadFrameAsync_OversizedFetchProgressesOnlyAsSoleReservation()
+    {
+        using var pool = new FetchBufferMemoryPool(100);
+        var frame = BuildFrame(correlationId: 1, payloadSize: 150);
+        using var stream = new ScriptedReadStream([frame]);
+        using var reader = ResponseFrameTestHelpers.CreateReader(stream);
+
+        var result = await reader.ReadBoundedFrameAsync(
+            _ => new ResponseFrameAdmission(pool, Discard: false));
+
+        await Assert.That(pool.UsedBytes).IsEqualTo(150);
+        result.Buffer.Dispose();
+        result.Reservation?.Dispose();
+        await Assert.That(pool.UsedBytes).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ReadFrameAsync_TransferredFetchBufferHoldsReservationUntilOwnerDisposal()
+    {
+        using var pool = new FetchBufferMemoryPool(100);
+        var frame = BuildFrame(correlationId: 1, payloadSize: 60);
+        using var stream = new ScriptedReadStream([frame]);
+        using var reader = ResponseFrameTestHelpers.CreateReader(stream);
+
+        var result = await reader.ReadBoundedFrameAsync(
+            _ => new ResponseFrameAdmission(pool, Discard: false));
+        var owner = result.Buffer.TransferOwnership(result.Reservation);
+
+        await Assert.That(pool.UsedBytes).IsEqualTo(60);
+        owner.Dispose();
+        await Assert.That(pool.UsedBytes).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ReadFrameAsync_DiscardedFrameUsesNoResponseBufferAndPreservesNextFrame()
+    {
+        var chunk = Concat(
+            BuildFrame(correlationId: 1, payloadSize: 100),
+            BuildFrame(correlationId: 2, payloadSize: 20));
+        using var stream = new ScriptedReadStream([chunk]);
+        using var reader = ResponseFrameTestHelpers.CreateReader(stream);
+        ResponseFrameAdmission GetAdmission(int correlationId) => correlationId == 1
+                ? ResponseFrameAdmission.Discarded
+                : ResponseFrameAdmission.Unrestricted;
+
+        var discarded = await reader.ReadBoundedFrameAsync(GetAdmission);
+        var next = await reader.ReadBoundedFrameAsync(GetAdmission);
+
+        await Assert.That(discarded.IsDiscarded).IsTrue();
+        await Assert.That(discarded.CorrelationId).IsEqualTo(1);
+        await Assert.That(next.CorrelationId).IsEqualTo(2);
+        await AssertPayloadAsync(next, payloadSize: 20);
     }
 
     [Test]
@@ -311,7 +413,18 @@ public sealed class ResponseFrameReaderTests
 
     private static async Task AssertPayloadAsync(ResponseFrame result, int payloadSize)
     {
-        var payload = result.Buffer.Data;
+        await AssertPayloadAsync(result.Buffer, payloadSize);
+    }
+
+    private static async Task AssertPayloadAsync(BoundedResponseFrame result, int payloadSize)
+    {
+        await AssertPayloadAsync(result.Buffer, payloadSize);
+        result.Reservation?.Dispose();
+    }
+
+    private static async Task AssertPayloadAsync(PooledResponseBuffer buffer, int payloadSize)
+    {
+        var payload = buffer.Data;
         await Assert.That(payload.Length).IsEqualTo(payloadSize);
 
         // Skip the correlation id; the remaining bytes carry BuildFrame's pattern
@@ -325,7 +438,7 @@ public sealed class ResponseFrameReaderTests
                     $"Payload mismatch at offset {i}: expected {expected}, actual {actual}");
         }
 
-        result.Buffer.Dispose();
+        buffer.Dispose();
     }
 
     private static byte[] Concat(params byte[][] chunks)

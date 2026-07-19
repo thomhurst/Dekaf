@@ -48,6 +48,8 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
 
     internal bool CheckCrcs { get; set; } = true;
 
+    internal IResponseMemoryPool? ResponseMemoryPool { get; set; }
+
     /// <summary>
     /// Isolation level (v4+).
     /// </summary>
@@ -102,6 +104,7 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
             item.MinBytes = 0;
             item.MaxBytes = 0x7FFFFFFF;
             item.CheckCrcs = true;
+            item.ResponseMemoryPool = null;
             item.IsolationLevel = IsolationLevel.ReadUncommitted;
             item.SessionId = 0;
             item.SessionEpoch = -1;

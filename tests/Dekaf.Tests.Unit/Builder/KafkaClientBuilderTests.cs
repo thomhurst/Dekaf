@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Unit.Builder;
 public sealed class KafkaClientBuilderTests
 {
     [Test]
-    public async Task RootClient_CreatedClients_ShareConnectionPoolAndMetadata()
+    public async Task RootClient_CreatedClients_ShareMetadataAndUseRoleAppropriateConnectionPools()
     {
         await using var client = Kafka.Connect("broker1:9092,broker2:9092");
         await using var producer = client.CreateProducer<string, string>().Build();
@@ -21,8 +21,10 @@ public sealed class KafkaClientBuilderTests
         var consumerPool = GetField<IConnectionPool>(consumer, "_connectionPool");
         var adminPool = GetField<IConnectionPool>(admin, "_connectionPool");
 
-        await Assert.That(ReferenceEquals(producerPool, consumerPool)).IsTrue();
+        await Assert.That(ReferenceEquals(producerPool, consumerPool)).IsFalse();
         await Assert.That(ReferenceEquals(producerPool, adminPool)).IsTrue();
+        await Assert.That(GetField<bool>(producerPool, "_responseMemoryAdmissionsEnabled")).IsFalse();
+        await Assert.That(GetField<bool>(consumerPool, "_responseMemoryAdmissionsEnabled")).IsTrue();
 
         var producerMetadata = GetField<MetadataManager>(producer, "_metadataManager");
         var consumerMetadata = GetField<MetadataManager>(consumer, "_metadataManager");
@@ -88,6 +90,22 @@ public sealed class KafkaClientBuilderTests
         var pool = GetField<ConnectionPool>(producer, "_connectionPool");
 
         await producer.DisposeAsync();
+
+        await Assert.That(GetField<int>(pool, "_disposed")).IsEqualTo(0);
+
+        await client.DisposeAsync();
+
+        await Assert.That(GetField<int>(pool, "_disposed")).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task RootClient_CreatedConsumer_DisposeDoesNotDisposeSharedConsumerPool()
+    {
+        var client = Kafka.Connect("localhost:9092");
+        var consumer = client.CreateConsumer<string, string>().Build();
+        var pool = GetField<ConnectionPool>(consumer, "_connectionPool");
+
+        await consumer.DisposeAsync();
 
         await Assert.That(GetField<int>(pool, "_disposed")).IsEqualTo(0);
 
@@ -258,12 +276,12 @@ public sealed class KafkaClientBuilderTests
     }
 
     [Test]
-    public async Task RootClient_SharedConnectionPool_UsesAdaptiveFetchResponseBufferCeiling()
+    public async Task RootClient_ConsumerConnectionPool_UsesAdaptiveFetchResponseBufferCeiling()
     {
         await using var client = Kafka.Connect("localhost:9092");
-        await using var producer = client.CreateProducer<string, string>().Build();
+        await using var consumer = client.CreateConsumer<string, string>().Build();
 
-        var pool = GetField<ConnectionPool>(producer, "_connectionPool");
+        var pool = GetField<ConnectionPool>(consumer, "_connectionPool");
         var responseBufferPool = GetField<ResponseBufferPool>(pool, "_responseBufferPool");
 
         await Assert.That(responseBufferPool.MaxArrayLength)
