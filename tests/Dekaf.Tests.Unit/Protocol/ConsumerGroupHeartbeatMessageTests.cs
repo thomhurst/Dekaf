@@ -577,6 +577,50 @@ public sealed class ConsumerGroupHeartbeatMessageTests
         await Assert.That(topicPartitions.NewPartitions).IsEquivalentTo([2]);
     }
 
+    [Test]
+    public async Task TopicPartitions_Read_V2_SkipsUnknownTailInNewPartitionsTaggedField()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteUuid(Guid.NewGuid());
+        writer.WriteUnsignedVarInt(1);             // no assigned partitions
+        writer.WriteUnsignedVarInt(1);             // one tagged field
+        writer.WriteUnsignedVarInt(0);             // NewPartitions tag
+        writer.WriteUnsignedVarInt(6);             // known payload plus one future byte
+        writer.WriteUnsignedVarInt(2);             // one new partition
+        writer.WriteInt32(2);
+        writer.WriteInt8(0x7f);                    // unknown future field data
+        writer.WriteInt32(0x12345678);             // following structure sentinel
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var topicPartitions = ConsumerGroupHeartbeatTopicPartitions.Read(ref reader, version: 2);
+        var sentinel = reader.ReadInt32();
+        var readerEnded = reader.End;
+
+        await Assert.That(topicPartitions.NewPartitions).IsEquivalentTo([2]);
+        await Assert.That(sentinel).IsEqualTo(0x12345678);
+        await Assert.That(readerEnded).IsTrue();
+    }
+
+    [Test]
+    public async Task TopicPartitions_Read_V2_RejectsNewPartitionsPayloadLargerThanDeclaredSize()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteUuid(Guid.NewGuid());
+        writer.WriteUnsignedVarInt(1);             // no assigned partitions
+        writer.WriteUnsignedVarInt(1);             // one tagged field
+        writer.WriteUnsignedVarInt(0);             // NewPartitions tag
+        writer.WriteUnsignedVarInt(4);             // payload actually consumes five bytes
+        writer.WriteUnsignedVarInt(2);             // one new partition
+        writer.WriteInt32(2);
+
+        await Assert.That(() => ReadTopicPartitions(buffer.WrittenMemory, version: 2))
+            .ThrowsExactly<MalformedProtocolDataException>();
+    }
+
     /// <summary>
     /// Helper to write a compact nullable string (varint length+1, then UTF-8 bytes; 0 for null).
     /// </summary>
@@ -588,6 +632,14 @@ public sealed class ConsumerGroupHeartbeatMessageTests
             return;
         }
         writer.WriteCompactString(value);
+    }
+
+    private static ConsumerGroupHeartbeatTopicPartitions ReadTopicPartitions(
+        ReadOnlyMemory<byte> data,
+        short version)
+    {
+        var reader = new KafkaProtocolReader(data);
+        return ConsumerGroupHeartbeatTopicPartitions.Read(ref reader, version);
     }
 
     #endregion

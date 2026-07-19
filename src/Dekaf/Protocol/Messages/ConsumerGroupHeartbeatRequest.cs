@@ -140,6 +140,7 @@ public sealed class ConsumerGroupHeartbeatTopicPartitions
         {
             var tag = reader.ReadUnsignedVarInt();
             var size = reader.ReadUnsignedVarInt();
+            var start = reader.Consumed;
             if (version >= 2 && tag == 0)
             {
                 newPartitions = reader.ReadCompactArray(
@@ -149,6 +150,8 @@ public sealed class ConsumerGroupHeartbeatTopicPartitions
             {
                 reader.Skip(size);
             }
+
+            LeaderDiscoveryFields.SkipRemaining(ref reader, start, size);
         }
 
         return new ConsumerGroupHeartbeatTopicPartitions
