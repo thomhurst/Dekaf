@@ -277,6 +277,9 @@ public class CachingStringDeserializerTests
         for (var i = KeyCacheMaxEntries; i < keyCount + KeyCacheMaxEntries; i++)
             sut.Deserialize(ToUtf8($"fill-window-{i % keyCount}"), context);
 
+        for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
+            sut.Deserialize(ToUtf8($"fill-window-{i % keyCount}"), context);
+
         await Assert.That(GetInnerModeName(sut)).IsNotEqualTo("BypassSerde");
         await Assert.That(ReferenceEquals(firstReference, sut.Deserialize(firstKey, context))).IsTrue();
     }

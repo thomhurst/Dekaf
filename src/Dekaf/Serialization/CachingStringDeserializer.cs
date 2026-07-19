@@ -218,11 +218,15 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         _probeRemaining = CalculateReuseProbeLookupCount(_maxCachedEntries);
         _probeHits = 0;
         _reuseProbeFillCredit = 0;
+        var exactMinimumHits = CalculateMinimumReuseProbeHits(_probeRemaining);
+        var samplingTolerance = (exactMinimumHits + 99) / 100;
         _minimumReuseProbeHits = Math.Max(
             _maxCachedEntries,
-            CalculateMinimumReuseProbeHits(_probeRemaining));
+            exactMinimumHits - samplingTolerance);
         // First-seen values cannot hit in this window. Credit only the fixed
         // phase-alignment slack, never the full cache fill, toward the 10% gate.
+        // A 1% evidence tolerance prevents a finite window from rejecting a high-yield
+        // cache solely because its clustered hit run straddles the window boundary.
         _isReuseProbe = true;
     }
 
