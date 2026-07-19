@@ -224,6 +224,10 @@ public class CachingStringDeserializerTests
             references[i] = sut.Deserialize(data[i], context);
         }
 
+        var reuseLookupLimit = CachingStringDeserializer.CalculateReuseProbeLookupCount(KeyCacheMaxEntries);
+        for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
+            sut.Deserialize(data[i % keyCount], context);
+
         var allReferencesCached = true;
         for (var i = 0; i < keyCount; i++)
             allReferencesCached &= ReferenceEquals(references[i], sut.Deserialize(data[i], context));
@@ -243,9 +247,34 @@ public class CachingStringDeserializerTests
         for (var i = 1; i < keyCount; i++)
             sut.Deserialize(ToUtf8($"high-yield-{i}"), context);
 
+        var reuseLookupLimit = CachingStringDeserializer.CalculateReuseProbeLookupCount(KeyCacheMaxEntries);
+        for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
+            sut.Deserialize(ToUtf8($"high-yield-{i % keyCount}"), context);
+
         var reusedReference = sut.Deserialize(firstKey, context);
 
         await Assert.That(ReferenceEquals(firstReference, reusedReference)).IsTrue();
+    }
+
+    [Test]
+    public async Task ReuseProbe_OneCoincidentalHit_DoesNotRestoreCache()
+    {
+        var sut = CreateSmallKeyCache();
+        var context = KeyContext();
+        var retained = ToUtf8("retained");
+        sut.Deserialize(retained, context);
+
+        for (var i = 1; i < CachingStringDeserializer.AdmissionProbeLimit; i++)
+            sut.Deserialize(ToUtf8($"admission-{i}"), context);
+        for (var i = 0; i < CachingStringDeserializer.ProbeLookupCount; i++)
+            sut.Deserialize(ToUtf8($"primary-{i}"), context);
+
+        sut.Deserialize(retained, context);
+        var reuseLookups = CachingStringDeserializer.CalculateReuseProbeLookupCount(ValueCacheMaxEntries);
+        for (var i = 1; i < reuseLookups; i++)
+            sut.Deserialize(ToUtf8($"reuse-{i}"), context);
+
+        await Assert.That(GetInnerModeName(sut)).IsEqualTo("BypassSerde");
     }
 
     [Test]
