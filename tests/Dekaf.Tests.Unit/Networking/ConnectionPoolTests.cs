@@ -1169,6 +1169,28 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ConnectionLockTimeout_IsReportedAsRequestTimeout()
+    {
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromMilliseconds(20)
+            });
+        using var connectionLock = new SemaphoreSlim(0, 1);
+        var waitForLock = typeof(ConnectionPool).GetMethod(
+            "WaitForConnectionLockAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        var exception = await Assert.That(() =>
+                ((ValueTask)waitForLock.Invoke(pool, [connectionLock, CancellationToken.None])!).AsTask())
+            .Throws<KafkaException>();
+
+        await Assert.That(exception).IsNotNull();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+    }
+
+    [Test]
     public async Task ConnectionSetupTimeout_GroupHardStopsFactoryThatIgnoresCancellation()
     {
         var releaseFactory = new TaskCompletionSource(

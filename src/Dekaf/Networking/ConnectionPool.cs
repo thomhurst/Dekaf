@@ -1180,7 +1180,16 @@ public sealed partial class ConnectionPool :
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             timeoutCts.Token);
-        await connectionLock.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+        try
+        {
+            await connectionLock.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new KafkaException(
+                ErrorCode.RequestTimedOut,
+                $"Timed out after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms waiting for a connection lock");
+        }
     }
 
     private static KafkaException CreateConnectionSetupTimeoutException(
