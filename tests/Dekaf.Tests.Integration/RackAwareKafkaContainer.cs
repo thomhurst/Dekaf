@@ -124,7 +124,7 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         return topic;
     }
 
-    public async Task<string> CreateReplicatedTopicAsync()
+    public async Task<string> CreateReplicatedTopicAsync(int minInSyncReplicas = 2)
     {
         var topic = $"replicated-{Guid.NewGuid():N}";
         await using var admin = CreateAdminClient();
@@ -141,7 +141,7 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
                 },
                 Configs = new Dictionary<string, string>
                 {
-                    ["min.insync.replicas"] = "2"
+                    ["min.insync.replicas"] = minInSyncReplicas.ToString()
                 }
             }
         ]).ConfigureAwait(false);
