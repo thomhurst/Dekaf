@@ -34,12 +34,16 @@ internal static class TransactionErrorClassifier
             Protocol.ErrorCode.CoordinatorNotAvailable => TransactionErrorClassification.Retriable,
             Protocol.ErrorCode.NotCoordinator => TransactionErrorClassification.Retriable,
             Protocol.ErrorCode.ConcurrentTransactions => TransactionErrorClassification.Retriable,
+            Protocol.ErrorCode.UnknownTopicId => TransactionErrorClassification.Retriable,
+            Protocol.ErrorCode.UnknownTopicOrPartition => TransactionErrorClassification.Retriable,
 
             // Abortable: the current transaction is broken and must be aborted, but the
             // producer stays usable for a new transaction. TransactionAbortable is the
             // dedicated KIP-890 signal; the default below also lands here per KIP-1050.
             Protocol.ErrorCode.TransactionAbortable => TransactionErrorClassification.Abortable,
             Protocol.ErrorCode.InvalidTxnState => TransactionErrorClassification.Abortable,
+            Protocol.ErrorCode.GroupIdNotFound => TransactionErrorClassification.Abortable,
+            Protocol.ErrorCode.StaleMemberEpoch => TransactionErrorClassification.Abortable,
 
             _ => TransactionErrorClassification.Abortable
         };

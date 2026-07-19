@@ -1,4 +1,5 @@
 using System.Reflection;
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Internal;
 using Dekaf.Metadata;
@@ -12,6 +13,111 @@ namespace Dekaf.Tests.Unit.Producer;
 
 public sealed class TransactionOffsetCommitTests
 {
+    private static readonly Guid TopicId = new("00112233-4455-6677-8899-aabbccddeeff");
+
+    [Test]
+    public async Task TV2_WithV6_UsesTopicIdAndConsumerMembership()
+    {
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 6,
+            topicId: TopicId);
+        var groupMetadata = new ConsumerGroupMetadata
+        {
+            GroupId = "group-1",
+            GenerationId = 7,
+            MemberId = "member-1",
+            GroupInstanceId = "instance-1"
+        };
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42, leaderEpoch: 3) { Metadata = "metadata-1" }],
+            groupMetadata,
+            CancellationToken.None);
+
+        var request = harness.Connection.CommitRequests.Single();
+        await Assert.That(request.GenerationIdOrMemberEpoch).IsEqualTo(7);
+        await Assert.That(request.MemberId).IsEqualTo("member-1");
+        await Assert.That(request.GroupInstanceId).IsEqualTo("instance-1");
+        await Assert.That(request.Topics.Single().TopicId).IsEqualTo(TopicId);
+        await Assert.That(request.Topics.Single().Partitions.Single().CommittedLeaderEpoch).IsEqualTo(3);
+        await Assert.That(request.Topics.Single().Partitions.Single().CommittedMetadata).IsEqualTo("metadata-1");
+        await Assert.That(harness.Connection.Requests
+                .Select(static recorded => (recorded.ApiKey, recorded.ApiVersion))
+                .SequenceEqual(
+            [
+                (ApiKey.FindCoordinator, (short)5),
+                (ApiKey.TxnOffsetCommit, (short)6)
+            ]))
+            .IsTrue();
+    }
+
+    [Test]
+    public async Task TV2_WithV6ButUnavailableTopicId_FallsBackToV5()
+    {
+        await using var harness = CreateHarness(transactionVersion: 2, txnOffsetCommitMaxVersion: 6);
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        var request = harness.Connection.CommitRequests.Single();
+        await Assert.That(request.Topics.Single().Name).IsEqualTo("orders");
+        await Assert.That(request.Topics.Single().TopicId).IsEqualTo(Guid.Empty);
+        await Assert.That(harness.Connection.Requests
+                .Select(static recorded => (recorded.ApiKey, recorded.ApiVersion))
+                .SequenceEqual(
+            [
+                (ApiKey.FindCoordinator, (short)5),
+                (ApiKey.Metadata, (short)13),
+                (ApiKey.TxnOffsetCommit, (short)5)
+            ]))
+            .IsTrue();
+    }
+
+    [Test]
+    public async Task TV2_V6UnknownTopicId_RefreshesMetadataAndRetries()
+    {
+        var outcomes = new Queue<object>([ErrorCode.UnknownTopicId, ErrorCode.None]);
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 6,
+            commitOutcomes: outcomes,
+            topicId: TopicId);
+
+        await harness.Producer.SendOffsetsToTransactionInternalAsync(
+            [new TopicPartitionOffset("orders", 0, 42)],
+            "group-1",
+            CancellationToken.None);
+
+        await Assert.That(harness.Connection.CommitRequests).Count().IsEqualTo(2);
+        await Assert.That(harness.Connection.Requests.Count(static request =>
+            request.ApiKey == ApiKey.Metadata)).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(ErrorCode.GroupIdNotFound)]
+    [Arguments(ErrorCode.StaleMemberEpoch)]
+    public async Task TV2_V6MembershipError_IsAbortable(ErrorCode errorCode)
+    {
+        var outcomes = new Queue<object>([errorCode]);
+        await using var harness = CreateHarness(
+            transactionVersion: 2,
+            txnOffsetCommitMaxVersion: 6,
+            commitOutcomes: outcomes,
+            topicId: TopicId);
+
+        var exception = await Assert.That(() => harness.Producer.SendOffsetsToTransactionInternalAsync(
+                [new TopicPartitionOffset("orders", 0, 42)],
+                "group-1",
+                CancellationToken.None).AsTask())
+            .Throws<AbortableTransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(errorCode);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.AbortableError);
+    }
+
     [Test]
     public async Task TV2_WithV5_SkipsAddOffsetsAndUsesV5()
     {
@@ -154,9 +260,10 @@ public sealed class TransactionOffsetCommitTests
     private static Harness CreateHarness(
         short transactionVersion,
         short txnOffsetCommitMaxVersion,
-        Queue<object>? commitOutcomes = null)
+        Queue<object>? commitOutcomes = null,
+        Guid topicId = default)
     {
-        var connection = new RecordingConnection(txnOffsetCommitMaxVersion, commitOutcomes);
+        var connection = new RecordingConnection(txnOffsetCommitMaxVersion, commitOutcomes, topicId);
         var connectionPool = new ConnectionPool(
             "transaction-offset-tests",
             connectionOptions: null,
@@ -165,11 +272,7 @@ public sealed class TransactionOffsetCommitTests
         connectionPool.RegisterBroker(1, "localhost", 9092);
 
         var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
-        metadataManager.Metadata.Update(new MetadataResponse
-        {
-            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
-            Topics = []
-        });
+        metadataManager.Metadata.Update(CreateMetadataResponse(topicId));
         metadataManager.ObserveClusterCapabilities(
             "cluster-a",
             KafkaConnectionCapabilities.Create(new ApiVersionsResponse
@@ -193,7 +296,8 @@ public sealed class TransactionOffsetCommitTests
                 TransactionalId = "transaction-1",
                 RetryBackoffMs = 0,
                 RetryBackoffMaxMs = 0,
-                CloseTimeoutMs = 100
+                CloseTimeoutMs = 100,
+                MaxBlockMs = 100
             },
             Serializers.String,
             Serializers.String,
@@ -236,7 +340,8 @@ public sealed class TransactionOffsetCommitTests
 
     private sealed class RecordingConnection(
         short txnOffsetCommitMaxVersion,
-        Queue<object>? commitOutcomes) : IKafkaConnection, IKafkaCapabilityProvider
+        Queue<object>? commitOutcomes,
+        Guid topicId) : IKafkaConnection, IKafkaCapabilityProvider
     {
         public int BrokerId => 1;
         public string Host => "localhost";
@@ -250,10 +355,12 @@ public sealed class TransactionOffsetCommitTests
                 [
                     new ApiVersion(ApiKey.AddOffsetsToTxn, 3, 4),
                     new ApiVersion(ApiKey.FindCoordinator, 4, 5),
+                    new ApiVersion(ApiKey.Metadata, 9, 13),
                     new ApiVersion(ApiKey.TxnOffsetCommit, 3, txnOffsetCommitMaxVersion)
                 ]
             });
         internal List<RecordedRequest> Requests { get; } = [];
+        internal List<TxnOffsetCommitRequest> CommitRequests { get; } = [];
 
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
             TRequest request,
@@ -284,6 +391,7 @@ public sealed class TransactionOffsetCommitTests
                         }
                     ]
                 },
+                MetadataRequest => CreateMetadataResponse(topicId),
                 TxnOffsetCommitRequest txnOffsetCommit => CreateCommitResponse(txnOffsetCommit),
                 _ => throw new NotSupportedException(typeof(TRequest).Name)
             };
@@ -293,6 +401,7 @@ public sealed class TransactionOffsetCommitTests
 
         private TxnOffsetCommitResponse CreateCommitResponse(TxnOffsetCommitRequest request)
         {
+            CommitRequests.Add(request);
             var outcome = commitOutcomes is { Count: > 0 }
                 ? commitOutcomes.Dequeue()
                 : ErrorCode.None;
@@ -305,6 +414,7 @@ public sealed class TransactionOffsetCommitTests
                 Topics = request.Topics.Select(topic => new TxnOffsetCommitResponseTopic
                 {
                     Name = topic.Name,
+                    TopicId = topic.TopicId,
                     Partitions = topic.Partitions.Select(partition =>
                         new TxnOffsetCommitResponsePartition
                         {
@@ -357,4 +467,29 @@ public sealed class TransactionOffsetCommitTests
         ApiKey ApiKey,
         short ApiVersion,
         string? CoordinatorKey);
+
+    private static MetadataResponse CreateMetadataResponse(Guid topicId) => new()
+    {
+        Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+        Topics =
+        [
+            new TopicMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                Name = "orders",
+                TopicId = topicId,
+                Partitions =
+                [
+                    new PartitionMetadata
+                    {
+                        ErrorCode = ErrorCode.None,
+                        PartitionIndex = 0,
+                        LeaderId = 1,
+                        ReplicaNodes = [1],
+                        IsrNodes = [1]
+                    }
+                ]
+            }
+        ]
+    };
 }

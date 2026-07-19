@@ -1,0 +1,18 @@
+﻿Request: Dekaf.Protocol.Messages.TxnOffsetCommitRequest
+API key: TxnOffsetCommit (28)
+Version: 6
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 156 bytes (152-byte payload)
+
+0000: 00 00 00 98 00 1C 00 06  10 20 30 40 00 0E 64 65 |......... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 11 77 69 |kaf-snapshot..wi|
+0020: 72 65 2D 74 72 61 6E 73  61 63 74 69 6F 6E 0B 77 |re-transaction.w|
+0030: 69 72 65 2D 67 72 6F 75  70 00 00 00 00 49 96 02 |ire-group....I..|
+0040: D2 00 07 00 00 00 11 0E  77 69 72 65 2D 6D 65 6D |........wire-mem|
+0050: 62 65 72 69 64 0B 77 69  72 65 2D 67 72 6F 75 70 |berid.wire-group|
+0060: 02 00 11 22 33 44 55 66  77 88 99 AA BB CC DD EE |..."3DUfw.......|
+0070: FF 02 00 00 00 02 00 00  00 00 00 00 00 2A 00 00 |.............*..|
+0080: 00 03 17 77 69 72 65 2D  63 6F 6D 6D 69 74 74 65 |...wire-committe|
+0090: 64 6D 65 74 61 64 61 74  61 00 00 00             |dmetadata...|

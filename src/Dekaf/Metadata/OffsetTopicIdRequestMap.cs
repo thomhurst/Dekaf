@@ -4,7 +4,7 @@ using Dekaf.Protocol;
 namespace Dekaf.Metadata;
 
 /// <summary>
-/// Request-local topic name/ID mapping for OffsetCommit and OffsetFetch v10.
+/// Request-local topic name/ID mapping for offset APIs that replace topic names with IDs.
 /// </summary>
 internal sealed class OffsetTopicIdRequestMap
 {

@@ -66,6 +66,72 @@ public sealed class OffsetTopicIdMessageTests
     }
 
     [Test]
+    public async Task TxnOffsetCommitRequest_V6_WritesTopicIdInsteadOfName()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        var request = new TxnOffsetCommitRequest
+        {
+            TransactionalId = "transaction-a",
+            GroupId = "group-a",
+            ProducerId = 42,
+            ProducerEpoch = 3,
+            GenerationIdOrMemberEpoch = 7,
+            MemberId = "member-a",
+            Topics =
+            [
+                new TxnOffsetCommitRequestTopic
+                {
+                    Name = "topic-a",
+                    TopicId = TopicId,
+                    Partitions =
+                    [
+                        new TxnOffsetCommitRequestPartition
+                        {
+                            PartitionIndex = 2,
+                            CommittedOffset = 42,
+                            CommittedLeaderEpoch = 3,
+                            CommittedMetadata = "metadata-a"
+                        }
+                    ]
+                }
+            ]
+        };
+
+        request.Write(ref writer, version: 6);
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = reader.ReadCompactNonNullableString();
+        _ = reader.ReadCompactNonNullableString();
+        _ = reader.ReadInt64();
+        _ = reader.ReadInt16();
+        _ = reader.ReadInt32();
+        _ = reader.ReadCompactNonNullableString();
+        _ = reader.ReadCompactString();
+        _ = reader.ReadUnsignedVarInt();
+
+        await Assert.That(reader.ReadUuid()).IsEqualTo(TopicId);
+    }
+
+    [Test]
+    public async Task TxnOffsetCommitResponse_V6_ReadsTopicId()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        writer.WriteUnsignedVarInt(2);
+        writer.WriteUuid(TopicId);
+        writer.WriteUnsignedVarInt(1);
+        writer.WriteEmptyTaggedFields();
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (TxnOffsetCommitResponse)TxnOffsetCommitResponse.Read(ref reader, version: 6);
+
+        await Assert.That(response.Topics.Single().TopicId).IsEqualTo(TopicId);
+        await Assert.That(response.Topics.Single().Name).IsEmpty();
+    }
+
+    [Test]
     public async Task OffsetFetchRequest_V10_WritesTopicIdInsteadOfName()
     {
         var buffer = new ArrayBufferWriter<byte>();
