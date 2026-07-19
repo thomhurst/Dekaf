@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -575,38 +576,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 .ConfigureAwait(false);
             return (brokerId, response);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            LogFetchFailed(brokerId, ex);
-            _sessionManager.ResetSession(brokerId);
-            return (brokerId, null);
-        }
-    }
-
-    private async Task<(int BrokerId, ShareFetchResponse? Response)> SendShareFetchAsync(
-        int brokerId,
-        ShareFetchRequest request,
-        short fallbackVersion,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
-                .ConfigureAwait(false);
-            var connection = connectionLease.Connection;
-            var version = connection is IKafkaCapabilityProvider
-                ? _metadataManager.GetNegotiatedApiVersion(
-                    connection,
-                    ApiKey.ShareFetch,
-                    ShareFetchRequest.LowestSupportedVersion,
-                    ShareFetchRequest.HighestSupportedVersion)
-                : fallbackVersion;
-            var response = await connection
-                .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
-                .ConfigureAwait(false);
-            return (brokerId, response);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException and not BrokerVersionException)
         {
             LogFetchFailed(brokerId, ex);
             _sessionManager.ResetSession(brokerId);

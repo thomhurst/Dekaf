@@ -28,6 +28,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private readonly object _endpointCacheLock = new();
 
     private volatile short _metadataApiVersion = -1;
+    private readonly object _legacyApiVersionSnapshotLock = new();
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
     private readonly ConcurrentDictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
     private volatile IReadOnlyList<FinalizedFeature>? _finalizedFeatures;
@@ -163,6 +164,32 @@ public sealed partial class MetadataManager : IAsyncDisposable
     public ClusterMetadata Metadata => _metadata;
 
     internal bool HasLegacyApiVersionSnapshot => !_brokerApiVersions.IsEmpty;
+
+    internal void EnsureLegacyApiVersionSnapshot(KafkaConnectionCapabilities capabilities)
+    {
+        if (HasLegacyApiVersionSnapshot)
+            return;
+
+        lock (_legacyApiVersionSnapshotLock)
+        {
+            if (HasLegacyApiVersionSnapshot)
+                return;
+
+            for (var key = 0; key <= (int)ApiKey.DeleteShareGroupOffsets; key++)
+            {
+                var apiKey = (ApiKey)key;
+                if (capabilities.TryGetApiRange(apiKey, out var minVersion, out var maxVersion))
+                    _brokerApiVersions[apiKey] = (minVersion, maxVersion);
+            }
+
+            _negotiatedVersionCache.Clear();
+            _finalizedFeatures = capabilities.FinalizedFeatures;
+            _metadataApiVersion = capabilities.NegotiateVersion(
+                ApiKey.Metadata,
+                MetadataRequest.LowestSupportedVersion,
+                MetadataRequest.HighestSupportedVersion);
+        }
+    }
 
     /// <summary>
     /// Returns true if the broker reported support for the given API key during version negotiation.
@@ -736,7 +763,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 // Production connections negotiate before becoming ready. Keep explicit
                 // negotiation only for injected test connections without a capability snapshot.
-                if (connection is not IKafkaCapabilityProvider && _metadataApiVersion < 0)
+                if (connection is IKafkaCapabilityProvider capabilityProvider)
+                {
+                    EnsureLegacyApiVersionSnapshot(capabilityProvider.Capabilities);
+                }
+                else if (_metadataApiVersion < 0)
                 {
                     await NegotiateApiVersionsAsync(connection, cancellationToken).ConfigureAwait(false);
                 }
@@ -883,7 +914,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     .ConfigureAwait(false);
                 var connection = connectionLease.Connection;
 
-                if (connection is not IKafkaCapabilityProvider)
+                if (connection is IKafkaCapabilityProvider capabilityProvider)
+                    EnsureLegacyApiVersionSnapshot(capabilityProvider.Capabilities);
+                else
                     await NegotiateApiVersionsAsync(connection, cancellationToken).ConfigureAwait(false);
 
                 var metadataApiVersion = connection is IKafkaCapabilityProvider

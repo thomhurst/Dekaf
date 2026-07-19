@@ -3851,6 +3851,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (!pendingResponseAdded)
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
+        catch (BrokerVersionException ex)
+        {
+            // A broker capability mismatch cannot be repaired by retrying the same
+            // partition leader. Surface the negotiated-version failure immediately.
+            for (var i = 0; i < count; i++)
+            {
+                var batch = batches[i];
+                if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
+                    continue;
+
+                FailAndCleanupBatch(batch, ex);
+            }
+
+            scratch.ClearReferences();
+
+            if (!pendingResponseAdded)
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+        }
         catch (Exception ex)
         {
             // Send failed (connection error, timeout, etc.) — retry batches instead of permanently failing.

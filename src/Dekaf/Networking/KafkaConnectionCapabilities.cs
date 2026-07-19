@@ -171,8 +171,30 @@ internal sealed class KafkaConnectionCapabilities
         return false;
     }
 
+    public bool TryGetApiRange(
+        ApiKey apiKey,
+        out short minVersion,
+        out short maxVersion)
+    {
+        var key = (int)apiKey;
+        if ((uint)key >= (uint)_apiRanges.Length || _apiRanges[key] == MissingRange)
+        {
+            minVersion = default;
+            maxVersion = default;
+            return false;
+        }
+
+        var range = _apiRanges[key];
+        minVersion = UnpackMin(range);
+        maxVersion = UnpackMax(range);
+        return true;
+    }
+
+    internal IReadOnlyList<FinalizedFeature> FinalizedFeatures => _finalizedFeatures;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int Pack(short minVersion, short maxVersion)
+        // Kafka API versions are non-negative; -1 is reserved as MissingRange.
         => (minVersion << 16) | (ushort)maxVersion;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

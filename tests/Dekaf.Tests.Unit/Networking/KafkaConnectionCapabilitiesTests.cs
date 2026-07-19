@@ -115,6 +115,74 @@ public class KafkaConnectionCapabilitiesTests
         await Assert.That(newerVersion).IsEqualTo((short)16);
     }
 
+    [Test]
+    public async Task LegacySnapshot_SeedsVersionlessMetadataApis()
+    {
+        var capabilities = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys =
+            [
+                new ApiVersion(ApiKey.Metadata, 9, 13),
+                new ApiVersion(ApiKey.Produce, 3, 11)
+            ],
+            FinalizedFeatures = [new FinalizedFeature("transaction.version", 2, 0)]
+        });
+        await using var metadata = new MetadataManager(
+            Substitute.For<IConnectionPool>(),
+            ["unused:9092"]);
+
+        metadata.EnsureLegacyApiVersionSnapshot(capabilities);
+
+        await Assert.That(metadata.HasApiKey(ApiKey.Produce)).IsTrue();
+        await Assert.That(metadata.GetNegotiatedApiVersion(ApiKey.Produce, 3, 13)).IsEqualTo((short)11);
+        await Assert.That(metadata.GetFinalizedFeatureVersion("transaction.version")).IsEqualTo((short)2);
+    }
+
+    [Test]
+    public async Task ConnectionPool_InFlightSendKeepsOriginalCapabilityGenerationDuringReplacement()
+    {
+        var releaseFirstSend = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = new GenerationConnection(
+            CreateCapabilities(new ApiVersion(ApiKey.Metadata, 9, 12)),
+            releaseFirstSend.Task);
+        var second = new GenerationConnection(
+            CreateCapabilities(new ApiVersion(ApiKey.Metadata, 9, 13)),
+            Task.CompletedTask);
+        var generations = new Queue<IKafkaConnection>([first, second]);
+        await using var pool = new ConnectionPool(
+            clientId: null,
+            connectionOptions: null,
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) =>
+                ValueTask.FromResult(generations.Dequeue()));
+        pool.RegisterBroker(1, "unused", 9092);
+
+        using var firstLease = await pool.LeaseConnectionAsync(1, CancellationToken.None);
+        var firstVersion = ((IKafkaCapabilityProvider)firstLease.Connection)
+            .Capabilities.NegotiateVersion(ApiKey.Metadata, 9, 13);
+        var inFlightSend = firstLease.Connection
+            .SendAsync<MetadataRequest, MetadataResponse>(
+                MetadataRequest.ForAllTopics(),
+                firstVersion,
+                CancellationToken.None)
+            .AsTask();
+        await first.SendStarted;
+
+        first.Disconnect();
+        using var secondLease = await pool.LeaseConnectionAsync(1, CancellationToken.None);
+        var secondVersion = ((IKafkaCapabilityProvider)secondLease.Connection)
+            .Capabilities.NegotiateVersion(ApiKey.Metadata, 9, 13);
+
+        releaseFirstSend.SetResult();
+        await inFlightSend;
+
+        await Assert.That(secondLease.Connection).IsSameReferenceAs(second);
+        await Assert.That(first.ObservedApiVersion).IsEqualTo((short)12);
+        await Assert.That(secondVersion).IsEqualTo((short)13);
+    }
+
     private static KafkaConnectionCapabilities CreateCapabilities(params ApiVersion[] versions)
         => KafkaConnectionCapabilities.Create(CreateResponse(versions));
 
@@ -146,6 +214,80 @@ public class KafkaConnectionCapabilitiesTests
             CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
             where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class GenerationConnection(
+        KafkaConnectionCapabilities capabilities,
+        Task releaseSend) :
+        IKafkaConnection,
+        IKafkaCapabilityProvider
+    {
+        private readonly TaskCompletionSource _sendStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _connected = 1;
+
+        public int BrokerId => 1;
+        public string Host => "unused";
+        public int Port => 9092;
+        public bool IsConnected => Volatile.Read(ref _connected) != 0;
+        public KafkaConnectionCapabilities Capabilities { get; } = capabilities;
+        public Task SendStarted => _sendStarted.Task;
+        public short ObservedApiVersion { get; private set; } = -1;
+
+        public void Disconnect() => Volatile.Write(ref _connected, 0);
+
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default)
+        {
+            Volatile.Write(ref _connected, 1);
+            return ValueTask.CompletedTask;
+        }
+
+        public async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            ObservedApiVersion = apiVersion;
+            _sendStarted.TrySetResult();
+            await releaseSend.WaitAsync(cancellationToken);
+            return (TResponse)(IKafkaResponse)new MetadataResponse
+            {
+                Brokers = [],
+                Topics = []
+            };
+        }
 
         public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
             TRequest request,

@@ -836,6 +836,49 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    [Timeout(120_000)]
+    public async Task SendLoop_UnsupportedTv2ProduceVersion_FailsWithoutRetry(
+        CancellationToken cancellationToken)
+    {
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var responses = new Queue<TaskCompletionSource<ProduceResponse>>([response]);
+        var sendCount = 0;
+        var (pool, _) = CreateMockConnection(
+            responses,
+            () => Interlocked.Increment(ref sendCount));
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(transactionalId: "test-transaction");
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>();
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, exception) => acknowledged.TrySetResult(exception),
+            produceApiVersion: ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion - 1,
+            isTransactional: true,
+            usesTransactionV2: true);
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+
+            var exception = await acknowledged.Task.WaitAsync(cancellationToken);
+
+            await Assert.That(exception).IsTypeOf<BrokerVersionException>();
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(0);
+        }
+        finally
+        {
+            response.TrySetResult(CreateSuccessResponse("test-topic", partition: 0, baseOffset: 42));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     [Arguments(true)]
     [Arguments(false)]
     [Timeout(120_000)]

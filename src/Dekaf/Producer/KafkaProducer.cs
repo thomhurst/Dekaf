@@ -79,6 +79,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private volatile bool _initialized;
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
+    private volatile int _produceApiVersion = -1;
     private int _maxObservedBrokerThrottleTimeMs;
     private int _disposed;
 
@@ -3041,8 +3042,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _options,
             _compressionCodecs,
             _inflightTracker,
-            static () => -1,
-            static _ => { },
+            () => _produceApiVersion,
+            version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
             TryEnsurePartitionsInTransaction,
             bumpEpoch: useEpochRecovery ? BumpEpochLocally : null,
