@@ -10,6 +10,7 @@ public sealed class ContainerStartupRetryTests
     [Test]
     [Arguments("Bind for 0.0.0.0:32769 failed: port is already allocated")]
     [Arguments("failed to bind host port 0.0.0.0:58162/tcp: address already in use")]
+    [Arguments("ports are not available: listen tcp 0.0.0.0:51600: bind: Only one usage of each socket address is normally permitted")]
     public async Task RunAsync_PortBindingCollision_UsesFreshAttempt(string message)
     {
         var attempts = 0;

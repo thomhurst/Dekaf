@@ -46,7 +46,11 @@ internal static class ContainerStartupRetry
         Contains(exception, static candidate =>
             candidate is DockerApiException &&
             (candidate.Message.Contains("port is already allocated", StringComparison.OrdinalIgnoreCase) ||
-             candidate.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase)));
+             candidate.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase) ||
+             candidate.Message.Contains("ports are not available", StringComparison.OrdinalIgnoreCase) ||
+             candidate.Message.Contains(
+                 "Only one usage of each socket address",
+                 StringComparison.OrdinalIgnoreCase)));
 
     internal static bool IsKafkaStartupScriptBusy(Exception exception) =>
         Contains(exception, static candidate =>

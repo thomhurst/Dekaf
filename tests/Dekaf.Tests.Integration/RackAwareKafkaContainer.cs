@@ -8,8 +8,9 @@ using TUnit.Core.Interfaces;
 
 namespace Dekaf.Tests.Integration;
 
-public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
+public class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
 {
+    private static readonly int[] AllBrokerNodeIds = [1, 2, 3];
     private static readonly string Image = $"apache/kafka:{KafkaContainerDefault.ImageTag}";
     private const int InternalBrokerPort = 9092;
     private const int ControllerPort = 9093;
@@ -19,6 +20,8 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
     private int[] _hostPorts = [];
     private IContainer[] _brokers = [];
     private INetwork? _network;
+
+    protected virtual IReadOnlyList<int> InitiallyStartedBrokerIds => AllBrokerNodeIds;
 
     public string BootstrapServers => string.Join(",", _hostPorts.Select(port => $"127.0.0.1:{port}"));
 
@@ -45,13 +48,16 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         _brokers[1] = CreateBroker(nodeId: 2, rack: "rack-a", externalPort: _hostPorts[1]);
         _brokers[2] = CreateBroker(nodeId: 3, rack: "rack-a", externalPort: _hostPorts[2]);
 
-        await Task.WhenAll(_brokers.Select(broker => broker.StartAsync())).ConfigureAwait(false);
-        await WaitForClusterAsync().ConfigureAwait(false);
+        var initiallyStartedBrokerIds = InitiallyStartedBrokerIds;
+        await Task.WhenAll(initiallyStartedBrokerIds.Select(nodeId => GetBroker(nodeId).StartAsync()))
+            .ConfigureAwait(false);
+        await WaitForClusterAsync(initiallyStartedBrokerIds.Count).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
     {
         await DisposeClusterAttemptAsync().ConfigureAwait(false);
+        GC.SuppressFinalize(this);
     }
 
     private async ValueTask DisposeClusterAttemptAsync()
@@ -193,7 +199,7 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
     {
         await StartBrokerWithoutClusterWaitAsync(nodeId, cancellationToken).ConfigureAwait(false);
 
-        await WaitForClusterAsync(cancellationToken).ConfigureAwait(false);
+        await WaitForClusterAsync(expectedBrokerCount: 3, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task StartBrokerWithoutClusterWaitAsync(
@@ -211,7 +217,7 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
     {
         await Task.WhenAll(nodeIds.Select(nodeId =>
             StartBrokerWithoutClusterWaitAsync(nodeId, cancellationToken))).ConfigureAwait(false);
-        await WaitForClusterAsync(cancellationToken).ConfigureAwait(false);
+        await WaitForClusterAsync(expectedBrokerCount: 3, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> WaitForPartitionLeaderChangeAsync(
@@ -294,7 +300,9 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         };
     }
 
-    private async Task WaitForClusterAsync(CancellationToken cancellationToken = default)
+    private async Task WaitForClusterAsync(
+        int expectedBrokerCount,
+        CancellationToken cancellationToken = default)
     {
         _ = await PollUntilAsync(
             async token =>
@@ -303,10 +311,10 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
                 var cluster = await admin.DescribeClusterAsync(token).ConfigureAwait(false);
                 return cluster.Nodes.Count;
             },
-            isComplete: nodeCount => nodeCount == 3,
+            isComplete: nodeCount => nodeCount == expectedBrokerCount,
             maxAttempts: 90,
             delay: TimeSpan.FromSeconds(1),
-            timeoutMessage: "Rack-aware Kafka cluster was not ready after 90s.",
+            timeoutMessage: $"Rack-aware Kafka cluster did not report {expectedBrokerCount} brokers after 90s.",
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
