@@ -14,6 +14,7 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using Dekaf.Retry;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Producer;
@@ -95,6 +96,8 @@ internal readonly record struct TransactionPartitionEnrollmentResult(
 /// </remarks>
 internal sealed partial class BrokerSender : IAsyncDisposable
 {
+    private static readonly double StopwatchTicksPerMillisecond = Stopwatch.Frequency / 1000.0;
+
     /// <summary>
     /// Timeout for SendCoalescedAsync which only does TCP write + response task wiring.
     /// Longer than this indicates a broken/stale connection. Reduced from 5000ms to 1500ms
@@ -3382,8 +3385,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Apply backoff to prevent tight retry loops if the epoch bump doesn't
             // resolve the error (e.g., broker keeps rejecting with OOSN).
-            batch.RetryNotBefore = Stopwatch.GetTimestamp() +
-                _options.RetryBackoffTicks;
+            ApplyRetryBackoff(batch);
         }
         else if (isEpochBumpError && _bumpEpoch is null
             && batch.InflightEntry is not null
@@ -3396,26 +3398,33 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             try { CompleteInflightEntry(batch); }
             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
             batch.InflightEntry = null;
+            ApplyRetryBackoff(batch);
         }
         else if (!networkRetryPrepared)
         {
-            if (TryApplyInlineLeader(batch.TopicPartition, errorCode, currentLeader, nodeEndpoints))
+            var inlineLeaderApplied = TryApplyInlineLeader(
+                batch.TopicPartition,
+                errorCode,
+                currentLeader,
+                nodeEndpoints);
+            if (inlineLeaderApplied && batch.RetryFailureCount == 0)
             {
                 LogRetriableErrorWithoutBackoff(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                // The inline leader update is the first retry attempt, matching ApplyRetryBackoff's
+                // pre-increment convention. A later failure therefore starts at failure count 2.
+                batch.RetryFailureCount = 1;
                 batch.RetryNotBefore = 0;
             }
             else
             {
+                var delayMs = ApplyRetryBackoff(batch);
                 LogRetriableErrorWithBackoff(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
-                    _options.RetryBackoffMs);
+                    delayMs);
 
                 // Fire-and-forget metadata refresh for leader changes.
                 // Observe exceptions to prevent UnobservedTaskException on GC.
                 _ = ObserveMetadataRefreshAsync(batch.TopicPartition.Topic, cancellationToken);
 
-                // Set backoff via RetryNotBefore instead of Task.Delay
-                batch.RetryNotBefore = Stopwatch.GetTimestamp() +
-                    _options.RetryBackoffTicks;
             }
         }
 
@@ -3949,9 +3958,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // sibling write cannot postpone metadata refresh or the start of retry backoff.
         if (!batch.IsLoopExitRedelivery)
             MutePartition(batch.TopicPartition);
+        var delayMs = ApplyRetryBackoff(batch);
         LogRetriableErrorWithBackoff(ErrorCode.NetworkException, batch.TopicPartition.Topic,
-            batch.TopicPartition.Partition, _options.RetryBackoffMs);
-        batch.RetryNotBefore = Stopwatch.GetTimestamp() + _options.RetryBackoffTicks;
+            batch.TopicPartition.Partition, delayMs);
 
         bool refreshMetadata;
         lock (metadataRefreshTopics)
@@ -3965,6 +3974,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // lifetime token so recovery can still refresh metadata.
             _ = ObserveMetadataRefreshAsync(batch.TopicPartition.Topic, _cts.Token);
         }
+    }
+
+    private int ApplyRetryBackoff(ReadyBatch batch)
+    {
+        var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+            _options.RetryBackoffMs,
+            _options.RetryBackoffMaxMs,
+            ++batch.RetryFailureCount);
+        batch.RetryNotBefore = _getTimestamp() + (long)(delayMs * StopwatchTicksPerMillisecond);
+        return delayMs;
     }
 
     /// <summary>

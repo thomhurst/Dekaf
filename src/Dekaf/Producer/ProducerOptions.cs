@@ -336,15 +336,6 @@ public sealed class ProducerOptions
         : (_requestTimeoutTicks = (long)(RequestTimeoutMs * (Stopwatch.Frequency / 1000.0)));
 
     /// <summary>
-    /// <see cref="RetryBackoffMs"/> converted to <see cref="Stopwatch"/> ticks.
-    /// Cached on first access to avoid repeated floating-point multiply.
-    /// </summary>
-    private long _retryBackoffTicks;
-    internal long RetryBackoffTicks =>
-        _retryBackoffTicks != 0 ? _retryBackoffTicks
-        : (_retryBackoffTicks = (long)(RetryBackoffMs * (Stopwatch.Frequency / 1000.0)));
-
-    /// <summary>
     /// Enables idempotent producer mode, which ensures that messages are delivered exactly once
     /// to a particular topic partition during the lifetime of a single producer session.
     /// <para>

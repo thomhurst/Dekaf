@@ -520,7 +520,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         // Retry loop for transient errors (CoordinatorNotAvailable, CoordinatorLoadInProgress)
         const int maxRetries = 5;
-        var retryDelayMs = 100;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
@@ -562,10 +561,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (errorCode == ErrorCode.CoordinatorNotAvailable ||
                 errorCode == ErrorCode.CoordinatorLoadInProgress)
             {
+                if (attempt == maxRetries - 1)
+                    break;
+
+                var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
                 LogCoordinatorNotAvailableRetry(attempt + 1, maxRetries, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 1000); // Exponential backoff, max 1s
                 continue;
             }
 
@@ -590,6 +592,35 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             GroupId = _options.GroupId
         };
     }
+
+    private int CalculateRequestRetryBackoff(int failureCount) =>
+        ExponentialRetryBackoff.CalculateDelayMilliseconds(
+            _options.RetryBackoffMs,
+            _options.RetryBackoffMaxMs,
+            failureCount);
+
+    internal static TimeSpan GetJoinRetryDelay(
+        int retryDelayMs,
+        TimeSpan elapsed,
+        TimeSpan rebalanceTimeout)
+    {
+        var remaining = rebalanceTimeout - elapsed;
+        return remaining <= TimeSpan.Zero
+            ? TimeSpan.Zero
+            : TimeSpan.FromMilliseconds(Math.Min(retryDelayMs, remaining.TotalMilliseconds));
+    }
+
+    private Task DelayForJoinRetryAsync(
+        int failureCount,
+        long startedAt,
+        TimeSpan rebalanceTimeout,
+        CancellationToken cancellationToken) =>
+        Task.Delay(
+            GetJoinRetryDelay(
+                CalculateRequestRetryBackoff(failureCount),
+                Stopwatch.GetElapsedTime(startedAt),
+                rebalanceTimeout),
+            cancellationToken);
 
     /// <summary>
     /// Serializes heartbeat loop starts to prevent concurrent callers from orphaning a loop.
@@ -801,7 +832,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         }
                     }
                 }
-            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync).ConfigureAwait(false);
+            }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs,
+                onRetry: FindCoordinatorAsync).ConfigureAwait(false);
         }
         finally
         {
@@ -1002,6 +1034,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 },
                 _metadataManager,
                 operationToken,
+                _options.RetryBackoffMs,
+                _options.RetryBackoffMaxMs,
                 onRetry: RecoverOffsetFetchAsync,
                 shouldRefreshMetadata: ShouldRefreshMetadataForOffsetFetchRetry).ConfigureAwait(false);
             }
@@ -1606,11 +1640,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             LogEnsureActiveGroupStarted(_options.GroupId!, _state);
             var startedAt = Stopwatch.GetTimestamp();
             var rebalanceTimeout = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
-            var retryDelayMs = 200;
+            var retryFailureCount = 0;
 
             while (_state != CoordinatorState.Stable)
             {
-                if (Stopwatch.GetElapsedTime(startedAt) > rebalanceTimeout)
+                if (Stopwatch.GetElapsedTime(startedAt) >= rebalanceTimeout)
                 {
                     throw new KafkaTimeoutException(
                         TimeoutKind.Rebalance,
@@ -1657,8 +1691,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     // Static member's previous session not yet released — retry with backoff
                     // until the rebalance timeout fires (checked at top of loop)
                     LogRetriableCoordinatorError(ex.ErrorCode);
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                    await DelayForJoinRetryAsync(
+                        ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnknownMemberId)
                 {
@@ -1670,8 +1704,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     LogRetriableCoordinatorError(ex.ErrorCode);
                     MarkCoordinatorUnknown();
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                    await DelayForJoinRetryAsync(
+                        ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (
                     ex is ObjectDisposedException ||
@@ -1681,8 +1715,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     LogCoordinatorConnectionDisposed();
                     MarkCoordinatorUnknown();
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                    await DelayForJoinRetryAsync(
+                        ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
                 }
             }
         }

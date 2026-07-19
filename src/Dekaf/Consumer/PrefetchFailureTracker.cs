@@ -1,5 +1,7 @@
 namespace Dekaf.Consumer;
 
+using Dekaf.Retry;
+
 internal readonly record struct PrefetchFailureKey(int BrokerId, int ConnectionIndex);
 
 internal readonly record struct PrefetchPosition(TopicPartition Partition, long Offset);
@@ -13,16 +15,21 @@ internal sealed class PrefetchFailureTracker
     private readonly int _terminalThreshold;
     private readonly int _initialDelayMs;
     private readonly int _maxDelayMs;
+    private readonly Func<double>? _randomDouble;
 
-    public PrefetchFailureTracker(int terminalThreshold, int initialDelayMs, int maxDelayMs)
+    public PrefetchFailureTracker(
+        int terminalThreshold,
+        int initialDelayMs,
+        int maxDelayMs,
+        Func<double>? randomDouble = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(terminalThreshold, 1);
-        ArgumentOutOfRangeException.ThrowIfLessThan(initialDelayMs, 1);
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxDelayMs, initialDelayMs);
+        ExponentialRetryBackoff.Validate(initialDelayMs, maxDelayMs);
 
         _terminalThreshold = terminalThreshold;
         _initialDelayMs = initialDelayMs;
         _maxDelayMs = maxDelayMs;
+        _randomDouble = randomDouble;
     }
 
     public PrefetchFailureDecision Observe(
@@ -49,8 +56,13 @@ internal sealed class PrefetchFailureTracker
 
             _failures[key] = new FailureState(deterministic, storedPositions, count);
 
-            var shift = Math.Min(count - 1, 30);
-            var delayMs = (int)Math.Min(_maxDelayMs, (long)_initialDelayMs << shift);
+            var delayMs = _randomDouble is null
+                ? ExponentialRetryBackoff.CalculateDelayMilliseconds(_initialDelayMs, _maxDelayMs, count)
+                : (int)ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _initialDelayMs,
+                    _maxDelayMs,
+                    count,
+                    _randomDouble());
             return new PrefetchFailureDecision(
                 delayMs,
                 IsTerminal: deterministic && count >= _terminalThreshold,

@@ -4,6 +4,7 @@ namespace Dekaf.Tests.Unit.Consumer;
 
 public sealed class PrefetchFailureTrackerTests
 {
+    private static readonly Func<double> NoJitter = static () => 0.5;
     private static readonly PrefetchFailureKey Key = new(BrokerId: 1, ConnectionIndex: 0);
     private static readonly PrefetchPosition[] Positions =
     [
@@ -14,7 +15,7 @@ public sealed class PrefetchFailureTrackerTests
     [Test]
     public async Task Observe_DeterministicFailureTripsAtThreshold()
     {
-        var tracker = new PrefetchFailureTracker(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 5_000);
+        var tracker = CreateTracker();
 
         var first = tracker.Observe(Key, Positions, deterministic: true);
         var second = tracker.Observe(Key, Positions, deterministic: true);
@@ -28,7 +29,7 @@ public sealed class PrefetchFailureTrackerTests
     [Test]
     public async Task Observe_ChangedPositionRestartsFailureCount()
     {
-        var tracker = new PrefetchFailureTracker(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 5_000);
+        var tracker = CreateTracker();
         tracker.Observe(Key, Positions, deterministic: true);
         tracker.Observe(Key, Positions, deterministic: true);
         PrefetchPosition[] advanced =
@@ -45,7 +46,7 @@ public sealed class PrefetchFailureTrackerTests
     [Test]
     public async Task Observe_ChangedFailureClassificationRestartsFailureCount()
     {
-        var tracker = new PrefetchFailureTracker(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 5_000);
+        var tracker = CreateTracker();
         tracker.Observe(Key, Positions, deterministic: false);
         tracker.Observe(Key, Positions, deterministic: false);
 
@@ -57,7 +58,7 @@ public sealed class PrefetchFailureTrackerTests
     [Test]
     public async Task Observe_TransientFailureBacksOffWithoutBecomingTerminal()
     {
-        var tracker = new PrefetchFailureTracker(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 500);
+        var tracker = new PrefetchFailureTracker(3, 100, 500, NoJitter);
         PrefetchFailureDecision decision = default;
 
         for (var i = 0; i < 10; i++)
@@ -73,7 +74,7 @@ public sealed class PrefetchFailureTrackerTests
     [Test]
     public async Task Reset_RestartsFailureCount()
     {
-        var tracker = new PrefetchFailureTracker(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 5_000);
+        var tracker = CreateTracker();
         tracker.Observe(Key, Positions, deterministic: true);
         tracker.Observe(Key, Positions, deterministic: true);
 
@@ -82,4 +83,29 @@ public sealed class PrefetchFailureTrackerTests
 
         await Assert.That(decision.Count).IsEqualTo(1);
     }
+
+    [Test]
+    [Arguments(-1, 100)]
+    [Arguments(100, -1)]
+    public async Task Constructor_InvalidBackoff_Throws(int initialDelayMs, int maxDelayMs)
+    {
+        var create = () => new PrefetchFailureTracker(3, initialDelayMs, maxDelayMs, NoJitter);
+
+        await Assert.That(create).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    [Arguments(0, 100)]
+    [Arguments(100, 0)]
+    public async Task Observe_DisabledBackoff_ReturnsZeroDelay(int initialDelayMs, int maxDelayMs)
+    {
+        var tracker = new PrefetchFailureTracker(3, initialDelayMs, maxDelayMs, NoJitter);
+
+        var decision = tracker.Observe(Key, Positions, deterministic: false);
+
+        await Assert.That(decision.DelayMs).IsEqualTo(0);
+    }
+
+    private static PrefetchFailureTracker CreateTracker()
+        => new(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 5_000, NoJitter);
 }

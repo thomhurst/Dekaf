@@ -161,6 +161,41 @@ public sealed class ConnectionBuilderOptionsTests
     }
 
     [Test]
+    public async Task Builders_WithRetryBackoff_PreserveCommonSettings()
+    {
+        var initial = TimeSpan.FromMilliseconds(123);
+        var maximum = TimeSpan.FromMilliseconds(456);
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRetryBackoff(initial)
+            .WithRetryBackoffMax(maximum)
+            .Build();
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("consumer-group")
+            .WithRetryBackoff(initial)
+            .WithRetryBackoffMax(maximum)
+            .Build();
+        await using var shareConsumer = Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("share-group")
+            .WithRetryBackoff(initial)
+            .WithRetryBackoffMax(maximum)
+            .Build();
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers("localhost:9092")
+            .WithRetryBackoff(initial)
+            .WithRetryBackoffMax(maximum)
+            .Build();
+
+        await AssertRetryBackoff(GetPrivateOptions<ProducerOptions>(producer));
+        await AssertRetryBackoff(GetPrivateOptions<ConsumerOptions>(consumer));
+        await AssertRetryBackoff(GetPrivateOptions<Dekaf.ShareConsumer.ShareConsumerOptions>(shareConsumer));
+        await AssertRetryBackoff(GetPrivateOptions<AdminClientOptions>(admin));
+    }
+
+    [Test]
     public async Task BuilderConnectionOptions_CanDisableTcpKeepAlive()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
@@ -216,5 +251,21 @@ public sealed class ConnectionBuilderOptionsTests
             ?? throw new InvalidOperationException($"Could not find _connectionPool on {client.GetType()}");
 
         return ((ConnectionPool)poolField.GetValue(client)!).EffectiveConnectionOptions;
+    }
+
+    private static TOptions GetPrivateOptions<TOptions>(object client)
+    {
+        var optionsField = client.GetType().GetField("_options", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"Could not find _options on {client.GetType()}");
+        return (TOptions)optionsField.GetValue(client)!;
+    }
+
+    private static async Task AssertRetryBackoff(object options)
+    {
+        var optionsType = options.GetType();
+        var initial = (int)optionsType.GetProperty("RetryBackoffMs")!.GetValue(options)!;
+        var maximum = (int)optionsType.GetProperty("RetryBackoffMaxMs")!.GetValue(options)!;
+        await Assert.That(initial).IsEqualTo(123);
+        await Assert.That(maximum).IsEqualTo(456);
     }
 }

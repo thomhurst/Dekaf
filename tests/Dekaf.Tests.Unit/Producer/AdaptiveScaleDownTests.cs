@@ -160,6 +160,10 @@ public sealed class AdaptiveScaleDownTests
 
         try
         {
+            // Keep the live loop in partition-limited state so it cannot independently
+            // end and flush the reflection-driven diagnostic window before disposal.
+            GetField<HashSet<TopicPartition>>(sender, "_knownPartitions")
+                .Add(new TopicPartition(Topic, 0));
             var observe = typeof(BrokerSender).GetMethod(
                 "ObservePartitionLimitedPressure",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -1048,6 +1052,7 @@ public sealed class AdaptiveScaleDownTests
 
         try
         {
+            await StopSendLoopAsync(sender);
             SetField(sender, "_connectionCount", 3);
             SetField(sender, "_totalMaxInFlight", 300);
             SetField(sender, "_totalPendingResponseCount", 1);
@@ -1198,6 +1203,12 @@ public sealed class AdaptiveScaleDownTests
         instance.GetType().GetField(
             fieldName,
             BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(instance, value);
+
+    private static async Task StopSendLoopAsync(BrokerSender sender)
+    {
+        GetField<CancellationTokenSource>(sender, "_cts").Cancel();
+        await GetField<Task>(sender, "_sendLoopTask").WaitAsync(TimeSpan.FromSeconds(5));
+    }
 
     [Test]
     public async Task FirstScaleUp_InvalidatesEndpointPinnedSingleton()

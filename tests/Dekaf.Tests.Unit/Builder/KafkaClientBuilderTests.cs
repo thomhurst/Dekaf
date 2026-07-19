@@ -150,6 +150,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithRetryBackoff(TimeSpan.FromMilliseconds(100)))
+            .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithConnectionTimeout(TimeSpan.FromSeconds(1)))
@@ -178,6 +180,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithRetryBackoff(TimeSpan.FromMilliseconds(100)))
+            .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithConnectionTimeout(TimeSpan.FromSeconds(1)))
@@ -198,6 +202,8 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionsPerBroker(2))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithRetryBackoff(TimeSpan.FromMilliseconds(100)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
@@ -221,6 +227,8 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateAdminClient().WithMetadataMaxAge(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithReconnectBackoff(TimeSpan.FromMilliseconds(100)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithRetryBackoff(TimeSpan.FromMilliseconds(100)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
@@ -247,6 +255,24 @@ public sealed class KafkaClientBuilderTests
 
         await Assert.That(pool.EffectiveConnectionOptions.ReconnectBackoff).IsEqualTo(TimeSpan.FromMilliseconds(123));
         await Assert.That(pool.EffectiveConnectionOptions.ReconnectBackoffMax).IsEqualTo(TimeSpan.FromMilliseconds(456));
+    }
+
+    [Test]
+    public async Task RootClient_WithRetryBackoff_ConfiguresCreatedClients()
+    {
+        await using var client = Kafka.Connect("localhost:9092", builder => builder
+            .WithRetryBackoff(TimeSpan.FromMilliseconds(123))
+            .WithRetryBackoffMax(TimeSpan.FromMilliseconds(456)));
+        await using var producer = client.CreateProducer<string, string>().Build();
+        await using var consumer = client.CreateConsumer<string, string>("group").Build();
+
+        var producerOptions = GetField<ProducerOptions>(producer, "_options");
+        var consumerOptions = GetField<ConsumerOptions>(consumer, "_options");
+
+        await Assert.That(producerOptions.RetryBackoffMs).IsEqualTo(123);
+        await Assert.That(producerOptions.RetryBackoffMaxMs).IsEqualTo(456);
+        await Assert.That(consumerOptions.RetryBackoffMs).IsEqualTo(123);
+        await Assert.That(consumerOptions.RetryBackoffMaxMs).IsEqualTo(456);
     }
 
     [Test]

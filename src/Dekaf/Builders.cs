@@ -108,6 +108,8 @@ public sealed class ProducerBuilder<TKey, TValue>
         _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
         _maxConnectionsPerBroker = clientInfrastructure.ProducerMaxConnectionsPerBroker;
         _isMaxConnectionsPerBrokerConfigured = true;
+        _retryBackoffMs = clientInfrastructure.RetryBackoffMs;
+        _retryBackoffMaxMs = clientInfrastructure.RetryBackoffMaxMs;
     }
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -1065,8 +1067,13 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
-    internal ProducerBuilder<TKey, TValue> WithRetryBackoff(TimeSpan backoff)
+    /// <summary>
+    /// Sets the initial delay for retrying failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithRetryBackoff(TimeSpan backoff)
     {
+        ThrowIfClientOwnedConnectionSettings();
         if (backoff < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
@@ -1075,8 +1082,13 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
-    internal ProducerBuilder<TKey, TValue> WithRetryBackoffMax(TimeSpan backoff)
+    /// <summary>
+    /// Sets the maximum delay for retrying repeatedly failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.max.ms</c>.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithRetryBackoffMax(TimeSpan backoff)
     {
+        ThrowIfClientOwnedConnectionSettings();
         if (backoff < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
         ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
@@ -1218,6 +1230,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             _reconnectBackoffMaxMs,
             _reconnectBackoffConfigured,
             _reconnectBackoffMaxConfigured);
+        ExponentialRetryBackoff.Validate(_retryBackoffMs, _retryBackoffMaxMs);
 
         ProducerOptions.ValidateArenaCapacity(_batchSize, _arenaCapacity);
 
@@ -1331,6 +1344,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
             DnsResolver = _dnsResolver,
+            RetryBackoffMs = _retryBackoffMs,
+            RetryBackoffMaxMs = _retryBackoffMaxMs,
             // Java parity: initial metadata blocks up to max.block.ms, retrying throughout.
             InitTimeoutMs = options.MaxBlockMs
         };
@@ -1450,6 +1465,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int? _heartbeatIntervalMs;
     private int _rebalanceTimeoutMs = 60000;
     private int _requestTimeoutMs = 30000;
+    private int _retryBackoffMs = 100;
+    private int _retryBackoffMaxMs = 1000;
     private bool _checkCrcs = true;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
@@ -1515,6 +1532,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _loggerFactory = clientInfrastructure.LoggerFactory;
         _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
         _maxConnectionsPerBroker = clientInfrastructure.MaxConnectionsPerBroker;
+        _retryBackoffMs = clientInfrastructure.RetryBackoffMs;
+        _retryBackoffMaxMs = clientInfrastructure.RetryBackoffMaxMs;
     }
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -2370,6 +2389,34 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the initial delay for retrying failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithRetryBackoff(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        if (backoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+        _retryBackoffMs = (int)backoff.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum delay for retrying repeatedly failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.max.ms</c>.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithRetryBackoffMax(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        if (backoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+        _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the maximum delay before reconnecting to a broker after repeated connection failures.
     /// Equivalent to Kafka's <c>reconnect.backoff.max.ms</c>.
     /// </summary>
@@ -2753,6 +2800,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             _reconnectBackoffMaxMs,
             _reconnectBackoffConfigured,
             _reconnectBackoffMaxConfigured);
+        ExponentialRetryBackoff.Validate(_retryBackoffMs, _retryBackoffMaxMs);
 
         GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
 
@@ -2784,6 +2832,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             HeartbeatIntervalMs = _heartbeatIntervalMs ?? 3000,
             RebalanceTimeoutMs = _rebalanceTimeoutMs,
             RequestTimeoutMs = _requestTimeoutMs,
+            RetryBackoffMs = _retryBackoffMs,
+            RetryBackoffMaxMs = _retryBackoffMaxMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
@@ -2834,7 +2884,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
-            DnsResolver = _dnsResolver
+            DnsResolver = _dnsResolver,
+            RetryBackoffMs = _retryBackoffMs,
+            RetryBackoffMaxMs = _retryBackoffMaxMs
         };
 
         var consumer = _clientInfrastructure is null
@@ -2927,6 +2979,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private int _sessionTimeoutMs = 45000;
     private int _heartbeatIntervalMs = 3000;
     private int _requestTimeoutMs = 30000;
+    private int _retryBackoffMs = 100;
+    private int _retryBackoffMaxMs = 1000;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
@@ -2968,6 +3022,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _bootstrapServers = clientInfrastructure.BootstrapServers;
         _loggerFactory = clientInfrastructure.LoggerFactory;
         _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
+        _retryBackoffMs = clientInfrastructure.RetryBackoffMs;
+        _retryBackoffMaxMs = clientInfrastructure.RetryBackoffMaxMs;
     }
 
     public ShareConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -3085,6 +3141,34 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             nameof(backoff),
             "Reconnect backoff cannot be negative");
         _reconnectBackoffConfigured = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the initial delay for retrying failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithRetryBackoff(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        if (backoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+        _retryBackoffMs = (int)backoff.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum delay for retrying repeatedly failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.max.ms</c>.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithRetryBackoffMax(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        if (backoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+        _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
         return this;
     }
 
@@ -3441,6 +3525,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             _reconnectBackoffMaxMs,
             _reconnectBackoffConfigured,
             _reconnectBackoffMaxConfigured);
+        ExponentialRetryBackoff.Validate(_retryBackoffMs, _retryBackoffMaxMs);
 
         GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
 
@@ -3463,6 +3548,8 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             SessionTimeoutMs = _sessionTimeoutMs,
             HeartbeatIntervalMs = _heartbeatIntervalMs,
             RequestTimeoutMs = _requestTimeoutMs,
+            RetryBackoffMs = _retryBackoffMs,
+            RetryBackoffMaxMs = _retryBackoffMaxMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,

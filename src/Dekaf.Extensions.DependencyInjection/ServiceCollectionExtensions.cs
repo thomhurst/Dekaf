@@ -910,6 +910,8 @@ internal static class DekafOptionsBinding
         builder.WithHeartbeatInterval(TimeSpan.FromMilliseconds(options.HeartbeatIntervalMs));
         builder.WithRebalanceTimeout(TimeSpan.FromMilliseconds(options.RebalanceTimeoutMs));
         builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
+        builder.WithRetryBackoff(TimeSpan.FromMilliseconds(options.RetryBackoffMs));
+        builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(options.RetryBackoffMaxMs));
         if (options.IsReconnectBackoffMsConfigured)
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
         if (options.IsReconnectBackoffMaxMsConfigured)
@@ -973,6 +975,8 @@ internal static class DekafOptionsBinding
         if (options.ClientId is not null)
             builder.WithClientId(options.ClientId);
         builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
+        builder.WithRetryBackoff(TimeSpan.FromMilliseconds(options.RetryBackoffMs));
+        builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(options.RetryBackoffMaxMs));
         if (options.IsReconnectBackoffMsConfigured)
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(options.ReconnectBackoffMs));
         if (options.IsReconnectBackoffMaxMsConfigured)
@@ -1295,6 +1299,10 @@ internal static class DekafConfigurationBinding
             builder.WithIsolationLevel(isolationLevel);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RequestTimeoutMs), out var requestTimeoutMs))
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RetryBackoffMs), out var retryBackoffMs))
+            builder.WithRetryBackoff(TimeSpan.FromMilliseconds(retryBackoffMs));
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RetryBackoffMaxMs), out var retryBackoffMaxMs))
+            builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(retryBackoffMaxMs));
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.ReconnectBackoffMs), out var reconnectBackoffMs))
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))
@@ -1346,6 +1354,10 @@ internal static class DekafConfigurationBinding
             builder.WithClientId(clientId);
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.RequestTimeoutMs), out var requestTimeoutMs))
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        if (TryGetValue<int>(configuration, nameof(AdminClientOptions.RetryBackoffMs), out var retryBackoffMs))
+            builder.WithRetryBackoff(TimeSpan.FromMilliseconds(retryBackoffMs));
+        if (TryGetValue<int>(configuration, nameof(AdminClientOptions.RetryBackoffMaxMs), out var retryBackoffMaxMs))
+            builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(retryBackoffMaxMs));
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.ReconnectBackoffMs), out var reconnectBackoffMs))
             builder.WithReconnectBackoff(TimeSpan.FromMilliseconds(reconnectBackoffMs));
         if (TryGetValue<int>(configuration, nameof(AdminClientOptions.ReconnectBackoffMaxMs), out var reconnectBackoffMaxMs))

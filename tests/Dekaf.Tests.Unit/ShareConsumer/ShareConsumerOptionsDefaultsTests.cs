@@ -19,6 +19,14 @@ public sealed class ShareConsumerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task RetryBackoff_DefaultsTo_100And1000()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.RetryBackoffMs).IsEqualTo(100);
+        await Assert.That(options.RetryBackoffMaxMs).IsEqualTo(1000);
+    }
+
+    [Test]
     public async Task ReconnectBackoffMaxMs_DefaultsTo_1000()
     {
         var options = CreateOptions();

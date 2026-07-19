@@ -7,6 +7,7 @@ using Dekaf.Internal;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Retry;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Metadata;
@@ -121,6 +122,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     {
         _connectionPool = connectionPool;
         _options = options ?? new MetadataOptions();
+        ExponentialRetryBackoff.Validate(_options.RetryBackoffMs, _options.RetryBackoffMaxMs);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<MetadataManager>.Instance;
 
         // Pre-parse bootstrap servers to avoid allocation in hot path
@@ -368,7 +370,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposalCts.Token);
             var initializationToken = linkedCts.Token;
-            var backoffMs = _options.RetryBackoffMs;
             var startedAt = Stopwatch.GetTimestamp();
 
             try
@@ -403,9 +404,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
                                 ex);
                         }
 
+                        var backoffMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                            _options.RetryBackoffMs,
+                            _options.RetryBackoffMaxMs,
+                            attempt + 1);
                         LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
                         await Task.Delay((int)Math.Min(backoffMs, remainingMs), initializationToken).ConfigureAwait(false);
-                        backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
                     }
                 }
             }
@@ -556,11 +560,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </remarks>
     private async ValueTask<TopicInfo?> GetTopicMetadataSlowAsync(string topicName, CancellationToken cancellationToken)
     {
-        const int initialRetryDelayMs = 100;
-        const int maxRetryDelayMs = 2000;
-
         TopicInfo? topic = null;
-        var retryDelayMs = initialRetryDelayMs;
+        var failureCount = 0;
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -578,8 +579,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
             if (topic is null
                 || topic.ErrorCode is ErrorCode.LeaderNotAvailable or ErrorCode.UnknownTopicOrPartition)
             {
+                failureCount++;
+                var retryDelayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _options.RetryBackoffMs,
+                    _options.RetryBackoffMaxMs,
+                    failureCount);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, maxRetryDelayMs);
                 continue;
             }
 
@@ -1221,12 +1226,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 consecutiveFailures++;
                 LogBackgroundMetadataRefreshFailed(ex, consecutiveFailures);
 
-                // Brief backoff on failures to avoid hammering a failing cluster
-                // Cap at 60 seconds, existing metadata continues to be used
-                var backoffSeconds = Math.Min(consecutiveFailures * 5, 60);
+                // Background refresh has a deliberately slower policy than individual request
+                // retries: preserve the existing 5-second step and 60-second outage cap.
+                var backoffMs = (int)Math.Min(consecutiveFailures * 5_000L, 60_000L);
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(backoffSeconds), cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
