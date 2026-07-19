@@ -309,6 +309,10 @@ auto-commit, `LeaveGroup`, assignment cleanup, and resource disposal:
 .WithRebalanceListener(new MyRebalanceListener())
 ```
 
+The same method accepts `IConsumerAwareRebalanceListener`. Its callbacks receive an
+`IRebalanceConsumer` view with safe commit, seek, pause/resume, metadata, and offset
+operations. The view is invalidated as soon as the callback completes.
+
 The stop callback is best-effort and bounded to five seconds. If it observes
 shutdown cancellation, Dekaf still completes local cleanup before rethrowing the
 cancellation from `CloseAsync`.

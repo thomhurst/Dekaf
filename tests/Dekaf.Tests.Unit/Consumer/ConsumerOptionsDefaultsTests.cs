@@ -246,6 +246,13 @@ public class ConsumerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task ConsumerAwareRebalanceListener_DefaultsTo_Null()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.ConsumerAwareRebalanceListener).IsNull();
+    }
+
+    [Test]
     public async Task SocketSendBufferBytes_DefaultsTo_0()
     {
         var options = CreateOptions();

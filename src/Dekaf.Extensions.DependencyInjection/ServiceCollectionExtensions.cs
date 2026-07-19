@@ -976,7 +976,9 @@ internal static class DekafOptionsBinding
             options.SaslCredentialProvider,
             builder.WithSaslOptions,
             builder.WithOAuthBearer);
-        if (options.RebalanceListener is not null)
+        if (options.ConsumerAwareRebalanceListener is not null)
+            builder.WithRebalanceListener(options.ConsumerAwareRebalanceListener);
+        else if (options.RebalanceListener is not null)
             builder.WithRebalanceListener(options.RebalanceListener);
         builder.WithPartitionEof(options.EnablePartitionEof);
         builder.WithSocketSendBufferBytes(options.SocketSendBufferBytes);

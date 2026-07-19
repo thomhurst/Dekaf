@@ -938,6 +938,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConcurrentDictionary<TopicPartition, long> _dirtyStoredOffsets = new(); // Stored offsets changed since last successful commit
     private readonly ConcurrentDictionary<TopicPartition, int> _storedOffsetLeaderEpochs = new();
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new(); // Fetch position (what to fetch next)
+    private readonly ConcurrentDictionary<TopicPartition, TopicPartitionOffset> _pendingRebalanceSeeks = new();
     // Last consumed record-batch leader epoch, sent as FetchRequest.LastFetchedEpoch.
     private readonly ConcurrentDictionary<TopicPartition, int> _lastConsumedLeaderEpochs = new();
     private readonly ConcurrentDictionary<TopicPartition, long> _committed = new();
@@ -1425,7 +1426,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     : null,
                 onPartitionsRevoked: null,
                 onPartitionsRevoking: QueueCoordinatorRevokedPartitionsForFetchClear,
-                onPartitionsRevokedAsync: CommitRevokedOffsetsAsync);
+                onPartitionsRevokedAsync: CommitRevokedOffsetsAsync,
+                createRebalanceConsumerScope: (assignment, newlyAssigned) =>
+                    new RebalanceConsumerScope<TKey, TValue>(
+                        this,
+                        assignment,
+                        newlyAssigned,
+                        StageRebalanceSeek,
+                        GetRebalancePosition));
         }
 
         _prefetchBuffer = new MpscFetchBuffer(CalculatePrefetchBufferCapacity(options));
@@ -4916,6 +4924,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return _positions.TryGetValue(partition, out var position) ? position : null;
     }
 
+    internal long? GetRebalancePosition(TopicPartition partition) =>
+        _pendingRebalanceSeeks.TryGetValue(partition, out var pending)
+            ? pending.Offset
+            : GetPosition(partition);
+
+    internal void StageRebalanceSeek(TopicPartitionOffset offset)
+    {
+        var partition = new TopicPartition(offset.Topic, offset.Partition);
+        _assignmentLock.Wait();
+        try
+        {
+            _pendingRebalanceSeeks[partition] = offset;
+            if (_coordinator is { } coordinator
+                && _assignmentSnapshot.Contains(partition)
+                && IsCoordinatorAssignmentSyncCurrent(coordinator, out _))
+            {
+                ApplyPendingRebalanceSeek(partition);
+            }
+        }
+        finally
+        {
+            SemaphoreHelper.ReleaseSafely(_assignmentLock);
+        }
+    }
+
     private void EmitFetchMetrics(PendingFetchData fetch)
     {
         if (!fetch.TryConsumeMetricDelta(out var messageCount, out var bytesConsumed))
@@ -5010,6 +5043,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _positions.TryRemove(partition, out _);
             ClearStoredOffset(partition);
             _fetchPositions.TryRemove(partition, out _);
+            _pendingRebalanceSeeks.TryRemove(partition, out _);
             _minimumFetchBufferEpochsByPartition.TryRemove(partition, out _);
             _lastConsumedLeaderEpochs.TryRemove(partition, out _);
             _committed.TryRemove(partition, out _);
@@ -6209,6 +6243,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     _fetchPositions[partition] = offset;
                 }
 
+                ApplyPendingRebalanceSeek(partition);
+
                 if (isNewlyExpanded)
                     (initializedNewPartitions ??= []).Add(partition);
             }
@@ -6218,6 +6254,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (initializedNewPartitions is not null)
                 coordinator.AcknowledgeInitializedPartitions(initializedNewPartitions, assignmentVersion);
         }
+    }
+
+    private void ApplyPendingRebalanceSeek(TopicPartition partition)
+    {
+        if (!_pendingRebalanceSeeks.TryRemove(partition, out var offset))
+            return;
+
+        if (offset.LeaderEpoch >= 0)
+            SetLastConsumedLeaderEpoch(partition, offset.LeaderEpoch);
+        else
+            ClearLastConsumedLeaderEpoch(partition);
+        SetPosition(partition, offset.Offset, dirty: true);
+        _fetchPositions[partition] = offset.Offset;
+        _eofEmitted.TryRemove(partition, out _);
     }
 
     private async ValueTask<long> GetResetOffsetAsync(

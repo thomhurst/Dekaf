@@ -28,6 +28,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly IRebalanceListener? _rebalanceListener;
+    private readonly IConsumerAwareRebalanceListener? _consumerAwareRebalanceListener;
     // Retained for the public six-parameter constructor and direct coordinator callers.
     // KafkaConsumer uses the pre-publication hook below to invalidate buffered fetches.
     private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsRevoked;
@@ -38,6 +39,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // Assignment snapshots wait for this hook so KafkaConsumer cannot discard dirty revoked offsets first.
     private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>?
         _onPartitionsRevokedAsync;
+    private readonly Func<
+        IEnumerable<TopicPartition>,
+        IEnumerable<TopicPartition>,
+        IRebalanceConsumerScope>? _createRebalanceConsumerScope;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
     private Task _pendingRevocationCommit = Task.CompletedTask;
     // Assignment publication and revocation history form one snapshot. Rebalance callbacks
@@ -123,15 +128,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Func<int>? getConnectionCount,
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked,
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking,
-        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? onPartitionsRevokedAsync = null)
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? onPartitionsRevokedAsync = null,
+        Func<IEnumerable<TopicPartition>, IEnumerable<TopicPartition>, IRebalanceConsumerScope>?
+            createRebalanceConsumerScope = null)
     {
         _options = options;
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
-        _rebalanceListener = options.RebalanceListener;
+        _consumerAwareRebalanceListener = options.ConsumerAwareRebalanceListener;
+        _rebalanceListener = _consumerAwareRebalanceListener is null
+            ? options.RebalanceListener
+            : null;
         _onPartitionsRevoked = onPartitionsRevoked;
         _onPartitionsRevoking = onPartitionsRevoking;
         _onPartitionsRevokedAsync = onPartitionsRevokedAsync;
+        _createRebalanceConsumerScope = createRebalanceConsumerScope;
+        if (_consumerAwareRebalanceListener is not null && _createRebalanceConsumerScope is null)
+        {
+            throw new ArgumentException(
+                "Consumer-aware rebalance listeners require a KafkaConsumer-owned coordinator.",
+                nameof(options));
+        }
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConsumerCoordinator>.Instance;
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
@@ -716,9 +733,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         try
         {
             LogRebalanceListenerCall(callbackName, partitions.Count);
-            var callbackTask = callback(listener, partitions, cancellationToken);
-
-            await callbackTask.ConfigureAwait(false);
+            await callback(listener, partitions, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -726,10 +741,53 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
+    private async ValueTask InvokeConsumerAwareRebalanceListenerAsync(
+        string callbackName,
+        IReadOnlyList<TopicPartition> partitions,
+        IConsumerAwareRebalanceListener listener,
+        Func<
+            IConsumerAwareRebalanceListener,
+            IRebalanceConsumer,
+            IEnumerable<TopicPartition>,
+            CancellationToken,
+            ValueTask> consumerAwareCallback,
+        IEnumerable<TopicPartition> newlyAssigned,
+        CancellationToken cancellationToken)
+    {
+        IRebalanceConsumerScope? consumerScope = null;
+        try
+        {
+            LogRebalanceListenerCall(callbackName, partitions.Count);
+            consumerScope = _createRebalanceConsumerScope!(
+                _assignedPartitions,
+                newlyAssigned);
+            await consumerAwareCallback(
+                listener,
+                consumerScope,
+                partitions,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LogRebalanceListenerCallbackError(callbackName, ex);
+        }
+        finally
+        {
+            consumerScope?.Invalidate();
+        }
+    }
+
     private async ValueTask InvokeRebalanceListenersAsync(
         string callbackName,
         IReadOnlyList<TopicPartition> partitions,
         Func<IRebalanceListener, IEnumerable<TopicPartition>, CancellationToken, ValueTask> callback,
+        Func<
+            IConsumerAwareRebalanceListener,
+            IRebalanceConsumer,
+            IEnumerable<TopicPartition>,
+            CancellationToken,
+            ValueTask> consumerAwareCallback,
+        IEnumerable<TopicPartition> newlyAssigned,
         CancellationToken cancellationToken)
     {
         var configuredListener = _rebalanceListener;
@@ -740,6 +798,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 partitions,
                 configuredListener,
                 callback,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var consumerAwareListener = _consumerAwareRebalanceListener;
+        if (consumerAwareListener is not null)
+        {
+            await InvokeConsumerAwareRebalanceListenerAsync(
+                callbackName,
+                partitions,
+                consumerAwareListener,
+                consumerAwareCallback,
+                newlyAssigned,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -1242,6 +1312,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 "OnPartitionsRevoked",
                 revoked,
                 static (listener, partitions, token) => listener.OnPartitionsRevokedAsync(partitions, token),
+                static (listener, consumer, partitions, token) =>
+                    listener.OnPartitionsRevokedAsync(consumer, partitions, token),
+                [],
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -1250,6 +1323,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 "OnPartitionsAssigned",
                 result.Assigned,
                 static (listener, partitions, token) => listener.OnPartitionsAssignedAsync(partitions, token),
+                static (listener, consumer, partitions, token) =>
+                    listener.OnPartitionsAssignedAsync(consumer, partitions, token),
+                result.Assigned,
                 cancellationToken).ConfigureAwait(false);
     }
 
@@ -1983,6 +2059,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 "OnPartitionsLost",
                 lost,
                 static (listener, partitions, token) => listener.OnPartitionsLostAsync(partitions, token),
+                static (listener, consumer, partitions, token) =>
+                    listener.OnPartitionsLostAsync(consumer, partitions, token),
+                [],
                 CancellationToken.None).ConfigureAwait(false);
         }
         finally

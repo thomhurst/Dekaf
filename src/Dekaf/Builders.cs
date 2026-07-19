@@ -1642,6 +1642,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _maxCachedStringValueBytes = DefaultMaxCachedStringValueBytes;
     private int _maxCachedStringValueEntries = DefaultMaxCachedStringValueEntries;
     private IRebalanceListener? _rebalanceListener;
+    private IConsumerAwareRebalanceListener? _consumerAwareRebalanceListener;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private bool _enablePartitionEof;
     private int _socketSendBufferBytes;
@@ -2470,6 +2471,17 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithRebalanceListener(IRebalanceListener listener)
     {
         _rebalanceListener = listener;
+        _consumerAwareRebalanceListener = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures a rebalance listener with callback-scoped access to safe consumer operations.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithRebalanceListener(IConsumerAwareRebalanceListener listener)
+    {
+        _consumerAwareRebalanceListener = listener;
+        _rebalanceListener = null;
         return this;
     }
 
@@ -3180,6 +3192,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             OAuthBearerTokenProvider = _oauthTokenProvider,
             AwsMskIamConfig = _awsMskIamConfig,
             RebalanceListener = _rebalanceListener,
+            ConsumerAwareRebalanceListener = _consumerAwareRebalanceListener,
             EnablePartitionEof = _enablePartitionEof,
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,

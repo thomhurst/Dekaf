@@ -110,7 +110,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         string? clientRack = null,
         int heartbeatIntervalMs = 3000,
         int rebalanceTimeoutMs = 30000,
-        int maxPollIntervalMs = 300000) => new()
+        int maxPollIntervalMs = 300000,
+        IConsumerAwareRebalanceListener? consumerAwareRebalanceListener = null) => new()
         {
             BootstrapServers = ["localhost:9092"],
             GroupId = groupId,
@@ -118,6 +119,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             GroupInstanceId = groupInstanceId,
             ClientRack = clientRack,
             RebalanceListener = rebalanceListener,
+            ConsumerAwareRebalanceListener = consumerAwareRebalanceListener,
             HeartbeatIntervalMs = heartbeatIntervalMs,
             RebalanceTimeoutMs = rebalanceTimeoutMs,
             MaxPollIntervalMs = maxPollIntervalMs
@@ -184,6 +186,19 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         var result = method!.Invoke(coordinator, [false, true, CancellationToken.None])!;
         var task = (Task)result.GetType().GetMethod("AsTask")!.Invoke(result, null)!;
         await task;
+    }
+
+    private static ValueTask InvokePartitionsLostAsync(
+        ConsumerCoordinator coordinator,
+        IReadOnlyList<TopicPartition> partitions)
+    {
+        var method = typeof(ConsumerCoordinator).GetMethod(
+            "InvokePartitionsLostAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("InvokePartitionsLostAsync method not found.");
+
+        return (ValueTask)(method.Invoke(coordinator, [partitions])
+            ?? throw new InvalidOperationException("InvokePartitionsLostAsync returned null."));
     }
 
     private static Task InvokeConsumerProtocolHeartbeatLoopAsync(
@@ -2297,6 +2312,195 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await Assert.That(assignedPartitions).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_ConsumerAwareAssignment_UsesAndInvalidatesScopedView()
+    {
+        var assignment = CreateAssignment(TestTopicId, 0, 1);
+        SetupSuccessfulConsumerProtocolJoin(assignment: assignment);
+        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
+        IRebalanceConsumer? capturedView = null;
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                capturedView = callInfo.Arg<IRebalanceConsumer>();
+                return ValueTask.CompletedTask;
+            });
+        var consumer = Substitute.For<IKafkaConsumer<byte[], byte[]>>();
+        consumer.Positions.Returns(Substitute.For<IConsumerPositions>());
+        RebalanceConsumerScope<byte[], byte[]>? scope = null;
+        TopicPartition[]? callbackAssignment = null;
+        TopicPartition[]? newlyAssigned = null;
+        var options = CreateConsumerProtocolOptions(
+            consumerAwareRebalanceListener: listener);
+        await using var coordinator = new ConsumerCoordinator(
+            options,
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: null,
+            createRebalanceConsumerScope: (current, added) =>
+            {
+                callbackAssignment = current.ToArray();
+                newlyAssigned = added.ToArray();
+                return scope = new RebalanceConsumerScope<byte[], byte[]>(
+                    consumer,
+                    current,
+                    added);
+            });
+
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic" },
+            CancellationToken.None);
+
+        await Assert.That(capturedView).IsSameReferenceAs(scope);
+        await Assert.That(callbackAssignment).Count().IsEqualTo(2);
+        await Assert.That(newlyAssigned).Count().IsEqualTo(2);
+        Assert.Throws<InvalidOperationException>(() => _ = scope!.Assignment);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_ConsumerAwareFailure_StillInvalidatesScopedView()
+    {
+        var assignment = CreateAssignment(TestTopicId, 0);
+        SetupSuccessfulConsumerProtocolJoin(assignment: assignment);
+        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
+        listener.OnPartitionsAssignedAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException(new InvalidOperationException("callback failed")));
+        var consumer = Substitute.For<IKafkaConsumer<byte[], byte[]>>();
+        consumer.Positions.Returns(Substitute.For<IConsumerPositions>());
+        RebalanceConsumerScope<byte[], byte[]>? scope = null;
+        var options = CreateConsumerProtocolOptions(
+            consumerAwareRebalanceListener: listener);
+        await using var coordinator = new ConsumerCoordinator(
+            options,
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: null,
+            createRebalanceConsumerScope: (current, added) =>
+                scope = new RebalanceConsumerScope<byte[], byte[]>(consumer, current, added));
+
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic" },
+            CancellationToken.None);
+
+        Assert.Throws<InvalidOperationException>(() => _ = scope!.Assignment);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_ConsumerAwareRevocation_ReceivesScopedView()
+    {
+        SetupFindCoordinator();
+        var heartbeatCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var count = Interlocked.Increment(ref heartbeatCount);
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = count,
+                    HeartbeatIntervalMs = 60_000,
+                    Assignment = count == 1
+                        ? CreateAssignment(TestTopicId, 0, 1)
+                        : CreateAssignment(TestTopicId, 1)
+                });
+            });
+        IRebalanceConsumer? revokedView = null;
+        TopicPartition[]? revokedPartitions = null;
+        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
+        listener.OnPartitionsRevokedAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                revokedView = callInfo.Arg<IRebalanceConsumer>();
+                revokedPartitions = callInfo.Arg<IEnumerable<TopicPartition>>()!.ToArray();
+                return ValueTask.CompletedTask;
+            });
+        var consumer = Substitute.For<IKafkaConsumer<byte[], byte[]>>();
+        consumer.Positions.Returns(Substitute.For<IConsumerPositions>());
+        var options = CreateConsumerProtocolOptions(
+            heartbeatIntervalMs: 60_000,
+            consumerAwareRebalanceListener: listener);
+        await using var coordinator = new ConsumerCoordinator(
+            options,
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: null,
+            createRebalanceConsumerScope: (current, added) =>
+                new RebalanceConsumerScope<byte[], byte[]>(consumer, current, added));
+
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic" },
+            CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        await InvokeSteadyConsumerGroupHeartbeatAsync(coordinator);
+
+        await Assert.That(revokedPartitions).IsEquivalentTo(
+            [new TopicPartition("test-topic", 0)]);
+        Assert.Throws<InvalidOperationException>(() => _ = revokedView!.Assignment);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_ConsumerAwareLostCancellation_InvalidatesScopedView()
+    {
+        IRebalanceConsumer? lostView = null;
+        var listener = Substitute.For<IConsumerAwareRebalanceListener>();
+        listener.OnPartitionsLostAsync(
+                Arg.Any<IRebalanceConsumer>(),
+                Arg.Any<IEnumerable<TopicPartition>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                lostView = callInfo.Arg<IRebalanceConsumer>();
+                return ValueTask.FromException(new OperationCanceledException("cancelled"));
+            });
+        var consumer = Substitute.For<IKafkaConsumer<byte[], byte[]>>();
+        consumer.Positions.Returns(Substitute.For<IConsumerPositions>());
+        var options = CreateConsumerProtocolOptions(
+            consumerAwareRebalanceListener: listener);
+        await using var coordinator = new ConsumerCoordinator(
+            options,
+            _connectionPool,
+            _metadataManager,
+            logger: null,
+            getConnectionCount: null,
+            onPartitionsRevoked: null,
+            onPartitionsRevoking: null,
+            onPartitionsRevokedAsync: null,
+            createRebalanceConsumerScope: (current, added) =>
+                new RebalanceConsumerScope<byte[], byte[]>(consumer, current, added));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await InvokePartitionsLostAsync(
+                coordinator,
+                [new TopicPartition("test-topic", 0)]));
+
+        Assert.Throws<InvalidOperationException>(() => _ = lostView!.Assignment);
     }
 
     [Test]

@@ -139,6 +139,54 @@ Callback semantics:
 
 Non-cancellation callback exceptions are logged and suppressed. `OperationCanceledException` follows the supplied cancellation token.
 
+Use `IConsumerAwareRebalanceListener` when a callback must operate on the consumer
+without capturing its unrestricted instance:
+
+```csharp
+public sealed class ConsumerAwareListener : IConsumerAwareRebalanceListener
+{
+    public ValueTask OnPartitionsAssignedAsync(
+        IRebalanceConsumer consumer,
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken ct)
+    {
+        var assigned = partitions.ToArray();
+        consumer.SeekToBeginning(assigned);
+        consumer.Pause(assigned);
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask OnPartitionsRevokedAsync(
+        IRebalanceConsumer consumer,
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken ct)
+    {
+        var completed = GetCompletedOffsets(partitions);
+        await consumer.CommitAsync(completed, ct);
+    }
+
+    public ValueTask OnPartitionsLostAsync(
+        IRebalanceConsumer consumer,
+        IEnumerable<TopicPartition> partitions,
+        CancellationToken ct) => ValueTask.CompletedTask;
+}
+
+var consumer = await Kafka.CreateConsumer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithGroupId("my-group")
+    .WithRebalanceListener(new ConsumerAwareListener())
+    .BuildAsync();
+```
+
+`IRebalanceConsumer` exposes commit/store, position and seek, pause/resume,
+assignment, group metadata, and offset queries. It intentionally excludes consume,
+close/dispose, subscribe, and assignment mutation. The view is valid only while its
+callback is running; using a retained view afterward throws `InvalidOperationException`.
+
+Existing `IRebalanceListener` implementations and registrations require no changes.
+Migrate only listeners that need safe consumer operations by changing the implemented
+interface and adding the `IRebalanceConsumer` callback parameter.
+
 For low-level consumers, track completed offsets only after durable processing.
 On revoke or graceful stop, commit those completed offsets. On lost, remove local
 state without committing:
