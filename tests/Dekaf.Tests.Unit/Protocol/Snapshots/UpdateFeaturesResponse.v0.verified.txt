@@ -1,0 +1,23 @@
+﻿Response: Dekaf.Protocol.Messages.UpdateFeaturesResponse
+API key: UpdateFeatures (57)
+Version: 0
+Header version: 1
+Body length: 47 bytes
+
+0000: 00 00 00 11 00 00 00 02  11 6D 65 74 61 64 61 74 |.........metadat|
+0010: 61 2E 76 65 72 73 69 6F  6E 00 60 12 75 6E 73 75 |a.version.`.unsu|
+0020: 70 70 6F 72 74 65 64 20  6C 65 76 65 6C 00 00    |pported level..|
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "ErrorMessage": null,
+  "Results": [
+    {
+      "ErrorCode": "FeatureUpdateFailed",
+      "ErrorMessage": "unsupported level",
+      "Feature": "metadata.version"
+    }
+  ],
+  "ThrottleTimeMs": 17
+}

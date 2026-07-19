@@ -603,6 +603,147 @@ public sealed class AdminClient : IAdminClient
         };
     }
 
+    public async ValueTask<FeatureMetadata> DescribeFeaturesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        return await WithRetryAsync(async () =>
+        {
+            using var connectionLease = await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                Protocol.ApiKey.ApiVersions,
+                ApiVersionsRequest.LowestSupportedVersion,
+                ApiVersionsRequest.HighestSupportedVersion);
+            var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                new ApiVersionsRequest
+                {
+                    ClientSoftwareName = "dekaf",
+                    ClientSoftwareVersion = typeof(AdminClient).Assembly.GetName().Version?.ToString() ?? "0.0.0",
+                    ClusterId = apiVersion >= 5 ? _metadataManager.Metadata.ClusterId : null,
+                    NodeId = apiVersion >= 5 ? connection.BrokerId : -1
+                },
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(
+                    response.ErrorCode,
+                    $"DescribeFeatures failed: {response.ErrorCode}");
+            }
+
+            var capabilities = KafkaConnectionCapabilities.Create(response);
+            _metadataManager.ObserveClusterCapabilities(
+                _metadataManager.Metadata.ClusterId,
+                capabilities);
+            _metadataManager.GetClusterFinalizedFeatureMetadata(
+                out var finalizedFeaturesEpoch,
+                out var finalizedFeatureData);
+
+            return new FeatureMetadata
+            {
+                FinalizedFeaturesEpoch = finalizedFeaturesEpoch,
+                SupportedFeatures = capabilities.SupportedFeatures.ToDictionary(
+                    static feature => feature.Key,
+                    static feature => new FeatureVersionRange(
+                        feature.Value.MinVersion,
+                        feature.Value.MaxVersion),
+                    StringComparer.Ordinal),
+                FinalizedFeatures = finalizedFeatureData.ToDictionary(
+                    static feature => feature.Key,
+                    static feature => new FeatureVersionRange(
+                        feature.Value.MinVersion,
+                        feature.Value.MaxVersion),
+                    StringComparer.Ordinal)
+            };
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<string, FeatureUpdateResultInfo>> UpdateFeaturesAsync(
+        IReadOnlyDictionary<string, FeatureUpdate> updates,
+        UpdateFeaturesOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(updates);
+
+        var updateData = new List<UpdateFeatureData>(updates.Count);
+        foreach (var update in updates)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(update.Key);
+            ArgumentNullException.ThrowIfNull(update.Value);
+            if (!Enum.IsDefined(update.Value.UpgradeType))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(updates),
+                    update.Value.UpgradeType,
+                    "Feature upgrade type is not defined.");
+            }
+
+            updateData.Add(new UpdateFeatureData
+            {
+                Feature = update.Key,
+                MaxVersionLevel = update.Value.MaxVersionLevel,
+                UpgradeType = (Protocol.Messages.FeatureUpdateType)update.Value.UpgradeType
+            });
+        }
+
+        var opts = options ?? new UpdateFeaturesOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(opts.TimeoutMs);
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        return await WithRetryAsync<IReadOnlyDictionary<string, FeatureUpdateResultInfo>>(async () =>
+        {
+            using var controllerLease = await LeaseControllerAsync(cancellationToken).ConfigureAwait(false);
+            var controller = controllerLease.Connection;
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                controller,
+                Protocol.ApiKey.UpdateFeatures,
+                UpdateFeaturesRequest.LowestSupportedVersion,
+                UpdateFeaturesRequest.HighestSupportedVersion);
+            if (opts.ValidateOnly && apiVersion == 0)
+            {
+                throw new Errors.BrokerVersionException(
+                    "Validate-only feature updates require UpdateFeatures v1 or later.");
+            }
+
+            var response = await controller.SendAsync<UpdateFeaturesRequest, UpdateFeaturesResponse>(
+                new UpdateFeaturesRequest
+                {
+                    TimeoutMs = opts.TimeoutMs,
+                    FeatureUpdates = updateData,
+                    ValidateOnly = opts.ValidateOnly
+                },
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(
+                    response.ErrorCode,
+                    response.ErrorMessage ?? $"UpdateFeatures failed: {response.ErrorCode}");
+            }
+
+            if (apiVersion >= 2)
+            {
+                return updates.Keys.ToDictionary(
+                    static feature => feature,
+                    static _ => new FeatureUpdateResultInfo(),
+                    StringComparer.Ordinal);
+            }
+
+            return response.Results.ToDictionary(
+                static result => result.Feature,
+                static result => new FeatureUpdateResultInfo
+                {
+                    ErrorCode = result.ErrorCode,
+                    ErrorMessage = result.ErrorMessage
+                },
+                StringComparer.Ordinal);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     private static void MergeTopicPartitionPage(
         Dictionary<string, TopicDescription> result,
         Dictionary<string, List<PartitionInfo>> partitionAccumulator,

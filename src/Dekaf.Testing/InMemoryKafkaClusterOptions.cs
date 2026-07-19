@@ -1,3 +1,5 @@
+using Dekaf.Admin;
+
 namespace Dekaf.Testing;
 
 /// <summary>
@@ -19,4 +21,10 @@ public sealed class InMemoryKafkaClusterOptions
     /// Cluster ID surfaced by admin operations.
     /// </summary>
     public string ClusterId { get; set; } = "dekaf-in-memory";
+
+    /// <summary>
+    /// Broker-supported feature ranges surfaced by the in-memory admin client.
+    /// </summary>
+    public IDictionary<string, FeatureVersionRange> SupportedFeatures { get; set; } =
+        new Dictionary<string, FeatureVersionRange>(StringComparer.Ordinal);
 }

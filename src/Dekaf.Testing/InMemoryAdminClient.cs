@@ -17,11 +17,18 @@ public sealed class InMemoryAdminClient : IAdminClient
     private readonly Dictionary<ClientQuotaEntity, Dictionary<string, double>> _clientQuotas = new();
     private readonly object _delegationTokenGate = new();
     private readonly Dictionary<string, DelegationToken> _delegationTokens = new(StringComparer.Ordinal);
+    private readonly object _featureGate = new();
+    private readonly Dictionary<string, FeatureVersionRange> _supportedFeatures;
+    private readonly Dictionary<string, FeatureVersionRange> _finalizedFeatures = new(StringComparer.Ordinal);
+    private long _finalizedFeaturesEpoch = -1;
     private bool _disposed;
 
     public InMemoryAdminClient(InMemoryKafkaCluster cluster)
     {
         _cluster = cluster ?? throw new ArgumentNullException(nameof(cluster));
+        _supportedFeatures = new Dictionary<string, FeatureVersionRange>(
+            cluster.Options.SupportedFeatures,
+            StringComparer.Ordinal);
     }
 
     public ClusterMetadata Metadata { get; } = new();
@@ -142,6 +149,58 @@ public sealed class InMemoryAdminClient : IAdminClient
                 }
             ]
         });
+    }
+
+    public ValueTask<FeatureMetadata> DescribeFeaturesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        lock (_featureGate)
+        {
+            return ValueTask.FromResult(new FeatureMetadata
+            {
+                FinalizedFeaturesEpoch = _finalizedFeaturesEpoch,
+                SupportedFeatures = new Dictionary<string, FeatureVersionRange>(
+                    _supportedFeatures,
+                    StringComparer.Ordinal),
+                FinalizedFeatures = new Dictionary<string, FeatureVersionRange>(
+                    _finalizedFeatures,
+                    StringComparer.Ordinal)
+            });
+        }
+    }
+
+    public ValueTask<IReadOnlyDictionary<string, FeatureUpdateResultInfo>> UpdateFeaturesAsync(
+        IReadOnlyDictionary<string, FeatureUpdate> updates,
+        UpdateFeaturesOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(updates);
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
+
+        if (options?.ValidateOnly != true)
+        {
+            lock (_featureGate)
+            {
+                foreach (var update in updates)
+                {
+                    _finalizedFeatures[update.Key] = new FeatureVersionRange(
+                        update.Value.MaxVersionLevel,
+                        update.Value.MaxVersionLevel);
+                }
+
+                _finalizedFeaturesEpoch++;
+            }
+        }
+
+        return ValueTask.FromResult<IReadOnlyDictionary<string, FeatureUpdateResultInfo>>(
+            updates.Keys.ToDictionary(
+                static feature => feature,
+                static _ => new FeatureUpdateResultInfo(),
+                StringComparer.Ordinal));
     }
 
     public ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsAsync(

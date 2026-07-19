@@ -390,13 +390,22 @@ public sealed partial class MetadataManager : IAsyncDisposable
     internal bool TryGetFinalizedFeatureVersion(string featureName, out short maxVersionLevel) =>
         GetFinalizedFeatureStatus(featureName, out maxVersionLevel) == FinalizedFeatureStatus.Present;
 
+    internal void GetClusterFinalizedFeatureMetadata(
+        out long finalizedFeaturesEpoch,
+        out IReadOnlyDictionary<string, (short MinVersion, short MaxVersion)> finalizedFeatures)
+    {
+        lock (_finalizedFeatureLock)
+        {
+            var finalizedSnapshot = Volatile.Read(ref _finalizedFeatures);
+            finalizedFeaturesEpoch = finalizedSnapshot?.Epoch ?? -1;
+            finalizedFeatures = finalizedSnapshot?.CopyFeatures()
+                ?? new Dictionary<string, (short MinVersion, short MaxVersion)>(StringComparer.Ordinal);
+        }
+    }
+
     private void ObserveConnectionCapabilities(KafkaConnectionCapabilities capabilities)
     {
         if (Volatile.Read(ref _disposed) != 0)
-            return;
-
-        var candidate = capabilities.FinalizedFeatureSnapshot;
-        if (candidate is null)
             return;
 
         lock (_finalizedFeatureLock)
@@ -404,7 +413,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             if (_finalizedFeatureClusterId is null)
                 return;
 
-            PublishFinalizedFeatures(candidate);
+            PublishClusterCapabilities(capabilities);
         }
     }
 
@@ -431,10 +440,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
             if (clusterId is null)
                 return;
 
-            var candidate = capabilities.FinalizedFeatureSnapshot;
-            if (candidate is not null)
-                PublishFinalizedFeatures(candidate);
+            PublishClusterCapabilities(capabilities);
         }
+    }
+
+    private void PublishClusterCapabilities(KafkaConnectionCapabilities capabilities)
+    {
+        var candidate = capabilities.FinalizedFeatureSnapshot;
+        if (candidate is not null)
+            PublishFinalizedFeatures(candidate);
     }
 
     private void PublishFinalizedFeatures(FinalizedFeatureSnapshot candidate)

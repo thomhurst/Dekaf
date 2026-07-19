@@ -81,5 +81,16 @@ internal sealed class FinalizedFeatureSnapshot
         return true;
     }
 
+    public IReadOnlyDictionary<string, (short MinVersion, short MaxVersion)> CopyFeatures()
+    {
+        var copy = new Dictionary<string, (short MinVersion, short MaxVersion)>(
+            _features.Count,
+            StringComparer.Ordinal);
+        foreach (var feature in _features)
+            copy.Add(feature.Key, (feature.Value.MinVersionLevel, feature.Value.MaxVersionLevel));
+
+        return copy;
+    }
+
     private readonly record struct FeatureLevel(short MinVersionLevel, short MaxVersionLevel);
 }
