@@ -30,7 +30,7 @@ public class RackAwarePartitionerBenchmarks
         var localPartitions = new int[PartitionCount / 10];
         for (var i = 0; i < localPartitions.Length; i++)
             localPartitions[i] = i * 10;
-        _uniformPartitioner.SetRackLocalPartitionsProvider((_, _) => localPartitions);
+        _uniformPartitioner.SetRackLocalPartitionsProvider((_, _, _) => localPartitions);
     }
 
     [Benchmark(OperationsPerInvoke = 1_000)]

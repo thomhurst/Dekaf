@@ -525,8 +525,9 @@ public sealed class ClusterMetadataTests
             ]
         });
 
-        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-a")).IsEquivalentTo([0, 2]);
-        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-b")).IsEquivalentTo([1]);
+        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-a", 3)).IsEquivalentTo([0, 2]);
+        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-b", 3)).IsEquivalentTo([1]);
+        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-a", 2)).IsEmpty();
 
         metadata.Update(new MetadataResponse
         {
@@ -551,8 +552,8 @@ public sealed class ClusterMetadataTests
             ]
         });
 
-        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-a")).IsEquivalentTo([1]);
-        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-b")).IsEquivalentTo([0, 2]);
+        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-a", 3)).IsEquivalentTo([1]);
+        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-b", 3)).IsEquivalentTo([0, 2]);
     }
 
     #endregion

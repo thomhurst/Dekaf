@@ -28,7 +28,7 @@ internal interface IUniformStickyPartitioner
     bool UsesStickyPartition(ReadOnlySpan<byte> key, bool keyIsNull);
     void OnRecordAppended(string topic, int partition, int bytes, int partitionCount);
     void SetPartitionQueueByteProvider(Func<string, int, long> partitionQueueBytes);
-    void SetRackLocalPartitionsProvider(Func<string, string, int[]> rackLocalPartitions);
+    void SetRackLocalPartitionsProvider(Func<string, string, int, int[]> rackLocalPartitions);
 }
 
 internal sealed class StickyPartitionTracker
@@ -41,7 +41,7 @@ internal sealed class StickyPartitionTracker
     private readonly RandomPartitionSelector _randomPartitionSelector = new();
     private readonly ConcurrentDictionary<(string Topic, int Partition), PartitionAvailabilityState> _availability = new();
     private Func<string, int, long>? _partitionQueueBytes;
-    private Func<string, string, int[]>? _rackLocalPartitions;
+    private Func<string, string, int, int[]>? _rackLocalPartitions;
 #if NETSTANDARD2_0
     private int _counter;
 #else
@@ -68,7 +68,7 @@ internal sealed class StickyPartitionTracker
         _partitionQueueBytes = partitionQueueBytes ?? throw new ArgumentNullException(nameof(partitionQueueBytes));
     }
 
-    public void SetRackLocalPartitionsProvider(Func<string, string, int[]> rackLocalPartitions)
+    public void SetRackLocalPartitionsProvider(Func<string, string, int, int[]> rackLocalPartitions)
     {
         _rackLocalPartitions = rackLocalPartitions ?? throw new ArgumentNullException(nameof(rackLocalPartitions));
     }
@@ -145,7 +145,7 @@ internal sealed class StickyPartitionTracker
 
     private int NextPartition(string topic, int partitionCount, int? currentPartition)
     {
-        var localPartitions = GetRackLocalPartitions(topic);
+        var localPartitions = GetRackLocalPartitions(topic, partitionCount);
         var nextPartition = TryNextAdaptivePartition(
                 topic,
                 partitionCount,
@@ -426,13 +426,13 @@ internal sealed class StickyPartitionTracker
             : partition;
     }
 
-    private int[] GetRackLocalPartitions(string topic)
+    private int[] GetRackLocalPartitions(string topic, int partitionCount)
     {
         var clientRack = _clientRack;
         return _rackAwarePartitioning
             && clientRack is { Length: > 0 }
             && _rackLocalPartitions is not null
-                ? _rackLocalPartitions(topic, clientRack)
+                ? _rackLocalPartitions(topic, clientRack, partitionCount)
                 : Array.Empty<int>();
     }
 
@@ -576,7 +576,7 @@ public sealed class DefaultPartitioner : IPartitioner, IBatchCompletionAwarePart
         _stickyPartitionTracker.SetPartitionQueueByteProvider(partitionQueueBytes);
     }
 
-    void IUniformStickyPartitioner.SetRackLocalPartitionsProvider(Func<string, string, int[]> rackLocalPartitions)
+    void IUniformStickyPartitioner.SetRackLocalPartitionsProvider(Func<string, string, int, int[]> rackLocalPartitions)
     {
         _stickyPartitionTracker.SetRackLocalPartitionsProvider(rackLocalPartitions);
     }
@@ -654,7 +654,7 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
         _stickyPartitionTracker.SetPartitionQueueByteProvider(partitionQueueBytes);
     }
 
-    void IUniformStickyPartitioner.SetRackLocalPartitionsProvider(Func<string, string, int[]> rackLocalPartitions)
+    void IUniformStickyPartitioner.SetRackLocalPartitionsProvider(Func<string, string, int, int[]> rackLocalPartitions)
     {
         _stickyPartitionTracker.SetRackLocalPartitionsProvider(rackLocalPartitions);
     }
