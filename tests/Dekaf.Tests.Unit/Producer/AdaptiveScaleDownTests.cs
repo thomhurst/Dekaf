@@ -186,6 +186,51 @@ public sealed class AdaptiveScaleDownTests
     }
 
     [Test]
+    public async Task PartitionLimitedPressure_DisposeTimeout_DoesNotFlushPartialWindow()
+    {
+        var options = CreateOptions(
+            idempotent: false,
+            scaleCooldownMs: 0,
+            enableDeliveryDiagnostics: true);
+        var accumulator = new RecordAccumulator(options);
+        var pool = Substitute.For<IConnectionPool>();
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            onAcknowledgement: null,
+            disposalDrainTimeout: TimeSpan.FromMilliseconds(25));
+        var incompleteSendLoop = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        try
+        {
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
+
+            var observe = typeof(BrokerSender).GetMethod(
+                "ObservePartitionLimitedPressure",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var now = Dekaf.MonotonicClock.GetMilliseconds();
+            observe.Invoke(sender, [now, 0.5, 10L, 20L]);
+            observe.Invoke(sender, [now + 1, 0.6, 30L, 40L]);
+            SetField(sender, "_sendLoopTask", incompleteSendLoop.Task);
+
+            await sender.DisposeAsync();
+
+            var diagnostics = accumulator.GetDeliveryDiagnosticsSnapshot().ConnectionScaleEvents;
+            await Assert.That(diagnostics).HasSingleItem();
+            await Assert.That(diagnostics[0].ObservationCount).IsEqualTo(1);
+        }
+        finally
+        {
+            incompleteSendLoop.TrySetResult();
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task PartitionLimitedBufferPressure_RecordsCappedEventOncePerDelta()
     {
         var options = CreateOptions(

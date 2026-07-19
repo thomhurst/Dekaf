@@ -5117,7 +5117,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         LogWaitingForSendLoop(_brokerId);
         try
         {
-            await _sendLoopTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await _sendLoopTask.WaitAsync(_disposalDrainTimeout).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -5126,7 +5126,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // The final loop iteration is not guaranteed to run the scale controller after
         // cancellation. Flush any partial diagnostic window explicitly once its writer exits.
-        EndPartitionLimitedDiagnosticState(MonotonicClock.GetMilliseconds());
+        // If the bounded wait timed out, the send loop still owns this state and must remain
+        // its only writer.
+        if (_sendLoopTask.IsCompleted)
+            EndPartitionLimitedDiagnosticState(MonotonicClock.GetMilliseconds());
 
         var deferredPendingCount = Volatile.Read(ref _totalPendingResponseCount);
         if (deferredPendingCount > 0 && !_sendLoopTask.IsCompleted)
