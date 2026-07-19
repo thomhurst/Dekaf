@@ -78,7 +78,7 @@ public class ResponseParserFuzzCorpusTests
         [
             "DescribeConfigsResponse.v4",
             "DescribeGroupsResponse.v5",
-            "FetchResponse.v16",
+            "FetchResponse.v18",
             "ListOffsetsResponse.v8",
             "MetadataResponse.v13",
             "OffsetFetchResponse.v9",
