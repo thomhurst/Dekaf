@@ -1319,9 +1319,11 @@ public sealed class ConnectionPoolTests
     {
         var releaseFactory = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondFactoryStarted = new TaskCompletionSource(
+        var observedBackoff = new TaskCompletionSource<TimeSpan>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseBackoff = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var attempts = 0;
+        long timestamp = 0;
         await using var pool = new ConnectionPool(
             clientId: "test-client",
             connectionOptions: new ConnectionOptions
@@ -1335,14 +1337,19 @@ public sealed class ConnectionPoolTests
             connectionFactory: async (brokerId, host, port, _, _) =>
             {
                 if (Interlocked.Increment(ref attempts) == 2)
-                {
-                    secondFactoryStarted.TrySetResult();
                     return CreateConnectedConnection(brokerId, host, port);
-                }
 
                 await releaseFactory.Task;
                 return CreateConnectedConnection(brokerId, host, port);
-            });
+            },
+            randomDouble: static () => 0.5,
+            reconnectBackoffDelay: async (delay, cancellationToken) =>
+            {
+                observedBackoff.TrySetResult(delay);
+                await releaseBackoff.Task.WaitAsync(cancellationToken);
+                Interlocked.Add(ref timestamp, (long)(delay.TotalSeconds * Stopwatch.Frequency));
+            },
+            timestampProvider: () => Volatile.Read(ref timestamp));
 
         try
         {
@@ -1350,17 +1357,19 @@ public sealed class ConnectionPoolTests
             await Assert.That(firstAttempt).Throws<KafkaException>()
                 .WithMessageContaining("Connection setup timeout after 20ms");
 
-            var stopwatch = Stopwatch.StartNew();
             var secondAttempt = pool.GetConnectionAsync("broker-a", 9092).AsTask();
-            await secondFactoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            stopwatch.Stop();
+            var delay = await observedBackoff.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
+            await Assert.That(delay).IsEqualTo(TimeSpan.FromMilliseconds(80));
+            await Assert.That(attempts).IsEqualTo(1);
+
+            releaseBackoff.SetResult();
             await secondAttempt;
-
-            await Assert.That(stopwatch.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(60));
+            await Assert.That(attempts).IsEqualTo(2);
         }
         finally
         {
+            releaseBackoff.TrySetResult();
             releaseFactory.TrySetResult();
         }
     }

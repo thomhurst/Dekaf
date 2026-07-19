@@ -63,6 +63,8 @@ public sealed partial class ConnectionPool :
     private readonly MetadataClusterIdentity _metadataClusterIdentity = new();
     private readonly Action? _brokerEndpointUpdated;
     private readonly Action<TimeSpan>? _connectionSetupTimeoutObserver;
+    private readonly Func<TimeSpan, CancellationToken, ValueTask>? _reconnectBackoffDelay;
+    private readonly Func<long>? _timestampProvider;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
@@ -150,7 +152,9 @@ public sealed partial class ConnectionPool :
         TimeSpan? idleReapDrainTimeout = null,
         Func<double>? randomDouble = null,
         Action? brokerEndpointUpdated = null,
-        Action<TimeSpan>? connectionSetupTimeoutObserver = null)
+        Action<TimeSpan>? connectionSetupTimeoutObserver = null,
+        Func<TimeSpan, CancellationToken, ValueTask>? reconnectBackoffDelay = null,
+        Func<long>? timestampProvider = null)
     {
         _clientId = clientId;
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
@@ -167,6 +171,8 @@ public sealed partial class ConnectionPool :
         _randomDouble = randomDouble ?? SharedRandomDouble;
         _brokerEndpointUpdated = brokerEndpointUpdated;
         _connectionSetupTimeoutObserver = connectionSetupTimeoutObserver;
+        _reconnectBackoffDelay = reconnectBackoffDelay;
+        _timestampProvider = timestampProvider;
         // No shared pool needed: factory-created connections manage their own pools.
         StartIdleConnectionReaper();
     }
@@ -999,7 +1005,7 @@ public sealed partial class ConnectionPool :
                 _sharedPipeMemoryPool,
                 _telemetryMetricCollector,
                 _responseMemoryAdmissionsEnabled,
-                GetBrokerThrottleState(brokerId, endpoint),
+                GetBrokerThrottleState(brokerId, new EndpointKey(host, port)),
                 Volatile.Read(ref _capabilityObserver),
                 _metadataClusterIdentity);
 
@@ -1174,7 +1180,7 @@ public sealed partial class ConnectionPool :
                 _sharedPipeMemoryPool,
                 _telemetryMetricCollector,
                 _responseMemoryAdmissionsEnabled,
-                GetBrokerThrottleState(brokerId, endpoint),
+                GetBrokerThrottleState(brokerId, new EndpointKey(host, port)),
                 Volatile.Read(ref _capabilityObserver),
                 _metadataClusterIdentity);
 
@@ -1398,7 +1404,7 @@ public sealed partial class ConnectionPool :
             int failureCount;
             lock (state.Sync)
             {
-                var retryAfterTicks = state.NextAttemptTimestamp - Stopwatch.GetTimestamp();
+                var retryAfterTicks = state.NextAttemptTimestamp - GetTimestamp();
                 if (state.FailureCount == 0 || retryAfterTicks <= 0)
                     return;
 
@@ -1407,7 +1413,14 @@ public sealed partial class ConnectionPool :
             }
 
             LogReconnectBackoffDelay(delay.TotalMilliseconds, brokerId, host, port, failureCount);
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            if (_reconnectBackoffDelay is null)
+            {
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await _reconnectBackoffDelay(delay, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -1422,7 +1435,7 @@ public sealed partial class ConnectionPool :
             state.FailureCount = Math.Min(state.FailureCount + 1, 30);
             failureCount = state.FailureCount;
             delay = CalculateReconnectBackoffDelay(failureCount);
-            state.NextAttemptTimestamp = Stopwatch.GetTimestamp() + ToStopwatchTicks(delay);
+            state.NextAttemptTimestamp = GetTimestamp() + ToStopwatchTicks(delay);
         }
 
         LogReconnectBackoffScheduled(delay.TotalMilliseconds, brokerId, host, port, failureCount);
@@ -1461,6 +1474,8 @@ public sealed partial class ConnectionPool :
 
         return (long)(delay.TotalSeconds * Stopwatch.Frequency);
     }
+
+    private long GetTimestamp() => _timestampProvider?.Invoke() ?? Stopwatch.GetTimestamp();
 
     internal async ValueTask<int> ReapIdleConnectionsAsync()
     {
