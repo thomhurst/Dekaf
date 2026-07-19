@@ -87,7 +87,10 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             cancellationToken,
             pollInterval: TimeSpan.FromMilliseconds(1));
 
-    private static ProduceResponse CreateRetriableErrorResponse(string topic, int partition) =>
+    private static ProduceResponse CreateRetriableErrorResponse(
+        string topic,
+        int partition,
+        ErrorCode errorCode = ErrorCode.NotLeaderOrFollower) =>
         new()
         {
             TopicCount = 1,
@@ -102,7 +105,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                         new ProduceResponsePartitionData
                         {
                             Index = partition,
-                            ErrorCode = ErrorCode.NotLeaderOrFollower,
+                            ErrorCode = errorCode,
                             BaseOffset = -1
                         }
                     ]
@@ -1163,14 +1166,18 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     /// Core muting test: a retriable error on partition 0 should mute it, blocking
     /// subsequent normal batches for partition 0 until the retry succeeds.
     ///
-    /// Flow: batch A (p0) → NotLeaderOrFollower → p0 muted → batch B (p0) enqueued
+    /// Flow: batch A (p0) → replica availability error → p0 muted → batch B (p0) enqueued
     /// but blocked → A retry succeeds → p0 unmuted → B proceeds.
     ///
     /// Verifies: batch A acknowledged before batch B (ordering preserved).
     /// </summary>
     [Test]
+    [Arguments(ErrorCode.NotEnoughReplicas)]
+    [Arguments(ErrorCode.NotEnoughReplicasAfterAppend)]
     [Timeout(60_000)]
-    public async Task RetriableError_MutesPartition_BlocksNormalBatchUntilRetrySucceeds(CancellationToken ct)
+    public async Task ReplicaAvailabilityError_MutesPartition_BlocksNormalBatchUntilRetrySucceeds(
+        ErrorCode errorCode,
+        CancellationToken ct)
     {
         // Send 1: batch A (p0) → retriable error
         // Send 2: batch A retry (p0) → success (batch B is blocked, not coalesced)
@@ -1224,7 +1231,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // Return retriable error → triggers HandleRetriableBatch → mutes p0
-            tcs1.SetResult(CreateRetriableErrorResponse("test-topic", 0));
+            tcs1.SetResult(CreateRetriableErrorResponse("test-topic", 0, errorCode));
 
             // Wait for send 2 (retry of batch A) — do this BEFORE enqueuing B to ensure
             // the send loop has processed the retriable error and started the retry.
