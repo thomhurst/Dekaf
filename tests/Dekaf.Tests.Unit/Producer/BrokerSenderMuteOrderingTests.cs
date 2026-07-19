@@ -113,6 +113,57 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             ]
         };
 
+    [Test]
+    public async Task PartitionCarryOver_UnreadySplitPrefixBlocksLaterRetry()
+    {
+        var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        try
+        {
+            var firstSplit = CreateTestBatch(
+                sourcePool,
+                "test-topic",
+                partition: 0,
+                markPreSerialized: false);
+            var secondSplit = CreateTestBatch(
+                sourcePool,
+                "test-topic",
+                partition: 0,
+                markPreSerialized: false);
+            var newerRetry = CreateTestBatch(sourcePool, "test-topic", partition: 0);
+            firstSplit.IsRetry = true;
+            secondSplit.IsRetry = true;
+            newerRetry.IsRetry = true;
+
+            var carryOver = new BrokerSender.PartitionCarryOver();
+            carryOver.AddAfterRetries(new BrokerSender.BatchReference(firstSplit, firstSplit.Generation));
+            carryOver.AddAfterRetries(new BrokerSender.BatchReference(secondSplit, secondSplit.Generation));
+            carryOver.AddAfterRetries(new BrokerSender.BatchReference(newerRetry, newerRetry.Generation));
+            var drained = new List<BrokerSender.BatchReference>();
+
+            carryOver.DrainTo(drained);
+            await Assert.That(drained).IsEmpty();
+            await Assert.That(carryOver.Count).IsEqualTo(3);
+
+            firstSplit.MarkPreSerialized();
+            carryOver.DrainTo(drained);
+            await Assert.That(drained).Count().IsEqualTo(1);
+            await Assert.That(ReferenceEquals(drained[0].Batch, firstSplit)).IsTrue();
+            await Assert.That(carryOver.Count).IsEqualTo(2);
+
+            drained.Clear();
+            secondSplit.MarkPreSerialized();
+            carryOver.DrainTo(drained);
+            await Assert.That(drained).Count().IsEqualTo(2);
+            await Assert.That(ReferenceEquals(drained[0].Batch, secondSplit)).IsTrue();
+            await Assert.That(ReferenceEquals(drained[1].Batch, newerRetry)).IsTrue();
+            await Assert.That(carryOver.Count).IsEqualTo(0);
+        }
+        finally
+        {
+            await sourcePool.DisposeAsync();
+        }
+    }
+
     private static ProduceResponse CreateInlineLeaderErrorResponse(
         string topic,
         int partition,
@@ -221,7 +272,8 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         ref int coalescedCount,
         HashSet<TopicPartition> coalescedPartitions,
         object carryOver,
-        int? capturedGeneration = null)
+        int? capturedGeneration = null,
+        bool fromCarryOver = false)
     {
         var coalescedRequestBudgetUsed = 0L;
         for (var i = 0; i < coalescedCount; i++)
@@ -241,7 +293,8 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             coalescedCount,
             coalescedRequestBudgetUsed,
             coalescedPartitions,
-            carryOver
+            carryOver,
+            fromCarryOver
         };
 
         CoalesceBatchMethod.Invoke(sender, args);
@@ -570,13 +623,13 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     private static MetadataResponse CreateRoutingMetadata(
         int partitionZeroLeader,
         int partitionThreeLeader = 1) => new()
-    {
-        Brokers =
+        {
+            Brokers =
         [
             new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9093 },
             new BrokerMetadata { NodeId = 2, Host = "broker-2", Port = 9094 }
         ],
-        Topics =
+            Topics =
         [
             new TopicMetadata
             {
@@ -605,7 +658,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 ]
             }
         ]
-    };
+        };
 
     private static ReadyBatch CreateMinimalBatch(string topic, int partition)
     {
@@ -615,6 +668,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             new RecordBatch { Records = Array.Empty<Record>() },
             completionSourcesArray: null,
             completionSourcesCount: 0,
+            recordCount: 0,
             dataSize: 100);
         return batch;
     }
@@ -938,6 +992,85 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     }
 
     [Test]
+    public async Task CoalesceBatch_BackoffReadyPrefix_StaysAheadOfUnreadySuffix()
+    {
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        var (pool, _) = CreateMockConnection(responseQueue);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            var olderRetry = CreateTestBatch(sourcePool, "test-topic", partition: 0);
+            var unreadySplit = CreateTestBatch(
+                sourcePool,
+                "test-topic",
+                partition: 0,
+                markPreSerialized: false);
+            olderRetry.IsRetry = true;
+            olderRetry.RetryNotBefore = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+            unreadySplit.IsRetry = true;
+
+            var carryOver = new BrokerSender.PartitionCarryOver();
+            carryOver.AddAfterRetries(new BrokerSender.BatchReference(olderRetry, olderRetry.Generation));
+            carryOver.AddAfterRetries(new BrokerSender.BatchReference(unreadySplit, unreadySplit.Generation));
+            var drained = new List<BrokerSender.BatchReference>();
+            carryOver.DrainTo(drained);
+            var coalescedBatches = new ReadyBatch[4];
+            var coalescedGenerations = new int[4];
+            var coalescedCount = 0;
+            var coalescedPartitions = new HashSet<TopicPartition>();
+
+            InvokeCoalesceBatch(
+                sender,
+                olderRetry,
+                coalescedBatches,
+                coalescedGenerations,
+                ref coalescedCount,
+                coalescedPartitions,
+                carryOver,
+                fromCarryOver: true);
+
+            unreadySplit.MarkPreSerialized();
+            drained.Clear();
+            carryOver.DrainTo(drained);
+
+            await Assert.That(coalescedCount).IsEqualTo(0);
+            await Assert.That(drained).Count().IsEqualTo(2);
+            await Assert.That(ReferenceEquals(drained[0].Batch, olderRetry)).IsTrue();
+            await Assert.That(ReferenceEquals(drained[1].Batch, unreadySplit)).IsTrue();
+
+            // Repeated all-ready drain/requeue cycles must reset the prefix insertion cursor.
+            carryOver.Add(new BrokerSender.BatchReference(olderRetry, olderRetry.Generation));
+            for (var i = 0; i < 2; i++)
+            {
+                drained.Clear();
+                carryOver.DrainTo(drained);
+                await Assert.That(drained).Count().IsEqualTo(1);
+                InvokeCoalesceBatch(
+                    sender,
+                    drained[0].Batch,
+                    coalescedBatches,
+                    coalescedGenerations,
+                    ref coalescedCount,
+                    coalescedPartitions,
+                    carryOver,
+                    fromCarryOver: true);
+            }
+
+            await Assert.That(carryOver.Count).IsEqualTo(1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await sourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task CoalesceBatch_SeparateDrainPasses_RespectsMaxRequestSizeBudget()
     {
         const string topic = "test-topic";
@@ -1014,6 +1147,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 new RecordBatch { Records = Array.Empty<Record>() },
                 completionSourcesArray: null,
                 completionSourcesCount: 0,
+                recordCount: 0,
                 dataSize: 100);
 
             var coalescedBatches = new ReadyBatch[4];

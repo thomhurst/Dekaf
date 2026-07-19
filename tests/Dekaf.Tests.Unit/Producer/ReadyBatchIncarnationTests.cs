@@ -46,6 +46,7 @@ public sealed class ReadyBatchIncarnationTests
             new RecordBatch { Records = Array.Empty<Record>() },
             completionSourcesArray: null,
             completionSourcesCount: 0,
+            recordCount: 0,
             dataSize: 100);
     }
 
@@ -80,6 +81,7 @@ public sealed class ReadyBatchIncarnationTests
             recordBatch,
             completionSourcesArray: null,
             completionSourcesCount: 0,
+            recordCount: 0,
             dataSize: 100,
             arena: arena);
         var generation = batch.Generation;

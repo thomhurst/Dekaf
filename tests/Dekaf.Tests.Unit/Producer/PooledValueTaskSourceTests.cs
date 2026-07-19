@@ -795,6 +795,7 @@ public class PooledValueTaskSourceTests
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             completionSourcesCount: 2,
+            recordCount: 2,
             dataSize: 0);
         var doneTask = batch.DoneTask;
 
@@ -843,6 +844,7 @@ public class PooledValueTaskSourceTests
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             completionSourcesCount: 3,
+            recordCount: 3,
             dataSize: 0);
 
         if (succeeds)
@@ -1114,6 +1116,7 @@ public class PooledValueTaskSourceTests
             new RecordBatch { Records = Array.Empty<Record>() },
             completionSourcesArray: null,
             completionSourcesCount: 0,
+            recordCount: 0,
             dataSize: 0);
     }
 }

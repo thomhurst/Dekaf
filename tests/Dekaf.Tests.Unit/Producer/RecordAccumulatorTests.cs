@@ -1724,6 +1724,62 @@ public class RecordAccumulatorTests
     }
 
     [Test]
+    [NotInParallel]
+    public async Task PartitionBatch_FirstSparseCallback_ClearsRentedPrefix()
+    {
+        var staleCallbackCount = 0;
+        var callbackCount = 0;
+        var staleCallbacks = ProducerContainerPools.Callbacks.Rent(16);
+        for (var i = 0; i < 6; i++)
+            staleCallbacks[i] = (_, _) => staleCallbackCount++;
+        ProducerContainerPools.Callbacks.Return(staleCallbacks, clearArray: false);
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 1024,
+            InitialBatchRecordCapacity = 16
+        };
+        var batch = new PartitionBatch(new TopicPartition("test-topic", 0), options);
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        for (var i = 0; i < 5; i++)
+        {
+            var result = batch.TryAppendFromSpans(
+                timestamp + i,
+                ReadOnlySpan<byte>.Empty,
+                keyIsNull: true,
+                "value"u8,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                estimatedSize: 5);
+            await Assert.That(result.Success).IsTrue();
+        }
+
+        var callbackResult = batch.TryAppendFromSpans(
+            timestamp + 5,
+            ReadOnlySpan<byte>.Empty,
+            keyIsNull: true,
+            "value"u8,
+            valueIsNull: false,
+            headers: null,
+            headerCount: 0,
+            completionSource: null,
+            callback: (_, _) => callbackCount++,
+            estimatedSize: 5);
+        await Assert.That(callbackResult.Success).IsTrue();
+
+        var readyBatch = batch.Complete();
+        readyBatch!.CompleteSend(0, DateTimeOffset.UtcNow);
+
+        await Assert.That(staleCallbackCount).IsEqualTo(0);
+        await Assert.That(callbackCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task PartitionBatch_Complete_CalledTwice_ReturnsIdempotent()
     {
         // This test verifies that calling Complete() multiple times on the same PartitionBatch
@@ -3151,6 +3207,7 @@ public class RecordAccumulatorTests
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             messageCount,
+            recordCount: messageCount,
             dataSize: 100);
 
         return batch;
@@ -3293,6 +3350,7 @@ public class RecordAccumulatorTests
                 new RecordBatch { Records = Array.Empty<Record>() },
                 newSources,
                 completionSourcesCount: 1,
+                recordCount: 1,
                 dataSize: 200);
 
             await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(0);

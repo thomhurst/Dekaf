@@ -295,6 +295,126 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    public async Task SenderRetryReady_WakesNoPendingCarryOverWait(CancellationToken cancellationToken)
+    {
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var sender = CreateSender(
+            Substitute.For<IConnectionPool>(),
+            options,
+            accumulator,
+            static (_, _, _, _, _) => { });
+
+        try
+        {
+            var waitMethod = typeof(BrokerSender).GetMethod(
+                "WaitForNoPendingCarryOverAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var senderRetryReady = (Action)typeof(BrokerSender).GetField(
+                "_senderRetryReadyCallback",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+            var wait = (ValueTask)waitMethod.Invoke(
+                sender,
+                [10_000, cancellationToken])!;
+            var waitTask = wait.AsTask();
+
+            await Assert.That(waitTask.IsCompleted).IsFalse();
+
+            senderRetryReady();
+
+            await waitTask;
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FailedSenderSplit_PreSerializationFailure_ReleasesPipelineAccounting()
+    {
+        const string topic = "failed-sender-split";
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 1_000,
+            BufferMemory = 1024 * 1024,
+            CompressionType = CompressionType.Gzip,
+            LingerMs = 0
+        };
+        var codecs = new CompressionCodecRegistry();
+        codecs.Register(new ThrowingCompressionCodec());
+        var accumulator = new RecordAccumulator(options, codecs);
+        var sender = CreateSender(
+            Substitute.For<IConnectionPool>(),
+            options,
+            accumulator,
+            static (_, _, _, _, _) => { });
+        var sourceBuilder = new PartitionBatch(new TopicPartition(topic, 0), options);
+        sourceBuilder.SetSplitBatchSizeLimit(4_096);
+        for (var i = 0; i < 8; i++)
+        {
+            var value = new byte[120];
+            value.AsSpan().Fill((byte)i);
+            var appended = sourceBuilder.TryAppendFromSpans(
+                timestamp: 1_000 + i,
+                keyData: default,
+                keyIsNull: true,
+                valueData: value,
+                valueIsNull: false,
+                headers: null,
+                headerCount: 0,
+                completionSource: null,
+                callback: null,
+                estimatedSize: PartitionBatch.EstimateRecordSize(0, value.Length, null, 0));
+            if (!appended.Success)
+                throw new InvalidOperationException("Test record did not fit.");
+        }
+
+        var source = sourceBuilder.Complete()!;
+        source.MarkAsSplitBatch(maxRecordSize: 128, isRetry: true);
+        source.MarkPreSerialized();
+        source.TrySetMemoryReleased();
+
+        try
+        {
+            var children = accumulator.SplitForSenderRetry(
+                source,
+                source.Generation,
+                static () => { })!;
+            var generations = children.Select(static child => child.Generation).ToArray();
+            foreach (var child in children)
+                child.WaitForPreSerializationIfStarted();
+
+            await Assert.That(children).Count().IsGreaterThan(1);
+            await Assert.That(children.All(static child => child.IsSendCompleted)).IsTrue();
+            await Assert.That(accumulator.BufferedBytes).IsGreaterThan(0);
+            await Assert.That(accumulator.InFlightBatchCount).IsEqualTo(children.Count);
+
+            var acquireMethod = typeof(BrokerSender).GetMethod(
+                "AcquireResourcePins",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var batches = children.ToArray();
+            var acquired = (int)acquireMethod.Invoke(
+                sender,
+                [batches, generations, batches.Length])!;
+
+            await Assert.That(acquired).IsEqualTo(0);
+            await Assert.That(children.All(static child => child.IsReturnedToPool)).IsTrue();
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+            await Assert.That(accumulator.InFlightBatchCount).IsEqualTo(0);
+            await Assert.That(accumulator.HasPendingWork()).IsFalse();
+            await accumulator.FlushAsync(CancellationToken.None);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task SelectWaveCoalesceBounds_ScalesWithLingerAndRetainsHardCaps()
     {
         var zeroLinger = BrokerSender.SelectWaveCoalesceBounds(lingerMs: 0);
@@ -733,6 +853,17 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             SaslMechanism = saslMechanism
         };
 
+    private sealed class ThrowingCompressionCodec : ICompressionCodec
+    {
+        public CompressionType Type => CompressionType.Gzip;
+
+        public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+            => throw new InvalidOperationException("Injected compression failure.");
+
+        public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+            => throw new NotSupportedException();
+    }
+
     /// <summary>
     /// Creates a mock connection pool that returns a controllable mock connection.
     /// The mock connection queues response tasks so each SendPipelinedAfterWriteAsync call
@@ -802,6 +933,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             completionSourcesCount: 1,
+            recordCount: 1,
             dataSize: 100);
         batch.TrySetMemoryReleased();
         return (batch, delivery);
