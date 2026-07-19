@@ -82,9 +82,15 @@ public sealed class OAuthBearerClientAssertionOptions
         if (TokenRefreshBufferSeconds < 0)
             throw new InvalidOperationException("OAuth client-assertion token refresh buffer must be non-negative");
 
-        if (AdditionalParameters is not null)
+        ValidateAdditionalParameters(AdditionalParameters);
+    }
+
+    internal static void ValidateAdditionalParameters(
+        IReadOnlyDictionary<string, string>? additionalParameters)
+    {
+        if (additionalParameters is not null)
         {
-            foreach (var name in AdditionalParameters.Keys)
+            foreach (var name in additionalParameters.Keys)
             {
                 if (name is "grant_type"
                     or "client_id"

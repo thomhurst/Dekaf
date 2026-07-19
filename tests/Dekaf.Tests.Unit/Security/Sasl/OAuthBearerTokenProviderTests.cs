@@ -377,6 +377,39 @@ public sealed class OAuthBearerTokenProviderTests
     }
 
     [Test]
+    [Arguments("grant_type")]
+    [Arguments("client_id")]
+    [Arguments("client_secret")]
+    [Arguments("client_assertion_type")]
+    [Arguments("client_assertion")]
+    public async Task GetTokenAsync_WithDirectClientAssertionAndReservedParameter_Throws(
+        string parameterName)
+    {
+        using var rsa = RSA.Create(2048);
+        var handler = new CapturingTokenEndpointHandler();
+        var config = new OAuthBearerConfig
+        {
+            TokenEndpointUrl = "https://auth.example.test/token",
+            ClientId = "client",
+            ClientAssertion = new OAuthBearerClientAssertionOptions
+            {
+                PrivateKey = rsa,
+                Audience = "https://auth.example.test/token"
+            },
+            AdditionalParameters = new Dictionary<string, string>
+            {
+                [parameterName] = "override"
+            }
+        };
+        using var provider = new OAuthBearerTokenProvider(config, new HttpClient(handler));
+
+        await Assert.That(async () => _ = await provider.GetTokenAsync())
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("reserved");
+        await Assert.That(handler.Requests).IsEmpty();
+    }
+
+    [Test]
     public async Task GetTokenAsync_WithAzureImds_SendsMetadataGetRequest()
     {
         var handler = new CapturingAzureImdsHandler();
