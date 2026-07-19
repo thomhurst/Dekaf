@@ -31,17 +31,31 @@ public sealed class OffsetTopicIdRequestMapTests
         var responseSnapshot = map.CaptureResponseSnapshot();
 
         var unknown = await Assert.That(() =>
-                map.MatchResponseTopic(Guid.NewGuid(), responseSnapshot, "OffsetCommit"))
+                map.MatchResponseTopic(
+                    Guid.NewGuid(),
+                    responseSnapshot,
+                    "OffsetCommit",
+                    responseMismatchIsRetriable: false))
             .Throws<KafkaException>();
         await Assert.That(unknown!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(unknown.IsRetriable).IsFalse();
 
-        await Assert.That(map.MatchResponseTopic(topicId, responseSnapshot, "OffsetCommit"))
+        await Assert.That(map.MatchResponseTopic(
+                topicId,
+                responseSnapshot,
+                "OffsetCommit",
+                responseMismatchIsRetriable: false))
             .IsEqualTo("test-topic");
 
         var duplicate = await Assert.That(() =>
-                map.MatchResponseTopic(topicId, responseSnapshot, "OffsetCommit"))
+                map.MatchResponseTopic(
+                    topicId,
+                    responseSnapshot,
+                    "OffsetCommit",
+                    responseMismatchIsRetriable: false))
             .Throws<KafkaException>();
         await Assert.That(duplicate!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(duplicate.IsRetriable).IsFalse();
     }
 
     [Test]
@@ -58,10 +72,12 @@ public sealed class OffsetTopicIdRequestMapTests
                 map.MatchResponseTopic(
                     oldTopicId,
                     map.CaptureResponseSnapshot(),
-                    "OffsetFetch"))
+                    "OffsetFetch",
+                    responseMismatchIsRetriable: true))
             .Throws<KafkaException>();
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(exception.IsRetriable).IsTrue();
     }
 
     private static ClusterMetadata CreateMetadata(Guid topicId)

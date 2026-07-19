@@ -37,12 +37,17 @@ internal sealed class OffsetTopicIdRequestMap
         return topic.TopicId;
     }
 
-    public string MatchResponseTopic(Guid topicId, ClusterMetadataSnapshot responseSnapshot, string operation)
+    public string MatchResponseTopic(
+        Guid topicId,
+        ClusterMetadataSnapshot responseSnapshot,
+        string operation,
+        bool responseMismatchIsRetriable)
     {
         if (topicId == Guid.Empty || !_unmatchedTopics.Remove(topicId, out var topicName))
         {
-            throw CreateUnknownTopicIdException(
-                $"{operation} response contained an unknown, duplicate, or unrequested topic ID '{topicId}'");
+            throw CreateResponseMismatchException(
+                $"{operation} response contained an unknown, duplicate, or unrequested topic ID '{topicId}'",
+                responseMismatchIsRetriable);
         }
 
         if (!responseSnapshot.Topics.TryGetValue(topicName, out var currentTopic)
@@ -50,8 +55,9 @@ internal sealed class OffsetTopicIdRequestMap
             || !responseSnapshot.TopicsById.TryGetValue(topicId, out var currentTopicById)
             || !string.Equals(currentTopicById.Name, topicName, StringComparison.Ordinal))
         {
-            throw CreateUnknownTopicIdException(
-                $"{operation} topic ID for '{topicName}' changed while the request was in flight");
+            throw CreateResponseMismatchException(
+                $"{operation} topic ID for '{topicName}' changed while the request was in flight",
+                responseMismatchIsRetriable);
         }
 
         return topicName;
@@ -61,4 +67,7 @@ internal sealed class OffsetTopicIdRequestMap
 
     private static KafkaException CreateUnknownTopicIdException(string message) =>
         new(ErrorCode.UnknownTopicId, message);
+
+    private static KafkaException CreateResponseMismatchException(string message, bool isRetriable) =>
+        new(ErrorCode.UnknownTopicId, message, isRetriable);
 }

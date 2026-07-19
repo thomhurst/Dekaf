@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -115,6 +116,63 @@ public sealed class AdminClientAlterConsumerGroupOffsetsTests
     }
 
     [Test]
+    public async Task AlterConsumerGroupOffsetsAsync_TopicRecreatedInFlight_DoesNotRetryCommit()
+    {
+        const string groupId = "test-group";
+        const string topic = "test-topic";
+        var recreatedTopicId = Guid.NewGuid();
+        var connection = CreateConnection(groupId);
+        var pool = CreatePool(connection);
+        var metadataManager = CreateMetadataManager(pool, topic, TopicId);
+        metadataManager.SetApiVersion(ApiKey.OffsetCommit, 10, 10);
+
+        connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                UpdateMetadata(metadataManager, topic, recreatedTopicId);
+                return ValueTask.FromResult(new OffsetCommitResponse
+                {
+                    Topics =
+                    [
+                        new OffsetCommitResponseTopic
+                        {
+                            TopicId = TopicId,
+                            Partitions =
+                            [
+                                new OffsetCommitResponsePartition
+                                {
+                                    PartitionIndex = 0,
+                                    ErrorCode = ErrorCode.None
+                                }
+                            ]
+                        }
+                    ]
+                });
+            });
+
+        await using var admin = new AdminClient(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            pool,
+            metadataManager);
+
+        var exception = await Assert.That(async () =>
+                await admin.AlterConsumerGroupOffsetsAsync(
+                    groupId,
+                    [new TopicPartitionOffset(topic, 0, 42)]))
+            .Throws<KafkaException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnknownTopicId);
+        await Assert.That(exception.IsRetriable).IsFalse();
+        await connection.Received(1).SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+            Arg.Any<OffsetCommitRequest>(),
+            10,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     public async Task ListConsumerGroupOffsetsAsync_FetchAll_FallsBackToV9()
     {
         const string groupId = "test-group";
@@ -219,6 +277,13 @@ public sealed class AdminClientAlterConsumerGroupOffsetsTests
         Guid topicId)
     {
         var metadataManager = new MetadataManager(pool, ["localhost:9092"]);
+        UpdateMetadata(metadataManager, topic, topicId);
+        metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+        return metadataManager;
+    }
+
+    private static void UpdateMetadata(MetadataManager metadataManager, string topic, Guid topicId)
+    {
         metadataManager.Metadata.Update(new MetadataResponse
         {
             Brokers =
@@ -248,7 +313,5 @@ public sealed class AdminClientAlterConsumerGroupOffsetsTests
                 }
             ]
         });
-        metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
-        return metadataManager;
     }
 }

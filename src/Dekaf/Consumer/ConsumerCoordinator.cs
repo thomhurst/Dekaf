@@ -827,7 +827,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     var topicName = topicIdMap is null
                         ? topic.Name
-                        : topicIdMap.MatchResponseTopic(topic.TopicId, responseSnapshot!, "OffsetCommit");
+                        : topicIdMap.MatchResponseTopic(
+                            topic.TopicId,
+                            responseSnapshot!,
+                            "OffsetCommit",
+                            responseMismatchIsRetriable: false);
                     foreach (var partition in topic.Partitions)
                     {
                         if (partition.ErrorCode != ErrorCode.None)
@@ -1020,7 +1024,11 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                             {
                                 var topicName = topicIdMap is null
                                     ? topic.Name
-                                    : topicIdMap.MatchResponseTopic(topic.TopicId, responseSnapshot!, "OffsetFetch");
+                                    : topicIdMap.MatchResponseTopic(
+                                        topic.TopicId,
+                                        responseSnapshot!,
+                                        "OffsetFetch",
+                                        responseMismatchIsRetriable: true);
                                 foreach (var partition in topic.Partitions)
                                 {
                                     if (partition.ErrorCode != ErrorCode.None)

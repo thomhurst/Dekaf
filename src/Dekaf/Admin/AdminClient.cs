@@ -1648,7 +1648,8 @@ public sealed class AdminClient : IAdminClient
                     : topicIdMap.MatchResponseTopic(
                         topic.TopicId,
                         responseSnapshot!,
-                        "AlterConsumerGroupOffsets");
+                        "AlterConsumerGroupOffsets",
+                        responseMismatchIsRetriable: false);
                 foreach (var partition in topic.Partitions)
                 {
                     if (partition.ErrorCode != Protocol.ErrorCode.None)
