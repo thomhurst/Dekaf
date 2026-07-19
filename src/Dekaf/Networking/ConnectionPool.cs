@@ -564,8 +564,9 @@ public sealed partial class ConnectionPool :
                     cancellationToken).AsTask();
             }
 
-            // Each setup task carries its own adaptive deadline, so the aggregate cannot
-            // hang even though lock and reconnect-backoff waits remain outside that deadline.
+            // RunConnectionSetupAttemptAsync applies a hard Task.WaitAsync deadline around
+            // each setup, so factory/auth code that ignores cancellation cannot stall the
+            // aggregate. Deadlines stay per attempt so lock and reconnect waits remain outside.
             await Task.WhenAll(tasks).ConfigureAwait(false);
 
             for (var i = 0; i < initialCount; i++)
