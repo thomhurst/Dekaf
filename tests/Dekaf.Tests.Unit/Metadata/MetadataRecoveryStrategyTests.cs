@@ -4,6 +4,7 @@ using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Metadata;
 
@@ -667,6 +668,69 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
+    public async Task TryRebootstrapImmediateAsync_RebootstrapRequiredResponseIsNotAdopted()
+    {
+        var connection = CreateMetadataConnection(new MetadataResponse
+        {
+            ErrorCode = ErrorCode.RebootstrapRequired,
+            ClusterId = "wrong-cluster",
+            Brokers = [new BrokerMetadata { NodeId = 9, Host = "wrong-broker", Port = 9092 }],
+            Topics = []
+        });
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) => ValueTask.FromResult(connection));
+        await using var manager = new MetadataManager(
+            pool,
+            ["broker.example:9092"],
+            new MetadataOptions
+            {
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+                MetadataClusterCheckEnabled = true,
+                DnsResolver = new ClientDnsEndpointResolver(
+                    new RecordingDnsLookup(IPAddress.Parse("192.0.2.10")))
+            });
+        var identity = GetField<MetadataClusterIdentity>(pool, "_metadataClusterIdentity");
+        identity.UpdateClusterId("cluster-a");
+
+        var result = await manager.TryRebootstrapImmediateAsync(null, CancellationToken.None);
+
+        await Assert.That(result).IsFalse();
+        await Assert.That(manager.Metadata.GetBrokers()).IsEmpty();
+        await Assert.That(identity.GetExpectedBrokerIdentity(7))
+            .IsEqualTo(new ExpectedBrokerIdentity("cluster-a", 7));
+    }
+
+    [Test]
+    public async Task RefreshMetadataAsync_FailedIdentityRebootstrapRearmsRequest()
+    {
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: static (_, _, _, _, _) => throw new InvalidOperationException("broker unavailable"));
+        await using var manager = new MetadataManager(
+            pool,
+            ["broker.example:9092"],
+            new MetadataOptions
+            {
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+                MetadataClusterCheckEnabled = true,
+                DnsResolver = new ClientDnsEndpointResolver(
+                    new RecordingDnsLookup(IPAddress.Parse("192.0.2.10")))
+            });
+        var identity = GetField<MetadataClusterIdentity>(pool, "_metadataClusterIdentity");
+        identity.RequestRebootstrap();
+
+        await Assert.That(() => manager.RefreshMetadataAsync().AsTask())
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(identity.TryConsumeRebootstrapRequest()).IsTrue();
+    }
+
+    [Test]
     public async Task NoneStrategy_DoesNotTriggerRebootstrap()
     {
         // When strategy is None, the MetadataManager should not attempt rebootstrap.
@@ -952,6 +1016,33 @@ public sealed class MetadataRecoveryStrategyTests
                 AddressList = [address]
             });
         }
+    }
+
+    private static IKafkaConnection CreateMetadataConnection(MetadataResponse response)
+    {
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
+            }));
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(response));
+        return connection;
     }
 
     private static T GetField<T>(object instance, string name)

@@ -81,5 +81,6 @@ internal interface IMetadataClusterIdentityPool
     void ConfigureMetadataClusterCheck(bool enabled);
     void UpdateMetadataClusterId(string? clusterId);
     void BeginMetadataRebootstrap();
+    void RequestMetadataRebootstrap();
     bool TryConsumeMetadataRebootstrapRequest();
 }

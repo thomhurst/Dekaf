@@ -61,6 +61,7 @@ public sealed partial class ConnectionPool :
     private readonly Func<double> _randomDouble;
     private Action<KafkaConnectionCapabilities>? _capabilityObserver;
     private readonly MetadataClusterIdentity _metadataClusterIdentity = new();
+    private readonly Action? _brokerEndpointUpdated;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
@@ -141,7 +142,8 @@ public sealed partial class ConnectionPool :
         int connectionsPerBroker,
         Func<int, string, int, int, CancellationToken, ValueTask<IKafkaConnection>> connectionFactory,
         TimeSpan? idleReapDrainTimeout = null,
-        Func<double>? randomDouble = null)
+        Func<double>? randomDouble = null,
+        Action? brokerEndpointUpdated = null)
     {
         _clientId = clientId;
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
@@ -155,6 +157,7 @@ public sealed partial class ConnectionPool :
         _connectionFactory = connectionFactory;
         _idleReapDrainTimeout = idleReapDrainTimeout ?? DefaultIdleReapDrainTimeout;
         _randomDouble = randomDouble ?? SharedRandomDouble;
+        _brokerEndpointUpdated = brokerEndpointUpdated;
         // No shared pool needed: factory-created connections manage their own pools.
         StartIdleConnectionReaper();
     }
@@ -214,6 +217,9 @@ public sealed partial class ConnectionPool :
 
     void IMetadataClusterIdentityPool.BeginMetadataRebootstrap()
         => _metadataClusterIdentity.BeginRebootstrap();
+
+    void IMetadataClusterIdentityPool.RequestMetadataRebootstrap()
+        => _metadataClusterIdentity.RequestRebootstrap();
 
     bool IMetadataClusterIdentityPool.TryConsumeMetadataRebootstrapRequest()
         => _metadataClusterIdentity.TryConsumeRebootstrapRequest();
@@ -306,12 +312,26 @@ public sealed partial class ConnectionPool :
     public void RegisterBroker(int brokerId, string host, int port)
     {
         var brokerInfo = new BrokerInfo(brokerId, host, port);
-        var endpointChanged = _brokers.TryGetValue(brokerId, out var previous)
-            && (previous.Port != port
-                || !StringComparer.OrdinalIgnoreCase.Equals(previous.Host, host));
-        _brokers[brokerId] = brokerInfo;
-        if (endpointChanged)
-            RetireBrokerConnections(brokerId);
+        while (true)
+        {
+            if (!_brokers.TryGetValue(brokerId, out var previous))
+            {
+                if (_brokers.TryAdd(brokerId, brokerInfo))
+                    break;
+
+                continue;
+            }
+
+            if (BrokerEndpointsEqual(previous, brokerInfo))
+                break;
+
+            if (!_brokers.TryUpdate(brokerId, brokerInfo, previous))
+                continue;
+
+            _brokerEndpointUpdated?.Invoke();
+            RetireBrokerConnections(brokerId, previous);
+            break;
+        }
 
         GetBrokerThrottleState(brokerId, new EndpointKey(host, port));
         LogRegisteredBroker(brokerId, host, port);
@@ -1468,9 +1488,11 @@ public sealed partial class ConnectionPool :
         where TKey : notnull
         => ((ICollection<KeyValuePair<TKey, TValue>>)dictionary).Remove(new KeyValuePair<TKey, TValue>(key, value));
 
-    private void RetireBrokerConnections(int brokerId)
+    private void RetireBrokerConnections(int brokerId, BrokerInfo previous)
     {
-        if (_connectionsById.TryRemove(brokerId, out var connection))
+        if (_connectionsById.TryGetValue(brokerId, out var connection)
+            && ConnectionMatchesBroker(connection, previous)
+            && TryRemoveExact(_connectionsById, brokerId, connection))
         {
             TryRemoveExact(
                 _connectionsByEndpoint,
@@ -1479,7 +1501,9 @@ public sealed partial class ConnectionPool :
             RetireConnection(connection);
         }
 
-        if (!_connectionGroupsById.TryRemove(brokerId, out var group))
+        if (!_connectionGroupsById.TryGetValue(brokerId, out var group)
+            || !ConnectionGroupMatchesBroker(group, previous)
+            || !TryRemoveExact(_connectionGroupsById, brokerId, group))
             return;
 
         for (var i = 0; i < group.Length; i++)
@@ -1491,6 +1515,25 @@ public sealed partial class ConnectionPool :
             if (groupedConnection is not null)
                 RetireConnection(groupedConnection);
         }
+    }
+
+    private static bool BrokerEndpointsEqual(BrokerInfo left, BrokerInfo right) =>
+        left.Port == right.Port
+        && StringComparer.OrdinalIgnoreCase.Equals(left.Host, right.Host);
+
+    private static bool ConnectionMatchesBroker(IKafkaConnection connection, BrokerInfo brokerInfo) =>
+        connection.Port == brokerInfo.Port
+        && StringComparer.OrdinalIgnoreCase.Equals(connection.Host, brokerInfo.Host);
+
+    private static bool ConnectionGroupMatchesBroker(IKafkaConnection[] group, BrokerInfo brokerInfo)
+    {
+        foreach (var connection in group)
+        {
+            if (connection is not null)
+                return ConnectionMatchesBroker(connection, brokerInfo);
+        }
+
+        return false;
     }
 
     private void RetireConnection(IKafkaConnection connection)

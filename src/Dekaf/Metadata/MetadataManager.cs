@@ -213,6 +213,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
         return requested;
     }
 
+    private void RequestMetadataRebootstrap()
+    {
+        if (_connectionPool is IMetadataClusterIdentityPool identityPool)
+            identityPool.RequestMetadataRebootstrap();
+
+        if (Volatile.Read(ref _additionalBrokerRegistrationTarget) is IMetadataClusterIdentityPool additionalIdentityPool)
+            additionalIdentityPool.RequestMetadataRebootstrap();
+    }
+
     /// <summary>
     /// Gets the current cluster metadata.
     /// </summary>
@@ -853,6 +862,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private async ValueTask RefreshMetadataInternalAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
     {
         Exception? lastException = null;
+        var retryRequestedRebootstrap = false;
 
         if (_options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap
             && TryConsumeMetadataRebootstrapRequest())
@@ -862,6 +872,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 _hasSuccessfulRefresh = true;
                 return;
             }
+
+            retryRequestedRebootstrap = true;
         }
 
         // Try each bootstrap server or known broker
@@ -975,6 +987,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
             }
         }
 
+        if (retryRequestedRebootstrap)
+            RequestMetadataRebootstrap();
+
         throw new InvalidOperationException("Failed to refresh metadata from any broker", lastException);
     }
 
@@ -1066,11 +1081,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
 
-                if (response.ErrorCode != ErrorCode.RebootstrapRequired)
+                // A freshly resolved endpoint that still reports misrouting is not trusted.
+                // Try another endpoint without adopting its capabilities, metadata, or brokers.
+                if (response.ErrorCode == ErrorCode.RebootstrapRequired)
                 {
-                    ResetFinalizedFeaturesForRebootstrap();
-                    BeginMetadataRebootstrap();
+                    LogRebootstrapChainSuppressed();
+                    continue;
                 }
+
+                ResetFinalizedFeaturesForRebootstrap();
+                BeginMetadataRebootstrap();
 
                 UpdateVersionlessCapabilities(
                     connection,
@@ -1083,15 +1103,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     ObserveClusterCapabilities(response.ClusterId, connection);
 
                 _metadata.Update(response, mergeTopics: topics is not null);
-                if (response.ErrorCode != ErrorCode.RebootstrapRequired)
-                    UpdateMetadataClusterId(response.ClusterId);
-
-                // Surface the condition where the new broker also wants a rebootstrap —
-                // we stop here to prevent an infinite loop, but log it for operators.
-                if (response.ErrorCode == ErrorCode.RebootstrapRequired)
-                {
-                    LogRebootstrapChainSuppressed();
-                }
+                UpdateMetadataClusterId(response.ClusterId);
 
                 foreach (var broker in response.Brokers)
                 {
@@ -1327,19 +1339,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 endpoints.Add((broker.NodeId, broker.Host, broker.Port));
             }
 
-            // Once KIP-1242 has learned a trusted cluster identity, anonymous bootstrap
-            // endpoints cannot be a fallback for normal refreshes. Explicit rebootstrap
-            // uses freshly resolved bootstrap endpoints through ExecuteRebootstrapAsync.
-            var hasEnforcedClusterIdentity = _options.MetadataClusterCheckEnabled
-                && _options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap
-                && Volatile.Read(ref _trustedMetadataClusterId) is not null;
-            if (!hasEnforcedClusterIdentity)
+            // Keep bootstrap servers as immediate fallback when known brokers are down.
+            // KIP-1242 identity validation still rejects a bootstrap address that resolves
+            // to the wrong cluster before that connection becomes usable.
+            foreach (var endpoint in _bootstrapEndpoints)
             {
-                foreach (var endpoint in _bootstrapEndpoints)
-                {
-                    if (seen.Add(endpoint))
-                        endpoints.Add((-1, endpoint.Host, endpoint.Port));
-                }
+                if (seen.Add(endpoint))
+                    endpoints.Add((-1, endpoint.Host, endpoint.Port));
             }
 
             // Update cache with new hash and endpoints

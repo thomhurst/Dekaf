@@ -167,7 +167,7 @@ public class MetadataManagerTests
     }
 
     [Test]
-    public async Task GetEndpointsToTry_AfterMetadataUpdate_ReturnsOnlyAuthenticatedBrokers()
+    public async Task GetEndpointsToTry_AfterMetadataUpdate_RetainsBootstrapFallback()
     {
         var manager = CreateTestManager();
 
@@ -181,12 +181,13 @@ public class MetadataManagerTests
 
         var endpoints = manager.GetEndpointsToTry();
 
-        await Assert.That(endpoints.Count).IsEqualTo(3);
+        await Assert.That(endpoints.Count).IsEqualTo(4);
 
         // First 3 should be known brokers
         await Assert.That(endpoints[0]).IsEquivalentTo((1, "broker1", 9092));
         await Assert.That(endpoints[1]).IsEquivalentTo((2, "broker2", 9092));
         await Assert.That(endpoints[2]).IsEquivalentTo((3, "broker3", 9092));
+        await Assert.That(endpoints[3]).IsEquivalentTo((-1, "localhost", 9092));
     }
 
     [Test]
