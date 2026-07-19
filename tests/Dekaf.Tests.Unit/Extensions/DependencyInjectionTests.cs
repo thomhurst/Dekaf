@@ -255,6 +255,85 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    public async Task AddProducerFromConfluentConfig_UsesConfluentIdempotenceDefault()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:Acks"] = "None"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.EnableIdempotence).IsFalse();
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_TransactionalIdEnablesIdempotenceByDefault()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:TransactionalId"] = "transactional-producer"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.EnableIdempotence).IsTrue();
+        await Assert.That(options.TransactionalId).IsEqualTo("transactional-producer");
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_DefaultCompressionLevelUsesCodecDefault()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:CompressionType"] = "Gzip",
+            ["Config:CompressionLevel"] = "-1"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.CompressionType).IsEqualTo(CompressionType.Gzip);
+        await Assert.That(options.CompressionLevel).IsNull();
+    }
+
+    [Test]
+    [Arguments("fnv1a", PartitionerType.Fnv1A)]
+    [Arguments("fnv1a_random", PartitionerType.Fnv1ARandom)]
+    public async Task AddProducerFromConfluentConfig_TranslatesFnvPartitioners(
+        string configuredValue,
+        PartitionerType expected)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:Partitioner"] = configuredValue
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.Partitioner).IsEqualTo(expected);
+    }
+
+    [Test]
     public async Task AddProducerFromConfluentConfig_UnsupportedProperty_FailsFast()
     {
         var services = new ServiceCollection();

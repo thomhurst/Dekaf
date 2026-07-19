@@ -111,15 +111,18 @@ internal static class ConfluentConfigurationBinding
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
         if (TryGet(configuration, "MessageMaxBytes", out int maxRequestSize))
             builder.WithMaxRequestSize(maxRequestSize);
-        if (TryGet(configuration, "EnableIdempotence", out bool enableIdempotence))
-            builder.WithIdempotence(enableIdempotence);
-        if (TryGet(configuration, "TransactionalId", out string transactionalId))
+        var hasTransactionalId = TryGet(configuration, "TransactionalId", out string transactionalId);
+        builder.WithIdempotence(
+            TryGet(configuration, "EnableIdempotence", out bool enableIdempotence)
+                ? enableIdempotence
+                : hasTransactionalId);
+        if (hasTransactionalId)
             builder.WithTransactionalId(transactionalId);
         if (TryGet(configuration, "TransactionTimeoutMs", out int transactionTimeoutMs))
             builder.WithTransactionTimeout(TimeSpan.FromMilliseconds(transactionTimeoutMs));
         if (TryGetEnum(configuration, "CompressionType", out ConfluentCompressionType compressionType))
             builder.UseCompression(MapCompressionType(compressionType));
-        if (TryGet(configuration, "CompressionLevel", out int compressionLevel))
+        if (TryGet(configuration, "CompressionLevel", out int compressionLevel) && compressionLevel != -1)
             builder.WithCompressionLevel(compressionLevel);
         if (TryGetEnum(configuration, "Partitioner", out ConfluentPartitioner partitioner))
             builder.WithPartitioner(MapPartitioner(partitioner));
@@ -488,6 +491,8 @@ internal static class ConfluentConfigurationBinding
             ConfluentPartitioner.ConsistentRandom => PartitionerType.ConsistentRandom,
             ConfluentPartitioner.Murmur2 => PartitionerType.Murmur2,
             ConfluentPartitioner.Murmur2Random => PartitionerType.Murmur2Random,
+            ConfluentPartitioner.Fnv1a => PartitionerType.Fnv1A,
+            ConfluentPartitioner.Fnv1aRandom => PartitionerType.Fnv1ARandom,
             _ => throw new UnreachableException()
         };
 
@@ -517,6 +522,8 @@ internal static class ConfluentConfigurationBinding
         Consistent,
         ConsistentRandom,
         Murmur2,
-        Murmur2Random
+        Murmur2Random,
+        Fnv1a,
+        Fnv1aRandom
     }
 }
