@@ -1166,7 +1166,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 AwsMskIamConfig = options.AwsMskIamConfig,
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes,
-                ClientDnsLookup = options.ClientDnsLookup
+                ClientDnsLookup = options.ClientDnsLookup,
+                DnsResolver = options.DnsResolver
             },
             loggerFactory,
             connectionsPerBroker: options.ConnectionsPerBroker,

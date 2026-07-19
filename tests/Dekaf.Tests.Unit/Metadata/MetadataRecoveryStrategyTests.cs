@@ -1,3 +1,4 @@
+using System.Net;
 using System.Reflection;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -592,6 +593,24 @@ public sealed class MetadataRecoveryStrategyTests
         await Assert.That(distinctCount).IsEqualTo(endpoints.Count);
     }
 
+    [Test]
+    public async Task ResolveBootstrapEndpointsAsync_UsesConfiguredDnsResolver()
+    {
+        var lookup = new RecordingDnsLookup(IPAddress.Parse("192.0.2.10"));
+        var manager = CreateTestManager(
+            new MetadataOptions
+            {
+                DnsResolver = new ClientDnsEndpointResolver(lookup)
+            },
+            ["broker.example:9092"]);
+
+        var endpoints = await manager.ResolveBootstrapEndpointsAsync(CancellationToken.None);
+
+        await Assert.That(lookup.InvocationCount).IsEqualTo(1);
+        await Assert.That(endpoints).Contains(("192.0.2.10", 9092));
+        await Assert.That(endpoints).Contains(("broker.example", 9092));
+    }
+
     #endregion
 
     #region MetadataManager Integration with Recovery Strategy
@@ -752,6 +771,27 @@ public sealed class MetadataRecoveryStrategyTests
     {
         var metadataManager = GetField<MetadataManager>(client, "_metadataManager");
         return GetField<MetadataOptions>(metadataManager, "_options");
+    }
+
+    private sealed class RecordingDnsLookup(IPAddress address) : IDnsLookup
+    {
+        public int InvocationCount { get; private set; }
+
+        public ValueTask<IPAddress[]> GetHostAddressesAsync(string host, CancellationToken cancellationToken)
+        {
+            InvocationCount++;
+            return ValueTask.FromResult<IPAddress[]>([address]);
+        }
+
+        public ValueTask<IPHostEntry> GetHostEntryAsync(string host, CancellationToken cancellationToken)
+        {
+            InvocationCount++;
+            return ValueTask.FromResult(new IPHostEntry
+            {
+                HostName = host,
+                AddressList = [address]
+            });
+        }
     }
 
     private static T GetField<T>(object instance, string name)

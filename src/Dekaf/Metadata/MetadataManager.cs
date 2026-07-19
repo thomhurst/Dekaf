@@ -905,31 +905,25 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // Apply a per-host timeout to prevent DNS hangs from blocking rebootstrap
                 using var dnsCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 dnsCts.CancelAfter(TimeSpan.FromSeconds(5));
-                IPAddress[] addresses;
+                var endpoints = await _options.DnsResolver
+                    .ResolveAsync(host, port, _options.ClientDnsLookup, dnsCts.Token)
+                    .ConfigureAwait(false);
                 if (_options.ClientDnsLookup == ClientDnsLookup.ResolveCanonicalBootstrapServersOnly)
                 {
-                    var entry = await Dns.GetHostEntryAsync(host, dnsCts.Token).ConfigureAwait(false);
-                    addresses = entry.AddressList;
-                    var canonicalHost = string.IsNullOrWhiteSpace(entry.HostName) ? host : entry.HostName;
-                    var canonicalEndpoint = (canonicalHost, port);
-                    if (seen.Add(canonicalEndpoint))
+                    if (endpoints.Count > 0)
                     {
-                        resolved.Add(canonicalEndpoint);
+                        var canonicalEndpoint = (endpoints[0].TargetHost, port);
+                        if (seen.Add(canonicalEndpoint))
+                            resolved.Add(canonicalEndpoint);
                     }
                 }
                 else
                 {
-                    addresses = await Dns.GetHostAddressesAsync(host, dnsCts.Token).ConfigureAwait(false);
-                    foreach (var address in addresses)
+                    foreach (var endpoint in endpoints)
                     {
-                        var endpoint = (address.ToString(), port);
-                        // Add resolved IP endpoints for rebootstrap fan-out. The original
-                        // hostname fallback below preserves TLS/SASL target names when direct
-                        // IP endpoints are unsuitable.
-                        if (seen.Add(endpoint))
-                        {
-                            resolved.Add(endpoint);
-                        }
+                        var resolvedEndpoint = (endpoint.Address.ToString(), port);
+                        if (seen.Add(resolvedEndpoint))
+                            resolved.Add(resolvedEndpoint);
                     }
                 }
 
@@ -940,7 +934,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     resolved.Add(hostnameEndpoint);
                 }
 
-                LogRebootstrapDnsResolved(host, port, addresses.Length);
+                LogRebootstrapDnsResolved(host, port, endpoints.Count);
             }
             catch (Exception ex)
             {
@@ -1352,6 +1346,11 @@ public sealed class MetadataOptions
     /// Controls how bootstrap and broker hostnames are resolved before connecting.
     /// </summary>
     public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
+
+    /// <summary>
+    /// DNS resolver used when re-resolving bootstrap endpoints. Internal for deterministic tests.
+    /// </summary>
+    internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
 
     /// <summary>
     /// Initial retry backoff in milliseconds for metadata initialization.

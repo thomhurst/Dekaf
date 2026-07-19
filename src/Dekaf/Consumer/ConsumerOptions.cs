@@ -428,6 +428,11 @@ public sealed class ConsumerOptions
     public ClientDnsLookup ClientDnsLookup { get; init; } = ClientDnsLookup.UseAllDnsIps;
 
     /// <summary>
+    /// DNS resolver used by connections. Internal for deterministic tests.
+    /// </summary>
+    internal ClientDnsEndpointResolver DnsResolver { get; init; } = ClientDnsEndpointResolver.Default;
+
+    /// <summary>
     /// Application-level retry policy for message processing in hosted consumer services.
     /// When set, the consumer service will use this policy to determine delays between retries.
     /// When <c>null</c>, existing retry behavior is unchanged.
