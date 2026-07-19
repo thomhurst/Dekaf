@@ -144,6 +144,18 @@ public sealed class ConsumerOptions
     public int FetchMaxBytes { get; init; } = 52428800;
 
     /// <summary>
+    /// Aggregate raw Fetch response memory limit in bytes across queued and in-flight
+    /// requests. Memory is reserved on demand and is not preallocated. Must be at least
+    /// <see cref="FetchMaxBytes"/>. Default is 100 MiB.
+    /// </summary>
+    /// <remarks>
+    /// Kafka may return one record batch larger than the configured fetch limits so a
+    /// consumer can make progress. Such an oversized response is admitted only when it is
+    /// the pool's sole reservation.
+    /// </remarks>
+    public long FetchBufferMemoryBytes { get; init; } = 100L * 1024 * 1024;
+
+    /// <summary>
     /// Maximum bytes per partition.
     /// </summary>
     public int MaxPartitionFetchBytes { get; init; } = 1048576;
@@ -375,10 +387,6 @@ public sealed class ConsumerOptions
     /// opts this consumer out of auto-tuning. The explicit amount is subtracted from the
     /// global budget before auto-tuned instances are sized, so explicit overrides still count
     /// against the process-wide total.
-    /// </para>
-    /// <para>
-    /// This value may be automatically raised at runtime when the pipeline depth and
-    /// assigned partition count require a larger buffer to avoid stalling prefetch.
     /// </para>
     /// </summary>
     public int QueuedMaxMessagesKbytes { get; init; } = 65536;

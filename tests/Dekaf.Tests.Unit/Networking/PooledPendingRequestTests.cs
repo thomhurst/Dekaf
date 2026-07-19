@@ -1,11 +1,72 @@
 using System.Collections.Concurrent;
 using System.Threading.Tasks.Sources;
+using Dekaf.Consumer;
 using Dekaf.Networking;
 
 namespace Dekaf.Tests.Unit.Networking;
 
 public class PooledPendingRequestTests
 {
+    [Test]
+    public async Task TryGetResponseMemoryPool_RejectsCancelledVersion()
+    {
+        using var memoryPool = new FetchBufferMemoryPool(100);
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(
+            responseHeaderVersion: 0,
+            CancellationToken.None,
+            responseMemoryPool: memoryPool);
+        var version = request.Version;
+
+        await Assert.That(request.TryGetResponseMemoryPool(version, out var admittedPool)).IsTrue();
+        await Assert.That(admittedPool).IsSameReferenceAs(memoryPool);
+
+        request.TrySetCanceled();
+
+        await Assert.That(request.TryGetResponseMemoryPool(version, out _)).IsFalse();
+        pool.Return(request);
+    }
+
+    [Test]
+    public async Task PoolReturn_ReleasesUntakenResponseMemoryReservation()
+    {
+        using var memoryPool = new FetchBufferMemoryPool(100);
+        var reservation = await memoryPool.ReserveAsync(40, CancellationToken.None);
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        var buffer = new PooledResponseBuffer(
+            [0, 0, 0, 1, 10],
+            length: 5,
+            isPooled: false);
+
+        await Assert.That(request.TryComplete(request.Version, buffer, reservation)).IsTrue();
+        _ = await request.AsValueTask();
+        await Assert.That(memoryPool.UsedBytes).IsEqualTo(40);
+
+        pool.Return(request);
+
+        await Assert.That(memoryPool.UsedBytes).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task TryComplete_ParseFailureReleasesResponseMemoryReservation()
+    {
+        using var memoryPool = new FetchBufferMemoryPool(100);
+        var reservation = await memoryPool.ReserveAsync(40, CancellationToken.None);
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        var invalidBuffer = new PooledResponseBuffer([0], length: 1, isPooled: false);
+
+        await Assert.That(request.TryComplete(request.Version, invalidBuffer, reservation)).IsTrue();
+        await Assert.That(async () => await request.AsValueTask()).Throws<Exception>();
+        await Assert.That(memoryPool.UsedBytes).IsEqualTo(0);
+
+        pool.Return(request);
+    }
+
     [Test]
     public async Task PoolReturn_ResetsCheckCrcs()
     {

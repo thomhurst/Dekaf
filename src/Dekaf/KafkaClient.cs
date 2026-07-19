@@ -646,7 +646,8 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             options.LoggerFactory,
             options.ConnectionsPerBroker,
             ResponseBufferPool.Create(SharedResponseBufferFetchMaxBytes),
-            pipeMemoryBucketCapacity: poolSizes.PipeMemoryArraysPerBucket);
+            pipeMemoryBucketCapacity: poolSizes.PipeMemoryArraysPerBucket,
+            responseMemoryAdmissionsEnabled: true);
 
         var metadataOptions = new MetadataOptions
         {

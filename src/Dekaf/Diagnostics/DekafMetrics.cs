@@ -101,6 +101,7 @@ internal static class DekafMetrics
     // duplicate instrument registration and ensuring disposed consumers stop reporting.
 
     private static readonly ConcurrentDictionary<Func<IEnumerable<Measurement<long>>>, byte> ConsumerLagCallbacks = new();
+    private static readonly ConcurrentDictionary<ConsumerFetchBufferStateSource, byte> ConsumerFetchBufferStateSources = new();
 
     internal static readonly ObservableGauge<long> ConsumerLagGauge =
         DekafDiagnostics.Meter.CreateObservableGauge(
@@ -108,6 +109,34 @@ internal static class DekafMetrics
             observeValues: ObserveAllConsumerLag,
             unit: "{message}",
             description: "Difference between high watermark and consumed position per partition.");
+
+    internal static readonly ObservableGauge<long> ConsumerFetchBufferUsedBytes =
+        DekafDiagnostics.Meter.CreateObservableGauge(
+            "dekaf.consumer.fetch_buffer.used_bytes",
+            observeValues: static () => ObserveConsumerFetchBuffers(static source => source.UsedBytes()),
+            unit: "By",
+            description: "Raw Fetch response bytes reserved across queued and in-flight requests.");
+
+    internal static readonly ObservableGauge<long> ConsumerFetchBufferFreeBytes =
+        DekafDiagnostics.Meter.CreateObservableGauge(
+            "dekaf.consumer.fetch_buffer.free_bytes",
+            observeValues: static () => ObserveConsumerFetchBuffers(static source => source.FreeBytes()),
+            unit: "By",
+            description: "Unreserved raw Fetch response memory.");
+
+    internal static readonly ObservableGauge<double> ConsumerFetchBufferDepletedPercent =
+        DekafDiagnostics.Meter.CreateObservableGauge(
+            "dekaf.consumer.fetch_buffer.depleted_percent",
+            observeValues: static () => ObserveConsumerFetchBuffers(static source => source.DepletedPercent()),
+            unit: "%",
+            description: "Percentage of consumer lifetime spent waiting for Fetch response memory.");
+
+    internal static readonly ObservableCounter<double> ConsumerFetchBufferDepletedDuration =
+        DekafDiagnostics.Meter.CreateObservableCounter(
+            "dekaf.consumer.fetch_buffer.depleted_duration",
+            observeValues: static () => ObserveConsumerFetchBuffers(static source => source.DepletedDuration()),
+            unit: "s",
+            description: "Total duration spent waiting for Fetch response memory.");
 
     /// <summary>
     /// Registers a consumer lag observation callback. Called from <c>KafkaConsumer</c> constructor.
@@ -123,6 +152,16 @@ internal static class DekafMetrics
     internal static void UnregisterConsumerLagCallback(Func<IEnumerable<Measurement<long>>> callback)
     {
         ConsumerLagCallbacks.TryRemove(callback, out _);
+    }
+
+    internal static void RegisterConsumerFetchBufferState(ConsumerFetchBufferStateSource source)
+    {
+        ConsumerFetchBufferStateSources.TryAdd(source, 0);
+    }
+
+    internal static void UnregisterConsumerFetchBufferState(ConsumerFetchBufferStateSource source)
+    {
+        ConsumerFetchBufferStateSources.TryRemove(source, out _);
     }
 
     private static IEnumerable<Measurement<long>> ObserveAllConsumerLag()
@@ -144,6 +183,26 @@ internal static class DekafMetrics
             {
                 yield return measurement;
             }
+        }
+    }
+
+    private static IEnumerable<Measurement<T>> ObserveConsumerFetchBuffers<T>(
+        Func<ConsumerFetchBufferStateSource, Measurement<T>> selector)
+        where T : struct
+    {
+        foreach (var (source, _) in ConsumerFetchBufferStateSources)
+        {
+            Measurement<T> measurement;
+            try
+            {
+                measurement = selector(source);
+            }
+            catch
+            {
+                continue;
+            }
+
+            yield return measurement;
         }
     }
 

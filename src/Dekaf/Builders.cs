@@ -1424,6 +1424,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private TimeSpan? _autoOffsetResetDuration;
     private int _fetchMinBytes = 1;
     private int _fetchMaxBytes = 52428800;
+    private long _fetchBufferMemoryBytes = 100L * 1024 * 1024;
+    private bool _isFetchBufferMemoryConfigured;
     private int _maxPartitionFetchBytes = 1048576;
     private int _fetchMaxWaitMs = 200;
     private int _maxPollRecords = 500;
@@ -1765,6 +1767,21 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _fetchMaxBytes = maxBytes;
         if (_usesHighThroughputAdaptiveDefaults)
             ApplyHighThroughputAdaptiveDefaults();
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the aggregate raw Fetch response memory limit across queued and in-flight
+    /// requests. Equivalent to Kafka consumer <c>buffer.memory</c>. Default is 100 MiB.
+    /// </summary>
+    /// <param name="bytes">
+    /// Maximum raw Fetch response bytes. Must cover <see cref="WithFetchMaxBytes"/>.
+    /// </param>
+    public ConsumerBuilder<TKey, TValue> WithFetchBufferMemory(long bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(bytes, 1);
+        _fetchBufferMemoryBytes = bytes;
+        _isFetchBufferMemoryConfigured = true;
         return this;
     }
 
@@ -2422,8 +2439,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <item><description>FetchMinBytes: 1KB (wait for more data)</description></item>
     /// <item><description>FetchMaxWaitMs: 200ms (matches default; higher values like 500ms cause stalls when the prefetch pipeline restarts after hitting memory limits)</description></item>
     /// <item><description>MaxPartitionFetchBytes: 4MB (larger fetch responses reduce round-trip overhead per byte)</description></item>
-    /// <item><description>FetchMaxBytes: 100MB (allow larger total fetch responses; note that the response buffer pool
-    /// may retain up to 8 arrays of this size per consumer instance)</description></item>
+    /// <item><description>FetchMaxBytes: 100MB initially, adapting up to 200MB</description></item>
+    /// <item><description>FetchBufferMemory: 1000MB unless explicitly configured (bounds aggregate raw Fetch responses)</description></item>
     /// <item><description>PrefetchPipelineDepth: 5 (aggressive prefetching to hide network latency)</description></item>
     /// <item><description>ConnectionsPerBroker: 3 for standalone consumers (two fetch connections plus one coordination connection)</description></item>
     /// <item><description>AdaptiveFetchSizing: enabled (auto-grows fetch sizes when consumer keeps up, shrinks under prefetch memory pressure)</description></item>
@@ -2431,9 +2448,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// broker-side validation already cover corruption in transit — matches librdkafka's default. Re-enable with
     /// <see cref="WithCheckCrcs"/> after this preset if end-to-end validation is required)</description></item>
     /// </list>
-    /// <para><b>Memory note:</b> The combined in-flight memory ceiling is
-    /// <c>PrefetchPipelineDepth × FetchMaxBytes</c> — with these defaults that is
-    /// 5 × 100 MB ≈ 500 MB peak per consumer instance.</para>
+    /// <para><b>Memory note:</b> Raw queued and in-flight Fetch responses are bounded by
+    /// <c>FetchBufferMemory</c>. The preset derives 5 × 200 MB = 1000 MB from its pipeline
+    /// depth and adaptive fetch maximum unless <see cref="WithFetchBufferMemory"/> was called.</para>
     /// <para>These settings can be overridden by calling other builder methods after this one.</para>
     /// </remarks>
     /// <returns>The builder instance for method chaining.</returns>
@@ -2481,6 +2498,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
             InitialFetchMaxBytes = initialFetchMaxBytes,
             MaxFetchMaxBytes = maxFetchMaxBytes
         };
+
+        if (!_isFetchBufferMemoryConfigured)
+        {
+            _fetchBufferMemoryBytes = (long)maxFetchMaxBytes * _prefetchPipelineDepth;
+        }
     }
 
     /// <summary>
@@ -2728,6 +2750,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             AutoOffsetResetDuration = _autoOffsetResetDuration,
             FetchMinBytes = _fetchMinBytes,
             FetchMaxBytes = _fetchMaxBytes,
+            FetchBufferMemoryBytes = _fetchBufferMemoryBytes,
             MaxPartitionFetchBytes = _maxPartitionFetchBytes,
             FetchMaxWaitMs = _fetchMaxWaitMs,
             EnableFetchSessions = _enableFetchSessions,

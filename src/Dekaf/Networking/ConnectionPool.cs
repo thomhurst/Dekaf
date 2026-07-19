@@ -23,6 +23,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     private readonly ILogger _logger;
     private readonly int _connectionsPerBroker;
     private readonly ResponseBufferPool _responseBufferPool;
+    private readonly bool _responseMemoryAdmissionsEnabled;
     private readonly ClientTelemetryMetricCollector? _telemetryMetricCollector;
     private readonly TimeSpan _idleReapDrainTimeout;
     private readonly OAuthBearerTokenProvider? _sharedOAuthBearerTokenProvider;
@@ -97,7 +98,8 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         int? pipeMemoryBucketCapacity = null,
         ClientTelemetryMetricCollector? telemetryMetricCollector = null,
         TimeSpan? idleReapDrainTimeout = null,
-        Func<double>? randomDouble = null)
+        Func<double>? randomDouble = null,
+        bool responseMemoryAdmissionsEnabled = false)
     {
         _clientId = clientId;
         _connectionOptions = ConfigureSharedOAuthBearerProvider(
@@ -108,6 +110,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
         _responseBufferPool = responseBufferPool;
+        _responseMemoryAdmissionsEnabled = responseMemoryAdmissionsEnabled;
         _telemetryMetricCollector = telemetryMetricCollector;
         _idleReapDrainTimeout = idleReapDrainTimeout ?? DefaultIdleReapDrainTimeout;
         _randomDouble = randomDouble ?? SharedRandomDouble;
@@ -791,7 +794,8 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
                 _loggerFactory?.CreateLogger<KafkaConnection>(),
                 _responseBufferPool,
                 _sharedPipeMemoryPool,
-                _telemetryMetricCollector);
+                _telemetryMetricCollector,
+                _responseMemoryAdmissionsEnabled);
 
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
@@ -965,7 +969,8 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
                 _loggerFactory?.CreateLogger<KafkaConnection>(),
                 _responseBufferPool,
                 _sharedPipeMemoryPool,
-                _telemetryMetricCollector);
+                _telemetryMetricCollector,
+                _responseMemoryAdmissionsEnabled);
 
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 

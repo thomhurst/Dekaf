@@ -48,6 +48,10 @@ public sealed class DekafMetricInstrumentTests
         await Assert.That(instrumentNames).Contains("messaging.consumer.rebalance.duration");
         await Assert.That(instrumentNames).Contains("messaging.consumer.fetch.duration");
         await Assert.That(instrumentNames).Contains("messaging.consumer.lag");
+        await Assert.That(instrumentNames).Contains("dekaf.consumer.fetch_buffer.used_bytes");
+        await Assert.That(instrumentNames).Contains("dekaf.consumer.fetch_buffer.free_bytes");
+        await Assert.That(instrumentNames).Contains("dekaf.consumer.fetch_buffer.depleted_percent");
+        await Assert.That(instrumentNames).Contains("dekaf.consumer.fetch_buffer.depleted_duration");
 
         // Producer internal-state gauges (observable — published by listening alone)
         await Assert.That(instrumentNames).Contains("dekaf.producer.buffer.used_bytes");

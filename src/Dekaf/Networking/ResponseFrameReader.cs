@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using Dekaf.Protocol;
 
 namespace Dekaf.Networking;
 
@@ -45,6 +46,7 @@ internal sealed class ResponseFrameReader : IDisposable
     // faulted read mid-frame can release pooled storage via AbandonInProgressFrame.
     private byte[]? _frameArray;
     private NativeResponseBuffer? _nativeFrame;
+    private IResponseMemoryReservation? _frameReservation;
     private int _frameSize;
     private int _frameFilled;
 
@@ -157,6 +159,138 @@ internal sealed class ResponseFrameReader : IDisposable
         return ResponseFrame.ForResponse(correlationId, response);
     }
 
+    /// <summary>
+    /// Reads a frame after exact-size admission. Kept separate from <see cref="ReadFrameAsync"/>
+    /// so producer and coordinator-only connections retain their unchanged framing fast path.
+    /// </summary>
+#if NET
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+#endif
+    public async ValueTask<BoundedResponseFrame> ReadBoundedFrameAsync(
+        Func<int, ResponseFrameAdmission> getAdmission)
+    {
+        if (_frameArray is null && _nativeFrame is null)
+        {
+            while (BufferedByteCount < 4)
+            {
+                if (_end == _buffer.Length)
+                {
+                    _buffer.Span[_start.._end].CopyTo(_buffer.Span);
+                    _end -= _start;
+                    _start = 0;
+                }
+
+                var read = await ReadSourceAsync(_buffer[_end..]).ConfigureAwait(false);
+                if (read == 0)
+                    return BoundedResponseFrame.EndOfStream;
+
+                _end += read;
+            }
+
+            var frameSize = BinaryPrimitives.ReadInt32BigEndian(_buffer.Span[_start..]);
+            ConnectionHelper.ValidateResponseFrameSize(frameSize, _responseBufferPool.MaxArrayLength);
+            _start += 4;
+
+            while (BufferedByteCount < ConnectionHelper.MinimumResponseFrameSize)
+            {
+                if (_end == _buffer.Length)
+                {
+                    _buffer.Span[_start.._end].CopyTo(_buffer.Span);
+                    _end -= _start;
+                    _start = 0;
+                }
+
+                var read = await ReadSourceAsync(_buffer[_end..]).ConfigureAwait(false);
+                if (read == 0)
+                    return BoundedResponseFrame.EndOfStream;
+
+                _end += read;
+            }
+
+            var frameCorrelationId = BinaryPrimitives.ReadInt32BigEndian(_buffer.Span[_start..]);
+            var admission = getAdmission(frameCorrelationId);
+            if (admission.Discard)
+            {
+                if (!await DiscardFrameAsync(frameSize).ConfigureAwait(false))
+                    return BoundedResponseFrame.EndOfStream;
+
+                return BoundedResponseFrame.ForDiscarded(frameCorrelationId);
+            }
+
+            if (admission.MemoryPool is not null)
+            {
+                _frameReservation = await admission.MemoryPool
+                    .ReserveAsync(frameSize, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            if (frameSize >= ResponseBufferPool.NativeMemoryThresholdBytes)
+                _nativeFrame = _responseBufferPool.RentNative(frameSize);
+            else
+                _frameArray = _responseBufferPool.Pool.Rent(frameSize);
+            _frameSize = frameSize;
+
+            var buffered = Math.Min(frameSize, BufferedByteCount);
+            _buffer.Span.Slice(_start, buffered).CopyTo(FrameMemory.Span);
+            _start += buffered;
+            _frameFilled = buffered;
+
+            if (_start == _end)
+            {
+                _start = 0;
+                _end = 0;
+            }
+        }
+
+        while (_frameFilled < _frameSize)
+        {
+            var read = await ReadSourceAsync(FrameMemory.Slice(_frameFilled, _frameSize - _frameFilled))
+                .ConfigureAwait(false);
+            if (read == 0)
+            {
+                AbandonInProgressFrame();
+                return BoundedResponseFrame.EndOfStream;
+            }
+
+            _frameFilled += read;
+        }
+
+        var correlationId = BinaryPrimitives.ReadInt32BigEndian(FrameMemory.Span);
+        var response = _nativeFrame is not null
+            ? new PooledResponseBuffer(_nativeFrame, _frameSize)
+            : new PooledResponseBuffer(_frameArray!, _frameSize, isPooled: true, pool: _responseBufferPool);
+        var reservation = _frameReservation;
+        _nativeFrame = null;
+        _frameArray = null;
+        _frameReservation = null;
+        return BoundedResponseFrame.ForResponse(correlationId, response, reservation);
+    }
+
+    private async ValueTask<bool> DiscardFrameAsync(int frameSize)
+    {
+        var buffered = Math.Min(frameSize, BufferedByteCount);
+        _start += buffered;
+        var remaining = frameSize - buffered;
+
+        if (_start == _end)
+        {
+            _start = 0;
+            _end = 0;
+        }
+
+        while (remaining > 0)
+        {
+            var read = await ReadSourceAsync(_buffer[..Math.Min(_buffer.Length, remaining)])
+                .ConfigureAwait(false);
+            if (read == 0)
+                return false;
+
+            remaining -= read;
+        }
+
+        return true;
+    }
+
 #if NET
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
@@ -246,11 +380,20 @@ internal sealed class ResponseFrameReader : IDisposable
     {
         var frameArray = _frameArray;
         var nativeFrame = _nativeFrame;
+        var frameReservation = _frameReservation;
         _frameArray = null;
         _nativeFrame = null;
-        if (frameArray is not null)
-            _responseBufferPool.Pool.Return(frameArray);
-        nativeFrame?.Return();
+        _frameReservation = null;
+        try
+        {
+            if (frameArray is not null)
+                _responseBufferPool.Pool.Return(frameArray);
+            nativeFrame?.Return();
+        }
+        finally
+        {
+            frameReservation?.Dispose();
+        }
     }
 
     private Memory<byte> FrameMemory => _nativeFrame is not null
@@ -262,10 +405,45 @@ internal sealed class ResponseFrameReader : IDisposable
 /// Result of <see cref="ResponseFrameReader.ReadFrameAsync"/>: either a complete response
 /// frame (correlation id + pooled payload) or an end-of-stream marker.
 /// </summary>
-internal readonly record struct ResponseFrame(bool IsEndOfStream, int CorrelationId, PooledResponseBuffer Buffer)
+internal readonly record struct ResponseFrame(
+    bool IsEndOfStream,
+    int CorrelationId,
+    PooledResponseBuffer Buffer)
 {
     public static ResponseFrame EndOfStream => new(IsEndOfStream: true, 0, default);
 
     public static ResponseFrame ForResponse(int correlationId, PooledResponseBuffer buffer)
         => new(IsEndOfStream: false, correlationId, buffer);
+}
+
+internal readonly record struct BoundedResponseFrame(
+    bool IsEndOfStream,
+    bool IsDiscarded,
+    int CorrelationId,
+    PooledResponseBuffer Buffer,
+    IResponseMemoryReservation? Reservation)
+{
+    public static BoundedResponseFrame EndOfStream => new(
+        IsEndOfStream: true,
+        IsDiscarded: false,
+        0,
+        default,
+        null);
+
+    public static BoundedResponseFrame ForResponse(
+        int correlationId,
+        PooledResponseBuffer buffer,
+        IResponseMemoryReservation? reservation)
+        => new(IsEndOfStream: false, IsDiscarded: false, correlationId, buffer, reservation);
+
+    public static BoundedResponseFrame ForDiscarded(int correlationId)
+        => new(IsEndOfStream: false, IsDiscarded: true, correlationId, default, null);
+}
+
+internal readonly record struct ResponseFrameAdmission(
+    IResponseMemoryPool? MemoryPool,
+    bool Discard)
+{
+    public static ResponseFrameAdmission Unrestricted => new(null, false);
+    public static ResponseFrameAdmission Discarded => new(null, true);
 }

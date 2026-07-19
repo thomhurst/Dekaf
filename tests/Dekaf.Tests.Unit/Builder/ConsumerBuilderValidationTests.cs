@@ -534,6 +534,45 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
+    public async Task ForHighThroughput_SizesFetchBufferForFullAdaptivePipeline()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .ForHighThroughput()
+            .Build();
+
+        var options = ((KafkaConsumer<string, string>)consumer).Options;
+
+        await Assert.That(options.FetchBufferMemoryBytes).IsEqualTo(1000L * 1024 * 1024);
+    }
+
+    [Test]
+    public async Task WithFetchBufferMemory_ConfiguresAggregateLimit()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithFetchBufferMemory(200L * 1024 * 1024)
+            .Build();
+
+        var options = ((KafkaConsumer<string, string>)consumer).Options;
+
+        await Assert.That(options.FetchBufferMemoryBytes).IsEqualTo(200L * 1024 * 1024);
+    }
+
+    [Test]
+    public async Task Build_FetchBufferBelowFetchMaximum_Throws()
+    {
+        var builder = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithFetchMaxBytes(64 * 1024 * 1024)
+            .WithFetchBufferMemory(32 * 1024 * 1024);
+
+        await Assert.That(() => builder.Build())
+            .Throws<ArgumentOutOfRangeException>()
+            .WithMessageContaining("Fetch buffer memory");
+    }
+
+    [Test]
     public async Task ForHighThroughput_FetchOverridesUpdateAdaptiveBounds()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()

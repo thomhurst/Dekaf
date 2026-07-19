@@ -855,6 +855,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly MetadataManager _metadataManager;
     private readonly ClientTelemetryMetricCollector _telemetryMetricCollector;
     private readonly ClientTelemetryManager _telemetryManager;
+    private readonly FetchBufferMemoryPool _fetchBufferMemoryPool;
+    private readonly Diagnostics.ConsumerFetchBufferStateSource _fetchBufferMetricSource;
     private readonly IDekafMemoryBudget _memoryBudget;
     private readonly bool _ownsInfrastructure;
     private readonly ConsumerCoordinator? _coordinator;
@@ -1092,7 +1094,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         MetadataManager metadataManager,
         ILoggerFactory? loggerFactory = null)
         : this(options, keyDeserializer, valueDeserializer,
-            (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer)),
+            (
+                connectionPool,
+                metadataManager,
+                new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer),
+                new FetchBufferMemoryPool(options.FetchBufferMemoryBytes)),
             loggerFactory,
             ownsInfrastructure: true,
             DekafMemoryBudget.Global)
@@ -1108,14 +1114,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         IDekafMemoryBudget memoryBudget,
         ILoggerFactory? loggerFactory = null)
         : this(options, keyDeserializer, valueDeserializer,
-            (connectionPool, metadataManager, new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer)),
+            (
+                connectionPool,
+                metadataManager,
+                new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer),
+                new FetchBufferMemoryPool(options.FetchBufferMemoryBytes)),
             loggerFactory,
             ownsInfrastructure: false,
             memoryBudget)
     {
     }
 
-    private static (IConnectionPool, MetadataManager, ClientTelemetryMetricCollector) CreateInfrastructure(
+    private static (
+        IConnectionPool,
+        MetadataManager,
+        ClientTelemetryMetricCollector,
+        FetchBufferMemoryPool) CreateInfrastructure(
         ConsumerOptions options, ILoggerFactory? loggerFactory, MetadataOptions? metadataOptions)
     {
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
@@ -1123,7 +1137,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             options.ReconnectBackoffMaxMs,
             options.IsReconnectBackoffMsConfigured,
             options.IsReconnectBackoffMaxMsConfigured);
+        ValidateFetchBufferMemory(options);
         var telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer);
+        var fetchBufferMemoryPool = new FetchBufferMemoryPool(options.FetchBufferMemoryBytes);
         var connectionPool = new ConnectionPool(
             options.ClientId,
             new ConnectionOptions
@@ -1155,7 +1171,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             loggerFactory,
             connectionsPerBroker: options.ConnectionsPerBroker,
             CreateResponseBufferPool(options),
-            telemetryMetricCollector: telemetryMetricCollector);
+            telemetryMetricCollector: telemetryMetricCollector,
+            responseMemoryAdmissionsEnabled: true);
 
         var metadataManager = new MetadataManager(
             connectionPool,
@@ -1163,7 +1180,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
-        return (connectionPool, metadataManager, telemetryMetricCollector);
+        return (connectionPool, metadataManager, telemetryMetricCollector, fetchBufferMemoryPool);
     }
 
     private static ResponseBufferPool CreateResponseBufferPool(ConsumerOptions options)
@@ -1207,11 +1224,29 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             InitialFetchMaxBytes = options.FetchMaxBytes
         };
 
+    internal static void ValidateFetchBufferMemory(ConsumerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.FetchBufferMemoryBytes, 1);
+
+        if (options.FetchBufferMemoryBytes < options.FetchMaxBytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.FetchBufferMemoryBytes,
+                $"Fetch buffer memory must be at least FetchMaxBytes ({options.FetchMaxBytes})");
+        }
+    }
+
     private KafkaConsumer(
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
-        (IConnectionPool Pool, MetadataManager Metadata, ClientTelemetryMetricCollector TelemetryMetricCollector) infrastructure,
+        (
+            IConnectionPool Pool,
+            MetadataManager Metadata,
+            ClientTelemetryMetricCollector TelemetryMetricCollector,
+            FetchBufferMemoryPool FetchBufferMemoryPool) infrastructure,
         ILoggerFactory? loggerFactory,
         bool ownsInfrastructure,
         IDekafMemoryBudget memoryBudget)
@@ -1220,9 +1255,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ArgumentOutOfRangeException.ThrowIfGreaterThan(options.ConnectionsPerBroker, options.MaxConnectionsPerBroker);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollRecords, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollIntervalMs, 1);
+        ValidateFetchBufferMemory(options);
         AutoOffsetResetStrategy.ValidateOptions(options);
 
         _options = options;
+        _fetchBufferMemoryPool = infrastructure.FetchBufferMemoryPool;
+        _fetchBufferMetricSource = new Diagnostics.ConsumerFetchBufferStateSource(
+            _fetchBufferMemoryPool,
+            options.ClientId,
+            options.GroupId);
         _currentQueuedMaxBytes = (long)((ulong)options.QueuedMaxMessagesKbytes * 1024UL);
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
@@ -1312,6 +1353,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Register this instance's lag callback with the shared static gauge.
         // The callback is invoked only during metric collection (~every 5-60s), not on the hot path.
         Diagnostics.DekafMetrics.RegisterConsumerLagCallback(ObserveConsumerLag);
+        Diagnostics.DekafMetrics.RegisterConsumerFetchBufferState(_fetchBufferMetricSource);
     }
 
     private ValueTask BeginConnectionRoutingTransitionAsync(
@@ -2544,12 +2586,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         continue;
                     }
 
-                    var maxBytes = CalculatePrefetchMaxBytes(
-                        (int)Math.Min(CurrentQueuedMaxBytes / 1024, int.MaxValue),
-                        _assignmentSnapshot.Count,
-                        _adaptiveFetchSizer?.CurrentPartitionFetchBytes ?? _options.MaxPartitionFetchBytes,
-                        _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes,
-                        _options.PrefetchPipelineDepth);
+                    var maxBytes = CalculatePrefetchMaxBytes(CurrentQueuedMaxBytes);
                     var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
                     if (PrefetchLoopControl.ShouldWaitForMemory(currentPrefetchedBytes, maxBytes))
                     {
@@ -2937,28 +2974,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// ErrorCode and are always transient — the ErrorCode guard excludes them.
     /// </remarks>
     /// <summary>
-    /// Calculates the effective prefetch memory budget, auto-scaling above the configured
-    /// maximum when the partition count and pipeline depth require more headroom.
+    /// Calculates the exact configured queued-record prefetch budget.
     /// </summary>
-    internal static long CalculatePrefetchMaxBytes(
-        int queuedMaxMessagesKbytes,
-        int partitionCount,
-        int maxPartitionFetchBytes,
-        int fetchMaxBytes,
-        int pipelineDepth)
-    {
-        var configuredMax = (long)queuedMaxMessagesKbytes * 1024;
-        // Auto-scale: ensure the budget fits (pipelineDepth + 1) full fetch responses.
-        // The +1 provides headroom so the consume loop can drain a completed response
-        // while the pipeline keeps its full depth of in-flight fetches.
-        // A single fetch response is capped at FetchMaxBytes by the broker, even when
-        // partitionCount * MaxPartitionFetchBytes would exceed it.
-        var fetchResponseSize = Math.Min(
-            (long)partitionCount * maxPartitionFetchBytes,
-            fetchMaxBytes);
-        var minRequired = fetchResponseSize * (pipelineDepth + 1);
-        return Math.Max(configuredMax, minRequired);
-    }
+    internal static long CalculatePrefetchMaxBytes(ulong configuredBytes) =>
+        configuredBytes > long.MaxValue ? long.MaxValue : (long)configuredBytes;
+
+    private int CurrentFetchMaxBytes =>
+        _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
 
     internal static int CalculatePrefetchBufferCapacity(ConsumerOptions options)
     {
@@ -3016,6 +3038,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         try
         {
+            var fetchMaxBytes = CurrentFetchMaxBytes;
             // Build fetch request — pass index range to avoid GetRange allocation
             var topicData = BuildFetchRequestTopicsForConnection(
                 partitions,
@@ -3028,8 +3051,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             var request = FetchRequest.Rent();
             request.MaxWaitMs = _options.FetchMaxWaitMs;
             request.MinBytes = _options.FetchMinBytes;
-            request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
+            request.MaxBytes = fetchMaxBytes;
             request.CheckCrcs = _options.CheckCrcs;
+            request.ResponseMemoryPool = _fetchBufferMemoryPool;
             request.IsolationLevel = _options.IsolationLevel;
             request.RackId = _options.ClientRack;
             request.Topics = fetchSessionBuild?.Topics ?? topicData;
@@ -3178,13 +3202,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             if (stuckError is not null)
                             {
                                 DisposePendingFetches(pendingItems);
-                                memoryOwner?.Dispose();
-                                memoryOwner = null;
                                 throw stuckError;
                             }
                         }
                     }
                 }
+            }
+            catch
+            {
+                DisposePendingFetches(pendingItems);
+                memoryOwner?.Dispose();
+                memoryOwner = null;
+                throw;
             }
             finally
             {
@@ -3208,7 +3237,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 await WritePrefetchedItemsAsync(pendingItems, fetchBufferEpoch, cancellationToken).ConfigureAwait(false);
             }
 
-            // If no pending items were created but we have a memory owner, dispose it
             memoryOwner?.Dispose();
         }
         finally
@@ -6374,6 +6402,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         int fetchBufferEpoch,
         CancellationToken cancellationToken)
     {
+        var fetchMaxBytes = CurrentFetchMaxBytes;
         using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
             brokerId,
             0,
@@ -6408,8 +6437,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         var request = FetchRequest.Rent();
         request.MaxWaitMs = _options.FetchMaxWaitMs;
         request.MinBytes = _options.FetchMinBytes;
-        request.MaxBytes = _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes;
+        request.MaxBytes = fetchMaxBytes;
         request.CheckCrcs = _options.CheckCrcs;
+        request.ResponseMemoryPool = _fetchBufferMemoryPool;
         request.IsolationLevel = _options.IsolationLevel;
         request.RackId = _options.ClientRack;
         request.Topics = fetchSessionBuild?.Topics ?? topicData;
@@ -6559,13 +6589,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 pendingItems = null;
                             }
 
-                            memoryOwner?.Dispose();
-                            memoryOwner = null;
                             throw stuckError;
                         }
                     }
                 }
             }
+        }
+        catch
+        {
+            if (pendingItems is not null)
+            {
+                DisposePendingFetches(pendingItems);
+                ConsumerFetchPools.ReturnPendingFetchDataList(pendingItems);
+                pendingItems = null;
+            }
+
+            memoryOwner?.Dispose();
+            memoryOwner = null;
+            throw;
         }
         finally
         {
@@ -6577,13 +6618,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             response.ReturnToPool();
         }
 
-        if (pendingItems is not null && pendingItems.Count > 0 && memoryOwner is not null)
+        if (pendingItems is { Count: > 0 } && memoryOwner is not null)
         {
             AssignSharedMemoryOwner(pendingItems, memoryOwner);
             memoryOwner = null; // Transferred
         }
 
-        // If no pending items were created but we have a memory owner, dispose it
         memoryOwner?.Dispose();
 
         return pendingItems;
@@ -7451,12 +7491,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void RatchetRecordWrapperPools(int partitionCount)
     {
-        var prefetchMaxBytes = CalculatePrefetchMaxBytes(
-            (int)Math.Min(CurrentQueuedMaxBytes / 1024, int.MaxValue),
-            Math.Max(1, partitionCount),
-            _adaptiveFetchSizer?.CurrentPartitionFetchBytes ?? _options.MaxPartitionFetchBytes,
-            _adaptiveFetchSizer?.CurrentFetchMaxBytes ?? _options.FetchMaxBytes,
-            _options.PrefetchPipelineDepth);
+        var prefetchMaxBytes = CalculatePrefetchMaxBytes(CurrentQueuedMaxBytes);
         var wrapperPoolSize = PoolSizing.ForConsumerRecordWrappers(prefetchMaxBytes);
         RecordBatch.RatchetPoolSize(wrapperPoolSize);
         LazyRecordList.RatchetPoolSize(wrapperPoolSize);
@@ -7918,6 +7953,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Unregister lag callback so the OTel SDK no longer invokes it on this disposed instance
         Diagnostics.DekafMetrics.UnregisterConsumerLagCallback(ObserveConsumerLag);
+        Diagnostics.DekafMetrics.UnregisterConsumerFetchBufferState(_fetchBufferMetricSource);
 
         // If not already closed, perform graceful close first
         // Use 30 seconds to allow CommitAsync (which may take up to RequestTimeoutMs=30s) to complete
@@ -8029,6 +8065,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             TrackPrefetchedBytes(prefetched, release: true);
             prefetched.Dispose();
         }
+
+        _fetchBufferMemoryPool.Dispose();
 
         _assignmentLock.Dispose();
         _initLock.Dispose();
