@@ -1701,6 +1701,59 @@ public sealed class ConnectionPoolTests
 
     [Test]
     [NotInParallel]
+    public async Task ReplaceConnectionInGroup_ScaleLockWaitIsBoundedAndDisposesReplacement()
+    {
+        var created = new List<IKafkaConnection>();
+        var options = new ConnectionOptions
+        {
+            ConnectionTimeout = TimeSpan.FromMilliseconds(20),
+            ConnectionTimeoutMax = TimeSpan.FromMilliseconds(20),
+            ReconnectBackoff = TimeSpan.Zero,
+            ReconnectBackoffMax = TimeSpan.Zero
+        };
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: options,
+            connectionsPerBroker: 2,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                created.Add(connection);
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "localhost", 9092);
+            await pool.GetConnectionAsync(1);
+            await Assert.That(created).Count().IsEqualTo(2);
+            created[0].IsConnected.Returns(false);
+            await Assert.That(created[0].IsConnected).IsFalse();
+
+            var scaleLock = (SemaphoreSlim)typeof(ConnectionPool).GetField(
+                "_scaleLock",
+                BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(pool)!;
+            await scaleLock.WaitAsync();
+            await Assert.That(scaleLock.CurrentCount).IsEqualTo(0);
+            try
+            {
+                Func<Task> replaceConnection = () => pool.GetConnectionByIndexAsync(1, 0).AsTask();
+                var exception = await Assert.That(replaceConnection).Throws<KafkaException>();
+
+                await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+            }
+            finally
+            {
+                scaleLock.Release();
+            }
+
+            await Assert.That(created).Count().IsEqualTo(3);
+            await created[2].Received(1).DisposeAsync();
+        }
+    }
+
+    [Test]
+    [NotInParallel]
     public async Task GetConnectionAsync_AfterReconnectBackoffReset_DisposesAttemptGate()
     {
         var attempts = 0;

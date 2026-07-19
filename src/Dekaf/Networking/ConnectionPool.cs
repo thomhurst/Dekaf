@@ -846,7 +846,17 @@ public sealed partial class ConnectionPool :
             // ShrinkConnectionGroupAsync, which may have swapped the array reference.
             bool stored = false;
             IKafkaConnection? oldConnection = null;
-            await _scaleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await WaitForConnectionLockAsync(_scaleLock, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                try { await connection.DisposeAsync().ConfigureAwait(false); }
+                catch { /* best-effort cleanup of an unpublished replacement */ }
+                throw;
+            }
+
             try
             {
                 if (_connectionGroupsById.TryGetValue(brokerId, out var connections) && index < connections.Length)
