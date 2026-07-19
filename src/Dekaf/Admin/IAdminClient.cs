@@ -71,6 +71,19 @@ public interface IAdminClient : IAsyncDisposable
     ValueTask<ClusterDescription> DescribeClusterAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes broker-supported and cluster-finalized feature levels.
+    /// </summary>
+    ValueTask<FeatureMetadata> DescribeFeaturesAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Updates cluster feature levels through the active controller.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<string, FeatureUpdateResultInfo>> UpdateFeaturesAsync(
+        IReadOnlyDictionary<string, FeatureUpdate> updates,
+        UpdateFeaturesOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Describes consumer groups.
     /// </summary>
     ValueTask<IReadOnlyDictionary<string, GroupDescription>> DescribeConsumerGroupsAsync(IEnumerable<string> groupIds, CancellationToken cancellationToken = default);
@@ -644,6 +657,58 @@ public sealed class ClusterDescription
     public string? ClusterId { get; init; }
     public int ControllerId { get; init; }
     public required IReadOnlyList<BrokerNode> Nodes { get; init; }
+}
+
+/// <summary>
+/// Broker-supported and cluster-finalized feature metadata.
+/// </summary>
+public sealed class FeatureMetadata
+{
+    public long FinalizedFeaturesEpoch { get; init; }
+    public required IReadOnlyDictionary<string, FeatureVersionRange> SupportedFeatures { get; init; }
+    public required IReadOnlyDictionary<string, FeatureVersionRange> FinalizedFeatures { get; init; }
+}
+
+/// <summary>
+/// Inclusive feature-level range.
+/// </summary>
+public readonly record struct FeatureVersionRange(short MinVersion, short MaxVersion);
+
+/// <summary>
+/// Requested finalized level and KIP-584 operation type for one feature.
+/// </summary>
+public sealed class FeatureUpdate
+{
+    public short MaxVersionLevel { get; init; }
+    public FeatureUpgradeType UpgradeType { get; init; } = FeatureUpgradeType.Upgrade;
+}
+
+/// <summary>
+/// KIP-584 feature update operation type.
+/// </summary>
+public enum FeatureUpgradeType : sbyte
+{
+    Upgrade = 1,
+    SafeDowngrade = 2,
+    UnsafeDowngrade = 3
+}
+
+/// <summary>
+/// Options for updating cluster feature levels.
+/// </summary>
+public sealed class UpdateFeaturesOptions
+{
+    public int TimeoutMs { get; init; } = 60000;
+    public bool ValidateOnly { get; init; }
+}
+
+/// <summary>
+/// Result for one requested feature update.
+/// </summary>
+public sealed class FeatureUpdateResultInfo
+{
+    public Protocol.ErrorCode ErrorCode { get; init; }
+    public string? ErrorMessage { get; init; }
 }
 
 /// <summary>

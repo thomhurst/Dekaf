@@ -1021,6 +1021,19 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
     }
 
     [Test]
+    [SupportsKafka(270)]
+    public async Task DescribeFeaturesAsync_ReturnsFeatureMetadata()
+    {
+        await using var admin = CreateAdminClient();
+
+        var features = await admin.DescribeFeaturesAsync().ConfigureAwait(false);
+
+        await Assert.That(features.FinalizedFeaturesEpoch).IsGreaterThanOrEqualTo(0);
+        await Assert.That(features.SupportedFeatures).IsNotEmpty();
+        await Assert.That(features.FinalizedFeatures).IsNotEmpty();
+    }
+
+    [Test]
     public async Task DescribeTopicsAsync_ReturnsTopicDetails()
     {
         // Arrange

@@ -33,8 +33,31 @@ internal static class DeterministicResponseFixtureFactory
             ["OffsetFetchResponse.v9"] = Encode(WriteOffsetFetchResponse),
             ["OffsetFetchResponse.v10"] = Encode(WriteOffsetFetchResponseV10),
             ["ProduceResponse.v12"] = Encode(WriteProduceResponseV12),
-            ["ProduceResponse.v13"] = Encode(WriteProduceResponseV13)
+            ["ProduceResponse.v13"] = Encode(WriteProduceResponseV13),
+            ["UpdateFeaturesResponse.v0"] = EncodeUpdateFeaturesResponse(version: 0),
+            ["UpdateFeaturesResponse.v1"] = EncodeUpdateFeaturesResponse(version: 1),
+            ["UpdateFeaturesResponse.v2"] = EncodeUpdateFeaturesResponse(version: 2)
         };
+
+    private static byte[] EncodeUpdateFeaturesResponse(short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(17);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactString(null);
+        if (version <= 1)
+        {
+            WriteCompactArrayLength(ref writer, 1);
+            writer.WriteCompactString("metadata.version");
+            writer.WriteInt16((short)ErrorCode.FeatureUpdateFailed);
+            writer.WriteCompactString("unsupported level");
+            WriteEmptyTaggedFields(ref writer);
+        }
+
+        WriteEmptyTaggedFields(ref writer);
+        return buffer.WrittenSpan.ToArray();
+    }
 
     private static byte[] Encode(WriteFixture writeFixture)
     {

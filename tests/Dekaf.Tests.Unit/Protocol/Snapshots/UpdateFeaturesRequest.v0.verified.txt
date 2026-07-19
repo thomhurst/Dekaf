@@ -1,0 +1,12 @@
+﻿Request: Dekaf.Protocol.Messages.UpdateFeaturesRequest
+API key: UpdateFeatures (57)
+Version: 0
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 52 bytes (48-byte payload)
+
+0000: 00 00 00 30 00 39 00 00  10 20 30 40 00 0E 64 65 |...0.9... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 00 00 75 |kaf-snapshot...u|
+0020: 30 02 0D 77 69 72 65 2D  66 65 61 74 75 72 65 00 |0..wire-feature.|
+0030: 07 01 00 00                                      |....|

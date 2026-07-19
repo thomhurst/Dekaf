@@ -33,6 +33,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private readonly ConcurrentDictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
     private readonly object _finalizedFeatureLock = new();
     private FinalizedFeatureSnapshot? _finalizedFeatures;
+    private IReadOnlyDictionary<string, SupportedFeature> _supportedFeatures =
+        new Dictionary<string, SupportedFeature>(StringComparer.Ordinal);
     private string? _finalizedFeatureClusterId;
     private string? _trustedMetadataClusterId;
     private readonly SemaphoreSlim _initializeLock = new(1, 1);
@@ -390,13 +392,27 @@ public sealed partial class MetadataManager : IAsyncDisposable
     internal bool TryGetFinalizedFeatureVersion(string featureName, out short maxVersionLevel) =>
         GetFinalizedFeatureStatus(featureName, out maxVersionLevel) == FinalizedFeatureStatus.Present;
 
+    internal void GetClusterFeatureMetadata(
+        out long finalizedFeaturesEpoch,
+        out IReadOnlyDictionary<string, SupportedFeature> supportedFeatures,
+        out IReadOnlyDictionary<string, (short MinVersion, short MaxVersion)> finalizedFeatures)
+    {
+        lock (_finalizedFeatureLock)
+        {
+            supportedFeatures = _supportedFeatures.ToDictionary(
+                static feature => feature.Key,
+                static feature => feature.Value,
+                StringComparer.Ordinal);
+            var finalizedSnapshot = Volatile.Read(ref _finalizedFeatures);
+            finalizedFeaturesEpoch = finalizedSnapshot?.Epoch ?? -1;
+            finalizedFeatures = finalizedSnapshot?.CopyFeatures()
+                ?? new Dictionary<string, (short MinVersion, short MaxVersion)>(StringComparer.Ordinal);
+        }
+    }
+
     private void ObserveConnectionCapabilities(KafkaConnectionCapabilities capabilities)
     {
         if (Volatile.Read(ref _disposed) != 0)
-            return;
-
-        var candidate = capabilities.FinalizedFeatureSnapshot;
-        if (candidate is null)
             return;
 
         lock (_finalizedFeatureLock)
@@ -404,7 +420,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             if (_finalizedFeatureClusterId is null)
                 return;
 
-            PublishFinalizedFeatures(candidate);
+            PublishClusterCapabilities(capabilities);
         }
     }
 
@@ -425,16 +441,27 @@ public sealed partial class MetadataManager : IAsyncDisposable
             if (!string.Equals(_finalizedFeatureClusterId, clusterId, StringComparison.Ordinal))
             {
                 _finalizedFeatureClusterId = clusterId;
+                _supportedFeatures = new Dictionary<string, SupportedFeature>(StringComparer.Ordinal);
                 Volatile.Write(ref _finalizedFeatures, null);
             }
 
             if (clusterId is null)
                 return;
 
-            var candidate = capabilities.FinalizedFeatureSnapshot;
-            if (candidate is not null)
-                PublishFinalizedFeatures(candidate);
+            PublishClusterCapabilities(capabilities);
         }
+    }
+
+    private void PublishClusterCapabilities(KafkaConnectionCapabilities capabilities)
+    {
+        _supportedFeatures = capabilities.SupportedFeatures.ToDictionary(
+            static feature => feature.Key,
+            static feature => feature.Value,
+            StringComparer.Ordinal);
+
+        var candidate = capabilities.FinalizedFeatureSnapshot;
+        if (candidate is not null)
+            PublishFinalizedFeatures(candidate);
     }
 
     private void PublishFinalizedFeatures(FinalizedFeatureSnapshot candidate)
@@ -465,6 +492,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         lock (_finalizedFeatureLock)
         {
             _finalizedFeatureClusterId = null;
+            _supportedFeatures = new Dictionary<string, SupportedFeature>(StringComparer.Ordinal);
             Volatile.Write(ref _finalizedFeatures, null);
         }
     }

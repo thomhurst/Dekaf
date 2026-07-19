@@ -191,6 +191,7 @@ internal sealed class KafkaConnectionCapabilities
     }
 
     internal FinalizedFeatureSnapshot? FinalizedFeatureSnapshot => _finalizedFeatures;
+    internal IReadOnlyDictionary<string, SupportedFeature> SupportedFeatures => _supportedFeatures;
     internal int ApiRangeCount => _apiRanges.Length;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
