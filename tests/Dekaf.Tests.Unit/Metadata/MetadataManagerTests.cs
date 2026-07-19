@@ -678,6 +678,34 @@ public class MetadataManagerTests
     }
 
     [Test]
+    public async Task InitializeAsync_AfterConnectionPhase_DnsFailureUsesMetadataRetryPolicy()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var attempts = 0;
+        pool.GetConnectionAsync("intermittent-host", 9092, Arg.Any<CancellationToken>())
+            .Returns(call => Interlocked.Increment(ref attempts) == 1
+                ? WaitForCancellationAsync(call.Arg<CancellationToken>())
+                : ValueTask.FromException<IKafkaConnection>(CreateDnsFailure("intermittent-host", 9092)));
+
+        await using var manager = new MetadataManager(
+            pool,
+            ["intermittent-host:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                InitTimeoutMs = 1000,
+                MaxInitRetries = 1,
+                BootstrapResolveTimeoutMs = 10,
+                RetryBackoffMs = 0,
+                RetryBackoffMaxMs = 0
+            });
+
+        await Assert.That(() => manager.InitializeAsync().AsTask())
+            .Throws<InvalidOperationException>();
+        await Assert.That(attempts).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task InitializeAsync_OneResolvableBootstrapHost_Succeeds()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -1182,6 +1210,13 @@ public class MetadataManagerTests
         await Task.Yield();
         cancellationToken.ThrowIfCancellationRequested();
         return connection;
+    }
+
+    private static async ValueTask<IKafkaConnection> WaitForCancellationAsync(
+        CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("The bootstrap deadline did not cancel the connection attempt.");
     }
 
     private static IKafkaConnection CreateSuccessfulMetadataConnection(string host, int port)

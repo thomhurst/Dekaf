@@ -514,6 +514,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             var bootstrapStartedAt = Stopwatch.GetTimestamp();
             var metadataStartedAt = 0L;
             var bootstrapResolutionCompleted = false;
+            BootstrapResolutionPendingException? lastBootstrapResolutionFailure = null;
             var metadataFailureCount = 0;
             var bootstrapFailureCount = 0;
 
@@ -528,7 +529,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     {
                         if (bootstrapResolutionCompleted)
                         {
-                            await RefreshMetadataForInitializationAsync(initializationToken).ConfigureAwait(false);
+                            await RefreshMetadataAfterBootstrapResolutionAsync(initializationToken)
+                                .ConfigureAwait(false);
                         }
                         else
                         {
@@ -536,6 +538,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                                 - Stopwatch.GetElapsedTime(bootstrapStartedAt).TotalMilliseconds;
                             await RefreshMetadataWithinBootstrapDeadlineAsync(
                                     Math.Max(0, bootstrapRemainingMs),
+                                    lastBootstrapResolutionFailure,
                                     initializationToken)
                                 .ConfigureAwait(false);
                         }
@@ -543,6 +546,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     }
                     catch (BootstrapResolutionPendingException ex) when (!initializationToken.IsCancellationRequested)
                     {
+                        lastBootstrapResolutionFailure = ex;
                         var bootstrapElapsed = Stopwatch.GetElapsedTime(bootstrapStartedAt);
                         var bootstrapRemainingMs = _options.BootstrapResolveTimeoutMs - bootstrapElapsed.TotalMilliseconds;
                         if (bootstrapRemainingMs <= 0)
@@ -885,20 +889,27 @@ public sealed partial class MetadataManager : IAsyncDisposable
         RefreshMetadataAsyncCore(
             topics,
             forceRefresh,
-            allowBootstrapResolutionPending: false,
+            BootstrapResolutionFailureMode.PublicException,
             cancellationToken);
 
     private ValueTask RefreshMetadataForInitializationAsync(CancellationToken cancellationToken) =>
         RefreshMetadataAsyncCore(
             topics: null,
             forceRefresh: false,
-            allowBootstrapResolutionPending: true,
+            BootstrapResolutionFailureMode.Pending,
+            cancellationToken);
+
+    private ValueTask RefreshMetadataAfterBootstrapResolutionAsync(CancellationToken cancellationToken) =>
+        RefreshMetadataAsyncCore(
+            topics: null,
+            forceRefresh: false,
+            BootstrapResolutionFailureMode.MetadataFailure,
             cancellationToken);
 
     private async ValueTask RefreshMetadataAsyncCore(
         IEnumerable<string>? topics,
         bool forceRefresh,
-        bool allowBootstrapResolutionPending,
+        BootstrapResolutionFailureMode bootstrapResolutionFailureMode,
         CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -923,9 +934,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
             {
                 await RefreshMetadataInternalAsync(topics, cancellationToken).ConfigureAwait(false);
             }
-            catch (BootstrapResolutionPendingException ex) when (!allowBootstrapResolutionPending)
+            catch (BootstrapResolutionPendingException ex) when (
+                bootstrapResolutionFailureMode != BootstrapResolutionFailureMode.Pending)
             {
-                throw CreateBootstrapResolutionException(ex.UnresolvedBootstrapServers, ex);
+                if (bootstrapResolutionFailureMode == BootstrapResolutionFailureMode.PublicException)
+                    throw CreateBootstrapResolutionException(ex.UnresolvedBootstrapServers, ex);
+
+                throw new InvalidOperationException(
+                    "Failed to refresh metadata from any broker",
+                    ex.InnerException ?? ex);
             }
         }
         finally
@@ -1104,10 +1121,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private async ValueTask RefreshMetadataWithinBootstrapDeadlineAsync(
         double remainingMs,
+        BootstrapResolutionPendingException? previousDnsFailure,
         CancellationToken cancellationToken)
     {
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadlineCts.CancelAfter(TimeSpan.FromMilliseconds(remainingMs));
+        // A zero budget still gets one bounded probe so an immediate DNS failure retains
+        // its endpoint details instead of racing a pre-cancelled refresh lock.
+        deadlineCts.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(1, remainingMs)));
         try
         {
             await RefreshMetadataForInitializationAsync(deadlineCts.Token).ConfigureAwait(false);
@@ -1116,6 +1136,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
             !cancellationToken.IsCancellationRequested
             && !IsDnsResolutionFailure(ex))
         {
+            if (previousDnsFailure is not null)
+                throw previousDnsFailure;
+
             // The DNS lookup completed and the shared deadline expired in a later connection
             // phase. Translate this into a normal retriable initialization failure so future
             // attempts use only the metadata initialization deadline.
@@ -1170,6 +1193,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
         : Exception("No bootstrap server DNS name could be resolved.", innerException)
     {
         public IReadOnlyList<string> UnresolvedBootstrapServers { get; } = unresolvedBootstrapServers;
+    }
+
+    private enum BootstrapResolutionFailureMode
+    {
+        Pending,
+        PublicException,
+        MetadataFailure
     }
 
     /// <summary>
