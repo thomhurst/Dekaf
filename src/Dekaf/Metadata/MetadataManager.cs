@@ -1093,6 +1093,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
             return;
 
         var capabilities = provider.Capabilities;
+        if (replaceExisting)
+            _brokerApiVersions.Clear();
+
         for (var key = 0; key < capabilities.ApiRangeCount; key++)
         {
             var apiKey = (ApiKey)key;

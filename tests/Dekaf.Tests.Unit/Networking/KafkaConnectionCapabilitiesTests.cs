@@ -156,7 +156,8 @@ public class KafkaConnectionCapabilitiesTests
             ApiKeys =
             [
                 new ApiVersion(ApiKey.Metadata, 9, 12),
-                new ApiVersion(ApiKey.Fetch, 12, 14)
+                new ApiVersion(ApiKey.Fetch, 12, 14),
+                new ApiVersion(ApiKey.Produce, 0, 11)
             ],
             FinalizedFeatures = [new FinalizedFeature("transaction.version", 1, 0)]
         });
@@ -189,6 +190,7 @@ public class KafkaConnectionCapabilitiesTests
             .IsEqualTo((short)14);
         await Assert.That(metadata.GetFinalizedFeatureVersion("transaction.version"))
             .IsEqualTo((short)1);
+        await Assert.That(metadata.HasApiKey(ApiKey.Produce)).IsTrue();
 
         var rebootstrapped = await metadata.TryRebootstrapImmediateAsync(null, CancellationToken.None);
 
@@ -198,6 +200,7 @@ public class KafkaConnectionCapabilitiesTests
             .IsEqualTo((short)16);
         await Assert.That(metadata.GetFinalizedFeatureVersion("transaction.version"))
             .IsEqualTo((short)2);
+        await Assert.That(metadata.HasApiKey(ApiKey.Produce)).IsFalse();
     }
 
     [Test]

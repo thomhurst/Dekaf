@@ -410,8 +410,18 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         ThrowIfFatalHeartbeatException();
 
-        if (_state == CoordinatorState.Stable && SubscriptionMatches(topics, subscribedTopicRegex))
-            return;
+        if (_state == CoordinatorState.Stable)
+        {
+            if (SubscriptionMatches(topics, subscribedTopicRegex))
+                return;
+
+            if (subscribedTopicRegex is not null)
+            {
+                using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                    _coordinatorId, _getCoordinationConnectionIndex(), cancellationToken).ConfigureAwait(false);
+                EnsureServerSideRegexSupported(connectionLease.Connection, subscribedTopicRegex);
+            }
+        }
 
         await EnsureActiveGroupConsumerProtocolAsync(topics, subscribedTopicRegex, cancellationToken).ConfigureAwait(false);
     }
@@ -1147,6 +1157,17 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private static void CompleteRevocationCommit(ConsumerHeartbeatResult result)
         => result.RevocationCommitCompletion?.TrySetResult(true);
 
+    private void EnsureServerSideRegexSupported(IKafkaConnection connection, string? subscribedTopicRegex)
+    {
+        if (subscribedTopicRegex is not null &&
+            !_metadataManager.SupportsApiVersion(connection, ApiKey.ConsumerGroupHeartbeat, 1))
+        {
+            throw new BrokerVersionException(
+                "Server-side regex subscriptions require ConsumerGroupHeartbeat v1 " +
+                "(Kafka 4.1 or later). Use Subscribe(Func<string, bool>) for client-side filtering on older brokers.");
+        }
+    }
+
     /// <summary>
     /// Sends a ConsumerGroupHeartbeat request and processes the response.
     /// </summary>
@@ -1181,13 +1202,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     "(KIP-848, introduced in Kafka 4.0). Dekaf's consumer requires Kafka 4.0 or later.");
             }
 
-            if (_subscribedTopicRegex is not null &&
-                !_metadataManager.SupportsApiVersion(connection, ApiKey.ConsumerGroupHeartbeat, 1))
-            {
-                throw new BrokerVersionException(
-                    "Server-side regex subscriptions require ConsumerGroupHeartbeat v1 " +
-                    "(Kafka 4.1 or later). Use Subscribe(Func<string, bool>) for client-side filtering on older brokers.");
-            }
+            EnsureServerSideRegexSupported(connection, _subscribedTopicRegex);
 
             var version = _metadataManager.GetNegotiatedApiVersion(
                 connection,
