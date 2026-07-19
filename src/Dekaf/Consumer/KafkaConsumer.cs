@@ -8218,8 +8218,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     }
 
     /// <inheritdoc />
-    public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
+    public ValueTask CloseAsync(CancellationToken cancellationToken = default) =>
+        CloseAsync(new ConsumerCloseOptions(), cancellationToken);
+
+    /// <inheritdoc />
+    public async ValueTask CloseAsync(
+        ConsumerCloseOptions options,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        if (!Enum.IsDefined(options.GroupMembershipOperation))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.GroupMembershipOperation,
+                "The group membership operation is invalid.");
+        }
+
         // Idempotent - return early if already closed/disposed
         if (Interlocked.Exchange(ref _closed, 1) != 0 || Volatile.Read(ref _consumerDisposed) != 0)
             return;
@@ -8227,7 +8242,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
-            await CloseAsyncCore(apiTimeout.Token).ConfigureAwait(false);
+            await CloseAsyncCore(options, apiTimeout.Token).ConfigureAwait(false);
             apiTimeout.Token.ThrowIfCancellationRequested();
         }
         catch (OperationCanceledException ex) when (apiTimeout.DefaultTimeoutExpired)
@@ -8240,7 +8255,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// Core teardown logic shared by <see cref="CloseAsync"/> and <see cref="DisposeAsync"/>.
     /// Callers must ensure this is invoked at most once via an atomic CAS on <c>_closed</c>.
     /// </summary>
-    private async ValueTask CloseAsyncCore(CancellationToken cancellationToken)
+    private async ValueTask CloseAsyncCore(
+        ConsumerCloseOptions options,
+        CancellationToken cancellationToken)
     {
         LogClosingConsumer();
 
@@ -8345,11 +8362,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         // Step 7: Send LeaveGroup request to coordinator
-        if (_coordinator is not null)
+        if (_coordinator is not null &&
+            options.GroupMembershipOperation != ConsumerGroupMembershipOperation.RemainInGroup)
         {
             try
             {
-                await _coordinator.LeaveGroupAsync(cancellationToken).ConfigureAwait(false);
+                await _coordinator.LeaveGroupAsync(
+                    options.GroupMembershipOperation,
+                    cancellationToken).ConfigureAwait(false);
                 LogLeftConsumerGroup();
             }
             catch (Exception ex)
@@ -8594,7 +8614,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 using var cts = new CancellationTokenSource(
                     Math.Min(_options.DefaultApiTimeoutMs, 30_000));
-                await CloseAsyncCore(cts.Token).ConfigureAwait(false);
+                await CloseAsyncCore(new ConsumerCloseOptions(), cts.Token).ConfigureAwait(false);
             }
             catch
             {

@@ -387,8 +387,22 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             _storedOffsets[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
     }
 
-    public ValueTask CloseAsync(CancellationToken cancellationToken = default)
+    public ValueTask CloseAsync(CancellationToken cancellationToken = default) =>
+        CloseAsync(new ConsumerCloseOptions(), cancellationToken);
+
+    public ValueTask CloseAsync(
+        ConsumerCloseOptions options,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        if (!Enum.IsDefined(options.GroupMembershipOperation))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.GroupMembershipOperation,
+                "The group membership operation is invalid.");
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
 
         if (_disposed)
@@ -402,6 +416,8 @@ public sealed class InMemoryConsumer<TKey, TValue> :
             if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
                 CommitStoredOffsets();
 
+            // The in-memory cluster has no broker session timer. Always unregister on close so
+            // RemainInGroup cannot create an immortal member that permanently owns partitions.
             UnregisterConsumerGroupMemberUnderLock();
             _disposed = true;
         }

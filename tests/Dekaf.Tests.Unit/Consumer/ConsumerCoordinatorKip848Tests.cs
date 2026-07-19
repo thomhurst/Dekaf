@@ -3206,6 +3206,51 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_StaticMemberPermanentLeave_SendsMemberEpochNegativeOne()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(groupInstanceId: "static-instance-1");
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        _connection.ClearReceivedCalls();
+        SetupConsumerGroupHeartbeat();
+
+        await coordinator.LeaveGroupAsync(
+            ConsumerGroupMembershipOperation.LeaveGroup,
+            CancellationToken.None);
+
+        await _connection.Received().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Is<ConsumerGroupHeartbeatRequest>(r =>
+                r != null && r.MemberEpoch == -1 && r.InstanceId == "static-instance-1"),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_RemainInGroup_SendsNoTerminalHeartbeat()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        _connection.ClearReceivedCalls();
+
+        await coordinator.LeaveGroupAsync(
+            ConsumerGroupMembershipOperation.RemainInGroup,
+            CancellationToken.None);
+
+        await _connection.DidNotReceive().SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+            Arg.Any<ConsumerGroupHeartbeatRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_EmptyStaticMemberLeaveGroup_SendsMemberEpochNegativeTwo()
     {
         SetupSuccessfulConsumerProtocolJoin();

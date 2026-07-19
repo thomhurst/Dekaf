@@ -273,6 +273,138 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
     }
 
     [Test]
+    public async Task StaticMember_PermanentLeave_RebalancesToDynamicMember()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var groupId = $"static-permanent-leave-{Guid.NewGuid():N}";
+        var instanceId = $"static-instance-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var staticConsumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("static-consumer")
+            .WithGroupId(groupId)
+            .WithGroupInstanceId(instanceId)
+            .WithSessionTimeout(TimeSpan.FromSeconds(30))
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        try
+        {
+            staticConsumer.Subscribe(topic);
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "before-close",
+                Value = "before-close",
+                Partition = 0
+            }, CancellationToken.None);
+
+            using var joinCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var initial = await staticConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), joinCts.Token);
+            await Assert.That(initial).IsNotNull();
+
+            await staticConsumer.CloseAsync(new ConsumerCloseOptions
+            {
+                GroupMembershipOperation = ConsumerGroupMembershipOperation.LeaveGroup
+            });
+
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "after-close",
+                Value = "after-close",
+                Partition = 1
+            }, CancellationToken.None);
+
+            await using var dynamicConsumer = await Kafka.CreateConsumer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithClientId("dynamic-consumer")
+                .WithGroupId(groupId)
+                .WithSessionTimeout(TimeSpan.FromSeconds(10))
+                .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+                .WithOffsetCommitMode(OffsetCommitMode.Manual)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+            dynamicConsumer.Subscribe(topic);
+            using var consumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var result = await dynamicConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), consumeCts.Token);
+
+            await Assert.That(result).IsNotNull();
+            await Assert.That(dynamicConsumer.Assignment.ToArray()).IsNotEmpty();
+        }
+        finally
+        {
+            await staticConsumer.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task DynamicMember_RemainInGroup_DoesNotTriggerImmediateRebalance()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var groupId = $"dynamic-remain-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var firstConsumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("dynamic-consumer-1")
+            .WithGroupId(groupId)
+            .WithSessionTimeout(TimeSpan.FromSeconds(30))
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        try
+        {
+            firstConsumer.Subscribe(topic);
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "before-close",
+                Value = "before-close"
+            }, CancellationToken.None);
+
+            using var joinCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var initial = await firstConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), joinCts.Token);
+            await Assert.That(initial).IsNotNull();
+
+            await firstConsumer.CloseAsync(new ConsumerCloseOptions
+            {
+                GroupMembershipOperation = ConsumerGroupMembershipOperation.RemainInGroup
+            });
+
+            await using var secondConsumer = await Kafka.CreateConsumer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithClientId("dynamic-consumer-2")
+                .WithGroupId(groupId)
+                .WithSessionTimeout(TimeSpan.FromSeconds(10))
+                .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+            secondConsumer.Subscribe(topic);
+            using var consumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            var result = await secondConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), consumeCts.Token);
+
+            await Assert.That(result).IsNull();
+            await Assert.That(secondConsumer.Assignment.ToArray()).IsEmpty();
+        }
+        finally
+        {
+            await firstConsumer.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task StaticMember_DuplicateInstanceId_FencingBehavior()
     {
         // Tests that a second consumer with the same GroupInstanceId can take over
