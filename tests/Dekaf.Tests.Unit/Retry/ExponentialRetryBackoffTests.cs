@@ -45,6 +45,23 @@ public sealed class ExponentialRetryBackoffTests
     }
 
     [Test]
+    [Arguments(0.0, 4000.0)]
+    [Arguments(0.5, 5000.0)]
+    [Arguments(1.0, 6000.0)]
+    public async Task MaximumBelowInitial_PreservesConfiguredInitialDelay(
+        double randomValue,
+        double expectedDelayMs)
+    {
+        var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+            initialDelayMs: 5000,
+            maximumDelayMs: 1000,
+            failureCount: 1,
+            randomValue);
+
+        await Assert.That(delayMs).IsEqualTo(expectedDelayMs).Within(0.001);
+    }
+
+    [Test]
     public async Task ExtremeFailureCount_CapsWithoutOverflow()
     {
         var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(

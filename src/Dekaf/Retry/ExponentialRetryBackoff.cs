@@ -37,9 +37,10 @@ internal static class ExponentialRetryBackoff
         if (initialDelayMs <= 0 || maximumDelayMs <= 0)
             return 0;
 
+        var effectiveMaximumDelayMs = Math.Max(initialDelayMs, maximumDelayMs);
         var exponent = Math.Min(Math.Max(failureCount - 1, 0), MaximumExponent);
         var exponentialDelayMs = initialDelayMs * Math.Pow(2, exponent);
-        var cappedDelayMs = Math.Min(maximumDelayMs, exponentialDelayMs);
+        var cappedDelayMs = Math.Min(effectiveMaximumDelayMs, exponentialDelayMs);
         var unitRandom = double.IsNaN(randomValue) ? 0.5 : Math.Clamp(randomValue, 0, 1);
         return cappedDelayMs * (MinimumJitterFactor + (unitRandom * JitterFactorRange));
     }
