@@ -54,12 +54,16 @@ internal static class RetryHelper
     /// of <see cref="RetryDelayMs"/> + [0, 100)ms.
     /// </summary>
     /// <param name="maxRetries">Maximum number of retries. Defaults to <see cref="MaxRetries"/> (3).</param>
+    /// <param name="shouldRefreshMetadata">
+    /// Optional predicate that suppresses metadata refresh for errors recovered by <paramref name="onRetry"/>.
+    /// </param>
     internal static async ValueTask<T> WithRetryAsync<T>(
         Func<ValueTask<T>> operation,
         MetadataManager metadataManager,
         CancellationToken cancellationToken,
         Func<CancellationToken, ValueTask>? onRetry = null,
-        int maxRetries = MaxRetries)
+        int maxRetries = MaxRetries,
+        Func<KafkaException, bool>? shouldRefreshMetadata = null)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -69,7 +73,10 @@ internal static class RetryHelper
             }
             catch (KafkaException ex) when (ex.IsRetriable && attempt < maxRetries)
             {
-                await RefreshMetadataForRetryAsync(metadataManager, cancellationToken).ConfigureAwait(false);
+                if (shouldRefreshMetadata?.Invoke(ex) ?? true)
+                {
+                    await RefreshMetadataForRetryAsync(metadataManager, cancellationToken).ConfigureAwait(false);
+                }
 
                 if (onRetry is not null)
                     await onRetry(cancellationToken).ConfigureAwait(false);

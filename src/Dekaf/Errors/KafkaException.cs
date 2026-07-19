@@ -372,6 +372,11 @@ public sealed class GroupException : KafkaException
     {
     }
 
+    internal GroupException(ErrorCode errorCode, string message, bool isRetriable)
+        : base(errorCode, message, isRetriable)
+    {
+    }
+
     /// <summary>
     /// The group ID.
     /// </summary>
