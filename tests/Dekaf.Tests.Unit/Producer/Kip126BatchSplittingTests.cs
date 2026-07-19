@@ -327,6 +327,47 @@ public sealed class Kip126BatchSplittingTests
     }
 
     [Test]
+    public async Task SplitForSenderRetry_LaterChildBuildFails_DiscardsUnstartedPreSerializationTasks()
+    {
+        const string topic = "sender-retry-split-failure";
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 1000,
+            BufferMemory = 1024 * 1024,
+            CompressionType = CompressionType.Gzip,
+            LingerMs = 0
+        };
+        var sourceBuilder = new PartitionBatch(new TopicPartition(topic, 0), options);
+        sourceBuilder.SetSplitBatchSizeLimit(4096);
+        for (var i = 0; i < 8; i++)
+            Append(sourceBuilder, i, completionSource: null, callback: null);
+
+        var source = sourceBuilder.Complete()!;
+        source.RecordBatch.BaseSequence = int.MaxValue;
+        source.MarkAsSplitBatch(maxRecordSize: 1, isRetry: true);
+        source.MarkPreSerialized();
+        source.TrySetMemoryReleased();
+
+        await using var accumulator = new RecordAccumulator(options, new CompressionCodecRegistry());
+        try
+        {
+            var splitTask = Task.Run(() => accumulator.SplitForSenderRetry(
+                source,
+                source.Generation,
+                static () => { }));
+
+            await Assert.That(async () => await splitTask.WaitAsync(TimeSpan.FromSeconds(5)))
+                .ThrowsExactly<OverflowException>();
+        }
+        finally
+        {
+            source.Fail(new InvalidOperationException("Test cleanup."));
+            accumulator.ReturnReadyBatch(source);
+        }
+    }
+
+    [Test]
     public async Task Drain_AdaptiveBatchExpandsLocally_SplitsAndReenqueues()
     {
         const string topic = "adaptive-local-split";

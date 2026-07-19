@@ -2227,6 +2227,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         foreach (var batch in batches)
         {
+            batch.ClearUnstartedPreSerializationTask();
             batch.TrySetMemoryReleased();
             batch.TryAbandonForSplit(batch.Generation);
             ReturnReadyBatch(batch);
@@ -8823,6 +8824,11 @@ internal sealed class ReadyBatch
     internal void SetPreSerializationTask(Task task)
     {
         Volatile.Write(ref _preSerializationTask, task);
+    }
+
+    internal void ClearUnstartedPreSerializationTask()
+    {
+        Volatile.Write(ref _preSerializationTask, null);
     }
 
     internal void StartPreSerializationTask()
