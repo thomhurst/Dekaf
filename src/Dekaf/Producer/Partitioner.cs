@@ -383,7 +383,16 @@ public sealed class DefaultPartitioner : IPartitioner, IBatchCompletionAwarePart
         int stickyBatchSize = int.MaxValue,
         bool adaptivePartitioning = false,
         int availabilityTimeoutMs = 0,
-        bool ignoreKeys = false,
+        bool ignoreKeys = false)
+        : this(stickyBatchSize, adaptivePartitioning, availabilityTimeoutMs, ignoreKeys, false, null)
+    {
+    }
+
+    public DefaultPartitioner(
+        int stickyBatchSize,
+        bool adaptivePartitioning,
+        int availabilityTimeoutMs,
+        bool ignoreKeys,
         bool rackAwarePartitioning = false,
         string? clientRack = null)
     {
@@ -453,7 +462,16 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
         int stickyBatchSize = int.MaxValue,
         bool adaptivePartitioning = false,
         int availabilityTimeoutMs = 0,
-        bool ignoreKeys = false,
+        bool ignoreKeys = false)
+        : this(stickyBatchSize, adaptivePartitioning, availabilityTimeoutMs, ignoreKeys, false, null)
+    {
+    }
+
+    public StickyPartitioner(
+        int stickyBatchSize,
+        bool adaptivePartitioning,
+        int availabilityTimeoutMs,
+        bool ignoreKeys,
         bool rackAwarePartitioning = false,
         string? clientRack = null)
     {

@@ -34,6 +34,15 @@ public class DefaultPartitionerTests
     private const string Topic = "test-topic";
 
     [Test]
+    public async Task BuiltInPartitioners_PreserveLegacyConstructorSignatures()
+    {
+        var parameterTypes = new[] { typeof(int), typeof(bool), typeof(int), typeof(bool) };
+
+        await Assert.That(typeof(DefaultPartitioner).GetConstructor(parameterTypes)).IsNotNull();
+        await Assert.That(typeof(StickyPartitioner).GetConstructor(parameterTypes)).IsNotNull();
+    }
+
+    [Test]
     public async Task Partition_WithNullKey_ReturnsValidPartition()
     {
         var partitioner = new DefaultPartitioner();
@@ -268,7 +277,13 @@ public class DefaultPartitionerTests
     [Test]
     public async Task RackAwarePartitioning_WhenDisabled_DoesNotFilterPartitions()
     {
-        var partitioner = new DefaultPartitioner(stickyBatchSize: 1, rackAwarePartitioning: false, clientRack: "rack-a");
+        var partitioner = new DefaultPartitioner(
+            stickyBatchSize: 1,
+            adaptivePartitioning: false,
+            availabilityTimeoutMs: 0,
+            ignoreKeys: false,
+            rackAwarePartitioning: false,
+            clientRack: "rack-a");
         var uniform = (IUniformStickyPartitioner)partitioner;
         uniform.SetPartitionLeaderRackProvider(
             (_, partition) => partition == 0 ? "rack-a" : "rack-b");
@@ -340,6 +355,10 @@ public class StickyPartitionerTests
     {
         const string topic = "test-topic";
         var partitioner = new StickyPartitioner(
+            stickyBatchSize: int.MaxValue,
+            adaptivePartitioning: false,
+            availabilityTimeoutMs: 0,
+            ignoreKeys: false,
             rackAwarePartitioning: true,
             clientRack: "rack-a");
         ((IUniformStickyPartitioner)partitioner).SetPartitionLeaderRackProvider(
