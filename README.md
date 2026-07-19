@@ -12,7 +12,7 @@ If you like, or use this library, a sponsor is appreciated!
 
 ## Why Dekaf?
 
-Unlike libraries that wrap librdkafka, Dekaf is a native .NET implementation with no external dependencies:
+Unlike libraries that wrap librdkafka, Dekaf is a native .NET implementation with no delegation to other runtimes and unmanaged code:
 
 - **Pure C#** - No native dependencies, no interop overhead
 - **Zero-allocation hot paths** - Uses `Span<T>`, `ref struct`, and object pooling for minimal GC pressure
