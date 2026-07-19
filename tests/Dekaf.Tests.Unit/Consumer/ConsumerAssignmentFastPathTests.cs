@@ -1324,6 +1324,70 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task TopicIdentityChange_AssignmentMutationDuringReset_IsReobserved()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.ByDuration,
+            autoOffsetResetDuration: TimeSpan.FromMinutes(1));
+        var partitions = new[]
+        {
+            new TopicPartition("test-topic", 0),
+            new TopicPartition("test-topic", 1)
+        };
+        consumer.IncrementalAssign(
+        [
+            new TopicPartitionOffset(partitions[0].Topic, partitions[0].Partition, 10),
+            new TopicPartitionOffset(partitions[1].Topic, partitions[1].Partition, 20)
+        ]);
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        var resetStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReset = new TaskCompletionSource<ListOffsetsResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var partition = call.ArgAt<ListOffsetsRequest>(0).Topics[0].Partitions[0].PartitionIndex;
+                if (partition != 0)
+                    return ValueTask.FromResult(CreateListOffsetsResponse(partition, 100 + partition));
+
+                resetStarted.TrySetResult();
+                return new ValueTask<ListOffsetsResponse>(releaseReset.Task);
+            });
+
+        metadataManager.Metadata.Update(CreateMetadataResponse(Guid.NewGuid(), partitionCount: 2));
+        var recovery = InvokeHandleTopicIdentityChangesAsync(consumer).AsTask();
+        await resetStarted.Task;
+
+        try
+        {
+            consumer.IncrementalUnassign(partitions);
+        }
+        finally
+        {
+            releaseReset.TrySetResult(CreateListOffsetsResponse(0, 100));
+            await recovery;
+        }
+
+        await InvokeHandleTopicIdentityChangesAsync(consumer);
+
+        await Assert.That(GetObservedTopicIds(consumer)).DoesNotContainKey("test-topic");
+    }
+
+    [Test]
     public async Task TopicIdentityChange_DropsVanishedPartition()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -1395,6 +1459,96 @@ public sealed class ConsumerAssignmentFastPathTests
 
         await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
         await Assert.That(GetObservedTopicIds(consumer)["test-topic"]).IsEqualTo(TestTopicId);
+    }
+
+    [Test]
+    public async Task FetchV13_TopicIdentityErrors_UseRequestIdentityAndRefreshOnce()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(ApiKey.Fetch, 13, 13);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        SetMetadataApiVersion(metadataManager);
+        var recreatedTopicId = Guid.NewGuid();
+        Guid requestedTopicId = default;
+
+        connection.SendAsync<FetchRequest, FetchResponse>(
+                Arg.Any<FetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                requestedTopicId = call.ArgAt<FetchRequest>(0).Topics[0].TopicId;
+                metadataManager.Metadata.Update(CreateMetadataResponse(recreatedTopicId, partitionCount: 2));
+                return ValueTask.FromResult(new FetchResponse
+                {
+                    Responses =
+                    [
+                        new FetchResponseTopic
+                        {
+                            TopicId = TestTopicId,
+                            Partitions =
+                            [
+                                new FetchResponsePartition
+                                {
+                                    PartitionIndex = 0,
+                                    ErrorCode = ErrorCode.UnknownTopicId
+                                },
+                                new FetchResponsePartition
+                                {
+                                    PartitionIndex = 1,
+                                    ErrorCode = ErrorCode.UnknownTopicId
+                                }
+                            ]
+                        }
+                    ]
+                });
+            });
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateMetadataResponse(recreatedTopicId, partitionCount: 2)));
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var partition = call.ArgAt<ListOffsetsRequest>(0).Topics[0].Partitions[0].PartitionIndex;
+                return ValueTask.FromResult(CreateListOffsetsResponse(partition, 100 + partition));
+            });
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partitions = new List<TopicPartition>
+        {
+            new("test-topic", 0),
+            new("test-topic", 1)
+        };
+        consumer.IncrementalAssign(
+        [
+            new TopicPartitionOffset(partitions[0].Topic, partitions[0].Partition, 10),
+            new TopicPartitionOffset(partitions[1].Topic, partitions[1].Partition, 20)
+        ]);
+
+        var pending = await InvokeFetchFromBrokerAsync(
+            consumer,
+            brokerId: 0,
+            partitions,
+            GetFetchBufferEpoch(consumer));
+
+        await Assert.That(pending).IsNull();
+        await Assert.That(requestedTopicId).IsEqualTo(TestTopicId);
+        await Assert.That(GetObservedTopicIds(consumer)["test-topic"]).IsEqualTo(recreatedTopicId);
+        _ = connection.Received(1).SendAsync<MetadataRequest, MetadataResponse>(
+            Arg.Any<MetadataRequest>(),
+            Arg.Any<short>(),
+            Arg.Any<CancellationToken>());
     }
 
     [Test]
@@ -1492,6 +1646,15 @@ public sealed class ConsumerAssignmentFastPathTests
         metadataManager.Metadata.Update(CreateMetadataResponse(TestTopicId, partitionCount: 2));
 
         return metadataManager;
+    }
+
+    private static void SetMetadataApiVersion(MetadataManager metadataManager)
+    {
+        var field = typeof(MetadataManager).GetField(
+            "_metadataApiVersion",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_metadataApiVersion field not found.");
+        field.SetValue(metadataManager, MetadataRequest.HighestSupportedVersion);
     }
 
     private static MetadataResponse CreateMetadataResponse(Guid topicId, int partitionCount) => new()
@@ -2117,6 +2280,25 @@ public sealed class ConsumerAssignmentFastPathTests
             throw new InvalidOperationException("HandleTopicIdentityChangesAsync returned unexpected type.");
 
         await valueTask.ConfigureAwait(false);
+    }
+
+    private static async ValueTask<List<PendingFetchData>?> InvokeFetchFromBrokerAsync(
+        KafkaConsumer<string, string> consumer,
+        int brokerId,
+        List<TopicPartition> partitions,
+        int fetchBufferEpoch)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "FetchFromBrokerAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("FetchFromBrokerAsync method not found.");
+        var result = method.Invoke(
+            consumer,
+            [brokerId, partitions, fetchBufferEpoch, CancellationToken.None]);
+        if (result is not ValueTask<List<PendingFetchData>?> valueTask)
+            throw new InvalidOperationException("FetchFromBrokerAsync returned unexpected type.");
+
+        return await valueTask.ConfigureAwait(false);
     }
 
     private static int GetLastConsumedLeaderEpoch(
