@@ -113,6 +113,57 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             ]
         };
 
+    [Test]
+    public async Task PartitionCarryOver_UnreadySplitPrefixBlocksLaterRetry()
+    {
+        var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        try
+        {
+            var firstSplit = CreateTestBatch(
+                sourcePool,
+                "test-topic",
+                partition: 0,
+                markPreSerialized: false);
+            var secondSplit = CreateTestBatch(
+                sourcePool,
+                "test-topic",
+                partition: 0,
+                markPreSerialized: false);
+            var newerRetry = CreateTestBatch(sourcePool, "test-topic", partition: 0);
+            firstSplit.IsRetry = true;
+            secondSplit.IsRetry = true;
+            newerRetry.IsRetry = true;
+
+            var carryOver = new BrokerSender.PartitionCarryOver();
+            carryOver.AddAfterRetries(new BrokerSender.BatchReference(firstSplit, firstSplit.Generation));
+            carryOver.AddAfterRetries(new BrokerSender.BatchReference(secondSplit, secondSplit.Generation));
+            carryOver.AddAfterRetries(new BrokerSender.BatchReference(newerRetry, newerRetry.Generation));
+            var drained = new List<BrokerSender.BatchReference>();
+
+            carryOver.DrainTo(drained);
+            await Assert.That(drained).IsEmpty();
+            await Assert.That(carryOver.Count).IsEqualTo(3);
+
+            firstSplit.MarkPreSerialized();
+            carryOver.DrainTo(drained);
+            await Assert.That(drained).Count().IsEqualTo(1);
+            await Assert.That(ReferenceEquals(drained[0].Batch, firstSplit)).IsTrue();
+            await Assert.That(carryOver.Count).IsEqualTo(2);
+
+            drained.Clear();
+            secondSplit.MarkPreSerialized();
+            carryOver.DrainTo(drained);
+            await Assert.That(drained).Count().IsEqualTo(2);
+            await Assert.That(ReferenceEquals(drained[0].Batch, secondSplit)).IsTrue();
+            await Assert.That(ReferenceEquals(drained[1].Batch, newerRetry)).IsTrue();
+            await Assert.That(carryOver.Count).IsEqualTo(0);
+        }
+        finally
+        {
+            await sourcePool.DisposeAsync();
+        }
+    }
+
     private static ProduceResponse CreateInlineLeaderErrorResponse(
         string topic,
         int partition,

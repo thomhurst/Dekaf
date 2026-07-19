@@ -247,6 +247,60 @@ public sealed class Kip126BatchSplittingTests
     }
 
     [Test]
+    public async Task SplitForSenderRetry_ReturnsOrderedChildrenWithoutAccumulatorPublish()
+    {
+        const string topic = "sender-retry-split";
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 1000,
+            BufferMemory = 1024 * 1024,
+            CompressionType = CompressionType.None,
+            LingerMs = 0
+        };
+        var sourceBuilder = new PartitionBatch(new TopicPartition(topic, 0), options);
+        sourceBuilder.SetSplitBatchSizeLimit(4096);
+        for (var i = 0; i < 8; i++)
+            Append(sourceBuilder, i, completionSource: null, callback: null);
+
+        var source = sourceBuilder.Complete()!;
+        source.RecordBatch.BaseSequence = 40;
+        source.MarkAsSplitBatch(maxRecordSize: 128);
+        source.MarkPreSerialized();
+        source.TrySetMemoryReleased();
+
+        await using var accumulator = new RecordAccumulator(options, new CompressionCodecRegistry());
+        await using var metadataManager = AccumulatorTestHelpers.CreateMetadataManager(topic, partitionCount: 1);
+        var children = accumulator.SplitForSenderRetry(source, source.Generation)!;
+        try
+        {
+            await Assert.That(children).Count().IsGreaterThan(1);
+            await Assert.That(children.All(static child => child.IsPreSerialized)).IsTrue();
+            await Assert.That(children.Sum(static child => child.RecordCount)).IsEqualTo(8);
+
+            var expectedSequence = 40;
+            foreach (var child in children)
+            {
+                await Assert.That(child.RecordBatch.BaseSequence).IsEqualTo(expectedSequence);
+                expectedSequence += child.RecordCount;
+            }
+
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+            await Assert.That(readyNodes).IsEmpty();
+        }
+        finally
+        {
+            var baseOffset = 0L;
+            foreach (var child in children)
+            {
+                CompleteAndReturn(accumulator, child, baseOffset);
+                baseOffset += child.RecordCount;
+            }
+        }
+    }
+
+    [Test]
     public async Task Drain_AdaptiveBatchExpandsLocally_SplitsAndReenqueues()
     {
         const string topic = "adaptive-local-split";

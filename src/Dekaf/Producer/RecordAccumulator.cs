@@ -2059,9 +2059,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// The source delivery deadline and idempotent sequence range are retained.
     /// </summary>
     internal bool SplitAndReenqueue(ReadyBatch source, int expectedGeneration)
+        => SplitBatch(source, expectedGeneration, reenqueue: true) is not null;
+
+    /// <summary>
+    /// KIP-126 split used for a broker rejection. Returns the ordered children to the
+    /// owning sender instead of publishing them through the accumulator, so they can
+    /// enter the sender's retry deque ahead of newer in-flight retries.
+    /// </summary>
+    internal List<ReadyBatch>? SplitForSenderRetry(ReadyBatch source, int expectedGeneration)
+        => SplitBatch(source, expectedGeneration, reenqueue: false);
+
+    private List<ReadyBatch>? SplitBatch(
+        ReadyBatch source,
+        int expectedGeneration,
+        bool reenqueue)
     {
         if (source.RecordCount <= 1 || !source.TryAcquireResourcePin(expectedGeneration))
-            return false;
+            return null;
 
         var splitBatches = new List<ReadyBatch>();
         PartitionBatch? building = null;
@@ -2123,7 +2137,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (_options.CompressionType == CompressionType.None)
                     PrepareBatchForPublish(child, child.Generation);
                 else
-                    child.SetPreSerializationTask(CreatePreSerializationTask(child));
+                    child.SetPreSerializationTask(reenqueue
+                        ? CreatePreSerializationTask(child)
+                        : CreateSenderRetryPreSerializationTask(child));
                 splitBatches.Add(child);
             }
         }
@@ -2148,7 +2164,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (splitBatches.Count == 0 || !source.TryAbandonForSplit(expectedGeneration))
         {
             DiscardUnpublishedSplitBatches(splitBatches);
-            return false;
+            return null;
         }
 
         var splitBytes = 0L;
@@ -2169,11 +2185,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         child.TopicPartition.Topic,
                         child.TopicPartition.Partition));
                 OnBatchEntersPipeline(pd, child);
-                if (ProducerId >= 0)
-                    pd.InsertInSequenceOrder(child);
-                else
-                    pd.AddFirst(child);
-                ProducerDebugCounters.RecordBatchQueuedToReady();
+                if (reenqueue)
+                {
+                    if (ProducerId >= 0)
+                        pd.InsertInSequenceOrder(child);
+                    else
+                        pd.AddFirst(child);
+                    ProducerDebugCounters.RecordBatchQueuedToReady();
+                }
             }
         }
 
@@ -2184,14 +2203,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ReturnReadyBatch(source);
 
         foreach (var child in splitBatches)
-            StartPreSerialization(child);
+        {
+            if (reenqueue)
+                StartPreSerialization(child);
+            else
+                StartSenderRetryPreSerialization(child);
+        }
 
         Diagnostics.DekafMetrics.BatchSplits.Add(1, new TagList
         {
             { Diagnostics.DekafDiagnostics.MessagingDestinationName, splitBatches[0].TopicPartition.Topic }
         });
         SignalWakeup();
-        return true;
+        return splitBatches;
     }
 
     private void DiscardUnpublishedSplitBatches(List<ReadyBatch> batches)
@@ -4566,6 +4590,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         readyBatch.StartPreSerializationTask();
     }
 
+    private void StartSenderRetryPreSerialization(ReadyBatch readyBatch)
+    {
+        if (readyBatch.IsPreSerialized)
+        {
+            SignalWakeup();
+            return;
+        }
+
+        readyBatch.StartPreSerializationTask();
+    }
+
     private Task CreatePreSerializationTask(ReadyBatch readyBatch)
     {
         var generation = readyBatch.Generation;
@@ -4580,13 +4615,45 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             TaskCreationOptions.DenyChildAttach);
     }
 
+    private Task CreateSenderRetryPreSerializationTask(ReadyBatch readyBatch)
+    {
+        var generation = readyBatch.Generation;
+        return new Task(
+            static state =>
+            {
+                var workItem = (SenderRetryPreSerializationWorkItem)state!;
+                workItem.Accumulator.PreSerializeSenderRetryBatch(workItem.Batch, workItem.Generation);
+            },
+            new SenderRetryPreSerializationWorkItem(this, readyBatch, generation),
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach);
+    }
+
     private void PreSerializeAndPublishBatch(ReadyBatch readyBatch, int generation)
     {
         if (PrepareBatchForPublish(readyBatch, generation) && readyBatch.IsCurrentIncarnation(generation))
             PublishSealedBatch(readyBatch);
     }
 
+    private void PreSerializeSenderRetryBatch(ReadyBatch readyBatch, int generation)
+    {
+        if (PrepareBatchForPublish(readyBatch, generation) && readyBatch.IsCurrentIncarnation(generation))
+            SignalWakeup();
+    }
+
     private sealed class PreSerializationWorkItem(
+        RecordAccumulator accumulator,
+        ReadyBatch batch,
+        int generation)
+    {
+        public RecordAccumulator Accumulator { get; } = accumulator;
+
+        public ReadyBatch Batch { get; } = batch;
+
+        public int Generation { get; } = generation;
+    }
+
+    private sealed class SenderRetryPreSerializationWorkItem(
         RecordAccumulator accumulator,
         ReadyBatch batch,
         int generation)

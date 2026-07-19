@@ -171,7 +171,8 @@ public abstract class ScriptedProduceResponseFixture
     private protected static ReadyBatch CreateTestBatch(
         ValueTaskSourcePool<RecordMetadata> pool,
         string topic, int partition, int messageCount = 1,
-        bool markMemoryReleased = true, int dataSize = 100)
+        bool markMemoryReleased = true, int dataSize = 100,
+        bool markPreSerialized = true)
     {
         var batch = new ReadyBatch();
         var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(messageCount);
@@ -185,6 +186,9 @@ public abstract class ScriptedProduceResponseFixture
             messageCount,
             recordCount: messageCount,
             dataSize: dataSize);
+
+        if (markPreSerialized)
+            batch.MarkPreSerialized();
 
         if (markMemoryReleased)
         {

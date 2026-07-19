@@ -244,7 +244,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         TransactionEnrollmentReady
     }
 
-    private readonly struct BatchReference
+    internal readonly struct BatchReference
     {
         public readonly ReadyBatch Batch;
         public readonly int Generation;
@@ -326,10 +326,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// partition), so List.Insert(0, item) O(n) shifts are negligible compared to the GC
     /// pressure from LinkedListNode allocations at high throughput.
     /// </remarks>
-    private sealed class PartitionCarryOver
+    internal sealed class PartitionCarryOver
     {
         private readonly Dictionary<TopicPartition, List<BatchReference>> _partitions = new();
         private int _count;
+        private bool _mayContainUnreadyBatch;
 
         public int Count => _count;
         public Dictionary<TopicPartition, List<BatchReference>> Partitions => _partitions;
@@ -355,6 +356,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             GetOrCreateQueue(batchRef.Batch.TopicPartition).Add(batchRef);
             _count++;
+            _mayContainUnreadyBatch |= !batchRef.Batch.IsPreSerialized;
         }
 
         /// <summary>
@@ -371,6 +373,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             GetOrCreateQueue(batchRef.Batch.TopicPartition).Insert(0, batchRef);
             _count++;
+            _mayContainUnreadyBatch |= !batchRef.Batch.IsPreSerialized;
         }
 
         /// <summary>
@@ -399,6 +402,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             queue.Insert(insertIdx, batchRef);
             _count++;
+            _mayContainUnreadyBatch |= !batchRef.Batch.IsPreSerialized;
         }
 
         private void AddLoopExitRedelivery(BatchReference batchRef)
@@ -412,22 +416,60 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             queue.Insert(insertIdx, batchRef);
             _count++;
+            _mayContainUnreadyBatch |= !batchRef.Batch.IsPreSerialized;
         }
 
         /// <summary>
-        /// Drains all batches to the destination in per-partition FIFO order, then clears.
-        /// Used before coalescing to iterate in deterministic per-partition order.
+        /// Drains each partition's wire-ready prefix to the destination in FIFO order.
+        /// A split retry can enter carry-over before asynchronous compression completes;
+        /// keeping its suffix queued prevents later same-partition retries overtaking it.
         /// </summary>
         public void DrainTo(List<BatchReference> destination)
         {
+            if (!_mayContainUnreadyBatch)
+            {
+                foreach (var kvp in _partitions)
+                {
+                    var queue = kvp.Value;
+                    for (var i = 0; i < queue.Count; i++)
+                        destination.Add(queue[i]);
+                    queue.Clear();
+                }
+
+                _count = 0;
+                return;
+            }
+
+            var hasUnreadyBatch = false;
             foreach (var kvp in _partitions)
             {
                 var queue = kvp.Value;
-                for (var i = 0; i < queue.Count; i++)
+                var readyCount = 0;
+                while (readyCount < queue.Count)
+                {
+                    var batchReference = queue[readyCount];
+                    if (batchReference.IsCurrentIncarnation()
+                        && !batchReference.Batch.IsPreSerialized)
+                    {
+                        hasUnreadyBatch = true;
+                        break;
+                    }
+
+                    readyCount++;
+                }
+
+                for (var i = 0; i < readyCount; i++)
                     destination.Add(queue[i]);
-                queue.Clear();
+
+                if (readyCount == queue.Count)
+                    queue.Clear();
+                else if (readyCount > 0)
+                    queue.RemoveRange(0, readyCount);
+
+                _count -= readyCount;
             }
-            _count = 0;
+
+            _mayContainUnreadyBatch = hasUnreadyBatch;
         }
 
         public void Clear()
@@ -435,6 +477,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             foreach (var kvp in _partitions)
                 kvp.Value.Clear();
             _count = 0;
+            _mayContainUnreadyBatch = false;
         }
 
         public void RemoveAt(List<BatchReference> queue, int index)
@@ -3032,12 +3075,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         try
                         {
                             CompleteInflightEntry(batch);
-                            if (_accumulator.SplitAndReenqueue(batch, pending.BatchGenerations[j]))
+                            var splitRetries = _accumulator.SplitForSenderRetry(
+                                batch,
+                                pending.BatchGenerations[j]);
+                            if (splitRetries is not null)
                             {
-                                // Keep the BrokerSender fence until the first split retry is
-                                // coalesced, but let the accumulator drain the children that
-                                // were inserted ahead of newer partition work.
-                                _accumulator.UnmutePartition(splitTopicPartition);
+                                // ProcessCompletedResponses walks requests oldest-first. Put
+                                // every child on that same retry path now, so a later response
+                                // cannot publish a newer retry ahead of this split range.
+                                for (var i = 0; i < splitRetries.Count; i++)
+                                {
+                                    var splitRetry = splitRetries[i];
+                                    carryOver.AddAfterRetries(new BatchReference(
+                                        splitRetry,
+                                        splitRetry.Generation));
+                                }
+
                                 batches[j] = null!;
                                 continue;
                             }
