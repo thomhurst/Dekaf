@@ -1437,6 +1437,50 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task DisposeAsync_WaitsForLateConnectionSetupDisposal()
+    {
+        var releaseFactory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDisposal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateConnection = CreateConnectedConnection(-1, "broker-a", 9092);
+        lateConnection.DisposeAsync().Returns(_ =>
+        {
+            disposalStarted.TrySetResult();
+            return new ValueTask(releaseDisposal.Task);
+        });
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromMilliseconds(20),
+                ConnectionTimeoutMax = TimeSpan.FromSeconds(1),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, _) =>
+            {
+                await releaseFactory.Task;
+                return lateConnection;
+            },
+            randomDouble: static () => 0.5);
+
+        Func<Task> connect = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
+        await Assert.That(connect).Throws<KafkaException>()
+            .WithMessageContaining("Connection setup timeout after 20ms");
+
+        var disposeTask = pool.DisposeAsync().AsTask();
+        await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+        releaseFactory.TrySetResult();
+        await disposalStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.That(disposeTask.IsCompleted).IsFalse();
+
+        releaseDisposal.TrySetResult();
+        await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Test]
     public async Task ConnectionSetupTimeout_SuccessResetsFailureProgression()
     {
         var attempts = 0;

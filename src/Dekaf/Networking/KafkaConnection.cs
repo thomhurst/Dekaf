@@ -503,8 +503,17 @@ public sealed partial class KafkaConnection :
         LogConnected(_host, _port);
     }
 
-    internal static ValueTask DisposeFailedTlsStreamAsync(SslStream sslStream)
-        => sslStream.DisposeAsync();
+    internal static async ValueTask DisposeFailedTlsStreamAsync(SslStream sslStream)
+    {
+        try
+        {
+            await sslStream.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort cleanup must not replace the TLS handshake exception.
+        }
+    }
 
     private async ValueTask<(Socket Socket, string TargetHost)> ConnectSocketAsync(CancellationToken cancellationToken)
     {

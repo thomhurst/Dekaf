@@ -1320,7 +1320,9 @@ public sealed partial class ConnectionPool :
         }
         catch (OperationCanceledException) when (callerCancellationToken.IsCancellationRequested)
         {
-            ObserveLateConnectionSetup(connectionTask);
+            // A caller-scoped factory may ignore cancellation indefinitely. Observe and
+            // clean up any eventual result without making pool disposal depend on it.
+            ObserveLateConnectionSetup(connectionTask, trackDisposal: false);
             throw;
         }
         catch (Exception)
@@ -1371,10 +1373,16 @@ public sealed partial class ConnectionPool :
             ErrorCode.RequestTimedOut,
             $"Connection operation timeout after {(int)timeout.TotalMilliseconds}ms to broker {brokerId} ({host}:{port})");
 
-    private static void ObserveLateConnectionSetup(Task<IKafkaConnection>? connectionTask)
+    private void ObserveLateConnectionSetup(
+        Task<IKafkaConnection>? connectionTask,
+        bool trackDisposal = true)
     {
-        if (connectionTask is not null)
-            _ = DisposeLateConnectionSetupAsync(connectionTask);
+        if (connectionTask is null)
+            return;
+
+        var disposalTask = DisposeLateConnectionSetupAsync(connectionTask);
+        if (trackDisposal)
+            TrackConnectionDisposal(disposalTask);
     }
 
     private static async Task DisposeLateConnectionSetupAsync(Task<IKafkaConnection> connectionTask)
@@ -1878,9 +1886,13 @@ public sealed partial class ConnectionPool :
     private void RetireConnection(IKafkaConnection connection)
     {
         BeginConnectionRetirement(connection);
-        var drainTask = DrainRetiredConnectionAsync(connection);
-        _retiredConnectionDisposalTasks.TryAdd(drainTask, 0);
-        _ = drainTask.ContinueWith(
+        TrackConnectionDisposal(DrainRetiredConnectionAsync(connection));
+    }
+
+    private void TrackConnectionDisposal(Task disposalTask)
+    {
+        _retiredConnectionDisposalTasks.TryAdd(disposalTask, 0);
+        _ = disposalTask.ContinueWith(
             static (task, state) => ((ConnectionPool)state!).ObserveRetiredConnectionDisposal(task),
             this,
             CancellationToken.None,

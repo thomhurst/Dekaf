@@ -1272,6 +1272,17 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    public async Task DisposeFailedTlsStreamAsync_DisposalFailureDoesNotReplaceHandshakeFailure()
+    {
+        var innerStream = new ThrowingDisposeStream();
+        var sslStream = new SslStream(innerStream, leaveInnerStreamOpen: false);
+
+        await KafkaConnection.DisposeFailedTlsStreamAsync(sslStream);
+
+        await Assert.That(innerStream.DisposeAttempted).IsTrue();
+    }
+
+    [Test]
     public async Task BuildRemoteCertificateValidationCallback_WhenHostNameValidationEnabledWithoutCustomPolicy_ReturnsNull()
     {
         await using var connection = new KafkaConnection(
@@ -1707,6 +1718,28 @@ public sealed class KafkaConnectionTests
                 DisposeCount++;
 
             base.Dispose(disposing);
+        }
+    }
+
+    private sealed class ThrowingDisposeStream : MemoryStream
+    {
+        public bool DisposeAttempted { get; private set; }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing)
+            {
+                DisposeAttempted = true;
+                throw new IOException("dispose failed");
+            }
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            DisposeAttempted = true;
+            await base.DisposeAsync();
+            throw new IOException("dispose failed");
         }
     }
 
