@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
@@ -182,14 +183,16 @@ public sealed class KafkaConnectionTests
         await Assert.That(segmented).IsTrue();
         try
         {
-            var actual = new byte[prefixLength + encodedRecords.Count + suffixLength];
+            var encodedRecordsLength = checked((int)encodedRecords.Length);
+            var actual = new byte[prefixLength + encodedRecordsLength + suffixLength];
             metadataArray.AsSpan(0, prefixLength).CopyTo(actual);
-            encodedRecords.AsSpan().CopyTo(actual.AsSpan(prefixLength));
+            encodedRecords.CopyTo(actual.AsSpan(prefixLength));
             metadataArray.AsSpan(suffixOffset, suffixLength)
-                .CopyTo(actual.AsSpan(prefixLength + encodedRecords.Count));
+                .CopyTo(actual.AsSpan(prefixLength + encodedRecordsLength));
 
             await Assert.That(actual).IsEquivalentTo(expected);
-            await Assert.That(encodedRecords.Array).IsSameReferenceAs(encodedRecordsBackingArray);
+            MemoryMarshal.TryGetArray(encodedRecords.First, out var firstRecordsSegment);
+            await Assert.That(firstRecordsSegment.Array).IsSameReferenceAs(encodedRecordsBackingArray);
         }
         finally
         {
@@ -199,29 +202,51 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
-    public async Task ConsumeSentSegments_PartialSend_AdvancesAcrossSegmentBoundary()
+    public async Task ScatterGatherSender_PartialSend_AdvancesAcrossWindowBoundary()
     {
-        var first = new byte[3];
-        var second = new byte[4];
-        var third = new byte[2];
-        var segments = new List<ArraySegment<byte>>
-        {
-            new(first),
-            new(second),
-            new(third)
-        };
+        using var sender = new KafkaConnection.SocketScatterGatherSender();
+        var buffers = Enumerable.Range(
+                0,
+                KafkaConnection.SocketScatterGatherSender.MaximumSegmentsPerSend + 2)
+            .Select(_ => new byte[4])
+            .ToArray();
+        foreach (var buffer in buffers)
+            sender.PendingSegments.Add(new ArraySegment<byte>(buffer));
 
-        KafkaConnection.ConsumeSentSegments(segments, 5);
+        sender.BeginPendingSend();
+        sender.LoadSendWindow();
+        await Assert.That(sender.Segments.Count)
+            .IsEqualTo(KafkaConnection.SocketScatterGatherSender.MaximumSegmentsPerSend);
 
-        await Assert.That(segments.Count).IsEqualTo(2);
-        await Assert.That(segments[0].Array).IsSameReferenceAs(second);
-        await Assert.That(segments[0].Offset).IsEqualTo(2);
-        await Assert.That(segments[0].Count).IsEqualTo(2);
-        await Assert.That(segments[1].Array).IsSameReferenceAs(third);
+        sender.ConsumeSentBytes((15 * 4) + 2);
+        sender.LoadSendWindow();
 
-        KafkaConnection.ConsumeSentSegments(segments, 4);
+        await Assert.That(sender.Segments.Count).IsEqualTo(3);
+        await Assert.That(sender.Segments[0].Array).IsSameReferenceAs(buffers[15]);
+        await Assert.That(sender.Segments[0].Offset).IsEqualTo(2);
+        await Assert.That(sender.Segments[0].Count).IsEqualTo(2);
+        await Assert.That(sender.Segments[1].Array).IsSameReferenceAs(buffers[16]);
+        await Assert.That(sender.Segments[2].Array).IsSameReferenceAs(buffers[17]);
 
-        await Assert.That(segments).IsEmpty();
+        sender.ConsumeSentBytes(6);
+        sender.LoadSendWindow();
+        await Assert.That(sender.Segments.Count).IsEqualTo(1);
+        await Assert.That(sender.Segments[0].Array).IsSameReferenceAs(buffers[17]);
+
+        sender.ConsumeSentBytes(4);
+        await Assert.That(sender.HasPendingSegments).IsFalse();
+    }
+
+    [Test]
+    public async Task ScatterGatherSender_PreSizesChunkedPendingSegments()
+    {
+        const int chunkedBatchSegmentCount = 66;
+
+        using var sender = new KafkaConnection.SocketScatterGatherSender(
+            chunkedBatchSegmentCount);
+
+        await Assert.That(sender.PendingSegments.Capacity)
+            .IsGreaterThanOrEqualTo(chunkedBatchSegmentCount);
     }
 
     [Test]

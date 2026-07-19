@@ -209,6 +209,14 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task BufferMemoryAllocationStrategy_DefaultsTo_Full()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.BufferMemoryAllocationStrategy)
+            .IsEqualTo(BufferMemoryAllocationStrategy.Full);
+    }
+
+    [Test]
     public async Task ValueTaskSourcePoolSize_DefaultsTo_0_AutoCalculate()
     {
         var options = CreateOptions();

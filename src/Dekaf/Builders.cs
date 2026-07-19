@@ -29,6 +29,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private Acks _acks = Acks.All;
     private int _lingerMs;
     private int _batchSize = 1048576;
+    private BufferMemoryAllocationStrategy _bufferMemoryAllocationStrategy;
     private string? _transactionalId;
     private bool _inlineTransactionCompletions = true;
     private int? _transactionTimeoutMs;
@@ -164,6 +165,19 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithBufferMemory(ulong bufferMemory)
     {
         _bufferMemory = bufferMemory;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets how producer batch memory is allocated. Incremental allocation grows batches
+    /// from pooled chunks and reduces retained memory when many partitions have small batches.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithBufferMemoryAllocationStrategy(
+        BufferMemoryAllocationStrategy strategy)
+    {
+        if (!ProducerOptions.IsBufferMemoryAllocationStrategyDefined(strategy))
+            throw new ArgumentOutOfRangeException(nameof(strategy));
+        _bufferMemoryAllocationStrategy = strategy;
         return this;
     }
 
@@ -1249,6 +1263,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             LingerMs = _lingerMs,
             BatchSize = _batchSize,
             BufferMemory = _bufferMemory ?? memoryBudget.PreviewProducerLimit(),
+            BufferMemoryAllocationStrategy = _bufferMemoryAllocationStrategy,
             IsAutoTuned = _bufferMemory is null,
             MaxInFlightRequestsPerConnection = maxInFlightRequestsPerConnection,
             Retries = _retries,

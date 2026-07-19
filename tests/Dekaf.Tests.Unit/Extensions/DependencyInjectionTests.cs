@@ -647,6 +647,7 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:ValueTaskSourcePoolSize"] = "128",
             ["Kafka:Producers:Orders:ArenaCapacity"] = "131072",
             ["Kafka:Producers:Orders:InitialBatchRecordCapacity"] = "32",
+            ["Kafka:Producers:Orders:BufferMemoryAllocationStrategy"] = "Incremental",
             ["Kafka:Producers:Orders:MetadataRecoveryStrategy"] = "None",
             ["Kafka:Producers:Orders:MetadataRecoveryRebootstrapTriggerMs"] = "60000",
             ["Kafka:Producers:Orders:ClientDnsLookup"] = "ResolveCanonicalBootstrapServersOnly"
@@ -696,6 +697,8 @@ public class DependencyInjectionTests
         await Assert.That(options.ValueTaskSourcePoolSize).IsEqualTo(128);
         await Assert.That(options.ArenaCapacity).IsEqualTo(131072);
         await Assert.That(options.InitialBatchRecordCapacity).IsEqualTo(32);
+        await Assert.That(options.BufferMemoryAllocationStrategy)
+            .IsEqualTo(BufferMemoryAllocationStrategy.Incremental);
         await Assert.That(options.MetadataRecoveryStrategy).IsEqualTo(MetadataRecoveryStrategy.None);
         await Assert.That(options.MetadataRecoveryRebootstrapTriggerMs).IsEqualTo(60000);
         await Assert.That(options.ClientDnsLookup).IsEqualTo(ClientDnsLookup.ResolveCanonicalBootstrapServersOnly);

@@ -12,6 +12,36 @@ namespace Dekaf.Tests.Integration;
 public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    public async Task Producer_WithIncrementalBatchMemory_ProducesAcrossChunkBoundaries()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        await using var producer = await Kafka.CreateProducer<string, byte[]>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-incremental-memory")
+            .WithBatchSize(256 * 1024)
+            .WithLinger(TimeSpan.FromMilliseconds(100))
+            .WithBufferMemoryAllocationStrategy(BufferMemoryAllocationStrategy.Incremental)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var produces = new Task<RecordMetadata>[64];
+        for (var i = 0; i < produces.Length; i++)
+        {
+            produces[i] = producer.ProduceAsync(new ProducerMessage<string, byte[]>
+            {
+                Topic = topic,
+                Key = "shared-key",
+                Value = new byte[1024]
+            }, CancellationToken.None).AsTask();
+        }
+
+        var results = await Task.WhenAll(produces).WaitAsync(TimeSpan.FromSeconds(30));
+
+        await Assert.That(results.Length).IsEqualTo(produces.Length);
+        await Assert.That(results.All(static result => result.Offset >= 0)).IsTrue();
+    }
+
+    [Test]
     public async Task Producer_ProduceWithAcksAll_SuccessfullyProduces()
     {
         // Arrange

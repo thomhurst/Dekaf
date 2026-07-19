@@ -1,3 +1,5 @@
+using Dekaf.Producer;
+
 namespace Dekaf.Tests.Unit.Builder;
 
 public class ProducerBuilderValidationTests
@@ -262,6 +264,24 @@ public class ProducerBuilderValidationTests
         var builder = Kafka.CreateProducer<string, string>();
         var result = builder.WithBufferMemory(1024);
         await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithBufferMemoryAllocationStrategy_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithBufferMemoryAllocationStrategy(
+            BufferMemoryAllocationStrategy.Incremental);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithBufferMemoryAllocationStrategy_InvalidValue_Throws()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        await Assert.That(() => builder.WithBufferMemoryAllocationStrategy(
+                (BufferMemoryAllocationStrategy)42))
+            .Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
