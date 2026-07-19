@@ -1,6 +1,9 @@
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Dekaf.Networking;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Unit.Networking;
 
@@ -66,7 +69,7 @@ public sealed class ClientDnsLookupTests
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        var acceptTask = listener.AcceptSocketAsync();
+        var acceptTask = AcceptAndCompleteHandshakeAsync(listener);
         // Listener is IPv4-only; IPv6 loopback fails quickly without depending on
         // platform-specific routing for aliases like 127.0.0.2.
         var resolver = new ClientDnsEndpointResolver(new StubDnsLookup(
@@ -91,6 +94,44 @@ public sealed class ClientDnsLookupTests
 
         await Assert.That(connection.IsConnected).IsTrue();
         await Assert.That(endpoints[0].Address).IsEqualTo(IPAddress.Loopback);
+    }
+
+    private static async Task<Socket> AcceptAndCompleteHandshakeAsync(TcpListener listener)
+    {
+        var socket = await listener.AcceptSocketAsync();
+        try
+        {
+            var stream = new NetworkStream(socket, ownsSocket: false);
+            var length = new byte[sizeof(int)];
+            await stream.ReadExactlyAsync(length);
+            var request = new byte[BinaryPrimitives.ReadInt32BigEndian(length)];
+            await stream.ReadExactlyAsync(request);
+
+            var body = new ArrayBufferWriter<byte>();
+            var writer = new KafkaProtocolWriter(body);
+            writer.WriteInt16(0);
+            writer.WriteUnsignedVarInt(2);
+            writer.WriteInt16((short)ApiKey.ApiVersions);
+            writer.WriteInt16(0);
+            writer.WriteInt16(3);
+            writer.WriteEmptyTaggedFields();
+            writer.WriteInt32(0);
+            writer.WriteEmptyTaggedFields();
+
+            var response = new byte[sizeof(int) * 2 + body.WrittenCount];
+            BinaryPrimitives.WriteInt32BigEndian(response, response.Length - sizeof(int));
+            BinaryPrimitives.WriteInt32BigEndian(
+                response.AsSpan(sizeof(int)),
+                BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4)));
+            body.WrittenSpan.CopyTo(response.AsSpan(sizeof(int) * 2));
+            await stream.WriteAsync(response);
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
     }
 
     private sealed class StubDnsLookup : IDnsLookup

@@ -79,7 +79,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private volatile bool _initialized;
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
-    private volatile int _produceApiVersion = -1;
     private int _maxObservedBrokerThrottleTimeMs;
     private int _disposed;
 
@@ -112,6 +111,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private long _partitionEnrollmentGeneration;
     private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask> _addPartitionsToTransaction;
     internal volatile bool _currentTransactionUsesTV2;
+    private short _currentTransactionFeatureVersion;
 
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
     // Always initialized but only actively used for idempotent producers. Non-idempotent producers
@@ -1869,15 +1869,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 $"Cannot begin transaction in state: {_transactionState}");
         }
 
-        var finalizedTransactionUsesTV2 =
-            _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature) >= 2;
-        if (finalizedTransactionUsesTV2 != _currentTransactionUsesTV2)
-        {
-            throw new InvalidOperationException(
-                "The broker transaction.version changed after producer initialization. " +
-                "Call InitTransactionsAsync() to acquire a fresh producer epoch before beginning another transaction.");
-        }
-
         _transactionState = TransactionState.InTransaction;
         _preparedTransactionState = PreparedTransactionState.Empty;
         _lastTransactionError = ErrorCode.None;
@@ -1901,8 +1892,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         ThrowIfNotInitialized();
         ThrowIfFatalTransactionError("Cannot initialize transactions");
-        ThrowIfTwoPhaseCommitUnsupported(keepPreparedTransaction);
-
         await SemaphoreHelper.AcquireOrThrowDisposedAsync(_transactionLock, nameof(KafkaProducer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
         try
         {
@@ -1911,7 +1900,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
 
             // Step 2: Initialize the producer ID via the coordinator
-            _currentTransactionUsesTV2 = _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature) >= 2;
             await ReinitializeProducerIdAsync(cancellationToken, keepPreparedTransaction).ConfigureAwait(false);
 
             _transactionState = _preparedTransactionState.HasTransaction
@@ -1995,8 +1983,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         if (!_options.EnableTwoPhaseCommit && !keepPreparedTransaction)
             return;
 
-        var transactionVersion = _metadataManager.GetFinalizedFeatureVersion(TransactionVersionFeature);
-        if (transactionVersion < 3)
+        if (_currentTransactionFeatureVersion < 3)
         {
             throw new BrokerVersionException(
                 "Broker does not support KIP-939 two-phase commit (transaction.version >= 3 required).");
@@ -2112,18 +2099,64 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private async ValueTask<TResponse> SendWithConnectionLeaseAsync<TRequest, TResponse>(
         int brokerId,
         TRequest request,
-        short apiVersion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        short minimumRequiredVersion = short.MinValue,
+        bool captureTransactionFeatures = false,
+        bool requireTransactionFeatureMatch = false,
+        bool keepPreparedTransaction = false)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
         using var connectionLease = await _connectionPool.LeaseConnectionAsync(
             brokerId,
             cancellationToken).ConfigureAwait(false);
-        return await connectionLease.Connection.SendAsync<TRequest, TResponse>(
+        var connection = connectionLease.Connection;
+        if (captureTransactionFeatures)
+            CaptureTransactionFeatures(connection, keepPreparedTransaction);
+        else if (requireTransactionFeatureMatch)
+            EnsureTransactionFeatureMatch(connection);
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            connection,
+            KafkaMessageMetadata<TRequest, TResponse>.ApiKey,
+            KafkaMessageMetadata<TRequest, TResponse>.LowestSupportedVersion,
+            KafkaMessageMetadata<TRequest, TResponse>.HighestSupportedVersion);
+        if (apiVersion < minimumRequiredVersion)
+        {
+            throw new BrokerVersionException(
+                $"Broker {brokerId} does not support {KafkaMessageMetadata<TRequest, TResponse>.ApiKey} " +
+                $"v{minimumRequiredVersion} required by this operation; negotiated v{apiVersion}.");
+        }
+
+        return await connection.SendAsync<TRequest, TResponse>(
             request,
             apiVersion,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private void CaptureTransactionFeatures(
+        IKafkaConnection connection,
+        bool keepPreparedTransaction)
+    {
+        var featureVersion = _metadataManager.GetFinalizedFeatureVersion(
+            connection,
+            TransactionVersionFeature);
+        _currentTransactionFeatureVersion = featureVersion;
+        _currentTransactionUsesTV2 = featureVersion >= 2;
+        ThrowIfTwoPhaseCommitUnsupported(keepPreparedTransaction);
+    }
+
+    private void EnsureTransactionFeatureMatch(IKafkaConnection connection)
+    {
+        var featureVersion = _metadataManager.GetFinalizedFeatureVersion(
+            connection,
+            TransactionVersionFeature);
+        if (featureVersion != _currentTransactionFeatureVersion)
+        {
+            throw new InvalidOperationException(
+                "The coordinator transaction.version changed after producer initialization. " +
+                "Call InitTransactionsAsync() to acquire a fresh producer epoch before beginning another transaction.");
+        }
     }
 
     internal async ValueTask ReinitializeProducerIdAsync(
@@ -2135,17 +2168,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var initProducerIdVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.InitProducerId,
-                InitProducerIdRequest.LowestSupportedVersion,
-                InitProducerIdRequest.HighestSupportedVersion);
-
-            if ((_options.EnableTwoPhaseCommit || keepPreparedTransaction) && initProducerIdVersion < 6)
-            {
-                throw new BrokerVersionException(
-                    "Broker does not support InitProducerId v6 required for KIP-939 two-phase commit.");
-            }
-
             var request = new InitProducerIdRequest
             {
                 TransactionalId = _options.TransactionalId,
@@ -2159,8 +2181,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
                     _transactionCoordinatorId,
                     request,
-                    initProducerIdVersion,
-                    cancellationToken)
+                    cancellationToken,
+                    minimumRequiredVersion: (_options.EnableTwoPhaseCommit || keepPreparedTransaction)
+                        ? (short)6
+                        : short.MinValue,
+                    captureTransactionFeatures: true,
+                    keepPreparedTransaction: keepPreparedTransaction)
                 .ConfigureAwait(false);
 
             if (response.ErrorCode != ErrorCode.None)
@@ -2242,15 +2268,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.FindCoordinator,
-                FindCoordinatorRequest.LowestSupportedVersion,
-                FindCoordinatorRequest.HighestSupportedVersion);
-
             var response = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                 brokers[0].NodeId,
                 request,
-                findCoordinatorVersion,
                 cancellationToken).ConfigureAwait(false);
 
             if (response.Coordinators.Count == 0)
@@ -2323,11 +2343,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             });
         }
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.AddPartitionsToTxn,
-            AddPartitionsToTxnRequest.LowestSupportedVersion,
-            AddPartitionsToTxnRequest.HighestSupportedVersion);
-
         var request = new AddPartitionsToTxnRequest
         {
             TransactionalId = _options.TransactionalId!,
@@ -2344,8 +2359,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var response = await SendWithConnectionLeaseAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
                     _transactionCoordinatorId,
                     request,
-                    apiVersion,
-                    cancellationToken)
+                    cancellationToken,
+                    requireTransactionFeatureMatch: true)
                 .ConfigureAwait(false);
 
             // Check for retriable errors in the response
@@ -2443,11 +2458,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.EndTxn,
-                EndTxnRequest.LowestSupportedVersion,
-                EndTxnRequest.HighestSupportedVersion);
-
             var request = new EndTxnRequest
             {
                 TransactionalId = _options.TransactionalId!,
@@ -2462,6 +2472,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                        cancellationToken).ConfigureAwait(false))
             {
                 var connection = connectionLease.Connection;
+                EnsureTransactionFeatureMatch(connection);
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    ApiKey.EndTxn,
+                    EndTxnRequest.LowestSupportedVersion,
+                    EndTxnRequest.HighestSupportedVersion);
                 if (afterRequestWrittenAsync is null)
                 {
                     response = await connection
@@ -2563,11 +2579,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
             // Step 1: Add offsets to the transaction via the transaction coordinator
-            var addOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.AddOffsetsToTxn,
-                AddOffsetsToTxnRequest.LowestSupportedVersion,
-                AddOffsetsToTxnRequest.HighestSupportedVersion);
-
             var addOffsetsRequest = new AddOffsetsToTxnRequest
             {
                 TransactionalId = _options.TransactionalId!,
@@ -2579,8 +2590,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var addOffsetsResponse = await SendWithConnectionLeaseAsync<AddOffsetsToTxnRequest, AddOffsetsToTxnResponse>(
                     _transactionCoordinatorId,
                     addOffsetsRequest,
-                    addOffsetsVersion,
-                    cancellationToken)
+                    cancellationToken,
+                    requireTransactionFeatureMatch: true)
                 .ConfigureAwait(false);
 
             if (addOffsetsResponse.ErrorCode != ErrorCode.None)
@@ -2596,11 +2607,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             // Step 2: Find the group coordinator
             var brokers = _metadataManager.Metadata.GetBrokers();
-            var findCoordVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.FindCoordinator,
-                FindCoordinatorRequest.LowestSupportedVersion,
-                FindCoordinatorRequest.HighestSupportedVersion);
-
             var findCoordRequest = new FindCoordinatorRequest
             {
                 Key = consumerGroupId,
@@ -2610,7 +2616,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var findCoordResponse = await SendWithConnectionLeaseAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                     brokers[0].NodeId,
                     findCoordRequest,
-                    findCoordVersion,
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -2635,11 +2640,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Step 3: Send TxnOffsetCommit to the group coordinator
-            var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.TxnOffsetCommit,
-                TxnOffsetCommitRequest.LowestSupportedVersion,
-                TxnOffsetCommitRequest.HighestSupportedVersion);
-
             // Group offsets by topic
             var topicOffsets = new Dictionary<string, List<TxnOffsetCommitRequestPartition>>();
             foreach (var offset in offsets)
@@ -2679,8 +2679,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var txnOffsetCommitResponse = await SendWithConnectionLeaseAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
                     coord.NodeId,
                     txnOffsetCommitRequest,
-                    txnOffsetCommitVersion,
-                    cancellationToken)
+                    cancellationToken,
+                    requireTransactionFeatureMatch: true)
                 .ConfigureAwait(false);
 
             // Check for errors across all partitions
@@ -3041,8 +3041,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _options,
             _compressionCodecs,
             _inflightTracker,
-            () => _produceApiVersion,
-            version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
+            static () => -1,
+            static _ => { },
             () => _accumulator.IsTransactional,
             TryEnsurePartitionsInTransaction,
             bumpEpoch: useEpochRecovery ? BumpEpochLocally : null,
@@ -3138,8 +3138,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         lock (_partitionsInTransactionLock)
         {
-            var usesImplicitEnrollment = _currentTransactionUsesTV2
-                && _produceApiVersion >= ProduceRequest.ImplicitTransactionPartitionEnrollmentVersion;
+            var usesImplicitEnrollment = _currentTransactionUsesTV2;
             if (usesImplicitEnrollment)
             {
                 for (var i = 0; i < count; i++)
@@ -3763,11 +3762,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return;
             }
 
-            var initProducerIdVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.InitProducerId,
-                InitProducerIdRequest.LowestSupportedVersion,
-                InitProducerIdRequest.HighestSupportedVersion);
-
             // Retry with backoff for retriable errors (e.g. CoordinatorLoadInProgress during broker startup)
             var retryDelayMs = _options.RetryBackoffMs;
 
@@ -3793,7 +3787,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
                         brokers[0].NodeId,
                         request,
-                        initProducerIdVersion,
                         cancellationToken)
                     .ConfigureAwait(false);
 
@@ -3891,11 +3884,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return (_producerId, _producerEpoch);
             }
 
-            var initProducerIdVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.InitProducerId,
-                InitProducerIdRequest.LowestSupportedVersion,
-                InitProducerIdRequest.HighestSupportedVersion);
-
             var retryDelayMs = _options.RetryBackoffMs;
 
             while (true)
@@ -3919,7 +3907,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 var response = await SendWithConnectionLeaseAsync<InitProducerIdRequest, InitProducerIdResponse>(
                         brokers[0].NodeId,
                         request,
-                        initProducerIdVersion,
                         cancellationToken)
                     .ConfigureAwait(false);
 

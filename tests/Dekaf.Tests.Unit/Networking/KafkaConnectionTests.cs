@@ -381,7 +381,7 @@ public sealed class KafkaConnectionTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
@@ -427,7 +427,7 @@ public sealed class KafkaConnectionTests
                 ApiVersionsResponse>();
             var expectedAfterReturn = Math.Max(1, baseline);
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
@@ -491,7 +491,7 @@ public sealed class KafkaConnectionTests
                 ApiVersionsResponse>();
             var expectedAfterReturn = Math.Max(1, baseline);
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
@@ -540,7 +540,7 @@ public sealed class KafkaConnectionTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
             await connection.ConnectAsync(cancellationToken);
             using var serverClient = await acceptTask.ConfigureAwait(false);
@@ -605,7 +605,7 @@ public sealed class KafkaConnectionTests
                 ApiVersionsResponse>();
             var expectedAfterReturn = Math.Max(1, baseline);
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
             await connection.ConnectAsync(cancellationToken);
             using var serverClient = await acceptTask.ConfigureAwait(false);
@@ -647,7 +647,7 @@ public sealed class KafkaConnectionTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
@@ -687,7 +687,7 @@ public sealed class KafkaConnectionTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
@@ -708,7 +708,7 @@ public sealed class KafkaConnectionTests
 
     [Test]
     [Timeout(10_000)]
-    public async Task ReceiveLoop_FailureBeforeFirstResponse_LogsDebug(CancellationToken cancellationToken)
+    public async Task ReceiveLoop_FailureAfterCapabilityHandshake_LogsError(CancellationToken cancellationToken)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -717,7 +717,7 @@ public sealed class KafkaConnectionTests
         {
             var logger = new CapturingLogger<KafkaConnection>();
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
@@ -730,11 +730,8 @@ public sealed class KafkaConnectionTests
             await WaitForReceiveLoopFailureAsync(logger, cancellationToken);
 
             await Assert.That(logger.Entries.Any(entry =>
-                entry.Level == LogLevel.Debug &&
-                entry.Message.Contains("before first response", StringComparison.Ordinal))).IsTrue();
-            await Assert.That(logger.Entries.Any(entry =>
                 entry.Level == LogLevel.Error &&
-                entry.Message.Contains("Error in receive loop", StringComparison.Ordinal))).IsFalse();
+                entry.Message.Contains("Error in receive loop", StringComparison.Ordinal))).IsTrue();
         }
         finally
         {
@@ -753,7 +750,7 @@ public sealed class KafkaConnectionTests
         {
             var logger = new CapturingLogger<KafkaConnection>();
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
@@ -797,7 +794,7 @@ public sealed class KafkaConnectionTests
         {
             var logger = new CapturingLogger<KafkaConnection>();
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
@@ -846,7 +843,7 @@ public sealed class KafkaConnectionTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
@@ -925,7 +922,7 @@ public sealed class KafkaConnectionTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
 
             await connection.ConnectAsync(cancellationToken);
@@ -949,7 +946,7 @@ public sealed class KafkaConnectionTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(
                 IPAddress.Loopback.ToString(),
                 port,
@@ -983,7 +980,7 @@ public sealed class KafkaConnectionTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
 
             await connection.ConnectAsync(cancellationToken);
@@ -1017,7 +1014,7 @@ public sealed class KafkaConnectionTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var acceptTask = listener.AcceptTcpClientAsync(cancellationToken);
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
             await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
             await connection.ConnectAsync(cancellationToken);
             using var serverClient = await acceptTask.ConfigureAwait(false);
@@ -1323,6 +1320,30 @@ public sealed class KafkaConnectionTests
         BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(4), correlationId);
         bodyBuffer.WrittenSpan.CopyTo(frame.AsSpan(8));
         return frame;
+    }
+
+    private static async Task<TcpClient> AcceptAndCompleteHandshakeAsync(
+        TcpListener listener,
+        CancellationToken cancellationToken)
+    {
+        var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var stream = client.GetStream();
+            var request = await ReadRequestFrameAsync(stream, cancellationToken).ConfigureAwait(false);
+            await Assert.That(BinaryPrimitives.ReadInt16BigEndian(request))
+                .IsEqualTo((short)ApiKey.ApiVersions);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(4));
+            await stream.WriteAsync(
+                BuildApiVersionsV3ResponseFrame(correlationId),
+                cancellationToken).ConfigureAwait(false);
+            return client;
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
     }
 
     private static async Task<byte[]> ReadRequestFrameAsync(NetworkStream stream, CancellationToken cancellationToken)

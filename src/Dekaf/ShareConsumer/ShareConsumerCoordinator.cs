@@ -141,6 +141,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             var connection = connectionLease.Connection;
 
             var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.FindCoordinator,
                 FindCoordinatorRequest.LowestSupportedVersion,
                 FindCoordinatorRequest.HighestSupportedVersion);
@@ -257,7 +258,15 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             .ConfigureAwait(false);
         var connection = connectionLease.Connection;
 
+        if (!_metadataManager.HasApiKey(connection, ApiKey.ShareGroupHeartbeat))
+        {
+            throw new BrokerVersionException(
+                "The target Kafka broker does not support the ShareGroupHeartbeat API " +
+                "(KIP-932, introduced in Kafka 4.0). Share group consumption requires Kafka 4.0 or later.");
+        }
+
         var version = _metadataManager.GetNegotiatedApiVersion(
+            connection,
             ApiKey.ShareGroupHeartbeat,
             ShareGroupHeartbeatRequest.LowestSupportedVersion,
             ShareGroupHeartbeatRequest.HighestSupportedVersion);
@@ -372,7 +381,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         StringSet topics,
         CancellationToken cancellationToken)
     {
-        if (!_metadataManager.HasApiKey(ApiKey.ShareGroupHeartbeat))
+        if (_metadataManager.HasLegacyApiVersionSnapshot &&
+            !_metadataManager.HasApiKey(ApiKey.ShareGroupHeartbeat))
         {
             throw new BrokerVersionException(
                 "The connected Kafka broker does not support the ShareGroupHeartbeat API " +
@@ -568,6 +578,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             };
 
             var version = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.ShareGroupHeartbeat,
                 ShareGroupHeartbeatRequest.LowestSupportedVersion,
                 ShareGroupHeartbeatRequest.HighestSupportedVersion);

@@ -525,6 +525,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             // Use negotiated API version
             var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.FindCoordinator,
                 FindCoordinatorRequest.LowestSupportedVersion,
                 FindCoordinatorRequest.HighestSupportedVersion);
@@ -764,6 +765,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                 // Use negotiated API version
                 var offsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
                     ApiKey.OffsetCommit,
                     OffsetCommitRequest.LowestSupportedVersion,
                     OffsetCommitRequest.HighestSupportedVersion);
@@ -890,6 +892,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     // Use negotiated API version
                     var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
+                        connection,
                         ApiKey.OffsetFetch,
                         OffsetFetchRequest.LowestSupportedVersion,
                         OffsetFetchRequest.HighestSupportedVersion);
@@ -1171,7 +1174,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                  IsCurrentPollGenerationExpired()))
                 return default;
 
+            if (!_metadataManager.HasApiKey(connection, ApiKey.ConsumerGroupHeartbeat))
+            {
+                throw new BrokerVersionException(
+                    "The target Kafka broker does not support the ConsumerGroupHeartbeat API " +
+                    "(KIP-848, introduced in Kafka 4.0). Dekaf's consumer requires Kafka 4.0 or later.");
+            }
+
+            if (_subscribedTopicRegex is not null &&
+                !_metadataManager.SupportsApiVersion(connection, ApiKey.ConsumerGroupHeartbeat, 1))
+            {
+                throw new BrokerVersionException(
+                    "Server-side regex subscriptions require ConsumerGroupHeartbeat v1 " +
+                    "(Kafka 4.1 or later). Use Subscribe(Func<string, bool>) for client-side filtering on older brokers.");
+            }
+
             var version = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.ConsumerGroupHeartbeat,
                 ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
                 ConsumerGroupHeartbeatRequest.HighestSupportedVersion);
@@ -1543,14 +1562,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         string? subscribedTopicRegex,
         CancellationToken cancellationToken)
     {
-        if (!_metadataManager.HasApiKey(ApiKey.ConsumerGroupHeartbeat))
+        if (_metadataManager.HasLegacyApiVersionSnapshot &&
+            !_metadataManager.HasApiKey(ApiKey.ConsumerGroupHeartbeat))
         {
             throw new BrokerVersionException(
                 "The connected Kafka broker does not support the ConsumerGroupHeartbeat API " +
                 "(KIP-848, introduced in Kafka 4.0). Dekaf's consumer requires Kafka 4.0 or later.");
         }
 
-        if (subscribedTopicRegex is not null &&
+        if (_metadataManager.HasLegacyApiVersionSnapshot &&
+            subscribedTopicRegex is not null &&
             !_metadataManager.SupportsApiVersion(ApiKey.ConsumerGroupHeartbeat, 1))
         {
             throw new BrokerVersionException(
@@ -1885,6 +1906,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             };
 
             var version = _metadataManager.GetNegotiatedApiVersion(
+                connection,
                 ApiKey.ConsumerGroupHeartbeat,
                 ConsumerGroupHeartbeatRequest.LowestSupportedVersion,
                 ConsumerGroupHeartbeatRequest.HighestSupportedVersion);

@@ -249,16 +249,9 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         Guid clientInstanceId,
         CancellationToken cancellationToken)
     {
-        if (!TryGetNegotiatedVersion(
-                ApiKey.GetTelemetrySubscriptions,
-                GetTelemetrySubscriptionsRequest.LowestSupportedVersion,
-                GetTelemetrySubscriptionsRequest.HighestSupportedVersion,
-                out var apiVersion) ||
-            !TryGetNegotiatedVersion(
-                ApiKey.PushTelemetry,
-                PushTelemetryRequest.LowestSupportedVersion,
-                PushTelemetryRequest.HighestSupportedVersion,
-                out _))
+        if (_metadataManager.HasLegacyApiVersionSnapshot &&
+            (!_metadataManager.HasApiKey(ApiKey.GetTelemetrySubscriptions) ||
+             !_metadataManager.HasApiKey(ApiKey.PushTelemetry)))
         {
             Disable();
             return null;
@@ -269,11 +262,29 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
             var leasedConnection = await GetTelemetryConnectionAsync(cancellationToken).ConfigureAwait(false);
             if (leasedConnection is null)
             {
+                Disable();
                 return null;
             }
 
             using var connectionLease = leasedConnection.Value;
             var connection = connectionLease.Connection;
+
+            if (!TryGetNegotiatedVersion(
+                    connection,
+                    ApiKey.GetTelemetrySubscriptions,
+                    GetTelemetrySubscriptionsRequest.LowestSupportedVersion,
+                    GetTelemetrySubscriptionsRequest.HighestSupportedVersion,
+                    out var apiVersion) ||
+                !TryGetNegotiatedVersion(
+                    connection,
+                    ApiKey.PushTelemetry,
+                    PushTelemetryRequest.LowestSupportedVersion,
+                    PushTelemetryRequest.HighestSupportedVersion,
+                    out _))
+            {
+                Disable();
+                return null;
+            }
 
             var response = await connection.SendAsync<GetTelemetrySubscriptionsRequest, GetTelemetrySubscriptionsResponse>(
                 new GetTelemetrySubscriptionsRequest { ClientInstanceId = clientInstanceId },
@@ -333,16 +344,6 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         bool terminating,
         CancellationToken cancellationToken)
     {
-        if (!TryGetNegotiatedVersion(
-                ApiKey.PushTelemetry,
-                PushTelemetryRequest.LowestSupportedVersion,
-                PushTelemetryRequest.HighestSupportedVersion,
-                out var apiVersion))
-        {
-            Disable();
-            return ErrorCode.UnsupportedVersion;
-        }
-
         try
         {
             var leasedConnection = await GetTelemetryConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -353,6 +354,17 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
 
             using var connectionLease = leasedConnection.Value;
             var connection = connectionLease.Connection;
+
+            if (!TryGetNegotiatedVersion(
+                    connection,
+                    ApiKey.PushTelemetry,
+                    PushTelemetryRequest.LowestSupportedVersion,
+                    PushTelemetryRequest.HighestSupportedVersion,
+                    out var apiVersion))
+            {
+                Disable();
+                return ErrorCode.UnsupportedVersion;
+            }
 
             var metricSnapshot = _metricCollector?.Collect(subscription) ??
                 ClientTelemetryMetricSnapshot.Empty(subscription.DeltaTemporality);
@@ -455,8 +467,14 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         return brokers.Count == 0 ? null : brokers[0].NodeId;
     }
 
-    private bool TryGetNegotiatedVersion(ApiKey apiKey, short lowestSupportedVersion, short highestSupportedVersion, out short apiVersion)
+    private bool TryGetNegotiatedVersion(
+        IKafkaConnection connection,
+        ApiKey apiKey,
+        short lowestSupportedVersion,
+        short highestSupportedVersion,
+        out short apiVersion)
         => _metadataManager.TryGetNegotiatedApiVersion(
+            connection,
             apiKey,
             lowestSupportedVersion,
             highestSupportedVersion,
