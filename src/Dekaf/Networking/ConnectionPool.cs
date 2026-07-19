@@ -862,8 +862,7 @@ public sealed partial class ConnectionPool :
                     port,
                     index,
                     setupTimeout,
-                    setupCancellationToken,
-                    callerCancellationToken),
+                    setupCancellationToken),
                 callerCancellationToken),
             cancellationToken).ConfigureAwait(false);
     }
@@ -874,10 +873,8 @@ public sealed partial class ConnectionPool :
         int port,
         int index,
         TimeSpan connectionSetupTimeout,
-        CancellationToken cancellationToken,
-        CancellationToken callerCancellationToken)
+        CancellationToken cancellationToken)
     {
-        var endpoint = new EndpointKey(host, port);
         KafkaConnection? connection = null;
 
         try
@@ -915,8 +912,6 @@ public sealed partial class ConnectionPool :
                 catch { /* best-effort cleanup of a failed connection attempt */ }
             }
 
-            if (!callerCancellationToken.IsCancellationRequested)
-                RecordReconnectFailure(endpoint, brokerId, host, port);
             throw;
         }
     }
@@ -1032,8 +1027,7 @@ public sealed partial class ConnectionPool :
                     host,
                     port,
                     setupTimeout,
-                    setupCancellationToken,
-                    cancellationToken),
+                    setupCancellationToken),
                 cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
@@ -1051,10 +1045,8 @@ public sealed partial class ConnectionPool :
         string host,
         int port,
         TimeSpan connectionSetupTimeout,
-        CancellationToken cancellationToken,
-        CancellationToken callerCancellationToken)
+        CancellationToken cancellationToken)
     {
-        var endpoint = new EndpointKey(host, port);
         KafkaConnection? connection = null;
 
         // Note: Stale connection cleanup is handled by the caller (GetOrCreateConnectionAsync)
@@ -1095,8 +1087,6 @@ public sealed partial class ConnectionPool :
                 catch { /* best-effort cleanup of a failed connection attempt */ }
             }
 
-            if (!callerCancellationToken.IsCancellationRequested)
-                RecordReconnectFailure(endpoint, brokerId, host, port);
             throw;
         }
     }
@@ -1109,6 +1099,7 @@ public sealed partial class ConnectionPool :
         CancellationToken callerCancellationToken)
     {
         var setupKey = new ConnectionSetupKey(brokerId, host, port);
+        var endpoint = new EndpointKey(host, port);
         var timeout = GetConnectionSetupTimeout(setupKey);
         _connectionSetupTimeoutObserver?.Invoke(timeout);
         using var timeoutCts = new CancellationTokenSource(timeout);
@@ -1132,11 +1123,13 @@ public sealed partial class ConnectionPool :
             timeoutCts.Cancel();
             ObserveLateConnectionSetup(connectionTask);
             RecordConnectionSetupFailure(setupKey);
+            RecordReconnectFailure(endpoint, brokerId, host, port);
             throw CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
         {
             RecordConnectionSetupFailure(setupKey);
+            RecordReconnectFailure(endpoint, brokerId, host, port);
             throw CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
         }
         catch (OperationCanceledException) when (callerCancellationToken.IsCancellationRequested)
@@ -1147,6 +1140,7 @@ public sealed partial class ConnectionPool :
         catch (Exception) when (!callerCancellationToken.IsCancellationRequested)
         {
             RecordConnectionSetupFailure(setupKey);
+            RecordReconnectFailure(endpoint, brokerId, host, port);
             throw;
         }
     }

@@ -1160,6 +1160,55 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ConnectionSetupTimeout_HardTimeoutPreservesReconnectBackoff()
+    {
+        var releaseFactory = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondFactoryStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromMilliseconds(20),
+                ConnectionTimeoutMax = TimeSpan.FromMilliseconds(20),
+                ReconnectBackoff = TimeSpan.FromMilliseconds(80),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(80)
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: async (brokerId, host, port, _, _) =>
+            {
+                if (Interlocked.Increment(ref attempts) == 2)
+                    secondFactoryStarted.TrySetResult();
+
+                await releaseFactory.Task;
+                return CreateConnectedConnection(brokerId, host, port);
+            });
+
+        try
+        {
+            Func<Task> firstAttempt = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
+            await Assert.That(firstAttempt).Throws<KafkaException>()
+                .WithMessageContaining("Connection setup timeout after 20ms");
+
+            var stopwatch = Stopwatch.StartNew();
+            var secondAttempt = pool.GetConnectionAsync("broker-a", 9092).AsTask();
+            await secondFactoryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            stopwatch.Stop();
+
+            releaseFactory.TrySetResult();
+            await secondAttempt;
+
+            await Assert.That(stopwatch.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(60));
+        }
+        finally
+        {
+            releaseFactory.TrySetResult();
+        }
+    }
+
+    [Test]
     public async Task ConnectionSetupTimeout_LateSuccessIsNeverPublished()
     {
         var releaseFirstFactory = new TaskCompletionSource(
