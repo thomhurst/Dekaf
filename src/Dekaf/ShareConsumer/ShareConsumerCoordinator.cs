@@ -52,8 +52,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
     internal static int GetCoordinationConnectionIndex(int connectionsPerBroker)
         => connectionsPerBroker - 1;
 
-    internal static int GetWaitForAssignmentDelayMs(int retryDelayMs, int heartbeatIntervalMs)
-        => Math.Max(retryDelayMs, heartbeatIntervalMs);
+    internal static int GetWaitForAssignmentDelayMs(int heartbeatIntervalMs)
+        => Math.Max(heartbeatIntervalMs, 1);
 
     public ShareConsumerCoordinator(
         ShareConsumerOptions options,
@@ -167,6 +167,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             if (errorCode == ErrorCode.CoordinatorNotAvailable ||
                 errorCode == ErrorCode.CoordinatorLoadInProgress)
             {
+                if (attempt == maxRetries - 1)
+                    break;
+
                 var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
                 LogCoordinatorNotAvailableRetry(attempt + 1, maxRetries, retryDelayMs);
 
@@ -437,11 +440,11 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                     else
                     {
                         // Broker accepted us but hasn't assigned partitions yet.
-                        // Wait before re-sending heartbeat.
+                        // This is a successful heartbeat, so preserve the broker cadence.
                         LogWaitingForAssignment();
-                        var retryDelayMs = CalculateRequestRetryBackoff(++retryFailureCount);
+                        retryFailureCount = 0;
                         await Task.Delay(
-                            GetWaitForAssignmentDelayMs(retryDelayMs, _heartbeatIntervalMs),
+                            GetWaitForAssignmentDelayMs(_heartbeatIntervalMs),
                             cancellationToken).ConfigureAwait(false);
                     }
                 }

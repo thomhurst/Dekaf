@@ -116,6 +116,28 @@ public sealed class ConsumerBuilderTests
     }
 
     [Test]
+    public async Task Build_WithZeroRetryBackoff_Succeeds()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRetryBackoff(TimeSpan.Zero)
+            .Build();
+
+        await Assert.That(consumer).IsNotNull();
+    }
+
+    [Test]
+    public async Task Build_WithZeroRetryBackoffMax_Succeeds()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithRetryBackoffMax(TimeSpan.Zero)
+            .Build();
+
+        await Assert.That(consumer).IsNotNull();
+    }
+
+    [Test]
     public async Task SubscribeTo_SingleTopic_BuildsWithSubscription()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()

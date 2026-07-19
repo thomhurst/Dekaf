@@ -561,6 +561,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (errorCode == ErrorCode.CoordinatorNotAvailable ||
                 errorCode == ErrorCode.CoordinatorLoadInProgress)
             {
+                if (attempt == maxRetries - 1)
+                    break;
+
                 var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
                 LogCoordinatorNotAvailableRetry(attempt + 1, maxRetries, retryDelayMs);
 
@@ -595,6 +598,29 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             _options.RetryBackoffMs,
             _options.RetryBackoffMaxMs,
             failureCount);
+
+    internal static TimeSpan GetJoinRetryDelay(
+        int retryDelayMs,
+        TimeSpan elapsed,
+        TimeSpan rebalanceTimeout)
+    {
+        var remaining = rebalanceTimeout - elapsed;
+        return remaining <= TimeSpan.Zero
+            ? TimeSpan.Zero
+            : TimeSpan.FromMilliseconds(Math.Min(retryDelayMs, remaining.TotalMilliseconds));
+    }
+
+    private Task DelayForJoinRetryAsync(
+        int failureCount,
+        long startedAt,
+        TimeSpan rebalanceTimeout,
+        CancellationToken cancellationToken) =>
+        Task.Delay(
+            GetJoinRetryDelay(
+                CalculateRequestRetryBackoff(failureCount),
+                Stopwatch.GetElapsedTime(startedAt),
+                rebalanceTimeout),
+            cancellationToken);
 
     /// <summary>
     /// Serializes heartbeat loop starts to prevent concurrent callers from orphaning a loop.
@@ -1618,7 +1644,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
             while (_state != CoordinatorState.Stable)
             {
-                if (Stopwatch.GetElapsedTime(startedAt) > rebalanceTimeout)
+                if (Stopwatch.GetElapsedTime(startedAt) >= rebalanceTimeout)
                 {
                     throw new KafkaTimeoutException(
                         TimeoutKind.Rebalance,
@@ -1665,8 +1691,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     // Static member's previous session not yet released — retry with backoff
                     // until the rebalance timeout fires (checked at top of loop)
                     LogRetriableCoordinatorError(ex.ErrorCode);
-                    var retryDelayMs = CalculateRequestRetryBackoff(++retryFailureCount);
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    await DelayForJoinRetryAsync(
+                        ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Errors.GroupException ex) when (ex.ErrorCode == ErrorCode.UnknownMemberId)
                 {
@@ -1678,8 +1704,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     LogRetriableCoordinatorError(ex.ErrorCode);
                     MarkCoordinatorUnknown();
-                    var retryDelayMs = CalculateRequestRetryBackoff(++retryFailureCount);
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    await DelayForJoinRetryAsync(
+                        ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (
                     ex is ObjectDisposedException ||
@@ -1689,8 +1715,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 {
                     LogCoordinatorConnectionDisposed();
                     MarkCoordinatorUnknown();
-                    var retryDelayMs = CalculateRequestRetryBackoff(++retryFailureCount);
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    await DelayForJoinRetryAsync(
+                        ++retryFailureCount, startedAt, rebalanceTimeout, cancellationToken).ConfigureAwait(false);
                 }
             }
         }

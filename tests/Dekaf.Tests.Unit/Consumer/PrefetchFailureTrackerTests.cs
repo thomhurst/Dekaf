@@ -85,13 +85,25 @@ public sealed class PrefetchFailureTrackerTests
     }
 
     [Test]
-    [Arguments(0, 100)]
-    [Arguments(100, 99)]
+    [Arguments(-1, 100)]
+    [Arguments(100, -1)]
     public async Task Constructor_InvalidBackoff_Throws(int initialDelayMs, int maxDelayMs)
     {
         var create = () => new PrefetchFailureTracker(3, initialDelayMs, maxDelayMs, NoJitter);
 
         await Assert.That(create).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    [Arguments(0, 100)]
+    [Arguments(100, 0)]
+    public async Task Observe_DisabledBackoff_ReturnsZeroDelay(int initialDelayMs, int maxDelayMs)
+    {
+        var tracker = new PrefetchFailureTracker(3, initialDelayMs, maxDelayMs, NoJitter);
+
+        var decision = tracker.Observe(Key, Positions, deterministic: false);
+
+        await Assert.That(decision.DelayMs).IsEqualTo(0);
     }
 
     private static PrefetchFailureTracker CreateTracker()

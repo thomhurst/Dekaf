@@ -3448,6 +3448,28 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task JoinRetryDelay_DoesNotExceedRemainingRebalanceTimeout()
+    {
+        var delay = ConsumerCoordinator.GetJoinRetryDelay(
+            retryDelayMs: 10_000,
+            elapsed: TimeSpan.FromMilliseconds(900),
+            rebalanceTimeout: TimeSpan.FromSeconds(1));
+
+        await Assert.That(delay).IsEqualTo(TimeSpan.FromMilliseconds(100));
+    }
+
+    [Test]
+    public async Task JoinRetryDelay_WhenDeadlinePassed_ReturnsZero()
+    {
+        var delay = ConsumerCoordinator.GetJoinRetryDelay(
+            retryDelayMs: 10_000,
+            elapsed: TimeSpan.FromSeconds(1),
+            rebalanceTimeout: TimeSpan.FromSeconds(1));
+
+        await Assert.That(delay).IsEqualTo(TimeSpan.Zero);
+    }
+
+    [Test]
     public async Task IsAssignmentSyncCurrent_PendingFatalHeartbeat_ReturnsFalse()
     {
         var options = CreateConsumerProtocolOptions();
