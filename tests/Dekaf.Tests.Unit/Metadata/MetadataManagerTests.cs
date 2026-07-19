@@ -558,11 +558,15 @@ public class MetadataManagerTests
     }
 
     [Test]
-    public async Task InitializeAsync_ShorterMetadataDeadlineDuringBootstrapDns_ThrowsMetadataTimeout()
+    public async Task InitializeAsync_MetadataDeadlineDoesNotCapBootstrapDnsRecovery()
     {
         var pool = Substitute.For<IConnectionPool>();
+        var connection = CreateSuccessfulMetadataConnection("recovering-host", 9092);
+        var attempts = 0;
         pool.GetConnectionAsync("missing-host", 9092, Arg.Any<CancellationToken>())
-            .Returns(_ => ValueTask.FromException<IKafkaConnection>(CreateDnsFailure("missing-host", 9092)));
+            .Returns(_ => Interlocked.Increment(ref attempts) == 1
+                ? ValueTask.FromException<IKafkaConnection>(CreateDnsFailure("missing-host", 9092))
+                : ValueTask.FromResult(connection));
 
         await using var manager = new MetadataManager(
             pool,
@@ -576,12 +580,10 @@ public class MetadataManagerTests
                 RetryBackoffMaxMs = 0
             });
 
-        var exception = await Assert.That(() => manager.InitializeAsync().AsTask())
-            .Throws<KafkaTimeoutException>();
+        await manager.InitializeAsync();
 
-        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Metadata);
-        await Assert.That(exception.InnerException).IsNotNull();
-        await Assert.That(exception.InnerException!.InnerException).IsTypeOf<DnsResolutionException>();
+        await Assert.That(attempts).IsEqualTo(2);
+        await Assert.That(manager.Metadata.LastRefreshed).IsNotEqualTo(default(DateTimeOffset));
     }
 
     [Test]
@@ -642,6 +644,37 @@ public class MetadataManagerTests
         await Assert.That(exception!.Timeout).IsEqualTo(TimeSpan.FromMilliseconds(20));
         await Assert.That(exception.UnresolvedBootstrapServers).IsEquivalentTo(["slow-host:9092"]);
         await Assert.That(Stopwatch.GetElapsedTime(startedAt)).IsLessThan(TimeSpan.FromSeconds(1));
+    }
+
+    [Test]
+    public async Task InitializeAsync_AfterBootstrapDeadlineFailure_GetsFreshDeadline()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = CreateSuccessfulMetadataConnection("recovering-host", 9092);
+        var resolve = 0;
+        pool.GetConnectionAsync("recovering-host", 9092, Arg.Any<CancellationToken>())
+            .Returns(call => Volatile.Read(ref resolve) != 0
+                ? YieldSuccessfulConnectionAsync(connection, call.Arg<CancellationToken>())
+                : ValueTask.FromException<IKafkaConnection>(CreateDnsFailure("recovering-host", 9092)));
+
+        await using var manager = new MetadataManager(
+            pool,
+            ["recovering-host:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                BootstrapResolveTimeoutMs = 100,
+                RetryBackoffMs = 100,
+                RetryBackoffMaxMs = 100
+            });
+
+        await Assert.That(() => manager.InitializeAsync().AsTask())
+            .Throws<BootstrapResolutionException>();
+
+        Volatile.Write(ref resolve, 1);
+        await manager.InitializeAsync();
+
+        await Assert.That(manager.Metadata.LastRefreshed).IsNotEqualTo(default(DateTimeOffset));
     }
 
     [Test]
@@ -1008,6 +1041,30 @@ public class MetadataManagerTests
     }
 
     [Test]
+    public async Task RefreshMetadataAsync_BootstrapDnsFailure_ThrowsPublicException()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync("missing-host", 9092, Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromException<IKafkaConnection>(CreateDnsFailure("missing-host", 9092)));
+
+        await using var manager = new MetadataManager(
+            pool,
+            ["missing-host:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                BootstrapResolveTimeoutMs = 1000
+            });
+
+        var exception = await Assert.That(() => manager.RefreshMetadataAsync().AsTask())
+            .Throws<BootstrapResolutionException>();
+
+        await Assert.That(exception!.UnresolvedBootstrapServers)
+            .IsEquivalentTo(["missing-host:9092"]);
+        await Assert.That(exception.InnerException).IsTypeOf<DnsResolutionException>();
+    }
+
+    [Test]
     public async Task BackgroundRefreshLoop_ObjectDisposedConnection_DoesNotResetInitialized()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -1116,6 +1173,15 @@ public class MetadataManagerTests
         {
             throw new DnsResolutionException(host, port, ex);
         }
+    }
+
+    private static async ValueTask<IKafkaConnection> YieldSuccessfulConnectionAsync(
+        IKafkaConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await Task.Yield();
+        cancellationToken.ThrowIfCancellationRequested();
+        return connection;
     }
 
     private static IKafkaConnection CreateSuccessfulMetadataConnection(string host, int port)

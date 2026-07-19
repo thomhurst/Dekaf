@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -70,6 +71,43 @@ public sealed class RetryHelperTests
 
         await Assert.That(result).IsEqualTo(42);
         await Assert.That(attempts).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task DnsResolutionFailure_RetriesOriginalOperation()
+    {
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+
+        var result = await RetryHelper.WithRetryAsync(
+            () => Interlocked.Increment(ref attempts) == 1
+                ? ValueTask.FromException<int>(new DnsResolutionException(
+                    "broker",
+                    9092,
+                    new SocketException((int)SocketError.HostNotFound)))
+                : ValueTask.FromResult(42),
+            metadataManager,
+            CancellationToken.None,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            maxRetries: 1);
+
+        await Assert.That(result).IsEqualTo(42);
+        await Assert.That(attempts).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task BootstrapResolutionDeadline_RemainsNonRetriable()
+    {
+        var exception = new BootstrapResolutionException(
+            ["broker:9092"],
+            TimeSpan.FromSeconds(1),
+            new DnsResolutionException(
+                "broker",
+                9092,
+                new SocketException((int)SocketError.HostNotFound)));
+
+        await Assert.That(RetryHelper.IsRetriableRequestFailure(exception)).IsFalse();
     }
 
     [Test]

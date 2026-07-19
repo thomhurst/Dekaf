@@ -39,7 +39,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private volatile bool _initialized;
     private volatile bool _hasSuccessfulRefresh;
     private int _initializationAttempt;
-    private long _bootstrapResolutionStartedAt;
     private int _disposed;
     private readonly CancellationTokenSource _disposalCts = new();
     private readonly object _backgroundRefreshGate = new();
@@ -512,8 +511,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposalCts.Token);
             var initializationToken = linkedCts.Token;
-            var metadataStartedAt = Stopwatch.GetTimestamp();
-            var bootstrapStartedAt = GetOrStartBootstrapResolutionTimer();
+            var bootstrapStartedAt = Stopwatch.GetTimestamp();
+            var metadataStartedAt = 0L;
             var bootstrapResolutionCompleted = false;
             var metadataFailureCount = 0;
             var bootstrapFailureCount = 0;
@@ -529,16 +528,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     {
                         if (bootstrapResolutionCompleted)
                         {
-                            await RefreshMetadataAsync(initializationToken).ConfigureAwait(false);
+                            await RefreshMetadataForInitializationAsync(initializationToken).ConfigureAwait(false);
                         }
                         else
                         {
                             var bootstrapRemainingMs = _options.BootstrapResolveTimeoutMs
                                 - Stopwatch.GetElapsedTime(bootstrapStartedAt).TotalMilliseconds;
-                            var metadataRemainingMs = _options.InitTimeoutMs
-                                - Stopwatch.GetElapsedTime(metadataStartedAt).TotalMilliseconds;
                             await RefreshMetadataWithinBootstrapDeadlineAsync(
-                                    Math.Max(0, Math.Min(bootstrapRemainingMs, metadataRemainingMs)),
+                                    Math.Max(0, bootstrapRemainingMs),
                                     initializationToken)
                                 .ConfigureAwait(false);
                         }
@@ -548,18 +545,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     {
                         var bootstrapElapsed = Stopwatch.GetElapsedTime(bootstrapStartedAt);
                         var bootstrapRemainingMs = _options.BootstrapResolveTimeoutMs - bootstrapElapsed.TotalMilliseconds;
-                        var metadataElapsed = Stopwatch.GetElapsedTime(metadataStartedAt);
-                        var metadataRemainingMs = _options.InitTimeoutMs - metadataElapsed.TotalMilliseconds;
-                        var remainingMs = Math.Min(bootstrapRemainingMs, metadataRemainingMs);
-                        if (remainingMs <= 0)
+                        if (bootstrapRemainingMs <= 0)
                             throw CreateBootstrapDeadlineException(
                                 ex.UnresolvedBootstrapServers,
                                 ex,
-                                bootstrapElapsed,
-                                bootstrapRemainingMs,
-                                metadataElapsed,
-                                metadataRemainingMs,
-                                metadataFailureCount + bootstrapFailureCount + 1);
+                                bootstrapElapsed);
 
                         var backoffMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                             _options.RetryBackoffMs,
@@ -567,12 +557,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
                             ++bootstrapFailureCount);
                         LogBootstrapResolutionRetry(ex, bootstrapFailureCount, backoffMs);
                         await Task.Delay(
-                                (int)Math.Min(backoffMs, remainingMs),
+                                (int)Math.Min(backoffMs, bootstrapRemainingMs),
                                 initializationToken)
                             .ConfigureAwait(false);
 
-                        // DNS failures do not consume the normal retry count, but the caller's
-                        // overall initialization deadline (for example max.block.ms) still applies.
+                        // DNS failures do not consume the normal retry count or its independent
+                        // metadata initialization budget.
                         metadataFailureCount = 0;
                     }
                     catch (OperationCanceledException ex) when (
@@ -581,23 +571,20 @@ public sealed partial class MetadataManager : IAsyncDisposable
                         && IsDnsResolutionFailure(ex))
                     {
                         var bootstrapElapsed = Stopwatch.GetElapsedTime(bootstrapStartedAt);
-                        var bootstrapRemainingMs = _options.BootstrapResolveTimeoutMs - bootstrapElapsed.TotalMilliseconds;
-                        var metadataElapsed = Stopwatch.GetElapsedTime(metadataStartedAt);
-                        var metadataRemainingMs = _options.InitTimeoutMs - metadataElapsed.TotalMilliseconds;
                         throw CreateBootstrapDeadlineException(
                             _originalBootstrapHostnames,
                             ex,
-                            bootstrapElapsed,
-                            bootstrapRemainingMs,
-                            metadataElapsed,
-                            metadataRemainingMs,
-                            metadataFailureCount + bootstrapFailureCount + 1);
+                            bootstrapElapsed);
                     }
                     catch (Exception ex) when (!IsFatalMetadataError(ex) && !initializationToken.IsCancellationRequested)
                     {
                         // Any non-DNS failure proves resolution completed. Stop applying the
                         // bootstrap DNS deadline to connection, authentication, and metadata work.
-                        bootstrapResolutionCompleted = true;
+                        if (!bootstrapResolutionCompleted)
+                        {
+                            bootstrapResolutionCompleted = true;
+                            metadataStartedAt = Stopwatch.GetTimestamp();
+                        }
                         if (metadataFailureCount >= _options.MaxInitRetries)
                         {
                             LogMetadataInitializationAbandoned(ex, metadataFailureCount + 1);
@@ -891,7 +878,28 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// <summary>
     /// Refreshes metadata for specific topics.
     /// </summary>
-    public async ValueTask RefreshMetadataAsync(IEnumerable<string>? topics, bool forceRefresh = false, CancellationToken cancellationToken = default)
+    public ValueTask RefreshMetadataAsync(
+        IEnumerable<string>? topics,
+        bool forceRefresh = false,
+        CancellationToken cancellationToken = default) =>
+        RefreshMetadataAsyncCore(
+            topics,
+            forceRefresh,
+            allowBootstrapResolutionPending: false,
+            cancellationToken);
+
+    private ValueTask RefreshMetadataForInitializationAsync(CancellationToken cancellationToken) =>
+        RefreshMetadataAsyncCore(
+            topics: null,
+            forceRefresh: false,
+            allowBootstrapResolutionPending: true,
+            cancellationToken);
+
+    private async ValueTask RefreshMetadataAsyncCore(
+        IEnumerable<string>? topics,
+        bool forceRefresh,
+        bool allowBootstrapResolutionPending,
+        CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(MetadataManager));
@@ -911,7 +919,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 return;
             }
 
-            await RefreshMetadataInternalAsync(topics, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await RefreshMetadataInternalAsync(topics, cancellationToken).ConfigureAwait(false);
+            }
+            catch (BootstrapResolutionPendingException ex) when (!allowBootstrapResolutionPending)
+            {
+                throw CreateBootstrapResolutionException(ex.UnresolvedBootstrapServers, ex);
+            }
         }
         finally
         {
@@ -1087,17 +1102,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
         throw new InvalidOperationException("Failed to refresh metadata from any broker", lastException);
     }
 
-    private long GetOrStartBootstrapResolutionTimer()
-    {
-        var startedAt = Volatile.Read(ref _bootstrapResolutionStartedAt);
-        if (startedAt != 0)
-            return startedAt;
-
-        var now = Stopwatch.GetTimestamp();
-        var existing = Interlocked.CompareExchange(ref _bootstrapResolutionStartedAt, now, 0);
-        return existing == 0 ? now : existing;
-    }
-
     private async ValueTask RefreshMetadataWithinBootstrapDeadlineAsync(
         double remainingMs,
         CancellationToken cancellationToken)
@@ -1106,7 +1110,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         deadlineCts.CancelAfter(TimeSpan.FromMilliseconds(remainingMs));
         try
         {
-            await RefreshMetadataAsync(deadlineCts.Token).ConfigureAwait(false);
+            await RefreshMetadataForInitializationAsync(deadlineCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException ex) when (
             !cancellationToken.IsCancellationRequested
@@ -1119,28 +1123,19 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
     }
 
-    private Exception CreateBootstrapDeadlineException(
+    private BootstrapResolutionException CreateBootstrapDeadlineException(
         IReadOnlyList<string> unresolvedBootstrapServers,
         Exception innerException,
-        TimeSpan bootstrapElapsed,
-        double bootstrapRemainingMs,
-        TimeSpan metadataElapsed,
-        double metadataRemainingMs,
-        int attemptCount)
+        TimeSpan bootstrapElapsed)
     {
-        if (metadataRemainingMs <= bootstrapRemainingMs)
-        {
-            LogMetadataInitializationAbandoned(innerException, attemptCount);
-            return new KafkaTimeoutException(
-                TimeoutKind.Metadata,
-                metadataElapsed,
-                TimeSpan.FromMilliseconds(_options.InitTimeoutMs),
-                $"Failed to fetch initial metadata within {_options.InitTimeoutMs}ms. " +
-                "Ensure the Kafka cluster is reachable and the bootstrap servers are correct.",
-                innerException);
-        }
-
         LogBootstrapResolutionExpired(bootstrapElapsed.TotalMilliseconds);
+        return CreateBootstrapResolutionException(unresolvedBootstrapServers, innerException);
+    }
+
+    private BootstrapResolutionException CreateBootstrapResolutionException(
+        IReadOnlyList<string> unresolvedBootstrapServers,
+        Exception innerException)
+    {
         return new BootstrapResolutionException(
             unresolvedBootstrapServers,
             TimeSpan.FromMilliseconds(_options.BootstrapResolveTimeoutMs),

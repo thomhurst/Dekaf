@@ -3524,8 +3524,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     private static bool IsRetriablePartitionEnrollmentException(Exception exception) =>
-        exception is IOException or System.Net.Sockets.SocketException or TimeoutException
-        || exception is KafkaException { IsRetriable: true };
+        RetryHelper.IsRetriableRequestFailure(exception);
 
     private Action<Exception?>[] ResetPartitionEnrollmentState()
     {
