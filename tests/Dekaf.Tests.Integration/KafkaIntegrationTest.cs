@@ -1,6 +1,21 @@
+using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
 
 namespace Dekaf.Tests.Integration;
+
+internal static class KafkaFixtureConcurrencyGate
+{
+    // Four coordinator-heavy tests per fixture is the proven-safe bound from #1638.
+    // Apply it to all shared-fixture traffic so unrelated clients cannot consume the
+    // broker capacity that transaction, group, and share coordinators need for progress.
+    internal const int MaximumConcurrencyPerFixture = 4;
+
+    private static readonly ConditionalWeakTable<KafkaTestContainer, SemaphoreSlim> Gates = new();
+
+    internal static SemaphoreSlim Get(KafkaTestContainer kafka) =>
+        Gates.GetValue(kafka, static _ =>
+            new SemaphoreSlim(MaximumConcurrencyPerFixture, MaximumConcurrencyPerFixture));
+}
 
 /// <summary>
 /// Base class for integration tests that require a Kafka container.
@@ -13,7 +28,28 @@ namespace Dekaf.Tests.Integration;
 [ClassDataSource<KafkaContainerDefault>(Shared = SharedType.PerTestSession)]
 public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer)
 {
+    private readonly SemaphoreSlim _fixtureConcurrencyGate =
+        KafkaFixtureConcurrencyGate.Get(kafkaTestContainer);
+    private bool _fixtureGateEntered;
+
     public KafkaTestContainer KafkaContainer { get; } = kafkaTestContainer;
+
+    [Before(Test)]
+    public async Task EnterKafkaFixtureConcurrencyGate(CancellationToken cancellationToken)
+    {
+        await _fixtureConcurrencyGate.WaitAsync(cancellationToken);
+        _fixtureGateEntered = true;
+    }
+
+    [After(Test)]
+    public void ExitKafkaFixtureConcurrencyGate()
+    {
+        if (!_fixtureGateEntered)
+            return;
+
+        _fixtureGateEntered = false;
+        _fixtureConcurrencyGate.Release();
+    }
 
     /// <summary>
     /// Polls until a condition is true, replacing fixed <c>Task.Delay</c> waits.
