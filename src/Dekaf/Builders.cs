@@ -175,7 +175,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithBufferMemoryAllocationStrategy(
         BufferMemoryAllocationStrategy strategy)
     {
-        if (!Enum.IsDefined(strategy))
+        if (!ProducerOptions.IsBufferMemoryAllocationStrategyDefined(strategy))
             throw new ArgumentOutOfRangeException(nameof(strategy));
         _bufferMemoryAllocationStrategy = strategy;
         return this;

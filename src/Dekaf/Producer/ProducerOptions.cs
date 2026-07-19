@@ -36,6 +36,16 @@ public sealed class ProducerOptions
     private bool _isReconnectBackoffMsConfigured;
     private bool _isReconnectBackoffMaxMsConfigured;
 
+    internal static bool IsBufferMemoryAllocationStrategyDefined(
+        BufferMemoryAllocationStrategy strategy)
+    {
+#if NETSTANDARD2_0
+        return Enum.IsDefined(typeof(BufferMemoryAllocationStrategy), strategy);
+#else
+        return Enum.IsDefined(strategy);
+#endif
+    }
+
     /// <summary>
     /// Bootstrap servers (host:port,host:port).
     /// </summary>

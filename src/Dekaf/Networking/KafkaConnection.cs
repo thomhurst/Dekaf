@@ -1510,7 +1510,15 @@ public sealed partial class KafkaConnection :
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(KafkaConnection));
 
-            var sender = _scatterGatherSender ??= new SocketScatterGatherSender();
+            var pendingSegmentCount = suffixLength > 0 ? 2 : 1;
+            foreach (var memory in encodedRecords)
+            {
+                if (memory.Length > 0)
+                    pendingSegmentCount = checked(pendingSegmentCount + 1);
+            }
+
+            var sender = _scatterGatherSender ??= new SocketScatterGatherSender(pendingSegmentCount);
+            sender.EnsurePendingSegmentCapacity(pendingSegmentCount);
             var pendingSegments = sender.PendingSegments;
             pendingSegments.Add(new ArraySegment<byte>(metadataArray, 0, prefixLength));
             foreach (var memory in encodedRecords)
@@ -3303,15 +3311,23 @@ public sealed partial class KafkaConnection :
             RunContinuationsAsynchronously = true
         };
 
-        public SocketScatterGatherSender()
+        public SocketScatterGatherSender(int pendingSegmentCapacity = MaximumSegmentsPerSend)
         {
             _eventArgs.Completed += CompleteSend;
+            PendingSegments = new List<ArraySegment<byte>>(
+                Math.Max(MaximumSegmentsPerSend, pendingSegmentCapacity));
         }
 
-        public List<ArraySegment<byte>> PendingSegments { get; } = new(MaximumSegmentsPerSend);
+        public List<ArraySegment<byte>> PendingSegments { get; }
         public List<ArraySegment<byte>> Segments { get; } = new(MaximumSegmentsPerSend);
 
         public bool HasPendingSegments => _pendingSegmentIndex < PendingSegments.Count;
+
+        public void EnsurePendingSegmentCapacity(int capacity)
+        {
+            if (PendingSegments.Capacity < capacity)
+                PendingSegments.Capacity = capacity;
+        }
 
         public void BeginPendingSend()
         {

@@ -238,6 +238,18 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    public async Task ScatterGatherSender_PreSizesChunkedPendingSegments()
+    {
+        const int chunkedBatchSegmentCount = 66;
+
+        using var sender = new KafkaConnection.SocketScatterGatherSender(
+            chunkedBatchSegmentCount);
+
+        await Assert.That(sender.PendingSegments.Capacity)
+            .IsGreaterThanOrEqualTo(chunkedBatchSegmentCount);
+    }
+
+    [Test]
     public async Task SingleBatchProduceSegments_UnpreparedCompressedBatch_FallsBack()
     {
         var batch = new RecordBatch

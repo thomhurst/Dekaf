@@ -2474,7 +2474,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         ProducerOptions.ValidateArenaCapacity(options.BatchSize, options.ArenaCapacity);
-        if (!Enum.IsDefined(options.BufferMemoryAllocationStrategy))
+        if (!ProducerOptions.IsBufferMemoryAllocationStrategyDefined(
+                options.BufferMemoryAllocationStrategy))
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 options.BufferMemoryAllocationStrategy,
