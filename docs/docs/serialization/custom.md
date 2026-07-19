@@ -186,3 +186,60 @@ var consumer = await Kafka.CreateConsumer<string, Order>()
     .WithValueDeserializer(codec)
     .BuildAsync();
 ```
+
+## Async Serializers (IAsyncSerde)
+
+When serialization itself requires I/O — for example an encryption stack that fetches short-lived
+keys per message — implement `IAsyncSerializer<T>` / `IAsyncDeserializer<T>` (or the combined
+`IAsyncSerde<T>`):
+
+```csharp
+using Dekaf;
+using Dekaf.Serialization;
+
+public class EncryptingSerde : IAsyncSerde<Order>
+{
+    public async ValueTask SerializeAsync(
+        Order value, IBufferWriter<byte> destination,
+        SerializationContext context, CancellationToken cancellationToken = default)
+    {
+        var key = await FetchEncryptionKeyAsync(cancellationToken);
+        var payload = Encrypt(JsonSerializer.SerializeToUtf8Bytes(value), key);
+        destination.Write(payload);
+    }
+
+    public async ValueTask<Order> DeserializeAsync(
+        ReadOnlyMemory<byte> data,
+        SerializationContext context, CancellationToken cancellationToken = default)
+    {
+        var key = await FetchEncryptionKeyAsync(cancellationToken);
+        // `data` is pooled memory — only valid until this method's task completes.
+        return JsonSerializer.Deserialize<Order>(Decrypt(data.Span, key))!;
+    }
+}
+
+// Same builder methods — the async overload is picked by type
+var producer = await Kafka.CreateProducer<string, Order>()
+    .WithValueSerializer(new EncryptingSerde())
+    .BuildAsync();
+
+var consumer = await Kafka.CreateConsumer<string, Order>()
+    .WithValueDeserializer(new EncryptingSerde())
+    .BuildAsync();
+```
+
+Behavior and trade-offs:
+
+- **Prefer synchronous serializers** unless you genuinely need per-message async work. Async
+  serdes route every message through a slower pooled-buffer path with async state-machine
+  overhead; the synchronous zero-allocation fast path is unaffected when they are not configured.
+- For a **one-time async setup** (like a Schema Registry fetch) keep a synchronous serializer and
+  implement `IAsyncSerializerPreparer<T>` instead.
+- Producer: `ProduceAsync`, `ProduceAllAsync`, and `FireAsync` all work. Fire-and-forget delivery
+  errors go to the delivery handler (or the log) as usual.
+- Consumer: records are delivered via `ConsumeAsync` and `ConsumeOneAsync`. `ConsumeBatchAsync`
+  iterates records synchronously and throws `NotSupportedException` when an async deserializer is
+  configured.
+- Mixed configurations are fine — e.g. a synchronous key serializer with an async value serializer.
+- Configuring both a synchronous and an asynchronous serializer for the same component fails at
+  `Build()` with `InvalidOperationException`.

@@ -65,6 +65,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private AwsMskIamConfig? _awsMskIamConfig;
     private ISerializer<TKey>? _keySerializer;
     private ISerializer<TValue>? _valueSerializer;
+    private IAsyncSerializer<TKey>? _asyncKeySerializer;
+    private IAsyncSerializer<TValue>? _asyncValueSerializer;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private ulong? _bufferMemory;
     private int? _maxBlockMs;
@@ -836,6 +838,30 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Configures an asynchronous key serializer for serializers that perform per-message I/O
+    /// (e.g. envelope encryption with short-lived keys). Messages are serialized on the
+    /// asynchronous produce path instead of the synchronous zero-allocation fast path — prefer
+    /// <see cref="WithKeySerializer(ISerializer{TKey})"/> when serialization can run synchronously.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithKeySerializer(IAsyncSerializer<TKey> serializer)
+    {
+        _asyncKeySerializer = serializer;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures an asynchronous value serializer for serializers that perform per-message I/O
+    /// (e.g. envelope encryption with short-lived keys). Messages are serialized on the
+    /// asynchronous produce path instead of the synchronous zero-allocation fast path — prefer
+    /// <see cref="WithValueSerializer(ISerializer{TValue})"/> when serialization can run synchronously.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithValueSerializer(IAsyncSerializer<TValue> serializer)
+    {
+        _asyncValueSerializer = serializer;
+        return this;
+    }
+
     public ProducerBuilder<TKey, TValue> WithLoggerFactory(Microsoft.Extensions.Logging.ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;
@@ -1325,8 +1351,23 @@ public sealed class ProducerBuilder<TKey, TValue>
         if (_clientInfrastructure is null)
             GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
 
-        var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>("key", "WithKeySerializer");
-        var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>("value", "WithValueSerializer");
+        if (_keySerializer is not null && _asyncKeySerializer is not null)
+            throw new InvalidOperationException(
+                "Both a synchronous and an asynchronous key serializer are configured. Configure only one of " +
+                "WithKeySerializer(ISerializer<TKey>) or WithKeySerializer(IAsyncSerializer<TKey>).");
+        if (_valueSerializer is not null && _asyncValueSerializer is not null)
+            throw new InvalidOperationException(
+                "Both a synchronous and an asynchronous value serializer are configured. Configure only one of " +
+                "WithValueSerializer(ISerializer<TValue>) or WithValueSerializer(IAsyncSerializer<TValue>).");
+
+        // A component with an async serializer never reaches the synchronous serialize path;
+        // its sync slot holds a throwing placeholder as defense in depth.
+        var keySerializer = _asyncKeySerializer is not null
+            ? AsyncOnlySerializerPlaceholder<TKey>.Instance
+            : _keySerializer ?? GetDefaultSerializer<TKey>("key", "WithKeySerializer");
+        var valueSerializer = _asyncValueSerializer is not null
+            ? AsyncOnlySerializerPlaceholder<TValue>.Instance
+            : _valueSerializer ?? GetDefaultSerializer<TValue>("value", "WithValueSerializer");
 
         var memoryBudget = _clientInfrastructure?.MemoryBudget ?? DekafMemoryBudget.Global;
 
@@ -1422,7 +1463,14 @@ public sealed class ProducerBuilder<TKey, TValue>
         };
 
         var producer = _clientInfrastructure is null
-            ? new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions)
+            ? new KafkaProducer<TKey, TValue>(
+                options,
+                keySerializer,
+                valueSerializer,
+                _loggerFactory,
+                metadataOptions,
+                asyncKeySerializer: _asyncKeySerializer,
+                asyncValueSerializer: _asyncValueSerializer)
             : new KafkaProducer<TKey, TValue>(
                 options,
                 keySerializer,
@@ -1430,7 +1478,9 @@ public sealed class ProducerBuilder<TKey, TValue>
                 _clientInfrastructure.ConnectionPool,
                 _clientInfrastructure.MetadataManager,
                 memoryBudget,
-                _loggerFactory);
+                _loggerFactory,
+                asyncKeySerializer: _asyncKeySerializer,
+                asyncValueSerializer: _asyncValueSerializer);
 
         // The BufferMemory above is seeded from PreviewProducerLimit(), which assumes N producers.
         // RegisterProducer rebalances to N+1 and synchronously fires OnBudgetChanged on every
@@ -1554,6 +1604,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private AwsMskIamConfig? _awsMskIamConfig;
     private IDeserializer<TKey>? _keyDeserializer;
     private IDeserializer<TValue>? _valueDeserializer;
+    private IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
+    private IAsyncDeserializer<TValue>? _asyncValueDeserializer;
     private bool _cacheStringValues;
     private int _maxCachedStringValueBytes = DefaultMaxCachedStringValueBytes;
     private int _maxCachedStringValueEntries = DefaultMaxCachedStringValueEntries;
@@ -2294,6 +2346,32 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Configures an asynchronous key deserializer for deserializers that perform per-record I/O
+    /// (e.g. envelope decryption with short-lived keys). Records are delivered via ConsumeAsync
+    /// and ConsumeOneAsync; ConsumeBatchAsync throws <see cref="NotSupportedException"/> because
+    /// batch records are deserialized during synchronous iteration. Prefer
+    /// <see cref="WithKeyDeserializer(IDeserializer{TKey})"/> when decoding can run synchronously.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithKeyDeserializer(IAsyncDeserializer<TKey> deserializer)
+    {
+        _asyncKeyDeserializer = deserializer;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures an asynchronous value deserializer for deserializers that perform per-record I/O
+    /// (e.g. envelope decryption with short-lived keys). Records are delivered via ConsumeAsync
+    /// and ConsumeOneAsync; ConsumeBatchAsync throws <see cref="NotSupportedException"/> because
+    /// batch records are deserialized during synchronous iteration. Prefer
+    /// <see cref="WithValueDeserializer(IDeserializer{TValue})"/> when decoding can run synchronously.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithValueDeserializer(IAsyncDeserializer<TValue> deserializer)
+    {
+        _asyncValueDeserializer = deserializer;
+        return this;
+    }
+
+    /// <summary>
     /// Enables bounded caching for repeated built-in string values.
     /// </summary>
     /// <remarks>
@@ -2900,8 +2978,23 @@ public sealed class ConsumerBuilder<TKey, TValue>
         if (_topicPatternToSubscribe is not null && string.IsNullOrWhiteSpace(_groupId))
             throw new InvalidOperationException("SubscribeToPattern requires WithGroupId(...) to be called before Build().");
 
-        var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>("key", "WithKeyDeserializer");
-        var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");
+        if (_keyDeserializer is not null && _asyncKeyDeserializer is not null)
+            throw new InvalidOperationException(
+                "Both a synchronous and an asynchronous key deserializer are configured. Configure only one of " +
+                "WithKeyDeserializer(IDeserializer<TKey>) or WithKeyDeserializer(IAsyncDeserializer<TKey>).");
+        if (_valueDeserializer is not null && _asyncValueDeserializer is not null)
+            throw new InvalidOperationException(
+                "Both a synchronous and an asynchronous value deserializer are configured. Configure only one of " +
+                "WithValueDeserializer(IDeserializer<TValue>) or WithValueDeserializer(IAsyncDeserializer<TValue>).");
+
+        // A component with an async deserializer never reaches the synchronous deserialize path;
+        // its sync slot holds a throwing placeholder as defense in depth.
+        var keyDeserializer = _asyncKeyDeserializer is not null
+            ? AsyncOnlyDeserializerPlaceholder<TKey>.Instance
+            : _keyDeserializer ?? GetDefaultDeserializer<TKey>("key", "WithKeyDeserializer");
+        var valueDeserializer = _asyncValueDeserializer is not null
+            ? AsyncOnlyDeserializerPlaceholder<TValue>.Instance
+            : _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");
 
         // Wrap the built-in string key deserializer with caching to avoid per-message string
         // allocation for repeated keys. Kafka workloads typically reuse a bounded set of key
@@ -3025,7 +3118,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
         };
 
         var consumer = _clientInfrastructure is null
-            ? new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory, metadataOptions)
+            ? new KafkaConsumer<TKey, TValue>(
+                options,
+                keyDeserializer,
+                valueDeserializer,
+                _loggerFactory,
+                metadataOptions,
+                asyncKeyDeserializer: _asyncKeyDeserializer,
+                asyncValueDeserializer: _asyncValueDeserializer)
             : new KafkaConsumer<TKey, TValue>(
                 options,
                 keyDeserializer,
@@ -3033,7 +3133,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
                 _clientInfrastructure.ConsumerConnectionPool,
                 _clientInfrastructure.MetadataManager,
                 memoryBudget,
-                _loggerFactory);
+                _loggerFactory,
+                asyncKeyDeserializer: _asyncKeyDeserializer,
+                asyncValueDeserializer: _asyncValueDeserializer);
 
         // QueuedMaxMessagesKbytes above is seeded from PreviewConsumerLimit() assuming N consumers.
         // RegisterConsumer rebalances to N+1 and synchronously dispatches OnBudgetChanged on every
