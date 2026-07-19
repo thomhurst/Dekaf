@@ -942,7 +942,22 @@ internal sealed class BatchArena
     internal int Capacity => _buffer.Length;
 
     internal void SetMaxPooledCapacity(int maxPooledCapacity)
-        => _maxPooledCapacity = Math.Max(_maxPooledCapacity, maxPooledCapacity);
+        => _maxPooledCapacity = maxPooledCapacity;
+
+    internal void Grow(int capacity, int maxPooledCapacity)
+    {
+        if (capacity <= _buffer.Length)
+        {
+            _maxPooledCapacity = maxPooledCapacity;
+            return;
+        }
+
+        var position = Volatile.Read(ref _position);
+        var expanded = GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
+        _buffer.AsSpan(0, position).CopyTo(expanded);
+        _buffer = expanded;
+        _maxPooledCapacity = maxPooledCapacity;
+    }
 
     /// <summary>
     /// Gets the current position in the arena (total bytes used).
@@ -2136,10 +2151,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             splitBytes += child.DataSize;
         Interlocked.Add(ref _bufferedBytes, splitBytes);
 
-        OnBatchExitsPipeline(source);
-        ReleaseBatchMemory(source);
-        ReturnReadyBatch(source);
-
         var pd = GetOrCreateDeque(splitBatches[0].TopicPartition);
         using (var guard = new SpinLockGuard(ref pd.Lock))
         {
@@ -2160,6 +2171,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ProducerDebugCounters.RecordBatchQueuedToReady();
             }
         }
+
+        // Publish replacement tracking before retiring the source. Flush/close waiters must
+        // never observe an in-flight count of zero between the rejected batch and its children.
+        OnBatchExitsPipeline(source);
+        ReleaseBatchMemory(source);
+        ReturnReadyBatch(source);
 
         foreach (var child in splitBatches)
             StartPreSerialization(child);
@@ -7143,7 +7160,7 @@ internal sealed class PartitionBatch
             topicPartition,
             _options,
             _compressionRatioEstimator);
-        EnsureArenaCapacityForLimit();
+        EnsureNormalArenaCapacity();
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
         _recordCount = 0;
         _completionSourceCount = 0;
@@ -7324,12 +7341,15 @@ internal sealed class PartitionBatch
         _effectiveBatchSizeLimit = Math.Max(
             RecordBatch.TotalBatchHeaderSize + 1,
             encodedBatchSizeLimit);
-        EnsureArenaCapacityForLimit();
+        EnsureNormalArenaCapacity();
     }
 
-    private void EnsureArenaCapacityForLimit()
+    private void EnsureNormalArenaCapacity()
     {
-        var requiredCapacity = GetEffectiveArenaCapacity(_options, _effectiveBatchSizeLimit);
+        if (_incrementalBuffer is not null)
+            return;
+
+        var requiredCapacity = GetNormalArenaCapacity(_options);
         if (_arena is not null && _arena.Capacity >= requiredCapacity)
         {
             _arena.SetMaxPooledCapacity(requiredCapacity);
@@ -7585,6 +7605,10 @@ internal sealed class PartitionBatch
         {
             EnsureArenaCanFitFirstRecord(encodedRecordSize);
         }
+        else
+        {
+            EnsureArenaCanFitNextRecord(encodedRecordSize);
+        }
 
         // Delivery arrays are record-aligned so a rejected batch can be split without
         // losing callback/future ownership or returning incorrect record offsets.
@@ -7764,8 +7788,9 @@ internal sealed class PartitionBatch
         else
         {
             _incrementalBuffer = null;
-            _arena = BatchArena.RentOrCreate(
-                GetEffectiveArenaCapacity(options, _effectiveBatchSizeLimit));
+            // Compression-based expansion grows lazily only after the batch fills,
+            // keeping idle partitions bounded by BatchSize.
+            _arena = BatchArena.RentOrCreate(GetNormalArenaCapacity(options));
         }
     }
 
@@ -7830,6 +7855,21 @@ internal sealed class PartitionBatch
         }
 
         _arena = BatchArena.RentOrCreate(capacity, normalCapacity);
+    }
+
+    private void EnsureArenaCanFitNextRecord(int encodedRecordSize)
+    {
+        var arena = _arena;
+        if (arena is null || encodedRecordSize <= arena.RemainingCapacity)
+            return;
+
+        var maximumCapacity = GetEffectiveArenaCapacity(_options, _effectiveBatchSizeLimit);
+        var requiredCapacity = checked(arena.Position + encodedRecordSize);
+        if (requiredCapacity > maximumCapacity)
+            return;
+
+        var doubledCapacity = (int)Math.Min((long)arena.Capacity * 2, maximumCapacity);
+        arena.Grow(Math.Max(requiredCapacity, doubledCapacity), GetNormalArenaCapacity(_options));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -31,6 +31,15 @@ public sealed class Kip126BatchSplittingTests
             new TopicPartition("other", 0), options, estimator);
         await Assert.That(trainedTopicBatch.EffectiveBatchSizeLimit)
             .IsGreaterThan(untrainedTopicBatch.EffectiveBatchSizeLimit);
+        var normalArenaCapacity = ProducerOptions.GetEffectiveArenaCapacity(
+            options.BatchSize,
+            options.ArenaCapacity);
+        await Assert.That(trainedTopicBatch.Arena!.Capacity).IsEqualTo(normalArenaCapacity);
+
+        for (var i = 0; i < 10; i++)
+            Append(trainedTopicBatch, i, completionSource: null, callback: null);
+        await Assert.That(trainedTopicBatch.Arena!.Capacity).IsGreaterThan(normalArenaCapacity);
+
         trainedTopicBatch.Complete();
         untrainedTopicBatch.Complete();
 
@@ -122,8 +131,10 @@ public sealed class Kip126BatchSplittingTests
             await AccumulatorTestHelpers.SealAllAsync(accumulator);
             var source = await DrainOneAsync(accumulator, metadataManager);
             await Assert.That(accumulator.BufferedBytes).IsEqualTo(source.DataSize);
+            var flushTask = accumulator.FlushAsync(CancellationToken.None).AsTask();
 
             await Assert.That(accumulator.SplitAndReenqueue(source, source.Generation)).IsTrue();
+            await Assert.That(flushTask.IsCompleted).IsFalse();
             var child = await DrainOneAsync(accumulator, metadataManager);
 
             await Assert.That(child.RecordCount).IsEqualTo(4);
@@ -133,6 +144,7 @@ public sealed class Kip126BatchSplittingTests
             accumulator.ReleaseBatchMemory(child);
             accumulator.OnBatchExitsPipeline(child);
             accumulator.ReturnReadyBatch(child);
+            await flushTask;
             await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
         }
         finally
