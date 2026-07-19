@@ -14,6 +14,9 @@ internal sealed class FetchSessionHandler
     private int _nextEpoch;
     private Dictionary<TopicPartition, CachedPartitionData> _sessionPartitions = [];
     private Dictionary<TopicPartition, CachedPartitionData> _lastDesiredPartitions = [];
+    private ClusterMetadataSnapshot? _sessionMetadataSnapshot;
+    private ClusterMetadataSnapshot? _responseMetadataSnapshot;
+    private ClusterMetadataSnapshot? _lastBuildMetadataSnapshot;
     private bool _lastBuildWasFull;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -24,7 +27,19 @@ internal sealed class FetchSessionHandler
     public bool HasActiveSession => _sessionId != 0;
 
     public FetchSessionBuildResult Build(IReadOnlyList<FetchRequestTopic> desiredTopics, ClusterMetadata? clusterMetadata)
+        => BuildCore(desiredTopics, clusterMetadata?.CaptureSnapshot());
+
+    public FetchSessionBuildResult BuildFromSnapshot(
+        IReadOnlyList<FetchRequestTopic> desiredTopics,
+        ClusterMetadataSnapshot metadataSnapshot)
+        => BuildCore(desiredTopics, metadataSnapshot);
+
+    private FetchSessionBuildResult BuildCore(
+        IReadOnlyList<FetchRequestTopic> desiredTopics,
+        ClusterMetadataSnapshot? metadataSnapshot)
     {
+        _responseMetadataSnapshot = _sessionMetadataSnapshot;
+        _lastBuildMetadataSnapshot = metadataSnapshot;
         var desiredPartitions = FlattenDesiredPartitions(desiredTopics);
         _lastDesiredPartitions = desiredPartitions;
 
@@ -45,7 +60,7 @@ internal sealed class FetchSessionHandler
         var changed = new List<(string Topic, Guid TopicId, FetchRequestPartition Partition)>();
         foreach (var topic in desiredTopics)
         {
-            var topicName = ResolveTopicName(topic, clusterMetadata);
+            var topicName = ResolveTopicName(topic, metadataSnapshot);
             foreach (var partition in topic.Partitions)
             {
                 var tp = new TopicPartition(topicName, partition.Partition);
@@ -55,7 +70,7 @@ internal sealed class FetchSessionHandler
             }
         }
 
-        var forgotten = BuildForgottenTopicsData(desiredPartitions, clusterMetadata);
+        var forgotten = BuildForgottenTopicsData(desiredPartitions, metadataSnapshot);
         _lastBuildWasFull = false;
 
         return new FetchSessionBuildResult(
@@ -80,6 +95,8 @@ internal sealed class FetchSessionHandler
         if (_lastBuildWasFull || _sessionId != 0)
             _sessionPartitions = new Dictionary<TopicPartition, CachedPartitionData>(_lastDesiredPartitions);
 
+        _sessionMetadataSnapshot = _lastBuildMetadataSnapshot;
+
         _nextEpoch = _sessionId == 0 ? InitialSessionEpoch : NextEpoch(_nextEpoch);
         return true;
     }
@@ -101,6 +118,9 @@ internal sealed class FetchSessionHandler
         _nextEpoch = InitialSessionEpoch;
         _sessionPartitions.Clear();
         _lastDesiredPartitions.Clear();
+        _sessionMetadataSnapshot = null;
+        _responseMetadataSnapshot = null;
+        _lastBuildMetadataSnapshot = null;
         _lastBuildWasFull = false;
     }
 
@@ -135,7 +155,7 @@ internal sealed class FetchSessionHandler
 
     private List<ForgottenTopic> BuildForgottenTopicsData(
         Dictionary<TopicPartition, CachedPartitionData> desiredPartitions,
-        ClusterMetadata? clusterMetadata)
+        ClusterMetadataSnapshot? metadataSnapshot)
     {
         Dictionary<string, List<int>>? forgottenPartitions = null;
         foreach (var tp in _sessionPartitions.Keys)
@@ -161,7 +181,10 @@ internal sealed class FetchSessionHandler
             result.Add(new ForgottenTopic
             {
                 Topic = kvp.Key,
-                TopicId = clusterMetadata?.GetTopic(kvp.Key)?.TopicId ?? Guid.Empty,
+                TopicId = metadataSnapshot is not null
+                    && metadataSnapshot.Topics.TryGetValue(kvp.Key, out var topicInfo)
+                        ? topicInfo.TopicId
+                        : Guid.Empty,
                 Partitions = [.. kvp.Value]
             });
         }
@@ -213,14 +236,32 @@ internal sealed class FetchSessionHandler
         return result;
     }
 
-    private static string ResolveTopicName(FetchRequestTopic topic, ClusterMetadata? clusterMetadata)
+    public bool TryResolveResponseTopicName(Guid topicId, out string topic)
+    {
+        if (_responseMetadataSnapshot is not null
+            && _responseMetadataSnapshot.TopicsById.TryGetValue(topicId, out var topicInfo))
+        {
+            topic = topicInfo.Name;
+            return true;
+        }
+
+        topic = string.Empty;
+        return false;
+    }
+
+    private static string ResolveTopicName(
+        FetchRequestTopic topic,
+        ClusterMetadataSnapshot? metadataSnapshot)
     {
         if (!string.IsNullOrEmpty(topic.Topic))
             return topic.Topic!;
 
         return topic.TopicId == Guid.Empty
             ? string.Empty
-            : clusterMetadata?.GetTopic(topic.TopicId)?.Name ?? string.Empty;
+            : metadataSnapshot is not null
+                && metadataSnapshot.TopicsById.TryGetValue(topic.TopicId, out var topicInfo)
+                    ? topicInfo.Name
+                    : string.Empty;
     }
 
     private static int NextEpoch(int current)

@@ -152,6 +152,28 @@ public sealed class FetchSessionHandlerTests
         await Assert.That(build.IsFull).IsTrue();
     }
 
+    [Test]
+    public async Task ResponseTopicName_UsesMetadataFromActiveSession()
+    {
+        var oldTopicId = Guid.NewGuid();
+        var newTopicId = Guid.NewGuid();
+        var metadata = Metadata("topic-a", oldTopicId);
+        var handler = new FetchSessionHandler();
+        var topics = Topics(("topic-a", 0, 100, 1024));
+
+        handler.BuildFromSnapshot(topics, metadata.CaptureSnapshot());
+        handler.HandleResponse(Response(sessionId: 42));
+
+        metadata.Update(CreateMetadataResponse("topic-a", newTopicId));
+        handler.BuildFromSnapshot(topics, metadata.CaptureSnapshot());
+        handler.HandleResponse(Response(sessionId: 42));
+
+        var resolved = handler.TryResolveResponseTopicName(oldTopicId, out var topic);
+
+        await Assert.That(resolved).IsTrue();
+        await Assert.That(topic).IsEqualTo("topic-a");
+    }
+
     private static FetchResponse Response(int sessionId, ErrorCode errorCode = ErrorCode.None) => new()
     {
         SessionId = sessionId,
@@ -230,7 +252,12 @@ public sealed class FetchSessionHandlerTests
     private static ClusterMetadata Metadata(string topic, Guid topicId)
     {
         var metadata = new ClusterMetadata();
-        metadata.Update(new MetadataResponse
+        metadata.Update(CreateMetadataResponse(topic, topicId));
+        return metadata;
+    }
+
+    private static MetadataResponse CreateMetadataResponse(string topic, Guid topicId) =>
+        new()
         {
             Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
             Topics =
@@ -243,7 +270,5 @@ public sealed class FetchSessionHandlerTests
                     Partitions = [new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] }]
                 }
             ]
-        });
-        return metadata;
-    }
+        };
 }

@@ -31,6 +31,7 @@ public sealed class AdaptiveScaleDownTests
 {
     private const string Topic = "test-topic";
     private const int PartitionCount = 8;
+    private const int IdleConnectionMaxIdleMs = 120_000;
 
     private static ProducerOptions CreateOptions(
         bool idempotent,
@@ -318,19 +319,22 @@ public sealed class AdaptiveScaleDownTests
         var connections = new ConnectionPoolTests.TestIdleConnection[connectionCount];
         var pool = new ConnectionPool(
             clientId: "test-client",
-            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = 1 },
+            connectionOptions: new ConnectionOptions { ConnectionsMaxIdleMs = IdleConnectionMaxIdleMs },
             connectionsPerBroker: connectionCount,
             connectionFactory: (brokerId, host, port, index, _) =>
             {
                 var connection = new ConnectionPoolTests.TestIdleConnection(brokerId, host, port)
                 {
-                    LastUsedTimestampMs = 0
+                    LastUsedTimestampMs = StaleIdleTimestamp()
                 };
                 connections[index] = connection;
                 return new ValueTask<IKafkaConnection>(connection);
             });
         return (pool, connections);
     }
+
+    private static long StaleIdleTimestamp()
+        => Environment.TickCount64 - IdleConnectionMaxIdleMs - 1;
 
     [Test]
     public async Task FloorWidth_ReapsNeverRoutedSlots_ButKeepsRoutedSlot()
@@ -412,7 +416,7 @@ public sealed class AdaptiveScaleDownTests
                 await Assert.That(metadataManager.GetPartitionsForNode(1)).IsEmpty();
                 await Assert.That(GetField<int>(sender, "_retainedConnectionIndexCount")).IsEqualTo(0);
                 foreach (var connection in connections)
-                    connection.LastUsedTimestampMs = 0;
+                    connection.LastUsedTimestampMs = StaleIdleTimestamp();
 
                 var reaped = await pool.ReapIdleConnectionsAsync();
 
@@ -503,8 +507,8 @@ public sealed class AdaptiveScaleDownTests
                 await pool.ScaleConnectionGroupAsync(1, 2);
                 senderType.GetMethod("ApplyScaleUp", BindingFlags.Instance | BindingFlags.NonPublic)!
                     .Invoke(sender, [2]);
-                connections[0].LastUsedTimestampMs = 0;
-                connections[1].LastUsedTimestampMs = 0;
+                connections[0].LastUsedTimestampMs = StaleIdleTimestamp();
+                connections[1].LastUsedTimestampMs = StaleIdleTimestamp();
 
                 var reaped = await pool.ReapIdleConnectionsAsync();
 

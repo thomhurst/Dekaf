@@ -251,6 +251,9 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
 
         await Assert.That(caughtException).IsNotNull();
         var failedRecord = caughtException!;
+        // Stop background prefetch from repeatedly refilling the failed offset while the
+        // dead-letter write completes. Seek drains any in-flight fetch before Resume.
+        consumer.Pause(tp);
         await Assert.That(failedRecord.Origin).IsEqualTo(DeserializationExceptionOrigin.Value);
         await Assert.That(failedRecord.TopicPartition).IsEqualTo(tp);
         await Assert.That(failedRecord.Offset).IsEqualTo(0L);
@@ -284,6 +287,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
 
         // Seek past the bad message to offset 1 (the normal message)
         consumer.Seek(new TopicPartitionOffset(topic, 0, 1));
+        consumer.Resume(tp);
 
         // Second consume attempt - should succeed for the normal message
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
