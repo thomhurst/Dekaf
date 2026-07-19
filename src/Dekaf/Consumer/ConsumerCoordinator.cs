@@ -947,7 +947,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         {
                             if (group.ErrorCode != ErrorCode.None)
                             {
-                                var isRetriable = HandleOffsetFetchMembershipError(group.ErrorCode);
+                                var isRetriable = HandleOffsetFetchMembershipError(group.ErrorCode)
+                                    || group.ErrorCode.IsRetriable();
                                 throw new GroupException(
                                     group.ErrorCode,
                                     $"OffsetFetch failed for group: {group.ErrorCode}",

@@ -2423,7 +2423,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     [Test]
     [Arguments(ErrorCode.StaleMemberEpoch)]
     [Arguments(ErrorCode.UnknownMemberId)]
-    public async Task FetchOffsetsAsync_MembershipGroupError_RejoinsAndRetries(ErrorCode errorCode)
+    [Arguments(ErrorCode.CoordinatorLoadInProgress)]
+    [Arguments(ErrorCode.CoordinatorNotAvailable)]
+    [Arguments(ErrorCode.NotCoordinator)]
+    public async Task FetchOffsetsAsync_RetriableGroupError_RecoversAndRetries(ErrorCode errorCode)
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
         SetupFindCoordinator();
