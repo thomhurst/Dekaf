@@ -201,6 +201,133 @@ public sealed class ShareConsumerRenewalTests
     }
 
     [Test]
+    public async Task Poll_InlineAcknowledgementError_RequeuesOnlyFailedPartition()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = new ShareFetchResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Responses =
+                [
+                    new ShareFetchResponseTopic
+                    {
+                        TopicId = TopicId,
+                        Partitions =
+                        [
+                            new ShareFetchResponsePartition
+                            {
+                                PartitionIndex = 0,
+                                AcknowledgeErrorCode = ErrorCode.None,
+                                CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                                AcquiredRecords = []
+                            },
+                            new ShareFetchResponsePartition
+                            {
+                                PartitionIndex = 1,
+                                AcknowledgeErrorCode = ErrorCode.InvalidRecordState,
+                                CurrentLeader = new ShareFetchLeaderIdAndEpoch(),
+                                AcquiredRecords = []
+                            }
+                        ]
+                    }
+                ],
+                NodeEndpoints = []
+            },
+            OnSend = cancellation.Cancel
+        };
+        await using var fixture = CreateFixture(connection);
+        PrepareForPoll(
+            fixture.Consumer,
+            new TopicPartition("topic", 0),
+            new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Accept);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Renew);
+
+        await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await poll.MoveNextAsync();
+
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 1)]);
+    }
+
+    [Test]
+    public async Task Commit_PartitionError_RequeuesOnlyFailedPartition()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2)
+        {
+            ShareAcknowledgeResponse = new ShareAcknowledgeResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Responses =
+                [
+                    new ShareAcknowledgeResponseTopic
+                    {
+                        TopicId = TopicId,
+                        Partitions =
+                        [
+                            new ShareAcknowledgeResponsePartition
+                            {
+                                PartitionIndex = 0,
+                                ErrorCode = ErrorCode.None,
+                                CurrentLeader = new ShareAcknowledgeLeaderIdAndEpoch()
+                            },
+                            new ShareAcknowledgeResponsePartition
+                            {
+                                PartitionIndex = 1,
+                                ErrorCode = ErrorCode.InvalidRecordState,
+                                CurrentLeader = new ShareAcknowledgeLeaderIdAndEpoch()
+                            }
+                        ]
+                    }
+                ],
+                NodeEndpoints = []
+            }
+        };
+        await using var fixture = CreateFixture(connection);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Accept);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Renew);
+
+        await Assert.That(async () => await fixture.Consumer.CommitAsync())
+            .Throws<KafkaException>();
+
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 1)]);
+    }
+
+    [Test]
+    public async Task Commit_RetriablePartitionError_RetriesOnlyFailedPartition()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareAcknowledge, 2)
+        {
+            ShareAcknowledgeResponses = new Queue<ShareAcknowledgeResponse>(
+            [
+                CreateAcknowledgeResponse(
+                    (0, ErrorCode.None),
+                    (1, ErrorCode.NotLeaderOrFollower)),
+                CreateAcknowledgeResponse((1, ErrorCode.None))
+            ])
+        };
+        await using var fixture = CreateFixture(connection);
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Accept);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Renew);
+
+        await fixture.Consumer.CommitAsync();
+
+        await Assert.That(connection.ShareAcknowledgeRequests).Count().IsEqualTo(2);
+        var retryPartitions = connection.ShareAcknowledgeRequests[1].Topics
+            .SelectMany(static topic => topic.Partitions)
+            .Select(static partition => partition.PartitionIndex)
+            .ToArray();
+        await Assert.That(retryPartitions).IsEquivalentTo([1]);
+        await Assert.That(HasPendingAcknowledgements(fixture.Consumer)).IsFalse();
+    }
+
+    [Test]
     public async Task Poll_SessionLoss_ClearsRenewedRecords()
     {
         using var cancellation = new CancellationTokenSource();
@@ -228,6 +355,65 @@ public sealed class ShareConsumerRenewalTests
 
         await Assert.That(moved).IsFalse();
         await Assert.That(GetActiveRenewedRecords(fixture.Consumer, assignment)).IsEmpty();
+    }
+
+    [Test]
+    public async Task BrokerSessionLoss_ClearsOnlyBrokerRenewedRecords()
+    {
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2);
+        await using var fixture = CreateFixture(connection);
+        fixture.MetadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9092 },
+                new BrokerMetadata { NodeId = 2, Host = "broker-2", Port = 9092 }
+            ],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "topic",
+                    TopicId = TopicId,
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = 1,
+                            ReplicaNodes = [1],
+                            IsrNodes = [1]
+                        },
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 1,
+                            LeaderId = 2,
+                            ReplicaNodes = [2],
+                            IsrNodes = [2]
+                        }
+                    ]
+                }
+            ]
+        });
+        var first = CreateRecord(partition: 0, offset: 40);
+        var second = CreateRecord(partition: 1, offset: 41);
+        fixture.Consumer.Acknowledge(first, AcknowledgeType.Renew);
+        fixture.Consumer.Acknowledge(second, AcknowledgeType.Renew);
+        ApplySuccessfulAcknowledgements(fixture.Consumer, RenewalAcknowledgementsForBothPartitions());
+
+        InvokePrivate(fixture.Consumer, "ClearRenewedRecordsForBroker", 1);
+
+        var assignment = new HashSet<TopicPartition>
+        {
+            new("topic", 0),
+            new("topic", 1)
+        };
+        var active = GetActiveRenewedRecords(fixture.Consumer, assignment);
+        await Assert.That(active).HasSingleItem();
+        await Assert.That(active[0].Partition).IsEqualTo(1);
     }
 
     [Test]
@@ -367,6 +553,47 @@ public sealed class ShareConsumerRenewalTests
             ]
         };
 
+    private static ShareAcknowledgeResponse CreateAcknowledgeResponse(
+        params (int Partition, ErrorCode ErrorCode)[] partitions)
+        => new()
+        {
+            ErrorCode = ErrorCode.None,
+            Responses =
+            [
+                new ShareAcknowledgeResponseTopic
+                {
+                    TopicId = TopicId,
+                    Partitions = partitions.Select(static partition =>
+                        new ShareAcknowledgeResponsePartition
+                        {
+                            PartitionIndex = partition.Partition,
+                            ErrorCode = partition.ErrorCode,
+                            CurrentLeader = new ShareAcknowledgeLeaderIdAndEpoch()
+                        }).ToArray()
+                }
+            ],
+            NodeEndpoints = []
+        };
+
+    private static Dictionary<TopicPartition, List<AcknowledgementBatchData>> RenewalAcknowledgementsForBothPartitions()
+        => new()
+        {
+            [new TopicPartition("topic", 0)] =
+            [
+                new AcknowledgementBatchData(
+                    40,
+                    40,
+                    [(byte)AcknowledgeType.Renew])
+            ],
+            [new TopicPartition("topic", 1)] =
+            [
+                new AcknowledgementBatchData(
+                    41,
+                    41,
+                    [(byte)AcknowledgeType.Renew])
+            ]
+        };
+
     private static Dictionary<TopicPartition, List<AcknowledgementBatchData>> MixedAcknowledgements()
         => new()
         {
@@ -386,11 +613,13 @@ public sealed class ShareConsumerRenewalTests
             ]
         };
 
-    private static ShareConsumeResult<string, string> CreateRecord() => new()
+    private static ShareConsumeResult<string, string> CreateRecord(
+        int partition = 0,
+        long offset = 42) => new()
     {
         Topic = "topic",
-        Partition = 0,
-        Offset = 42,
+        Partition = partition,
+        Offset = offset,
         Value = "value",
         DeliveryCount = 1
     };
@@ -443,6 +672,15 @@ public sealed class ShareConsumerRenewalTests
             .GetValue(tracker)!;
     }
 
+    private static Dictionary<TopicPartition, List<AcknowledgementBatchData>> FlushPendingAcknowledgements(
+        KafkaShareConsumer<string, string> consumer)
+    {
+        var tracker = (AcknowledgementTracker)typeof(KafkaShareConsumer<string, string>)
+            .GetField("_ackTracker", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(consumer)!;
+        return tracker.Flush();
+    }
+
     private static int GetSessionEpoch(
         KafkaShareConsumer<string, string> consumer,
         int brokerId)
@@ -473,7 +711,9 @@ public sealed class ShareConsumerRenewalTests
             .SetValue(coordinator, memberId);
     }
 
-    private static void PrepareForPoll(KafkaShareConsumer<string, string> consumer)
+    private static void PrepareForPoll(
+        KafkaShareConsumer<string, string> consumer,
+        params TopicPartition[] assignedPartitions)
     {
         typeof(KafkaShareConsumer<string, string>)
             .GetField("_initialized", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -481,9 +721,11 @@ public sealed class ShareConsumerRenewalTests
         var coordinator = typeof(KafkaShareConsumer<string, string>)
             .GetField("_coordinator", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(consumer)!;
+        if (assignedPartitions.Length == 0)
+            assignedPartitions = [new TopicPartition("topic", 0)];
         typeof(ShareConsumerCoordinator)
             .GetField("_assignedPartitions", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .SetValue(coordinator, new HashSet<TopicPartition> { new("topic", 0) });
+            .SetValue(coordinator, assignedPartitions.ToHashSet());
         typeof(ShareConsumerCoordinator)
             .GetField("_state", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(coordinator, CoordinatorState.Stable);
@@ -494,11 +736,12 @@ public sealed class ShareConsumerRenewalTests
         MetadataManager metadataManager) : IAsyncDisposable
     {
         internal KafkaShareConsumer<string, string> Consumer { get; } = consumer;
+        internal MetadataManager MetadataManager { get; } = metadataManager;
 
         public async ValueTask DisposeAsync()
         {
             await Consumer.DisposeAsync();
-            await metadataManager.DisposeAsync();
+            await MetadataManager.DisposeAsync();
         }
     }
 
@@ -514,7 +757,14 @@ public sealed class ShareConsumerRenewalTests
             KafkaConnectionCapabilities.Create(new ApiVersionsResponse
             {
                 ErrorCode = ErrorCode.None,
-                ApiKeys = [new ApiVersion(apiKey, 0, maximumVersion)]
+                ApiKeys =
+                [
+                    new ApiVersion(apiKey, 0, maximumVersion),
+                    new ApiVersion(
+                        ApiKey.Metadata,
+                        MetadataRequest.LowestSupportedVersion,
+                        MetadataRequest.HighestSupportedVersion)
+                ]
             });
         internal int SendCount { get; private set; }
         internal short LastApiVersion { get; private set; }
@@ -522,6 +772,8 @@ public sealed class ShareConsumerRenewalTests
         internal ShareAcknowledgeRequest? ShareAcknowledgeRequest { get; private set; }
         internal ShareFetchResponse? ShareFetchResponse { get; init; }
         internal ShareAcknowledgeResponse? ShareAcknowledgeResponse { get; init; }
+        internal Queue<ShareAcknowledgeResponse>? ShareAcknowledgeResponses { get; init; }
+        internal List<ShareAcknowledgeRequest> ShareAcknowledgeRequests { get; } = [];
         internal Action? OnSend { get; init; }
 
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
@@ -545,12 +797,46 @@ public sealed class ShareConsumerRenewalTests
                     }),
                 ShareAcknowledgeRequest acknowledge => Capture(
                     acknowledge,
-                    ShareAcknowledgeResponse ?? new ShareAcknowledgeResponse
+                    ShareAcknowledgeResponses is { Count: > 0 }
+                        ? ShareAcknowledgeResponses.Dequeue()
+                        : ShareAcknowledgeResponse ?? new ShareAcknowledgeResponse
                     {
                         ErrorCode = ErrorCode.None,
                         Responses = [],
                         NodeEndpoints = []
                     }),
+                MetadataRequest => new MetadataResponse
+                {
+                    Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+                    Topics =
+                    [
+                        new TopicMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            Name = "topic",
+                            TopicId = TopicId,
+                            Partitions =
+                            [
+                                new PartitionMetadata
+                                {
+                                    ErrorCode = ErrorCode.None,
+                                    PartitionIndex = 0,
+                                    LeaderId = 1,
+                                    ReplicaNodes = [1],
+                                    IsrNodes = [1]
+                                },
+                                new PartitionMetadata
+                                {
+                                    ErrorCode = ErrorCode.None,
+                                    PartitionIndex = 1,
+                                    LeaderId = 1,
+                                    ReplicaNodes = [1],
+                                    IsrNodes = [1]
+                                }
+                            ]
+                        }
+                    ]
+                },
                 _ => throw new NotSupportedException(typeof(TRequest).Name)
             };
             OnSend?.Invoke();
@@ -570,6 +856,7 @@ public sealed class ShareConsumerRenewalTests
             ShareAcknowledgeResponse response)
         {
             ShareAcknowledgeRequest = request;
+            ShareAcknowledgeRequests.Add(request);
             return response;
         }
 

@@ -299,7 +299,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                         response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
                     {
                         _sessionManager.ResetSession(brokerId);
-                        ClearRenewedRecords();
+                        ClearRenewedRecordsForBroker(brokerId);
                         // Note: _ackTracker may still hold pending acks from the now-invalid session.
                         // On next CommitAsync those acks will be sent with epoch 0 (new session).
                         // The broker will reject them if the old record locks have expired, which is
@@ -316,10 +316,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 if (version >= 1)
                     Volatile.Write(ref _acquisitionLockTimeoutMs, response.AcquisitionLockTimeoutMs);
 
-                if (TryGetAcknowledgementError(response, out var acknowledgementError))
+                var acknowledgementFailures = GetAcknowledgementFailures(response, sentAcks);
+                if (acknowledgementFailures is not null)
                 {
-                    RequeueAcknowledgements(sentAcks);
-                    LogInlineAcknowledgeFailed(brokerId, acknowledgementError);
+                    SplitAcknowledgements(
+                        sentAcks,
+                        acknowledgementFailures,
+                        out var successfulAcknowledgements,
+                        out var failedAcknowledgements);
+                    ApplySuccessfulAcknowledgements(successfulAcknowledgements);
+                    RequeueAcknowledgements(failedAcknowledgements);
+                    LogInlineAcknowledgeFailed(brokerId, acknowledgementFailures.FirstError);
                 }
                 else
                 {
@@ -453,32 +460,26 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         {
             try
             {
-                await SendAcknowledgeAsync(
+                return await SendAcknowledgeAsync(
                         kvp.Key,
                         kvp.Value,
                         retryRetriableFailures: true,
                         cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
-                return (Acks: kvp.Value, Error: (Exception?)null);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                return (Acks: kvp.Value, Error: ex);
+                return new AcknowledgeBrokerResult(null, kvp.Value, ex);
             }
         })).ConfigureAwait(false);
 
         // Re-queue failed partitions so they can be retried on the next commit
         Exception? firstError = null;
-        foreach (var (acks, error) in results)
+        foreach (var result in results)
         {
-            if (error is null)
-            {
-                ApplySuccessfulAcknowledgements(acks);
-                continue;
-            }
-
-            firstError ??= error;
-            _ackTracker.RequeueAcks(acks);
+            ApplySuccessfulAcknowledgements(result.SuccessfulAcknowledgements);
+            RequeueAcknowledgements(result.FailedAcknowledgements);
+            firstError ??= result.Error;
         }
 
         if (firstError is not null)
@@ -621,12 +622,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             {
                 try
                 {
-                    await SendAcknowledgeAsync(
+                    var result = await SendAcknowledgeAsync(
                             brokerId,
                             acks,
                             retryRetriableFailures: false,
                             cancellationToken: CancellationToken.None)
                         .ConfigureAwait(false);
+                    if (result.Error is not null)
+                        LogAcknowledgeRequestFailed(brokerId, result.Error);
                 }
                 catch (Exception ex)
                 {
@@ -695,7 +698,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
                 LogFetchFailed(brokerId, ex);
                 _sessionManager.ResetSession(brokerId);
-                ClearRenewedRecords();
+                ClearRenewedRecordsForBroker(brokerId);
                 return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks);
             }
         }
@@ -757,19 +760,23 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         }
     }
 
-    private async Task SendAcknowledgeAsync(
+    private async Task<AcknowledgeBrokerResult> SendAcknowledgeAsync(
         int brokerId,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> topicAcks,
         bool retryRetriableFailures,
         CancellationToken cancellationToken)
     {
-        var topics = BuildShareAcknowledgeTopics(topicAcks);
-        var isRenewAck = ContainsRenewAcknowledgement(topicAcks);
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? successfulAcknowledgements = null;
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? failedAcknowledgements = null;
+        Exception? firstError = null;
+        var pendingAcknowledgements = topicAcks;
 
         for (var attempt = 0; ; attempt++)
         {
             try
             {
+                var topics = BuildShareAcknowledgeTopics(pendingAcknowledgements);
+                var isRenewAck = ContainsRenewAcknowledgement(pendingAcknowledgements);
                 using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
                     .ConfigureAwait(false);
                 var connection = connectionLease.Connection;
@@ -799,7 +806,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                         or ErrorCode.InvalidShareSessionEpoch)
                     {
                         _sessionManager.ResetSession(brokerId);
-                        ClearRenewedRecords();
+                        ClearRenewedRecordsForBroker(brokerId);
                     }
                     else
                     {
@@ -815,16 +822,76 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 if (isRenewAck)
                     Volatile.Write(ref _acquisitionLockTimeoutMs, response.AcquisitionLockTimeoutMs);
 
-                if (TryGetAcknowledgementError(response, out var acknowledgementError))
-                    throw acknowledgementError;
+                var acknowledgementFailures = GetAcknowledgementFailures(
+                    response,
+                    pendingAcknowledgements);
+                if (acknowledgementFailures is null)
+                {
+                    MergeAcknowledgements(ref successfulAcknowledgements, pendingAcknowledgements);
+                    return new AcknowledgeBrokerResult(
+                        successfulAcknowledgements,
+                        failedAcknowledgements,
+                        firstError);
+                }
 
-                return;
+                SplitAcknowledgements(
+                    pendingAcknowledgements,
+                    acknowledgementFailures,
+                    out var successfulThisAttempt,
+                    out var failedThisAttempt);
+                MergeAcknowledgements(ref successfulAcknowledgements, successfulThisAttempt);
+
+                SplitRetriableAcknowledgements(
+                    failedThisAttempt!,
+                    acknowledgementFailures,
+                    retryRetriableFailures,
+                    out var retriableAcknowledgements,
+                    out var terminalAcknowledgements);
+                if (terminalAcknowledgements is not null)
+                {
+                    MergeAcknowledgements(ref failedAcknowledgements, terminalAcknowledgements);
+                    firstError ??= acknowledgementFailures.GetFirstError(terminalAcknowledgements.Keys);
+                }
+
+                if (retriableAcknowledgements is not null && attempt < RetryHelper.MaxRetries)
+                {
+                    pendingAcknowledgements = retriableAcknowledgements;
+                    await PrepareRequestRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (retriableAcknowledgements is not null)
+                {
+                    MergeAcknowledgements(ref failedAcknowledgements, retriableAcknowledgements);
+                    firstError ??= acknowledgementFailures.GetFirstError(retriableAcknowledgements.Keys);
+                }
+
+                return new AcknowledgeBrokerResult(
+                    successfulAcknowledgements,
+                    failedAcknowledgements,
+                    firstError);
+            }
+            catch (BrokerVersionException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex) when (retryRetriableFailures
                                        && attempt < RetryHelper.MaxRetries
                                        && RetryHelper.IsRetriableRequestFailure(ex))
             {
                 await PrepareRequestRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                MergeAcknowledgements(ref failedAcknowledgements, pendingAcknowledgements);
+                return new AcknowledgeBrokerResult(
+                    successfulAcknowledgements,
+                    failedAcknowledgements,
+                    firstError ?? ex);
             }
         }
     }
@@ -1083,10 +1150,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             _ackTracker.RequeueAcks(acknowledgements);
     }
 
-    private static bool TryGetAcknowledgementError(
+    private AcknowledgementFailures? GetAcknowledgementFailures(
         ShareFetchResponse response,
-        out KafkaException error)
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements)
     {
+        if (acknowledgements is null || acknowledgements.Count == 0)
+            return null;
+
+        Dictionary<TopicPartition, KafkaException>? errors = null;
         foreach (var topic in response.Responses)
         {
             foreach (var partition in topic.Partitions)
@@ -1094,22 +1165,31 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 if (partition.AcknowledgeErrorCode == ErrorCode.None)
                     continue;
 
-                error = KafkaException.FromErrorCode(
+                var error = KafkaException.FromErrorCode(
                     partition.AcknowledgeErrorCode,
                     $"Inline ShareFetch acknowledgement failed for partition " +
                     $"{partition.PartitionIndex}: {partition.AcknowledgeErrorMessage}");
-                return true;
+                var topicInfo = _metadataManager.Metadata.GetTopic(topic.TopicId);
+                if (topicInfo is null)
+                    return AcknowledgementFailures.ForAll(acknowledgements.Keys, error);
+
+                var topicPartition = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
+                if (!acknowledgements.ContainsKey(topicPartition))
+                    continue;
+
+                errors ??= [];
+                errors[topicPartition] = error;
             }
         }
 
-        error = null!;
-        return false;
+        return errors is null ? null : new AcknowledgementFailures(errors);
     }
 
-    private static bool TryGetAcknowledgementError(
+    private AcknowledgementFailures? GetAcknowledgementFailures(
         ShareAcknowledgeResponse response,
-        out KafkaException error)
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements)
     {
+        Dictionary<TopicPartition, KafkaException>? errors = null;
         foreach (var topic in response.Responses)
         {
             foreach (var partition in topic.Partitions)
@@ -1117,16 +1197,89 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 if (partition.ErrorCode == ErrorCode.None)
                     continue;
 
-                error = KafkaException.FromErrorCode(
+                var error = KafkaException.FromErrorCode(
                     partition.ErrorCode,
                     $"ShareAcknowledge failed for partition {partition.PartitionIndex}: " +
                     partition.ErrorMessage);
-                return true;
+                var topicInfo = _metadataManager.Metadata.GetTopic(topic.TopicId);
+                if (topicInfo is null)
+                    return AcknowledgementFailures.ForAll(acknowledgements.Keys, error);
+
+                var topicPartition = new TopicPartition(topicInfo.Name, partition.PartitionIndex);
+                if (!acknowledgements.ContainsKey(topicPartition))
+                    continue;
+
+                errors ??= [];
+                errors[topicPartition] = error;
             }
         }
 
-        error = null!;
-        return false;
+        return errors is null ? null : new AcknowledgementFailures(errors);
+    }
+
+    private static void SplitAcknowledgements(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? acknowledgements,
+        AcknowledgementFailures failures,
+        out Dictionary<TopicPartition, List<AcknowledgementBatchData>>? successful,
+        out Dictionary<TopicPartition, List<AcknowledgementBatchData>>? failed)
+    {
+        successful = null;
+        failed = null;
+        if (acknowledgements is null)
+            return;
+
+        foreach (var (topicPartition, batches) in acknowledgements)
+        {
+            if (failures.Errors.ContainsKey(topicPartition))
+            {
+                failed ??= [];
+                failed[topicPartition] = batches;
+            }
+            else
+            {
+                successful ??= [];
+                successful[topicPartition] = batches;
+            }
+        }
+    }
+
+    private static void SplitRetriableAcknowledgements(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>> acknowledgements,
+        AcknowledgementFailures failures,
+        bool retryRetriableFailures,
+        out Dictionary<TopicPartition, List<AcknowledgementBatchData>>? retriable,
+        out Dictionary<TopicPartition, List<AcknowledgementBatchData>>? terminal)
+    {
+        retriable = null;
+        terminal = null;
+        foreach (var (topicPartition, batches) in acknowledgements)
+        {
+            var canRetry = retryRetriableFailures
+                           && failures.Errors[topicPartition].ErrorCode is { } errorCode
+                           && errorCode.IsRetriable();
+            if (canRetry)
+            {
+                retriable ??= [];
+                retriable[topicPartition] = batches;
+            }
+            else
+            {
+                terminal ??= [];
+                terminal[topicPartition] = batches;
+            }
+        }
+    }
+
+    private static void MergeAcknowledgements(
+        ref Dictionary<TopicPartition, List<AcknowledgementBatchData>>? target,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? source)
+    {
+        if (source is null)
+            return;
+
+        target ??= [];
+        foreach (var (topicPartition, batches) in source)
+            target[topicPartition] = batches;
     }
 
     private void TrackRenewalDisposition(
@@ -1243,6 +1396,32 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
     private void ClearRenewedRecords() => _renewedRecords = null;
 
+    private void ClearRenewedRecordsForBroker(int brokerId)
+    {
+        if (_renewedRecords is null)
+            return;
+
+        List<RenewedRecordKey>? removed = null;
+        foreach (var key in _renewedRecords.Keys)
+        {
+            var leader = _metadataManager.Metadata.GetPartitionLeader(key.Topic, key.Partition);
+            if (leader?.NodeId != brokerId)
+                continue;
+
+            removed ??= [];
+            removed.Add(key);
+        }
+
+        if (removed is null)
+            return;
+
+        foreach (var key in removed)
+            _renewedRecords.Remove(key);
+
+        if (_renewedRecords.Count == 0)
+            _renewedRecords = null;
+    }
+
     /// <summary>
     /// Groups acknowledgement data by leader broker.
     /// </summary>
@@ -1355,6 +1534,40 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         internal ShareConsumeResult<TKey, TValue> Record { get; set; } = record;
         internal bool Active { get; set; }
     }
+
+    private sealed class AcknowledgementFailures(
+        Dictionary<TopicPartition, KafkaException> errors)
+    {
+        internal Dictionary<TopicPartition, KafkaException> Errors { get; } = errors;
+        internal KafkaException FirstError => Errors.Values.First();
+
+        internal KafkaException GetFirstError(IEnumerable<TopicPartition> topicPartitions)
+        {
+            foreach (var topicPartition in topicPartitions)
+            {
+                if (Errors.TryGetValue(topicPartition, out var error))
+                    return error;
+            }
+
+            return FirstError;
+        }
+
+        internal static AcknowledgementFailures ForAll(
+            IEnumerable<TopicPartition> topicPartitions,
+            KafkaException error)
+        {
+            var errors = new Dictionary<TopicPartition, KafkaException>();
+            foreach (var topicPartition in topicPartitions)
+                errors[topicPartition] = error;
+
+            return new AcknowledgementFailures(errors);
+        }
+    }
+
+    private readonly record struct AcknowledgeBrokerResult(
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? SuccessfulAcknowledgements,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? FailedAcknowledgements,
+        Exception? Error);
 
     private readonly record struct ShareFetchBrokerResult(
         int BrokerId,
