@@ -803,6 +803,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     DeadLetter.IRawRecordAccessor,
     IBudgetedInstance
 {
+    internal ValueTask CloseConnectionsForTestingAsync() => _connectionPool.CloseAllAsync();
+
     /// <summary>
     /// Delay in milliseconds when all assigned partitions are paused, to prevent
     /// a tight spin loop that would starve CPU while still allowing responsive
@@ -1153,6 +1155,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,
+                SaslCredentialProvider = options.SaslCredentialProvider,
                 SaslScramTokenAuth = options.SaslScramTokenAuth,
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,

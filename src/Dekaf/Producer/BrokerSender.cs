@@ -15,6 +15,7 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Retry;
+using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Producer;
@@ -3871,6 +3872,33 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
 
                 FailAndCleanupBatch(batch, ex);
+            }
+
+            scratch.ClearReferences();
+
+            if (!pendingResponseAdded)
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+        }
+        catch (AuthenticationException ex) when (
+            ex.ErrorCode == ErrorCode.SaslAuthenticationFailed
+            && !_options.UsesDynamicSaslCredentials
+            && _options.SaslMechanism is SaslMechanism.Plain
+                or SaslMechanism.ScramSha256
+                or SaslMechanism.ScramSha512)
+        {
+            // A broker-rejected static PLAIN/SCRAM credential is fatal. Dynamic credential
+            // providers and other authentication-adjacent failures follow the normal retry path.
+            _pinnedConnections[connectionIndex] = null;
+            LogResponseFailed(ex, _brokerId);
+            for (var i = 0; i < count; i++)
+            {
+                var batch = batches[i];
+                if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
+                    continue;
+
+                UnmutePartition(batch.TopicPartition);
+                try { FailAndCleanupBatch(batch, ex); }
+                catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
             }
 
             scratch.ClearReferences();

@@ -1,4 +1,5 @@
 using Dekaf.Admin;
+using Dekaf.Errors;
 using Testcontainers.Kafka;
 
 namespace Dekaf.Tests.Integration.Security;
@@ -73,6 +74,73 @@ public class SaslKafkaContainer : KafkaTestContainer
             .WithSaslPlain(SaslUsername, SaslPassword)
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
+    }
+
+    public async Task UpsertScramSha256CredentialAsync(string user, string password)
+    {
+        await using var admin = CreateAdminClient();
+        await admin.AlterUserScramCredentialsAsync(
+        [
+            new UserScramCredentialUpsertion
+            {
+                User = user,
+                Mechanism = ScramMechanism.ScramSha256,
+                Iterations = 4096,
+                Password = password
+            }
+        ]).ConfigureAwait(false);
+
+        await WaitForAdminReadyAsync(
+            $"SCRAM-SHA-256 user '{user}'",
+            () => CreateScramAdminClient(ScramMechanism.ScramSha256, user, password)).ConfigureAwait(false);
+    }
+
+    public async Task DeleteScramSha256CredentialAsync(string user, string password)
+    {
+        await using var admin = CreateAdminClient();
+        await admin.AlterUserScramCredentialsAsync(
+        [
+            new UserScramCredentialDeletion
+            {
+                User = user,
+                Mechanism = ScramMechanism.ScramSha256
+            }
+        ]).ConfigureAwait(false);
+
+        await WaitForScramRejectionAsync(user, password).ConfigureAwait(false);
+    }
+
+    private async Task WaitForScramRejectionAsync(string user, string password, int maxAttempts = 30)
+    {
+        Console.WriteLine($"[{GetType().Name}] Waiting for SCRAM-SHA-256 user '{user}' to be revoked...");
+        Exception? lastError = null;
+
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                var admin = CreateScramAdminClient(ScramMechanism.ScramSha256, user, password);
+                await using (admin.ConfigureAwait(false))
+                {
+                    await admin.ListTopicsAsync().ConfigureAwait(false);
+                }
+            }
+            catch (AuthenticationException)
+            {
+                Console.WriteLine($"[{GetType().Name}] SCRAM-SHA-256 user '{user}' is revoked");
+                return;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+
+            await Task.Delay(1000).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException(
+            $"SCRAM-SHA-256 user '{user}' remained usable after {maxAttempts} attempts. " +
+            $"Last client error: {lastError?.Message}.{await TryGetBrokerLogTailAsync().ConfigureAwait(false)}");
     }
 
     /// <summary>

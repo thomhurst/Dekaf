@@ -3041,8 +3041,8 @@ public sealed partial class KafkaConnection :
     /// </summary>
     private async ValueTask<long> PerformSaslExchangeAsync(CancellationToken cancellationToken)
     {
-        // Create the appropriate authenticator
-        ISaslAuthenticator authenticator = CreateSaslAuthenticator();
+        // Resolve dynamic credentials once per authentication attempt, then create a fresh authenticator.
+        var authenticator = await CreateSaslAuthenticatorAsync(cancellationToken).ConfigureAwait(false);
 
         long sessionLifetimeMs = 0;
 
@@ -3090,6 +3090,7 @@ public sealed partial class KafkaConnection :
                 if (authResponse.ErrorCode != ErrorCode.None)
                 {
                     throw new AuthenticationException(
+                        authResponse.ErrorCode,
                         $"SASL authentication failed: {authResponse.ErrorCode}" +
                         (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
                 }
@@ -3119,20 +3120,47 @@ public sealed partial class KafkaConnection :
         return sessionLifetimeMs;
     }
 
-    private ISaslAuthenticator CreateSaslAuthenticator() => _options.SaslMechanism switch
+    private ValueTask<ISaslAuthenticator> CreateSaslAuthenticatorAsync(CancellationToken cancellationToken)
+    {
+        var provider = _options.SaslMechanism is SaslMechanism.Plain
+            or SaslMechanism.ScramSha256
+            or SaslMechanism.ScramSha512
+            ? _options.SaslCredentialProvider
+            : null;
+        return provider is null
+            ? new ValueTask<ISaslAuthenticator>(CreateSaslAuthenticator(_options.SaslUsername, _options.SaslPassword))
+            : CreateSaslAuthenticatorFromProviderAsync(provider, cancellationToken);
+    }
+
+    private async ValueTask<ISaslAuthenticator> CreateSaslAuthenticatorFromProviderAsync(
+        Func<CancellationToken, ValueTask<SaslCredentials>> provider,
+        CancellationToken cancellationToken)
+    {
+        var credentials = await provider(cancellationToken).ConfigureAwait(false);
+        if (credentials.Username is null || credentials.Password is null)
+        {
+            throw new AuthenticationException(
+                ErrorCode.SaslAuthenticationFailed,
+                "SASL credential provider returned invalid credentials");
+        }
+
+        return CreateSaslAuthenticator(credentials.Username, credentials.Password);
+    }
+
+    private ISaslAuthenticator CreateSaslAuthenticator(string? username, string? password) => _options.SaslMechanism switch
     {
         SaslMechanism.Plain => new PlainAuthenticator(
-            _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
-            _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+            username ?? throw new InvalidOperationException("SASL username not configured"),
+            password ?? throw new InvalidOperationException("SASL password not configured")),
         SaslMechanism.ScramSha256 => new ScramAuthenticator(
             SaslMechanism.ScramSha256,
-            _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
-            _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured"),
+            username ?? throw new InvalidOperationException("SASL username not configured"),
+            password ?? throw new InvalidOperationException("SASL password not configured"),
             _options.SaslScramTokenAuth),
         SaslMechanism.ScramSha512 => new ScramAuthenticator(
             SaslMechanism.ScramSha512,
-            _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
-            _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured"),
+            username ?? throw new InvalidOperationException("SASL username not configured"),
+            password ?? throw new InvalidOperationException("SASL password not configured"),
             _options.SaslScramTokenAuth),
         SaslMechanism.Gssapi => new GssapiAuthenticator(
             _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
@@ -3265,8 +3293,8 @@ public sealed partial class KafkaConnection :
         if (!IsConnected)
             throw new InvalidOperationException("Not connected");
 
-        // Create the appropriate authenticator (fresh instance for each re-auth)
-        ISaslAuthenticator authenticator = CreateSaslAuthenticator();
+        // Resolve dynamic credentials once per re-authentication attempt.
+        var authenticator = await CreateSaslAuthenticatorAsync(cancellationToken).ConfigureAwait(false);
 
         long sessionLifetimeMs = 0;
 
@@ -3311,6 +3339,7 @@ public sealed partial class KafkaConnection :
                 if (authResponse.ErrorCode != ErrorCode.None)
                 {
                     throw new AuthenticationException(
+                        authResponse.ErrorCode,
                         $"SASL re-authentication failed: {authResponse.ErrorCode}" +
                         (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
                 }
@@ -3909,6 +3938,12 @@ public sealed class ConnectionOptions
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
     public string? SaslPassword { get; init; }
+
+    /// <summary>
+    /// Dynamic credential provider for PLAIN and SCRAM authentication.
+    /// Invoked once for each initial authentication and re-authentication attempt.
+    /// </summary>
+    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
 
     /// <summary>
     /// Whether SCRAM authentication uses Kafka delegation token credentials.

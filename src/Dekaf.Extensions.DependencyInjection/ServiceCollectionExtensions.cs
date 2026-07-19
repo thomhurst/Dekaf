@@ -792,6 +792,16 @@ public sealed class AdminClientServiceBuilder
 
 internal static class DekafOptionsBinding
 {
+    private delegate TBuilder SaslOptionsApplier<TBuilder>(
+        SaslMechanism mechanism,
+        string? username,
+        string? password,
+        GssapiConfig? gssapiConfig,
+        OAuthBearerConfig? oauthConfig,
+        AwsMskIamConfig? awsMskIamConfig,
+        bool saslScramTokenAuth,
+        Func<CancellationToken, ValueTask<SaslCredentials>>? credentialProvider);
+
     public static void ApplyProducer<TKey, TValue>(
         ProducerOptions options,
         ProducerBuilder<TKey, TValue> builder)
@@ -857,6 +867,7 @@ internal static class DekafOptionsBinding
             options.OAuthBearerConfig,
             options.OAuthBearerTokenProvider,
             options.AwsMskIamConfig,
+            options.SaslCredentialProvider,
             builder.WithSaslOptions,
             builder.WithOAuthBearer);
         builder.WithSocketSendBufferBytes(options.SocketSendBufferBytes);
@@ -943,6 +954,7 @@ internal static class DekafOptionsBinding
             options.OAuthBearerConfig,
             options.OAuthBearerTokenProvider,
             options.AwsMskIamConfig,
+            options.SaslCredentialProvider,
             builder.WithSaslOptions,
             builder.WithOAuthBearer);
         if (options.RebalanceListener is not null)
@@ -1015,7 +1027,8 @@ internal static class DekafOptionsBinding
                 options.GssapiConfig,
                 options.OAuthBearerConfig,
                 options.AwsMskIamConfig,
-                options.SaslScramTokenAuth);
+                options.SaslScramTokenAuth,
+                options.SaslCredentialProvider);
         }
 
         builder.WithMetadataRecoveryStrategy(options.MetadataRecoveryStrategy);
@@ -1081,7 +1094,8 @@ internal static class DekafOptionsBinding
         OAuthBearerConfig? oauthConfig,
         Func<CancellationToken, ValueTask<OAuthBearerToken>>? oauthTokenProvider,
         AwsMskIamConfig? awsMskIamConfig,
-        Func<SaslMechanism, string?, string?, GssapiConfig?, OAuthBearerConfig?, AwsMskIamConfig?, bool, TBuilder> withSaslOptions,
+        Func<CancellationToken, ValueTask<SaslCredentials>>? credentialProvider,
+        SaslOptionsApplier<TBuilder> withSaslOptions,
         Func<Func<CancellationToken, ValueTask<OAuthBearerToken>>, TBuilder> withOAuthBearer)
     {
         if (oauthTokenProvider is not null)
@@ -1097,7 +1111,8 @@ internal static class DekafOptionsBinding
             gssapiConfig,
             oauthConfig,
             awsMskIamConfig,
-            saslScramTokenAuth);
+            saslScramTokenAuth,
+            credentialProvider);
     }
 
     private static void AddProducerInterceptors<TKey, TValue>(

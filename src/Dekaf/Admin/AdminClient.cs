@@ -66,6 +66,7 @@ public sealed class AdminClient : IAdminClient
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,
+                SaslCredentialProvider = options.SaslCredentialProvider,
                 SaslScramTokenAuth = options.SaslScramTokenAuth,
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
@@ -4785,6 +4786,8 @@ public sealed class AdminClientOptions
     public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
     public string? SaslUsername { get; init; }
     public string? SaslPassword { get; init; }
+
+    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
     public bool SaslScramTokenAuth { get; init; }
 
     /// <summary>
@@ -4857,6 +4860,7 @@ public sealed class AdminClientBuilder
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private Func<CancellationToken, ValueTask<SaslCredentials>>? _saslCredentialProvider;
     private bool _saslScramTokenAuth;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
@@ -4972,6 +4976,19 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public AdminClientBuilder WithSaslPlain(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.Plain;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -4982,6 +4999,19 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public AdminClientBuilder WithSaslScramSha256(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -4992,6 +5022,19 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public AdminClientBuilder WithSaslScramSha512(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -5002,6 +5045,7 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = tokenId;
         _saslPassword = tokenHmac;
+        _saslCredentialProvider = null;
         _saslScramTokenAuth = true;
         return this;
     }
@@ -5012,6 +5056,7 @@ public sealed class AdminClientBuilder
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = tokenId;
         _saslPassword = tokenHmac;
+        _saslCredentialProvider = null;
         _saslScramTokenAuth = true;
         return this;
     }
@@ -5374,12 +5419,14 @@ public sealed class AdminClientBuilder
         GssapiConfig? gssapiConfig,
         OAuthBearerConfig? oauthConfig,
         AwsMskIamConfig? awsMskIamConfig = null,
-        bool saslScramTokenAuth = false)
+        bool saslScramTokenAuth = false,
+        Func<CancellationToken, ValueTask<SaslCredentials>>? credentialProvider = null)
     {
         ThrowIfClientOwnedConnectionSettings();
         _saslMechanism = mechanism;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = credentialProvider;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
         _saslScramTokenAuth = saslScramTokenAuth;
@@ -5422,6 +5469,7 @@ public sealed class AdminClientBuilder
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            SaslCredentialProvider = _saslCredentialProvider,
             SaslScramTokenAuth = _saslScramTokenAuth,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
