@@ -234,13 +234,16 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         consumer.Acknowledge(first, AcknowledgeType.Renew);
         await consumer.CommitAsync();
         await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
+        var fetched = await ConsumeOneAsync(consumer);
         var renewed = await ConsumeOneAsync(consumer);
 
         await Assert.That(consumer.AcquisitionLockTimeoutMs).IsNotNull();
         await Assert.That(consumer.AcquisitionLockTimeoutMs!.Value).IsGreaterThan(0);
+        await Assert.That(fetched.Offset).IsEqualTo(first.Offset + 1);
         await Assert.That(renewed.Offset).IsEqualTo(first.Offset);
         await Assert.That(renewed.Value).IsEqualTo(first.Value);
 
+        consumer.Acknowledge(fetched, AcknowledgeType.Accept);
         consumer.Acknowledge(renewed, AcknowledgeType.Accept);
         await consumer.CommitAsync();
     }
