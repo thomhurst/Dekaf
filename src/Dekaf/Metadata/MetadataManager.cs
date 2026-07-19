@@ -1021,9 +1021,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private async ValueTask NegotiateApiVersionsAsync(IKafkaConnection connection, CancellationToken cancellationToken)
     {
-        // Production connections negotiate during physical connection setup. This path exists
-        // only for injected connections without a capability snapshot and still starts at the
-        // highest locally supported stable version.
+        const short versionlessConnectionApiVersionsVersion = 3;
+
+        // Production connections negotiate v4 with fallback during physical connection setup.
+        // Injected connections have no capability snapshot or physical-connection retry path,
+        // so preserve the broadly-compatible v3 probe used before v4 support was added.
         var request = new ApiVersionsRequest
         {
             ClientSoftwareName = "dekaf",
@@ -1032,7 +1034,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             request,
-            ApiVersionsRequest.HighestSupportedVersion,
+            versionlessConnectionApiVersionsVersion,
             cancellationToken).ConfigureAwait(false);
 
         if (response.ErrorCode != ErrorCode.None)

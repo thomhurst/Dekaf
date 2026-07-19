@@ -394,6 +394,50 @@ public class MetadataManagerTests
     }
 
     [Test]
+    public async Task InitializeAsync_VersionlessConnection_UsesCompatibleApiVersionsV3()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        short? requestedVersion = null;
+
+        pool.GetConnectionAsync("localhost", 9092, Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<IKafkaConnection>(connection));
+        connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                Arg.Any<ApiVersionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                requestedVersion = call.ArgAt<short>(1);
+                return new ValueTask<ApiVersionsResponse>(new ApiVersionsResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    ApiKeys =
+                    [
+                        new ApiVersion(
+                            ApiKey.Metadata,
+                            MetadataRequest.LowestSupportedVersion,
+                            MetadataRequest.HighestSupportedVersion)
+                    ]
+                });
+            });
+        connection.SendAsync<MetadataRequest, MetadataResponse>(
+                Arg.Any<MetadataRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<MetadataResponse>(CreateMetadataResponse((1, "localhost", 9092))));
+
+        await using var manager = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions { EnableBackgroundRefresh = false });
+
+        await manager.InitializeAsync();
+
+        await Assert.That(requestedVersion).IsEqualTo((short)3);
+    }
+
+    [Test]
     public async Task InitializeAsync_HoldsConnectionLeaseAcrossNegotiationAndMetadataRequest()
     {
         var pool = Substitute.For<IConnectionPool>();
