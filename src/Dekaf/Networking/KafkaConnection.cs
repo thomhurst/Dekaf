@@ -130,6 +130,7 @@ public sealed partial class KafkaConnection :
     private readonly CancellationTokenSource _pendingRequestSlotCts = new();
     private readonly TaskCompletionSource _pendingRequestSlotOperationsDrained =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource? _pendingRequestsDrained;
     private int _pendingRequestSlotOperationCount;
     private int _pendingRequestSlotsClosed;
     private int _pendingRequestCount;
@@ -1010,6 +1011,7 @@ public sealed partial class KafkaConnection :
         => PooledPipelinedResponse<TRequest, TResponse>.ApproximatePoolCount;
 
     internal static Action? PipelinedResponseBeforePublishTestHook;
+    internal static Action? PendingRequestDrainStartedTestHook;
 
     private sealed class PooledPipelinedResponse<TRequest, TResponse> :
         IPipelinedResponseSource<TResponse>
@@ -2369,24 +2371,6 @@ public sealed partial class KafkaConnection :
         }
     }
 
-    private void ReleasePendingRequestSlots(int count)
-    {
-        if (count <= 0 || !TryEnterPendingRequestSlotOperation())
-            return;
-
-        try
-        {
-            _pendingRequestSlots.Release(count);
-        }
-        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _pendingRequestSlotsClosed) != 0)
-        {
-        }
-        finally
-        {
-            ExitPendingRequestSlotOperation();
-        }
-    }
-
     private void MarkDisposed()
     {
         Volatile.Write(ref _disposed, 1);
@@ -2474,6 +2458,9 @@ public sealed partial class KafkaConnection :
             var remaining = Interlocked.Decrement(ref _pendingRequestCount);
             Debug.Assert(remaining >= 0);
 
+            if (remaining == 0 && Volatile.Read(ref _disposed) != 0)
+                Volatile.Read(ref _pendingRequestsDrained)?.TrySetResult();
+
             RefreshReceiveTimeout();
 
             ReleasePendingRequestSlot();
@@ -2483,6 +2470,22 @@ public sealed partial class KafkaConnection :
     }
 
     private int GetPendingRequestCount() => Volatile.Read(ref _pendingRequestCount);
+
+    private Task WaitForPendingRequestsDrainedAsync()
+    {
+        if (GetPendingRequestCount() == 0)
+            return Task.CompletedTask;
+
+        var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Volatile.Write(ref _pendingRequestsDrained, drained);
+
+        // Close the race where the final owner removed its request before the
+        // completion source was published.
+        if (GetPendingRequestCount() == 0)
+            drained.TrySetResult();
+
+        return drained.Task;
+    }
 
     private bool HasPendingRequests() => Volatile.Read(ref _pendingRequestCount) != 0;
 
@@ -2676,32 +2679,6 @@ public sealed partial class KafkaConnection :
                     slot.Request.TrySetException(slot.Version, ex);
             }
         }
-    }
-
-    private void ReturnAllPendingRequestsToPool()
-    {
-        var releasedSlots = 0;
-        foreach (var shard in _pendingRequestShards)
-        {
-            lock (shard.Gate)
-            {
-                foreach (var slot in shard.Requests.Values)
-                {
-                    _pendingRequestPool.Return(slot.Request);
-                    releasedSlots++;
-                }
-
-                shard.Requests.Clear();
-            }
-        }
-
-        if (releasedSlots != 0)
-        {
-            var remaining = Interlocked.Add(ref _pendingRequestCount, -releasedSlots);
-            Debug.Assert(remaining >= 0);
-        }
-
-        ReleasePendingRequestSlots(releasedSlots);
     }
 
 #if NETSTANDARD2_0
@@ -3944,11 +3921,14 @@ public sealed partial class KafkaConnection :
         _loadedClientCertificate?.Dispose();
 
         FailAllPendingRequests(new ObjectDisposedException(nameof(KafkaConnection)));
+        var pendingRequestsDrained = WaitForPendingRequestsDrainedAsync();
 
-        // Sweep any remaining entries that had no awaiter (edge case: request registered
-        // but cancelled before AwaitAndParseResponseAsync was entered). These won't be
-        // cleaned up by a continuation since none was registered.
-        ReturnAllPendingRequestsToPool();
+        Volatile.Read(ref PendingRequestDrainStartedTestHook)?.Invoke();
+
+        // Each registered request has an owning send path that removes and returns its
+        // source after observing completion. Wait for those owners before disposing the
+        // slot semaphore; resetting sources here would invalidate delayed ValueTask awaiters.
+        await pendingRequestsDrained.ConfigureAwait(false);
 
         await pendingRequestSlotOperationsDrained.ConfigureAwait(false);
         _pendingRequestSlots.Dispose();
