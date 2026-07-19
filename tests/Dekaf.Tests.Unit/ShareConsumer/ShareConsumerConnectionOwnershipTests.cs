@@ -99,6 +99,64 @@ public sealed class ShareConsumerConnectionOwnershipTests
         await Assert.That(connection.LeaseCount).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task SendShareFetchForPartitionsAsync_RetriesRetriableTopLevelError()
+    {
+        var options = new ShareConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "share-group",
+            ConnectionsPerBroker = 2,
+            RetryBackoffMs = 0,
+            RetryBackoffMaxMs = 0
+        };
+        var connection = new LeaseTrackingConnection(
+            new ApiVersion(
+                ApiKey.ShareFetch,
+                ShareFetchRequest.LowestSupportedVersion,
+                ShareFetchRequest.HighestSupportedVersion),
+            new ApiVersion(
+                ApiKey.Metadata,
+                MetadataRequest.LowestSupportedVersion,
+                MetadataRequest.HighestSupportedVersion))
+        {
+            ShareFetchResponses = new Queue<ShareFetchResponse>(
+            [
+                new ShareFetchResponse
+                {
+                    ErrorCode = ErrorCode.CoordinatorLoadInProgress,
+                    Responses = [],
+                    NodeEndpoints = []
+                },
+                new ShareFetchResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    Responses = [],
+                    NodeEndpoints = []
+                }
+            ])
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(1, Arg.Any<CancellationToken>()).Returns(connection);
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        await using var consumer = new KafkaShareConsumer<string, string>(
+            options,
+            Substitute.For<IDeserializer<string>>(),
+            Substitute.For<IDeserializer<string>>(),
+            pool,
+            metadataManager);
+        SetMemberId(consumer, "member-1");
+
+        var sendTask = InvokeSendShareFetchForPartitionsAsync(consumer);
+
+        await sendTask;
+
+        await Assert.That(connection.ShareFetchSendCount).IsEqualTo(2);
+        await Assert.That(connection.LeaseCount).IsEqualTo(0);
+    }
+
     private static Task InvokeSendShareFetchForPartitionsAsync(
         KafkaShareConsumer<string, string> consumer)
     {
@@ -154,6 +212,8 @@ public sealed class ShareConsumerConnectionOwnershipTests
             });
         public int LeaseCount => Volatile.Read(ref _leaseCount);
         public int LeaseCountDuringSend { get; private set; }
+        public int ShareFetchSendCount { get; private set; }
+        public Queue<ShareFetchResponse>? ShareFetchResponses { get; init; }
 
         int IRetirableKafkaConnection.LeaseCount => LeaseCount;
         int IRetirableKafkaConnection.ActiveOperationCount => 0;
@@ -193,15 +253,24 @@ public sealed class ShareConsumerConnectionOwnershipTests
                 {
                     ErrorCode = ErrorCode.None
                 },
-                ShareFetchRequest => new ShareFetchResponse
+                ShareFetchRequest => GetShareFetchResponse(),
+                MetadataRequest => new MetadataResponse { Brokers = [], Topics = [] },
+                _ => throw new NotSupportedException(typeof(TRequest).Name)
+            };
+            return new ValueTask<TResponse>((TResponse)response);
+        }
+
+        private ShareFetchResponse GetShareFetchResponse()
+        {
+            ShareFetchSendCount++;
+            return ShareFetchResponses is { Count: > 0 }
+                ? ShareFetchResponses.Dequeue()
+                : new ShareFetchResponse
                 {
                     ErrorCode = ErrorCode.None,
                     Responses = [],
                     NodeEndpoints = []
-                },
-                _ => throw new NotSupportedException(typeof(TRequest).Name)
-            };
-            return new ValueTask<TResponse>((TResponse)response);
+                };
         }
 
         public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(

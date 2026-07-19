@@ -583,6 +583,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 var response = (ShareFetchResponse)await connection
                     .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
                     .ConfigureAwait(false);
+
+                if (attempt < RetryHelper.MaxRetries && response.ErrorCode.IsRetriable())
+                {
+                    await PrepareRequestRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 return (brokerId, response);
             }
             catch (Exception ex) when (ex is not OperationCanceledException and not BrokerVersionException)
