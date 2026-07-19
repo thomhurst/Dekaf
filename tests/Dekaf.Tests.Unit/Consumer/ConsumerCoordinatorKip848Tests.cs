@@ -3531,6 +3531,58 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_CancelledHeartbeatTransportFailure_DoesNotInvalidateRejoin()
+    {
+        SetupFindCoordinator();
+        var oldHeartbeatStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldHeartbeatCancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldHeartbeatResponse = new TaskCompletionSource<ConsumerGroupHeartbeatResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var heartbeatCount = 0;
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var call = Interlocked.Increment(ref heartbeatCount);
+                if (call == 2)
+                {
+                    var heartbeatToken = callInfo.ArgAt<CancellationToken>(2);
+                    heartbeatToken.Register(
+                        static state => ((TaskCompletionSource<bool>)state!).TrySetResult(true),
+                        oldHeartbeatCancelled);
+                    oldHeartbeatStarted.TrySetResult(true);
+                    return new ValueTask<ConsumerGroupHeartbeatResponse>(oldHeartbeatResponse.Task);
+                }
+
+                return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+                {
+                    ErrorCode = ErrorCode.None,
+                    MemberId = "member-1",
+                    MemberEpoch = call == 1 ? 1 : 2,
+                    HeartbeatIntervalMs = call == 1 ? 1 : 60_000
+                });
+            });
+
+        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 1);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string> { "test-topic" };
+
+        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
+        await oldHeartbeatStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        coordinator.RequestRejoin();
+        var rejoin = coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None).AsTask();
+        await oldHeartbeatCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        oldHeartbeatResponse.TrySetException(new IOException("retired coordinator connection closed"));
+        await rejoin.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.GenerationId).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task ConsumerProtocol_FindCoordinator_TransportFailureTriesNextBroker()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
