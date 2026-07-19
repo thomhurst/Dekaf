@@ -1409,8 +1409,10 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 CreateMultiPartitionResponse("test-topic", partitions.ToArray())));
         };
         var pool = Substitute.For<IConnectionPool>();
+        var connectionAvailable = new TaskCompletionSource<IKafkaConnection>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(connection);
+            .Returns(_ => new ValueTask<IKafkaConnection>(connectionAvailable.Task));
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -1440,6 +1442,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             sender.Enqueue(batchA);
             sender.Enqueue(batchB);
             sender.Enqueue(batchC);
+            connectionAvailable.SetResult(connection);
 
             await firstSend.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
