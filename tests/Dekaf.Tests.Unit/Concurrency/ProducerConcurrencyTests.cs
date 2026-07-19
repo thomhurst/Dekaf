@@ -149,13 +149,13 @@ public class ProducerConcurrencyTests
     }
 
     [Test]
-    public async Task EnqueueAppend_ConcurrentWithDisposal_CompletesOrFails()
+    public async Task EnqueueAppend_ConcurrentWithDisposal_CompletesOrFails(
+        CancellationToken cancellationToken)
     {
         // EnqueueAppend racing with DisposeAsync should either succeed
         // or throw ObjectDisposedException, never hang or silently lose messages.
 
-        const int taskCount = 8;
-        const int messagesPerTask = 50;
+        const int messageCount = 400;
         var options = new ProducerOptions
         {
             BootstrapServers = ["localhost:9092"],
@@ -172,42 +172,63 @@ public class ProducerConcurrencyTests
         // Start append workers before enqueuing
         using var workerCts = new CancellationTokenSource();
         accumulator.StartAppendWorkers(workerCts.Token);
+        var firstAppendEnqueued = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var disposalRaceGate = new ManualResetEventSlim();
 
         try
         {
-            var enqueueTasks = Enumerable.Range(0, taskCount).Select(taskIndex => Task.Run(() =>
-            {
-                for (var i = 0; i < messagesPerTask; i++)
+            var enqueueTask = Task.Factory.StartNew(
+                () =>
                 {
-                    try
+                    for (var i = 0; i < messageCount; i++)
                     {
-                        var completion = pool.Rent();
-                        accumulator.EnqueueAppend(
-                            "test-topic",
-                            taskIndex,
-                            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                            new PooledMemory(null, 0, isNull: true),
-                            new PooledMemory(null, 0, isNull: true),
-                            null,
-                            0,
-                            completion,
-                            CancellationToken.None);
+                        try
+                        {
+                            var completion = pool.Rent();
+                            accumulator.EnqueueAppend(
+                                "test-topic",
+                                i % 8,
+                                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                                new PooledMemory(null, 0, isNull: true),
+                                new PooledMemory(null, 0, isNull: true),
+                                null,
+                                0,
+                                completion,
+                                CancellationToken.None);
 
-                        Interlocked.Increment(ref successCount);
+                            Interlocked.Increment(ref successCount);
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            Interlocked.Increment(ref failedCount);
+                        }
+
+                        if (i == 0)
+                        {
+                            firstAppendEnqueued.TrySetResult();
+                            disposalRaceGate.Wait(cancellationToken);
+                        }
                     }
-                    catch (ObjectDisposedException)
-                    {
-                        Interlocked.Increment(ref failedCount);
-                    }
-                }
-            })).ToArray();
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
 
-            await Task.Delay(2);
-            workerCts.Cancel();
-            await accumulator.DisposeAsync();
+            await firstAppendEnqueued.Task.WaitAsync(cancellationToken);
+            var disposeTask = Task.Factory.StartNew(
+                async () =>
+                {
+                    disposalRaceGate.Set();
+                    workerCts.Cancel();
+                    await accumulator.DisposeAsync();
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap();
 
-            await Task.WhenAll(enqueueTasks).WaitAsync(TimeSpan.FromSeconds(10));
-            await Assert.That(successCount + failedCount).IsEqualTo(taskCount * messagesPerTask);
+            await Task.WhenAll(enqueueTask, disposeTask).WaitAsync(cancellationToken);
+            await Assert.That(successCount + failedCount).IsEqualTo(messageCount);
         }
         finally
         {
