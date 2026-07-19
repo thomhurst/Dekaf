@@ -2836,7 +2836,6 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         SetupFindCoordinator();
 
         var callCount = 0;
-        var fatalHeartbeatReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
                 Arg.Any<ConsumerGroupHeartbeatRequest>(),
@@ -2853,11 +2852,10 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                         ErrorCode = ErrorCode.None,
                         MemberId = "member-1",
                         MemberEpoch = 5,
-                        HeartbeatIntervalMs = 100
+                        HeartbeatIntervalMs = 60_000
                     });
                 }
 
-                fatalHeartbeatReturned.TrySetResult();
                 return ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
                 {
                     ErrorCode = errorCode,
@@ -2866,19 +2864,17 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                 });
             });
 
-        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 100);
+        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
         var topics = new HashSet<string> { "test-topic" };
 
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
 
-        var heartbeatTimeout = TimeSpan.FromSeconds(15);
-
-        await fatalHeartbeatReturned.Task.WaitAsync(heartbeatTimeout);
-        await TestWait.UntilAsync(
-            () => coordinator.State == CoordinatorState.Unjoined,
-            heartbeatTimeout);
+        await coordinator.StopHeartbeatAsync();
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+        await InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, CancellationToken.None);
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
 
         GroupException? caught = null;
         try
