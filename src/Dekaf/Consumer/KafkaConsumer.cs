@@ -843,6 +843,43 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+    private readonly struct ApiTimeoutScope : IDisposable
+    {
+        private readonly CancellationTokenSource _timeoutSource;
+        private readonly CancellationToken _callerToken;
+        private readonly long _startedAt;
+        private readonly int _timeoutMs;
+
+        public ApiTimeoutScope(int timeoutMs, CancellationToken callerToken)
+        {
+            _timeoutMs = timeoutMs;
+            _callerToken = callerToken;
+            _startedAt = Stopwatch.GetTimestamp();
+            _timeoutSource = callerToken.CanBeCanceled
+                ? CancellationTokenSource.CreateLinkedTokenSource(callerToken)
+                : new CancellationTokenSource();
+            _timeoutSource.CancelAfter(timeoutMs);
+        }
+
+        public CancellationToken Token => _timeoutSource.Token;
+
+        public bool DefaultTimeoutExpired =>
+            !_callerToken.IsCancellationRequested && _timeoutSource.IsCancellationRequested;
+
+        public KafkaTimeoutException CreateTimeoutException(string operation, Exception innerException)
+        {
+            var configured = TimeSpan.FromMilliseconds(_timeoutMs);
+            return new KafkaTimeoutException(
+                TimeoutKind.Api,
+                Stopwatch.GetElapsedTime(_startedAt),
+                configured,
+                $"Consumer API operation '{operation}' did not complete within default API timeout ({_timeoutMs}ms)",
+                innerException);
+        }
+
+        public void Dispose() => _timeoutSource.Dispose();
+    }
+
     void IBudgetedInstance.OnBudgetChanged(ulong newLimit)
     {
         Interlocked.Exchange(ref _currentQueuedMaxBytes, (long)newLimit);
@@ -1134,6 +1171,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             options.IsReconnectBackoffMsConfigured,
             options.IsReconnectBackoffMaxMsConfigured);
         ValidateFetchBufferMemory(options);
+        ValidateDefaultApiTimeout(options);
         var telemetryMetricCollector = new ClientTelemetryMetricCollector(ClientTelemetryClientRole.Consumer);
         var fetchBufferMemoryPool = new FetchBufferMemoryPool(options.FetchBufferMemoryBytes);
         var connectionPool = new ConnectionPool(
@@ -1241,6 +1279,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
     }
 
+    internal static void ValidateDefaultApiTimeout(ConsumerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.DefaultApiTimeoutMs, 1);
+    }
+
     private KafkaConsumer(
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
@@ -1259,6 +1303,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollRecords, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollIntervalMs, 1);
         ValidateFetchBufferMemory(options);
+        ValidateDefaultApiTimeout(options);
         AutoOffsetResetStrategy.ValidateOptions(options);
 
         _options = options;
@@ -4274,10 +4319,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
-        // Explicit commit: the caller vouches for everything yielded so far, including
-        // a record still being processed.
-        FlushActiveConsumedPosition();
-        await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        try
+        {
+            // Explicit commit: the caller vouches for everything yielded so far, including
+            // a record still being processed.
+            FlushActiveConsumedPosition();
+            await CommitStoredOffsetsAsync(apiTimeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        {
+            throw apiTimeout.CreateTimeoutException(nameof(CommitAsync), ex);
+        }
     }
 
     /// <summary>
@@ -4406,19 +4459,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_coordinator is null)
             return;
 
-        // Materialize to list to allow iteration for both commit tracking and interceptors
-        var offsetsList = offsets as IReadOnlyList<TopicPartitionOffset> ?? offsets.ToArray();
-
-        await _coordinator.CommitOffsetsAsync(offsetsList, cancellationToken).ConfigureAwait(false);
-
-        foreach (var offset in offsetsList)
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        try
         {
-            var partition = new TopicPartition(offset.Topic, offset.Partition);
-            MarkOffsetCommitted(partition, offset.Offset);
-        }
+            // Materialize to list to allow iteration for both commit tracking and interceptors
+            var offsetsList = offsets as IReadOnlyList<TopicPartitionOffset> ?? offsets.ToArray();
 
-        // Invoke OnCommit interceptors
-        InvokeOnCommitInterceptors(offsetsList);
+            await _coordinator.CommitOffsetsAsync(offsetsList, apiTimeout.Token).ConfigureAwait(false);
+
+            foreach (var offset in offsetsList)
+            {
+                var partition = new TopicPartition(offset.Topic, offset.Partition);
+                MarkOffsetCommitted(partition, offset.Offset);
+            }
+
+            // Invoke OnCommit interceptors
+            InvokeOnCommitInterceptors(offsetsList);
+        }
+        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        {
+            throw apiTimeout.CreateTimeoutException(nameof(CommitAsync), ex);
+        }
     }
 
     public void StoreOffset(ConsumeResult<TKey, TValue> result)
@@ -4443,9 +4504,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_committed.TryGetValue(partition, out var offset))
             return offset;
 
-        if (_coordinator is not null)
+        if (_coordinator is null)
+            return null;
+
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        try
         {
-            var offsets = await _coordinator.FetchOffsetsAsync([partition], cancellationToken).ConfigureAwait(false);
+            var offsets = await _coordinator.FetchOffsetsAsync([partition], apiTimeout.Token).ConfigureAwait(false);
             if (offsets.TryGetValue(partition, out var committedOffset))
             {
                 offset = committedOffset.Offset;
@@ -4456,6 +4521,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     ClearLastConsumedLeaderEpoch(partition);
                 return offset;
             }
+        }
+        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        {
+            throw apiTimeout.CreateTimeoutException(nameof(GetCommittedOffsetAsync), ex);
         }
 
         return null;
@@ -5235,81 +5304,89 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         ThrowIfNotInitialized();
 
-        return await RetryHelper.WithRetryAsync(async () =>
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        try
         {
-            var connectionLease = await GetPartitionLeaderControlConnectionAsync(topicPartition, cancellationToken)
+            return await RetryHelper.WithRetryAsync(async () =>
+            {
+                var connectionLease = await GetPartitionLeaderControlConnectionAsync(topicPartition, apiTimeout.Token)
+                    .ConfigureAwait(false);
+                if (connectionLease is null)
+                    throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
+                using var lease = connectionLease.Value;
+                var connection = lease.Connection;
+
+                var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    ApiKey.ListOffsets,
+                    ListOffsetsRequest.LowestSupportedVersion,
+                    ListOffsetsRequest.HighestSupportedVersion);
+
+                var currentLeaderEpoch = GetCurrentLeaderEpoch(topicPartition);
+                var earliestRequest = CreateWatermarkListOffsetsRequest(
+                    topicPartition,
+                    _options.IsolationLevel,
+                    EarliestOffsetTimestamp,
+                    currentLeaderEpoch);
+                var latestRequest = CreateWatermarkListOffsetsRequest(
+                    topicPartition,
+                    _options.IsolationLevel,
+                    LatestOffsetTimestamp,
+                    currentLeaderEpoch);
+
+                var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                    earliestRequest,
+                    listOffsetsVersion,
+                    apiTimeout.Token).AsTask();
+
+                var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                    latestRequest,
+                    listOffsetsVersion,
+                    apiTimeout.Token).AsTask();
+
+                await Task.WhenAll(earliestResponseTask, latestResponseTask).ConfigureAwait(false);
+
+                var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
+
+                if (earliestPartitionResponse is null)
+                    throw new KafkaException(ErrorCode.UnknownServerError,
+                        $"Failed to query earliest offset for {topicPartition}: missing partition response");
+
+                if (earliestPartitionResponse.ErrorCode != ErrorCode.None)
+                {
+                    throw KafkaException.FromErrorCode(earliestPartitionResponse.ErrorCode,
+                        $"Failed to query earliest offset for {topicPartition}: {earliestPartitionResponse.ErrorCode}");
+                }
+
+                var lowWatermark = earliestPartitionResponse.Offset;
+
+                var latestPartitionResponse = FindListOffsetsPartition(latestResponseTask.Result, topicPartition);
+
+                if (latestPartitionResponse is null)
+                    throw new KafkaException(ErrorCode.UnknownServerError,
+                        $"Failed to query latest offset for {topicPartition}: missing partition response");
+
+                if (latestPartitionResponse.ErrorCode != ErrorCode.None)
+                {
+                    throw KafkaException.FromErrorCode(latestPartitionResponse.ErrorCode,
+                        $"Failed to query latest offset for {topicPartition}: {latestPartitionResponse.ErrorCode}");
+                }
+
+                var highWatermark = latestPartitionResponse.Offset;
+
+                var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
+
+                // Cache the result
+                _watermarks[topicPartition] = watermarks;
+
+                return watermarks;
+            }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
                 .ConfigureAwait(false);
-            if (connectionLease is null)
-                throw new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader found for partition {topicPartition}");
-            using var lease = connectionLease.Value;
-            var connection = lease.Connection;
-
-            var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
-                connection,
-                ApiKey.ListOffsets,
-                ListOffsetsRequest.LowestSupportedVersion,
-                ListOffsetsRequest.HighestSupportedVersion);
-
-            var currentLeaderEpoch = GetCurrentLeaderEpoch(topicPartition);
-            var earliestRequest = CreateWatermarkListOffsetsRequest(
-                topicPartition,
-                _options.IsolationLevel,
-                EarliestOffsetTimestamp,
-                currentLeaderEpoch);
-            var latestRequest = CreateWatermarkListOffsetsRequest(
-                topicPartition,
-                _options.IsolationLevel,
-                LatestOffsetTimestamp,
-                currentLeaderEpoch);
-
-            var earliestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-                earliestRequest,
-                listOffsetsVersion,
-                cancellationToken).AsTask();
-
-            var latestResponseTask = connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-                latestRequest,
-                listOffsetsVersion,
-                cancellationToken).AsTask();
-
-            await Task.WhenAll(earliestResponseTask, latestResponseTask).ConfigureAwait(false);
-
-            var earliestPartitionResponse = FindListOffsetsPartition(earliestResponseTask.Result, topicPartition);
-
-            if (earliestPartitionResponse is null)
-                throw new KafkaException(ErrorCode.UnknownServerError,
-                    $"Failed to query earliest offset for {topicPartition}: missing partition response");
-
-            if (earliestPartitionResponse.ErrorCode != ErrorCode.None)
-            {
-                throw KafkaException.FromErrorCode(earliestPartitionResponse.ErrorCode,
-                    $"Failed to query earliest offset for {topicPartition}: {earliestPartitionResponse.ErrorCode}");
-            }
-
-            var lowWatermark = earliestPartitionResponse.Offset;
-
-            var latestPartitionResponse = FindListOffsetsPartition(latestResponseTask.Result, topicPartition);
-
-            if (latestPartitionResponse is null)
-                throw new KafkaException(ErrorCode.UnknownServerError,
-                    $"Failed to query latest offset for {topicPartition}: missing partition response");
-
-            if (latestPartitionResponse.ErrorCode != ErrorCode.None)
-            {
-                throw KafkaException.FromErrorCode(latestPartitionResponse.ErrorCode,
-                    $"Failed to query latest offset for {topicPartition}: {latestPartitionResponse.ErrorCode}");
-            }
-
-            var highWatermark = latestPartitionResponse.Offset;
-
-            var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
-
-            // Cache the result
-            _watermarks[topicPartition] = watermarks;
-
-            return watermarks;
-        }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
-            .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        {
+            throw apiTimeout.CreateTimeoutException(nameof(QueryWatermarkOffsetsAsync), ex);
+        }
     }
 
     /// <inheritdoc />
@@ -5322,20 +5399,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (_initialized)
             return;
 
-        await SemaphoreHelper.AcquireOrThrowDisposedAsync(_initLock, nameof(KafkaConsumer<TKey, TValue>), cancellationToken).ConfigureAwait(false);
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
         try
         {
-            // Double-check after acquiring lock
-            if (_initialized)
-                return;
+            await SemaphoreHelper.AcquireOrThrowDisposedAsync(
+                _initLock,
+                nameof(KafkaConsumer<TKey, TValue>),
+                apiTimeout.Token).ConfigureAwait(false);
+            try
+            {
+                // Double-check after acquiring lock
+                if (_initialized)
+                    return;
 
-            await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            await _telemetryManager.StartAsync(cancellationToken).ConfigureAwait(false);
-            _initialized = true;
+                await _metadataManager.InitializeAsync(apiTimeout.Token).ConfigureAwait(false);
+                await _telemetryManager.StartAsync(apiTimeout.Token).ConfigureAwait(false);
+                _initialized = true;
+            }
+            finally
+            {
+                SemaphoreHelper.ReleaseSafely(_initLock);
+            }
         }
-        finally
+        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
         {
-            SemaphoreHelper.ReleaseSafely(_initLock);
+            throw apiTimeout.CreateTimeoutException(nameof(InitializeAsync), ex);
         }
     }
 
@@ -7640,7 +7728,16 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (Interlocked.Exchange(ref _closed, 1) != 0 || Volatile.Read(ref _consumerDisposed) != 0)
             return;
 
-        await CloseAsyncCore(cancellationToken).ConfigureAwait(false);
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        try
+        {
+            await CloseAsyncCore(apiTimeout.Token).ConfigureAwait(false);
+            apiTimeout.Token.ThrowIfCancellationRequested();
+        }
+        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        {
+            throw apiTimeout.CreateTimeoutException(nameof(CloseAsync), ex);
+        }
     }
 
     /// <summary>
@@ -7834,51 +7931,63 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         ThrowIfNotInitialized();
 
-        var timestamps = timestampsToSearch as IReadOnlyList<TopicPartitionTimestamp>
-            ?? [.. timestampsToSearch];
-
-        return await RetryHelper.WithRetryAsync<IReadOnlyDictionary<TopicPartition, long>>(async () =>
+        using var apiTimeout = new ApiTimeoutScope(_options.DefaultApiTimeoutMs, cancellationToken);
+        try
         {
-            // Group partitions by broker leader for efficient batch requests.
-            // Retrying the whole operation re-groups after metadata refreshes.
-            var partitionsByBroker = new Dictionary<int, List<TopicPartitionTimestamp>>();
-            foreach (var tpt in timestamps)
+            var timestamps = timestampsToSearch as IReadOnlyList<TopicPartitionTimestamp>
+                ?? [.. timestampsToSearch];
+
+            return await RetryHelper.WithRetryAsync<IReadOnlyDictionary<TopicPartition, long>>(async () =>
             {
-                var leader = await _metadataManager.GetPartitionLeaderAsync(tpt.Topic, tpt.Partition, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (leader is null)
+                // Group partitions by broker leader for efficient batch requests.
+                // Retrying the whole operation re-groups after metadata refreshes.
+                var partitionsByBroker = new Dictionary<int, List<TopicPartitionTimestamp>>();
+                foreach (var tpt in timestamps)
                 {
-                    LogNoLeaderFound(tpt.Topic, tpt.Partition);
-                    continue;
+                    var leader = await _metadataManager.GetPartitionLeaderAsync(
+                        tpt.Topic,
+                        tpt.Partition,
+                        apiTimeout.Token).ConfigureAwait(false);
+
+                    if (leader is null)
+                    {
+                        LogNoLeaderFound(tpt.Topic, tpt.Partition);
+                        continue;
+                    }
+
+                    if (!partitionsByBroker.TryGetValue(leader.NodeId, out var list))
+                    {
+                        list = [];
+                        partitionsByBroker[leader.NodeId] = list;
+                    }
+
+                    list.Add(tpt);
                 }
 
-                if (!partitionsByBroker.TryGetValue(leader.NodeId, out var list))
+                var results = new Dictionary<TopicPartition, long>();
+
+                // Send ListOffsets requests to each broker
+                foreach (var (brokerId, partitions) in partitionsByBroker)
                 {
-                    list = [];
-                    partitionsByBroker[leader.NodeId] = list;
+                    var brokerResults = await GetOffsetsForTimesFromBrokerAsync(
+                        brokerId,
+                        partitions,
+                        apiTimeout.Token).ConfigureAwait(false);
+
+                    foreach (var kvp in brokerResults)
+                    {
+                        results[kvp.Key] = kvp.Value;
+                    }
                 }
 
-                list.Add(tpt);
-            }
-
-            var results = new Dictionary<TopicPartition, long>();
-
-            // Send ListOffsets requests to each broker
-            foreach (var (brokerId, partitions) in partitionsByBroker)
-            {
-                var brokerResults = await GetOffsetsForTimesFromBrokerAsync(brokerId, partitions, cancellationToken)
-                    .ConfigureAwait(false);
-
-                foreach (var kvp in brokerResults)
-                {
-                    results[kvp.Key] = kvp.Value;
-                }
-            }
-
-            return results;
-        }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
-            .ConfigureAwait(false);
+                return results;
+            }, _metadataManager, apiTimeout.Token, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (apiTimeout.DefaultTimeoutExpired)
+        {
+            throw apiTimeout.CreateTimeoutException(nameof(GetOffsetsForTimesAsync), ex);
+        }
     }
 
     private async ValueTask<Dictionary<TopicPartition, long>> GetOffsetsForTimesFromBrokerAsync(
@@ -7980,14 +8089,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         Diagnostics.DekafMetrics.UnregisterConsumerFetchBufferState(_fetchBufferMetricSource);
 
         // If not already closed, perform graceful close first
-        // Use 30 seconds to allow CommitAsync (which may take up to RequestTimeoutMs=30s) to complete
+        // Preserve the existing 30-second disposal cap while honoring a shorter configured API timeout.
         // Interlocked.Exchange prevents the TOCTOU gap where both CloseAsync and DisposeAsync
         // could race to run teardown concurrently when using Volatile.Read + separate CloseAsync CAS.
         if (Interlocked.Exchange(ref _closed, 1) == 0)
         {
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                using var cts = new CancellationTokenSource(
+                    Math.Min(_options.DefaultApiTimeoutMs, 30_000));
                 await CloseAsyncCore(cts.Token).ConfigureAwait(false);
             }
             catch

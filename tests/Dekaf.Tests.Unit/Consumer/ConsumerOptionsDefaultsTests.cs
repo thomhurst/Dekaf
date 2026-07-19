@@ -153,6 +153,13 @@ public class ConsumerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task DefaultApiTimeoutMs_DefaultsTo_60000()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.DefaultApiTimeoutMs).IsEqualTo(60000);
+    }
+
+    [Test]
     public async Task RetryBackoff_DefaultsTo_100And1000()
     {
         var options = CreateOptions();

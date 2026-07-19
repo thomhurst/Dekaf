@@ -566,6 +566,36 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task GetCommittedOffsetAsync_StaleMemberEpoch_UsesDefaultApiTimeout()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        var rejoinStarted = SetupBlockingRejoinConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetchStaleAfterInitialSuccess(connection, new ConcurrentQueue<int>());
+
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            requestTimeoutMs: 5000,
+            defaultApiTimeoutMs: 100);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var exception = await Assert.That(async () => await consumer.GetCommittedOffsetAsync(
+                new TopicPartition("test-topic", 1),
+                CancellationToken.None))
+            .Throws<KafkaTimeoutException>();
+
+        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Api);
+        await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(100));
+        await Assert.That(rejoinStarted.Task.IsCompleted).IsTrue();
+    }
+
+    [Test]
     public async Task GetCommittedOffsetAsync_StaleMemberEpoch_PreservesCallerCancellation()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
@@ -1063,7 +1093,8 @@ public sealed class ConsumerAssignmentFastPathTests
         int queuedMinMessages = 1,
         int maxPollIntervalMs = 300_000,
         OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
-        int requestTimeoutMs = 30_000)
+        int requestTimeoutMs = 30_000,
+        int defaultApiTimeoutMs = 60_000)
     {
         return new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -1073,7 +1104,8 @@ public sealed class ConsumerAssignmentFastPathTests
                 OffsetCommitMode = offsetCommitMode,
                 QueuedMinMessages = queuedMinMessages,
                 MaxPollIntervalMs = maxPollIntervalMs,
-                RequestTimeoutMs = requestTimeoutMs
+                RequestTimeoutMs = requestTimeoutMs,
+                DefaultApiTimeoutMs = defaultApiTimeoutMs
             },
             Serializers.String,
             Serializers.String,

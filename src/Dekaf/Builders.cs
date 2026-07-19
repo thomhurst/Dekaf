@@ -1536,6 +1536,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int? _heartbeatIntervalMs;
     private int _rebalanceTimeoutMs = 60000;
     private int _requestTimeoutMs = 30000;
+    private int _defaultApiTimeoutMs = 60000;
     private int _retryBackoffMs = 100;
     private int _retryBackoffMaxMs = 1000;
     private bool _checkCrcs = true;
@@ -1963,6 +1964,23 @@ public sealed class ConsumerBuilder<TKey, TValue>
     {
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
         _sessionTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the aggregate timeout for finite consumer API operations such as initialization,
+    /// commits, committed-offset lookup, watermark lookup, timestamp-offset lookup, and close.
+    /// Equivalent to Kafka's <c>default.api.timeout.ms</c>. Default is 60 seconds.
+    /// Streaming consume APIs remain long-lived and are controlled by their cancellation token.
+    /// </summary>
+    /// <param name="timeout">The aggregate API timeout. Must be at least one millisecond.</param>
+    public ConsumerBuilder<TKey, TValue> WithDefaultApiTimeout(TimeSpan timeout)
+    {
+        if (timeout < TimeSpan.FromMilliseconds(1))
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Default API timeout must be at least one millisecond");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
+
+        _defaultApiTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
     }
 
@@ -2947,6 +2965,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             HeartbeatIntervalMs = _heartbeatIntervalMs ?? 3000,
             RebalanceTimeoutMs = _rebalanceTimeoutMs,
             RequestTimeoutMs = _requestTimeoutMs,
+            DefaultApiTimeoutMs = _defaultApiTimeoutMs,
             RetryBackoffMs = _retryBackoffMs,
             RetryBackoffMaxMs = _retryBackoffMaxMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
