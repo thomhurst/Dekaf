@@ -205,6 +205,29 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             _options.RetryBackoffMaxMs,
             failureCount);
 
+    internal static TimeSpan GetJoinRetryDelay(
+        int retryDelayMs,
+        TimeSpan elapsed,
+        TimeSpan joinTimeout)
+    {
+        var remaining = joinTimeout - elapsed;
+        return remaining <= TimeSpan.Zero
+            ? TimeSpan.Zero
+            : TimeSpan.FromMilliseconds(Math.Min(retryDelayMs, remaining.TotalMilliseconds));
+    }
+
+    private Task DelayForJoinRetryAsync(
+        int failureCount,
+        long startedAt,
+        TimeSpan joinTimeout,
+        CancellationToken cancellationToken) =>
+        Task.Delay(
+            GetJoinRetryDelay(
+                CalculateRequestRetryBackoff(failureCount),
+                Stopwatch.GetElapsedTime(startedAt),
+                joinTimeout),
+            cancellationToken);
+
     /// <summary>
     /// Serializes heartbeat loop starts to prevent concurrent callers from orphaning a loop.
     /// </summary>
@@ -463,8 +486,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 {
                     LogRetriableCoordinatorError(ex.ErrorCode);
                     MarkCoordinatorUnknown();
-                    var retryDelayMs = CalculateRequestRetryBackoff(++retryFailureCount);
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    await DelayForJoinRetryAsync(
+                        ++retryFailureCount, startedAt, timeout, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (
                     ex is ObjectDisposedException ||
@@ -474,8 +497,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 {
                     LogCoordinatorConnectionDisposed();
                     MarkCoordinatorUnknown();
-                    var retryDelayMs = CalculateRequestRetryBackoff(++retryFailureCount);
-                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    await DelayForJoinRetryAsync(
+                        ++retryFailureCount, startedAt, timeout, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
