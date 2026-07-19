@@ -268,10 +268,21 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
-    internal void AcknowledgeInitializedPartitions(IReadOnlyList<TopicPartition> initializedPartitions)
+    internal void AcknowledgeInitializedPartitions(
+        IReadOnlyList<TopicPartition> initializedPartitions,
+        int assignmentVersion)
     {
+        if (initializedPartitions.Count == 0)
+            return;
+
         lock (_assignmentStateLock)
         {
+            // Position initialization performs asynchronous OffsetFetch/ListOffsets I/O.
+            // A newer assignment or classification must not be acknowledged by work that
+            // used an older snapshot; the next assignment-sync pass will apply it instead.
+            if (Volatile.Read(ref _assignmentVersion) != assignmentVersion)
+                return;
+
             HashSet<TopicPartition>? remaining = null;
             foreach (var partition in initializedPartitions)
             {
@@ -1608,8 +1619,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
-        if (changed)
-            NotifyRevoking(revoked);
+        NotifyRevoking(revoked);
 
         var classificationChanged = false;
         lock (_assignmentStateLock)
@@ -1637,7 +1647,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        if (changed && revoked is not null)
+        if (revoked is not null)
             _onPartitionsRevoked?.Invoke(revoked);
 
         if (changed)

@@ -5613,6 +5613,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     // between polls. Unseen revocations require stale-fetch cleanup and position reset.
                     if (_assignment.SetEquals(coordinatorAssignment)
                         && coordinatorRevocations is null
+                        && newlyExpandedPartitions.Count == 0
                         && HasInitializedFetchPositions(coordinatorAssignment))
                     {
                         if (coordinator.AssignmentVersion != coordinatorAssignmentVersion)
@@ -5627,7 +5628,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     List<TopicPartition>? newPartitions = null;
                     foreach (var partition in coordinatorAssignment)
                     {
-                        if (!_assignment.Contains(partition) || !_fetchPositions.ContainsKey(partition))
+                        if (!_assignment.Contains(partition)
+                            || !_fetchPositions.ContainsKey(partition)
+                            || newlyExpandedPartitions.Contains(partition))
                         {
                             newPartitions ??= new List<TopicPartition>();
                             newPartitions.Add(partition);
@@ -5696,9 +5699,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         await InitializePositionsAsync(
                                 newPartitions,
                                 newlyExpandedPartitions,
+                                coordinatorAssignmentVersion,
                                 cancellationToken)
                             .ConfigureAwait(false);
-                        coordinator.AcknowledgeInitializedPartitions(newPartitions);
                     }
 
                     // OffsetFetch recovery can rejoin the group. If that produced a new assignment,
@@ -5791,36 +5794,52 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private async ValueTask InitializePositionsAsync(
         List<TopicPartition> partitions,
         HashSet<TopicPartition> newlyExpandedPartitions,
+        int assignmentVersion,
         CancellationToken cancellationToken)
     {
-        // Fetch committed offsets for all partitions
-        var committedOffsets = await _coordinator!.FetchOffsetsAsync(partitions, cancellationToken).ConfigureAwait(false);
-
-        foreach (var partition in partitions)
+        var coordinator = _coordinator!;
+        List<TopicPartition>? initializedNewPartitions = null;
+        try
         {
-            if (committedOffsets.TryGetValue(partition, out var committedOffset) && committedOffset.Offset >= 0)
+            // Fetch committed offsets for all partitions
+            var committedOffsets = await coordinator.FetchOffsetsAsync(partitions, cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (var partition in partitions)
             {
-                // Use committed offset
-                SetPosition(partition, committedOffset.Offset, dirty: false);
-                if (committedOffset.LeaderEpoch >= 0)
-                    SetLastConsumedLeaderEpoch(partition, committedOffset.LeaderEpoch);
+                var isNewlyExpanded = newlyExpandedPartitions.Contains(partition);
+                if (committedOffsets.TryGetValue(partition, out var committedOffset) && committedOffset.Offset >= 0)
+                {
+                    // Use committed offset
+                    SetPosition(partition, committedOffset.Offset, dirty: false);
+                    if (committedOffset.LeaderEpoch >= 0)
+                        SetLastConsumedLeaderEpoch(partition, committedOffset.LeaderEpoch);
+                    else
+                        ClearLastConsumedLeaderEpoch(partition);
+                    _fetchPositions[partition] = committedOffset.Offset;
+                    _committed[partition] = committedOffset.Offset;
+                }
                 else
+                {
+                    // No committed offset, use auto offset reset
+                    var offset = await GetResetOffsetAsync(
+                            partition,
+                            cancellationToken,
+                            isNewlyExpanded)
+                        .ConfigureAwait(false);
+                    SetPosition(partition, offset, dirty: false);
                     ClearLastConsumedLeaderEpoch(partition);
-                _fetchPositions[partition] = committedOffset.Offset;
-                _committed[partition] = committedOffset.Offset;
+                    _fetchPositions[partition] = offset;
+                }
+
+                if (isNewlyExpanded)
+                    (initializedNewPartitions ??= []).Add(partition);
             }
-            else
-            {
-                // No committed offset, use auto offset reset
-                var offset = await GetResetOffsetAsync(
-                        partition,
-                        cancellationToken,
-                        newlyExpandedPartitions.Contains(partition))
-                    .ConfigureAwait(false);
-                SetPosition(partition, offset, dirty: false);
-                ClearLastConsumedLeaderEpoch(partition);
-                _fetchPositions[partition] = offset;
-            }
+        }
+        finally
+        {
+            if (initializedNewPartitions is not null)
+                coordinator.AcknowledgeInitializedPartitions(initializedNewPartitions, assignmentVersion);
         }
     }
 

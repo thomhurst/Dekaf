@@ -656,6 +656,102 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task EnsureAssignmentAsync_LateNewPartitionClassification_ReinitializesPosition()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetchWithoutCommits(connection);
+        var requestedTimestamps = new ConcurrentQueue<long>();
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<ListOffsetsRequest>(0);
+                var partition = request.Topics[0].Partitions[0];
+                requestedTimestamps.Enqueue(partition.Timestamp);
+                var offset = partition.Timestamp == TopicPartitionTimestamp.Earliest ? 0 : 100;
+                return ValueTask.FromResult(CreateListOffsetsResponse(partition.PartitionIndex, offset));
+            });
+
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetResetNewPartitions: AutoOffsetReset.Earliest);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var partition = new TopicPartition("test-topic", 0);
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
+
+        var coordinator = GetCoordinator(consumer);
+        ProcessCoordinatorAssignment(
+            coordinator,
+            CreateAssignmentWithNewPartitions([0], [0]));
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        var (_, _, _, pendingClassifications) =
+            await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(0L);
+        await Assert.That(requestedTimestamps).IsEquivalentTo(
+            [TopicPartitionTimestamp.Latest, TopicPartitionTimestamp.Earliest]);
+        await Assert.That(pendingClassifications).IsEmpty();
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_PartialInitializationFailure_AcknowledgesSuccessfulPartitions()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(
+            connection,
+            CreateAssignmentWithNewPartitions([0, 1], [0, 1]));
+        SetupOffsetFetchWithSingleCommit(connection, committedPartition: 0, committedOffset: 10);
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns<ValueTask<ListOffsetsResponse>>(_ => throw new KafkaException(
+                ErrorCode.InvalidRequest,
+                "Injected ListOffsets failure"));
+
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            autoOffsetResetNewPartitions: AutoOffsetReset.Earliest);
+        consumer.Subscribe("test-topic");
+
+        _ = await Assert.That(async () => await consumer.EnsureAssignmentAsync(CancellationToken.None))
+            .Throws<KafkaException>();
+
+        var coordinator = GetCoordinator(consumer);
+        var (_, _, _, pendingClassifications) =
+            await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+
+        await Assert.That(GetFetchPositions(consumer)[new TopicPartition("test-topic", 0)]).IsEqualTo(10L);
+        await Assert.That(pendingClassifications).IsEquivalentTo(
+            [new TopicPartition("test-topic", 1)]);
+    }
+
+    [Test]
     [Timeout(30_000)]
     public async Task EnsureAssignmentAsync_RevocationCommitPending_WaitsForCommit(
         CancellationToken testTimeout)
@@ -1094,7 +1190,8 @@ public sealed class ConsumerAssignmentFastPathTests
         int maxPollIntervalMs = 300_000,
         OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
         int requestTimeoutMs = 30_000,
-        int defaultApiTimeoutMs = 60_000)
+        int defaultApiTimeoutMs = 60_000,
+        AutoOffsetReset? autoOffsetResetNewPartitions = null)
     {
         return new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -1105,7 +1202,8 @@ public sealed class ConsumerAssignmentFastPathTests
                 QueuedMinMessages = queuedMinMessages,
                 MaxPollIntervalMs = maxPollIntervalMs,
                 RequestTimeoutMs = requestTimeoutMs,
-                DefaultApiTimeoutMs = defaultApiTimeoutMs
+                DefaultApiTimeoutMs = defaultApiTimeoutMs,
+                AutoOffsetResetNewPartitions = autoOffsetResetNewPartitions
             },
             Serializers.String,
             Serializers.String,
@@ -1334,6 +1432,31 @@ public sealed class ConsumerAssignmentFastPathTests
             .Returns(ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
     }
 
+    private static void SetupOffsetFetchWithoutCommits(IKafkaConnection connection)
+    {
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateOffsetFetchResponse(
+                (0, -1L),
+                (1, -1L))));
+    }
+
+    private static void SetupOffsetFetchWithSingleCommit(
+        IKafkaConnection connection,
+        int committedPartition,
+        long committedOffset)
+    {
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(CreateOffsetFetchResponse(
+                (committedPartition, committedOffset),
+                (committedPartition == 0 ? 1 : 0, -1L))));
+    }
+
     private static void SetupBlockingOffsetFetch(
         IKafkaConnection connection,
         TaskCompletionSource offsetFetchStarted,
@@ -1455,6 +1578,46 @@ public sealed class ConsumerAssignmentFastPathTests
         ]
     };
 
+    private static OffsetFetchResponse CreateOffsetFetchResponse(
+        params (int Partition, long Offset)[] partitions) => new()
+        {
+            ErrorCode = ErrorCode.None,
+            Topics =
+            [
+                new OffsetFetchResponseTopic
+                {
+                    Name = "test-topic",
+                    Partitions = partitions.Select(static partition => new OffsetFetchResponsePartition
+                    {
+                        PartitionIndex = partition.Partition,
+                        CommittedOffset = partition.Offset,
+                        CommittedLeaderEpoch = -1,
+                        ErrorCode = ErrorCode.None
+                    }).ToArray()
+                }
+            ]
+        };
+
+    private static ListOffsetsResponse CreateListOffsetsResponse(int partition, long offset) => new()
+    {
+        Topics =
+        [
+            new ListOffsetsResponseTopic
+            {
+                Name = "test-topic",
+                Partitions =
+                [
+                    new ListOffsetsResponsePartition
+                    {
+                        PartitionIndex = partition,
+                        ErrorCode = ErrorCode.None,
+                        Offset = offset
+                    }
+                ]
+            }
+        ]
+    };
+
     private static ConsumerGroupHeartbeatAssignment CreateAssignment(params int[] partitions)
     {
         return new ConsumerGroupHeartbeatAssignment
@@ -1470,6 +1633,22 @@ public sealed class ConsumerAssignmentFastPathTests
             PendingTopicPartitions = []
         };
     }
+
+    private static ConsumerGroupHeartbeatAssignment CreateAssignmentWithNewPartitions(
+        int[] partitions,
+        int[] newPartitions) => new()
+        {
+            AssignedTopicPartitions =
+            [
+                new ConsumerGroupHeartbeatTopicPartitions
+                {
+                    TopicId = TestTopicId,
+                    Partitions = partitions,
+                    NewPartitions = newPartitions
+                }
+            ],
+            PendingTopicPartitions = []
+        };
 
     private static SemaphoreSlim GetAssignmentLock(KafkaConsumer<string, string> consumer)
     {
