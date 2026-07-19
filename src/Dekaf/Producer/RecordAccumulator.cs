@@ -2064,7 +2064,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         try
         {
             var sourceRecordBatch = source.RecordBatch;
-            var records = sourceRecordBatch.Records;
+            var records = sourceRecordBatch.GetRecordsForSplit();
             var topicPartition = source.TopicPartition;
             var sourceBaseSequence = sourceRecordBatch.BaseSequence;
             var splitRecordsBudget = source.IsSplitBatch
@@ -7636,7 +7636,8 @@ internal sealed class PartitionBatch
                     ref _callbacks!,
                     _recordCount,
                     recordIndex + 1,
-                    ProducerContainerPools.Callbacks);
+                    ProducerContainerPools.Callbacks,
+                    clearExpandedGap: true);
             }
         }
 
@@ -7887,11 +7888,15 @@ internal sealed class PartitionBatch
         ref T[] array,
         int count,
         int requiredCapacity,
-        ArrayPool<T> pool)
+        ArrayPool<T> pool,
+        bool clearExpandedGap = false)
     {
         var newSize = Math.Max(checked(array.Length * 2), requiredCapacity);
         var newArray = pool.Rent(newSize);
-        Array.Copy(array, newArray, Math.Min(count, array.Length));
+        var copiedCount = Math.Min(count, array.Length);
+        Array.Copy(array, newArray, copiedCount);
+        if (clearExpandedGap && requiredCapacity > copiedCount)
+            Array.Clear(newArray, copiedCount, requiredCapacity - copiedCount);
         pool.Return(array, clearArray: false);
         array = newArray;
     }

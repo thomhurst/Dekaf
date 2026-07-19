@@ -676,7 +676,45 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     internal bool HasPreEncodedRecords => _hasPreEncodedRecords;
 
-    internal int PreEncodedRecordsLength => _hasPreEncodedRecords ? _preEncodedRecords.Length : 0;
+    internal int PreEncodedRecordsLength => _hasPreEncodedRecords ? GetPreEncodedRecordsLength() : 0;
+
+    internal IReadOnlyList<Record> GetRecordsForSplit()
+    {
+        if (_records is not ProducerRecordCountList countOnlyRecords)
+            return Records;
+
+        if (!_hasPreEncodedRecords)
+            throw new InvalidOperationException("Producer records cannot be split without encoded data.");
+
+        var encodedLength = GetPreEncodedRecordsLength();
+        var encodedRecords = ArrayPool<byte>.Shared.Rent(encodedLength);
+        try
+        {
+            GetPreEncodedRecordsSequence().CopyTo(encodedRecords);
+        }
+        catch
+        {
+            ArrayPool<byte>.Shared.Return(encodedRecords, clearArray: false);
+            throw;
+        }
+
+        LazyRecordList materializedRecords;
+        try
+        {
+            materializedRecords = LazyRecordList.Create(
+                new PooledRecordData(encodedRecords, encodedLength),
+                countOnlyRecords.Count);
+        }
+        catch
+        {
+            ArrayPool<byte>.Shared.Return(encodedRecords, clearArray: false);
+            throw;
+        }
+
+        countOnlyRecords.Dispose();
+        _records = materializedRecords;
+        return materializedRecords;
+    }
 
     internal void SetPreEncodedRecords(ReadOnlyMemory<byte> records)
     {

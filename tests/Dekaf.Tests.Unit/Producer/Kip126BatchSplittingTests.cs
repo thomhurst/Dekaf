@@ -76,8 +76,15 @@ public sealed class Kip126BatchSplittingTests
     }
 
     [Test]
+    [NotInParallel]
     public async Task FirstLateCallback_GrowsArrayToRecordIndex()
     {
+        var staleCallbackCount = 0;
+        var staleCallbacks = ProducerContainerPools.Callbacks.Rent(128);
+        for (var i = 0; i <= 100; i++)
+            staleCallbacks[i] = (_, _) => staleCallbackCount++;
+        ProducerContainerPools.Callbacks.Return(staleCallbacks, clearArray: false);
+
         var options = new ProducerOptions
         {
             BootstrapServers = ["localhost:9092"],
@@ -96,6 +103,7 @@ public sealed class Kip126BatchSplittingTests
         ready.CompleteSend(500, DateTimeOffset.UnixEpoch);
 
         await Assert.That(callbackMetadata.Offset).IsEqualTo(600);
+        await Assert.That(staleCallbackCount).IsEqualTo(0);
     }
 
     [Test]
@@ -153,7 +161,10 @@ public sealed class Kip126BatchSplittingTests
     }
 
     [Test]
-    public async Task SplitAndReenqueue_PreservesOrderSequencesAndDeliveryOwnership()
+    [Arguments(BufferMemoryAllocationStrategy.Full)]
+    [Arguments(BufferMemoryAllocationStrategy.Incremental)]
+    public async Task SplitAndReenqueue_PreservesOrderSequencesAndDeliveryOwnership(
+        BufferMemoryAllocationStrategy allocationStrategy)
     {
         const string topic = "kip-126";
         var options = new ProducerOptions
@@ -162,6 +173,7 @@ public sealed class Kip126BatchSplittingTests
             BatchSize = 1000,
             BufferMemory = 1024 * 1024,
             CompressionType = CompressionType.Gzip,
+            BufferMemoryAllocationStrategy = allocationStrategy,
             LingerMs = 0
         };
         var sourcePool = new ValueTaskSourcePool<RecordMetadata>();
@@ -181,6 +193,7 @@ public sealed class Kip126BatchSplittingTests
         var sourceBatch = sourceBuilder.Complete()!;
         sourceBatch.RecordBatch.BaseSequence = 50;
         sourceBatch.RecordBatch.PreCompress(options.CompressionType, new CompressionCodecRegistry());
+        await Assert.That(sourceBatch.RecordBatch.PreEncodedRecordsLength).IsGreaterThan(0);
         sourceBatch.ObservedCompressionRatio = (double)sourceBatch.RecordBatch.PreCompressedLength
             / sourceBatch.RecordBatch.PreEncodedRecordsLength;
         sourceBatch.SetEncodedSize(sourceBatch.RecordBatch.GetEncodedSize(options.CompressionType));
