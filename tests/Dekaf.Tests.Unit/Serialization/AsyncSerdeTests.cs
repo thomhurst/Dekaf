@@ -87,6 +87,18 @@ public class AsyncSerdeTests
     }
 
     [Test]
+    public async Task ProducerBuilder_AsyncSerializerCapacity_IsBoundedByBufferMemory()
+    {
+        await using var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithBufferMemory(4UL * 1024 * 1024)
+            .WithValueSerializer(new YieldingStringSerde())
+            .Build();
+
+        await Assert.That(producer.AsyncSerializationSlotCapacity).IsEqualTo(4);
+    }
+
+    [Test]
     public async Task ConsumeBatchAsync_WithAsyncDeserializer_ThrowsNotSupported()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()

@@ -667,6 +667,7 @@ internal readonly struct AppendWorkItem
     public readonly int HeaderCount;
     public readonly PooledValueTaskSource<RecordMetadata> Completion;
     public readonly CancellationToken CancellationToken;
+    public readonly SemaphoreSlim? AsyncSerializationSlot;
 
     public AppendWorkItem(
         string topic,
@@ -678,7 +679,8 @@ internal readonly struct AppendWorkItem
         Header[]? headers,
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SemaphoreSlim? asyncSerializationSlot = null)
     {
         Topic = topic;
         Partition = partition;
@@ -690,6 +692,7 @@ internal readonly struct AppendWorkItem
         HeaderCount = headerCount;
         Completion = completion;
         CancellationToken = cancellationToken;
+        AsyncSerializationSlot = asyncSerializationSlot;
     }
 }
 
@@ -2971,6 +2974,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             finally
             {
+                workItem.AsyncSerializationSlot?.Release();
                 DecrementSlowPathAppendCount(workItem.Topic, workItem.Partition);
             }
         }
@@ -3010,18 +3014,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken,
-        int partitionCount = 0)
+        int partitionCount = 0,
+        SemaphoreSlim? asyncSerializationSlot = null)
     {
         EnsureAppendWorkersStarted();
         var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
         var workItem = new AppendWorkItem(topic, partition, partitionCount, timestamp, key, value,
-            headers, headerCount, completion, cancellationToken);
+            headers, headerCount, completion, cancellationToken, asyncSerializationSlot);
 
         IncrementSlowPathAppendCount(topic, partition);
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
         {
             DecrementSlowPathAppendCount(topic, partition);
             CleanupWorkItemResources(in workItem);
+            asyncSerializationSlot?.Release();
             PooledCompletionSource.TrySetException(
                 completion,
                 new ObjectDisposedException(nameof(RecordAccumulator)));
@@ -6858,6 +6864,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             while (channel.Reader.TryRead(out var workItem))
             {
                 CleanupWorkItemResources(in workItem);
+                workItem.AsyncSerializationSlot?.Release();
                 PooledCompletionSource.TrySetException(workItem.Completion, disposedException);
             }
         }

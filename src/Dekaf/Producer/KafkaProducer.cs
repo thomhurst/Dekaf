@@ -55,6 +55,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly IAsyncSerializer<TKey>? _asyncKeySerializer;
     private readonly IAsyncSerializer<TValue>? _asyncValueSerializer;
     private readonly bool _hasAsyncSerializers;
+    private readonly SemaphoreSlim? _asyncSerializationSlots;
+    internal int AsyncSerializationSlotCapacity { get; }
     private readonly IPartitioner _partitioner;
     private readonly bool _usesCustomPartitioner;
     private readonly IUniformStickyPartitioner? _uniformStickyPartitioner;
@@ -338,6 +340,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _asyncKeySerializer = asyncKeySerializer;
         _asyncValueSerializer = asyncValueSerializer;
         _hasAsyncSerializers = asyncKeySerializer is not null || asyncValueSerializer is not null;
+        if (_hasAsyncSerializers)
+        {
+            var maxRequestSize = options.MaxRequestSize > 0
+                ? options.MaxRequestSize
+                : ProduceRequestSizeCalculator.DefaultMaxRequestSize;
+            var capacity = Math.Clamp(
+                options.BufferMemory / (ulong)maxRequestSize,
+                1UL,
+                (ulong)int.MaxValue);
+            AsyncSerializationSlotCapacity = (int)capacity;
+            _asyncSerializationSlots = new SemaphoreSlim(AsyncSerializationSlotCapacity, AsyncSerializationSlotCapacity);
+        }
         _memoryBudget = memoryBudget;
         _ownsInfrastructure = ownsInfrastructure;
         _logger = loggerFactory?.CreateLogger<KafkaProducer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaProducer<TKey, TValue>>.Instance;
@@ -1700,8 +1714,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var valueIsNull = message.Value is null;
         var key = PooledMemory.Null;
         var value = PooledMemory.Null;
+        var ownsAsyncSerializationSlot = false;
         try
         {
+            await AcquireAsyncSerializationSlotAsync(cancellationToken).ConfigureAwait(false);
+            ownsAsyncSerializationSlot = true;
+
             if (!keyIsNull)
             {
                 key = _asyncKeySerializer is not null
@@ -1750,7 +1768,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 headerCount,
                 completion,
                 cancellationToken,
-                batchCompletionPartitionCount);
+                batchCompletionPartitionCount,
+                _asyncSerializationSlots);
+            ownsAsyncSerializationSlot = false;
         }
         catch
         {
@@ -1759,6 +1779,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             key.Return();
             value.Return();
             throw;
+        }
+        finally
+        {
+            if (ownsAsyncSerializationSlot)
+                _asyncSerializationSlots!.Release();
         }
     }
 
@@ -4207,6 +4232,29 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ValueTask AcquireAsyncSerializationSlotAsync(CancellationToken cancellationToken)
+    {
+        var slots = _asyncSerializationSlots!;
+        return slots.Wait(0, cancellationToken)
+            ? ValueTask.CompletedTask
+            : AcquireAsyncSerializationSlotSlowAsync(slots, cancellationToken);
+    }
+
+    private async ValueTask AcquireAsyncSerializationSlotSlowAsync(
+        SemaphoreSlim slots,
+        CancellationToken cancellationToken)
+    {
+        if (await slots.WaitAsync(_options.MaxBlockMs, cancellationToken).ConfigureAwait(false))
+            return;
+
+        throw new KafkaTimeoutException(
+            TimeoutKind.MaxBlock,
+            TimeSpan.FromMilliseconds(_options.MaxBlockMs),
+            TimeSpan.FromMilliseconds(_options.MaxBlockMs),
+            $"Failed to acquire async serialization capacity within max.block.ms ({_options.MaxBlockMs}ms).");
+    }
+
     /// <summary>
     /// Fire-and-forget path with async serializers. Serializes on the async path, then appends
     /// through the accumulator's span/callback machinery — the same delivery-callback mechanism
@@ -4259,8 +4307,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var valueIsNull = message.Value is null;
             var key = PooledMemory.Null;
             var value = PooledMemory.Null;
+            var ownsAsyncSerializationSlot = false;
             try
             {
+                await AcquireAsyncSerializationSlotAsync(CancellationToken.None).ConfigureAwait(false);
+                ownsAsyncSerializationSlot = true;
+
                 if (!keyIsNull)
                 {
                     key = _asyncKeySerializer is not null
@@ -4293,6 +4345,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // serialization arrays are no longer referenced once the append completes.
                 key.Return();
                 value.Return();
+                if (ownsAsyncSerializationSlot)
+                    _asyncSerializationSlots!.Release();
             }
 
             activity?.SetStatus(ActivityStatusCode.Ok);

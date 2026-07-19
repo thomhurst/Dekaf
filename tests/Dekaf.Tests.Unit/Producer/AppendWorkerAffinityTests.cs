@@ -190,6 +190,8 @@ public class AppendWorkerAffinityTests
 
         var completion = pool.Rent();
         using var messageCts = new CancellationTokenSource();
+        using var asyncSerializationSlot = new SemaphoreSlim(1, 1);
+        await asyncSerializationSlot.WaitAsync();
         messageCts.Cancel();
 
         accumulator.EnqueueAppend(
@@ -201,11 +203,13 @@ public class AppendWorkerAffinityTests
             headers: null,
             headerCount: 0,
             completion: completion,
-            cancellationToken: messageCts.Token);
+            cancellationToken: messageCts.Token,
+            asyncSerializationSlot: asyncSerializationSlot);
 
         // Await the completion directly — the worker will set cancellation deterministically
         var vt = new ValueTask<RecordMetadata>(completion, completion.Version);
         await Assert.That(async () => await vt).Throws<OperationCanceledException>();
+        await Assert.That(asyncSerializationSlot.CurrentCount).IsEqualTo(1);
 
         workerCts.Cancel();
         await accumulator.DisposeAsync();
