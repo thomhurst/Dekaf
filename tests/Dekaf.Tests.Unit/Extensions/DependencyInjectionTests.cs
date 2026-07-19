@@ -420,6 +420,70 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    [Arguments("SslCaLocation", "ca.pem", "TLS")]
+    [Arguments("SaslUsername", "user", "SASL")]
+    public async Task AddProducerFromConfluentConfig_SecuritySettingWithoutProtocol_FailsFast(
+        string property,
+        string value,
+        string expectedMessage)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            [$"Config:{property}"] = value
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(
+                    configuration.GetSection("Config"))))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining(expectedMessage);
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_CertificateAndKeystore_FailsFast()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:SecurityProtocol"] = "Ssl",
+            ["Config:SslCertificateLocation"] = "client.pem",
+            ["Config:SslKeystoreLocation"] = "client.p12"
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(
+                    configuration.GetSection("Config"))))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("cannot both be configured");
+    }
+
+    [Test]
+    [Arguments("SaslUsername", "user")]
+    [Arguments("SaslPassword", "password")]
+    public async Task AddProducerFromConfluentConfig_IncompletePlainCredentials_FailsFast(
+        string property,
+        string value)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:SecurityProtocol"] = "SaslPlaintext",
+            ["Config:SaslMechanism"] = "Plain",
+            [$"Config:{property}"] = value
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(
+                    configuration.GetSection("Config"))))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("SaslUsername and SaslPassword");
+    }
+
+    [Test]
     public async Task AddProducer_WithTypedOptions_BindsOptions()
     {
         var services = new ServiceCollection();
