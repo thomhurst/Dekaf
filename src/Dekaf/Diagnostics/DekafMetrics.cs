@@ -41,6 +41,12 @@ internal static class DekafMetrics
             unit: "{retry}",
             description: "Number of produce retries.");
 
+    internal static readonly Counter<long> BatchSplits =
+        DekafDiagnostics.Meter.CreateCounter<long>(
+            "dekaf.producer.batch.splits",
+            unit: "{split}",
+            description: "Number of oversized produce batches split for KIP-126 retry.");
+
     internal static readonly Counter<long> InlineContinuationExceptions =
         DekafDiagnostics.Meter.CreateCounter<long>(
             "dekaf.producer.inline_continuation.exceptions",

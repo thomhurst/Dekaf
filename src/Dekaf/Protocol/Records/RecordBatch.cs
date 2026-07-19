@@ -676,6 +676,8 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     internal bool HasPreEncodedRecords => _hasPreEncodedRecords;
 
+    internal int PreEncodedRecordsLength => _hasPreEncodedRecords ? _preEncodedRecords.Length : 0;
+
     internal void SetPreEncodedRecords(ReadOnlyMemory<byte> records)
     {
         _preEncodedRecords = records;

@@ -25,6 +25,7 @@ public sealed class DekafMetricInstrumentTests
         DekafMetrics.OperationDuration.Record(0);
         DekafMetrics.ProduceErrors.Add(0);
         DekafMetrics.Retries.Add(0);
+        DekafMetrics.BatchSplits.Add(0);
         DekafMetrics.InlineContinuationExceptions.Add(0);
         DekafMetrics.CompletionSourceFaults.Add(0);
         DekafMetrics.PendingResponseCleanupDeferred.Add(0);
@@ -39,6 +40,7 @@ public sealed class DekafMetricInstrumentTests
         await Assert.That(instrumentNames).Contains("messaging.client.operation.duration");
         await Assert.That(instrumentNames).Contains("messaging.client.sent.errors");
         await Assert.That(instrumentNames).Contains("messaging.client.sent.retries");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.batch.splits");
         await Assert.That(instrumentNames).Contains("dekaf.producer.inline_continuation.exceptions");
         await Assert.That(instrumentNames).Contains("dekaf.producer.completion_source.faults");
         await Assert.That(instrumentNames).Contains("dekaf.producer.pending_response.cleanup.deferred");

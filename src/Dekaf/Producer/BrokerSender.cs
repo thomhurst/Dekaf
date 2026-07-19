@@ -3018,6 +3018,38 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 else if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
+                    if (partitionResponse.ErrorCode == ErrorCode.MessageTooLarge
+                        && batch.RecordCount > 1
+                        && !batch.IsSendCompleted)
+                    {
+                        LogBatchSplit(
+                            _brokerId,
+                            batch.TopicPartition.Topic,
+                            batch.TopicPartition.Partition,
+                            batch.RecordCount);
+                        MutePartition(batch.TopicPartition);
+                        try
+                        {
+                            CompleteInflightEntry(batch);
+                            if (_accumulator.SplitAndReenqueue(batch, pending.BatchGenerations[j]))
+                            {
+                                // Keep the BrokerSender fence until the first split retry is
+                                // coalesced, but let the accumulator drain the children that
+                                // were inserted ahead of newer partition work.
+                                _accumulator.UnmutePartition(batch.TopicPartition);
+                                batches[j] = null!;
+                                continue;
+                            }
+                        }
+                        catch
+                        {
+                            UnmutePartition(batch.TopicPartition);
+                            throw;
+                        }
+
+                        UnmutePartition(batch.TopicPartition);
+                    }
+
                     if (partitionResponse.ErrorCode.IsRetriable()
                         || (partitionResponse.ErrorCode == ErrorCode.ConcurrentTransactions
                             && _isTransactional()
@@ -3606,7 +3638,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         batch.InflightEntry = _inflightTracker.Register(
                             batch.TopicPartition,
                             batch.RecordBatch.BaseSequence,
-                            batch.CompletionSourcesCount);
+                            batch.RecordCount);
                     }
                 }
             }
@@ -5912,6 +5944,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] delivery timeout exceeded for {Topic}-{Partition}")]
     private partial void LogDeliveryTimeoutExceeded(int brokerId, string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] splitting oversized batch for {Topic}-{Partition} ({RecordCount} records)")]
+    private partial void LogBatchSplit(int brokerId, string topic, int partition, int recordCount);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] re-sequencing batch {Topic}-{Partition}: stale epoch {StaleEpoch} -> current {CurrentEpoch}")]
     private partial void LogStaleEpochResequencing(int brokerId, string topic, int partition, short staleEpoch, short currentEpoch);

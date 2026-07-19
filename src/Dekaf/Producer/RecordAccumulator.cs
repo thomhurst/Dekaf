@@ -941,6 +941,9 @@ internal sealed class BatchArena
 
     internal int Capacity => _buffer.Length;
 
+    internal void SetMaxPooledCapacity(int maxPooledCapacity)
+        => _maxPooledCapacity = Math.Max(_maxPooledCapacity, maxPooledCapacity);
+
     /// <summary>
     /// Gets the current position in the arena (total bytes used).
     /// Uses volatile read for thread-safe access.
@@ -1151,6 +1154,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private readonly PartitionBatchPool _batchPool;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
+    private readonly CompressionRatioEstimator _compressionRatioEstimator = new();
 
     // O(1) counter for fast flush-check (is anything in-flight?).
     // The separate _inFlightBatches dictionary provides reference-tracking for orphan sweep.
@@ -2030,6 +2034,153 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         SignalWakeup();
     }
 
+    /// <summary>
+    /// KIP-126: replaces a broker-rejected compressed batch with smaller, ordered batches.
+    /// The source delivery deadline and idempotent sequence range are retained.
+    /// </summary>
+    internal bool SplitAndReenqueue(ReadyBatch source, int expectedGeneration)
+    {
+        if (source.RecordCount <= 1 || !source.TryAcquireResourcePin(expectedGeneration))
+            return false;
+
+        var splitBatches = new List<ReadyBatch>();
+        PartitionBatch? building = null;
+        try
+        {
+            var sourceRecordBatch = source.RecordBatch;
+            var records = sourceRecordBatch.Records;
+            var topicPartition = source.TopicPartition;
+            var sourceBaseSequence = sourceRecordBatch.BaseSequence;
+            var splitRecordsBudget = source.IsSplitBatch
+                ? Math.Max(source.MaxRecordSize, Math.Max(1, source.DataSize / 2))
+                : Math.Max(1, _options.BatchSize - RecordBatch.TotalBatchHeaderSize);
+            var splitBatchSizeLimit = checked(RecordBatch.TotalBatchHeaderSize + splitRecordsBudget);
+
+            _compressionRatioEstimator.ResetAfterSplit(
+                topicPartition.Topic,
+                _options.CompressionType,
+                source.ObservedCompressionRatio);
+
+            var recordIndex = 0;
+            while (recordIndex < source.RecordCount)
+            {
+                var childStartIndex = recordIndex;
+                var childMaxRecordSize = 0;
+                building = _batchPool.Rent(topicPartition, partitionCount: 1);
+                building.SetTransactionState(
+                    sourceRecordBatch.ProducerId,
+                    sourceRecordBatch.ProducerEpoch,
+                    (sourceRecordBatch.Attributes & RecordBatchAttributes.IsTransactional) != 0);
+                building.SetSplitBatchSizeLimit(splitBatchSizeLimit);
+
+                while (recordIndex < source.RecordCount)
+                {
+                    var record = records[recordIndex];
+                    var result = building.TryAppendSplitRecord(
+                        sourceRecordBatch.BaseTimestamp + record.TimestampDelta,
+                        record,
+                        source.GetCompletionSource(recordIndex),
+                        source.GetCallback(recordIndex));
+                    if (!result.Success)
+                        break;
+
+                    childMaxRecordSize = Math.Max(childMaxRecordSize, result.ActualSizeAdded);
+                    recordIndex++;
+                }
+
+                if (recordIndex == childStartIndex)
+                    throw new InvalidOperationException("KIP-126 split could not fit its first record.");
+
+                var child = building.Complete()
+                    ?? throw new InvalidOperationException("KIP-126 produced an empty split batch.");
+                _batchPool.Return(building);
+                building = null;
+
+                if (sourceBaseSequence >= 0)
+                    child.RecordBatch.BaseSequence = checked(sourceBaseSequence + childStartIndex);
+                child.PreserveDeliveryTimeline(source);
+                child.MarkAsSplitBatch(childMaxRecordSize);
+                if (_options.CompressionType == CompressionType.None)
+                    PrepareBatchForPublish(child, child.Generation);
+                else
+                    child.SetPreSerializationTask(CreatePreSerializationTask(child));
+                splitBatches.Add(child);
+            }
+        }
+        catch
+        {
+            if (building is not null)
+            {
+                building.DiscardSplitBuild();
+                _batchPool.Return(building);
+            }
+
+            DiscardUnpublishedSplitBatches(splitBatches);
+            throw;
+        }
+        finally
+        {
+            source.ReleaseResourcePin();
+        }
+
+        // A first split may still produce one child when the broker's limit is below the
+        // configured BatchSize. Re-enqueue it as a split batch so the next rejection halves it.
+        if (splitBatches.Count == 0 || !source.TryAbandonForSplit(expectedGeneration))
+        {
+            DiscardUnpublishedSplitBatches(splitBatches);
+            return false;
+        }
+
+        OnBatchExitsPipeline(source);
+        ReturnReadyBatch(source);
+
+        var splitBytes = 0L;
+        foreach (var child in splitBatches)
+            splitBytes += child.DataSize;
+        Interlocked.Add(ref _bufferedBytes, splitBytes);
+
+        var pd = GetOrCreateDeque(splitBatches[0].TopicPartition);
+        using (var guard = new SpinLockGuard(ref pd.Lock))
+        {
+            for (var i = splitBatches.Count - 1; i >= 0; i--)
+            {
+                var child = splitBatches[i];
+                AttributeUntrackedBudget(
+                    child,
+                    ResolveAndCacheUnackedBudget(
+                        pd,
+                        child.TopicPartition.Topic,
+                        child.TopicPartition.Partition));
+                OnBatchEntersPipeline(pd, child);
+                if (ProducerId >= 0)
+                    pd.InsertInSequenceOrder(child);
+                else
+                    pd.AddFirst(child);
+                ProducerDebugCounters.RecordBatchQueuedToReady();
+            }
+        }
+
+        foreach (var child in splitBatches)
+            StartPreSerialization(child);
+
+        Diagnostics.DekafMetrics.BatchSplits.Add(1, new TagList
+        {
+            { Diagnostics.DekafDiagnostics.MessagingDestinationName, splitBatches[0].TopicPartition.Topic }
+        });
+        SignalWakeup();
+        return true;
+    }
+
+    private void DiscardUnpublishedSplitBatches(List<ReadyBatch> batches)
+    {
+        foreach (var batch in batches)
+        {
+            batch.TrySetMemoryReleased();
+            batch.TryAbandonForSplit(batch.Generation);
+            ReturnReadyBatch(batch);
+        }
+    }
+
     internal void MutePartition(TopicPartition tp)
     {
         lock (_partitionMuteLock)
@@ -2494,7 +2645,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // ReadyBatch lifecycle spans seal→send→response→cleanup (longer than PartitionBatch),
         // so its pool needs to be larger to avoid exhaustion under sustained throughput.
         _readyBatchPool = new ReadyBatchPool(maxPoolSize: poolSize * ReadyBatchPoolSizeRatio);
-        _batchPool = new PartitionBatchPool(options, maxPoolSize: poolSize);
+        _batchPool = new PartitionBatchPool(options, _compressionRatioEstimator, maxPoolSize: poolSize);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = (long)options.BufferMemory;
 
@@ -4447,6 +4598,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
                 readyBatch.SetEncodedSize(readyBatch.RecordBatch.GetEncodedSize(_options.CompressionType));
+                if (_options.CompressionType != CompressionType.None
+                    && readyBatch.RecordBatch.PreEncodedRecordsLength > 0)
+                {
+                    var observedRatio = (double)readyBatch.RecordBatch.PreCompressedLength
+                        / readyBatch.RecordBatch.PreEncodedRecordsLength;
+                    readyBatch.ObservedCompressionRatio = observedRatio;
+                    _compressionRatioEstimator.Update(
+                        readyBatch.TopicPartition.Topic,
+                        _options.CompressionType,
+                        observedRatio);
+                }
             }
             catch (Exception ex)
             {
@@ -6768,6 +6930,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
 {
     private readonly ProducerOptions _options;
+    private readonly CompressionRatioEstimator _compressionRatioEstimator;
     private ReadyBatchPool? _readyBatchPool;
     private readonly BatchArrayReuseQueue _arrayReuseQueue;
 
@@ -6777,10 +6940,14 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     /// <param name="options">Producer options for configuring new batches.</param>
     /// <param name="maxPoolSize">Maximum number of batches to keep pooled.
     /// Defaults to <see cref="BatchArena.DefaultPoolSize"/> since each pooled batch retains a BatchArena.</param>
-    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = BatchArena.DefaultPoolSize)
+    public PartitionBatchPool(
+        ProducerOptions options,
+        CompressionRatioEstimator? compressionRatioEstimator = null,
+        int maxPoolSize = BatchArena.DefaultPoolSize)
         : base(maxPoolSize)
     {
         _options = options;
+        _compressionRatioEstimator = compressionRatioEstimator ?? new CompressionRatioEstimator();
         _arrayReuseQueue = new BatchArrayReuseQueue(maxSize: maxPoolSize);
     }
 
@@ -6795,7 +6962,7 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
 
     protected override PartitionBatch Create()
     {
-        var batch = new PartitionBatch(default, _options);
+        var batch = new PartitionBatch(default, _options, _compressionRatioEstimator);
         batch.SetReadyBatchPool(_readyBatchPool);
         batch.SetArrayReuseQueue(_arrayReuseQueue);
         return batch;
@@ -6840,6 +7007,7 @@ internal sealed class PartitionBatch
     private TopicPartition _topicPartition;
     private int _partitionCount;
     private ProducerOptions _options;
+    private readonly CompressionRatioEstimator _compressionRatioEstimator;
     private readonly int _initialRecordCapacity;
     private ReadyBatchPool? _readyBatchPool; // Pool for renting ReadyBatch objects
     private BatchArrayReuseQueue? _arrayReuseQueue; // Reuse queue for working arrays
@@ -6883,14 +7051,28 @@ internal sealed class PartitionBatch
     /// ArenaCapacity. Records encode directly into the arena, so explicit values below
     /// the BatchSize-derived minimum are rejected during producer construction.
     /// </summary>
-    private static int GetEffectiveArenaCapacity(ProducerOptions options) =>
+    private static int GetNormalArenaCapacity(ProducerOptions options) =>
         ProducerOptions.GetEffectiveArenaCapacity(options.BatchSize, options.ArenaCapacity);
 
+    private static int GetEffectiveArenaCapacity(ProducerOptions options, int effectiveBatchSizeLimit) =>
+        Math.Max(
+            GetNormalArenaCapacity(options),
+            Math.Max(1, effectiveBatchSizeLimit - RecordBatch.TotalBatchHeaderSize));
+
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
+        : this(topicPartition, options, compressionRatioEstimator: null)
+    {
+    }
+
+    internal PartitionBatch(
+        TopicPartition topicPartition,
+        ProducerOptions options,
+        CompressionRatioEstimator? compressionRatioEstimator)
     {
         _topicPartition = topicPartition;
         _options = options;
-        _effectiveBatchSizeLimit = GetEffectiveBatchSizeLimit(topicPartition, options);
+        _compressionRatioEstimator = compressionRatioEstimator ?? new CompressionRatioEstimator();
+        _effectiveBatchSizeLimit = GetEffectiveBatchSizeLimit(topicPartition, options, _compressionRatioEstimator);
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
 
         _initialRecordCapacity = options.InitialBatchRecordCapacity > 0
@@ -6956,7 +7138,11 @@ internal sealed class PartitionBatch
     {
         _topicPartition = topicPartition;
         _partitionCount = partitionCount;
-        _effectiveBatchSizeLimit = GetEffectiveBatchSizeLimit(topicPartition, _options);
+        _effectiveBatchSizeLimit = GetEffectiveBatchSizeLimit(
+            topicPartition,
+            _options,
+            _compressionRatioEstimator);
+        EnsureArenaCapacityForLimit();
         _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
         _recordCount = 0;
         _completionSourceCount = 0;
@@ -7100,7 +7286,8 @@ internal sealed class PartitionBatch
 
     private static int GetEffectiveBatchSizeLimit(
         TopicPartition topicPartition,
-        ProducerOptions options)
+        ProducerOptions options,
+        CompressionRatioEstimator compressionRatioEstimator)
     {
         var maxRequestSize = options.MaxRequestSize > 0
             ? options.MaxRequestSize
@@ -7109,7 +7296,49 @@ internal sealed class PartitionBatch
             maxRequestSize,
             options.TransactionalId,
             topicPartition.Topic ?? string.Empty);
-        return Math.Min(options.BatchSize, maxEncodedBatchSize);
+        var wireBatchSizeLimit = Math.Min(options.BatchSize, maxEncodedBatchSize);
+        if (options.CompressionType == CompressionType.None)
+            return wireBatchSizeLimit;
+
+        var estimatedRatio = compressionRatioEstimator.Get(
+            topicPartition.Topic ?? string.Empty,
+            options.CompressionType);
+        var compressedRecordsBudget = Math.Max(
+            1,
+            wireBatchSizeLimit - RecordBatch.TotalBatchHeaderSize);
+        var maximumUncompressedRecordsBudget = Math.Min(
+            int.MaxValue - RecordBatch.TotalBatchHeaderSize,
+            (long)Math.Min(options.BufferMemory, (ulong)long.MaxValue));
+        var estimatedUncompressedRecordsBudget = compressedRecordsBudget
+            / Math.Max(double.Epsilon, estimatedRatio * CompressionRatioEstimator.EstimationFactor);
+        var uncompressedRecordsBudget = (long)Math.Clamp(
+            estimatedUncompressedRecordsBudget,
+            1.0,
+            maximumUncompressedRecordsBudget);
+        return checked(RecordBatch.TotalBatchHeaderSize + (int)uncompressedRecordsBudget);
+    }
+
+    internal void SetSplitBatchSizeLimit(int encodedBatchSizeLimit)
+    {
+        _effectiveBatchSizeLimit = Math.Max(
+            RecordBatch.TotalBatchHeaderSize + 1,
+            encodedBatchSizeLimit);
+        EnsureArenaCapacityForLimit();
+    }
+
+    private void EnsureArenaCapacityForLimit()
+    {
+        var requiredCapacity = GetEffectiveArenaCapacity(_options, _effectiveBatchSizeLimit);
+        if (_arena is not null && _arena.Capacity >= requiredCapacity)
+        {
+            _arena.SetMaxPooledCapacity(requiredCapacity);
+            return;
+        }
+
+        if (_arena is not null)
+            BatchArena.ReturnToPool(_arena);
+
+        _arena = BatchArena.RentOrCreate(requiredCapacity);
     }
 
     internal readonly record struct ReservedRecordAppend(
@@ -7356,17 +7585,18 @@ internal sealed class PartitionBatch
             EnsureArenaCanFitFirstRecord(encodedRecordSize);
         }
 
-        // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
-        if (hasCompletionSource && _completionSourceCount >= _completionSources.Length)
+        // Delivery arrays are record-aligned so a rejected batch can be split without
+        // losing callback/future ownership or returning incorrect record offsets.
+        if (recordIndex >= _completionSources.Length)
         {
-            GrowArray(ref _completionSources, ref _completionSourceCount, ProducerContainerPools.CompletionSources);
+            GrowArray(ref _completionSources, ref _recordCount, ProducerContainerPools.CompletionSources);
         }
-        if (hasCallback)
+        if (hasCallback || _callbacks is not null)
         {
             _callbacks ??= ProducerContainerPools.Callbacks.Rent(_initialRecordCapacity);
-            if (_callbackCount >= _callbacks.Length)
+            if (recordIndex >= _callbacks.Length)
             {
-                GrowArray(ref _callbacks!, ref _callbackCount, ProducerContainerPools.Callbacks);
+                GrowArray(ref _callbacks!, ref _recordCount, ProducerContainerPools.Callbacks);
             }
         }
 
@@ -7480,15 +7710,18 @@ internal sealed class PartitionBatch
         _encodedRecordsLength += reservedAppend.EncodedRecordSize;
         _maxTimestamp = recordIndex == 0 ? reservedAppend.Timestamp : Math.Max(_maxTimestamp, reservedAppend.Timestamp);
 
+        _completionSources[recordIndex] = completionSource!;
         if (completionSource is not null)
         {
-            _completionSources[_completionSourceCount++] = completionSource;
+            _completionSourceCount++;
             ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
         }
 
+        if (_callbacks is not null)
+            _callbacks[recordIndex] = callback;
         if (callback is not null)
         {
-            _callbacks![_callbackCount++] = callback;
+            _callbackCount++;
         }
 
         _recordCount = recordIndex + 1;
@@ -7522,8 +7755,54 @@ internal sealed class PartitionBatch
         else
         {
             _incrementalBuffer = null;
-            _arena = BatchArena.RentOrCreate(GetEffectiveArenaCapacity(options));
+            _arena = BatchArena.RentOrCreate(
+                GetEffectiveArenaCapacity(options, _effectiveBatchSizeLimit));
         }
+    }
+
+    internal RecordAppendResult TryAppendSplitRecord(
+        long timestamp,
+        in Record record,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
+        Action<RecordMetadata, Exception?>? callback)
+    {
+        var result = TryReserveAppend(
+            timestamp,
+            record.IsKeyNull,
+            record.Key.Length,
+            record.IsValueNull,
+            record.Value.Length,
+            record.Headers,
+            record.HeaderCount,
+            completionSource is not null,
+            callback is not null,
+            out var reservedAppend);
+        if (!result.Success)
+            return result;
+
+        try
+        {
+            EncodeReservedAppend(
+                reservedAppend,
+                record.Key.Span,
+                record.IsKeyNull,
+                record.Value.Span,
+                record.IsValueNull,
+                record.Headers,
+                record.HeaderCount);
+        }
+        catch
+        {
+            CancelReservedAppend(reservedAppend);
+            throw;
+        }
+
+        CommitReservedAppend(
+            reservedAppend,
+            completionSource,
+            callback,
+            reservedAppend.EncodedRecordSize);
+        return result;
     }
 
     private void EnsureArenaCanFitFirstRecord(int encodedRecordSize)
@@ -7534,7 +7813,7 @@ internal sealed class PartitionBatch
             return;
         }
 
-        var normalCapacity = GetEffectiveArenaCapacity(_options);
+        var normalCapacity = GetNormalArenaCapacity(_options);
         var capacity = Math.Max(normalCapacity, encodedRecordSize);
         if (arena is not null)
         {
@@ -7732,13 +8011,16 @@ internal sealed class PartitionBatch
 
         if (_completionSourceCount > 0 && _completionSources is not null)
         {
-            for (var i = 0; i < _completionSourceCount; i++)
-                PooledCompletionSource.TrySetException(_completionSources[i], exception);
+            for (var i = 0; i < _recordCount; i++)
+            {
+                if (_completionSources[i] is { } source)
+                    PooledCompletionSource.TrySetException(source, exception);
+            }
         }
 
         if (_callbackCount > 0 && _callbacks is not null)
         {
-            for (var i = 0; i < _callbackCount; i++)
+            for (var i = 0; i < _recordCount; i++)
             {
                 var callback = _callbacks[i];
                 if (callback is null)
@@ -7761,6 +8043,25 @@ internal sealed class PartitionBatch
         _completedBatch = null;
 
         return bytesToRelease;
+    }
+
+    internal void DiscardSplitBuild()
+    {
+        if (_completionSources is not null)
+            Array.Clear(_completionSources, 0, Math.Min(_recordCount, _completionSources.Length));
+        if (_callbacks is not null)
+            Array.Clear(_callbacks, 0, Math.Min(_recordCount, _callbacks.Length));
+
+        ReleaseAdmissionReservation();
+        ReturnBatchArraysToPool();
+        _recordCount = 0;
+        _completionSourceCount = 0;
+        _callbackCount = 0;
+        _encodedRecordsStart = 0;
+        _encodedRecordsLength = 0;
+        _estimatedSize = 0;
+        _reservedSize = 0;
+        _completedBatch = null;
     }
 
     private void ReleaseAdmissionReservation()
@@ -7984,6 +8285,25 @@ internal sealed class ReadyBatch
     // Callbacks for Send(message, callback) - inline invocation without ThreadPool
     private Action<RecordMetadata, Exception?>?[]? _callbacks;
     private int _callbackCount;
+
+    internal PooledValueTaskSource<RecordMetadata>? GetCompletionSource(int recordIndex)
+        => _completionSourcesArray?[recordIndex];
+
+    internal Action<RecordMetadata, Exception?>? GetCallback(int recordIndex)
+        => _callbacks?[recordIndex];
+
+    internal bool IsSplitBatch { get; private set; }
+
+    internal int MaxRecordSize { get; private set; }
+
+    internal double ObservedCompressionRatio { get; set; } = 1.0;
+
+    internal void MarkAsSplitBatch(int maxRecordSize)
+    {
+        IsSplitBatch = true;
+        MaxRecordSize = maxRecordSize;
+        IsRetry = true;
+    }
 
     // In-flight tracker entry for coordinated retry with multiple in-flight batches per partition.
     // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
@@ -8368,6 +8688,14 @@ internal sealed class ReadyBatch
         IsRetry = true;
     }
 
+    internal void PreserveDeliveryTimeline(ReadyBatch source)
+    {
+        StopwatchCreatedTicks = source.StopwatchCreatedTicks;
+        StopwatchSealedTicks = source.StopwatchSealedTicks;
+        GovernedOriginTicks = source.GovernedOriginTicks;
+        _createdTimestamp = Stopwatch.GetTimestamp();
+    }
+
     // DoneTask is observed only by diagnostics/tests; producer flushing uses the accumulator's
     // in-flight counter. Allocate its source lazily so the hot path remains allocation-free.
     // A Task is deliberately used instead of a resettable IValueTaskSource: ReadyBatch can be
@@ -8531,7 +8859,7 @@ internal sealed class ReadyBatch
         _completionSourcesCount = completionSourcesCount;
         // Captured at seal time because the RecordBatch's record list may be recycled or
         // never materialized by the time a (possibly stale) Fail needs the count.
-        _recordCount = recordCount;
+        _recordCount = recordCount > 0 ? recordCount : completionSourcesCount;
         DataSize = dataSize;
         EncodedSize = dataSize;
         UnackedBudget = null;
@@ -8551,6 +8879,9 @@ internal sealed class ReadyBatch
             StopwatchSealedTicks,
             StopwatchCreatedTicks + lingerTicks);
         _createdTimestamp = StopwatchSealedTicks;
+        IsSplitBatch = false;
+        MaxRecordSize = 0;
+        ObservedCompressionRatio = 1.0;
     }
 
     /// <summary>
@@ -8573,10 +8904,10 @@ internal sealed class ReadyBatch
                     $"Batch recycled without completing delivery — this indicates a bug in the producer pipeline " +
                     $"(tp={_topicPartition}, sendCompleted={Volatile.Read(ref _sendCompleted)}, " +
                     $"completed={Volatile.Read(ref _completed)}, trace={DiagTrace})");
-                for (var i = 0; i < _completionSourcesCount; i++)
+                for (var i = 0; i < _recordCount; i++)
                 {
-                    if (PooledCompletionSource.TrySetException(
-                        _completionSourcesArray[i], orphanedException))
+                    if (_completionSourcesArray[i] is { } source
+                        && PooledCompletionSource.TrySetException(source, orphanedException))
                         failedCount++;
                 }
             }
@@ -8623,6 +8954,9 @@ internal sealed class ReadyBatch
         LoopExitRedeliveryOrder = 0;
         RetryNotBefore = 0;
         RetryFailureCount = 0;
+        IsSplitBatch = false;
+        MaxRecordSize = 0;
+        ObservedCompressionRatio = 1.0;
         _diagTraceLen = 0;
 
         // NOTE: _cleanedUp, _completed, and _sendCompleted are NOT reset here. They stay
@@ -8666,10 +9000,10 @@ internal sealed class ReadyBatch
 #if DEBUG
                 var completedCount = 0;
 #endif
-                for (var i = 0; i < _completionSourcesCount; i++)
+                for (var i = 0; i < _recordCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    if (PooledCompletionSource.TrySetResult(source, new RecordMetadata
+                    if (source is not null && PooledCompletionSource.TrySetResult(source, new RecordMetadata
                     {
                         Topic = _topicPartition.Topic,
                         Partition = _topicPartition.Partition,
@@ -8691,7 +9025,7 @@ internal sealed class ReadyBatch
             // Callbacks are invoked on the sender thread, so they must be non-blocking
             if (_callbackCount > 0 && _callbacks is not null)
             {
-                for (var i = 0; i < _callbackCount; i++)
+                for (var i = 0; i < _recordCount; i++)
                 {
                     var callback = _callbacks[i];
                     if (callback is not null)
@@ -8760,6 +9094,30 @@ internal sealed class ReadyBatch
         return true;
     }
 
+    /// <summary>
+    /// Ends the rejected source batch after its delivery work has moved to split children.
+    /// No record future or callback is completed here.
+    /// </summary>
+    internal bool TryAbandonForSplit(int expectedGeneration)
+    {
+        if (!TryAcquireResourcePin(expectedGeneration))
+            return false;
+
+        try
+        {
+            if (Interlocked.CompareExchange(ref _sendCompleted, 1, 0) != 0)
+                return false;
+
+            CompleteDoneTask(succeeded: true);
+            Cleanup();
+            return true;
+        }
+        finally
+        {
+            ReleaseResourcePin();
+        }
+    }
+
     internal void CompleteTerminalBookkeeping()
         => Volatile.Write(ref _terminalBookkeepingCompleted, 1);
 
@@ -8815,10 +9173,10 @@ internal sealed class ReadyBatch
 #if DEBUG
                 var failedCount = 0;
 #endif
-                for (var i = 0; i < _completionSourcesCount; i++)
+                for (var i = 0; i < _recordCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    if (PooledCompletionSource.TrySetException(source, exception))
+                    if (source is not null && PooledCompletionSource.TrySetException(source, exception))
                     {
 #if DEBUG
                         failedCount++;
@@ -8833,7 +9191,7 @@ internal sealed class ReadyBatch
             // Invoke callbacks with exception - NO ThreadPool scheduling
             if (_callbackCount > 0 && _callbacks is not null)
             {
-                for (var i = 0; i < _callbackCount; i++)
+                for (var i = 0; i < _recordCount; i++)
                 {
                     var callback = _callbacks[i];
                     if (callback is not null)
