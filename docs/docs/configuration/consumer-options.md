@@ -106,6 +106,7 @@ Configuration is applied before the optional fluent callback, so fluent calls ca
 | `WithPrefetchPipelineDepth(...)` | `PrefetchPipelineDepth` | Integer |
 | `WithConnectionsMaxIdle(...)` | `ConnectionsMaxIdleMs` | Milliseconds; `-1` disables |
 | `WithConnectionTimeout(...)` | `ConnectionTimeout` | TimeSpan |
+| `WithConnectionTimeoutMax(...)` | `ConnectionTimeoutMax` | TimeSpan; Kafka `socket.connection.setup.timeout.max.ms` |
 | `WithTcpKeepAlive(...)` | `EnableTcpKeepAlive`, `TcpKeepAliveTime`, `TcpKeepAliveInterval`, `TcpKeepAliveRetryCount` | Socket keepalive |
 | `WithConnectionsPerBroker(...)` | `ConnectionsPerBroker` | Integer |
 | `WithAdaptiveConnections(...)` | `EnableAdaptiveConnections`, `MaxConnectionsPerBroker` | Set `EnableAdaptiveConnections` to `false` to disable |
@@ -338,6 +339,15 @@ Maximum time allowed for socket connection setup, including TLS and SASL handsha
 .WithConnectionTimeout(TimeSpan.FromSeconds(10))
 ```
 
+Set a larger maximum to enable KIP-601 adaptive setup deadlines. Consecutive failures grow the effective timeout exponentially with ±20% jitter, capped at the maximum. A successful setup resets it. Reconnect backoff remains separate.
+
+```csharp
+.WithConnectionTimeout(TimeSpan.FromSeconds(10))
+.WithConnectionTimeoutMax(TimeSpan.FromSeconds(127))
+```
+
+When only `WithConnectionTimeout` is set, the maximum follows the initial value, preserving fixed-timeout behavior. Failure progression follows the broker ID plus advertised `host:port`. DNS address rotation for that broker and endpoint retains it; a different broker ID or advertised endpoint starts fresh.
+
 ### WithTcpKeepAlive
 
 Enable, disable, or tune TCP keepalive probes:
@@ -456,6 +466,7 @@ For transactional reads:
 | `WithConnectionsPerBroker` | 2 | TCP connections per broker |
 | `WithAdaptiveConnections` | enabled (max 4) | Auto-scale connections under load |
 | `WithConnectionTimeout` | 30000ms | Socket connection setup timeout |
+| `WithConnectionTimeoutMax` | Same as initial | Maximum adaptive connection setup timeout |
 | `WithTcpKeepAlive` | enabled | TCP keepalive; 2m idle, 30s interval, 3 retries |
 | `UseTls` | false | Enable TLS |
 | `WithRemoteCertificateValidationCallback` | null | Custom TLS certificate validation |

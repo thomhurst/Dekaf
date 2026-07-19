@@ -81,6 +81,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 TlsConfig = options.TlsConfig,
                 RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
                 ConnectionTimeout = options.ConnectionTimeout,
+                ConnectionTimeoutMax = options.ConnectionTimeoutMax,
                 EnableTcpKeepAlive = options.EnableTcpKeepAlive,
                 TcpKeepAliveTime = options.TcpKeepAliveTime,
                 TcpKeepAliveInterval = options.TcpKeepAliveInterval,

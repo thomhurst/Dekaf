@@ -113,6 +113,53 @@ public sealed class ConnectionBuilderOptionsTests
     }
 
     [Test]
+    public async Task Builders_WithConnectionTimeoutMax_ConfigureAdaptiveRange()
+    {
+        var initial = TimeSpan.FromSeconds(7);
+        var maximum = TimeSpan.FromSeconds(21);
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithConnectionTimeout(initial)
+            .WithConnectionTimeoutMax(maximum)
+            .Build();
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("consumer-group")
+            .WithConnectionTimeout(initial)
+            .WithConnectionTimeoutMax(maximum)
+            .Build();
+        await using var shareConsumer = Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("share-group")
+            .WithConnectionTimeout(initial)
+            .WithConnectionTimeoutMax(maximum)
+            .Build();
+        await using var admin = Kafka.CreateAdminClient()
+            .WithBootstrapServers("localhost:9092")
+            .WithConnectionTimeout(initial)
+            .WithConnectionTimeoutMax(maximum)
+            .Build();
+        await using var client = Kafka.Connect("localhost:9092", builder => builder
+            .WithConnectionTimeout(initial)
+            .WithConnectionTimeoutMax(maximum));
+        await using var clientProducer = client.CreateProducer<string, string>().Build();
+
+        foreach (var options in new[]
+                 {
+                     GetConnectionOptions(producer),
+                     GetConnectionOptions(consumer),
+                     GetConnectionOptions(shareConsumer),
+                     GetConnectionOptions(admin),
+                     GetConnectionOptions(clientProducer)
+                 })
+        {
+            await Assert.That(options.ConnectionTimeout).IsEqualTo(initial);
+            await Assert.That(options.ConnectionTimeoutMax).IsEqualTo(maximum);
+        }
+    }
+
+    [Test]
     public async Task DirectClientOptions_WithOnlyReconnectBackoff_UseFixedBackoff()
     {
         var expected = TimeSpan.FromMilliseconds(123);
@@ -264,6 +311,14 @@ public sealed class ConnectionBuilderOptionsTests
 
         await Assert.That(() => builder.WithConnectionTimeout(TimeSpan.Zero))
             .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder.WithConnectionTimeoutMax(TimeSpan.Zero))
+            .Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => builder
+                .WithBootstrapServers("localhost:9092")
+                .WithConnectionTimeout(TimeSpan.FromSeconds(2))
+                .WithConnectionTimeoutMax(TimeSpan.FromSeconds(1))
+                .Build())
+            .Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => builder.WithTcpKeepAlive(TimeSpan.Zero, TimeSpan.FromSeconds(1)))
             .Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => builder.WithTcpKeepAlive(TimeSpan.FromSeconds(1), TimeSpan.Zero))
@@ -284,6 +339,7 @@ public sealed class ConnectionBuilderOptionsTests
         await Assert.That(options.UseTls).IsTrue();
         await Assert.That((object?)options.RemoteCertificateValidationCallback).IsSameReferenceAs(callback);
         await Assert.That(options.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(7));
+        await Assert.That(options.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(7));
         await Assert.That(options.EnableTcpKeepAlive).IsEqualTo(keepAliveEnabled);
         await Assert.That(options.TcpKeepAliveTime).IsEqualTo(TimeSpan.FromSeconds(11));
         await Assert.That(options.TcpKeepAliveInterval).IsEqualTo(TimeSpan.FromSeconds(3));

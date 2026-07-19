@@ -171,6 +171,8 @@ public class DependencyInjectionTests
             EnableAdaptiveConnections = false,
             ClientRack = "rack-a",
             EnableRackAwarePartitioning = true,
+            ConnectionTimeout = TimeSpan.FromSeconds(7),
+            ConnectionTimeoutMax = TimeSpan.FromSeconds(21),
             UseTls = true,
             SaslMechanism = SaslMechanism.ScramSha512,
             SaslUsername = "producer-user",
@@ -195,6 +197,8 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.EnableAdaptiveConnections).IsFalse();
         await Assert.That(boundOptions.ClientRack).IsEqualTo("rack-a");
         await Assert.That(boundOptions.EnableRackAwarePartitioning).IsTrue();
+        await Assert.That(boundOptions.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(7));
+        await Assert.That(boundOptions.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(21));
         await Assert.That(boundOptions.UseTls).IsTrue();
         await Assert.That(boundOptions.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("producer-user");
@@ -417,6 +421,8 @@ public class DependencyInjectionTests
             FetchMinBytes = 4096,
             DefaultApiTimeoutMs = 12_345,
             EnableAdaptiveConnections = false,
+            ConnectionTimeout = TimeSpan.FromSeconds(8),
+            ConnectionTimeoutMax = TimeSpan.FromSeconds(24),
             UseTls = true,
             SaslMechanism = SaslMechanism.ScramSha256,
             SaslUsername = "consumer-user",
@@ -441,6 +447,8 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.FetchMinBytes).IsEqualTo(4096);
         await Assert.That(boundOptions.DefaultApiTimeoutMs).IsEqualTo(12_345);
         await Assert.That(boundOptions.EnableAdaptiveConnections).IsFalse();
+        await Assert.That(boundOptions.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(8));
+        await Assert.That(boundOptions.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(24));
         await Assert.That(boundOptions.UseTls).IsTrue();
         await Assert.That(boundOptions.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha256);
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("consumer-user");
@@ -542,6 +550,8 @@ public class DependencyInjectionTests
             BootstrapServers = ["broker1:9092"],
             ClientId = "typed-admin",
             RequestTimeoutMs = 12345,
+            ConnectionTimeout = TimeSpan.FromSeconds(9),
+            ConnectionTimeoutMax = TimeSpan.FromSeconds(27),
             UseTls = true,
             SaslMechanism = SaslMechanism.ScramSha512,
             SaslUsername = "admin-user",
@@ -562,6 +572,8 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.BootstrapServers[0]).IsEqualTo("broker1:9092");
         await Assert.That(boundOptions.ClientId).IsEqualTo("override-admin");
         await Assert.That(boundOptions.RequestTimeoutMs).IsEqualTo(12345);
+        await Assert.That(boundOptions.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(9));
+        await Assert.That(boundOptions.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(27));
         await Assert.That(boundOptions.UseTls).IsTrue();
         await Assert.That(boundOptions.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("admin-user");
@@ -702,6 +714,8 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:RequestTimeoutMs"] = "3000",
             ["Kafka:Producers:Orders:ReconnectBackoffMs"] = "75",
             ["Kafka:Producers:Orders:ReconnectBackoffMaxMs"] = "750",
+            ["Kafka:Producers:Orders:ConnectionTimeout"] = "00:00:07",
+            ["Kafka:Producers:Orders:ConnectionTimeoutMax"] = "00:00:21",
             ["Kafka:Producers:Orders:EnableIdempotence"] = "false",
             ["Kafka:Producers:Orders:ConnectionsPerBroker"] = "3",
             ["Kafka:Producers:Orders:MaxConnectionsPerBroker"] = "6",
@@ -756,6 +770,8 @@ public class DependencyInjectionTests
         await Assert.That(options.RequestTimeoutMs).IsEqualTo(3000);
         await Assert.That(options.ReconnectBackoffMs).IsEqualTo(75);
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(750);
+        await Assert.That(options.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(7));
+        await Assert.That(options.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(21));
         await Assert.That(options.EnableIdempotence).IsFalse();
         await Assert.That(options.ConnectionsPerBroker).IsEqualTo(3);
         await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(6);
@@ -947,6 +963,8 @@ public class DependencyInjectionTests
             ["Kafka:Consumers:Orders:DefaultApiTimeoutMs"] = "25000",
             ["Kafka:Consumers:Orders:ReconnectBackoffMs"] = "80",
             ["Kafka:Consumers:Orders:ReconnectBackoffMaxMs"] = "800",
+            ["Kafka:Consumers:Orders:ConnectionTimeout"] = "00:00:08",
+            ["Kafka:Consumers:Orders:ConnectionTimeoutMax"] = "00:00:24",
             ["Kafka:Consumers:Orders:CheckCrcs"] = "true",
             ["Kafka:Consumers:Orders:UseTls"] = "true",
             ["Kafka:Consumers:Orders:SaslMechanism"] = "ScramSha256",
@@ -1010,6 +1028,8 @@ public class DependencyInjectionTests
         await Assert.That(options.DefaultApiTimeoutMs).IsEqualTo(25000);
         await Assert.That(options.ReconnectBackoffMs).IsEqualTo(80);
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(800);
+        await Assert.That(options.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(8));
+        await Assert.That(options.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(24));
         await Assert.That(options.CheckCrcs).IsTrue();
         await Assert.That(options.UseTls).IsTrue();
         await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha256);
@@ -1140,6 +1160,8 @@ public class DependencyInjectionTests
             ["Kafka:Admin:RequestTimeoutMs"] = "45000",
             ["Kafka:Admin:ReconnectBackoffMs"] = "90",
             ["Kafka:Admin:ReconnectBackoffMaxMs"] = "900",
+            ["Kafka:Admin:ConnectionTimeout"] = "00:00:09",
+            ["Kafka:Admin:ConnectionTimeoutMax"] = "00:00:27",
             ["Kafka:Admin:UseTls"] = "true",
             ["Kafka:Admin:SaslMechanism"] = "ScramSha512",
             ["Kafka:Admin:SaslUsername"] = "admin",
@@ -1167,6 +1189,8 @@ public class DependencyInjectionTests
         await Assert.That(options.RequestTimeoutMs).IsEqualTo(45000);
         await Assert.That(options.ReconnectBackoffMs).IsEqualTo(90);
         await Assert.That(options.ReconnectBackoffMaxMs).IsEqualTo(900);
+        await Assert.That(options.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(9));
+        await Assert.That(options.ConnectionTimeoutMax).IsEqualTo(TimeSpan.FromSeconds(27));
         await Assert.That(options.UseTls).IsTrue();
         await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
         await Assert.That(options.SaslUsername).IsEqualTo("admin");

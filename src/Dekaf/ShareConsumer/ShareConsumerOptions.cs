@@ -12,6 +12,8 @@ namespace Dekaf.ShareConsumer;
 /// </summary>
 public sealed class ShareConsumerOptions
 {
+    private TimeSpan? _connectionTimeoutMax;
+
     /// <summary>
     /// Bootstrap servers (host:port,host:port).
     /// </summary>
@@ -120,6 +122,17 @@ public sealed class ShareConsumerOptions
     /// Maximum time allowed for socket connection setup, including TLS/SASL handshakes.
     /// </summary>
     public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+
+    /// <summary>
+    /// Maximum connection setup timeout after consecutive failures. Defaults to
+    /// <see cref="ConnectionTimeout"/> to preserve fixed-timeout behavior.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.max.ms</c>.
+    /// </summary>
+    public TimeSpan ConnectionTimeoutMax
+    {
+        get => _connectionTimeoutMax ?? ConnectionTimeout;
+        init => _connectionTimeoutMax = value;
+    }
 
     /// <summary>
     /// Whether to enable TCP keepalive on broker sockets.

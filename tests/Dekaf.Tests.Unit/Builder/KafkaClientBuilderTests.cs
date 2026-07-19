@@ -216,6 +216,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithConnectionTimeout(TimeSpan.FromSeconds(1)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateProducer<string, string>().WithConnectionTimeoutMax(TimeSpan.FromSeconds(2)))
+            .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithTcpKeepAlive(false))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateProducer<string, string>().WithRemoteCertificateValidationCallback(AcceptCertificate))
@@ -248,6 +250,8 @@ public sealed class KafkaClientBuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithConnectionTimeout(TimeSpan.FromSeconds(1)))
             .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateConsumer<string, string>().WithConnectionTimeoutMax(TimeSpan.FromSeconds(2)))
+            .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithTcpKeepAlive(false))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateConsumer<string, string>().WithRemoteCertificateValidationCallback(AcceptCertificate))
@@ -272,6 +276,8 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionTimeout(TimeSpan.FromSeconds(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateShareConsumer<string, string>().WithConnectionTimeoutMax(TimeSpan.FromSeconds(2)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateShareConsumer<string, string>().WithTcpKeepAlive(false))
             .Throws<InvalidOperationException>();
@@ -299,6 +305,8 @@ public sealed class KafkaClientBuilderTests
         await Assert.That(() => client.CreateAdminClient().WithConnectionsMaxIdle(TimeSpan.FromMinutes(1)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithConnectionTimeout(TimeSpan.FromSeconds(1)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(() => client.CreateAdminClient().WithConnectionTimeoutMax(TimeSpan.FromSeconds(2)))
             .Throws<InvalidOperationException>();
         await Assert.That(() => client.CreateAdminClient().WithTcpKeepAlive(false))
             .Throws<InvalidOperationException>();

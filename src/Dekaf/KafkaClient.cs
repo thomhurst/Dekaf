@@ -107,6 +107,7 @@ public sealed class KafkaClientBuilder
     private bool _isMaxConnectionsPerBrokerConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
+    private TimeSpan? _connectionTimeoutMax;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
     private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
     private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
@@ -230,6 +231,19 @@ public sealed class KafkaClientBuilder
             timeout,
             nameof(timeout),
             "Connection timeout must be positive");
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum connection setup timeout after consecutive failures.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.max.ms</c>.
+    /// </summary>
+    public KafkaClientBuilder WithConnectionTimeoutMax(TimeSpan timeout)
+    {
+        _connectionTimeoutMax = ConnectionOptionValidation.ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "Maximum connection timeout must be positive");
         return this;
     }
 
@@ -596,6 +610,7 @@ public sealed class KafkaClientBuilder
             TlsConfig = _tlsConfig,
             RemoteCertificateValidationCallback = _remoteCertificateValidationCallback,
             ConnectionTimeout = _connectionTimeout,
+            ConnectionTimeoutMax = _connectionTimeoutMax ?? _connectionTimeout,
             EnableTcpKeepAlive = _enableTcpKeepAlive,
             TcpKeepAliveTime = _tcpKeepAliveTime,
             TcpKeepAliveInterval = _tcpKeepAliveInterval,
@@ -631,6 +646,7 @@ public sealed class KafkaClientBuilder
 }
 internal sealed class KafkaClientOptions
 {
+    private TimeSpan? _connectionTimeoutMax;
     public required IReadOnlyList<string> BootstrapServers { get; init; }
     public string? ClientId { get; init; }
     public int RequestTimeoutMs { get; init; }
@@ -642,6 +658,12 @@ internal sealed class KafkaClientOptions
     public TlsConfig? TlsConfig { get; init; }
     public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
     public TimeSpan ConnectionTimeout { get; init; } = ConnectionOptions.DefaultConnectionTimeout;
+    public TimeSpan ConnectionTimeoutMax
+    {
+        get => _connectionTimeoutMax ?? ConnectionTimeout;
+        init => _connectionTimeoutMax = value;
+    }
+
     public bool EnableTcpKeepAlive { get; init; } = ConnectionOptions.DefaultEnableTcpKeepAlive;
     public TimeSpan TcpKeepAliveTime { get; init; } = ConnectionOptions.DefaultTcpKeepAliveTime;
     public TimeSpan TcpKeepAliveInterval { get; init; } = ConnectionOptions.DefaultTcpKeepAliveInterval;
@@ -793,6 +815,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         TlsConfig = options.TlsConfig,
         RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
         ConnectionTimeout = options.ConnectionTimeout,
+        ConnectionTimeoutMax = options.ConnectionTimeoutMax,
         EnableTcpKeepAlive = options.EnableTcpKeepAlive,
         TcpKeepAliveTime = options.TcpKeepAliveTime,
         TcpKeepAliveInterval = options.TcpKeepAliveInterval,

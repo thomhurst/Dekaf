@@ -1199,6 +1199,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 TlsConfig = options.TlsConfig,
                 RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
                 ConnectionTimeout = options.ConnectionTimeout,
+                ConnectionTimeoutMax = options.ConnectionTimeoutMax,
                 EnableTcpKeepAlive = options.EnableTcpKeepAlive,
                 TcpKeepAliveTime = options.TcpKeepAliveTime,
                 TcpKeepAliveInterval = options.TcpKeepAliveInterval,

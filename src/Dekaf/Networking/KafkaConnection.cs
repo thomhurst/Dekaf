@@ -348,7 +348,10 @@ public sealed partial class KafkaConnection :
     private PendingRequestShard GetPendingRequestShard(int correlationId)
         => _pendingRequestShards[(int)((uint)correlationId % (uint)_pendingRequestShards.Length)];
 
-    public async ValueTask ConnectAsync(CancellationToken cancellationToken = default)
+    public ValueTask ConnectAsync(CancellationToken cancellationToken = default)
+        => ConnectAsync(_options.ConnectionTimeout, cancellationToken);
+
+    internal async ValueTask ConnectAsync(TimeSpan connectionTimeout, CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
@@ -366,7 +369,7 @@ public sealed partial class KafkaConnection :
             if (IsConnected)
                 return;
 
-            await ConnectCoreAsync(cancellationToken).ConfigureAwait(false);
+            await ConnectCoreAsync(connectionTimeout, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -374,18 +377,19 @@ public sealed partial class KafkaConnection :
         }
     }
 
-    private async ValueTask ConnectCoreAsync(CancellationToken cancellationToken)
+    private async ValueTask ConnectCoreAsync(TimeSpan connectionTimeout, CancellationToken cancellationToken)
     {
         LogConnecting(_host, _port);
 
         Volatile.Write(ref _capabilities, null);
 
         using var connectTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        connectTimeoutCts.CancelAfter(_options.ConnectionTimeout);
+        connectTimeoutCts.CancelAfter(connectionTimeout);
+        var setupCancellationToken = connectTimeoutCts.Token;
         (Socket socket, string targetHost) socketResult;
         try
         {
-            socketResult = await ConnectSocketAsync(connectTimeoutCts.Token).ConfigureAwait(false);
+            socketResult = await ConnectSocketAsync(setupCancellationToken).ConfigureAwait(false);
         }
         catch (DnsResolutionException ex) when (cancellationToken.IsCancellationRequested)
         {
@@ -411,15 +415,20 @@ public sealed partial class KafkaConnection :
             try
             {
 #if NETSTANDARD2_0
-                await AuthenticateAsClientNetStandardAsync(sslStream, targetHost, cancellationToken)
+                await AuthenticateAsClientNetStandardAsync(sslStream, targetHost, setupCancellationToken)
                     .ConfigureAwait(false);
 #else
                 var sslOptions = BuildSslClientAuthenticationOptions(targetHost);
-                await sslStream.AuthenticateAsClientAsync(sslOptions, cancellationToken).ConfigureAwait(false);
+                await sslStream.AuthenticateAsClientAsync(sslOptions, setupCancellationToken).ConfigureAwait(false);
 #endif
             }
-            catch (System.Security.Authentication.AuthenticationException ex)
+            catch (Exception ex)
             {
+                await DisposeFailedTlsStreamAsync(sslStream).ConfigureAwait(false);
+
+                if (ex is not System.Security.Authentication.AuthenticationException authenticationException)
+                    throw;
+
                 // TLS handshake failures surface here — primarily a rejected certificate, but .NET
                 // also throws this type for negotiation/protocol mismatches. We deliberately treat
                 // them all as fatal: TLS configuration is cluster-wide, so the same failure would
@@ -427,8 +436,9 @@ public sealed partial class KafkaConnection :
                 // Wrap as a Dekaf AuthenticationException (a KafkaException) so callers can catch it
                 // and metadata refresh treats it as fatal instead of masking it behind a generic
                 // "failed to refresh metadata" error.
-                await sslStream.DisposeAsync().ConfigureAwait(false);
-                throw new AuthenticationException($"TLS handshake failed: {ex.Message}", ex);
+                throw new AuthenticationException(
+                    $"TLS handshake failed: {authenticationException.Message}",
+                    authenticationException);
             }
             networkStream = sslStream;
             _isTls = true;
@@ -439,7 +449,7 @@ public sealed partial class KafkaConnection :
         // Perform SASL authentication if configured
         if (_options.SaslMechanism != SaslMechanism.None)
         {
-            await PerformSaslAuthenticationAsync(cancellationToken).ConfigureAwait(false);
+            await PerformSaslAuthenticationAsync(setupCancellationToken).ConfigureAwait(false);
         }
 
         // Release the previous reader's buffer (reconnect path) before its source pool
@@ -492,6 +502,18 @@ public sealed partial class KafkaConnection :
         _telemetryMetricCollector?.RecordConnectionCreated();
 
         LogConnected(_host, _port);
+    }
+
+    internal static async ValueTask DisposeFailedTlsStreamAsync(SslStream sslStream)
+    {
+        try
+        {
+            await sslStream.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort cleanup must not replace the TLS handshake exception.
+        }
     }
 
     private async ValueTask<(Socket Socket, string TargetHost)> ConnectSocketAsync(CancellationToken cancellationToken)
@@ -4177,9 +4199,21 @@ public sealed class ConnectionOptions
     public int MinimumReadSize { get; init; } = 256;
 
     /// <summary>
-    /// Connection timeout.
+    /// Initial socket connection setup timeout.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.ms</c>.
     /// </summary>
     public TimeSpan ConnectionTimeout { get; init; } = DefaultConnectionTimeout;
+
+    /// <summary>
+    /// Maximum socket connection setup timeout after consecutive failures.
+    /// Equivalent to Kafka's <c>socket.connection.setup.timeout.max.ms</c>.
+    /// Defaults to <see cref="ConnectionTimeout"/> to preserve fixed-timeout behavior.
+    /// </summary>
+    public TimeSpan ConnectionTimeoutMax
+    {
+        get => _connectionTimeoutMax ?? ConnectionTimeout;
+        init => _connectionTimeoutMax = value;
+    }
 
     /// <summary>
     /// Request timeout.
@@ -4252,6 +4286,7 @@ public sealed class ConnectionOptions
     }
 
     private readonly int _connectionsMaxIdleMs = DefaultConnectionsMaxIdleMs;
+    private readonly TimeSpan? _connectionTimeoutMax;
 }
 
 /// <summary>
