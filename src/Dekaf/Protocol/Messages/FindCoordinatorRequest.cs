@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace Dekaf.Protocol.Messages;
 
 /// <summary>
@@ -8,10 +10,10 @@ public sealed class FindCoordinatorRequest : IKafkaRequest<FindCoordinatorRespon
 {
     public static ApiKey ApiKey => ApiKey.FindCoordinator;
     public static short LowestSupportedVersion => 4;
-    public static short HighestSupportedVersion => 5;
+    public static short HighestSupportedVersion => 6;
 
     /// <summary>
-    /// The type of coordinator: 0 = group, 1 = transaction.
+    /// The type of coordinator: 0 = group, 1 = transaction, 2 = share partition.
     /// </summary>
     public CoordinatorType KeyType { get; init; } = CoordinatorType.Group;
 
@@ -19,6 +21,41 @@ public sealed class FindCoordinatorRequest : IKafkaRequest<FindCoordinatorRespon
     /// The key to look up the coordinator for.
     /// </summary>
     public required string Key { get; init; }
+
+    /// <summary>
+    /// Creates a KIP-932 share-partition coordinator request from typed key parts.
+    /// </summary>
+    public static FindCoordinatorRequest ForSharePartition(string groupId, Guid topicId, int partition) =>
+        new()
+        {
+            KeyType = CoordinatorType.Share,
+            Key = BuildShareCoordinatorKey(groupId, topicId, partition)
+        };
+
+    /// <summary>
+    /// Builds the KIP-932 coordinator key for a share-group partition.
+    /// </summary>
+    public static string BuildShareCoordinatorKey(string groupId, Guid topicId, int partition)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupId);
+        if (topicId == Guid.Empty)
+            throw new ArgumentException("A share coordinator key requires a non-empty topic ID.", nameof(topicId));
+        ArgumentOutOfRangeException.ThrowIfNegative(partition);
+
+        var topicIdBytes = new byte[16];
+        KafkaGuid.WriteBigEndian(topicId, topicIdBytes);
+        var encodedTopicId = Convert.ToBase64String(topicIdBytes)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+
+        return string.Concat(
+            groupId,
+            ":",
+            encodedTopicId,
+            ":",
+            partition.ToString(CultureInfo.InvariantCulture));
+    }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -36,5 +73,6 @@ public sealed class FindCoordinatorRequest : IKafkaRequest<FindCoordinatorRespon
 public enum CoordinatorType : sbyte
 {
     Group = 0,
-    Transaction = 1
+    Transaction = 1,
+    Share = 2
 }

@@ -25,6 +25,7 @@ Decoded:
     {
       "AuthorizedOperations": 8191,
       "ErrorCode": "None",
+      "ErrorMessage": null,
       "GroupId": "wire-group",
       "GroupState": "Stable",
       "Members": [
@@ -51,6 +52,7 @@ Decoded:
     {
       "AuthorizedOperations": 8191,
       "ErrorCode": "GroupIdNotFound",
+      "ErrorMessage": null,
       "GroupId": "wire-group-b",
       "GroupState": "Dead",
       "Members": [],

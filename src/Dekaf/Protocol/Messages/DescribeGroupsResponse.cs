@@ -8,7 +8,7 @@ public sealed class DescribeGroupsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.DescribeGroups;
     public static short LowestSupportedVersion => 5;
-    public static short HighestSupportedVersion => 5;
+    public static short HighestSupportedVersion => 6;
 
     /// <summary>
     /// The duration in milliseconds for which the request was throttled due to quota violation
@@ -25,9 +25,9 @@ public sealed class DescribeGroupsResponse : IKafkaResponse
     {
         var throttleTimeMs = reader.ReadInt32();
 
-        IReadOnlyList<DescribeGroupsResponseGroup> groups;
-        groups = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DescribeGroupsResponseGroup.Read(ref r, version)) ?? [];
+        var groups = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => DescribeGroupsResponseGroup.Read(ref r, v),
+            version);
 
         reader.SkipTaggedFields();
 
@@ -48,6 +48,11 @@ public sealed class DescribeGroupsResponseGroup
     /// The error code, or 0 if there was no error.
     /// </summary>
     public ErrorCode ErrorCode { get; init; }
+
+    /// <summary>
+    /// The broker-provided error message (v6+), or null when unavailable.
+    /// </summary>
+    public string? ErrorMessage { get; init; }
 
     /// <summary>
     /// The group ID.
@@ -82,6 +87,7 @@ public sealed class DescribeGroupsResponseGroup
     public static DescribeGroupsResponseGroup Read(ref KafkaProtocolReader reader, short version)
     {
         var errorCode = (ErrorCode)reader.ReadInt16();
+        var errorMessage = version >= 6 ? reader.ReadCompactString() : null;
 
         var groupId = reader.ReadCompactString() ?? string.Empty;
 
@@ -91,9 +97,9 @@ public sealed class DescribeGroupsResponseGroup
 
         var protocolData = reader.ReadCompactString();
 
-        IReadOnlyList<DescribeGroupsResponseMember> members;
-        members = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DescribeGroupsResponseMember.Read(ref r, version)) ?? [];
+        var members = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => DescribeGroupsResponseMember.Read(ref r, v),
+            version);
 
         var authorizedOperations = reader.ReadInt32();
 
@@ -102,6 +108,7 @@ public sealed class DescribeGroupsResponseGroup
         return new DescribeGroupsResponseGroup
         {
             ErrorCode = errorCode,
+            ErrorMessage = errorMessage,
             GroupId = groupId,
             GroupState = groupState,
             ProtocolType = protocolType,

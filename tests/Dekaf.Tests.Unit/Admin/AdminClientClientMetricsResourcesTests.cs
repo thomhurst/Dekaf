@@ -14,7 +14,7 @@ public sealed class AdminClientClientMetricsResourcesTests
     [Test]
     public async Task ListClientMetricsResourcesAsync_MapsResponseToResult()
     {
-        var (admin, connection) = CreateAdminWithMockConnection();
+        var (admin, connection) = CreateAdminWithMockConnection(maxApiVersion: 1);
 
         connection.SendAsync<ListClientMetricsResourcesRequest, ListClientMetricsResourcesResponse>(
                 Arg.Any<ListClientMetricsResourcesRequest>(),
@@ -39,6 +39,58 @@ public sealed class AdminClientClientMetricsResourcesTests
             Arg.Any<ListClientMetricsResourcesRequest>(),
             Arg.Is<short>(version => version == 0),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ListConfigResourcesAsync_MapsTypedResourcesAndFilters()
+    {
+        var (admin, connection) = CreateAdminWithMockConnection(maxApiVersion: 1);
+
+        connection.SendAsync<ListConfigResourcesRequest, ListConfigResourcesResponse>(
+                Arg.Any<ListConfigResourcesRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new ListConfigResourcesResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ConfigResources =
+                [
+                    new ListConfigResource { Name = "orders", ResourceType = (sbyte)ConfigResourceType.Topic },
+                    new ListConfigResource { Name = "analytics", ResourceType = (sbyte)ConfigResourceType.ClientMetrics }
+                ]
+            }));
+
+        var result = await admin.ListConfigResourcesAsync(new ListConfigResourcesOptions
+        {
+            ResourceTypes = [ConfigResourceType.Topic, ConfigResourceType.ClientMetrics]
+        });
+
+        await Assert.That(result.Count).IsEqualTo(2);
+        await Assert.That(result[0].Name).IsEqualTo("orders");
+        await Assert.That(result[0].Type).IsEqualTo(ConfigResourceType.Topic);
+        await Assert.That(result[1].Name).IsEqualTo("analytics");
+        await Assert.That(result[1].Type).IsEqualTo(ConfigResourceType.ClientMetrics);
+
+        await connection.Received(1).SendAsync<ListConfigResourcesRequest, ListConfigResourcesResponse>(
+            Arg.Is<ListConfigResourcesRequest>(request => request != null &&
+                request.ResourceTypes.SequenceEqual(new[]
+                {
+                    (sbyte)ConfigResourceType.Topic,
+                    (sbyte)ConfigResourceType.ClientMetrics
+                })),
+            Arg.Is<short>(version => version == 1),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ListConfigResourcesAsync_V0Broker_ThrowsBrokerVersionException()
+    {
+        var (admin, _) = CreateAdminWithMockConnection(maxApiVersion: 0);
+
+        var exception = await Assert.ThrowsAsync<BrokerVersionException>(async () =>
+            await admin.ListConfigResourcesAsync());
+
+        await Assert.That(exception).IsNotNull();
     }
 
     [Test]
@@ -80,7 +132,8 @@ public sealed class AdminClientClientMetricsResourcesTests
     }
 
     private static (AdminClient Admin, IKafkaConnection Connection) CreateAdminWithMockConnection(
-        IKafkaConnection? suppliedConnection = null)
+        IKafkaConnection? suppliedConnection = null,
+        short maxApiVersion = 0)
     {
         var connection = suppliedConnection ?? Substitute.For<IKafkaConnection>();
         if (suppliedConnection is null)
@@ -99,7 +152,7 @@ public sealed class AdminClientClientMetricsResourcesTests
 
         var metadataManager = new MetadataManager(pool, ["localhost:9092"]);
         metadataManager.Metadata.Update(CreateMetadataResponse());
-        metadataManager.SetApiVersion(ApiKey.ListClientMetricsResources, 0, 0);
+        metadataManager.SetApiVersion(ApiKey.ListClientMetricsResources, 0, maxApiVersion);
         metadataManager.SetApiVersion(ApiKey.Metadata, 9, 13);
 
         if (suppliedConnection is null)
@@ -120,7 +173,7 @@ public sealed class AdminClientClientMetricsResourcesTests
                     ApiKeys =
                     [
                         new ApiVersion(ApiKey.Metadata, 9, 13),
-                        new ApiVersion(ApiKey.ListClientMetricsResources, 0, 0)
+                        new ApiVersion(ApiKey.ListClientMetricsResources, 0, maxApiVersion)
                     ]
                 }));
         }

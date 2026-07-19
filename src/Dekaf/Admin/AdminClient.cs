@@ -178,6 +178,55 @@ public sealed class AdminClient : IAdminClient
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<IReadOnlyList<ConfigResourceListing>> ListConfigResourcesAsync(
+        ListConfigResourcesOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var resourceTypes = options?.ResourceTypes is { Count: > 0 } types
+            ? types.Select(static type => (sbyte)type).ToArray()
+            : [];
+
+        return await WithRetryAsync<IReadOnlyList<ConfigResourceListing>>(async () =>
+        {
+            using var connectionLease = await LeaseAnyBrokerConnectionAsync(cancellationToken).ConfigureAwait(false);
+            var connection = connectionLease.Connection;
+            if (!_metadataManager.HasApiKey(connection, Protocol.ApiKey.ListClientMetricsResources))
+                throw new Errors.BrokerVersionException($"Broker {connection.BrokerId} does not support ListConfigResources (API key 74).");
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                connection,
+                Protocol.ApiKey.ListClientMetricsResources,
+                ListConfigResourcesRequest.LowestSupportedVersion,
+                ListConfigResourcesRequest.HighestSupportedVersion);
+
+            var request = new ListConfigResourcesRequest
+            {
+                ResourceTypes = resourceTypes
+            };
+
+            var response = await connection.SendAsync<ListConfigResourcesRequest, ListConfigResourcesResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw KafkaException.FromErrorCode(response.ErrorCode,
+                    $"ListConfigResources failed: {response.ErrorCode}");
+            }
+
+            return response.ConfigResources
+                .Select(static resource => new ConfigResourceListing
+                {
+                    Name = resource.Name,
+                    Type = (ConfigResourceType)resource.ResourceType
+                })
+                .ToList();
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask CreateTopicsAsync(
         IEnumerable<NewTopic> topics,
         CreateTopicsOptions? options = null,
@@ -894,8 +943,11 @@ public sealed class AdminClient : IAdminClient
 
                 if (group.ErrorCode != Protocol.ErrorCode.None)
                 {
+                    var errorMessage = string.IsNullOrEmpty(group.ErrorMessage)
+                        ? string.Empty
+                        : $": {group.ErrorMessage}";
                     throw new Errors.GroupException(group.ErrorCode,
-                        $"DescribeConsumerGroups failed for group '{group.GroupId}': {group.ErrorCode}")
+                        $"DescribeConsumerGroups failed for group '{group.GroupId}': {group.ErrorCode}{errorMessage}")
                     {
                         GroupId = group.GroupId
                     };
@@ -968,8 +1020,11 @@ public sealed class AdminClient : IAdminClient
             {
                 if (group.ErrorCode != Protocol.ErrorCode.None)
                 {
+                    var errorMessage = string.IsNullOrEmpty(group.ErrorMessage)
+                        ? string.Empty
+                        : $": {group.ErrorMessage}";
                     throw new Errors.GroupException(group.ErrorCode,
-                        $"DescribeConsumerGroups failed for group '{group.GroupId}': {group.ErrorCode}")
+                        $"DescribeConsumerGroups failed for group '{group.GroupId}': {group.ErrorCode}{errorMessage}")
                     {
                         GroupId = group.GroupId
                     };

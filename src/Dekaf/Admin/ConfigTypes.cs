@@ -23,7 +23,17 @@ public enum ConfigResourceType : sbyte
     /// <summary>
     /// Broker logger configuration.
     /// </summary>
-    BrokerLogger = 8
+    BrokerLogger = 8,
+
+    /// <summary>
+    /// Client metrics configuration.
+    /// </summary>
+    ClientMetrics = 16,
+
+    /// <summary>
+    /// Group configuration.
+    /// </summary>
+    Group = 32
 }
 
 /// <summary>

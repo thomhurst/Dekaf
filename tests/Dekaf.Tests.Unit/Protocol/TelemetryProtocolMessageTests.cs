@@ -138,6 +138,63 @@ public sealed class TelemetryProtocolMessageTests
     }
 
     [Test]
+    public async Task ListConfigResourcesRequest_V1_WritesTypedFilters()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        var request = new ListConfigResourcesRequest
+        {
+            ResourceTypes = [2, 16, 32]
+        };
+
+        request.Write(ref writer, version: 1);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var resourceCount = reader.ReadUnsignedVarInt();
+        var topicType = reader.ReadInt8();
+        var clientMetricsType = reader.ReadInt8();
+        var groupType = reader.ReadInt8();
+        reader.SkipTaggedFields();
+        var readerEnd = reader.End;
+
+        await Assert.That(resourceCount).IsEqualTo(4);
+        await Assert.That(topicType).IsEqualTo((sbyte)2);
+        await Assert.That(clientMetricsType).IsEqualTo((sbyte)16);
+        await Assert.That(groupType).IsEqualTo((sbyte)32);
+        await Assert.That(readerEnd).IsTrue();
+    }
+
+    [Test]
+    public async Task ListConfigResourcesResponse_V1_ReadsTypedResources()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(10);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteUnsignedVarInt(3);
+        writer.WriteCompactString("orders");
+        writer.WriteInt8(2);
+        writer.WriteEmptyTaggedFields();
+        writer.WriteCompactString("analytics");
+        writer.WriteInt8(16);
+        writer.WriteEmptyTaggedFields();
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ListConfigResourcesResponse)ListConfigResourcesResponse.Read(ref reader, version: 1);
+        var readerEnd = reader.End;
+
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(10);
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(response.ConfigResources.Count).IsEqualTo(2);
+        await Assert.That(response.ConfigResources[0].Name).IsEqualTo("orders");
+        await Assert.That(response.ConfigResources[0].ResourceType).IsEqualTo((sbyte)2);
+        await Assert.That(response.ConfigResources[1].Name).IsEqualTo("analytics");
+        await Assert.That(response.ConfigResources[1].ResourceType).IsEqualTo((sbyte)16);
+        await Assert.That(readerEnd).IsTrue();
+    }
+
+    [Test]
     public async Task TelemetryRequests_UseFlexibleHeaders()
     {
         await Assert.That(GetRequestHeaderVersion<GetTelemetrySubscriptionsRequest, GetTelemetrySubscriptionsResponse>(0))
@@ -151,6 +208,10 @@ public sealed class TelemetryProtocolMessageTests
         await Assert.That(GetRequestHeaderVersion<ListClientMetricsResourcesRequest, ListClientMetricsResourcesResponse>(0))
             .IsEqualTo((short)2);
         await Assert.That(GetResponseHeaderVersion<ListClientMetricsResourcesRequest, ListClientMetricsResourcesResponse>(0))
+            .IsEqualTo((short)1);
+        await Assert.That(GetRequestHeaderVersion<ListConfigResourcesRequest, ListConfigResourcesResponse>(1))
+            .IsEqualTo((short)2);
+        await Assert.That(GetResponseHeaderVersion<ListConfigResourcesRequest, ListConfigResourcesResponse>(1))
             .IsEqualTo((short)1);
     }
 

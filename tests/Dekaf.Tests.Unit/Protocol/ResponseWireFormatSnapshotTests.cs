@@ -93,7 +93,9 @@ public class ResponseWireFormatSnapshotTests
         foreach (var (fixtureName, expectedBytes) in populatedFixtures)
         {
             var actualBytes = ResponseFixtures[fixtureName];
-            await Assert.That(actualBytes.AsSpan().SequenceEqual(expectedBytes)).IsTrue();
+            await Assert.That(actualBytes.AsSpan().SequenceEqual(expectedBytes))
+                .IsTrue()
+                .Because($"fixture {fixtureName} must match its deterministic encoder");
         }
     }
 
