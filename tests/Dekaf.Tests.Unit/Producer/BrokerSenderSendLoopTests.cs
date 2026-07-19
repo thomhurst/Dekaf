@@ -1140,6 +1140,58 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
 
     [Test]
     [Timeout(120_000)]
+    public async Task SendLoop_ProduceV13_LocalTopicIdMissPreservesPinnedConnection(
+        CancellationToken cancellationToken)
+    {
+        const string topic = "local-topic-id-miss";
+        var topicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+        var response = new TaskCompletionSource<ProduceResponse>();
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (pool, connection) = CreateMockConnection(
+            new Queue<TaskCompletionSource<ProduceResponse>>([response]),
+            () => sent.TrySetResult());
+        cancellationToken = GuardUnscriptedSends(cancellationToken);
+        var options = CreateOptions(retryBackoffMs: 0, retryBackoffMaxMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(CreateLeaderMetadataResponse(topic, 1, 1, topicId: Guid.Empty));
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, error) => acknowledged.TrySetResult(error),
+            metadataManager,
+            produceApiVersion: 13);
+        var batch = CreateTestBatch(valueTaskSourcePool, topic, partition: 0);
+
+        try
+        {
+            sender.Enqueue(batch);
+            await WaitUntilAsync(() => batch.DiagTrace.Contains('Z'), cancellationToken);
+
+            await Assert.That(GetPinnedConnection(sender, 0)).IsSameReferenceAs(connection);
+
+            metadataManager.Metadata.Update(CreateLeaderMetadataResponse(topic, 1, 2, topicId: topicId));
+            await sent.Task.WaitAsync(cancellationToken);
+            response.SetResult(CreateTopicIdResponse(topicId, 0, ErrorCode.None, baseOffset: 42));
+
+            await Assert.That(await acknowledged.Task.WaitAsync(cancellationToken)).IsNull();
+            await Assert.That(GetPinnedConnection(sender, 0)).IsSameReferenceAs(connection);
+            await Assert.That(connection.SendPipelinedAfterWriteCalls).IsEqualTo(1);
+        }
+        finally
+        {
+            response.TrySetResult(CreateTopicIdResponse(topicId, 0, ErrorCode.None));
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(120_000)]
     public async Task SendLoop_ProduceV12_FallsBackToTopicNames(
         CancellationToken cancellationToken)
     {
@@ -4077,6 +4129,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         (int)typeof(BrokerSender).GetField(
             "_totalPendingResponseCount",
             BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+
+    private static IKafkaConnection? GetPinnedConnection(BrokerSender sender, int connectionIndex) =>
+        ((IKafkaConnection?[])typeof(BrokerSender).GetField(
+            "_pinnedConnections",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!)[connectionIndex];
 
     private static int GetDeferredPendingResponseCleanupCount(BrokerSender sender) =>
         (int)typeof(BrokerSender).GetField(
