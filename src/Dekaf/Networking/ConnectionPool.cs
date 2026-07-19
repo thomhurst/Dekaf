@@ -13,7 +13,11 @@ namespace Dekaf.Networking;
 /// Connection pool for managing connections to Kafka brokers.
 /// Supports multiple connections per broker for parallel request handling.
 /// </summary>
-public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDiagnostics, IBrokerThrottleProvider
+public sealed partial class ConnectionPool :
+    IConnectionPool,
+    IConnectionPoolDiagnostics,
+    IBrokerThrottleProvider,
+    IConnectionCapabilityObserverPool
 {
     private const int MaxConnectionReapDiagnosticEvents = 256;
     private static readonly TimeSpan DefaultIdleReapDrainTimeout = TimeSpan.FromSeconds(5);
@@ -54,6 +58,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     /// </summary>
     private readonly Func<int, string, int, int, CancellationToken, ValueTask<IKafkaConnection>>? _connectionFactory;
     private readonly Func<double> _randomDouble;
+    private Action<KafkaConnectionCapabilities>? _capabilityObserver;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
@@ -191,6 +196,13 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
 
     internal BrokerThrottleState GetBrokerThrottleStateForTest(int brokerId, string host, int port) =>
         GetBrokerThrottleState(brokerId, new EndpointKey(host, port));
+
+    void IConnectionCapabilityObserverPool.SetConnectionCapabilityObserver(
+        Action<KafkaConnectionCapabilities> observer)
+    {
+        ArgumentNullException.ThrowIfNull(observer);
+        Volatile.Write(ref _capabilityObserver, observer);
+    }
 
     private static ConnectionOptions ConfigureSharedOAuthBearerProvider(
         ConnectionOptions options,
@@ -841,7 +853,8 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
                 _sharedPipeMemoryPool,
                 _telemetryMetricCollector,
                 _responseMemoryAdmissionsEnabled,
-                GetBrokerThrottleState(brokerId, endpoint));
+                GetBrokerThrottleState(brokerId, endpoint),
+                Volatile.Read(ref _capabilityObserver));
 
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1022,7 +1035,8 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
                 _sharedPipeMemoryPool,
                 _telemetryMetricCollector,
                 _responseMemoryAdmissionsEnabled,
-                GetBrokerThrottleState(brokerId, endpoint));
+                GetBrokerThrottleState(brokerId, endpoint),
+                Volatile.Read(ref _capabilityObserver));
 
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 

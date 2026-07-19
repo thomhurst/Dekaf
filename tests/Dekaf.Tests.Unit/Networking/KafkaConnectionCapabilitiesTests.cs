@@ -84,9 +84,106 @@ public class KafkaConnectionCapabilitiesTests
         await Assert.That(maxVersion).IsEqualTo((short)1);
         await Assert.That(capabilities.TryGetSupportedFeatureRange("missing", out _, out _)).IsFalse();
         await Assert.That(capabilities.FinalizedFeaturesEpoch).IsEqualTo(42);
-        await Assert.That(capabilities.GetFinalizedFeatureVersion("transaction.version")).IsEqualTo((short)2);
-        await Assert.That(capabilities.GetFinalizedFeatureVersion("missing")).IsEqualTo((short)0);
+        await Assert.That(capabilities.TryGetFinalizedFeatureVersion(
+            "transaction.version",
+            out var transactionVersion)).IsTrue();
+        await Assert.That(transactionVersion).IsEqualTo((short)2);
+        await Assert.That(capabilities.TryGetFinalizedFeatureVersion("missing", out _)).IsFalse();
         await Assert.That(capabilities.ZkMigrationReady).IsTrue();
+    }
+
+    [Test]
+    public async Task ClusterFinalizedFeatures_DistinguishesUnavailableAbsentAndZero()
+    {
+        await using var metadata = new MetadataManager(
+            Substitute.For<IConnectionPool>(),
+            ["unused:9092"]);
+
+        await Assert.That(metadata.GetFinalizedFeatureStatus(
+            "transaction.version",
+            out _)).IsEqualTo(FinalizedFeatureStatus.Unavailable);
+
+        metadata.ObserveClusterCapabilities(
+            "cluster-a",
+            CreateFeatureCapabilities(-1, new FinalizedFeature("transaction.version", 2, 0)));
+        await Assert.That(metadata.GetFinalizedFeatureStatus(
+            "transaction.version",
+            out _)).IsEqualTo(FinalizedFeatureStatus.Unavailable);
+
+        metadata.ObserveClusterCapabilities("cluster-a", CreateFeatureCapabilities(1));
+        await Assert.That(metadata.GetFinalizedFeatureStatus(
+            "transaction.version",
+            out _)).IsEqualTo(FinalizedFeatureStatus.Absent);
+
+        metadata.ObserveClusterCapabilities(
+            "cluster-a",
+            CreateFeatureCapabilities(2, new FinalizedFeature("transaction.version", 0, 0)));
+        await Assert.That(metadata.GetFinalizedFeatureStatus(
+            "transaction.version",
+            out var featureVersion)).IsEqualTo(FinalizedFeatureStatus.Present);
+        await Assert.That(featureVersion).IsEqualTo((short)0);
+    }
+
+    [Test]
+    public async Task ClusterFinalizedFeatures_RejectsRegressionAndEqualEpochConflict()
+    {
+        await using var metadata = new MetadataManager(
+            Substitute.For<IConnectionPool>(),
+            ["unused:9092"]);
+
+        metadata.ObserveClusterCapabilities(
+            "cluster-a",
+            CreateFeatureCapabilities(2, new FinalizedFeature("transaction.version", 2, 0)));
+        metadata.ObserveClusterCapabilities(
+            "cluster-a",
+            CreateFeatureCapabilities(1, new FinalizedFeature("transaction.version", 1, 0)));
+        metadata.ObserveClusterCapabilities(
+            "cluster-a",
+            CreateFeatureCapabilities(2, new FinalizedFeature("transaction.version", 2, 0)));
+
+        await Assert.That(metadata.TryGetFinalizedFeatureVersion(
+            "transaction.version",
+            out var featureVersion)).IsTrue();
+        await Assert.That(featureVersion).IsEqualTo((short)2);
+
+        var exception = await Assert.That(() => metadata.ObserveClusterCapabilities(
+                "cluster-a",
+                CreateFeatureCapabilities(2, new FinalizedFeature("transaction.version", 3, 0))))
+            .Throws<KafkaException>();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.FeatureUpdateFailed);
+
+        metadata.ObserveClusterCapabilities(
+            "cluster-a",
+            CreateFeatureCapabilities(3, new FinalizedFeature("transaction.version", 3, 0)));
+        await Assert.That(metadata.TryGetFinalizedFeatureVersion(
+            "transaction.version",
+            out featureVersion)).IsTrue();
+        await Assert.That(featureVersion).IsEqualTo((short)3);
+    }
+
+    [Test]
+    public async Task ClusterFinalizedFeatures_ClusterChangeCannotLeakPreviousSnapshot()
+    {
+        await using var metadata = new MetadataManager(
+            Substitute.For<IConnectionPool>(),
+            ["unused:9092"]);
+
+        metadata.ObserveClusterCapabilities(
+            "cluster-a",
+            CreateFeatureCapabilities(5, new FinalizedFeature("transaction.version", 2, 0)));
+        metadata.ObserveClusterCapabilities("cluster-b", CreateFeatureCapabilities(-1));
+
+        await Assert.That(metadata.GetFinalizedFeatureStatus(
+            "transaction.version",
+            out _)).IsEqualTo(FinalizedFeatureStatus.Unavailable);
+
+        metadata.ObserveClusterCapabilities(
+            "cluster-b",
+            CreateFeatureCapabilities(1, new FinalizedFeature("transaction.version", 1, 0)));
+        await Assert.That(metadata.TryGetFinalizedFeatureVersion(
+            "transaction.version",
+            out var featureVersion)).IsTrue();
+        await Assert.That(featureVersion).IsEqualTo((short)1);
     }
 
     [Test]
@@ -126,6 +223,7 @@ public class KafkaConnectionCapabilitiesTests
                 new ApiVersion(ApiKey.Metadata, 9, 13),
                 new ApiVersion(ApiKey.Fetch, 12, 16)
             ],
+            FinalizedFeaturesEpoch = 1,
             FinalizedFeatures = [new FinalizedFeature("transaction.version", 2, 0)]
         });
         var connection = new CapabilityConnection(capabilities);
@@ -143,8 +241,10 @@ public class KafkaConnectionCapabilitiesTests
         await Assert.That(metadata.HasApiKey(ApiKey.Fetch)).IsTrue();
         await Assert.That(metadata.GetNegotiatedApiVersion(ApiKey.Fetch, 12, 18))
             .IsEqualTo((short)16);
-        await Assert.That(metadata.GetFinalizedFeatureVersion("transaction.version"))
-            .IsEqualTo((short)2);
+        await Assert.That(metadata.TryGetFinalizedFeatureVersion(
+            "transaction.version",
+            out var initializedTransactionVersion)).IsTrue();
+        await Assert.That(initializedTransactionVersion).IsEqualTo((short)2);
     }
 
     [Test]
@@ -159,6 +259,7 @@ public class KafkaConnectionCapabilitiesTests
                 new ApiVersion(ApiKey.Fetch, 12, 14),
                 new ApiVersion(ApiKey.Produce, 0, 11)
             ],
+            FinalizedFeaturesEpoch = 1,
             FinalizedFeatures = [new FinalizedFeature("transaction.version", 1, 0)]
         });
         var replacementCapabilities = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
@@ -169,6 +270,7 @@ public class KafkaConnectionCapabilitiesTests
                 new ApiVersion(ApiKey.Metadata, 9, 13),
                 new ApiVersion(ApiKey.Fetch, 12, 16)
             ],
+            FinalizedFeaturesEpoch = 2,
             FinalizedFeatures = [new FinalizedFeature("transaction.version", 2, 0)]
         });
         var initialConnection = new CapabilityConnection(initialCapabilities);
@@ -188,8 +290,10 @@ public class KafkaConnectionCapabilitiesTests
         await metadata.InitializeAsync();
         await Assert.That(metadata.GetNegotiatedApiVersion(ApiKey.Fetch, 12, 18))
             .IsEqualTo((short)14);
-        await Assert.That(metadata.GetFinalizedFeatureVersion("transaction.version"))
-            .IsEqualTo((short)1);
+        await Assert.That(metadata.TryGetFinalizedFeatureVersion(
+            "transaction.version",
+            out var initialTransactionVersion)).IsTrue();
+        await Assert.That(initialTransactionVersion).IsEqualTo((short)1);
         await Assert.That(metadata.HasApiKey(ApiKey.Produce)).IsTrue();
 
         var rebootstrapped = await metadata.TryRebootstrapImmediateAsync(null, CancellationToken.None);
@@ -198,8 +302,10 @@ public class KafkaConnectionCapabilitiesTests
         await Assert.That(replacementConnection.ObservedApiVersion).IsEqualTo((short)13);
         await Assert.That(metadata.GetNegotiatedApiVersion(ApiKey.Fetch, 12, 18))
             .IsEqualTo((short)16);
-        await Assert.That(metadata.GetFinalizedFeatureVersion("transaction.version"))
-            .IsEqualTo((short)2);
+        await Assert.That(metadata.TryGetFinalizedFeatureVersion(
+            "transaction.version",
+            out var replacementTransactionVersion)).IsTrue();
+        await Assert.That(replacementTransactionVersion).IsEqualTo((short)2);
         await Assert.That(metadata.HasApiKey(ApiKey.Produce)).IsFalse();
     }
 
@@ -250,6 +356,17 @@ public class KafkaConnectionCapabilitiesTests
     private static KafkaConnectionCapabilities CreateCapabilities(params ApiVersion[] versions)
         => KafkaConnectionCapabilities.Create(CreateResponse(versions));
 
+    private static KafkaConnectionCapabilities CreateFeatureCapabilities(
+        long epoch,
+        params FinalizedFeature[] features)
+        => KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys = [],
+            FinalizedFeaturesEpoch = epoch,
+            FinalizedFeatures = features
+        });
+
     private static IKafkaConnection CreateConnection(KafkaConnectionCapabilities capabilities)
         => new CapabilityConnection(capabilities);
 
@@ -286,6 +403,7 @@ public class KafkaConnectionCapabilitiesTests
             ObservedApiVersion = apiVersion;
             return ValueTask.FromResult((TResponse)(IKafkaResponse)new MetadataResponse
             {
+                ClusterId = "cluster-a",
                 Brokers = [],
                 Topics = []
             });

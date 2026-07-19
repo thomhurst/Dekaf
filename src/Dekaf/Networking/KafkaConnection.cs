@@ -155,6 +155,7 @@ public sealed partial class KafkaConnection :
     private int _disposed;
     private int _connected;
     private KafkaConnectionCapabilities? _capabilities;
+    private readonly Action<KafkaConnectionCapabilities>? _capabilitiesObserver;
     private bool _hasReceivedResponse;
     private long _lastUsedTimestampMs = Dekaf.MonotonicClock.GetMilliseconds();
     private readonly SemaphoreSlim _connectLock = new(1, 1);
@@ -249,7 +250,8 @@ public sealed partial class KafkaConnection :
         ClientTelemetryMetricCollector? telemetryMetricCollector = null,
         Func<Task, TimeSpan, Task>? waitForAbandonedWriteAsync = null,
         bool responseMemoryAdmissionsEnabled = false,
-        BrokerThrottleState? brokerThrottleState = null)
+        BrokerThrottleState? brokerThrottleState = null,
+        Action<KafkaConnectionCapabilities>? capabilitiesObserver = null)
     {
         _host = host;
         _port = port;
@@ -267,6 +269,7 @@ public sealed partial class KafkaConnection :
         _telemetryMetricCollector = telemetryMetricCollector;
         _brokerThrottleState = brokerThrottleState ?? new BrokerThrottleState(telemetryMetricCollector);
         _waitForAbandonedWriteAsync = waitForAbandonedWriteAsync ?? WaitForAbandonedWriteAsync;
+        _capabilitiesObserver = capabilitiesObserver;
         _receiveTimeoutStopwatchTicks =
             (long)(_options.RequestTimeout.Ticks * (double)Stopwatch.Frequency / TimeSpan.TicksPerSecond);
     }
@@ -305,7 +308,8 @@ public sealed partial class KafkaConnection :
         PipeMemoryPool? sharedPipeMemoryPool = null,
         ClientTelemetryMetricCollector? telemetryMetricCollector = null,
         bool responseMemoryAdmissionsEnabled = false,
-        BrokerThrottleState? brokerThrottleState = null)
+        BrokerThrottleState? brokerThrottleState = null,
+        Action<KafkaConnectionCapabilities>? capabilitiesObserver = null)
         : this(
             host,
             port,
@@ -315,7 +319,8 @@ public sealed partial class KafkaConnection :
             responseBufferPool,
             telemetryMetricCollector,
             responseMemoryAdmissionsEnabled: responseMemoryAdmissionsEnabled,
-            brokerThrottleState: brokerThrottleState)
+            brokerThrottleState: brokerThrottleState,
+            capabilitiesObserver: capabilitiesObserver)
     {
         BrokerId = brokerId;
         _sharedPipeMemoryPool = sharedPipeMemoryPool;
@@ -463,6 +468,7 @@ public sealed partial class KafkaConnection :
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
 
         var capabilities = await NegotiateCapabilitiesAsync(connectTimeoutCts.Token).ConfigureAwait(false);
+        _capabilitiesObserver?.Invoke(capabilities);
         Volatile.Write(ref _capabilities, capabilities);
 
         Touch();

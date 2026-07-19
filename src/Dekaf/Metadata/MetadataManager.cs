@@ -31,7 +31,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private volatile short _metadataApiVersion = -1;
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
     private readonly ConcurrentDictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
-    private volatile IReadOnlyList<FinalizedFeature>? _finalizedFeatures;
+    private readonly object _finalizedFeatureLock = new();
+    private FinalizedFeatureSnapshot? _finalizedFeatures;
+    private string? _finalizedFeatureClusterId;
     private readonly SemaphoreSlim _initializeLock = new(1, 1);
     private volatile bool _initialized;
     private volatile bool _hasSuccessfulRefresh;
@@ -120,6 +122,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
         _options = options ?? new MetadataOptions();
         ExponentialRetryBackoff.Validate(_options.RetryBackoffMs, _options.RetryBackoffMaxMs);
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<MetadataManager>.Instance;
+        if (connectionPool is IConnectionCapabilityObserverPool observerPool)
+            observerPool.SetConnectionCapabilityObserver(ObserveConnectionCapabilities);
 
         // Pre-parse bootstrap servers to avoid allocation in hot path
         _bootstrapEndpoints = new List<(string Host, int Port)>();
@@ -153,6 +157,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
         {
             throw new InvalidOperationException("An additional broker registration target is already configured");
         }
+
+        if (connectionPool is IConnectionCapabilityObserverPool observerPool)
+            observerPool.SetConnectionCapabilityObserver(ObserveConnectionCapabilities);
     }
 
     /// <summary>
@@ -303,29 +310,103 @@ public sealed partial class MetadataManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns the max finalized version for a broker feature, or 0 if the feature is not present.
+    /// Returns whether finalized cluster state is unavailable, the feature is absent, or it is present.
     /// </summary>
-    internal short GetFinalizedFeatureVersion(string featureName)
+    internal FinalizedFeatureStatus GetFinalizedFeatureStatus(
+        string featureName,
+        out short maxVersionLevel)
     {
-        var features = _finalizedFeatures;
-        if (features is null)
-            return 0;
-
-        foreach (var feature in features)
+        var snapshot = Volatile.Read(ref _finalizedFeatures);
+        if (snapshot is null)
         {
-            if (feature.Name == featureName)
-                return feature.MaxVersionLevel;
+            maxVersionLevel = default;
+            return FinalizedFeatureStatus.Unavailable;
         }
 
-        return 0;
+        return snapshot.GetFeatureStatus(featureName, out maxVersionLevel);
     }
 
-    internal short GetFinalizedFeatureVersion(
-        IKafkaConnection connection,
-        string featureName) =>
-        connection is IKafkaCapabilityProvider provider
-            ? provider.Capabilities.GetFinalizedFeatureVersion(featureName)
-            : GetFinalizedFeatureVersion(featureName);
+    internal bool TryGetFinalizedFeatureVersion(string featureName, out short maxVersionLevel) =>
+        GetFinalizedFeatureStatus(featureName, out maxVersionLevel) == FinalizedFeatureStatus.Present;
+
+    private void ObserveConnectionCapabilities(KafkaConnectionCapabilities capabilities)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
+        var candidate = capabilities.FinalizedFeatureSnapshot;
+        if (candidate is null)
+            return;
+
+        lock (_finalizedFeatureLock)
+        {
+            if (_finalizedFeatureClusterId is null)
+                return;
+
+            PublishFinalizedFeatures(candidate);
+        }
+    }
+
+    private void ObserveClusterCapabilities(string? clusterId, IKafkaConnection connection)
+    {
+        if (connection is not IKafkaCapabilityProvider provider)
+            return;
+
+        ObserveClusterCapabilities(clusterId, provider.Capabilities);
+    }
+
+    internal void ObserveClusterCapabilities(
+        string? clusterId,
+        KafkaConnectionCapabilities capabilities)
+    {
+        lock (_finalizedFeatureLock)
+        {
+            if (!string.Equals(_finalizedFeatureClusterId, clusterId, StringComparison.Ordinal))
+            {
+                _finalizedFeatureClusterId = clusterId;
+                Volatile.Write(ref _finalizedFeatures, null);
+            }
+
+            if (clusterId is null)
+                return;
+
+            var candidate = capabilities.FinalizedFeatureSnapshot;
+            if (candidate is not null)
+                PublishFinalizedFeatures(candidate);
+        }
+    }
+
+    private void PublishFinalizedFeatures(FinalizedFeatureSnapshot candidate)
+    {
+        var current = Volatile.Read(ref _finalizedFeatures);
+        if (current is not null)
+        {
+            if (candidate.Epoch < current.Epoch)
+                return;
+
+            if (candidate.Epoch == current.Epoch)
+            {
+                if (current.HasSameContent(candidate))
+                    return;
+
+                LogConflictingFinalizedFeatures(candidate.Epoch);
+                throw new KafkaException(
+                    ErrorCode.FeatureUpdateFailed,
+                    $"Brokers returned conflicting finalized feature state for epoch {candidate.Epoch}");
+            }
+        }
+
+        Volatile.Write(ref _finalizedFeatures, candidate);
+    }
+
+    private void ResetFinalizedFeaturesForRebootstrap()
+    {
+        lock (_finalizedFeatureLock)
+        {
+            _finalizedFeatureClusterId = null;
+            Volatile.Write(ref _finalizedFeatures, null);
+        }
+    }
 
     /// <summary>
     /// Initializes the metadata manager by fetching initial metadata.
@@ -735,9 +816,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 // Production connections negotiate before becoming ready. Keep explicit
                 // negotiation only for injected test connections without a capability snapshot.
+                KafkaConnectionCapabilities? negotiatedCapabilities = null;
                 if (connection is not IKafkaCapabilityProvider && _metadataApiVersion < 0)
                 {
-                    await NegotiateApiVersionsAsync(connection, cancellationToken).ConfigureAwait(false);
+                    negotiatedCapabilities = await NegotiateApiVersionsAsync(
+                        connection,
+                        cancellationToken).ConfigureAwait(false);
                 }
 
                 var metadataApiVersion = connection is IKafkaCapabilityProvider
@@ -774,6 +858,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     }
                     // Rebootstrap failed — fall through and apply the original response as best-effort fallback
                 }
+
+                if (negotiatedCapabilities is not null)
+                    ObserveClusterCapabilities(response.ClusterId, negotiatedCapabilities);
+                else
+                    ObserveClusterCapabilities(response.ClusterId, connection);
 
                 // Topic-specific requests merge into the existing snapshot to preserve
                 // metadata for other topics. Full-cluster requests replace the snapshot.
@@ -869,6 +958,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     private async ValueTask<bool> ExecuteRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
     {
+        ResetFinalizedFeaturesForRebootstrap();
+
         // Re-resolve DNS for each original bootstrap server
         var newEndpoints = await ResolveBootstrapEndpointsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -888,8 +979,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     .ConfigureAwait(false);
                 var connection = connectionLease.Connection;
 
+                KafkaConnectionCapabilities? negotiatedCapabilities = null;
                 if (connection is not IKafkaCapabilityProvider)
-                    await NegotiateApiVersionsAsync(connection, cancellationToken).ConfigureAwait(false);
+                {
+                    negotiatedCapabilities = await NegotiateApiVersionsAsync(
+                        connection,
+                        cancellationToken).ConfigureAwait(false);
+                }
 
                 var metadataApiVersion = connection is IKafkaCapabilityProvider
                     ? GetNegotiatedApiVersion(
@@ -912,6 +1008,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     connection,
                     metadataApiVersion,
                     replaceExisting: true);
+
+                if (negotiatedCapabilities is not null)
+                    ObserveClusterCapabilities(response.ClusterId, negotiatedCapabilities);
+                else
+                    ObserveClusterCapabilities(response.ClusterId, connection);
 
                 _metadata.Update(response, mergeTopics: topics is not null);
 
@@ -1027,7 +1128,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
         Interlocked.Exchange(ref _allBrokersUnavailableSince, 0);
     }
 
-    private async ValueTask NegotiateApiVersionsAsync(IKafkaConnection connection, CancellationToken cancellationToken)
+    private async ValueTask<KafkaConnectionCapabilities> NegotiateApiVersionsAsync(
+        IKafkaConnection connection,
+        CancellationToken cancellationToken)
     {
         const short versionlessConnectionApiVersionsVersion = 3;
 
@@ -1087,9 +1190,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
         // Set metadata version last (acts as a signal that negotiation is complete)
         _metadataApiVersion = newMetadataVersion;
 
-        _finalizedFeatures = response.FinalizedFeatures;
-
         LogNegotiatedApiVersion(_metadataApiVersion);
+        return KafkaConnectionCapabilities.Create(response);
     }
 
     private void UpdateVersionlessCapabilities(
@@ -1113,7 +1215,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         _negotiatedVersionCache.Clear();
-        _finalizedFeatures = capabilities.FinalizedFeatures;
         _metadataApiVersion = metadataApiVersion;
     }
 
@@ -1377,6 +1478,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Negotiated Metadata API version: {Version}")]
     private partial void LogNegotiatedApiVersion(short version);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Brokers returned conflicting finalized feature state for epoch {Epoch}")]
+    private partial void LogConflictingFinalizedFeatures(long epoch);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Background metadata refresh failed (attempt {Attempt}), continuing with existing metadata")]
     private partial void LogBackgroundMetadataRefreshFailed(Exception exception, int attempt);

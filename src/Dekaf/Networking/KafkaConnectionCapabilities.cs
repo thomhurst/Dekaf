@@ -19,14 +19,14 @@ internal sealed class KafkaConnectionCapabilities
     private const int MissingRange = -1;
 
     private readonly int[] _apiRanges;
-    private readonly SupportedFeature[] _supportedFeatures;
-    private readonly FinalizedFeature[] _finalizedFeatures;
+    private readonly Dictionary<string, SupportedFeature> _supportedFeatures;
+    private readonly FinalizedFeatureSnapshot? _finalizedFeatures;
 
     private KafkaConnectionCapabilities(
         int[] apiRanges,
-        SupportedFeature[] supportedFeatures,
+        Dictionary<string, SupportedFeature> supportedFeatures,
         long finalizedFeaturesEpoch,
-        FinalizedFeature[] finalizedFeatures,
+        FinalizedFeatureSnapshot? finalizedFeatures,
         bool zkMigrationReady)
     {
         _apiRanges = apiRanges;
@@ -56,8 +56,10 @@ internal sealed class KafkaConnectionCapabilities
             ranges[key] = Pack(version.MinVersion, version.MaxVersion);
         }
 
-        var supportedFeatures = CopyFeatures(response.SupportedFeatures);
-        var finalizedFeatures = CopyFeatures(response.FinalizedFeatures);
+        var supportedFeatures = CopySupportedFeatures(response.SupportedFeatures);
+        var finalizedFeatures = FinalizedFeatureSnapshot.Create(
+            response.FinalizedFeaturesEpoch,
+            response.FinalizedFeatures);
 
         return new KafkaConnectionCapabilities(
             ranges,
@@ -140,15 +142,16 @@ internal sealed class KafkaConnectionCapabilities
             out negotiatedVersion);
     }
 
-    public short GetFinalizedFeatureVersion(string featureName)
+    public bool TryGetFinalizedFeatureVersion(string featureName, out short maxVersionLevel)
     {
-        foreach (var feature in _finalizedFeatures)
+        if (_finalizedFeatures is null)
         {
-            if (string.Equals(feature.Name, featureName, StringComparison.Ordinal))
-                return feature.MaxVersionLevel;
+            maxVersionLevel = default;
+            return false;
         }
 
-        return 0;
+        return _finalizedFeatures.GetFeatureStatus(featureName, out maxVersionLevel)
+            == FinalizedFeatureStatus.Present;
     }
 
     public bool TryGetSupportedFeatureRange(
@@ -156,14 +159,11 @@ internal sealed class KafkaConnectionCapabilities
         out short minVersion,
         out short maxVersion)
     {
-        foreach (var feature in _supportedFeatures)
+        if (_supportedFeatures.TryGetValue(featureName, out var feature))
         {
-            if (string.Equals(feature.Name, featureName, StringComparison.Ordinal))
-            {
-                minVersion = feature.MinVersion;
-                maxVersion = feature.MaxVersion;
-                return true;
-            }
+            minVersion = feature.MinVersion;
+            maxVersion = feature.MaxVersion;
+            return true;
         }
 
         minVersion = default;
@@ -190,7 +190,7 @@ internal sealed class KafkaConnectionCapabilities
         return true;
     }
 
-    internal IReadOnlyList<FinalizedFeature> FinalizedFeatures => _finalizedFeatures;
+    internal FinalizedFeatureSnapshot? FinalizedFeatureSnapshot => _finalizedFeatures;
     internal int ApiRangeCount => _apiRanges.Length;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -204,14 +204,17 @@ internal sealed class KafkaConnectionCapabilities
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static short UnpackMax(int range) => (short)range;
 
-    private static T[] CopyFeatures<T>(IReadOnlyList<T>? source)
+    private static Dictionary<string, SupportedFeature> CopySupportedFeatures(
+        IReadOnlyList<SupportedFeature>? source)
     {
-        if (source is null || source.Count == 0)
-            return [];
+        var copy = new Dictionary<string, SupportedFeature>(
+            source?.Count ?? 0,
+            StringComparer.Ordinal);
+        if (source is null)
+            return copy;
 
-        var copy = new T[source.Count];
-        for (var i = 0; i < copy.Length; i++)
-            copy[i] = source[i];
+        foreach (var feature in source)
+            copy.TryAdd(feature.Name, feature);
 
         return copy;
     }

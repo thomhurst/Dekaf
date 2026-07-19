@@ -1885,6 +1885,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 $"Cannot begin transaction in state: {_transactionState}");
         }
 
+        RefreshTransactionFeaturesAtBoundary();
+
         _transactionState = TransactionState.InTransaction;
         _preparedTransactionState = PreparedTransactionState.Empty;
         _lastTransactionError = ErrorCode.None;
@@ -2128,9 +2130,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             cancellationToken).ConfigureAwait(false);
         var connection = connectionLease.Connection;
         if (captureTransactionFeatures)
-            CaptureTransactionFeatures(connection, keepPreparedTransaction);
+            CaptureTransactionFeatures(keepPreparedTransaction);
         else if (requireTransactionFeatureMatch)
-            EnsureTransactionFeatureMatch(connection);
+            EnsureTransactionFeatureMatch();
 
         var apiVersion = _metadataManager.GetNegotiatedApiVersion(
             connection,
@@ -2150,23 +2152,46 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             cancellationToken).ConfigureAwait(false);
     }
 
-    private void CaptureTransactionFeatures(
-        IKafkaConnection connection,
-        bool keepPreparedTransaction)
+    private void CaptureTransactionFeatures(bool keepPreparedTransaction)
     {
-        var featureVersion = _metadataManager.GetFinalizedFeatureVersion(
-            connection,
-            TransactionVersionFeature);
+        var status = _metadataManager.GetFinalizedFeatureStatus(
+            TransactionVersionFeature,
+            out var featureVersion);
+        if (status != FinalizedFeatureStatus.Present)
+            featureVersion = 0;
+
         _currentTransactionFeatureVersion = featureVersion;
         _currentTransactionUsesTV2 = featureVersion >= 2;
         ThrowIfTwoPhaseCommitUnsupported(keepPreparedTransaction);
     }
 
-    private void EnsureTransactionFeatureMatch(IKafkaConnection connection)
+    private void RefreshTransactionFeaturesAtBoundary()
     {
-        var featureVersion = _metadataManager.GetFinalizedFeatureVersion(
-            connection,
-            TransactionVersionFeature);
+        var status = _metadataManager.GetFinalizedFeatureStatus(
+            TransactionVersionFeature,
+            out var featureVersion);
+        if (status == FinalizedFeatureStatus.Unavailable)
+            return;
+
+        if (status == FinalizedFeatureStatus.Absent)
+            featureVersion = 0;
+
+        _currentTransactionFeatureVersion = featureVersion;
+        _currentTransactionUsesTV2 = featureVersion >= 2;
+        ThrowIfTwoPhaseCommitUnsupported(keepPreparedTransaction: false);
+    }
+
+    private void EnsureTransactionFeatureMatch()
+    {
+        var status = _metadataManager.GetFinalizedFeatureStatus(
+            TransactionVersionFeature,
+            out var featureVersion);
+        if (status == FinalizedFeatureStatus.Unavailable)
+            return;
+
+        if (status == FinalizedFeatureStatus.Absent)
+            featureVersion = 0;
+
         if (featureVersion != _currentTransactionFeatureVersion)
         {
             _transactionState = TransactionState.FatalError;
@@ -2501,7 +2526,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                        cancellationToken).ConfigureAwait(false))
             {
                 var connection = connectionLease.Connection;
-                EnsureTransactionFeatureMatch(connection);
+                EnsureTransactionFeatureMatch();
                 var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                     connection,
                     ApiKey.EndTxn,
