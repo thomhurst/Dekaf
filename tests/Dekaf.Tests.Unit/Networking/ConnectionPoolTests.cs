@@ -206,6 +206,79 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    [NotInParallel]
+    [Timeout(5_000)]
+    public async Task RegisterBroker_EndpointChange_RetiresMixedConnectionGroup(
+        CancellationToken cancellationToken)
+    {
+        var endpointUpdated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 2,
+            connectionFactory: (brokerId, host, port, _, _) =>
+                ValueTask.FromResult(CreateConnectedConnection(brokerId, host, port)),
+            brokerEndpointUpdated: () =>
+            {
+                endpointUpdated.TrySetResult();
+                releaseRegistration.Task.GetAwaiter().GetResult();
+            });
+
+        pool.RegisterBroker(1, "host-a", 9092);
+        var oldFirst = await pool.GetConnectionByIndexAsync(1, 0, cancellationToken);
+        var oldSecond = await pool.GetConnectionByIndexAsync(1, 1, cancellationToken);
+        oldFirst.IsConnected.Returns(false);
+
+        var registration = Task.Run(
+            () => pool.RegisterBroker(1, "host-b", 9093),
+            cancellationToken);
+        IKafkaConnection replacement;
+        try
+        {
+            await endpointUpdated.Task.WaitAsync(cancellationToken);
+            replacement = await pool.GetConnectionByIndexAsync(1, 0, cancellationToken);
+        }
+        finally
+        {
+            releaseRegistration.TrySetResult();
+        }
+
+        await registration.WaitAsync(cancellationToken);
+        var fresh = await pool.GetConnectionByIndexAsync(1, 0, cancellationToken);
+        await pool.DisposeAsync();
+
+        await Assert.That(replacement.Host).IsEqualTo("host-b");
+        await Assert.That(fresh).IsNotSameReferenceAs(replacement);
+        await oldSecond.Received(1).DisposeAsync();
+        await replacement.Received(1).DisposeAsync();
+    }
+
+    [Test]
+    public async Task DisposeAsync_ForceDisposesTrackedRetiredConnection()
+    {
+        var retired = new TestIdleConnection(1, "host-a", 9092);
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, host, port, _, _) =>
+                ValueTask.FromResult<IKafkaConnection>(host == "host-a"
+                    ? retired
+                    : new TestIdleConnection(1, host, port)));
+
+        pool.RegisterBroker(1, "host-a", 9092);
+        _ = await pool.GetConnectionAsync(1);
+        await Assert.That(KafkaConnectionLease.TryAcquire(retired, out var lease)).IsTrue();
+        pool.RegisterBroker(1, "host-b", 9093);
+
+        await pool.DisposeAsync();
+
+        await Assert.That(retired.DisposeCount).IsEqualTo(1);
+        lease.Dispose();
+    }
+
+    [Test]
     public async Task RegisterBroker_MultipleBrokers_AllRegistered()
     {
         await using var pool = new ConnectionPool("test-client");

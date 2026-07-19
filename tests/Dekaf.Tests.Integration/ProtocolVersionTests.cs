@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -13,6 +14,12 @@ namespace Dekaf.Tests.Integration;
 [Category("Admin")]
 public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    private static (string Host, int Port) ParseBootstrapEndpoint(string bootstrapServers)
+    {
+        var separator = bootstrapServers.LastIndexOf(':');
+        return (bootstrapServers[..separator], int.Parse(bootstrapServers[(separator + 1)..]));
+    }
+
     private static async Task<ApiVersionsResponse> SendApiVersionsAsync(IKafkaConnection connection)
     {
         var request = new ApiVersionsRequest
@@ -103,6 +110,76 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         {
             await pool.DisposeAsync();
         }
+    }
+
+    [Test]
+    [SupportsKafka(440)]
+    public async Task Connection_MetadataClusterCheck_RejectsMisrouteAndRecovers()
+    {
+        await using var admin = KafkaContainer.CreateAdminClient();
+        var cluster = await admin.DescribeClusterAsync();
+        var clusterId = cluster.ClusterId
+            ?? throw new InvalidOperationException("Broker did not return a cluster ID.");
+        var broker = cluster.Nodes[0];
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
+
+        await using var pool = new ConnectionPool(
+            "metadata-cluster-check-test",
+            new ConnectionOptions
+            {
+                RequestTimeout = TimeSpan.FromSeconds(30),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            loggerFactory: null);
+        var identityPool = (IMetadataClusterIdentityPool)pool;
+        identityPool.ConfigureMetadataClusterCheck(enabled: true);
+        identityPool.UpdateMetadataClusterId("unexpected-cluster-id");
+        pool.RegisterBroker(broker.NodeId, host, port);
+
+        Func<Task> connectToMisroutedBroker = () =>
+            pool.GetConnectionAsync(broker.NodeId).AsTask();
+        var exception = await Assert.That(connectToMisroutedBroker)
+            .Throws<KafkaException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RebootstrapRequired);
+        await Assert.That(identityPool.TryConsumeMetadataRebootstrapRequest()).IsTrue();
+
+        identityPool.UpdateMetadataClusterId(clusterId);
+        var connection = await pool.GetConnectionAsync(broker.NodeId);
+
+        await Assert.That(connection.IsConnected).IsTrue();
+    }
+
+    [Test]
+    public async Task Connection_BrokerEndpointChange_ReplacesLiveConnection()
+    {
+        await using var admin = KafkaContainer.CreateAdminClient();
+        var cluster = await admin.DescribeClusterAsync();
+        var broker = cluster.Nodes[0];
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
+        var replacementHost = host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            ? "127.0.0.1"
+            : "localhost";
+
+        await using var pool = new ConnectionPool(
+            "endpoint-change-test",
+            new ConnectionOptions
+            {
+                RequestTimeout = TimeSpan.FromSeconds(30),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            loggerFactory: null);
+        pool.RegisterBroker(broker.NodeId, host, port);
+        var staleConnection = await pool.GetConnectionAsync(broker.NodeId);
+
+        pool.RegisterBroker(broker.NodeId, replacementHost, port);
+        var replacement = await pool.GetConnectionAsync(broker.NodeId);
+
+        await Assert.That(replacement).IsNotSameReferenceAs(staleConnection);
+        await Assert.That(replacement.Host).IsEqualTo(replacementHost);
+        await Assert.That(replacement.IsConnected).IsTrue();
     }
 
     [Test]
