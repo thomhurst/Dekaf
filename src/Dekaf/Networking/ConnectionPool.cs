@@ -1118,25 +1118,67 @@ public sealed partial class ConnectionPool :
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             callerCancellationToken,
             timeoutCts.Token);
+        Task<IKafkaConnection>? connectionTask = null;
 
         try
         {
-            var connection = await createConnection(timeout, linkedCts.Token).ConfigureAwait(false);
+            connectionTask = createConnection(timeout, linkedCts.Token).AsTask();
+            var connection = await connectionTask
+                .WaitAsync(timeout, callerCancellationToken)
+                .ConfigureAwait(false);
             if (!connection.IsConnected)
                 RecordConnectionSetupFailure(setupKey);
             return connection;
         }
+        catch (TimeoutException) when (!callerCancellationToken.IsCancellationRequested)
+        {
+            timeoutCts.Cancel();
+            ObserveLateConnectionSetup(connectionTask);
+            RecordConnectionSetupFailure(setupKey);
+            throw CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
+        }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
         {
             RecordConnectionSetupFailure(setupKey);
-            throw new KafkaException(
-                ErrorCode.RequestTimedOut,
-                $"Connection setup timeout after {(int)timeout.TotalMilliseconds}ms to broker {brokerId} ({host}:{port})");
+            throw CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
+        }
+        catch (OperationCanceledException) when (callerCancellationToken.IsCancellationRequested)
+        {
+            ObserveLateConnectionSetup(connectionTask);
+            throw;
         }
         catch (Exception) when (!callerCancellationToken.IsCancellationRequested)
         {
             RecordConnectionSetupFailure(setupKey);
             throw;
+        }
+    }
+
+    private static KafkaException CreateConnectionSetupTimeoutException(
+        TimeSpan timeout,
+        int brokerId,
+        string host,
+        int port)
+        => new(
+            ErrorCode.RequestTimedOut,
+            $"Connection setup timeout after {(int)timeout.TotalMilliseconds}ms to broker {brokerId} ({host}:{port})");
+
+    private static void ObserveLateConnectionSetup(Task<IKafkaConnection>? connectionTask)
+    {
+        if (connectionTask is not null)
+            _ = DisposeLateConnectionSetupAsync(connectionTask);
+    }
+
+    private static async Task DisposeLateConnectionSetupAsync(Task<IKafkaConnection> connectionTask)
+    {
+        try
+        {
+            var connection = await connectionTask.ConfigureAwait(false);
+            await connection.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // The caller already received cancellation/timeout; only observe late failure.
         }
     }
 

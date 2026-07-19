@@ -1118,6 +1118,42 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ConnectionSetupTimeout_GroupHardStopsFactoryThatIgnoresCancellation()
+    {
+        var releaseFactory = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromMilliseconds(20),
+                ConnectionTimeoutMax = TimeSpan.FromMilliseconds(20),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: 2,
+            connectionFactory: async (brokerId, host, port, _, _) =>
+            {
+                await releaseFactory.Task;
+                return CreateConnectedConnection(brokerId, host, port);
+            },
+            randomDouble: static () => 0.5);
+        pool.RegisterBroker(1, "broker-a", 9092);
+
+        try
+        {
+            Func<Task> connect = () => pool.GetConnectionAsync(1).AsTask();
+
+            await Assert.That(connect).Throws<KafkaException>()
+                .WithMessageContaining("Connection setup timeout after 20ms");
+        }
+        finally
+        {
+            releaseFactory.TrySetResult();
+        }
+    }
+
+    [Test]
     public async Task ConnectionSetupTimeout_SuccessResetsFailureProgression()
     {
         var attempts = 0;
