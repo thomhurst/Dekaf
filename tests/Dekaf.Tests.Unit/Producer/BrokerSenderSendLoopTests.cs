@@ -80,10 +80,11 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     public async Task DeliveryLatencyOrigin_SealWithinLinger_UsesSealNotCreation()
     {
         // Sealing within the configured linger: the origin stays the seal, so opted-in
-        // batching delay never reads as queueing to the window governor.
+        // batching delay never reads as queueing to the window governor. Keep the deadline
+        // far beyond any scheduler pause so suite load cannot change the branch under test.
         var readyBatch = CreateReadyBatchSealedAfter(
             creationAgeTicks: Stopwatch.Frequency / 10,
-            lingerMs: 200);
+            lingerMs: 60_000);
 
         try
         {
