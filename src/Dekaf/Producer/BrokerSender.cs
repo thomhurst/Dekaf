@@ -2460,7 +2460,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (coalescedCount < coalescedBatches.Length)
         {
             var candidateBatch = batchRef.Batch;
-            batchRequestBodySize = ProduceRequestSizeCalculator.GetSingleBatchRequestBodySize(
+            batchRequestBodySize = ProduceRequestSizeCalculator.GetConservativeSingleBatchRequestBodySize(
                 _options.TransactionalId,
                 candidateBatch.TopicPartition.Topic,
                 candidateBatch.EncodedSize);
@@ -4337,7 +4337,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 requestBodySizeHint = checked(
                     requestBodySizeHint +
                     (apiVersion >= ProduceRequest.TopicIdVersion
-                        ? 16
+                        ? ProduceRequestSizeCalculator.TopicIdSize
                         : ProduceRequestSizeCalculator.CompactStringSize(topicName)) +
                     ProduceRequestSizeCalculator.CompactArrayLengthSize(partCount) +
                     1); // Topic tagged fields

@@ -7,6 +7,7 @@ namespace Dekaf.Producer;
 internal static class ProduceRequestSizeCalculator
 {
     internal const int DefaultMaxRequestSize = 1_048_576;
+    internal const int TopicIdSize = 16;
 
     internal static int GetSingleBatchRequestBodySize(
         string? transactionalId,
@@ -14,6 +15,15 @@ internal static class ProduceRequestSizeCalculator
         int encodedBatchSize)
         => GetSingleBatchRequestBodySize(
             GetSingleBatchFixedSize(transactionalId, topic),
+            encodedBatchSize);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int GetConservativeSingleBatchRequestBodySize(
+        string? transactionalId,
+        string topic,
+        int encodedBatchSize)
+        => GetSingleBatchRequestBodySize(
+            GetConservativeSingleBatchFixedSize(transactionalId, topic),
             encodedBatchSize);
 
     internal static int GetSingleBatchRequestBodySize(
@@ -29,7 +39,7 @@ internal static class ProduceRequestSizeCalculator
         string? transactionalId,
         string topic)
     {
-        var available = maxRequestSize - GetSingleBatchFixedSize(transactionalId, topic);
+        var available = maxRequestSize - GetConservativeSingleBatchFixedSize(transactionalId, topic);
         if (available <= 1)
             return 0;
 
@@ -67,13 +77,24 @@ internal static class ProduceRequestSizeCalculator
         return checked(CompactBytesLengthSize(byteCount) + byteCount);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static int GetSingleBatchFixedSize(string? transactionalId, string topic)
+        => GetSingleBatchFixedSize(transactionalId, CompactStringSize(topic));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int GetConservativeSingleBatchFixedSize(string? transactionalId, string topic)
+        => GetSingleBatchFixedSize(
+            transactionalId,
+            Math.Max(TopicIdSize, CompactStringSize(topic)));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int GetSingleBatchFixedSize(string? transactionalId, int topicFieldSize)
         => checked(
             CompactStringSize(transactionalId) +
             2 + // Acks
             4 + // TimeoutMs
             CompactArrayLengthSize(1) + // Topics array
-            CompactStringSize(topic) +
+            topicFieldSize + // Topic name through v12; 16-byte topic ID in v13
             CompactArrayLengthSize(1) + // Partitions array
             4 + // Partition index
             1 + // Partition tagged fields
