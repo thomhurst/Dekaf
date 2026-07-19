@@ -47,7 +47,7 @@ public class BatchMemoryAllocationBenchmarks
 
         const int poolSize = BatchArena.DefaultPoolSize;
         _readyBatchPool = new ReadyBatchPool(poolSize * 2);
-        _batchPool = new PartitionBatchPool(_options, poolSize);
+        _batchPool = new PartitionBatchPool(_options, maxPoolSize: poolSize);
         _batchPool.SetReadyBatchPool(_readyBatchPool);
 
         if (AllocationStrategy == BufferMemoryAllocationStrategy.Incremental)
