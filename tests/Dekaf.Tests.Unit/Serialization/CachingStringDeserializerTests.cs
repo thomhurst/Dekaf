@@ -7,6 +7,8 @@ namespace Dekaf.Tests.Unit.Serialization;
 
 public class CachingStringDeserializerTests
 {
+    private const int KeyCacheMaxEntries = 16_384;
+
     private static SerializationContext KeyContext(string topic = "test") =>
         new() { Topic = topic, Component = SerializationComponent.Key };
 
@@ -17,7 +19,19 @@ public class CachingStringDeserializerTests
         Encoding.UTF8.GetBytes(value);
 
     private static CachingStringDeserializer CreateKeyCache() =>
-        new(Serializers.String, maxCachedBytes: 128, maxCachedEntries: 16_384);
+        new(Serializers.String, maxCachedBytes: 128, maxCachedEntries: KeyCacheMaxEntries);
+
+    private static void EnterHighCardinalityBypass(
+        CachingStringDeserializer deserializer,
+        SerializationContext context)
+    {
+        var lookupCount = CachingStringDeserializer.AdmissionProbeLimit
+            + CachingStringDeserializer.ProbeLookupCount
+            + KeyCacheMaxEntries;
+
+        for (var uniqueKey = 0; uniqueKey < lookupCount; uniqueKey++)
+            deserializer.Deserialize(ToUtf8($"unique-{uniqueKey}"), context);
+    }
 
     private static CachingStringDeserializer CreateValueCache() =>
         new(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: 128);
@@ -110,13 +124,12 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
-    public async Task HighCardinalityKeys_BypassCacheAfterAdmissionProbeLimit()
+    public async Task HighCardinalityKeys_BypassCacheAfterLowHitRateProbe()
     {
         var sut = CreateKeyCache();
         var context = KeyContext();
 
-        for (var i = 0; i < CachingStringDeserializer.AdmissionProbeLimit; i++)
-            sut.Deserialize(ToUtf8($"unique-{i}"), context);
+        EnterHighCardinalityBypass(sut, context);
 
         var data = ToUtf8("bypassed");
         var first = sut.Deserialize(data, context);
@@ -124,6 +137,34 @@ public class CachingStringDeserializerTests
 
         await Assert.That(first).IsEqualTo("bypassed");
         await Assert.That(ReferenceEquals(first, second)).IsFalse();
+    }
+
+    [Test]
+    public async Task BoundedReusableKeys_RemainCachedAfterHitRateProbe()
+    {
+        const int keyCount = 1_000;
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+        var data = new ReadOnlyMemory<byte>[keyCount];
+        var references = new string[keyCount];
+
+        for (var i = 0; i < keyCount; i++)
+        {
+            data[i] = ToUtf8($"bounded-{i}");
+            references[i] = sut.Deserialize(data[i], context);
+        }
+
+        // Complete the 1,024-lookup probe with enough reuse to exceed its 10% hit gate.
+        var repeatedLookups = CachingStringDeserializer.ProbeLookupCount
+            - (keyCount - CachingStringDeserializer.AdmissionProbeLimit);
+        for (var i = 0; i < repeatedLookups; i++)
+            sut.Deserialize(data[i], context);
+
+        var allReferencesCached = true;
+        for (var i = 0; i < keyCount; i++)
+            allReferencesCached &= ReferenceEquals(references[i], sut.Deserialize(data[i], context));
+
+        await Assert.That(allReferencesCached).IsTrue();
     }
 
     [Test]
@@ -147,8 +188,7 @@ public class CachingStringDeserializerTests
         var sut = CreateKeyCache();
         var context = KeyContext();
 
-        for (var i = 0; i < CachingStringDeserializer.AdmissionProbeLimit; i++)
-            sut.Deserialize(ToUtf8($"unique-{i}"), context);
+        EnterHighCardinalityBypass(sut, context);
 
         var repeated = ToUtf8("new-repeated-key");
         for (var i = 0; i < CachingStringDeserializer.BypassInterval; i++)

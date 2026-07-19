@@ -17,10 +17,13 @@ namespace Dekaf.Serialization;
 internal sealed class CachingStringDeserializer : ISerde<string>
 {
     internal const int AdmissionProbeLimit = 256;
+    internal const int ProbeLookupCount = 1_024;
+    internal const int MinimumProbeHits = (ProbeLookupCount + 9) / 10;
     internal const int BypassInterval = 64 * 1_024;
 
     private readonly ISerde<string> _configuredInner;
     // Swapping the existing cold-path target keeps Deserialize's cached-hit JIT shape unchanged.
+    private readonly ISerde<string> _probeSerde;
     private readonly ISerde<string> _bypassSerde;
     private readonly int _configuredMaxCachedBytes;
     private readonly int _maxCachedEntries;
@@ -29,6 +32,9 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     private int _maxCachedBytes;
     private int _cacheCount;
     private int _admissionsRemaining = AdmissionProbeLimit;
+    private int _probeRemaining;
+    private int _probeHits;
+    private bool _probeAllowsAdmission;
     private int _bypassRemaining;
 
     internal CachingStringDeserializer(
@@ -38,6 +44,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     {
         _configuredInner = inner;
         _inner = inner;
+        _probeSerde = new ProbeSerde(this);
         _bypassSerde = new BypassSerde(this);
         _configuredMaxCachedBytes = maxCachedBytes;
         _maxCachedBytes = maxCachedBytes;
@@ -94,8 +101,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         if (remaining <= 0)
         {
             _bypassRemaining = 0;
-            _inner = _configuredInner;
-            _maxCachedBytes = _configuredMaxCachedBytes;
+            StartPrimaryProbe();
         }
         else
         {
@@ -103,6 +109,59 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         }
 
         return _configuredInner.Deserialize(data, context);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private string DeserializeWhileProbing(ReadOnlyMemory<byte> data, SerializationContext context)
+    {
+        var hash = ComputeHash(data.Span);
+        if (_cache.TryGetValue(hash, out var cachedValue))
+        {
+            ObserveProbeLookup(hit: true);
+            return cachedValue;
+        }
+
+        var result = _configuredInner.Deserialize(data, context);
+        if (_probeAllowsAdmission && Volatile.Read(ref _cacheCount) < _maxCachedEntries)
+        {
+            if (_cache.TryAdd(hash, result))
+                Interlocked.Increment(ref _cacheCount);
+        }
+
+        ObserveProbeLookup(hit: false);
+        return result;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ObserveProbeLookup(bool hit)
+    {
+        if (hit)
+        {
+            _probeHits++;
+            if (!_probeAllowsAdmission)
+            {
+                RestoreCache();
+                return;
+            }
+        }
+
+        var remaining = _probeRemaining - 1;
+        if (remaining > 0)
+        {
+            _probeRemaining = remaining;
+            return;
+        }
+
+        if (_probeAllowsAdmission)
+        {
+            if (_probeHits >= MinimumProbeHits)
+                RestoreCache();
+            else
+                StartReuseProbe();
+            return;
+        }
+
+        StartBypass();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -114,13 +173,43 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         if (remaining <= 0)
         {
             _admissionsRemaining = AdmissionProbeLimit;
-            _bypassRemaining = BypassInterval;
-            _inner = _bypassSerde;
-            _maxCachedBytes = -1;
+            StartPrimaryProbe();
             return;
         }
 
         _admissionsRemaining = remaining;
+    }
+
+    private void StartPrimaryProbe()
+    {
+        _probeRemaining = ProbeLookupCount;
+        _probeHits = 0;
+        _probeAllowsAdmission = true;
+        // These mode fields are deliberately lock-free. Racing callers may observe one
+        // transition late, but every combination still deserializes correctly and the
+        // next probe/bypass cycle self-corrects the approximate counters.
+        _inner = _probeSerde;
+        _maxCachedBytes = -1;
+    }
+
+    private void StartReuseProbe()
+    {
+        _probeRemaining = _maxCachedEntries;
+        _probeHits = 0;
+        _probeAllowsAdmission = false;
+    }
+
+    private void StartBypass()
+    {
+        _bypassRemaining = BypassInterval;
+        _inner = _bypassSerde;
+    }
+
+    private void RestoreCache()
+    {
+        _admissionsRemaining = AdmissionProbeLimit;
+        _inner = _configuredInner;
+        _maxCachedBytes = _configuredMaxCachedBytes;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -134,6 +223,26 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     }
 
     private readonly record struct Hash128Key(ulong Low, ulong High);
+
+    private sealed class ProbeSerde(CachingStringDeserializer owner) : ISerde<string>
+    {
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : System.Buffers.IBufferWriter<byte>
+#if !NETSTANDARD2_0
+            , allows ref struct
+#endif
+        {
+            owner._configuredInner.Serialize(value, ref destination, context);
+        }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            if (data.Length == 0 || data.Length > owner._configuredMaxCachedBytes)
+                return owner._configuredInner.Deserialize(data, context);
+
+            return owner.DeserializeWhileProbing(data, context);
+        }
+    }
 
     private sealed class BypassSerde(CachingStringDeserializer owner) : ISerde<string>
     {
