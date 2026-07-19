@@ -268,6 +268,25 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
     }
 
+    internal void AcknowledgeInitializedPartitions(IReadOnlyList<TopicPartition> initializedPartitions)
+    {
+        lock (_assignmentStateLock)
+        {
+            HashSet<TopicPartition>? remaining = null;
+            foreach (var partition in initializedPartitions)
+            {
+                if (!_newlyExpandedPartitions.Contains(partition))
+                    continue;
+
+                remaining ??= new HashSet<TopicPartition>(_newlyExpandedPartitions);
+                remaining.Remove(partition);
+            }
+
+            if (remaining is not null)
+                _newlyExpandedPartitions = remaining;
+        }
+    }
+
     internal void AcknowledgeAssignmentSync(int assignmentVersion)
     {
         if (Volatile.Read(ref _maxPollExpiredAtPollVersion) < 0
@@ -1580,7 +1599,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         }
 
         var changed = revoked is { Count: > 0 } || assigned is { Count: > 0 };
-        var classificationChanged = !_newlyExpandedPartitions.SetEquals(newlyExpandedPartitions);
         TaskCompletionSource<bool>? revocationCommitCompletion = null;
         if (revoked is { Count: > 0 }
             && _options.OffsetCommitMode == OffsetCommitMode.Auto
@@ -1590,12 +1608,23 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
-        if (changed || classificationChanged)
-        {
-            if (changed)
-                NotifyRevoking(revoked);
+        if (changed)
+            NotifyRevoking(revoked);
 
-            lock (_assignmentStateLock)
+        var classificationChanged = false;
+        lock (_assignmentStateLock)
+        {
+            // The heartbeat loop can acknowledge ownership before the poll loop initializes
+            // positions. Retain prior classifications until that initialization explicitly
+            // acknowledges them, while dropping partitions that are no longer assigned.
+            foreach (var partition in _newlyExpandedPartitions)
+            {
+                if (newAssignment.Contains(partition))
+                    newlyExpandedPartitions.Add(partition);
+            }
+
+            classificationChanged = !_newlyExpandedPartitions.SetEquals(newlyExpandedPartitions);
+            if (changed || classificationChanged)
             {
                 _assignedPartitions = newAssignment;
                 _newlyExpandedPartitions = newlyExpandedPartitions;
@@ -1606,13 +1635,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 if (revocationCommitCompletion is not null)
                     _pendingRevocationCommit = revocationCommitCompletion.Task;
             }
-
-            if (changed && revoked is not null)
-                _onPartitionsRevoked?.Invoke(revoked);
-
-            if (changed)
-                LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
         }
+
+        if (changed && revoked is not null)
+            _onPartitionsRevoked?.Invoke(revoked);
+
+        if (changed)
+            LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);
 
         return new ConsumerHeartbeatResult(changed, revoked, assigned, revocationCommitCompletion);
     }

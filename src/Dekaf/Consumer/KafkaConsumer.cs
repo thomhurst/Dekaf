@@ -5698,6 +5698,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 newlyExpandedPartitions,
                                 cancellationToken)
                             .ConfigureAwait(false);
+                        coordinator.AcknowledgeInitializedPartitions(newPartitions);
                     }
 
                     // OffsetFetch recovery can rejoin the group. If that produced a new assignment,
