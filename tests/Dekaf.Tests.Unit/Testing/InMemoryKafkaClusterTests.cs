@@ -14,6 +14,58 @@ namespace Dekaf.Tests.Unit.Testing;
 public sealed class InMemoryKafkaClusterTests
 {
     [Test]
+    public async Task AdminFeatures_KeepSupportedAndFinalizedRangesIndependent()
+    {
+        var cluster = new InMemoryKafkaCluster(new InMemoryKafkaClusterOptions
+        {
+            SupportedFeatures = new Dictionary<string, FeatureVersionRange>(StringComparer.Ordinal)
+            {
+                ["metadata.version"] = new(7, 19)
+            }
+        });
+        var admin = new InMemoryAdminClient(cluster);
+
+        var before = await admin.DescribeFeaturesAsync();
+        await admin.UpdateFeaturesAsync(new Dictionary<string, FeatureUpdate>(StringComparer.Ordinal)
+        {
+            ["metadata.version"] = new() { MaxVersionLevel = 17 }
+        });
+        var after = await admin.DescribeFeaturesAsync();
+
+        await Assert.That(before.SupportedFeatures["metadata.version"])
+            .IsEqualTo(new FeatureVersionRange(7, 19));
+        await Assert.That(before.FinalizedFeatures).IsEmpty();
+        await Assert.That(after.SupportedFeatures["metadata.version"])
+            .IsEqualTo(new FeatureVersionRange(7, 19));
+        await Assert.That(after.FinalizedFeatures["metadata.version"])
+            .IsEqualTo(new FeatureVersionRange(17, 17));
+        await Assert.That(ReferenceEquals(after.SupportedFeatures, after.FinalizedFeatures)).IsFalse();
+    }
+
+    [Test]
+    public async Task AdminFeatures_ConcurrentUpdatesPreserveEpochAndState()
+    {
+        var admin = new InMemoryAdminClient(new InMemoryKafkaCluster());
+        const int updateCount = 100;
+
+        var updates = Enumerable.Range(0, updateCount)
+            .Select(index => Task.Run(async () =>
+            {
+                await admin.UpdateFeaturesAsync(new Dictionary<string, FeatureUpdate>
+                {
+                    [$"feature-{index}"] = new() { MaxVersionLevel = (short)index }
+                });
+                _ = await admin.DescribeFeaturesAsync();
+            }))
+            .ToArray();
+        await Task.WhenAll(updates);
+
+        var metadata = await admin.DescribeFeaturesAsync();
+        await Assert.That(metadata.FinalizedFeaturesEpoch).IsEqualTo(updateCount - 1L);
+        await Assert.That(metadata.FinalizedFeatures).Count().IsEqualTo(updateCount);
+    }
+
+    [Test]
     public async Task ProducerConsumer_RoundTripsThroughSerializers()
     {
         var cluster = new InMemoryKafkaCluster();

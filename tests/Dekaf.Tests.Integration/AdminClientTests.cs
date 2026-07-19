@@ -1034,6 +1034,19 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
     }
 
     [Test]
+    [SupportsKafka(270)]
+    public async Task UpdateFeaturesAsync_ValidateOnlyEmptyUpdateSucceeds()
+    {
+        await using var admin = CreateAdminClient();
+
+        var result = await admin.UpdateFeaturesAsync(
+            new Dictionary<string, FeatureUpdate>(),
+            new UpdateFeaturesOptions { ValidateOnly = true }).ConfigureAwait(false);
+
+        await Assert.That(result).IsEmpty();
+    }
+
+    [Test]
     public async Task DescribeTopicsAsync_ReturnsTopicDetails()
     {
         // Arrange

@@ -634,18 +634,18 @@ public sealed class AdminClient : IAdminClient
                     $"DescribeFeatures failed: {response.ErrorCode}");
             }
 
+            var capabilities = KafkaConnectionCapabilities.Create(response);
             _metadataManager.ObserveClusterCapabilities(
                 _metadataManager.Metadata.ClusterId,
-                KafkaConnectionCapabilities.Create(response));
-            _metadataManager.GetClusterFeatureMetadata(
+                capabilities);
+            _metadataManager.GetClusterFinalizedFeatureMetadata(
                 out var finalizedFeaturesEpoch,
-                out var supportedFeatureData,
                 out var finalizedFeatureData);
 
             return new FeatureMetadata
             {
                 FinalizedFeaturesEpoch = finalizedFeaturesEpoch,
-                SupportedFeatures = supportedFeatureData.ToDictionary(
+                SupportedFeatures = capabilities.SupportedFeatures.ToDictionary(
                     static feature => feature.Key,
                     static feature => new FeatureVersionRange(
                         feature.Value.MinVersion,

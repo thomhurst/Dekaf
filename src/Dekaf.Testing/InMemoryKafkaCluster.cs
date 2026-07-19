@@ -30,6 +30,7 @@ public sealed class InMemoryKafkaCluster
     public InMemoryKafkaCluster(InMemoryKafkaClusterOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(options.SupportedFeatures);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.DefaultPartitionCount, 1);
         _options = options;
     }
