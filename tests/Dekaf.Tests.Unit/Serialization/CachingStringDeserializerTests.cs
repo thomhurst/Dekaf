@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Unit.Serialization;
 public class CachingStringDeserializerTests
 {
     private const int KeyCacheMaxEntries = 16_384;
+    private const int ValueCacheMaxEntries = 128;
 
     private static SerializationContext KeyContext(string topic = "test") =>
         new() { Topic = topic, Component = SerializationComponent.Key };
@@ -34,7 +35,7 @@ public class CachingStringDeserializerTests
     }
 
     private static CachingStringDeserializer CreateValueCache() =>
-        new(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: 128);
+        new(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: ValueCacheMaxEntries);
 
     private static IDeserializer<string> GetValueDeserializer(IKafkaConsumer<string, string> consumer)
     {
@@ -140,6 +141,29 @@ public class CachingStringDeserializerTests
         var second = sut.Deserialize(data, context);
 
         await Assert.That(first).IsEqualTo("bypassed");
+        await Assert.That(ReferenceEquals(first, second)).IsFalse();
+    }
+
+    [Test]
+    public async Task SaturatedCache_MissesStillTriggerHighCardinalityBypass()
+    {
+        var sut = CreateValueCache();
+        var context = ValueContext();
+
+        for (var i = 0; i < ValueCacheMaxEntries; i++)
+            sut.Deserialize(ToUtf8($"cached-{i}"), context);
+
+        var missesUntilBypass = CachingStringDeserializer.AdmissionProbeLimit
+            - ValueCacheMaxEntries
+            + CachingStringDeserializer.ProbeLookupCount
+            + ValueCacheMaxEntries;
+        for (var i = 0; i < missesUntilBypass; i++)
+            sut.Deserialize(ToUtf8($"saturated-miss-{i}"), context);
+
+        var data = ToUtf8("bypassed-after-saturation");
+        var first = sut.Deserialize(data, context);
+        var second = sut.Deserialize(data, context);
+
         await Assert.That(ReferenceEquals(first, second)).IsFalse();
     }
 

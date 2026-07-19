@@ -30,7 +30,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     private CacheGeneration _cache = new();
     private ISerde<string> _inner;
     private int _maxCachedBytes;
-    private int _admissionsRemaining = AdmissionProbeLimit;
+    private int _missesUntilProbe = AdmissionProbeLimit;
     private int _probeRemaining;
     private int _probeHits;
     private bool _isReuseProbe;
@@ -85,12 +85,11 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         if (Volatile.Read(ref cache.Count) < _maxCachedEntries)
         {
             if (cache.Entries.TryAdd(hash, result))
-            {
                 Interlocked.Increment(ref cache.Count);
-                if (ReferenceEquals(cache, Volatile.Read(ref _cache)))
-                    ObserveAdmission();
-            }
         }
+
+        if (ReferenceEquals(cache, Volatile.Read(ref _cache)))
+            ObserveCacheMiss();
 
         return result;
     }
@@ -167,19 +166,19 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void ObserveAdmission()
+    private void ObserveCacheMiss()
     {
         // Approximate by design: racing callers may slightly shift the probe and
         // bypass boundaries, but no synchronization belongs on this hot path.
-        var remaining = _admissionsRemaining - 1;
+        var remaining = _missesUntilProbe - 1;
         if (remaining <= 0)
         {
-            _admissionsRemaining = AdmissionProbeLimit;
+            _missesUntilProbe = AdmissionProbeLimit;
             StartPrimaryProbe();
             return;
         }
 
-        _admissionsRemaining = remaining;
+        _missesUntilProbe = remaining;
     }
 
     private void StartPrimaryProbe()
@@ -212,7 +211,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
 
     private void RestoreCache()
     {
-        _admissionsRemaining = AdmissionProbeLimit;
+        _missesUntilProbe = AdmissionProbeLimit;
         _inner = _configuredInner;
         _maxCachedBytes = _configuredMaxCachedBytes;
     }
