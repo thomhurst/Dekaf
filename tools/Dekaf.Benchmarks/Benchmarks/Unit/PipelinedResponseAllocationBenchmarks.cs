@@ -33,10 +33,11 @@ public class PipelinedResponseAllocationBenchmarks
         var port = ((IPEndPoint)_listener.LocalEndpoint).Port;
         var acceptTask = _listener.AcceptTcpClientAsync();
         _connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
-        await _connection.ConnectAsync().ConfigureAwait(false);
+        var connectTask = _connection.ConnectAsync();
         _serverClient = await acceptTask.ConfigureAwait(false);
         _serverCancellation = new CancellationTokenSource();
         _serverTask = RunServerAsync(_serverClient.GetStream(), _serverCancellation.Token);
+        await connectTask.ConfigureAwait(false);
     }
 
     [Benchmark(Baseline = true)]

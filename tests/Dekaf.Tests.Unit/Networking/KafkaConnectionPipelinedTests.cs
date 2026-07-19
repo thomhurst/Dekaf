@@ -14,6 +14,58 @@ namespace Dekaf.Tests.Unit.Networking;
 public sealed class KafkaConnectionPipelinedTests
 {
     [Test]
+    [NotInParallel]
+    [Timeout(10_000)]
+    public async Task DisposeAsync_DelayedPendingAwait_DoesNotResetSourceEarly(
+        CancellationToken cancellationToken)
+    {
+        var drainStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        KafkaConnection.PendingRequestDrainStartedTestHook = () =>
+        {
+            drainStarted.TrySetResult();
+            releaseDrain.Task.GetAwaiter().GetResult();
+        };
+
+        var connection = new KafkaConnection("localhost", 9092);
+        const int correlationId = 42;
+        await ReservePendingRequestSlotAsync(connection);
+        var request = new PooledPendingRequest();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
+        var pendingTask = request.AsValueTask();
+        AddPendingRequest(connection, correlationId, request);
+
+        try
+        {
+            var disposeTask = Task.Run(async () => await connection.DisposeAsync(), CancellationToken.None);
+            await drainStarted.Task.WaitAsync(cancellationToken);
+
+            var removed = false;
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+            {
+                try
+                {
+                    await pendingTask.ConfigureAwait(false);
+                }
+                finally
+                {
+                    removed = TryRemovePendingRequest(connection, correlationId);
+                }
+            });
+
+            await Assert.That(removed).IsTrue();
+            releaseDrain.TrySetResult();
+            await disposeTask.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            releaseDrain.TrySetResult();
+            KafkaConnection.PendingRequestDrainStartedTestHook = null;
+            await connection.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task SendPipelinedAsync_DisposedConnection_ThrowsObjectDisposedException()
     {
         var connection = new KafkaConnection("localhost", 9092);
@@ -86,6 +138,9 @@ public sealed class KafkaConnectionPipelinedTests
         await waitingForSlot.WaitAsync(TimeSpan.FromSeconds(1));
         ReleasePendingRequestSlot(connection);
 
+        for (var correlationId = 2; correlationId <= capacity; correlationId++)
+            await Assert.That(TryRemovePendingRequest(connection, correlationId)).IsTrue();
+
         await connection.DisposeAsync();
     }
 
@@ -94,12 +149,14 @@ public sealed class KafkaConnectionPipelinedTests
     {
         var connection = new KafkaConnection("localhost", 9092);
         var capacity = PoolSizing.ForConnection(maxInFlightRequestsPerConnection: 5).PendingRequests;
+        var pendingTasks = new Task<PooledResponseBuffer>[capacity];
 
         for (var i = 0; i < capacity; i++)
         {
             await ReservePendingRequestSlotAsync(connection);
             var request = new PooledPendingRequest();
             request.Initialize(responseHeaderVersion: 0, CancellationToken.None, registerCancellation: false);
+            pendingTasks[i] = request.AsValueTask().AsTask();
             AddPendingRequest(connection, i + 1, request);
         }
 
@@ -111,13 +168,22 @@ public sealed class KafkaConnectionPipelinedTests
 
         await Assert.That(waiters.Any(static waiter => !waiter.IsCompleted)).IsTrue();
 
-        await connection.DisposeAsync();
+        var disposeTask = Task.Run(async () => await connection.DisposeAsync(), CancellationToken.None);
 
         foreach (var waiter in waiters)
         {
             await Assert.That(async () => await waiter.WaitAsync(TimeSpan.FromSeconds(1)))
                 .Throws<ObjectDisposedException>();
         }
+
+        for (var i = 0; i < pendingTasks.Length; i++)
+        {
+            await Assert.That(async () => await pendingTasks[i].WaitAsync(TimeSpan.FromSeconds(1)))
+                .Throws<ObjectDisposedException>();
+            await Assert.That(TryRemovePendingRequest(connection, i + 1)).IsTrue();
+        }
+
+        await disposeTask.WaitAsync(TimeSpan.FromSeconds(1));
     }
 
     [Test]
