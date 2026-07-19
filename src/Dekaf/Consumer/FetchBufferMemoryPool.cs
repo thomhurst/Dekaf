@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Dekaf.Producer;
 using Dekaf.Protocol;
 
@@ -17,6 +18,7 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
     private long _depletedStartTimestamp;
     private long _depletedTimestampTicks;
     private int _waiterCount;
+    private int _pendingWakeCount;
     private int _disposed;
 
     public FetchBufferMemoryPool(long limitBytes)
@@ -28,6 +30,7 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
     public long LimitBytes => _limitBytes;
     public long UsedBytes => Interlocked.Read(ref _usedBytes);
     public long FreeBytes => Math.Max(0, _limitBytes - UsedBytes);
+    internal int PendingWakeCount => Volatile.Read(ref _pendingWakeCount);
 
     public double DepletedPercent
     {
@@ -97,13 +100,12 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
             {
                 await _memoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-                if (TryReserve(bytes))
-                    return FetchBufferMemoryReservation.Create(this, bytes);
+                ConsumePendingWake();
+                var reserved = TryReserve(bytes);
+                SignalNextWaiter(currentWaiterIncluded: true);
 
-                // The awakened waiter may need more memory than another waiter. Pass the
-                // edge-triggered signal to an already-queued waiter before waiting again.
-                if (Volatile.Read(ref _waiterCount) > 1)
-                    SignalMemoryAvailable();
+                if (reserved)
+                    return FetchBufferMemoryReservation.Create(this, bytes);
             }
         }
         finally
@@ -114,8 +116,8 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
                 if (Volatile.Read(ref _waiterCount) > 0)
                     BeginDepletion();
             }
-            else if (Volatile.Read(ref _disposed) != 0 || FreeBytes > 0)
-                SignalMemoryAvailable();
+            else
+                SignalNextWaiter(currentWaiterIncluded: false);
         }
     }
 
@@ -131,7 +133,7 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
         }
 
         if (Volatile.Read(ref _waiterCount) > 0)
-            SignalMemoryAvailable();
+            WakeWaitersAfterCapacityChanged();
     }
 
     private void BeginDepletion()
@@ -174,12 +176,71 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
         }
     }
 
+    private void EnsurePendingWakes(int waiterCount)
+    {
+        // A capacity change grants at most one attempt per waiter. The final waiter
+        // consumes the budget without re-signaling, so insufficient capacity sleeps
+        // until another Release instead of bouncing the semaphore indefinitely.
+        var pending = Volatile.Read(ref _pendingWakeCount);
+        while (pending < waiterCount)
+        {
+            var observed = Interlocked.CompareExchange(
+                ref _pendingWakeCount,
+                waiterCount,
+                pending);
+            if (observed == pending)
+                return;
+
+            pending = observed;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void WakeWaitersAfterCapacityChanged()
+    {
+        var waiterCount = Volatile.Read(ref _waiterCount);
+        if (waiterCount <= 0)
+            return;
+
+        EnsurePendingWakes(waiterCount);
+        SignalMemoryAvailable();
+    }
+
+    private void ConsumePendingWake()
+    {
+        var pending = Volatile.Read(ref _pendingWakeCount);
+        while (pending > 0)
+        {
+            var observed = Interlocked.CompareExchange(
+                ref _pendingWakeCount,
+                pending - 1,
+                pending);
+            if (observed == pending)
+                return;
+
+            pending = observed;
+        }
+    }
+
+    private void SignalNextWaiter(bool currentWaiterIncluded)
+    {
+        var minimumWaiterCount = currentWaiterIncluded ? 1 : 0;
+        if (Volatile.Read(ref _pendingWakeCount) > 0
+            && Volatile.Read(ref _waiterCount) > minimumWaiterCount)
+        {
+            SignalMemoryAvailable();
+        }
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
         EndDepletion();
+        var waiterCount = Volatile.Read(ref _waiterCount);
+        if (waiterCount > 0)
+            EnsurePendingWakes(waiterCount);
         SignalMemoryAvailable();
     }
 }

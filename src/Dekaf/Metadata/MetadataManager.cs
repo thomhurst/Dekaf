@@ -18,6 +18,7 @@ namespace Dekaf.Metadata;
 public sealed partial class MetadataManager : IAsyncDisposable
 {
     private readonly IConnectionPool _connectionPool;
+    private IConnectionPool? _additionalBrokerRegistrationTarget;
     private readonly MetadataOptions _options;
     private readonly ILogger _logger;
     private readonly ClusterMetadata _metadata = new();
@@ -142,6 +143,18 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     _originalBootstrapHostnames.Add(server);
                 }
             }
+        }
+    }
+
+    internal void SetAdditionalBrokerRegistrationTarget(IConnectionPool connectionPool)
+    {
+        ArgumentNullException.ThrowIfNull(connectionPool);
+        if (Interlocked.CompareExchange(
+                ref _additionalBrokerRegistrationTarget,
+                connectionPool,
+                null) is not null)
+        {
+            throw new InvalidOperationException("An additional broker registration target is already configured");
         }
     }
 
@@ -720,7 +733,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 // Register brokers with connection pool
                 foreach (var broker in response.Brokers)
                 {
-                    _connectionPool.RegisterBroker(broker.NodeId, broker.Host, broker.Port);
+                    RegisterBroker(broker.NodeId, broker.Host, broker.Port);
                 }
 
                 LogMetadataRefreshed(response.Brokers.Count, response.Topics.Count);
@@ -844,7 +857,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
                 foreach (var broker in response.Brokers)
                 {
-                    _connectionPool.RegisterBroker(broker.NodeId, broker.Host, broker.Port);
+                    RegisterBroker(broker.NodeId, broker.Host, broker.Port);
                 }
 
                 LogRebootstrapSuccessful(response.Brokers.Count, host, port);
@@ -869,6 +882,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         LogRebootstrapFailed(lastException);
         return false;
+    }
+
+    private void RegisterBroker(int brokerId, string host, int port)
+    {
+        _connectionPool.RegisterBroker(brokerId, host, port);
+        Volatile.Read(ref _additionalBrokerRegistrationTarget)?.RegisterBroker(brokerId, host, port);
     }
 
     /// <summary>

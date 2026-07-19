@@ -579,6 +579,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
     private KafkaClientInfrastructure(
         IReadOnlyList<string> bootstrapServers,
         ConnectionPool connectionPool,
+        ConnectionPool consumerConnectionPool,
         MetadataManager metadataManager,
         IDekafMemoryBudget memoryBudget,
         ILoggerFactory? loggerFactory,
@@ -588,6 +589,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
     {
         BootstrapServers = bootstrapServers;
         ConnectionPool = connectionPool;
+        ConsumerConnectionPool = consumerConnectionPool;
         MetadataManager = metadataManager;
         MemoryBudget = memoryBudget;
         LoggerFactory = loggerFactory;
@@ -598,6 +600,7 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
 
     public IReadOnlyList<string> BootstrapServers { get; }
     public ConnectionPool ConnectionPool { get; }
+    public ConnectionPool ConsumerConnectionPool { get; }
     public MetadataManager MetadataManager { get; }
     public IDekafMemoryBudget MemoryBudget { get; }
     public ILoggerFactory? LoggerFactory { get; }
@@ -614,35 +617,17 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             batchSize: 1048576,
             maxConnectionsPerBroker: options.MaxConnectionsPerBroker);
 
+        var connectionOptions = CreateConnectionOptions(options);
         var connectionPool = new ConnectionPool(
             options.ClientId,
-            new ConnectionOptions
-            {
-                UseTls = options.UseTls,
-                TlsConfig = options.TlsConfig,
-                RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
-                ConnectionTimeout = options.ConnectionTimeout,
-                EnableTcpKeepAlive = options.EnableTcpKeepAlive,
-                TcpKeepAliveTime = options.TcpKeepAliveTime,
-                TcpKeepAliveInterval = options.TcpKeepAliveInterval,
-                TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
-                RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
-                ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
-                ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
-                ConnectionsMaxIdleMs = options.ConnectionsMaxIdleMs,
-                SaslMechanism = options.SaslMechanism,
-                SaslUsername = options.SaslUsername,
-                SaslPassword = options.SaslPassword,
-                SaslScramTokenAuth = options.SaslScramTokenAuth,
-                GssapiConfig = options.GssapiConfig,
-                OAuthBearerConfig = options.OAuthBearerConfig,
-                OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
-                AwsMskIamConfig = options.AwsMskIamConfig,
-                SendBufferSize = options.SocketSendBufferBytes,
-                ReceiveBufferSize = options.SocketReceiveBufferBytes,
-                MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection,
-                ClientDnsLookup = options.ClientDnsLookup
-            },
+            connectionOptions,
+            options.LoggerFactory,
+            options.ConnectionsPerBroker,
+            ResponseBufferPool.Create(SharedResponseBufferFetchMaxBytes),
+            pipeMemoryBucketCapacity: poolSizes.PipeMemoryArraysPerBucket);
+        var consumerConnectionPool = new ConnectionPool(
+            options.ClientId,
+            connectionOptions,
             options.LoggerFactory,
             options.ConnectionsPerBroker,
             ResponseBufferPool.Create(SharedResponseBufferFetchMaxBytes),
@@ -662,10 +647,12 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             options.BootstrapServers,
             options: metadataOptions,
             logger: options.LoggerFactory?.CreateLogger<MetadataManager>());
+        metadataManager.SetAdditionalBrokerRegistrationTarget(consumerConnectionPool);
 
         return new KafkaClientInfrastructure(
             options.BootstrapServers,
             connectionPool,
+            consumerConnectionPool,
             metadataManager,
             new ClientMemoryBudget(options.MemoryBudgetBytes),
             options.LoggerFactory,
@@ -674,12 +661,41 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             options.ProducerMaxConnectionsPerBroker);
     }
 
+    private static ConnectionOptions CreateConnectionOptions(KafkaClientOptions options) => new()
+    {
+        UseTls = options.UseTls,
+        TlsConfig = options.TlsConfig,
+        RemoteCertificateValidationCallback = options.RemoteCertificateValidationCallback,
+        ConnectionTimeout = options.ConnectionTimeout,
+        EnableTcpKeepAlive = options.EnableTcpKeepAlive,
+        TcpKeepAliveTime = options.TcpKeepAliveTime,
+        TcpKeepAliveInterval = options.TcpKeepAliveInterval,
+        TcpKeepAliveRetryCount = options.TcpKeepAliveRetryCount,
+        RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
+        ReconnectBackoff = TimeSpan.FromMilliseconds(options.ReconnectBackoffMs),
+        ReconnectBackoffMax = TimeSpan.FromMilliseconds(options.ReconnectBackoffMaxMs),
+        ConnectionsMaxIdleMs = options.ConnectionsMaxIdleMs,
+        SaslMechanism = options.SaslMechanism,
+        SaslUsername = options.SaslUsername,
+        SaslPassword = options.SaslPassword,
+        SaslScramTokenAuth = options.SaslScramTokenAuth,
+        GssapiConfig = options.GssapiConfig,
+        OAuthBearerConfig = options.OAuthBearerConfig,
+        OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
+        AwsMskIamConfig = options.AwsMskIamConfig,
+        SendBufferSize = options.SocketSendBufferBytes,
+        ReceiveBufferSize = options.SocketReceiveBufferBytes,
+        MaxInFlightRequestsPerConnection = options.MaxInFlightRequestsPerConnection,
+        ClientDnsLookup = options.ClientDnsLookup
+    };
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
         await MetadataManager.DisposeAsync().ConfigureAwait(false);
+        await ConsumerConnectionPool.DisposeAsync().ConfigureAwait(false);
         await ConnectionPool.DisposeAsync().ConfigureAwait(false);
     }
 }

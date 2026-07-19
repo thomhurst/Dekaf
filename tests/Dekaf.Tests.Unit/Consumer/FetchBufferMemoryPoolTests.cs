@@ -124,4 +124,42 @@ public sealed class FetchBufferMemoryPoolTests
         cancellation.Cancel();
         await Assert.That(async () => await large).Throws<OperationCanceledException>();
     }
+
+    [Test]
+    public async Task ReserveAsync_StopsWakingWhenReleasedCapacityFitsNoWaiter()
+    {
+        using var pool = new FetchBufferMemoryPool(100);
+        using var retained = await pool.ReserveAsync(80, CancellationToken.None);
+        var released = await pool.ReserveAsync(10, CancellationToken.None);
+        using var cancellation = new CancellationTokenSource();
+        var first = pool.ReserveAsync(70, cancellation.Token).AsTask();
+        var second = pool.ReserveAsync(80, cancellation.Token).AsTask();
+
+        released.Dispose();
+
+        await Assert.That(() => pool.PendingWakeCount).IsEqualTo(0)
+            .Within(5000);
+        await Assert.That(first.IsCompleted).IsFalse();
+        await Assert.That(second.IsCompleted).IsFalse();
+
+        cancellation.Cancel();
+        await Assert.That(async () => await first).Throws<OperationCanceledException>();
+        await Assert.That(async () => await second).Throws<OperationCanceledException>();
+    }
+
+    [Test]
+    public async Task Dispose_WakesAllWaitingReservations()
+    {
+        var pool = new FetchBufferMemoryPool(100);
+        using var retained = await pool.ReserveAsync(100, CancellationToken.None);
+        var first = pool.ReserveAsync(1, CancellationToken.None).AsTask();
+        var second = pool.ReserveAsync(1, CancellationToken.None).AsTask();
+
+        pool.Dispose();
+
+        await Assert.That(async () => await first.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<ObjectDisposedException>();
+        await Assert.That(async () => await second.WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<ObjectDisposedException>();
+    }
 }

@@ -2817,7 +2817,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
                 options,
                 keyDeserializer,
                 valueDeserializer,
-                _clientInfrastructure.ConnectionPool,
+                _clientInfrastructure.ConsumerConnectionPool,
                 _clientInfrastructure.MetadataManager,
                 memoryBudget,
                 _loggerFactory);
