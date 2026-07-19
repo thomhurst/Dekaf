@@ -310,21 +310,24 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             ]);
             await WaitUntilAsync(
                 () => accumulator.GetDeliveryDiagnosticsSnapshot()
-                    .ProduceRequestCount == 1,
+                    .ProduceRequestCount == 1
+                    && Volatile.Read(ref connection.SendFireAndForgetWithCallerTimeoutCalls) == 1,
                 cancellationToken);
 
             Volatile.Write(ref injectSibling, 1);
             sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
             await WaitUntilAsync(
                 () => accumulator.GetDeliveryDiagnosticsSnapshot()
-                    .ProduceRequestCount == 2,
+                    .ProduceRequestCount == 2
+                    && Volatile.Read(ref connection.SendFireAndForgetWithCallerTimeoutCalls) == 2,
                 cancellationToken);
 
             // The sender is fully idle again. Waiting for this event must re-arm the wave.
             sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 0));
             await WaitUntilAsync(
                 () => accumulator.GetDeliveryDiagnosticsSnapshot()
-                    .ProduceRequestCount == 3,
+                    .ProduceRequestCount == 3
+                    && Volatile.Read(ref connection.SendFireAndForgetWithCallerTimeoutCalls) == 3,
                 cancellationToken);
 
             var diagnostic = accumulator.GetDeliveryDiagnosticsSnapshot();
