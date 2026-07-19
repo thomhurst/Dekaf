@@ -149,7 +149,8 @@ public class ProducerConcurrencyTests
     }
 
     [Test]
-    public async Task EnqueueAppend_ConcurrentWithDisposal_CompletesOrFails()
+    public async Task EnqueueAppend_ConcurrentWithDisposal_CompletesOrFails(
+        CancellationToken cancellationToken)
     {
         // EnqueueAppend racing with DisposeAsync should either succeed
         // or throw ObjectDisposedException, never hang or silently lose messages.
@@ -172,11 +173,20 @@ public class ProducerConcurrencyTests
         // Start append workers before enqueuing
         using var workerCts = new CancellationTokenSource();
         accumulator.StartAppendWorkers(workerCts.Token);
+        var workersMayAppend = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var allWorkersReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var readyWorkerCount = 0;
 
         try
         {
-            var enqueueTasks = Enumerable.Range(0, taskCount).Select(taskIndex => Task.Run(() =>
+            var enqueueTasks = Enumerable.Range(0, taskCount).Select(async taskIndex =>
             {
+                if (Interlocked.Increment(ref readyWorkerCount) == taskCount)
+                    allWorkersReady.TrySetResult();
+                await workersMayAppend.Task;
+
                 for (var i = 0; i < messagesPerTask; i++)
                 {
                     try
@@ -200,13 +210,14 @@ public class ProducerConcurrencyTests
                         Interlocked.Increment(ref failedCount);
                     }
                 }
-            })).ToArray();
+            }).ToArray();
 
-            await Task.Delay(2);
+            await allWorkersReady.Task.WaitAsync(cancellationToken);
+            workersMayAppend.SetResult();
             workerCts.Cancel();
             await accumulator.DisposeAsync();
 
-            await Task.WhenAll(enqueueTasks).WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.WhenAll(enqueueTasks).WaitAsync(cancellationToken);
             await Assert.That(successCount + failedCount).IsEqualTo(taskCount * messagesPerTask);
         }
         finally
