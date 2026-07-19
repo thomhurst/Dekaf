@@ -7751,7 +7751,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Step 1: Stop heartbeat background task
         if (_coordinator is not null)
         {
-            await _coordinator.StopHeartbeatAsync().ConfigureAwait(false);
+            await _coordinator.StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
         }
 
         // Step 2: Stop leader-refresh tasks before metadata dependencies are disposed

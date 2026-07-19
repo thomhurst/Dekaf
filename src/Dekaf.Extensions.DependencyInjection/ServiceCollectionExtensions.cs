@@ -924,6 +924,7 @@ internal static class DekafOptionsBinding
         builder.WithHeartbeatInterval(TimeSpan.FromMilliseconds(options.HeartbeatIntervalMs));
         builder.WithRebalanceTimeout(TimeSpan.FromMilliseconds(options.RebalanceTimeoutMs));
         builder.WithRequestTimeout(TimeSpan.FromMilliseconds(options.RequestTimeoutMs));
+        builder.WithDefaultApiTimeout(TimeSpan.FromMilliseconds(options.DefaultApiTimeoutMs));
         builder.WithRetryBackoff(TimeSpan.FromMilliseconds(options.RetryBackoffMs));
         builder.WithRetryBackoffMax(TimeSpan.FromMilliseconds(options.RetryBackoffMaxMs));
         if (options.IsReconnectBackoffMsConfigured)
@@ -1321,6 +1322,8 @@ internal static class DekafConfigurationBinding
             builder.WithIsolationLevel(isolationLevel);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RequestTimeoutMs), out var requestTimeoutMs))
             builder.WithRequestTimeout(TimeSpan.FromMilliseconds(requestTimeoutMs));
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.DefaultApiTimeoutMs), out var defaultApiTimeoutMs))
+            builder.WithDefaultApiTimeout(TimeSpan.FromMilliseconds(defaultApiTimeoutMs));
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RetryBackoffMs), out var retryBackoffMs))
             builder.WithRetryBackoff(TimeSpan.FromMilliseconds(retryBackoffMs));
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.RetryBackoffMaxMs), out var retryBackoffMaxMs))

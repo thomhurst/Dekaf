@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Serialization;
@@ -79,6 +80,21 @@ public sealed class ConsumerPartitionStopListenerTests
     }
 
     [Test]
+    public async Task CloseAsync_BlockingHeartbeatShutdown_ObservesAggregateCancellation()
+    {
+        await using var consumer = CreateGroupConsumer(defaultApiTimeoutMs: 60_000);
+        var coordinator = GetCoordinator(consumer);
+        SetField(coordinator, "_heartbeatTask", new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously).Task);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var close = consumer.CloseAsync(cts.Token);
+
+        await Assert.That(close.IsCompleted).IsTrue();
+        await Assert.That(async () => await close).Throws<OperationCanceledException>();
+    }
+
+    [Test]
     public async Task DisposeAsync_BlockingPartitionStopListener_UsesShorterDefaultApiTimeout()
     {
         var listener = new TrackingPartitionStopListener
@@ -125,6 +141,35 @@ public sealed class ConsumerPartitionStopListenerTests
             },
             Serializers.String,
             Serializers.String);
+    }
+
+    private static KafkaConsumer<string, string> CreateGroupConsumer(int defaultApiTimeoutMs)
+    {
+        return new KafkaConsumer<string, string>(
+            new ConsumerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                GroupId = "group-a",
+                OffsetCommitMode = OffsetCommitMode.Manual,
+                QueuedMinMessages = 1,
+                DefaultApiTimeoutMs = defaultApiTimeoutMs
+            },
+            Serializers.String,
+            Serializers.String);
+    }
+
+    private static ConsumerCoordinator GetCoordinator(KafkaConsumer<string, string> consumer) =>
+        (ConsumerCoordinator)GetField(consumer, "_coordinator");
+
+    private static object GetField(object instance, string fieldName) =>
+        instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(instance)
+        ?? throw new InvalidOperationException($"{fieldName} field not found.");
+
+    private static void SetField(object instance, string fieldName, object value)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found.");
+        field.SetValue(instance, value);
     }
 
     private sealed class TrackingPartitionStopListener : IRebalanceListener, IPartitionStopListener
