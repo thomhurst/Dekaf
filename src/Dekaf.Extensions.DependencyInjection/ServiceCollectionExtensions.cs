@@ -841,6 +841,9 @@ internal static class DekafOptionsBinding
             builder.WithCustomPartitioner(options.CustomPartitioner);
         else
             builder.WithPartitioner(options.Partitioner);
+        if (options.ClientRack is not null)
+            builder.WithClientRack(options.ClientRack);
+        builder.WithRackAwarePartitioning(options.EnableRackAwarePartitioning);
         ApplyTls(options.UseTls, options.TlsConfig, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         ApplyRemoteCertificateValidationCallback(
             options.RemoteCertificateValidationCallback,
@@ -1209,6 +1212,10 @@ internal static class DekafConfigurationBinding
             builder.WithCompressionLevel(compressionLevel);
         if (TryGetValue<PartitionerType>(configuration, nameof(ProducerOptions.Partitioner), out var partitioner))
             builder.WithPartitioner(partitioner);
+        if (TryGetValue<string>(configuration, nameof(ProducerOptions.ClientRack), out var clientRack))
+            builder.WithClientRack(clientRack);
+        if (TryGetValue<bool>(configuration, nameof(ProducerOptions.EnableRackAwarePartitioning), out var enableRackAwarePartitioning))
+            builder.WithRackAwarePartitioning(enableRackAwarePartitioning);
         ApplyTls(configuration, () => builder.UseTls(), tlsConfig => builder.UseTls(tlsConfig));
         if (TryReadSasl(configuration, out var mechanism, out var username, out var password, out var gssapi, out var oauth, out var awsMskIam, out var saslScramTokenAuth))
             builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIam, saslScramTokenAuth: saslScramTokenAuth);

@@ -458,6 +458,20 @@ public sealed class ProducerOptions
     public bool IgnorePartitionerKeys { get; init; }
 
     /// <summary>
+    /// Logical rack ID of this producer. Used by rack-aware built-in partitioning.
+    /// Equivalent to Kafka's <c>client.rack</c> configuration.
+    /// </summary>
+    public string? ClientRack { get; init; }
+
+    /// <summary>
+    /// Whether built-in default and sticky partitioners prefer partitions whose leaders
+    /// are in <see cref="ClientRack"/>. Falls back to all partitions when no local leader is usable.
+    /// Equivalent to Kafka's <c>partitioner.rack.aware</c>. Default is false.
+    /// Has no effect when <see cref="CustomPartitioner"/> is set.
+    /// </summary>
+    public bool EnableRackAwarePartitioning { get; init; }
+
+    /// <summary>
     /// Use TLS.
     /// </summary>
     public bool UseTls { get; init; }

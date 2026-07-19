@@ -27,6 +27,7 @@ internal interface IUniformStickyPartitioner
     bool UsesStickyPartition(ReadOnlySpan<byte> key, bool keyIsNull);
     void OnRecordAppended(string topic, int partition, int bytes, int partitionCount);
     void SetPartitionQueueByteProvider(Func<string, int, long> partitionQueueBytes);
+    void SetPartitionLeaderRackProvider(Func<string, int, string?> partitionLeaderRack);
 }
 
 internal sealed class StickyPartitionTracker
@@ -34,27 +35,41 @@ internal sealed class StickyPartitionTracker
     private readonly ConcurrentDictionary<string, StickyPartitionState> _partitions = new();
     private readonly bool _adaptivePartitioning;
     private readonly int _availabilityTimeoutMs;
+    private readonly bool _rackAwarePartitioning;
+    private readonly string? _clientRack;
     private readonly RandomPartitionSelector _randomPartitionSelector = new();
     private readonly ConcurrentDictionary<(string Topic, int Partition), PartitionAvailabilityState> _availability = new();
     private Func<string, int, long>? _partitionQueueBytes;
+    private Func<string, int, string?>? _partitionLeaderRack;
 #if NETSTANDARD2_0
     private int _counter;
 #else
     private uint _counter;
 #endif
 
-    public StickyPartitionTracker(bool adaptivePartitioning = false, int availabilityTimeoutMs = 0)
+    public StickyPartitionTracker(
+        bool adaptivePartitioning = false,
+        int availabilityTimeoutMs = 0,
+        bool rackAwarePartitioning = false,
+        string? clientRack = null)
     {
         if (availabilityTimeoutMs < 0)
             throw new ArgumentOutOfRangeException(nameof(availabilityTimeoutMs), "Availability timeout cannot be negative");
 
         _adaptivePartitioning = adaptivePartitioning;
         _availabilityTimeoutMs = availabilityTimeoutMs;
+        _rackAwarePartitioning = rackAwarePartitioning;
+        _clientRack = clientRack;
     }
 
     public void SetPartitionQueueByteProvider(Func<string, int, long> partitionQueueBytes)
     {
         _partitionQueueBytes = partitionQueueBytes ?? throw new ArgumentNullException(nameof(partitionQueueBytes));
+    }
+
+    public void SetPartitionLeaderRackProvider(Func<string, int, string?> partitionLeaderRack)
+    {
+        _partitionLeaderRack = partitionLeaderRack ?? throw new ArgumentNullException(nameof(partitionLeaderRack));
     }
 
     public int GetOrAssign(string topic, int partitionCount)
@@ -131,13 +146,20 @@ internal sealed class StickyPartitionTracker
 
     private int NextPartition(string topic, int partitionCount, int? currentPartition)
     {
-        var nextPartition = TryNextAdaptivePartition(topic, partitionCount, currentPartition) ?? NextSequentialPartition(partitionCount);
-        if (partitionCount > 1 && currentPartition == nextPartition)
+        var localPartitionCount = CountAvailableLocalPartitions(topic, partitionCount);
+        var nextPartition = TryNextAdaptivePartition(topic, partitionCount, currentPartition, localPartitionCount)
+            ?? TryNextLocalSequentialPartition(topic, partitionCount, currentPartition, localPartitionCount)
+            ?? NextSequentialPartition(partitionCount);
+        if (partitionCount > 1 && currentPartition == nextPartition && localPartitionCount != 1)
             nextPartition = (nextPartition + 1) % partitionCount;
         return nextPartition;
     }
 
-    private int? TryNextAdaptivePartition(string topic, int partitionCount, int? currentPartition)
+    private int? TryNextAdaptivePartition(
+        string topic,
+        int partitionCount,
+        int? currentPartition,
+        int localPartitionCount)
     {
         var partitionQueueBytes = _partitionQueueBytes;
         if (!_adaptivePartitioning || partitionQueueBytes is null || partitionCount < 2)
@@ -151,7 +173,13 @@ internal sealed class StickyPartitionTracker
 
         for (var partition = 0; partition < partitionCount; partition++)
         {
-            if (currentPartition == partition)
+            if (localPartitionCount > 0 && !IsLocalPartition(topic, partition))
+            {
+                queueSizes[partition] = -1;
+                continue;
+            }
+
+            if (currentPartition == partition && localPartitionCount != 1)
             {
                 queueSizes[partition] = -1;
                 continue;
@@ -173,7 +201,7 @@ internal sealed class StickyPartitionTracker
                 maxQueueSize = queueSize;
         }
 
-        if (eligibleCount == 0)
+        if (eligibleCount == 0 && localPartitionCount == 0)
         {
             // Every other partition has stayed backed up past the timeout. Fall back to
             // the weighted choice across all partitions; NextPartition still prevents a
@@ -199,7 +227,7 @@ internal sealed class StickyPartitionTracker
             eligibleCount = partitionCount;
         }
 
-        if (allEqual && eligibleCount == partitionCount)
+        if (allEqual && eligibleCount == partitionCount && localPartitionCount == 0)
             return null;
 
         var maxWeightSource = maxQueueSize == long.MaxValue ? long.MaxValue : maxQueueSize + 1;
@@ -233,6 +261,49 @@ internal sealed class StickyPartitionTracker
 
         return null;
     }
+
+    private int? TryNextLocalSequentialPartition(
+        string topic,
+        int partitionCount,
+        int? currentPartition,
+        int localPartitionCount)
+    {
+        if (localPartitionCount == 0)
+            return null;
+
+        var start = NextSequentialPartition(partitionCount);
+        for (var offset = 0; offset < partitionCount; offset++)
+        {
+            var partition = (start + offset) % partitionCount;
+            if (IsLocalPartition(topic, partition)
+                && (localPartitionCount == 1 || currentPartition != partition))
+                return partition;
+        }
+
+        return null;
+    }
+
+    private int CountAvailableLocalPartitions(string topic, int partitionCount)
+    {
+        if (!_rackAwarePartitioning || string.IsNullOrEmpty(_clientRack) || _partitionLeaderRack is null)
+            return 0;
+
+        var count = 0;
+        for (var partition = 0; partition < partitionCount; partition++)
+        {
+            if (!IsLocalPartition(topic, partition))
+                continue;
+
+            var queueSize = Math.Max(0, _partitionQueueBytes?.Invoke(topic, partition) ?? 0);
+            if (!IsUnavailable(topic, partition, queueSize))
+                count++;
+        }
+
+        return count;
+    }
+
+    private bool IsLocalPartition(string topic, int partition)
+        => string.Equals(_partitionLeaderRack?.Invoke(topic, partition), _clientRack, StringComparison.Ordinal);
 
     private bool IsUnavailable(string topic, int partition, long queueSize)
     {
@@ -299,14 +370,20 @@ public sealed class DefaultPartitioner : IPartitioner, IBatchCompletionAwarePart
         int stickyBatchSize = int.MaxValue,
         bool adaptivePartitioning = false,
         int availabilityTimeoutMs = 0,
-        bool ignoreKeys = false)
+        bool ignoreKeys = false,
+        bool rackAwarePartitioning = false,
+        string? clientRack = null)
     {
         if (stickyBatchSize < 1)
             throw new ArgumentOutOfRangeException(nameof(stickyBatchSize), "Sticky batch size must be at least 1 byte");
 
         _stickyBatchSize = stickyBatchSize;
         _ignoreKeys = ignoreKeys;
-        _stickyPartitionTracker = new StickyPartitionTracker(adaptivePartitioning, availabilityTimeoutMs);
+        _stickyPartitionTracker = new StickyPartitionTracker(
+            adaptivePartitioning,
+            availabilityTimeoutMs,
+            rackAwarePartitioning,
+            clientRack);
     }
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
@@ -341,6 +418,11 @@ public sealed class DefaultPartitioner : IPartitioner, IBatchCompletionAwarePart
         _stickyPartitionTracker.SetPartitionQueueByteProvider(partitionQueueBytes);
     }
 
+    void IUniformStickyPartitioner.SetPartitionLeaderRackProvider(Func<string, int, string?> partitionLeaderRack)
+    {
+        _stickyPartitionTracker.SetPartitionLeaderRackProvider(partitionLeaderRack);
+    }
+
     private bool UsesStickyPartition(ReadOnlySpan<byte> key, bool keyIsNull)
         => _ignoreKeys || keyIsNull || key.Length == 0;
 }
@@ -358,14 +440,20 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
         int stickyBatchSize = int.MaxValue,
         bool adaptivePartitioning = false,
         int availabilityTimeoutMs = 0,
-        bool ignoreKeys = false)
+        bool ignoreKeys = false,
+        bool rackAwarePartitioning = false,
+        string? clientRack = null)
     {
         if (stickyBatchSize < 1)
             throw new ArgumentOutOfRangeException(nameof(stickyBatchSize), "Sticky batch size must be at least 1 byte");
 
         _stickyBatchSize = stickyBatchSize;
         _ignoreKeys = ignoreKeys;
-        _stickyPartitionTracker = new StickyPartitionTracker(adaptivePartitioning, availabilityTimeoutMs);
+        _stickyPartitionTracker = new StickyPartitionTracker(
+            adaptivePartitioning,
+            availabilityTimeoutMs,
+            rackAwarePartitioning,
+            clientRack);
     }
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
@@ -397,6 +485,11 @@ public sealed class StickyPartitioner : IPartitioner, IBatchCompletionAwareParti
     void IUniformStickyPartitioner.SetPartitionQueueByteProvider(Func<string, int, long> partitionQueueBytes)
     {
         _stickyPartitionTracker.SetPartitionQueueByteProvider(partitionQueueBytes);
+    }
+
+    void IUniformStickyPartitioner.SetPartitionLeaderRackProvider(Func<string, int, string?> partitionLeaderRack)
+    {
+        _stickyPartitionTracker.SetPartitionLeaderRackProvider(partitionLeaderRack);
     }
 
     private bool UsesStickyPartition(ReadOnlySpan<byte> key, bool keyIsNull)

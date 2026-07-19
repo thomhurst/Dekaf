@@ -167,6 +167,8 @@ public class DependencyInjectionTests
             LingerMs = 7,
             DeliveryLatencyTargetMs = 23,
             EnableAdaptiveConnections = false,
+            ClientRack = "rack-a",
+            EnableRackAwarePartitioning = true,
             UseTls = true,
             SaslMechanism = SaslMechanism.ScramSha512,
             SaslUsername = "producer-user",
@@ -188,6 +190,8 @@ public class DependencyInjectionTests
         await Assert.That(boundOptions.LingerMs).IsEqualTo(7);
         await Assert.That(boundOptions.DeliveryLatencyTargetMs).IsEqualTo(23);
         await Assert.That(boundOptions.EnableAdaptiveConnections).IsFalse();
+        await Assert.That(boundOptions.ClientRack).IsEqualTo("rack-a");
+        await Assert.That(boundOptions.EnableRackAwarePartitioning).IsTrue();
         await Assert.That(boundOptions.UseTls).IsTrue();
         await Assert.That(boundOptions.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
         await Assert.That(boundOptions.SaslUsername).IsEqualTo("producer-user");
@@ -637,6 +641,8 @@ public class DependencyInjectionTests
             ["Kafka:Producers:Orders:CompressionType"] = "Gzip",
             ["Kafka:Producers:Orders:CompressionLevel"] = "4",
             ["Kafka:Producers:Orders:Partitioner"] = "RoundRobin",
+            ["Kafka:Producers:Orders:ClientRack"] = "rack-a",
+            ["Kafka:Producers:Orders:EnableRackAwarePartitioning"] = "true",
             ["Kafka:Producers:Orders:UseTls"] = "true",
             ["Kafka:Producers:Orders:SaslMechanism"] = "ScramSha512",
             ["Kafka:Producers:Orders:SaslUsername"] = "user",
@@ -687,6 +693,8 @@ public class DependencyInjectionTests
         await Assert.That(options.CompressionType).IsEqualTo(CompressionType.Gzip);
         await Assert.That(options.CompressionLevel).IsEqualTo(4);
         await Assert.That(options.Partitioner).IsEqualTo(PartitionerType.RoundRobin);
+        await Assert.That(options.ClientRack).IsEqualTo("rack-a");
+        await Assert.That(options.EnableRackAwarePartitioning).IsTrue();
         await Assert.That(options.UseTls).IsTrue();
         await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
         await Assert.That(options.SaslUsername).IsEqualTo("user");

@@ -120,6 +120,18 @@ var producer = await Kafka.CreateProducer<string, string>()
     .BuildAsync();
 ```
 
+To prefer partition leaders in the producer's rack for records using automatic partitioning, enable KIP-1123 rack awareness:
+
+```csharp
+var producer = await Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithClientRack("rack-a")
+    .WithRackAwarePartitioning()
+    .BuildAsync();
+```
+
+The built-in default and sticky partitioners fall back to all partitions when no local leader is usable. Explicit partitions, keyed records, and custom partitioners are unaffected unless `.WithPartitionerIgnoreKeys()` enables automatic partitioning for keyed records. Because only local leaders are preferred, uneven partition-leader placement across racks can create an uneven partition distribution.
+
 ## Partition Count Considerations
 
 The number of partitions affects:

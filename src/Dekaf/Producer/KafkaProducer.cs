@@ -353,7 +353,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 options.BatchSize,
                 options.EnableAdaptivePartitioning,
                 options.PartitionerAvailabilityTimeoutMs,
-                options.IgnorePartitionerKeys),
+                options.IgnorePartitionerKeys,
+                options.EnableRackAwarePartitioning,
+                options.ClientRack),
             PartitionerType.RoundRobin => new RoundRobinPartitioner(),
             PartitionerType.Random => new RandomPartitioner(),
             PartitionerType.Consistent => new ConsistentPartitioner(),
@@ -366,7 +368,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 options.BatchSize,
                 options.EnableAdaptivePartitioning,
                 options.PartitionerAvailabilityTimeoutMs,
-                options.IgnorePartitionerKeys)
+                options.IgnorePartitionerKeys,
+                options.EnableRackAwarePartitioning,
+                options.ClientRack)
         };
         _uniformStickyPartitioner = _usesCustomPartitioner ? null : _partitioner as IUniformStickyPartitioner;
 
@@ -415,6 +419,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             recordAppendedCallback,
             ResolveLeaderIdForUnackedBudget);
         _uniformStickyPartitioner?.SetPartitionQueueByteProvider(_accumulator.GetPartitionQueueBytes);
+        _uniformStickyPartitioner?.SetPartitionLeaderRackProvider(
+            (topic, partition) => _metadataManager.Metadata.GetPartitionLeader(topic, partition)?.Rack);
 
         // Inflight tracker enables coordinated retry with multiple in-flight batches per partition.
         // The broker uses sequence numbers to guarantee ordering, so multiple batches can be

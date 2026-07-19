@@ -50,6 +50,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private bool _enableAdaptivePartitioning = true;
     private int _partitionerAvailabilityTimeoutMs;
     private bool _ignorePartitionerKeys;
+    private string? _clientRack;
+    private bool _enableRackAwarePartitioning;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
@@ -507,6 +509,24 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithPartitionerIgnoreKeys(bool ignoreKeys = true)
     {
         _ignorePartitionerKeys = ignoreKeys;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the producer rack used by rack-aware built-in partitioning.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithClientRack(string clientRack)
+    {
+        _clientRack = clientRack ?? throw new ArgumentNullException(nameof(clientRack));
+        return this;
+    }
+
+    /// <summary>
+    /// Enables or disables KIP-1123 rack-aware behavior for built-in default and sticky partitioners.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithRackAwarePartitioning(bool enable = true)
+    {
+        _enableRackAwarePartitioning = enable;
         return this;
     }
 
@@ -1296,6 +1316,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             EnableAdaptivePartitioning = _enableAdaptivePartitioning,
             PartitionerAvailabilityTimeoutMs = _partitionerAvailabilityTimeoutMs,
             IgnorePartitionerKeys = _ignorePartitionerKeys,
+            ClientRack = _clientRack,
+            EnableRackAwarePartitioning = _enableRackAwarePartitioning,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             RemoteCertificateValidationCallback = _remoteCertificateValidationCallback,
