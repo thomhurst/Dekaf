@@ -70,7 +70,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _fetchLock = new(1, 1);
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
-    private GroupException? _fatalHeartbeatException;
+    private KafkaException? _fatalHeartbeatException;
     private int _disposed;
     private readonly Func<int> _getCoordinationConnectionIndex;
 
@@ -443,7 +443,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             or ErrorCode.CoordinatorNotAvailable
             or ErrorCode.CoordinatorLoadInProgress;
 
-    private async ValueTask StoreFatalHeartbeatExceptionAsync(GroupException exception)
+    private async ValueTask StoreFatalHeartbeatExceptionAsync(KafkaException exception)
     {
         Interlocked.CompareExchange(ref _fatalHeartbeatException, exception, null);
 
@@ -1741,6 +1741,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             catch (Exception ex)
             {
                 LogHeartbeatFailed(ex);
+
+                if (ex is BrokerVersionException brokerVersionException)
+                {
+                    await StoreFatalHeartbeatExceptionAsync(brokerVersionException).ConfigureAwait(false);
+                    break;
+                }
 
                 if (ex is Errors.GroupException ge)
                 {

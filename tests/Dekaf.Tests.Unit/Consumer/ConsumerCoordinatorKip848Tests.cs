@@ -3152,6 +3152,31 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_StableRegex_CapabilityLossDuringHeartbeat_PropagatesToPoll()
+    {
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
+        SetupFindCoordinator();
+        SetupConsumerGroupHeartbeat(heartbeatIntervalMs: 60_000);
+
+        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+        var topics = new HashSet<string>();
+
+        await coordinator.EnsureActiveGroupAsync(topics, "orders-.*", CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+
+        await InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(async () =>
+                await coordinator.EnsureActiveGroupAsync(topics, "orders-.*", CancellationToken.None))
+            .Throws<BrokerVersionException>()
+            .WithMessageContaining("Kafka 4.1");
+    }
+
+    [Test]
     public async Task ConsumerProtocol_InvalidRegularExpression_ThrowsGroupException()
     {
         _metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 1);
