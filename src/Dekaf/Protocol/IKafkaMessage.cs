@@ -70,6 +70,12 @@ public interface IKafkaResponse : IKafkaMessage
 {
 #if !NETSTANDARD2_0
     /// <summary>
+    /// Gets the broker-reported throttle time in milliseconds, or zero when this
+    /// response type does not carry quota throttle information.
+    /// </summary>
+    int ThrottleTimeMs => 0;
+
+    /// <summary>
     /// Reads the response body from the protocol reader.
     /// </summary>
     static abstract IKafkaResponse Read(ref KafkaProtocolReader reader, short version);

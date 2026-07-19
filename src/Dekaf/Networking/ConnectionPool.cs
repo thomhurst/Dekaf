@@ -13,7 +13,7 @@ namespace Dekaf.Networking;
 /// Connection pool for managing connections to Kafka brokers.
 /// Supports multiple connections per broker for parallel request handling.
 /// </summary>
-public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDiagnostics
+public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDiagnostics, IBrokerThrottleProvider
 {
     private const int MaxConnectionReapDiagnosticEvents = 256;
     private static readonly TimeSpan DefaultIdleReapDrainTimeout = TimeSpan.FromSeconds(5);
@@ -61,6 +61,8 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     // Per-endpoint semaphores to deduplicate concurrent single-connection creation
     private readonly ConcurrentDictionary<EndpointKey, SemaphoreSlim> _connectionCreationLocks = new();
     private readonly ConcurrentDictionary<EndpointKey, ReconnectBackoffState> _reconnectBackoffs = new();
+    private readonly ConcurrentDictionary<int, BrokerThrottleState> _brokerThrottleStates = new();
+    private readonly ConcurrentDictionary<EndpointKey, BrokerThrottleState> _bootstrapThrottleStates = new();
 
     // Multi-connection support: connection groups and round-robin index
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
@@ -79,6 +81,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
 
     private readonly SemaphoreSlim _disposeLock = new(1, 1);
     private readonly SemaphoreSlim _scaleLock = new(1, 1);
+    private readonly CancellationTokenSource _disposeCts = new();
     private int _disposed;
 
     public ConnectionPool(
@@ -161,6 +164,23 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     internal ConnectionOptions EffectiveConnectionOptions => _connectionOptions;
 
     internal bool HasSharedOAuthBearerTokenProvider => _sharedOAuthBearerTokenProvider is not null;
+
+    int IBrokerThrottleProvider.GetRemainingBrokerThrottleMilliseconds(int brokerId) =>
+        _brokerThrottleStates.TryGetValue(brokerId, out var state)
+            ? state.GetRemainingMilliseconds()
+            : 0;
+
+    private BrokerThrottleState GetBrokerThrottleState(
+        int brokerId,
+        EndpointKey endpoint) => brokerId >= 0
+            ? _brokerThrottleStates.GetOrAdd(
+                brokerId,
+                static (_, collector) => new BrokerThrottleState(collector),
+                _telemetryMetricCollector)
+            : _bootstrapThrottleStates.GetOrAdd(
+                endpoint,
+                static (_, collector) => new BrokerThrottleState(collector),
+                _telemetryMetricCollector);
 
     private static ConnectionOptions ConfigureSharedOAuthBearerProvider(
         ConnectionOptions options,
@@ -258,6 +278,12 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ConnectionPool));
 
+        if (_brokerThrottleStates.TryGetValue(brokerId, out var throttleState))
+        {
+            await throttleState.WaitAsync(cancellationToken, _disposeCts.Token)
+                .ConfigureAwait(false);
+        }
+
         // Multi-connection path: use connection groups with round-robin selection
         if (_connectionsPerBroker > 1)
         {
@@ -323,6 +349,12 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     {
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ConnectionPool));
+
+        if (_brokerThrottleStates.TryGetValue(brokerId, out var throttleState))
+        {
+            await throttleState.WaitAsync(cancellationToken, _disposeCts.Token)
+                .ConfigureAwait(false);
+        }
 
         ArgumentOutOfRangeException.ThrowIfNegative(index);
         ArgumentOutOfRangeException.ThrowIfEqual(index, int.MaxValue);
@@ -797,7 +829,8 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
                 _responseBufferPool,
                 _sharedPipeMemoryPool,
                 _telemetryMetricCollector,
-                _responseMemoryAdmissionsEnabled);
+                _responseMemoryAdmissionsEnabled,
+                GetBrokerThrottleState(brokerId, endpoint));
 
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
@@ -825,6 +858,11 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
             throw new ObjectDisposedException(nameof(ConnectionPool));
 
         var endpoint = new EndpointKey(host, port);
+        if (_bootstrapThrottleStates.TryGetValue(endpoint, out var throttleState))
+        {
+            await throttleState.WaitAsync(cancellationToken, _disposeCts.Token)
+                .ConfigureAwait(false);
+        }
 
         // Try to get existing connection
         if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected)
@@ -972,7 +1010,8 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
                 _responseBufferPool,
                 _sharedPipeMemoryPool,
                 _telemetryMetricCollector,
-                _responseMemoryAdmissionsEnabled);
+                _responseMemoryAdmissionsEnabled,
+                GetBrokerThrottleState(brokerId, endpoint));
 
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1318,6 +1357,16 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     IReadOnlyList<ConnectionReapDiagnostic> IConnectionPoolDiagnostics.GetConnectionReapDiagnosticsSnapshot() =>
         GetConnectionReapDiagnosticsSnapshot();
 
+    int IConnectionPoolDiagnostics.GetMaxObservedBrokerThrottleTimeMs()
+    {
+        var maximum = 0;
+        foreach (var state in _brokerThrottleStates.Values)
+            maximum = Math.Max(maximum, state.MaxObservedThrottleTimeMs);
+        foreach (var state in _bootstrapThrottleStates.Values)
+            maximum = Math.Max(maximum, state.MaxObservedThrottleTimeMs);
+        return maximum;
+    }
+
     private void RecordConnectionReapDiagnostic(int brokerId, int connectionIndex, long idleDurationMs)
     {
         lock (_connectionReapDiagnosticsLock)
@@ -1533,6 +1582,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        _disposeCts.Cancel();
         _idleReaperCts?.Cancel();
         if (_idleReaperTask is not null)
             await _idleReaperTask.ConfigureAwait(false);
@@ -1541,6 +1591,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         await CloseAllAsync().ConfigureAwait(false);
 
         _sharedOAuthBearerTokenProvider?.Dispose();
+        _disposeCts.Dispose();
         _disposeLock.Dispose();
         _scaleLock.Dispose();
     }

@@ -82,7 +82,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
     private volatile int _produceApiVersion = -1;
-    private int _maxObservedBrokerThrottleTimeMs;
     private int _disposed;
 
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
@@ -2785,23 +2784,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _accumulator.ResetProduceRequestDiagnostics();
 
     int IProducerDiagnostics.MaxObservedBrokerThrottleTimeMs =>
-        Volatile.Read(ref _maxObservedBrokerThrottleTimeMs);
-
-    private void ObserveBrokerThrottle(int throttleTimeMs)
-    {
-        var observedMaximum = Volatile.Read(ref _maxObservedBrokerThrottleTimeMs);
-        while (throttleTimeMs > observedMaximum)
-        {
-            var previous = Interlocked.CompareExchange(
-                ref _maxObservedBrokerThrottleTimeMs,
-                throttleTimeMs,
-                observedMaximum);
-            if (previous == observedMaximum)
-                return;
-
-            observedMaximum = previous;
-        }
-    }
+        _connectionPool is IConnectionPoolDiagnostics diagnostics
+            ? diagnostics.GetMaxObservedBrokerThrottleTimeMs()
+            : _telemetryMetricCollector.MaxObservedBrokerThrottleTimeMs;
 
     private async Task SenderLoopAsync(CancellationToken cancellationToken)
     {
@@ -3090,7 +3075,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
             _logger,
             canPhysicallyShrinkConnections: _ownsInfrastructure,
-            onBrokerThrottle: _options.EnableDeliveryDiagnostics ? ObserveBrokerThrottle : null,
+            onBrokerThrottle: _options.EnableDeliveryDiagnostics
+                ? _telemetryMetricCollector.RecordBrokerThrottle
+                : null,
             unackedBudget: _accumulator.GetBrokerUnackedBudget(brokerId),
             usesTransactionV2: () => _currentTransactionUsesTV2);
     }
