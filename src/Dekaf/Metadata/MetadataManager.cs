@@ -531,11 +531,26 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     catch (BootstrapResolutionPendingException ex) when (!initializationToken.IsCancellationRequested)
                     {
                         var bootstrapStartedAt = GetOrStartBootstrapResolutionTimer();
-                        var elapsed = Stopwatch.GetElapsedTime(bootstrapStartedAt);
-                        var remainingMs = _options.BootstrapResolveTimeoutMs - elapsed.TotalMilliseconds;
+                        var bootstrapElapsed = Stopwatch.GetElapsedTime(bootstrapStartedAt);
+                        var bootstrapRemainingMs = _options.BootstrapResolveTimeoutMs - bootstrapElapsed.TotalMilliseconds;
+                        var metadataElapsed = Stopwatch.GetElapsedTime(metadataStartedAt);
+                        var metadataRemainingMs = _options.InitTimeoutMs - metadataElapsed.TotalMilliseconds;
+                        var remainingMs = Math.Min(bootstrapRemainingMs, metadataRemainingMs);
+                        if (remainingMs <= 0 && metadataRemainingMs <= bootstrapRemainingMs)
+                        {
+                            LogMetadataInitializationAbandoned(ex, metadataFailureCount + bootstrapFailureCount + 1);
+                            throw new KafkaTimeoutException(
+                                TimeoutKind.Metadata,
+                                metadataElapsed,
+                                TimeSpan.FromMilliseconds(_options.InitTimeoutMs),
+                                $"Failed to fetch initial metadata within {_options.InitTimeoutMs}ms. " +
+                                "Ensure the Kafka cluster is reachable and the bootstrap servers are correct.",
+                                ex);
+                        }
+
                         if (remainingMs <= 0)
                         {
-                            LogBootstrapResolutionExpired(elapsed.TotalMilliseconds);
+                            LogBootstrapResolutionExpired(bootstrapElapsed.TotalMilliseconds);
                             throw new BootstrapResolutionException(
                                 ex.UnresolvedBootstrapServers,
                                 TimeSpan.FromMilliseconds(_options.BootstrapResolveTimeoutMs),
@@ -547,13 +562,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
                             _options.RetryBackoffMaxMs,
                             ++bootstrapFailureCount);
                         LogBootstrapResolutionRetry(ex, bootstrapFailureCount, backoffMs);
-                        await Task.Delay((int)Math.Min(backoffMs, remainingMs), initializationToken)
+                        await Task.Delay(
+                                (int)Math.Min(backoffMs, remainingMs),
+                                initializationToken)
                             .ConfigureAwait(false);
 
-                        // DNS resolution has its own KIP-909 budget. Once it recovers, connection,
-                        // authentication, and metadata failures receive their full normal budget.
+                        // DNS failures do not consume the normal retry count, but the caller's
+                        // overall initialization deadline (for example max.block.ms) still applies.
                         metadataFailureCount = 0;
-                        metadataStartedAt = Stopwatch.GetTimestamp();
                     }
                     catch (Exception ex) when (!IsFatalMetadataError(ex) && !initializationToken.IsCancellationRequested)
                     {

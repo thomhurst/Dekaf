@@ -149,7 +149,7 @@ public sealed class BootstrapResolutionClientTests
             new MetadataOptions
             {
                 EnableBackgroundRefresh = false,
-                InitTimeoutMs = 1,
+                InitTimeoutMs = 1000,
                 MaxInitRetries = 0,
                 BootstrapResolveTimeoutMs = 1000,
                 RetryBackoffMs = 0,
