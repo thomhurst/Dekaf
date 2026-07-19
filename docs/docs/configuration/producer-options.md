@@ -313,7 +313,7 @@ Set a larger maximum to enable KIP-601 adaptive setup deadlines. Consecutive fai
 .WithConnectionTimeoutMax(TimeSpan.FromSeconds(127))
 ```
 
-When only `WithConnectionTimeout` is set, the maximum follows the initial value, preserving fixed-timeout behavior. Failure progression follows the logical `host:port`, so DNS address rotation retains it; a broker moving to a different advertised endpoint starts fresh.
+When only `WithConnectionTimeout` is set, the maximum follows the initial value, preserving fixed-timeout behavior. Failure progression follows the broker ID plus advertised `host:port`. DNS address rotation for that broker and endpoint retains it; a different broker ID or advertised endpoint starts fresh.
 
 ### WithTcpKeepAlive
 
