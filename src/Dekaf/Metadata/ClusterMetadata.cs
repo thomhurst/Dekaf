@@ -170,6 +170,9 @@ public sealed class ClusterMetadata
     private volatile ClusterMetadataSnapshot _snapshot = ClusterMetadataSnapshot.Empty;
     private readonly object _writeLock = new(); // Only needed for concurrent writes (rare)
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal ClusterMetadataSnapshot CaptureSnapshot() => _snapshot;
+
     /// <summary>
     /// Cluster ID.
     /// </summary>
@@ -505,12 +508,23 @@ public sealed class ClusterMetadata
     {
         foreach (var topic in response.Topics)
         {
+            var topicIdentityUnchanged = existing.Topics.TryGetValue(topic.Name, out var existingTopic)
+                && existingTopic.TopicId == topic.TopicId;
+            if (topics.TryGetValue(topic.Name, out var replacedTopic)
+                && replacedTopic.TopicId != Guid.Empty
+                && replacedTopic.TopicId != topic.TopicId)
+            {
+                topicsById.Remove(replacedTopic.TopicId);
+            }
+
             // Use explicit loop instead of LINQ Select to avoid enumerator allocation
             var partitions = new List<PartitionInfo>(topic.Partitions.Count);
             foreach (var p in topic.Partitions)
             {
                 var existingPartition = GetPartitionInfo(existing, topic.Name, p.PartitionIndex);
-                if (existingPartition is not null && ShouldPreserveExistingPartition(existingPartition, p))
+                if (topicIdentityUnchanged
+                    && existingPartition is not null
+                    && ShouldPreserveExistingPartition(existingPartition, p))
                 {
                     partitions.Add(existingPartition);
                     EnsureBrokerPresent(brokers, existing, existingPartition.LeaderId);

@@ -192,6 +192,26 @@ public sealed class ClusterMetadataTests
         await Assert.That(topic).IsNull();
     }
 
+    [Test]
+    public async Task MergeUpdate_TopicRecreated_RemovesStaleTopicIdMapping()
+    {
+        var oldTopicId = Guid.NewGuid();
+        var newTopicId = Guid.NewGuid();
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateMetadataResponse(topicId: oldTopicId));
+
+        metadata.Update(CreateMetadataResponse(
+            topicId: newTopicId,
+            partition0LeaderId: 2,
+            partition0LeaderEpoch: 1), mergeTopics: true);
+
+        await Assert.That(metadata.GetTopic(oldTopicId)).IsNull();
+        await Assert.That(metadata.GetTopic(newTopicId)?.Name).IsEqualTo("test-topic");
+        await Assert.That(metadata.GetTopic("test-topic")?.TopicId).IsEqualTo(newTopicId);
+        await Assert.That(metadata.GetTopic("test-topic")?.Partitions[0].LeaderId).IsEqualTo(2);
+        await Assert.That(metadata.GetTopic("test-topic")?.Partitions[0].LeaderEpoch).IsEqualTo(1);
+    }
+
     #endregion
 
     #region GetTopics

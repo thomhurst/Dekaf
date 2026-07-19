@@ -6,9 +6,11 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class OffsetCommitRequest : IKafkaRequest<OffsetCommitResponse>
 {
+    internal const short TopicIdVersion = 10;
+
     public static ApiKey ApiKey => ApiKey.OffsetCommit;
     public static short LowestSupportedVersion => 8;
-    public static short HighestSupportedVersion => 9;
+    public static short HighestSupportedVersion => TopicIdVersion;
 
     /// <summary>
     /// The group ID.
@@ -62,11 +64,15 @@ public sealed class OffsetCommitRequest : IKafkaRequest<OffsetCommitResponse>
 public sealed class OffsetCommitRequestTopic
 {
     public required string Name { get; init; }
+    public Guid TopicId { get; init; }
     public required IReadOnlyList<OffsetCommitRequestPartition> Partitions { get; init; }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        writer.WriteCompactString(Name);
+        if (version >= OffsetCommitRequest.TopicIdVersion)
+            writer.WriteUuid(TopicId);
+        else
+            writer.WriteCompactString(Name);
 
         writer.WriteCompactArray(
             Partitions,

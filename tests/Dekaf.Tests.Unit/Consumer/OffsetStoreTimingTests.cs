@@ -1138,7 +1138,7 @@ public sealed class OffsetStoreTimingTests
         metadataManager.SetApiVersion(
             ApiKey.OffsetCommit,
             OffsetCommitRequest.LowestSupportedVersion,
-            OffsetCommitRequest.HighestSupportedVersion);
+            9);
 
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions

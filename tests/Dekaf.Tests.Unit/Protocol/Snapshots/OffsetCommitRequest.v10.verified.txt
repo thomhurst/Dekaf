@@ -1,0 +1,17 @@
+﻿Request: Dekaf.Protocol.Messages.OffsetCommitRequest
+API key: OffsetCommit (8)
+Version: 10
+Header version: 2
+Correlation ID: 270544960 (0x10203040)
+Client ID: dekaf-snapshot
+Frame length: 129 bytes (125-byte payload)
+
+0000: 00 00 00 7D 00 08 00 0A  10 20 30 40 00 0E 64 65 |...}..... 0@..de|
+0010: 6B 61 66 2D 73 6E 61 70  73 68 6F 74 00 0B 77 69 |kaf-snapshot..wi|
+0020: 72 65 2D 67 72 6F 75 70  00 00 00 03 0E 77 69 72 |re-group.....wir|
+0030: 65 2D 6D 65 6D 62 65 72  69 64 0B 77 69 72 65 2D |e-memberid.wire-|
+0040: 67 72 6F 75 70 02 00 11  22 33 44 55 66 77 88 99 |group..."3DUfw..|
+0050: AA BB CC DD EE FF 02 00  00 00 02 00 00 00 00 00 |................|
+0060: 00 00 2A 00 00 00 03 17  77 69 72 65 2D 63 6F 6D |..*.....wire-com|
+0070: 6D 69 74 74 65 64 6D 65  74 61 64 61 74 61 00 00 |mittedmetadata..|
+0080: 00                                               |.|

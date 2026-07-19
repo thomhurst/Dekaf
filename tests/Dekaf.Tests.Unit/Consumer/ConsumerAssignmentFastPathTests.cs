@@ -667,7 +667,7 @@ public sealed class ConsumerAssignmentFastPathTests
         metadataManager.SetApiVersion(
             ApiKey.OffsetCommit,
             OffsetCommitRequest.LowestSupportedVersion,
-            OffsetCommitRequest.HighestSupportedVersion);
+            9);
         SetupFindCoordinator(connection);
         SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
         SetupOffsetFetch(connection);
@@ -1118,7 +1118,7 @@ public sealed class ConsumerAssignmentFastPathTests
         var metadataManager = new MetadataManager(connectionPool, ["localhost:9092"]);
         metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
         metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
-        metadataManager.SetApiVersion(ApiKey.OffsetFetch, OffsetFetchRequest.LowestSupportedVersion, OffsetFetchRequest.HighestSupportedVersion);
+        metadataManager.SetApiVersion(ApiKey.OffsetFetch, OffsetFetchRequest.LowestSupportedVersion, 9);
         metadataManager.Metadata.Update(new MetadataResponse
         {
             Brokers =

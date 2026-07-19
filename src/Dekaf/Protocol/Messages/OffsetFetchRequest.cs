@@ -6,9 +6,11 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
 {
+    internal const short TopicIdVersion = 10;
+
     public static ApiKey ApiKey => ApiKey.OffsetFetch;
     public static short LowestSupportedVersion => 6;
-    public static short HighestSupportedVersion => 9;
+    public static short HighestSupportedVersion => TopicIdVersion;
 
     /// <summary>
     /// The group ID.
@@ -82,15 +84,19 @@ public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
 public sealed class OffsetFetchRequestTopic
 {
     public required string Name { get; init; }
+    public Guid TopicId { get; init; }
     public required IReadOnlyList<int> PartitionIndexes { get; init; }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        writer.WriteCompactString(Name);
+        if (version >= OffsetFetchRequest.TopicIdVersion)
+            writer.WriteUuid(TopicId);
+        else
+            writer.WriteCompactString(Name);
 
         writer.WriteCompactArray(
             PartitionIndexes,
-            (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
+            static (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
 
         writer.WriteEmptyTaggedFields();
     }

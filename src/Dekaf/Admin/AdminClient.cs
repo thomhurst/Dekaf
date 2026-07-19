@@ -1533,7 +1533,7 @@ public sealed class AdminClient : IAdminClient
                 connection,
                 Protocol.ApiKey.OffsetFetch,
                 OffsetFetchRequest.LowestSupportedVersion,
-                OffsetFetchRequest.HighestSupportedVersion);
+                OffsetFetchRequest.TopicIdVersion - 1); // Fetch-all has no request-local name-to-ID mapping.
 
             var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
                 request,
@@ -1599,34 +1599,63 @@ public sealed class AdminClient : IAdminClient
             using var connectionLease = await _connectionPool.LeaseConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
             var connection = connectionLease.Connection;
 
-            var request = new OffsetCommitRequest
-            {
-                GroupId = groupId,
-                GenerationIdOrMemberEpoch = -1,
-                MemberId = string.Empty,
-                Topics = topicOffsets
-            };
-
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 connection,
                 Protocol.ApiKey.OffsetCommit,
                 OffsetCommitRequest.LowestSupportedVersion,
                 OffsetCommitRequest.HighestSupportedVersion);
 
+            OffsetTopicIdRequestMap? topicIdMap = apiVersion >= OffsetCommitRequest.TopicIdVersion
+                ? new OffsetTopicIdRequestMap(_metadataManager.Metadata, topicOffsets.Count)
+                : null;
+            IReadOnlyList<OffsetCommitRequestTopic> requestTopics = topicOffsets;
+            if (topicIdMap is not null)
+            {
+                var topicIdOffsets = new List<OffsetCommitRequestTopic>(topicOffsets.Count);
+                foreach (var topic in topicOffsets)
+                {
+                    topicIdOffsets.Add(new OffsetCommitRequestTopic
+                    {
+                        Name = topic.Name,
+                        TopicId = topicIdMap.AddTopic(topic.Name, "AlterConsumerGroupOffsets"),
+                        Partitions = topic.Partitions
+                    });
+                }
+
+                requestTopics = topicIdOffsets;
+            }
+
+            var request = new OffsetCommitRequest
+            {
+                GroupId = groupId,
+                GenerationIdOrMemberEpoch = -1,
+                MemberId = string.Empty,
+                Topics = requestTopics
+            };
+
             var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
                 request,
                 apiVersion,
                 cancellationToken).ConfigureAwait(false);
 
+            var responseSnapshot = topicIdMap?.CaptureResponseSnapshot();
+
             // Check for errors
             foreach (var topic in response.Topics)
             {
+                var topicName = topicIdMap is null
+                    ? topic.Name
+                    : topicIdMap.MatchResponseTopic(
+                        topic.TopicId,
+                        responseSnapshot!,
+                        "AlterConsumerGroupOffsets",
+                        responseMismatchIsRetriable: false);
                 foreach (var partition in topic.Partitions)
                 {
                     if (partition.ErrorCode != Protocol.ErrorCode.None)
                     {
                         throw new Errors.GroupException(partition.ErrorCode,
-                            $"AlterConsumerGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}");
+                            $"AlterConsumerGroupOffsets failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}");
                     }
                 }
             }
