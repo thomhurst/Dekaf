@@ -498,6 +498,63 @@ public sealed class ClusterMetadataTests
         await Assert.That(metadata.GetPartitionsForBroker(2)).Count().IsEqualTo(0);
     }
 
+    [Test]
+    public async Task GetPartitionsForRack_UpdateRefreshesIndex()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 1, Host = "broker1", Port = 9092, Rack = "rack-a" },
+                new BrokerMetadata { NodeId = 2, Host = "broker2", Port = 9092, Rack = "rack-b" },
+            ],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "rack-topic",
+                    Partitions =
+                    [
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] },
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 1, LeaderId = 2, ReplicaNodes = [2], IsrNodes = [2] },
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 2, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] },
+                    ]
+                }
+            ]
+        });
+
+        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-a")).IsEquivalentTo([0, 2]);
+        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-b")).IsEquivalentTo([1]);
+
+        metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 1, Host = "broker1", Port = 9092, Rack = "rack-b" },
+                new BrokerMetadata { NodeId = 2, Host = "broker2", Port = 9092, Rack = "rack-a" },
+            ],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "rack-topic",
+                    Partitions =
+                    [
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] },
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 1, LeaderId = 2, ReplicaNodes = [2], IsrNodes = [2] },
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 2, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] },
+                    ]
+                }
+            ]
+        });
+
+        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-a")).IsEquivalentTo([1]);
+        await Assert.That(metadata.GetPartitionsForRack("rack-topic", "rack-b")).IsEquivalentTo([0, 2]);
+    }
+
     #endregion
 
     #region Update Replaces Previous State

@@ -419,8 +419,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             recordAppendedCallback,
             ResolveLeaderIdForUnackedBudget);
         _uniformStickyPartitioner?.SetPartitionQueueByteProvider(_accumulator.GetPartitionQueueBytes);
-        _uniformStickyPartitioner?.SetPartitionLeaderRackProvider(
-            (topic, partition) => _metadataManager.Metadata.GetPartitionLeader(topic, partition)?.Rack);
+        _uniformStickyPartitioner?.SetRackLocalPartitionsProvider(
+            _metadataManager.Metadata.GetPartitionsForRack);
 
         // Inflight tracker enables coordinated retry with multiple in-flight batches per partition.
         // The broker uses sequence numbers to guarantee ordering, so multiple batches can be
