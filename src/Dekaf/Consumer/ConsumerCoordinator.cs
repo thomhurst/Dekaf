@@ -863,7 +863,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         LogCommitOffsetsStarted(_options.GroupId!);
         // Lock is intentionally held across retries to protect the shared _commitTopicGroups dictionary,
         // which is reused across calls to avoid allocations. With up to 3 retries x ~600ms each,
-        // the lock can be held for up to ~1.8 seconds. Concurrent callers will block for the full retry duration.
+        // the lock can be held for up to ~1.8 seconds — longer when a StaleMemberEpoch retry waits
+        // up to one heartbeat interval for the refreshed epoch. Concurrent callers block for the
+        // full retry duration.
         await _commitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -969,8 +971,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     {
                         if (partition.ErrorCode != ErrorCode.None)
                         {
+                            var staleMemberEpoch = partition.ErrorCode == ErrorCode.StaleMemberEpoch;
+                            if (staleMemberEpoch)
+                            {
+                                // KIP-848: the coordinator bumped the member epoch (e.g. a
+                                // reassignment) after this request was built. The member is
+                                // still in the group; wait for the background heartbeat to
+                                // deliver the refreshed epoch, then retry the commit with it —
+                                // matching the Java client's commit semantics.
+                                await WaitForMemberEpochRefreshAsync(
+                                    request.GenerationIdOrMemberEpoch,
+                                    cancellationToken).ConfigureAwait(false);
+                            }
+
                             throw new Errors.GroupException(partition.ErrorCode,
-                                $"OffsetCommit failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                                $"OffsetCommit failed for {topicName}-{partition.PartitionIndex}: {partition.ErrorCode}",
+                                isRetriable: staleMemberEpoch || partition.ErrorCode.IsRetriable())
                             {
                                 GroupId = _options.GroupId
                             };
@@ -978,11 +994,29 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     }
                 }
             }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs,
-                onRetry: FindCoordinatorAsync).ConfigureAwait(false);
+                onRetry: FindCoordinatorAsync,
+                shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry).ConfigureAwait(false);
         }
         finally
         {
             _commitLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Waits for the background heartbeat loop to advance the member epoch past the value a
+    /// failed OffsetCommit was sent with. Bounded by one heartbeat interval plus slack: if the
+    /// epoch has not refreshed by then (e.g. the member was reset), the retry proceeds anyway
+    /// and surfaces the coordinator's verdict.
+    /// </summary>
+    private async ValueTask WaitForMemberEpochRefreshAsync(int staleEpoch, CancellationToken cancellationToken)
+    {
+        var maxWait = TimeSpan.FromMilliseconds(_heartbeatIntervalMs + 1_000);
+        var startedAt = Stopwatch.GetTimestamp();
+        while (_generationId == staleEpoch && Stopwatch.GetElapsedTime(startedAt) < maxWait)
+        {
+            ThrowIfMaxPollIntervalExpired();
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1194,7 +1228,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 _options.RetryBackoffMs,
                 _options.RetryBackoffMaxMs,
                 onRetry: RecoverOffsetFetchAsync,
-                shouldRefreshMetadata: ShouldRefreshMetadataForOffsetFetchRetry).ConfigureAwait(false);
+                shouldRefreshMetadata: ShouldRefreshMetadataForGroupRetry).ConfigureAwait(false);
             }
             finally
             {
@@ -1227,7 +1261,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static bool ShouldRefreshMetadataForOffsetFetchRetry(KafkaException exception) =>
+    // Membership errors are recovered by the group protocol (epoch refresh or rejoin),
+    // so a cluster metadata refresh buys nothing for their retries.
+    private static bool ShouldRefreshMetadataForGroupRetry(KafkaException exception) =>
         exception.ErrorCode is not ErrorCode.StaleMemberEpoch and not ErrorCode.UnknownMemberId;
 
     private bool HandleOffsetFetchMembershipError(ErrorCode errorCode)

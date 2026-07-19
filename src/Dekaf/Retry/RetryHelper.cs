@@ -18,6 +18,9 @@ internal static class RetryHelper
     /// callback (e.g. to re-discover a coordinator), and retries after KIP-580 backoff.
     /// </summary>
     /// <param name="maxRetries">Maximum number of retries. Defaults to <see cref="MaxRetries"/> (3).</param>
+    /// <param name="shouldRefreshMetadata">
+    /// Optional predicate that suppresses metadata refresh for errors recovered by other means.
+    /// </param>
     internal static async ValueTask WithRetryAsync(
         Func<ValueTask> operation,
         MetadataManager metadataManager,
@@ -25,7 +28,8 @@ internal static class RetryHelper
         int retryBackoffMs = 100,
         int retryBackoffMaxMs = 1000,
         Func<CancellationToken, ValueTask>? onRetry = null,
-        int maxRetries = MaxRetries)
+        int maxRetries = MaxRetries,
+        Func<KafkaException, bool>? shouldRefreshMetadata = null)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -36,7 +40,11 @@ internal static class RetryHelper
             }
             catch (Exception ex) when (IsRetriableRequestFailure(ex) && attempt < maxRetries)
             {
-                await RefreshMetadataForRetryAsync(metadataManager, cancellationToken).ConfigureAwait(false);
+                if (ex is not KafkaException kafkaException ||
+                    shouldRefreshMetadata?.Invoke(kafkaException) != false)
+                {
+                    await RefreshMetadataForRetryAsync(metadataManager, cancellationToken).ConfigureAwait(false);
+                }
 
                 if (onRetry is not null)
                     await onRetry(cancellationToken).ConfigureAwait(false);

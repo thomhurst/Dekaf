@@ -62,6 +62,10 @@ public sealed class DynamicConfigurationIntegrationTests(RackAwareKafkaContainer
             LowMaxMessageBytes.ToString(),
             cancellationToken).ConfigureAwait(false);
 
+        // Latent race, mirror of the raised-limit test: if the lowered limit has not reached the
+        // partition leader yet, this oversized produce would be accepted and the Throws assertion
+        // would flake. Not yet observed in CI; the raised-limit direction uses
+        // ProduceUntilAcceptedAsync for the same reason.
         var oversizedTask = producer.ProduceAsync(topic, null, largeMessage, cancellationToken).AsTask();
         var validTask = producer.ProduceAsync(topic, null, smallMessage, cancellationToken).AsTask();
         var exception = await Assert.That(async () => await oversizedTask.ConfigureAwait(false))
@@ -100,7 +104,10 @@ public sealed class DynamicConfigurationIntegrationTests(RackAwareKafkaContainer
             HighMaxMessageBytes.ToString(),
             cancellationToken).ConfigureAwait(false);
 
-        var accepted = await producer.ProduceAsync(topic, null, largeMessage, cancellationToken)
+        // DescribeConfigs reflects the raised limit before the partition leader applies it to
+        // produce validation, so the first large produce can still be rejected. Rejected records
+        // are never appended, which keeps the accepted record's expected offset at 0.
+        var accepted = await ProduceUntilAcceptedAsync(producer, topic, largeMessage, cancellationToken)
             .ConfigureAwait(false);
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
@@ -215,6 +222,29 @@ public sealed class DynamicConfigurationIntegrationTests(RackAwareKafkaContainer
             .WithLinger(TimeSpan.FromMilliseconds(100))
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync(cancellationToken).ConfigureAwait(false);
+
+    private static async Task<RecordMetadata> ProduceUntilAcceptedAsync(
+        IKafkaProducer<byte[], byte[]> producer,
+        string topic,
+        byte[] message,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                return await producer.ProduceAsync(topic, null, message, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (ProduceException exception)
+                when (exception.ErrorCode == ErrorCode.MessageTooLarge
+                    && stopwatch.Elapsed < TimeSpan.FromSeconds(15))
+            {
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
 
     private static async Task SetTopicConfigAsync(
         IAdminClient admin,
