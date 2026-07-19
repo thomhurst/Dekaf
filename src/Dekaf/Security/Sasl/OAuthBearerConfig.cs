@@ -26,6 +26,13 @@ public sealed class OAuthBearerConfig
     public string? ClientSecret { get; init; }
 
     /// <summary>
+    /// Whether to form URL-encode the client ID and client secret independently before
+    /// constructing the HTTP Basic Authorization header. Defaults to <see langword="false"/>
+    /// for compatibility with OAuth providers that expect raw credentials.
+    /// </summary>
+    public bool UrlEncodeHeaderCredentials { get; init; }
+
+    /// <summary>
     /// The OAuth 2.0 scope(s) to request. Multiple scopes should be space-separated.
     /// </summary>
     public string? Scope { get; init; }

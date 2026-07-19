@@ -131,10 +131,20 @@ public sealed class OAuthBearerTokenProvider : IDisposable
         };
 
         // If client secret is provided, use HTTP Basic authentication
-        if (_config.ClientAssertion is null && !string.IsNullOrEmpty(_config.ClientSecret))
+        if (_config.ClientAssertion is null
+            && _config.ClientSecret is { } clientSecret
+            // Preserve the legacy "empty means absent" behavior unless encoding is opted in.
+            && (clientSecret.Length > 0 || _config.UrlEncodeHeaderCredentials))
         {
+            var clientId = _config.ClientId;
+            if (_config.UrlEncodeHeaderCredentials)
+            {
+                clientId = FormUrlEncode(clientId);
+                clientSecret = FormUrlEncode(clientSecret);
+            }
+
             var credentials = Convert.ToBase64String(
-                Encoding.UTF8.GetBytes($"{_config.ClientId}:{_config.ClientSecret}"));
+                Encoding.UTF8.GetBytes($"{clientId}:{clientSecret}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
         }
 
@@ -151,6 +161,38 @@ public sealed class OAuthBearerTokenProvider : IDisposable
         }
 
         return ParseTokenResponse(responseContent);
+    }
+
+    private static string FormUrlEncode(string value)
+    {
+        if (value.Length == 0)
+            return string.Empty;
+
+        const string Hex = "0123456789ABCDEF";
+        var bytes = Encoding.UTF8.GetBytes(value);
+        var encoded = new StringBuilder(bytes.Length);
+        foreach (var valueByte in bytes)
+        {
+            if (valueByte is >= (byte)'a' and <= (byte)'z'
+                or >= (byte)'A' and <= (byte)'Z'
+                or >= (byte)'0' and <= (byte)'9'
+                or (byte)'-' or (byte)'.' or (byte)'_' or (byte)'*')
+            {
+                encoded.Append((char)valueByte);
+            }
+            else if (valueByte == (byte)' ')
+            {
+                encoded.Append('+');
+            }
+            else
+            {
+                encoded.Append('%');
+                encoded.Append(Hex[valueByte >> 4]);
+                encoded.Append(Hex[valueByte & 0x0F]);
+            }
+        }
+
+        return encoded.ToString();
     }
 
     private async Task<OAuthBearerToken> FetchAzureImdsTokenAsync(CancellationToken cancellationToken)
