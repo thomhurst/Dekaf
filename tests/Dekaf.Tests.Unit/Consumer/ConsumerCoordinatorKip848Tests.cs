@@ -2423,18 +2423,24 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     [Test]
     [Arguments(ErrorCode.StaleMemberEpoch)]
     [Arguments(ErrorCode.UnknownMemberId)]
-    public async Task FetchOffsetsAsync_MembershipGroupError_ThrowsAndRequestsRejoin(ErrorCode errorCode)
+    [Arguments(ErrorCode.CoordinatorLoadInProgress)]
+    [Arguments(ErrorCode.CoordinatorNotAvailable)]
+    [Arguments(ErrorCode.NotCoordinator)]
+    public async Task FetchOffsetsAsync_RetriableGroupError_RecoversAndRetries(ErrorCode errorCode)
     {
         _metadataManager.SetApiVersion(ApiKey.OffsetFetch, 9, 9);
-        SetupSuccessfulConsumerProtocolJoin();
+        SetupFindCoordinator();
+        SetupConsumerGroupHeartbeat(heartbeatIntervalMs: 60_000);
 
+        var requestCount = 0;
         _connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
                 Arg.Any<OffsetFetchRequest>(),
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new OffsetFetchResponse
-            {
-                Groups =
+            .Returns(_ => ValueTask.FromResult(Interlocked.Increment(ref requestCount) == 1
+                ? new OffsetFetchResponse
+                {
+                    Groups =
                 [
                     new OffsetFetchResponseGroup
                     {
@@ -2443,28 +2449,33 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
                         ErrorCode = errorCode
                     }
                 ]
-            }));
+                }
+                : new OffsetFetchResponse
+                {
+                    Groups =
+                    [
+                        new OffsetFetchResponseGroup
+                        {
+                            GroupId = "test-group",
+                            Topics = [],
+                            ErrorCode = ErrorCode.None
+                        }
+                    ]
+                }));
 
         var options = CreateConsumerProtocolOptions();
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
         var topics = new HashSet<string> { "test-topic" };
         await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
 
-        var exception = await Assert.That(async () =>
-                await coordinator.FetchOffsetsAsync([new TopicPartition("test-topic", 0)], CancellationToken.None))
-            .Throws<GroupException>();
+        var result = await coordinator.FetchOffsetsAsync(
+            [new TopicPartition("test-topic", 0)],
+            CancellationToken.None);
 
-        await Assert.That(exception!.ErrorCode).IsEqualTo(errorCode);
-        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
-        await Assert.That(coordinator.MemberId).IsEqualTo(
-            errorCode == ErrorCode.UnknownMemberId ? null : "member-1");
-
-        await coordinator.EnsureActiveGroupAsync(topics, CancellationToken.None);
-
-        await _connection.Received(2).SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
-            Arg.Any<ConsumerGroupHeartbeatRequest>(),
-            Arg.Any<short>(),
-            Arg.Any<CancellationToken>());
+        await Assert.That(result).IsEmpty();
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(coordinator.MemberId).IsEqualTo("member-1");
+        await Assert.That(requestCount).IsEqualTo(2);
     }
 
     #endregion

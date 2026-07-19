@@ -440,7 +440,7 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
-    public async Task EnsureAssignmentAsync_AbaInitializationFailure_RetriesRevocationRecovery()
+    public async Task EnsureAssignmentAsync_AbaStaleMemberEpoch_RetriesRevocationRecovery()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -462,20 +462,13 @@ public sealed class ConsumerAssignmentFastPathTests
         coordinator.RequestRejoin();
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
-        var exception = await Assert.That(async () =>
-                await consumer.EnsureAssignmentAsync(CancellationToken.None))
-            .Throws<GroupException>();
-
-        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.StaleMemberEpoch);
-        await Assert.That(GetFetchPositions(consumer).ContainsKey(reassignedPartition)).IsFalse();
-
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         await Assert.That(GetFetchPositions(consumer)[reassignedPartition]).IsEqualTo(20L);
     }
 
     [Test]
-    public async Task EnsureAssignmentAsync_InitialPositionFailure_RetriesUnchangedAssignment()
+    public async Task EnsureAssignmentAsync_InitialPositionStaleMemberEpoch_RetriesUnchangedAssignment()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
         var connection = Substitute.For<IKafkaConnection>();
@@ -489,17 +482,114 @@ public sealed class ConsumerAssignmentFastPathTests
         await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
         consumer.Subscribe("test-topic");
 
-        _ = await Assert.That(async () =>
-                await consumer.EnsureAssignmentAsync(CancellationToken.None))
-            .Throws<GroupException>();
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
 
         var partition = new TopicPartition("test-topic", 0);
         await Assert.That(consumer.Assignment).Contains(partition);
-        await Assert.That(GetFetchPositions(consumer).ContainsKey(partition)).IsFalse();
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(10L);
+    }
+
+    [Test]
+    public async Task EnsureAssignmentAsync_InitialPositionRejoinRestartsChangedAssignment()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupChangingConsumerGroupHeartbeat(connection);
+        SetupOffsetFetchFailureThenSuccess(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
 
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
 
-        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(10L);
+        var initialPartition = new TopicPartition("test-topic", 0);
+        var addedPartition = new TopicPartition("test-topic", 1);
+        await Assert.That(consumer.Assignment).Contains(initialPartition);
+        await Assert.That(consumer.Assignment).Contains(addedPartition);
+        await Assert.That(GetFetchPositions(consumer)[initialPartition]).IsEqualTo(10L);
+        await Assert.That(GetFetchPositions(consumer)[addedPartition]).IsEqualTo(20L);
+    }
+
+    [Test]
+    public async Task GetCommittedOffsetAsync_StaleMemberEpoch_RejoinsAndRetriesWithUpdatedEpoch()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupIncrementingConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        var requestedEpochs = new ConcurrentQueue<int>();
+        SetupOffsetFetchStaleAfterInitialSuccess(connection, requestedEpochs);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var committed = await consumer.GetCommittedOffsetAsync(
+            new TopicPartition("test-topic", 1),
+            CancellationToken.None);
+
+        await Assert.That(committed).IsEqualTo(20L);
+        await Assert.That(requestedEpochs).IsEquivalentTo([1, 1, 2]);
+    }
+
+    [Test]
+    public async Task GetCommittedOffsetAsync_StaleMemberEpoch_UsesAggregateRequestTimeout()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        var rejoinStarted = SetupBlockingRejoinConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetchStaleAfterInitialSuccess(connection, new ConcurrentQueue<int>());
+
+        await using var consumer = CreateGroupConsumer(
+            connectionPool,
+            metadataManager,
+            requestTimeoutMs: 100);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        _ = await Assert.That(async () => await consumer.GetCommittedOffsetAsync(
+                new TopicPartition("test-topic", 1),
+                CancellationToken.None))
+            .Throws<KafkaTimeoutException>();
+        await Assert.That(rejoinStarted.Task.IsCompleted).IsTrue();
+    }
+
+    [Test]
+    public async Task GetCommittedOffsetAsync_StaleMemberEpoch_PreservesCallerCancellation()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        var rejoinStarted = SetupBlockingRejoinConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetchStaleAfterInitialSuccess(connection, new ConcurrentQueue<int>());
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        using var cancellation = new CancellationTokenSource();
+
+        var committed = consumer.GetCommittedOffsetAsync(
+            new TopicPartition("test-topic", 1),
+            cancellation.Token).AsTask();
+        await rejoinStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        _ = await Assert.That(async () => await committed)
+            .Throws<OperationCanceledException>();
     }
 
     [Test]
@@ -972,7 +1062,8 @@ public sealed class ConsumerAssignmentFastPathTests
         MetadataManager metadataManager,
         int queuedMinMessages = 1,
         int maxPollIntervalMs = 300_000,
-        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual)
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Manual,
+        int requestTimeoutMs = 30_000)
     {
         return new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -981,7 +1072,8 @@ public sealed class ConsumerAssignmentFastPathTests
                 GroupId = "group-a",
                 OffsetCommitMode = offsetCommitMode,
                 QueuedMinMessages = queuedMinMessages,
-                MaxPollIntervalMs = maxPollIntervalMs
+                MaxPollIntervalMs = maxPollIntervalMs,
+                RequestTimeoutMs = requestTimeoutMs
             },
             Serializers.String,
             Serializers.String,
@@ -1103,6 +1195,62 @@ public sealed class ConsumerAssignmentFastPathTests
             });
     }
 
+    private static void SetupIncrementingConsumerGroupHeartbeat(
+        IKafkaConnection connection,
+        ConsumerGroupHeartbeatAssignment assignment)
+    {
+        var callCount = 0;
+        connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(CreateHeartbeatResponse(
+                assignment,
+                Interlocked.Increment(ref callCount))));
+    }
+
+    private static TaskCompletionSource SetupBlockingRejoinConsumerGroupHeartbeat(
+        IKafkaConnection connection,
+        ConsumerGroupHeartbeatAssignment assignment)
+    {
+        var callCount = 0;
+        var rejoinStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var count = Interlocked.Increment(ref callCount);
+                return count == 2
+                    ? WaitForRejoinCancellationAsync(
+                        rejoinStarted,
+                        call.ArgAt<CancellationToken>(2))
+                    : ValueTask.FromResult(CreateHeartbeatResponse(assignment, count));
+            });
+        return rejoinStarted;
+    }
+
+    private static ConsumerGroupHeartbeatResponse CreateHeartbeatResponse(
+        ConsumerGroupHeartbeatAssignment assignment,
+        int memberEpoch) => new()
+        {
+            ErrorCode = ErrorCode.None,
+            MemberId = "member-1",
+            MemberEpoch = memberEpoch,
+            HeartbeatIntervalMs = 60000,
+            Assignment = assignment
+        };
+
+    private static async ValueTask<ConsumerGroupHeartbeatResponse> WaitForRejoinCancellationAsync(
+        TaskCompletionSource rejoinStarted,
+        CancellationToken cancellationToken)
+    {
+        rejoinStarted.TrySetResult();
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        throw new InvalidOperationException("Cancellation wait completed without cancellation");
+    }
+
     private static void SetupRevokingConsumerGroupHeartbeat(IKafkaConnection connection)
     {
         var callCount = 0;
@@ -1214,6 +1362,36 @@ public sealed class ConsumerAssignmentFastPathTests
                     ]
                 })
                 : ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse()));
+    }
+
+    private static void SetupOffsetFetchStaleAfterInitialSuccess(
+        IKafkaConnection connection,
+        ConcurrentQueue<int> requestedEpochs)
+    {
+        var callCount = 0;
+        connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                Arg.Any<OffsetFetchRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<OffsetFetchRequest>(0);
+                requestedEpochs.Enqueue(request.Groups![0].MemberEpoch);
+                return Interlocked.Increment(ref callCount) == 2
+                    ? ValueTask.FromResult(new OffsetFetchResponse
+                    {
+                        Groups =
+                        [
+                            new OffsetFetchResponseGroup
+                            {
+                                GroupId = "group-a",
+                                Topics = [],
+                                ErrorCode = ErrorCode.StaleMemberEpoch
+                            }
+                        ]
+                    })
+                    : ValueTask.FromResult(CreateSuccessfulOffsetFetchResponse());
+            });
     }
 
     private static OffsetFetchResponse CreateSuccessfulOffsetFetchResponse() => new()
