@@ -34,7 +34,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     private int _admissionsRemaining = AdmissionProbeLimit;
     private int _probeRemaining;
     private int _probeHits;
-    private bool _probeAllowsAdmission;
+    private bool _isReuseProbe;
     private int _bypassRemaining;
 
     internal CachingStringDeserializer(
@@ -122,7 +122,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         }
 
         var result = _configuredInner.Deserialize(data, context);
-        if (_probeAllowsAdmission && Volatile.Read(ref _cacheCount) < _maxCachedEntries)
+        if (Volatile.Read(ref _cacheCount) < _maxCachedEntries)
         {
             if (_cache.TryAdd(hash, result))
                 Interlocked.Increment(ref _cacheCount);
@@ -138,7 +138,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         if (hit)
         {
             _probeHits++;
-            if (!_probeAllowsAdmission)
+            if (_isReuseProbe)
             {
                 RestoreCache();
                 return;
@@ -152,7 +152,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
             return;
         }
 
-        if (_probeAllowsAdmission)
+        if (!_isReuseProbe)
         {
             if (_probeHits >= MinimumProbeHits)
                 RestoreCache();
@@ -184,7 +184,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     {
         _probeRemaining = ProbeLookupCount;
         _probeHits = 0;
-        _probeAllowsAdmission = true;
+        _isReuseProbe = false;
         // These mode fields are deliberately lock-free. Racing callers may observe one
         // transition late, but every combination still deserializes correctly and the
         // next probe/bypass cycle self-corrects the approximate counters.
@@ -196,11 +196,15 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     {
         _probeRemaining = _maxCachedEntries;
         _probeHits = 0;
-        _probeAllowsAdmission = false;
+        _isReuseProbe = true;
     }
 
     private void StartBypass()
     {
+        // A full reuse window without a hit means the retained entries are cold. Drop them
+        // before bypassing so the next probe has capacity to learn a new repetitive set.
+        _cache.Clear();
+        Volatile.Write(ref _cacheCount, 0);
         _bypassRemaining = BypassInterval;
         _inner = _bypassSerde;
     }

@@ -168,6 +168,28 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
+    public async Task BoundedReusableKeys_LargerThanPrimaryProbe_AreAdmittedDuringReuseProbe()
+    {
+        const int keyCount = 5_000;
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+        var data = new ReadOnlyMemory<byte>[keyCount];
+        var references = new string[keyCount];
+
+        for (var i = 0; i < keyCount; i++)
+        {
+            data[i] = ToUtf8($"bounded-reuse-{i}");
+            references[i] = sut.Deserialize(data[i], context);
+        }
+
+        var allReferencesCached = true;
+        for (var i = 0; i < keyCount; i++)
+            allReferencesCached &= ReferenceEquals(references[i], sut.Deserialize(data[i], context));
+
+        await Assert.That(allReferencesCached).IsTrue();
+    }
+
+    [Test]
     public async Task LowCardinalityKeys_RemainCachedPastAdmissionProbeLimit()
     {
         var sut = CreateKeyCache();
