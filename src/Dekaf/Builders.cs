@@ -91,8 +91,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private bool _reconnectBackoffMaxConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
-    private TimeSpan _connectionTimeoutMax = ConnectionOptions.DefaultConnectionTimeout;
-    private bool _connectionTimeoutMaxConfigured;
+    private TimeSpan? _connectionTimeoutMax;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
     private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
     private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
@@ -390,8 +389,6 @@ public sealed class ProducerBuilder<TKey, TValue>
             timeout,
             nameof(timeout),
             "Connection timeout must be positive");
-        if (!_connectionTimeoutMaxConfigured)
-            _connectionTimeoutMax = _connectionTimeout;
         return this;
     }
 
@@ -406,7 +403,6 @@ public sealed class ProducerBuilder<TKey, TValue>
             timeout,
             nameof(timeout),
             "Maximum connection timeout must be positive");
-        _connectionTimeoutMaxConfigured = true;
         return this;
     }
 
@@ -1442,7 +1438,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             ConnectionTimeout = _connectionTimeout,
-            ConnectionTimeoutMax = _connectionTimeoutMax,
+            ConnectionTimeoutMax = _connectionTimeoutMax ?? _connectionTimeout,
             EnableTcpKeepAlive = _enableTcpKeepAlive,
             TcpKeepAliveTime = _tcpKeepAliveTime,
             TcpKeepAliveInterval = _tcpKeepAliveInterval,
@@ -1689,8 +1685,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private bool _reconnectBackoffMaxConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
-    private TimeSpan _connectionTimeoutMax = ConnectionOptions.DefaultConnectionTimeout;
-    private bool _connectionTimeoutMaxConfigured;
+    private TimeSpan? _connectionTimeoutMax;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
     private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
     private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
@@ -2782,8 +2777,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
             timeout,
             nameof(timeout),
             "Connection timeout must be positive");
-        if (!_connectionTimeoutMaxConfigured)
-            _connectionTimeoutMax = _connectionTimeout;
         return this;
     }
 
@@ -2798,7 +2791,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
             timeout,
             nameof(timeout),
             "Maximum connection timeout must be positive");
-        _connectionTimeoutMaxConfigured = true;
         return this;
     }
 
@@ -3201,7 +3193,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             ConnectionTimeout = _connectionTimeout,
-            ConnectionTimeoutMax = _connectionTimeoutMax,
+            ConnectionTimeoutMax = _connectionTimeoutMax ?? _connectionTimeout,
             EnableTcpKeepAlive = _enableTcpKeepAlive,
             TcpKeepAliveTime = _tcpKeepAliveTime,
             TcpKeepAliveInterval = _tcpKeepAliveInterval,
@@ -3382,8 +3374,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private bool _reconnectBackoffMaxConfigured;
     private int _connectionsMaxIdleMs = ConnectionOptions.DefaultConnectionsMaxIdleMs;
     private TimeSpan _connectionTimeout = ConnectionOptions.DefaultConnectionTimeout;
-    private TimeSpan _connectionTimeoutMax = ConnectionOptions.DefaultConnectionTimeout;
-    private bool _connectionTimeoutMaxConfigured;
+    private TimeSpan? _connectionTimeoutMax;
     private bool _enableTcpKeepAlive = ConnectionOptions.DefaultEnableTcpKeepAlive;
     private TimeSpan _tcpKeepAliveTime = ConnectionOptions.DefaultTcpKeepAliveTime;
     private TimeSpan _tcpKeepAliveInterval = ConnectionOptions.DefaultTcpKeepAliveInterval;
@@ -3596,8 +3587,6 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             timeout,
             nameof(timeout),
             "Connection timeout must be positive");
-        if (!_connectionTimeoutMaxConfigured)
-            _connectionTimeoutMax = _connectionTimeout;
         return this;
     }
 
@@ -3612,7 +3601,6 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             timeout,
             nameof(timeout),
             "Maximum connection timeout must be positive");
-        _connectionTimeoutMaxConfigured = true;
         return this;
     }
 
@@ -4019,7 +4007,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
             ConnectionTimeout = _connectionTimeout,
-            ConnectionTimeoutMax = _connectionTimeoutMax,
+            ConnectionTimeoutMax = _connectionTimeoutMax ?? _connectionTimeout,
             EnableTcpKeepAlive = _enableTcpKeepAlive,
             TcpKeepAliveTime = _tcpKeepAliveTime,
             TcpKeepAliveInterval = _tcpKeepAliveInterval,

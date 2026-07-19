@@ -1147,19 +1147,18 @@ public sealed class ConnectionPoolTests
                 return ValueTask.FromResult(CreateConnectedConnection(brokerId, host, port));
             });
 
-        Func<Task> establishReconnectState = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
+        pool.RegisterBroker(1, "broker-a", 9092);
+        Func<Task> establishReconnectState = () => pool.GetConnectionAsync(1).AsTask();
         await Assert.That(establishReconnectState).Throws<InvalidOperationException>();
         var attemptGate = await AssertSingleReconnectBackoffGate(pool);
         await attemptGate.WaitAsync(cancellationToken);
         try
         {
-            pool.RegisterBroker(1, "broker-a", 9092);
-
             Func<Task> createGroup = () => pool.GetConnectionAsync(1, cancellationToken).AsTask();
             var exception = await Assert.That(createGroup).Throws<KafkaException>();
 
             await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
-            await Assert.That(attempts).IsEqualTo(1);
+            await Assert.That(attempts).IsEqualTo(3);
         }
         finally
         {
@@ -1315,7 +1314,7 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    public async Task ConnectionSetupTimeout_HardTimeoutPreservesReconnectBackoff()
+    public async Task ConnectionSetupTimeout_OverallDeadlineIncludesReconnectBackoff()
     {
         var releaseFactory = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1355,7 +1354,7 @@ public sealed class ConnectionPoolTests
         {
             Func<Task> firstAttempt = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
             await Assert.That(firstAttempt).Throws<KafkaException>()
-                .WithMessageContaining("Connection setup timeout after 20ms");
+                .WithMessageContaining("timeout after 20ms");
 
             var secondAttempt = pool.GetConnectionAsync("broker-a", 9092).AsTask();
             var delay = await observedBackoff.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1363,9 +1362,9 @@ public sealed class ConnectionPoolTests
             await Assert.That(delay).IsEqualTo(TimeSpan.FromMilliseconds(80));
             await Assert.That(attempts).IsEqualTo(1);
 
-            releaseBackoff.SetResult();
-            await secondAttempt;
-            await Assert.That(attempts).IsEqualTo(2);
+            await Assert.That(async () => await secondAttempt).Throws<KafkaException>()
+                .WithMessageContaining("Connection operation timeout after 20ms");
+            await Assert.That(attempts).IsEqualTo(1);
         }
         finally
         {
@@ -1515,6 +1514,43 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ReconnectBackoff_FailureStateIsIsolatedByBrokerAtSharedEndpoint()
+    {
+        var observedBackoffs = new List<TimeSpan>();
+        long timestamp = 0;
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromSeconds(1),
+                ReconnectBackoff = TimeSpan.FromMilliseconds(100),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(100)
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: static (_, _, _, _, _) => throw new InvalidOperationException("broker down"),
+            randomDouble: static () => 0.5,
+            reconnectBackoffDelay: (delay, _) =>
+            {
+                observedBackoffs.Add(delay);
+                Interlocked.Add(ref timestamp, (long)(delay.TotalSeconds * Stopwatch.Frequency));
+                return ValueTask.CompletedTask;
+            },
+            timestampProvider: () => Volatile.Read(ref timestamp));
+        pool.RegisterBroker(1, "shared-endpoint", 9092);
+        pool.RegisterBroker(2, "shared-endpoint", 9092);
+
+        Func<Task> failBrokerOne = () => pool.GetConnectionAsync(1).AsTask();
+        await Assert.That(failBrokerOne).Throws<InvalidOperationException>();
+        Func<Task> failBrokerTwo = () => pool.GetConnectionAsync(2).AsTask();
+        await Assert.That(failBrokerTwo).Throws<InvalidOperationException>();
+
+        await Assert.That(observedBackoffs).IsEmpty();
+
+        await Assert.That(failBrokerOne).Throws<InvalidOperationException>();
+        await Assert.That(observedBackoffs).IsEquivalentTo([TimeSpan.FromMilliseconds(100)]);
+    }
+
+    [Test]
     public async Task ConnectionSetupTimeout_BrokerEndpointChangeDropsOldState()
     {
         var observedTimeouts = new List<TimeSpan>();
@@ -1530,7 +1566,9 @@ public sealed class ConnectionPoolTests
             await Assert.That(fail).Throws<InvalidOperationException>();
         }
 
+        var oldReconnectGate = await AssertSingleReconnectBackoffGate(pool);
         pool.RegisterBroker(1, "broker-b", 9092);
+        await Assert.That(() => oldReconnectGate.Wait(0)).Throws<ObjectDisposedException>();
         Func<Task> failAfterMove = () => pool.GetConnectionAsync(1).AsTask();
         await Assert.That(failAfterMove).Throws<InvalidOperationException>();
 
@@ -1704,7 +1742,7 @@ public sealed class ConnectionPoolTests
 
     [Test]
     [NotInParallel]
-    public async Task ReplaceConnectionInGroup_ReconnectBackoffDoesNotConsumeSetupTimeout()
+    public async Task ReplaceConnectionInGroup_ReconnectBackoffRespectsOverallDeadline()
     {
         const int connectionsPerBroker = 2;
         var initialCreationDone = 0;
@@ -1712,8 +1750,8 @@ public sealed class ConnectionPoolTests
         var options = new ConnectionOptions
         {
             ConnectionTimeout = TimeSpan.FromMilliseconds(100),
-            ReconnectBackoff = TimeSpan.FromMilliseconds(40),
-            ReconnectBackoffMax = TimeSpan.FromMilliseconds(40)
+            ReconnectBackoff = TimeSpan.FromMilliseconds(200),
+            ReconnectBackoffMax = TimeSpan.FromMilliseconds(200)
         };
 
         var pool = new ConnectionPool(
@@ -1730,7 +1768,8 @@ public sealed class ConnectionPoolTests
                 }
 
                 return new ValueTask<IKafkaConnection>(CreateConnectedConnection(brokerId, host, port));
-            });
+            },
+            randomDouble: static () => 0.5);
 
         await using (pool)
         {
@@ -1745,12 +1784,10 @@ public sealed class ConnectionPoolTests
             Func<Task> failedReplacement = () => pool.GetConnectionByIndexAsync(1, 0).AsTask();
             await Assert.That(failedReplacement).Throws<InvalidOperationException>();
 
-            var stopwatch = Stopwatch.StartNew();
-            var replacement = await pool.GetConnectionByIndexAsync(1, 0);
-            stopwatch.Stop();
-
-            await Assert.That(replacement.IsConnected).IsTrue();
-            await Assert.That(stopwatch.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(25));
+            Func<Task> replacement = () => pool.GetConnectionByIndexAsync(1, 0).AsTask();
+            await Assert.That(replacement).Throws<KafkaException>()
+                .WithMessageContaining("Connection operation timeout after 100ms");
+            await Assert.That(replacementAttempts).IsEqualTo(1);
         }
     }
 
