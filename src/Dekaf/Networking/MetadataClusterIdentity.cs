@@ -31,7 +31,6 @@ internal sealed class MetadataClusterIdentity
                 return;
 
             _clusterId = clusterId;
-            _rebootstrapRequested = false;
         }
     }
 

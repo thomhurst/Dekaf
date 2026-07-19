@@ -305,7 +305,14 @@ public sealed partial class ConnectionPool :
 
     public void RegisterBroker(int brokerId, string host, int port)
     {
-        _brokers[brokerId] = new BrokerInfo(brokerId, host, port);
+        var brokerInfo = new BrokerInfo(brokerId, host, port);
+        var endpointChanged = _brokers.TryGetValue(brokerId, out var previous)
+            && (previous.Port != port
+                || !StringComparer.OrdinalIgnoreCase.Equals(previous.Host, host));
+        _brokers[brokerId] = brokerInfo;
+        if (endpointChanged)
+            RetireBrokerConnections(brokerId);
+
         GetBrokerThrottleState(brokerId, new EndpointKey(host, port));
         LogRegisteredBroker(brokerId, host, port);
     }
@@ -346,7 +353,9 @@ public sealed partial class ConnectionPool :
         return MarkConnectionAcquired(connection);
     }
 
-    private async ValueTask<IKafkaConnection> GetConnectionFromGroupAsync(int brokerId, CancellationToken cancellationToken)
+    private async ValueTask<IKafkaConnection> GetConnectionFromGroupAsync(
+        int brokerId,
+        CancellationToken cancellationToken)
     {
         // Get broker info
         if (!_brokers.TryGetValue(brokerId, out var brokerInfo))
@@ -765,6 +774,8 @@ public sealed partial class ConnectionPool :
                     // Capture old connection for disposal — it still holds Pipe buffers,
                     // StreamPipeWriter memory, and socket resources that leak without disposal.
                     oldConnection = connections[index];
+                    if (oldConnection is not null)
+                        BeginConnectionRetirement(oldConnection);
                     connections[index] = connection;
                     stored = true;
                 }
@@ -778,7 +789,7 @@ public sealed partial class ConnectionPool :
             // Fire-and-forget with exception observation to prevent UnobservedTaskException.
             if (oldConnection is not null)
             {
-                _ = oldConnection.DisposeAsync().AsTask().ContinueWith(
+                _ = RetiredConnectionDisposer.DrainAndDisposeAsync(oldConnection, CancellationToken.None).AsTask().ContinueWith(
                     static (t, state) =>
                     {
                         var (logger, id, idx) = ((ILogger, int, int))state!;
@@ -1456,6 +1467,57 @@ public sealed partial class ConnectionPool :
         TValue value)
         where TKey : notnull
         => ((ICollection<KeyValuePair<TKey, TValue>>)dictionary).Remove(new KeyValuePair<TKey, TValue>(key, value));
+
+    private void RetireBrokerConnections(int brokerId)
+    {
+        if (_connectionsById.TryRemove(brokerId, out var connection))
+        {
+            TryRemoveExact(
+                _connectionsByEndpoint,
+                new EndpointKey(connection.Host, connection.Port),
+                connection);
+            RetireConnection(connection);
+        }
+
+        if (!_connectionGroupsById.TryRemove(brokerId, out var group))
+            return;
+
+        for (var i = 0; i < group.Length; i++)
+            _connectionReplacementLocks.TryRemove((brokerId, i), out _);
+        _groupCreationLocks.TryRemove(brokerId, out _);
+
+        foreach (var groupedConnection in group)
+        {
+            if (groupedConnection is not null)
+                RetireConnection(groupedConnection);
+        }
+    }
+
+    private void RetireConnection(IKafkaConnection connection)
+    {
+        BeginConnectionRetirement(connection);
+        _ = DrainRetiredConnectionAsync(connection);
+    }
+
+    private async Task DrainRetiredConnectionAsync(IKafkaConnection connection)
+    {
+        try
+        {
+            await RetiredConnectionDisposer
+                .DrainAndDisposeAsync(connection, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogIdleConnectionDisposalFailed(ex, connection.BrokerId, connection.Host, connection.Port);
+        }
+    }
+
+    private static void BeginConnectionRetirement(IKafkaConnection connection)
+    {
+        if (connection is IRetirableKafkaConnection retirableConnection)
+            retirableConnection.BeginRetirement();
+    }
 
     private static IKafkaConnection MarkConnectionAcquired(IKafkaConnection connection)
     {

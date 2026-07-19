@@ -159,7 +159,7 @@ public class MetadataManagerTests
     }
 
     [Test]
-    public async Task GetEndpointsToTry_AfterMetadataUpdate_ReturnsBrokersAndBootstrap()
+    public async Task GetEndpointsToTry_AfterMetadataUpdate_ReturnsOnlyAuthenticatedBrokers()
     {
         var manager = CreateTestManager();
 
@@ -172,16 +172,13 @@ public class MetadataManagerTests
 
         var endpoints = manager.GetEndpointsToTry();
 
-        // Should return 3 brokers + 1 bootstrap server = 4 total
-        await Assert.That(endpoints.Count).IsEqualTo(4);
+        await Assert.That(endpoints.Count).IsEqualTo(3);
 
         // First 3 should be known brokers
         await Assert.That(endpoints[0]).IsEquivalentTo((1, "broker1", 9092));
         await Assert.That(endpoints[1]).IsEquivalentTo((2, "broker2", 9092));
         await Assert.That(endpoints[2]).IsEquivalentTo((3, "broker3", 9092));
 
-        // Last should be bootstrap server
-        await Assert.That(endpoints[3]).IsEquivalentTo((-1, "localhost", 9092));
     }
 
     [Test]
@@ -233,8 +230,8 @@ public class MetadataManagerTests
         var endpoints2 = manager.GetEndpointsToTry();
 
         // Verify cache was invalidated and new broker appears
-        await Assert.That(endpoints1.Count).IsEqualTo(3); // 2 brokers + 1 bootstrap
-        await Assert.That(endpoints2.Count).IsEqualTo(4); // 3 brokers + 1 bootstrap
+        await Assert.That(endpoints1.Count).IsEqualTo(2);
+        await Assert.That(endpoints2.Count).IsEqualTo(3);
 
         // Verify new broker is in the list
         await Assert.That(endpoints2.Any(e => e.Host == "broker3" && e.Port == 9092)).IsTrue();

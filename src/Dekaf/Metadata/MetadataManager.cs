@@ -1018,9 +1018,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     private async ValueTask<bool> ExecuteRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
     {
-        ResetFinalizedFeaturesForRebootstrap();
-        BeginMetadataRebootstrap();
-
         // Re-resolve DNS for each original bootstrap server
         var newEndpoints = await ResolveBootstrapEndpointsAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1064,6 +1061,12 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     request,
                     metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
+
+                if (response.ErrorCode != ErrorCode.RebootstrapRequired)
+                {
+                    ResetFinalizedFeaturesForRebootstrap();
+                    BeginMetadataRebootstrap();
+                }
 
                 UpdateVersionlessCapabilities(
                     connection,
@@ -1320,14 +1323,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 endpoints.Add((broker.NodeId, broker.Host, broker.Port));
             }
 
-            // Then bootstrap servers (skip duplicates — common in single-broker setups
-            // where the advertised listener matches the bootstrap address, avoiding
-            // redundant 30s request timeouts against the same endpoint)
-            foreach (var endpoint in _bootstrapEndpoints)
+            // Bootstrap endpoints are unauthenticated by KIP-1242 and therefore only
+            // eligible before any broker metadata is known. Explicit rebootstrap uses
+            // freshly resolved bootstrap endpoints through ExecuteRebootstrapAsync.
+            if (currentBrokers.Count == 0)
             {
-                if (seen.Add(endpoint))
+                foreach (var endpoint in _bootstrapEndpoints)
                 {
-                    endpoints.Add((-1, endpoint.Host, endpoint.Port));
+                    if (seen.Add(endpoint))
+                        endpoints.Add((-1, endpoint.Host, endpoint.Port));
                 }
             }
 

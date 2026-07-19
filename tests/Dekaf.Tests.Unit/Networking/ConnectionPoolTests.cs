@@ -98,6 +98,60 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task GetConnectionAsync_EndpointChanged_ReplacesCachedConnection()
+    {
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var original = await pool.GetConnectionAsync(1);
+
+            pool.RegisterBroker(1, "host-b", 9093);
+            var replacement = await pool.GetConnectionAsync(1);
+
+            await Assert.That(replacement).IsNotSameReferenceAs(original);
+            await Assert.That(replacement.Host).IsEqualTo("host-b");
+            await Assert.That(replacement.Port).IsEqualTo(9093);
+            await original.Received(1).DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task GetConnectionAsync_EndpointChanged_ReplacesCachedConnectionGroup()
+    {
+        var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 2,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                return new ValueTask<IKafkaConnection>(connection);
+            });
+        await using (pool)
+        {
+            pool.RegisterBroker(1, "host-a", 9092);
+            var original = await pool.GetConnectionAsync(1);
+
+            pool.RegisterBroker(1, "host-b", 9093);
+            var replacement = await pool.GetConnectionByIndexAsync(1, 0);
+
+            await Assert.That(replacement).IsNotSameReferenceAs(original);
+            await Assert.That(replacement.Host).IsEqualTo("host-b");
+            await Assert.That(replacement.Port).IsEqualTo(9093);
+            await original.Received(1).DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task RegisterBroker_MultipleBrokers_AllRegistered()
     {
         await using var pool = new ConnectionPool("test-client");

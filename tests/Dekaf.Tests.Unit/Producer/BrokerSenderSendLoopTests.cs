@@ -2700,9 +2700,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var metadataRequests = 0;
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(1, Arg.Any<CancellationToken>())
-            .Returns(staleConnection);
-        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(new ValueTask<IKafkaConnection>(metadataConnection));
+            .Returns(
+                new ValueTask<IKafkaConnection>(staleConnection),
+                new ValueTask<IKafkaConnection>(metadataConnection));
         metadataConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
                 Arg.Any<ApiVersionsRequest>(),
                 Arg.Any<short>(),
@@ -2776,9 +2776,9 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var metadataRequests = 0;
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(1, Arg.Any<CancellationToken>())
-            .Returns(staleConnection);
-        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(new ValueTask<IKafkaConnection>(metadataConnection));
+            .Returns(
+                new ValueTask<IKafkaConnection>(staleConnection),
+                new ValueTask<IKafkaConnection>(metadataConnection));
         metadataConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
                 Arg.Any<ApiVersionsRequest>(),
                 Arg.Any<short>(),
@@ -2876,7 +2876,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var metadataRequests = 0;
         var duplicateMetadataRequest = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+        pool.GetConnectionAsync(1, Arg.Any<CancellationToken>())
             .Returns(new ValueTask<IKafkaConnection>(metadataConnection));
         metadataConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
                 Arg.Any<ApiVersionsRequest>(),
@@ -2981,7 +2981,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             .Returns(new ValueTask<IKafkaConnection>(siblingConnection));
         var metadataConnection = Substitute.For<IKafkaConnection>();
         var metadataRefreshStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+        pool.GetConnectionAsync(1, Arg.Any<CancellationToken>())
             .Returns(new ValueTask<IKafkaConnection>(metadataConnection));
         metadataConnection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
                 Arg.Any<ApiVersionsRequest>(),

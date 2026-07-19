@@ -518,6 +518,19 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
+    public async Task MetadataClusterIdentity_UpdatePreservesPendingRebootstrapRequest()
+    {
+        var identity = new MetadataClusterIdentity();
+        identity.Configure(enabled: true);
+        identity.UpdateClusterId("cluster-a");
+        identity.RequestRebootstrap();
+
+        identity.UpdateClusterId("cluster-a");
+
+        await Assert.That(identity.TryConsumeRebootstrapRequest()).IsTrue();
+    }
+
+    [Test]
     public async Task MetadataManager_NoneRecoveryDisablesClusterCheck()
     {
         await using var pool = new ConnectionPool();
@@ -595,6 +608,35 @@ public sealed class MetadataRecoveryStrategyTests
         // Since we have a null connection pool, the connection attempt will fail,
         // but we can verify it returned false (failed rebootstrap) not throwing
         // The key test is that the first call correctly returns false
+    }
+
+    [Test]
+    public async Task TryRebootstrapImmediateAsync_FailurePreservesLearnedIdentity()
+    {
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions(),
+            connectionsPerBroker: 1,
+            connectionFactory: (_, _, _, _, _) =>
+                throw new InvalidOperationException("broker unavailable"));
+        await using var manager = new MetadataManager(
+            pool,
+            ["broker.example:9092"],
+            new MetadataOptions
+            {
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+                MetadataClusterCheckEnabled = true,
+                DnsResolver = new ClientDnsEndpointResolver(
+                    new RecordingDnsLookup(IPAddress.Parse("192.0.2.10")))
+            });
+        var identity = GetField<MetadataClusterIdentity>(pool, "_metadataClusterIdentity");
+        identity.UpdateClusterId("cluster-a");
+
+        var result = await manager.TryRebootstrapImmediateAsync(null, CancellationToken.None);
+
+        await Assert.That(result).IsFalse();
+        await Assert.That(identity.GetExpectedBrokerIdentity(7))
+            .IsEqualTo(new ExpectedBrokerIdentity("cluster-a", 7));
     }
 
     [Test]
