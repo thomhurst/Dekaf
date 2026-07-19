@@ -153,6 +153,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Action? _onBlockedBucketRequeued;
     private readonly Action? _onPipelinedResponseAcquired;
     private readonly Action? _onWaveCoalesceStarted;
+    private readonly Action? _onIdleWaitStarted;
     private readonly Func<long> _getTimestamp;
     private readonly Func<int, CancellationToken, ValueTask> _delayForThrottle;
     private readonly TimeSpan _disposalDrainTimeout;
@@ -743,7 +744,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         TimeSpan? disposalDrainTimeout = null,
         Func<bool>? usesTransactionV2 = null,
         Action? onPipelinedResponseAcquired = null,
-        Action? onWaveCoalesceStarted = null)
+        Action? onWaveCoalesceStarted = null,
+        Action? onIdleWaitStarted = null)
     {
         _unackedBudget = unackedBudget;
         _brokerId = brokerId;
@@ -769,6 +771,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _onBlockedBucketRequeued = onBlockedBucketRequeued;
         _onPipelinedResponseAcquired = onPipelinedResponseAcquired;
         _onWaveCoalesceStarted = onWaveCoalesceStarted;
+        _onIdleWaitStarted = onIdleWaitStarted;
         _disposalDrainTimeout = disposalDrainTimeout ?? DisposalDrainTimeout;
 
         _eventChannel = Channel.CreateUnbounded<SendLoopEvent>(new UnboundedChannelOptions
@@ -1841,6 +1844,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Fully idle — wait for any event (new batch, response, unmute). While an
                     // indexed route remains retained, periodically recheck whether this broker
                     // still leads any partitions so an unused socket can become reapable.
+                    _onIdleWaitStarted?.Invoke();
                     if (Volatile.Read(ref _retainedConnectionIndexCount) > 0
                         && _options.ConnectionsMaxIdleMs >= 0)
                     {

@@ -238,6 +238,7 @@ public abstract class ScriptedProduceResponseFixture
         Action? onBlockedBucketRequeued = null,
         Action? onPipelinedResponseAcquired = null,
         Action? onWaveCoalesceStarted = null,
+        Action? onIdleWaitStarted = null,
         BrokerUnackedByteBudget? unackedBudget = null,
         int produceApiVersion = 9,
         bool isTransactional = false,
@@ -267,5 +268,6 @@ public abstract class ScriptedProduceResponseFixture
             unackedBudget: unackedBudget,
             usesTransactionV2: () => usesTransactionV2,
             onPipelinedResponseAcquired: onPipelinedResponseAcquired,
-            onWaveCoalesceStarted: onWaveCoalesceStarted);
+            onWaveCoalesceStarted: onWaveCoalesceStarted,
+            onIdleWaitStarted: onIdleWaitStarted);
 }
