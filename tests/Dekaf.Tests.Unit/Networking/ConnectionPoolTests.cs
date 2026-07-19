@@ -1493,6 +1493,40 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ConnectionCreationLock_ContentionRemainsBoundedByInitialTimeout()
+    {
+        var factoryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = new ConnectionOptions
+        {
+            ConnectionTimeout = TimeSpan.FromMilliseconds(100),
+            ConnectionTimeoutMax = TimeSpan.FromMilliseconds(100),
+            ReconnectBackoff = TimeSpan.Zero,
+            ReconnectBackoffMax = TimeSpan.Zero
+        };
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: options,
+            connectionsPerBroker: 1,
+            connectionFactory: async (brokerId, host, port, _, cancellationToken) =>
+            {
+                factoryStarted.TrySetResult();
+                await Task.Delay(TimeSpan.FromMilliseconds(80), cancellationToken);
+                var connection = CreateConnectedConnection(brokerId, host, port);
+                connection.IsConnected.Returns(false);
+                return connection;
+            });
+
+        var lockHolder = pool.GetConnectionAsync("broker-a", 9092).AsTask();
+        await factoryStarted.Task;
+
+        var contender = pool.GetConnectionAsync("broker-a", 9092).AsTask();
+        await Assert.That(async () => await contender).Throws<OperationCanceledException>();
+
+        try { await lockHolder; }
+        catch { /* Only the contending caller's bounded wait is under test. */ }
+    }
+
+    [Test]
     [NotInParallel]
     public async Task ReplaceConnectionInGroup_ReconnectBackoffDoesNotConsumeSetupTimeout()
     {

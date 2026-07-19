@@ -789,7 +789,7 @@ public sealed partial class ConnectionPool :
             (brokerId, index),
             static _ => new SemaphoreSlim(1, 1));
 
-        await replacementLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await WaitForConnectionLockAsync(replacementLock, cancellationToken).ConfigureAwait(false);
         try
         {
             // Re-check: another caller may have already replaced this connection
@@ -978,7 +978,7 @@ public sealed partial class ConnectionPool :
         // contract (multiple awaiters) and captured a caller-scoped CTS that could be disposed.
         var creationLock = _connectionCreationLocks.GetOrAdd(endpoint, static _ => new SemaphoreSlim(1, 1));
 
-        await creationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await WaitForConnectionLockAsync(creationLock, cancellationToken).ConfigureAwait(false);
         try
         {
             for (var attempt = 0; attempt < MaxRetries; attempt++)
@@ -1143,7 +1143,7 @@ public sealed partial class ConnectionPool :
                 RecordConnectionSetupFailure(setupKey);
             return connection;
         }
-        catch (TimeoutException) when (!callerCancellationToken.IsCancellationRequested)
+        catch (TimeoutException)
         {
             timeoutCts.Cancel();
             ObserveLateConnectionSetup(connectionTask);
@@ -1153,6 +1153,7 @@ public sealed partial class ConnectionPool :
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !callerCancellationToken.IsCancellationRequested)
         {
+            ObserveLateConnectionSetup(connectionTask);
             if (recordFailure)
                 RecordConnectionAttemptFailure(setupKey, endpoint, brokerId, host, port);
             throw CreateConnectionSetupTimeoutException(timeout, brokerId, host, port);
@@ -1162,12 +1163,24 @@ public sealed partial class ConnectionPool :
             ObserveLateConnectionSetup(connectionTask);
             throw;
         }
-        catch (Exception) when (!callerCancellationToken.IsCancellationRequested)
+        catch (Exception)
         {
+            ObserveLateConnectionSetup(connectionTask);
             if (recordFailure)
                 RecordConnectionAttemptFailure(setupKey, endpoint, brokerId, host, port);
             throw;
         }
+    }
+
+    private async ValueTask WaitForConnectionLockAsync(
+        SemaphoreSlim connectionLock,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeoutCts.Token);
+        await connectionLock.WaitAsync(linkedCts.Token).ConfigureAwait(false);
     }
 
     private static KafkaException CreateConnectionSetupTimeoutException(
