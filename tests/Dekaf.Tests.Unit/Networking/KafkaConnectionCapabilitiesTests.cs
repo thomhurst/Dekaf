@@ -148,6 +148,59 @@ public class KafkaConnectionCapabilitiesTests
     }
 
     [Test]
+    public async Task Rebootstrap_RefreshesVersionlessCompatibilitySnapshot()
+    {
+        var initialCapabilities = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys =
+            [
+                new ApiVersion(ApiKey.Metadata, 9, 12),
+                new ApiVersion(ApiKey.Fetch, 12, 14)
+            ],
+            FinalizedFeatures = [new FinalizedFeature("transaction.version", 1, 0)]
+        });
+        var replacementCapabilities = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys =
+            [
+                new ApiVersion(ApiKey.Metadata, 9, 13),
+                new ApiVersion(ApiKey.Fetch, 12, 16)
+            ],
+            FinalizedFeatures = [new FinalizedFeature("transaction.version", 2, 0)]
+        });
+        var initialConnection = new CapabilityConnection(initialCapabilities);
+        var replacementConnection = new CapabilityConnection(replacementCapabilities);
+        var connections = new Queue<IKafkaConnection>([initialConnection, replacementConnection]);
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(
+                Arg.Any<string>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ValueTask.FromResult(connections.Dequeue()));
+        await using var metadata = new MetadataManager(
+            pool,
+            ["localhost:9092"],
+            new MetadataOptions { EnableBackgroundRefresh = false });
+
+        await metadata.InitializeAsync();
+        await Assert.That(metadata.GetNegotiatedApiVersion(ApiKey.Fetch, 12, 18))
+            .IsEqualTo((short)14);
+        await Assert.That(metadata.GetFinalizedFeatureVersion("transaction.version"))
+            .IsEqualTo((short)1);
+
+        var rebootstrapped = await metadata.TryRebootstrapImmediateAsync(null, CancellationToken.None);
+
+        await Assert.That(rebootstrapped).IsTrue();
+        await Assert.That(replacementConnection.ObservedApiVersion).IsEqualTo((short)13);
+        await Assert.That(metadata.GetNegotiatedApiVersion(ApiKey.Fetch, 12, 18))
+            .IsEqualTo((short)16);
+        await Assert.That(metadata.GetFinalizedFeatureVersion("transaction.version"))
+            .IsEqualTo((short)2);
+    }
+
+    [Test]
     public async Task ConnectionPool_InFlightSendKeepsOriginalCapabilityGenerationDuringReplacement()
     {
         var releaseFirstSend = new TaskCompletionSource(

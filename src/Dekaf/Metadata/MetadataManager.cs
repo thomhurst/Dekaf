@@ -757,7 +757,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
 
-                SeedVersionlessCapabilities(connection, metadataApiVersion);
+                UpdateVersionlessCapabilities(connection, metadataApiVersion);
 
                 // KIP-1102: If the broker signals rebootstrap, prefer fresh topology
                 // from re-resolved DNS over the current response's potentially-stale data.
@@ -903,7 +903,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     metadataApiVersion,
                     cancellationToken).ConfigureAwait(false);
 
-                SeedVersionlessCapabilities(connection, metadataApiVersion);
+                UpdateVersionlessCapabilities(
+                    connection,
+                    metadataApiVersion,
+                    replaceExisting: true);
 
                 _metadata.Update(response, mergeTopics: topics is not null);
 
@@ -1080,11 +1083,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
         LogNegotiatedApiVersion(_metadataApiVersion);
     }
 
-    private void SeedVersionlessCapabilities(
+    private void UpdateVersionlessCapabilities(
         IKafkaConnection connection,
-        short metadataApiVersion)
+        short metadataApiVersion,
+        bool replaceExisting = false)
     {
-        if (_metadataApiVersion >= 0 || connection is not IKafkaCapabilityProvider provider)
+        if ((!replaceExisting && _metadataApiVersion >= 0)
+            || connection is not IKafkaCapabilityProvider provider)
             return;
 
         var capabilities = provider.Capabilities;
