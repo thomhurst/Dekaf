@@ -75,6 +75,7 @@ public sealed partial class ConnectionPool :
     // Multi-connection support: connection groups and round-robin index
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
     private readonly ConcurrentDictionary<(int BrokerId, int Index), SemaphoreSlim> _connectionReplacementLocks = new();
+    private readonly ConcurrentDictionary<Task, byte> _retiredConnectionDisposalTasks = new();
     private readonly Lock _connectionGroupRetentionLock = new();
     private readonly Dictionary<(int BrokerId, int Index), int> _connectionGroupRetainers = [];
 
@@ -805,21 +806,9 @@ public sealed partial class ConnectionPool :
                 _scaleLock.Release();
             }
 
-            // Dispose old connection outside the lock to avoid blocking scale operations.
-            // Fire-and-forget with exception observation to prevent UnobservedTaskException.
+            // Drain the old connection outside the lock and track it for coordinated disposal.
             if (oldConnection is not null)
-            {
-                _ = RetiredConnectionDisposer.DrainAndDisposeAsync(oldConnection, CancellationToken.None).AsTask().ContinueWith(
-                    static (t, state) =>
-                    {
-                        var (logger, id, idx) = ((ILogger, int, int))state!;
-                        LogOldConnectionDisposalFailed(logger, id, idx, t.Exception!);
-                    },
-                    (_logger, brokerId, index),
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-            }
+                RetireConnection(oldConnection);
 
             // If the index is now out of bounds (shrink happened concurrently),
             // dispose the orphaned connection to avoid leaking TCP handles.
@@ -1529,8 +1518,8 @@ public sealed partial class ConnectionPool :
     {
         foreach (var connection in group)
         {
-            if (connection is not null)
-                return ConnectionMatchesBroker(connection, brokerInfo);
+            if (connection is not null && ConnectionMatchesBroker(connection, brokerInfo))
+                return true;
         }
 
         return false;
@@ -1539,7 +1528,14 @@ public sealed partial class ConnectionPool :
     private void RetireConnection(IKafkaConnection connection)
     {
         BeginConnectionRetirement(connection);
-        _ = DrainRetiredConnectionAsync(connection);
+        var drainTask = DrainRetiredConnectionAsync(connection);
+        _retiredConnectionDisposalTasks.TryAdd(drainTask, 0);
+        _ = drainTask.ContinueWith(
+            static (task, state) => ((ConnectionPool)state!).ObserveRetiredConnectionDisposal(task),
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private async Task DrainRetiredConnectionAsync(IKafkaConnection connection)
@@ -1547,13 +1543,30 @@ public sealed partial class ConnectionPool :
         try
         {
             await RetiredConnectionDisposer
-                .DrainAndDisposeAsync(connection, CancellationToken.None)
+                .DrainAndDisposeAsync(connection, _disposeCts.Token)
                 .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_disposeCts.IsCancellationRequested)
+        {
+            try
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                LogIdleConnectionDisposalFailed(ex, connection.BrokerId, connection.Host, connection.Port);
+            }
         }
         catch (Exception ex)
         {
             LogIdleConnectionDisposalFailed(ex, connection.BrokerId, connection.Host, connection.Port);
         }
+    }
+
+    private void ObserveRetiredConnectionDisposal(Task task)
+    {
+        _retiredConnectionDisposalTasks.TryRemove(task, out _);
+        _ = task.Exception;
     }
 
     private static void BeginConnectionRetirement(IKafkaConnection connection)
@@ -1736,6 +1749,10 @@ public sealed partial class ConnectionPool :
 
         await CloseAllAsync().ConfigureAwait(false);
 
+        var retiredConnectionDisposals = _retiredConnectionDisposalTasks.Keys.ToArray();
+        if (retiredConnectionDisposals.Length > 0)
+            await Task.WhenAll(retiredConnectionDisposals).ConfigureAwait(false);
+
         _sharedOAuthBearerTokenProvider?.Dispose();
         _disposeCts.Dispose();
         _disposeLock.Dispose();
@@ -1788,9 +1805,6 @@ public sealed partial class ConnectionPool :
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Shrunk connection group from {OldCount} to {NewCount} connections for broker {BrokerId}")]
     private partial void LogShrunkConnectionGroup(int oldCount, int newCount, int brokerId);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to dispose replaced connection for broker {BrokerId} index {Index}")]
-    private static partial void LogOldConnectionDisposalFailed(ILogger logger, int brokerId, int index, Exception ex);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Waiting {DelayMs}ms before reconnecting to broker {BrokerId} at {Host}:{Port} after {FailureCount} failed attempt(s)")]
     private partial void LogReconnectBackoffDelay(double delayMs, int brokerId, string host, int port, int failureCount);
