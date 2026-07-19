@@ -4813,41 +4813,70 @@ public sealed class AdminClient : IAdminClient
             throw new InvalidOperationException("No brokers available");
         }
 
-        using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
-
-        var connection = connectionLease.Connection;
-
         var request = new FindCoordinatorRequest
         {
             Key = groupId,
             KeyType = CoordinatorType.Group
         };
+        Exception? lastFailure = null;
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            connection,
-            Protocol.ApiKey.FindCoordinator,
-            FindCoordinatorRequest.LowestSupportedVersion,
-            FindCoordinatorRequest.HighestSupportedVersion);
-
-        var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        if (response.Coordinators.Count == 0)
+        foreach (var broker in brokers)
         {
-            throw new Errors.GroupException(Protocol.ErrorCode.CoordinatorNotAvailable,
-                "FindCoordinator returned an empty Coordinators array");
+            try
+            {
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(
+                    broker.NodeId,
+                    cancellationToken).ConfigureAwait(false);
+                var connection = connectionLease.Connection;
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    Protocol.ApiKey.FindCoordinator,
+                    FindCoordinatorRequest.LowestSupportedVersion,
+                    FindCoordinatorRequest.HighestSupportedVersion);
+                var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.Coordinators.Count == 0)
+                {
+                    lastFailure = new Errors.GroupException(
+                        Protocol.ErrorCode.CoordinatorNotAvailable,
+                        "FindCoordinator returned an empty Coordinators array");
+                    continue;
+                }
+
+                var coordinator = response.Coordinators[0];
+                if (coordinator.ErrorCode is Protocol.ErrorCode.CoordinatorNotAvailable
+                    or Protocol.ErrorCode.CoordinatorLoadInProgress)
+                {
+                    lastFailure = new Errors.GroupException(
+                        coordinator.ErrorCode,
+                        $"FindCoordinator failed: {coordinator.ErrorCode}");
+                    continue;
+                }
+
+                if (coordinator.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new Errors.GroupException(
+                        coordinator.ErrorCode,
+                        $"FindCoordinator failed: {coordinator.ErrorCode}");
+                }
+
+                _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
+                return coordinator.NodeId;
+            }
+            catch (Exception exception) when (
+                RetryHelper.IsRetriableRequestFailure(exception)
+                && !cancellationToken.IsCancellationRequested)
+            {
+                lastFailure = exception;
+            }
         }
 
-        var coordinator = response.Coordinators[0];
-        if (coordinator.ErrorCode != Protocol.ErrorCode.None)
-        {
-            throw new Errors.GroupException(coordinator.ErrorCode, $"FindCoordinator failed: {coordinator.ErrorCode}");
-        }
-
-        _connectionPool.RegisterBroker(coordinator.NodeId, coordinator.Host, coordinator.Port);
-        return coordinator.NodeId;
+        throw lastFailure ?? new Errors.GroupException(
+            Protocol.ErrorCode.CoordinatorNotAvailable,
+            $"FindCoordinator failed for group '{groupId}'");
     }
 
     private async ValueTask<int> FindTransactionCoordinatorAsync(string transactionalId, CancellationToken cancellationToken)

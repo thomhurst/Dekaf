@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Sockets;
 using System.Reflection;
 using Dekaf.Consumer;
 using Dekaf.Errors;
@@ -111,6 +112,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         int heartbeatIntervalMs = 3000,
         int rebalanceTimeoutMs = 30000,
         int maxPollIntervalMs = 300000,
+        int retryBackoffMs = 100,
+        int retryBackoffMaxMs = 1000,
         IConsumerAwareRebalanceListener? consumerAwareRebalanceListener = null) => new()
         {
             BootstrapServers = ["localhost:9092"],
@@ -122,7 +125,9 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             ConsumerAwareRebalanceListener = consumerAwareRebalanceListener,
             HeartbeatIntervalMs = heartbeatIntervalMs,
             RebalanceTimeoutMs = rebalanceTimeoutMs,
-            MaxPollIntervalMs = maxPollIntervalMs
+            MaxPollIntervalMs = maxPollIntervalMs,
+            RetryBackoffMs = retryBackoffMs,
+            RetryBackoffMaxMs = retryBackoffMaxMs
         };
 
     private void SetupFindCoordinator()
@@ -210,6 +215,17 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             BindingFlags.NonPublic | BindingFlags.Instance);
 
         return (Task)method!.Invoke(coordinator, [cancellationToken])!;
+    }
+
+    private static ValueTask InvokeFindCoordinatorAsync(
+        ConsumerCoordinator coordinator,
+        CancellationToken cancellationToken)
+    {
+        var method = typeof(ConsumerCoordinator).GetMethod(
+            "FindCoordinatorAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+
+        return (ValueTask)method!.Invoke(coordinator, [cancellationToken])!;
     }
 
     private static ConsumerGroupHeartbeatAssignment CreateAssignment(
@@ -3443,6 +3459,142 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task ConsumerProtocol_TransportFailureDuringHeartbeat_InvalidatesCoordinator()
+    {
+        SetupSuccessfulConsumerProtocolJoin();
+        var options = CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic" },
+            CancellationToken.None);
+        await coordinator.StopHeartbeatAsync();
+        _connection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException<ConsumerGroupHeartbeatResponse>(
+                new IOException("coordinator connection closed")));
+        SetPrivateField(coordinator, "_heartbeatIntervalMs", 1);
+
+        await InvokeConsumerProtocolHeartbeatLoopAsync(coordinator, CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Unjoined);
+        await Assert.That(GetPrivateField<int>(coordinator, "_coordinatorId")).IsEqualTo(-1);
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_FindCoordinator_TransportFailureTriesNextBroker()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var availableConnection = Substitute.For<IKafkaConnection>();
+        connectionPool.GetConnectionByIndexAsync(
+                Arg.Is(0),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException<IKafkaConnection>(
+                new SocketException((int)SocketError.ConnectionRefused)));
+        connectionPool.GetConnectionByIndexAsync(
+                Arg.Is(1),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(availableConnection));
+        availableConnection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                Coordinators =
+                [
+                    new Coordinator
+                    {
+                        Key = "test-group",
+                        NodeId = 1,
+                        Host = "broker-1",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
+                    }
+                ]
+            }));
+        availableConnection.SendAsync<ConsumerGroupHeartbeatRequest, ConsumerGroupHeartbeatResponse>(
+                Arg.Any<ConsumerGroupHeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new ConsumerGroupHeartbeatResponse
+            {
+                ErrorCode = ErrorCode.None,
+                MemberId = "member-1",
+                MemberEpoch = 1,
+                HeartbeatIntervalMs = 60_000
+            }));
+
+        await using var metadataManager = new MetadataManager(connectionPool, ["broker-0:9092"]);
+        metadataManager.SetApiVersion(ApiKey.ConsumerGroupHeartbeat, 0, 0);
+        metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 0, Host = "broker-0", Port = 9092 },
+                new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9092 }
+            ],
+            Topics = []
+        });
+        await using var coordinator = new ConsumerCoordinator(
+            CreateConsumerProtocolOptions(heartbeatIntervalMs: 60_000),
+            connectionPool,
+            metadataManager);
+
+        await coordinator.EnsureActiveGroupAsync(
+            new HashSet<string> { "test-topic" },
+            CancellationToken.None);
+
+        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+        await Assert.That(GetPrivateField<int>(coordinator, "_coordinatorId")).IsEqualTo(1);
+        await connectionPool.Received().GetConnectionByIndexAsync(
+            Arg.Is(1),
+            Arg.Any<int>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task ConsumerProtocol_FindCoordinator_TransportFailureExhaustionThrowsGroupException()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        connectionPool.GetConnectionByIndexAsync(
+                Arg.Any<int>(),
+                Arg.Any<int>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException<IKafkaConnection>(
+                new SocketException((int)SocketError.ConnectionRefused)));
+
+        await using var metadataManager = new MetadataManager(connectionPool, ["broker-0:9092"]);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 0, Host = "broker-0", Port = 9092 },
+                new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9092 }
+            ],
+            Topics = []
+        });
+        var options = CreateConsumerProtocolOptions(retryBackoffMs: 1, retryBackoffMaxMs: 1);
+        await using var coordinator = new ConsumerCoordinator(options, connectionPool, metadataManager);
+
+        var exception = await Assert.That(async () =>
+                await InvokeFindCoordinatorAsync(coordinator, CancellationToken.None))
+            .Throws<GroupException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.CoordinatorNotAvailable);
+        await Assert.That(exception.InnerException).IsTypeOf<SocketException>();
+        await connectionPool.Received(5).GetConnectionByIndexAsync(
+            Arg.Any<int>(),
+            Arg.Any<int>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
     [Arguments(ErrorCode.GroupAuthorizationFailed)]
     [Arguments(ErrorCode.InvalidGroupId)]
     public async Task ConsumerProtocol_FatalGroupErrorDuringHeartbeat_PropagatesOnNextEnsureActiveGroup(
@@ -4125,6 +4277,15 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     #endregion
+
+    private static T GetPrivateField<T>(ConsumerCoordinator coordinator, string fieldName)
+    {
+        var field = typeof(ConsumerCoordinator).GetField(
+            fieldName,
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found.");
+        return (T)field.GetValue(coordinator)!;
+    }
 
     private static void SetPrivateField<T>(ConsumerCoordinator coordinator, string fieldName, T value)
     {

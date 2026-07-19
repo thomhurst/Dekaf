@@ -579,67 +579,90 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            // Cycle through brokers on retries to avoid wasting all attempts on one slow broker.
-            var broker = brokers[attempt % brokers.Count];
-            using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
-                broker.NodeId,
-                _getCoordinationConnectionIndex(),
-                cancellationToken)
-                .ConfigureAwait(false);
-            var connection = connectionLease.Connection;
-
-            // Use negotiated API version
-            var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
-                connection,
-                ApiKey.FindCoordinator,
-                FindCoordinatorRequest.LowestSupportedVersion,
-                FindCoordinatorRequest.HighestSupportedVersion);
-
-            var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                request,
-                findCoordinatorVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            if (response.Coordinators.Count == 0)
+            try
             {
-                throw new Errors.GroupException(ErrorCode.CoordinatorNotAvailable,
-                    "FindCoordinator returned an empty Coordinators array")
-                { GroupId = _options.GroupId };
+                // Cycle through brokers on retries to avoid wasting all attempts on one
+                // unavailable broker.
+                var broker = brokers[attempt % brokers.Count];
+                using var connectionLease = await _connectionPool.LeaseConnectionByIndexAsync(
+                    broker.NodeId,
+                    _getCoordinationConnectionIndex(),
+                    cancellationToken)
+                    .ConfigureAwait(false);
+                var connection = connectionLease.Connection;
+
+                // Use negotiated API version
+                var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    ApiKey.FindCoordinator,
+                    FindCoordinatorRequest.LowestSupportedVersion,
+                    FindCoordinatorRequest.HighestSupportedVersion);
+
+                var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                    request,
+                    findCoordinatorVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.Coordinators.Count == 0)
+                {
+                    throw new Errors.GroupException(ErrorCode.CoordinatorNotAvailable,
+                        "FindCoordinator returned an empty Coordinators array")
+                    { GroupId = _options.GroupId };
+                }
+
+                var coordinator = response.Coordinators[0];
+                var errorCode = coordinator.ErrorCode;
+                var nodeId = coordinator.NodeId;
+                var host = coordinator.Host;
+                var port = coordinator.Port;
+
+                // Retry on transient coordinator errors
+                if (errorCode == ErrorCode.CoordinatorNotAvailable ||
+                    errorCode == ErrorCode.CoordinatorLoadInProgress)
+                {
+                    if (attempt == maxRetries - 1)
+                        break;
+
+                    var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
+                    LogCoordinatorNotAvailableRetry(attempt + 1, maxRetries, retryDelayMs);
+
+                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (errorCode != ErrorCode.None)
+                {
+                    throw new Errors.GroupException(errorCode, $"FindCoordinator failed: {errorCode}")
+                    {
+                        GroupId = _options.GroupId
+                    };
+                }
+
+                _coordinatorId = nodeId;
+                _connectionPool.RegisterBroker(nodeId, host, port);
+
+                LogFoundCoordinator(_coordinatorId, _options.GroupId!);
+                return;
             }
-
-            var coordinator = response.Coordinators[0];
-            var errorCode = coordinator.ErrorCode;
-            var nodeId = coordinator.NodeId;
-            var host = coordinator.Host;
-            var port = coordinator.Port;
-
-            // Retry on transient coordinator errors
-            if (errorCode == ErrorCode.CoordinatorNotAvailable ||
-                errorCode == ErrorCode.CoordinatorLoadInProgress)
+            catch (Exception ex) when (
+                RetryHelper.IsRetriableRequestFailure(ex) &&
+                !cancellationToken.IsCancellationRequested)
             {
                 if (attempt == maxRetries - 1)
-                    break;
+                {
+                    throw new Errors.GroupException(
+                        ErrorCode.CoordinatorNotAvailable,
+                        $"FindCoordinator failed after {maxRetries} retries: {ex.Message}",
+                        ex)
+                    {
+                        GroupId = _options.GroupId
+                    };
+                }
 
                 var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
                 LogCoordinatorNotAvailableRetry(attempt + 1, maxRetries, retryDelayMs);
-
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                continue;
             }
-
-            if (errorCode != ErrorCode.None)
-            {
-                throw new Errors.GroupException(errorCode, $"FindCoordinator failed: {errorCode}")
-                {
-                    GroupId = _options.GroupId
-                };
-            }
-
-            _coordinatorId = nodeId;
-            _connectionPool.RegisterBroker(nodeId, host, port);
-
-            LogFoundCoordinator(_coordinatorId, _options.GroupId!);
-            return;
         }
 
         throw new Errors.GroupException(ErrorCode.CoordinatorNotAvailable,
@@ -1980,7 +2003,10 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     break;
                 }
 
-                // Non-group error — continue heartbeating
+                // Transport and connection failures may mean the cached coordinator broker
+                // disappeared. Force FindCoordinator on the next foreground group operation.
+                MarkCoordinatorUnknown();
+                break;
             }
         }
     }

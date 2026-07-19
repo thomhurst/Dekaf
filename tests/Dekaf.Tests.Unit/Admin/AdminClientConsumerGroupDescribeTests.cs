@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using Dekaf.Admin;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -9,6 +10,83 @@ namespace Dekaf.Tests.Unit.Admin;
 
 public sealed class AdminClientConsumerGroupDescribeTests
 {
+    [Test]
+    public async Task DescribeConsumerGroupsAsync_FindCoordinatorTransportFailureTriesNextBroker()
+    {
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.BrokerId.Returns(2);
+        connection.Host.Returns("broker-2");
+        connection.Port.Returns(9092);
+        connection.IsConnected.Returns(true);
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Is(1), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromException<IKafkaConnection>(
+                new SocketException((int)SocketError.ConnectionRefused)));
+        pool.GetConnectionAsync(Arg.Is(2), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(connection));
+        connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                Coordinators =
+                [
+                    new Coordinator
+                    {
+                        Key = "consumer-group",
+                        NodeId = 2,
+                        Host = "broker-2",
+                        Port = 9092,
+                        ErrorCode = ErrorCode.None
+                    }
+                ]
+            }));
+        connection.SendAsync<ConsumerGroupDescribeRequest, ConsumerGroupDescribeResponse>(
+                Arg.Any<ConsumerGroupDescribeRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new ConsumerGroupDescribeResponse
+            {
+                Groups =
+                [
+                    new ConsumerGroupDescribeGroup
+                    {
+                        ErrorCode = ErrorCode.None,
+                        GroupId = "consumer-group",
+                        GroupState = "Stable",
+                        GroupEpoch = 1,
+                        AssignmentEpoch = 1,
+                        AssignorName = "uniform",
+                        Members = []
+                    }
+                ]
+            }));
+        var metadataManager = new MetadataManager(pool, ["broker-1:9092"]);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9092 },
+                new BrokerMetadata { NodeId = 2, Host = "broker-2", Port = 9092 }
+            ],
+            ClusterId = "test-cluster",
+            ControllerId = 2,
+            Topics = []
+        });
+        metadataManager.SetApiVersion(ApiKey.FindCoordinator, 4, 5);
+        metadataManager.SetApiVersion(ApiKey.ConsumerGroupDescribe, 0, 1);
+        await using var admin = new AdminClient(
+            new AdminClientOptions { BootstrapServers = ["broker-1:9092"] },
+            pool,
+            metadataManager);
+
+        var descriptions = await admin.DescribeConsumerGroupsAsync(["consumer-group"]);
+
+        await Assert.That(descriptions["consumer-group"].CoordinatorId).IsEqualTo(2);
+        await pool.Received().GetConnectionAsync(Arg.Is(2), Arg.Any<CancellationToken>());
+    }
+
     [Test]
     public async Task DescribeConsumerGroupsAsync_FallsBackPerGroupWhenApi69ReportsClassicGroup()
     {

@@ -434,6 +434,11 @@ public sealed class GroupException : KafkaException
     {
     }
 
+    internal GroupException(ErrorCode errorCode, string message, Exception innerException)
+        : base(errorCode, message, innerException)
+    {
+    }
+
     internal GroupException(ErrorCode errorCode, string message, bool isRetriable)
         : base(errorCode, message, isRetriable)
     {
