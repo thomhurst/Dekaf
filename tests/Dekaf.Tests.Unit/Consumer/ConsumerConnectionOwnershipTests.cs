@@ -272,7 +272,9 @@ public sealed class ConsumerConnectionOwnershipTests
     }
 
     [Test]
-    public async Task StandaloneConsumer_Dispose_WaitsForRetiredConnectionDisposal()
+    [Timeout(30_000)]
+    public async Task StandaloneConsumer_Dispose_WaitsForRetiredConnectionDisposal(
+        CancellationToken cancellationToken)
     {
         var pool = CreatePool();
         var removedConnection = new TrackedConnection(
@@ -284,20 +286,20 @@ public sealed class ConsumerConnectionOwnershipTests
         var leaseReleased = false;
 
         TriggerScaleDown(consumer);
-        await TestWait.UntilAsync(
-            () => GetField<Task>(consumer, "_connectionRoutingTransitionTask").IsCompleted,
-            TimeSpan.FromSeconds(5));
+        await GetField<Task>(consumer, "_connectionRoutingTransitionTask")
+            .WaitAsync(cancellationToken);
+        await removedConnection.RetirementLeaseObserved.WaitAsync(cancellationToken);
         var disposeTask = consumer.DisposeAsync().AsTask();
 
         try
         {
-            await Task.Delay(100);
             await Assert.That(disposeTask.IsCompleted).IsFalse();
             _ = pool.DidNotReceive().DisposeAsync();
 
             removedConnection.ReleaseLease();
             leaseReleased = true;
-            await disposeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await removedConnection.DisposalStarted.WaitAsync(cancellationToken);
+            await disposeTask.WaitAsync(cancellationToken);
         }
         finally
         {
@@ -572,6 +574,10 @@ public sealed class ConsumerConnectionOwnershipTests
     {
         private readonly TaskCompletionSource _activeRequest = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _retirementLeaseObserved = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _disposalStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         private int _pendingRequestCount = hasPendingRequest ? 1 : 0;
         private int _leaseCount = hasLease ? 1 : 0;
         private int _leaseAcquisitionCount;
@@ -583,10 +589,21 @@ public sealed class ConsumerConnectionOwnershipTests
         public int Port => 9092;
         public bool IsConnected => true;
         public Task ActiveRequest => _activeRequest.Task;
+        public Task RetirementLeaseObserved => _retirementLeaseObserved.Task;
+        public Task DisposalStarted => _disposalStarted.Task;
         public int DisposeCount => Volatile.Read(ref _disposeCount);
         public long LastUsedTimestampMs => 0;
         public int PendingRequestCount => Volatile.Read(ref _pendingRequestCount);
-        public int LeaseCount => Volatile.Read(ref _leaseCount);
+        public int LeaseCount
+        {
+            get
+            {
+                var leaseCount = Volatile.Read(ref _leaseCount);
+                if (leaseCount > 0)
+                    _retirementLeaseObserved.TrySetResult();
+                return leaseCount;
+            }
+        }
         public int LeaseAcquisitionCount => Volatile.Read(ref _leaseAcquisitionCount);
         public int ActiveOperationCount => Volatile.Read(ref _activeOperationCount);
 
@@ -673,6 +690,7 @@ public sealed class ConsumerConnectionOwnershipTests
         public ValueTask DisposeAsync()
         {
             Interlocked.Increment(ref _disposeCount);
+            _disposalStarted.TrySetResult();
             _activeRequest.TrySetException(new ObjectDisposedException(nameof(TrackedConnection)));
             return ValueTask.CompletedTask;
         }
