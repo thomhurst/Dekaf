@@ -177,6 +177,8 @@ public class ProducerConcurrencyTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var allWorkersReady = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstAppendEnqueued = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var readyWorkerCount = 0;
 
         try
@@ -204,6 +206,7 @@ public class ProducerConcurrencyTests
                             CancellationToken.None);
 
                         Interlocked.Increment(ref successCount);
+                        firstAppendEnqueued.TrySetResult();
                     }
                     catch (ObjectDisposedException)
                     {
@@ -214,6 +217,7 @@ public class ProducerConcurrencyTests
 
             await allWorkersReady.Task.WaitAsync(cancellationToken);
             workersMayAppend.SetResult();
+            await firstAppendEnqueued.Task.WaitAsync(cancellationToken);
             workerCts.Cancel();
             await accumulator.DisposeAsync();
 
