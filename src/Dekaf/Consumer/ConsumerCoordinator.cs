@@ -38,6 +38,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     // Assignment snapshots wait for this hook so KafkaConsumer cannot discard dirty revoked offsets first.
     private readonly Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>?
         _onPartitionsRevokedAsync;
+    // A heartbeat can newly classify an already-owned partition while a batch is being
+    // iterated. Publish fetch invalidation immediately instead of waiting for the poll loop.
+    private readonly Action<IReadOnlyList<TopicPartition>>? _onPartitionsReclassified;
     private readonly ConcurrentQueue<TopicPartition> _revokedPartitionsSinceLastSync = new();
     private Task _pendingRevocationCommit = Task.CompletedTask;
     // Assignment publication and revocation history form one snapshot. Rebalance callbacks
@@ -111,7 +114,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             getConnectionCount,
             onPartitionsRevoked,
             onPartitionsRevoking: null,
-            onPartitionsRevokedAsync: null)
+            onPartitionsRevokedAsync: null,
+            onPartitionsReclassified: null)
     {
     }
 
@@ -123,7 +127,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         Func<int>? getConnectionCount,
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoked,
         Action<IReadOnlyList<TopicPartition>>? onPartitionsRevoking,
-        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? onPartitionsRevokedAsync = null)
+        Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? onPartitionsRevokedAsync = null,
+        Action<IReadOnlyList<TopicPartition>>? onPartitionsReclassified = null)
     {
         _options = options;
         _connectionPool = connectionPool;
@@ -132,6 +137,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         _onPartitionsRevoked = onPartitionsRevoked;
         _onPartitionsRevoking = onPartitionsRevoking;
         _onPartitionsRevokedAsync = onPartitionsRevokedAsync;
+        _onPartitionsReclassified = onPartitionsReclassified;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConsumerCoordinator>.Instance;
         _getCoordinationConnectionIndex = getConnectionCount is not null
             ? () => GetCoordinationConnectionIndex(getConnectionCount())
@@ -1622,8 +1628,22 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         NotifyRevoking(revoked);
 
         var classificationChanged = false;
+        List<TopicPartition>? reclassified = null;
         lock (_assignmentStateLock)
         {
+            if (_options.AutoOffsetResetNewPartitions is not null
+                && _onPartitionsReclassified is not null)
+            {
+                foreach (var partition in newlyExpandedPartitions)
+                {
+                    if (oldAssignment.Contains(partition)
+                        && !_newlyExpandedPartitions.Contains(partition))
+                    {
+                        (reclassified ??= []).Add(partition);
+                    }
+                }
+            }
+
             // The heartbeat loop can acknowledge ownership before the poll loop initializes
             // positions. Retain prior classifications until that initialization explicitly
             // acknowledges them, while dropping partitions that are no longer assigned.
@@ -1649,6 +1669,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         if (revoked is not null)
             _onPartitionsRevoked?.Invoke(revoked);
+        if (reclassified is not null)
+            _onPartitionsReclassified?.Invoke(reclassified);
 
         if (changed)
             LogConsumerProtocolAssignmentUpdate(assigned?.Count ?? 0, revoked?.Count ?? 0);

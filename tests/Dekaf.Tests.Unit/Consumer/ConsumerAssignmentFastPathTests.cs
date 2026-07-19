@@ -703,9 +703,13 @@ public sealed class ConsumerAssignmentFastPathTests
             KafkaConsumer<string, string>.EstimatePendingFetchBytes(stalePrefetchedFetch));
 
         var coordinator = GetCoordinator(consumer);
+        var batchIterationVersion = GetBatchIterationVersion(consumer);
         ProcessCoordinatorAssignment(
             coordinator,
             CreateAssignmentWithNewPartitions([0], [0]));
+        await Assert.That(GetCoordinatorRevokedPartitionsPendingFetchClear(consumer))
+            .ContainsKey(partition);
+        await Assert.That(GetBatchIterationVersion(consumer)).IsGreaterThan(batchIterationVersion);
         await consumer.EnsureAssignmentAsync(CancellationToken.None);
         var staleInFlightFetch = CreateFetch(partition: 0, baseOffset: 102, value: "stale-in-flight");
         await WritePrefetchedItemsAsync(consumer, [staleInFlightFetch], staleFetchBufferEpoch);

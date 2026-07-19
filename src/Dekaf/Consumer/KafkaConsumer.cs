@@ -1398,7 +1398,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     : null,
                 onPartitionsRevoked: null,
                 onPartitionsRevoking: QueueCoordinatorRevokedPartitionsForFetchClear,
-                onPartitionsRevokedAsync: CommitRevokedOffsetsAsync);
+                onPartitionsRevokedAsync: CommitRevokedOffsetsAsync,
+                onPartitionsReclassified: QueueCoordinatorRevokedPartitionsForFetchClear);
         }
 
         _prefetchBuffer = new MpscFetchBuffer(CalculatePrefetchBufferCapacity(options));
