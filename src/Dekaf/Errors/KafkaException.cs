@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using Dekaf.Protocol;
 using Dekaf.Serialization;
 
@@ -90,6 +91,39 @@ public class KafkaException : Exception
             => new AuthenticationException(errorCode, message),
         _ => new KafkaException(errorCode, message),
     };
+}
+
+/// <summary>
+/// Exception thrown when a consumer detects that a partition log was truncated and
+/// <c>auto.offset.reset</c> is configured as <c>none</c>.
+/// </summary>
+public sealed class LogTruncationException : KafkaException
+{
+    /// <summary>
+    /// Creates a log truncation exception for the corrected partition offsets.
+    /// </summary>
+    public LogTruncationException(IReadOnlyList<TopicPartitionOffset> truncationOffsets)
+        : base(Protocol.ErrorCode.OffsetOutOfRange, CreateMessage(truncationOffsets))
+    {
+        TruncationOffsets = new ReadOnlyCollection<TopicPartitionOffset>(truncationOffsets.ToArray());
+    }
+
+    /// <summary>
+    /// The first divergent offset and last common leader epoch for each truncated partition.
+    /// </summary>
+    public IReadOnlyList<TopicPartitionOffset> TruncationOffsets { get; }
+
+    private static string CreateMessage(IReadOnlyList<TopicPartitionOffset> truncationOffsets)
+    {
+        ArgumentNullException.ThrowIfNull(truncationOffsets);
+        if (truncationOffsets.Count == 0)
+            throw new ArgumentException("At least one truncation offset is required.", nameof(truncationOffsets));
+
+        return truncationOffsets.Count == 1
+            ? $"Log truncation detected for {truncationOffsets[0].Topic}-{truncationOffsets[0].Partition} " +
+              $"at offset {truncationOffsets[0].Offset}"
+            : $"Log truncation detected for {truncationOffsets.Count} partitions";
+    }
 }
 
 /// <summary>

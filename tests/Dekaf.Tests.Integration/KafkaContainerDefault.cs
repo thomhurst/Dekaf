@@ -18,6 +18,8 @@ public class KafkaContainerDefault : KafkaTestContainer
     private static readonly string Tag =
         Environment.GetEnvironmentVariable("KAFKA_TEST_IMAGE_TAG") is { Length: > 0 } tag ? tag : DefaultTag;
 
+    internal static string ImageTag => Tag;
+
     public override string ContainerName => $"apache/kafka:{Tag}";
 
     public override int Version { get; } = ParseVersion(Tag);
