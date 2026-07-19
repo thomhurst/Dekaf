@@ -47,6 +47,7 @@ public sealed class ConsumerLeaderDiscoveryTests
         await Assert.That(leader).IsNotNull();
         await Assert.That(leader!.NodeId).IsEqualTo(2);
         await Assert.That(leader.Host).IsEqualTo("broker-2");
+        pool.Received(1).RegisterBroker(2, "broker-2", 9094);
         _ = pool.DidNotReceive().GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
     }
 
