@@ -10,6 +10,24 @@ namespace Dekaf.Tests.Unit.Producer;
 public sealed class Kip126BatchSplittingTests
 {
     [Test]
+    public async Task CompressedBatch_ZeroBufferMemory_UsesMinimumSizeLimit()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 1024,
+            BufferMemory = 0,
+            CompressionType = CompressionType.Gzip
+        };
+
+        var batch = new PartitionBatch(new TopicPartition("zero-buffer", 0), options);
+
+        await Assert.That(batch.EffectiveBatchSizeLimit)
+            .IsEqualTo(RecordBatch.TotalBatchHeaderSize + 1);
+        batch.Complete();
+    }
+
+    [Test]
     public async Task CompressionEstimate_IsPerTopic_AndResetIsConservative()
     {
         var estimator = new CompressionRatioEstimator();

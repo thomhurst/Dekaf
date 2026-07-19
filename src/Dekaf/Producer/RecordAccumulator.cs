@@ -7423,9 +7423,11 @@ internal sealed class PartitionBatch
         var compressedRecordsBudget = Math.Max(
             1,
             wireBatchSizeLimit - RecordBatch.TotalBatchHeaderSize);
-        var maximumUncompressedRecordsBudget = Math.Min(
-            int.MaxValue - RecordBatch.TotalBatchHeaderSize,
-            (long)Math.Min(options.BufferMemory, (ulong)long.MaxValue));
+        var maximumUncompressedRecordsBudget = Math.Max(
+            1,
+            Math.Min(
+                int.MaxValue - RecordBatch.TotalBatchHeaderSize,
+                (long)Math.Min(options.BufferMemory, (ulong)long.MaxValue)));
         var estimatedUncompressedRecordsBudget = compressedRecordsBudget
             / Math.Max(double.Epsilon, estimatedRatio * CompressionRatioEstimator.EstimationFactor);
         var uncompressedRecordsBudget = (long)Math.Clamp(
