@@ -171,6 +171,7 @@ public sealed partial class KafkaConnection :
     // Certificates loaded from files that we own and must dispose
     private X509Certificate2Collection? _loadedCaCertificates;
     private X509Certificate2? _loadedClientCertificate;
+    private string? _tlsCertificateValidationFailure;
 
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
@@ -404,6 +405,7 @@ public sealed partial class KafkaConnection :
 
         if (_options.UseTls || _options.TlsConfig is not null)
         {
+            _tlsCertificateValidationFailure = null;
 #if NETSTANDARD2_0
             var sslStream = new SslStream(
                 networkStream,
@@ -436,9 +438,11 @@ public sealed partial class KafkaConnection :
                 // Wrap as a Dekaf AuthenticationException (a KafkaException) so callers can catch it
                 // and metadata refresh treats it as fatal instead of masking it behind a generic
                 // "failed to refresh metadata" error.
-                throw new AuthenticationException(
-                    $"TLS handshake failed: {authenticationException.Message}",
-                    authenticationException);
+                var validationFailure = _tlsCertificateValidationFailure;
+                var message = string.IsNullOrWhiteSpace(validationFailure)
+                    ? $"TLS handshake failed: {authenticationException.Message}"
+                    : $"TLS handshake failed: {authenticationException.Message} Certificate validation: {validationFailure}";
+                throw new AuthenticationException(message, authenticationException);
             }
             networkStream = sslStream;
             _isTls = true;
@@ -2786,11 +2790,16 @@ public sealed partial class KafkaConnection :
             // Custom CA certificate validation
             var caCertificates = LoadCaCertificatesWithOwnership(tlsConfig!);
             return (_, certificate, chain, sslPolicyErrors) =>
-                ValidateServerCertificate(
+            {
+                var isValid = ValidateServerCertificate(
                     certificate,
                     chain,
                     ApplyServerCertificateHostNamePolicy(sslPolicyErrors, validateServerCertificateHostName),
-                    caCertificates);
+                    caCertificates,
+                    out var failureDetail);
+                _tlsCertificateValidationFailure = failureDetail;
+                return isValid;
+            };
         }
 
         if (!validateServerCertificateHostName)
@@ -3110,10 +3119,15 @@ public sealed partial class KafkaConnection :
         X509Certificate? certificate,
         X509Chain? chain,
         SslPolicyErrors sslPolicyErrors,
-        X509Certificate2Collection trustedCaCertificates)
+        X509Certificate2Collection trustedCaCertificates,
+        out string? failureDetail)
     {
+        failureDetail = null;
         if (certificate is null)
+        {
+            failureDetail = "the broker did not provide a certificate";
             return false;
+        }
 
         // If there are no policy errors, the certificate is valid
         if (sslPolicyErrors == SslPolicyErrors.None)
@@ -3148,7 +3162,19 @@ public sealed partial class KafkaConnection :
 
                 if (customChain.Build(cert2))
                 {
-                    return IsChainRootedInTrustedCa(customChain, trustedCaCertificates);
+                    if (IsChainRootedInTrustedCa(customChain, trustedCaCertificates))
+                    {
+                        return true;
+                    }
+
+                    failureDetail = "the certificate chain does not terminate at a configured CA";
+                }
+                else
+                {
+                    failureDetail = string.Join(
+                        "; ",
+                        customChain.ChainStatus.Select(status =>
+                            $"{status.Status}: {status.StatusInformation.Trim()}"));
                 }
             }
             finally
@@ -3157,6 +3183,7 @@ public sealed partial class KafkaConnection :
             }
         }
 
+        failureDetail ??= sslPolicyErrors.ToString();
         return false;
     }
 
