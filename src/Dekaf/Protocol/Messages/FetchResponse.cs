@@ -23,7 +23,7 @@ public sealed class FetchResponse : IKafkaResponse
 
     public static ApiKey ApiKey => ApiKey.Fetch;
     public static short LowestSupportedVersion => 12;
-    public static short HighestSupportedVersion => 16;
+    public static short HighestSupportedVersion => 18;
 
     /// <summary>
     /// Throttle time in milliseconds.

@@ -1,0 +1,150 @@
+﻿Response: Dekaf.Protocol.Messages.FetchResponse
+API key: Fetch (1)
+Version: 18
+Header version: 1
+Body length: 387 bytes
+
+0000: 00 00 00 1F 00 00 10 20  30 40 02 00 11 22 33 44 |....... 0@..."3D|
+0010: 55 66 77 88 99 AA BB CC  DD EE FF 03 00 00 00 00 |Ufw.............|
+0020: 00 00 00 00 00 00 00 00  00 64 00 00 00 00 00 00 |.........d......|
+0030: 00 5A 00 00 00 00 00 00  00 05 02 00 00 00 00 00 |.Z..............|
+0040: 00 00 4D 00 00 00 00 00  00 00 0C 00 00 00 00 02 |..M.............|
+0050: 91 01 00 00 00 00 00 00  00 2A 00 00 00 84 00 00 |.........*......|
+0060: 00 07 02 2D C1 74 88 00  00 00 00 00 01 00 00 01 |...-.t..........|
+0070: 8B CF E5 68 00 00 00 01  8B CF E5 68 01 00 00 00 |...h.......h....|
+0080: 00 00 00 04 D2 00 02 00  00 00 09 00 00 00 02 6A |...............j|
+0090: 00 00 00 14 77 69 72 65  2D 6B 65 79 2D 30 18 77 |....wire-key-0.w|
+00A0: 69 72 65 2D 76 61 6C 75  65 2D 30 02 16 77 69 72 |ire-value-0..wir|
+00B0: 65 2D 68 65 61 64 65 72  18 68 65 61 64 65 72 2D |e-header.header-|
+00C0: 76 61 6C 75 65 38 00 02  02 14 77 69 72 65 2D 6B |value8....wire-k|
+00D0: 65 79 2D 31 18 77 69 72  65 2D 76 61 6C 75 65 2D |ey-1.wire-value-|
+00E0: 31 00 04 00 0C 00 00 00  07 00 00 00 00 00 00 00 |1...............|
+00F0: 2A 01 08 00 00 00 02 00  00 00 07 02 0C 00 00 00 |*...............|
+0100: 00 00 00 00 54 00 00 00  08 08 04 DE CA FB AD 00 |....T...........|
+0110: 00 00 01 00 01 00 00 00  00 00 00 00 65 00 00 00 |............e...|
+0120: 00 00 00 00 5B 00 00 00  00 00 00 00 05 01 00 00 |....[...........|
+0130: 00 02 00 01 01 08 00 00  00 02 00 00 00 07 00 02 |................|
+0140: 00 3D 03 00 00 00 01 11  62 72 6F 6B 65 72 2D 61 |.=......broker-a|
+0150: 2E 65 78 61 6D 70 6C 65  00 00 23 84 07 72 61 63 |.example..#..rac|
+0160: 6B 2D 61 00 00 00 00 02  11 62 72 6F 6B 65 72 2D |k-a......broker-|
+0170: 62 2E 65 78 61 6D 70 6C  65 00 00 23 85 00 00 09 |b.example..#....|
+0180: 02 10 20                                         |.. |
+
+Decoded:
+{
+  "ErrorCode": "None",
+  "NodeEndpoints": [
+    {
+      "Host": "broker-a.example",
+      "NodeId": 1,
+      "Port": 9092,
+      "Rack": "rack-a"
+    },
+    {
+      "Host": "broker-b.example",
+      "NodeId": 2,
+      "Port": 9093,
+      "Rack": null
+    }
+  ],
+  "Responses": [
+    {
+      "Partitions": [
+        {
+          "AbortedTransactions": [
+            {
+              "FirstOffset": 12,
+              "ProducerId": 77
+            }
+          ],
+          "CurrentLeader": {
+            "LeaderEpoch": 7,
+            "LeaderId": 2
+          },
+          "DivergingEpoch": {
+            "EndOffset": 42,
+            "Epoch": 7
+          },
+          "ErrorCode": "None",
+          "HighWatermark": 100,
+          "LastStableOffset": 90,
+          "LogStartOffset": 5,
+          "PartitionIndex": 0,
+          "PreferredReadReplica": 2,
+          "Records": [
+            {
+              "Attributes": "None",
+              "BaseOffset": 42,
+              "BaseSequence": 9,
+              "BaseTimestamp": 1700000000000,
+              "BatchLength": 132,
+              "Crc": 767653000,
+              "LastOffsetDelta": 1,
+              "Magic": 2,
+              "MaxTimestamp": 1700000000001,
+              "PartitionLeaderEpoch": 7,
+              "ProducerEpoch": 2,
+              "ProducerId": 1234,
+              "Records": [
+                {
+                  "Attributes": 0,
+                  "HeaderCount": 1,
+                  "Headers": [
+                    {
+                      "IsValueNull": false,
+                      "Key": "wire-header",
+                      "Value": "6865616465722D76616C7565"
+                    }
+                  ],
+                  "IsKeyNull": false,
+                  "IsValueNull": false,
+                  "Key": "776972652D6B65792D30",
+                  "Length": 53,
+                  "OffsetDelta": 0,
+                  "TimestampDelta": 0,
+                  "Value": "776972652D76616C75652D30"
+                },
+                {
+                  "Attributes": 0,
+                  "HeaderCount": 0,
+                  "Headers": null,
+                  "IsKeyNull": false,
+                  "IsValueNull": false,
+                  "Key": "776972652D6B65792D31",
+                  "Length": 28,
+                  "OffsetDelta": 1,
+                  "TimestampDelta": 1,
+                  "Value": "776972652D76616C75652D31"
+                }
+              ]
+            }
+          ],
+          "SnapshotId": {
+            "EndOffset": 84,
+            "Epoch": 8
+          }
+        },
+        {
+          "AbortedTransactions": null,
+          "CurrentLeader": {
+            "LeaderEpoch": 7,
+            "LeaderId": 2
+          },
+          "DivergingEpoch": null,
+          "ErrorCode": "OffsetOutOfRange",
+          "HighWatermark": 101,
+          "LastStableOffset": 91,
+          "LogStartOffset": 5,
+          "PartitionIndex": 1,
+          "PreferredReadReplica": 2,
+          "Records": null,
+          "SnapshotId": null
+        }
+      ],
+      "Topic": null,
+      "TopicId": "00112233-4455-6677-8899-aabbccddeeff"
+    }
+  ],
+  "SessionId": 270544960,
+  "ThrottleTimeMs": 31
+}

@@ -25,6 +25,8 @@ internal static class DeterministicResponseFixtureFactory
             ["DescribeGroupsResponse.v5"] = Encode(WriteDescribeGroupsResponse),
             ["DescribeTransactionsResponse.v1"] = Encode(WriteDescribeTransactionsResponseV1),
             ["FetchResponse.v16"] = Encode(WriteFetchResponse),
+            ["FetchResponse.v17"] = Encode(WriteFetchResponse),
+            ["FetchResponse.v18"] = Encode(WriteFetchResponse),
             ["ListOffsetsResponse.v8"] = Encode(WriteListOffsetsResponse),
             ["ListOffsetsResponse.v9"] = Encode(WriteListOffsetsResponse),
             ["ListOffsetsResponse.v10"] = Encode(WriteListOffsetsResponse),

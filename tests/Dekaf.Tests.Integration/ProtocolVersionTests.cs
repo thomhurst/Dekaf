@@ -263,9 +263,17 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             var apiResponse = await SendApiVersionsAsync(connection);
 
             var fetchApi = apiResponse.ApiKeys.FirstOrDefault(k => k.ApiKey == ApiKey.Fetch);
+            var negotiatedVersion = ((IKafkaCapabilityProvider)connection).Capabilities.NegotiateVersion(
+                ApiKey.Fetch,
+                FetchRequest.LowestSupportedVersion,
+                FetchRequest.HighestSupportedVersion);
 
-            // Assert - Fetch should support v4+ for isolation level support
+            // The client selects the newest mutually supported consumer Fetch schema.
             await Assert.That((int)fetchApi.MaxVersion).IsGreaterThanOrEqualTo(4);
+            await Assert.That(negotiatedVersion)
+                .IsEqualTo(Math.Min(fetchApi.MaxVersion, FetchRequest.HighestSupportedVersion));
+            if (KafkaContainer.Version >= 431)
+                await Assert.That(negotiatedVersion).IsEqualTo((short)18);
         }
         finally
         {
