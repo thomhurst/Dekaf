@@ -545,6 +545,10 @@ public sealed class BrokerVersionException : KafkaException
     public BrokerVersionException(string message, Exception innerException) : base(message, innerException)
     {
     }
+
+    public BrokerVersionException(ErrorCode errorCode, string message) : base(errorCode, message)
+    {
+    }
 }
 
 /// <summary>

@@ -209,6 +209,43 @@ public class ShareConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     }
 
     [Test]
+    public async Task ShareConsumer_Renewal_RetainsRecordAcrossPolls()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+        var groupId = $"share-group-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+        await using var consumer = await Kafka.CreateShareConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId(groupId)
+            .WithAcknowledgementMode(ShareAcknowledgementMode.Explicit)
+            .WithMaxPollRecords(1)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+        await ShareConsumerTestHelper.PrimeShareConsumerAsync(consumer);
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
+        var first = await ConsumeOneAsync(consumer);
+
+        consumer.Acknowledge(first, AcknowledgeType.Renew);
+        await consumer.CommitAsync();
+        await ShareConsumerTestHelper.ProduceAsync(producer, topic, count: 1);
+        var renewed = await ConsumeOneAsync(consumer);
+
+        await Assert.That(consumer.AcquisitionLockTimeoutMs).IsNotNull();
+        await Assert.That(consumer.AcquisitionLockTimeoutMs!.Value).IsGreaterThan(0);
+        await Assert.That(renewed.Offset).IsEqualTo(first.Offset);
+        await Assert.That(renewed.Value).IsEqualTo(first.Value);
+
+        consumer.Acknowledge(renewed, AcknowledgeType.Accept);
+        await consumer.CommitAsync();
+    }
+
+    [Test]
     public async Task ShareConsumer_Builder_ConfiguresCorrectly()
     {
         var groupId = $"share-group-{Guid.NewGuid():N}";

@@ -38,6 +38,12 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     string? MemberId { get; }
 
     /// <summary>
+    /// Gets the acquisition lock timeout reported by the latest applicable ShareFetch or
+    /// renewal ShareAcknowledge response, or <see langword="null"/> before one is available.
+    /// </summary>
+    int? AcquisitionLockTimeoutMs { get; }
+
+    /// <summary>
     /// Subscribes to topics. Share groups do not support manual partition assignment.
     /// </summary>
     IKafkaShareConsumer<TKey, TValue> Subscribe(params string[] topics);
@@ -61,7 +67,8 @@ public interface IKafkaShareConsumer<TKey, TValue> : IInitializableKafkaClient, 
     IAsyncEnumerable<ShareConsumeResult<TKey, TValue>> PollAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Sets the acknowledgement type for a specific record.
+    /// Sets the acknowledgement type for a specific record. Renewal is supported only in
+    /// explicit acknowledgement mode and requires ShareFetch/ShareAcknowledge v2.
     /// In implicit acknowledgement mode, records default to <see cref="AcknowledgeType.Accept"/>.
     /// <para>
     /// <b>Warning:</b> In implicit mode, call this before the next <see cref="PollAsync"/> or

@@ -83,6 +83,7 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     }
 
     public string? MemberId => _memberId;
+    public int? AcquisitionLockTimeoutMs => null;
 
 #if !NET10_0_OR_GREATER
     IReadOnlyCollection<string> IKafkaShareConsumer<TKey, TValue>.Subscription => Subscription;
