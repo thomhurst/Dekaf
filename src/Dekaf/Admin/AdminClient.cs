@@ -1532,12 +1532,10 @@ public sealed class AdminClient : IAdminClient
                 Topics = topicOffsets
             };
 
-            // Cap at v7 for admin offset commits — v8+ requires valid MemberId/GenerationId
-            // for group membership validation, which admin operations don't have.
             var apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 Protocol.ApiKey.OffsetCommit,
                 OffsetCommitRequest.LowestSupportedVersion,
-                Math.Min(OffsetCommitRequest.HighestSupportedVersion, (short)7));
+                OffsetCommitRequest.HighestSupportedVersion);
 
             var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
                 request,
@@ -4357,19 +4355,11 @@ public sealed class AdminClient : IAdminClient
         => RetryHelper.WithRetryAsync(operation, _metadataManager, cancellationToken);
 
     private bool SupportsApiRange(Protocol.ApiKey apiKey, short lowestSupportedVersion, short highestSupportedVersion)
-    {
-        if (!_metadataManager.HasApiKey(apiKey))
-            return false;
-
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+        => _metadataManager.TryGetNegotiatedApiVersion(
             apiKey,
             lowestSupportedVersion,
-            highestSupportedVersion);
-
-        return apiVersion >= lowestSupportedVersion &&
-               apiVersion <= highestSupportedVersion &&
-               _metadataManager.SupportsApiVersion(apiKey, apiVersion);
-    }
+            highestSupportedVersion,
+            out _);
 
     private static WriteTxnMarkersResponsePartition FindAbortTransactionPartition(
         WriteTxnMarkersResponse response,

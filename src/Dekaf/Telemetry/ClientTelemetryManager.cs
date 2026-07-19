@@ -456,22 +456,11 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
     }
 
     private bool TryGetNegotiatedVersion(ApiKey apiKey, short lowestSupportedVersion, short highestSupportedVersion, out short apiVersion)
-    {
-        apiVersion = lowestSupportedVersion;
-        if (!_metadataManager.HasApiKey(apiKey))
-        {
-            return false;
-        }
-
-        var negotiated = _metadataManager.GetNegotiatedApiVersion(apiKey, lowestSupportedVersion, highestSupportedVersion);
-        if (negotiated < lowestSupportedVersion || negotiated > highestSupportedVersion)
-        {
-            return false;
-        }
-
-        apiVersion = negotiated;
-        return true;
-    }
+        => _metadataManager.TryGetNegotiatedApiVersion(
+            apiKey,
+            lowestSupportedVersion,
+            highestSupportedVersion,
+            out apiVersion);
 
     private bool TrySelectCompression(IReadOnlyList<sbyte> acceptedCompressionTypes, out sbyte compressionType)
     {

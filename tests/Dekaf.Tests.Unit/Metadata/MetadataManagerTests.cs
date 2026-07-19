@@ -31,6 +31,99 @@ public class MetadataManagerTests
             bootstrapServers: ["localhost:9092"]);
     }
 
+    [Test]
+    [Arguments((short)0, (short)3, (short)2, (short)6, (short)3)]
+    [Arguments((short)2, (short)6, (short)0, (short)3, (short)3)]
+    [Arguments((short)4, (short)4, (short)4, (short)4, (short)4)]
+    public async Task GetNegotiatedApiVersion_OverlappingRanges_ReturnsHighestCommonVersion(
+        short brokerMinVersion,
+        short brokerMaxVersion,
+        short clientMinVersion,
+        short clientMaxVersion,
+        short expectedVersion)
+    {
+        await using var manager = CreateTestManager();
+        manager.SetApiVersion(ApiKey.Fetch, brokerMinVersion, brokerMaxVersion);
+
+        var version = manager.GetNegotiatedApiVersion(ApiKey.Fetch, clientMinVersion, clientMaxVersion);
+
+        await Assert.That(version).IsEqualTo(expectedVersion);
+    }
+
+    [Test]
+    [Arguments((short)0, (short)3, (short)5, (short)6)]
+    [Arguments((short)5, (short)6, (short)0, (short)3)]
+    public async Task GetNegotiatedApiVersion_DisjointRanges_ThrowsBrokerVersionException(
+        short brokerMinVersion,
+        short brokerMaxVersion,
+        short clientMinVersion,
+        short clientMaxVersion)
+    {
+        await using var manager = CreateTestManager();
+        manager.SetApiVersion(ApiKey.Fetch, brokerMinVersion, brokerMaxVersion);
+
+        var exception = Assert.Throws<BrokerVersionException>(() =>
+            manager.GetNegotiatedApiVersion(ApiKey.Fetch, clientMinVersion, clientMaxVersion));
+
+        await Assert.That(exception).IsNotNull();
+        await Assert.That(exception!.Message).Contains("Fetch");
+        await Assert.That(exception.Message).Contains($"client [{clientMinVersion}, {clientMaxVersion}]");
+        await Assert.That(exception.Message).Contains($"broker [{brokerMinVersion}, {brokerMaxVersion}]");
+    }
+
+    [Test]
+    public async Task GetNegotiatedApiVersion_MissingApiKey_ThrowsBrokerVersionException()
+    {
+        await using var manager = CreateTestManager();
+
+        var exception = Assert.Throws<BrokerVersionException>(() =>
+            manager.GetNegotiatedApiVersion(ApiKey.Fetch, 0, 18));
+
+        await Assert.That(exception).IsNotNull();
+        await Assert.That(exception!.Message).Contains("Fetch");
+        await Assert.That(exception.Message).Contains("client [0, 18]");
+        await Assert.That(exception.Message).Contains("API absent");
+    }
+
+    [Test]
+    public async Task GetNegotiatedApiVersion_InvalidClientRange_ThrowsArgumentOutOfRangeException()
+    {
+        await using var manager = CreateTestManager();
+        manager.SetApiVersion(ApiKey.Fetch, 0, 18);
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            manager.GetNegotiatedApiVersion(ApiKey.Fetch, 5, 4));
+
+        await Assert.That(exception).IsNotNull();
+    }
+
+    [Test]
+    public async Task TryGetNegotiatedApiVersion_ReturnsFalseForMissingOrDisjointApi()
+    {
+        await using var manager = CreateTestManager();
+        manager.SetApiVersion(ApiKey.Fetch, 0, 3);
+
+        var disjoint = manager.TryGetNegotiatedApiVersion(ApiKey.Fetch, 5, 6, out var disjointVersion);
+        var missing = manager.TryGetNegotiatedApiVersion(ApiKey.Produce, 0, 12, out var missingVersion);
+
+        await Assert.That(disjoint).IsFalse();
+        await Assert.That(disjointVersion).IsEqualTo(default(short));
+        await Assert.That(missing).IsFalse();
+        await Assert.That(missingVersion).IsEqualTo(default(short));
+    }
+
+    [Test]
+    public async Task TryGetNegotiatedApiVersion_OverlappingRange_ReturnsHighestCommonVersion()
+    {
+        await using var manager = CreateTestManager();
+        manager.SetApiVersion(ApiKey.Fetch, 2, 6);
+
+        var supported = manager.TryGetNegotiatedApiVersion(ApiKey.Fetch, 0, 3, out var version);
+
+        await Assert.That(supported).IsTrue();
+        await Assert.That(version).IsEqualTo((short)3);
+    }
+
     /// <summary>
     /// Helper to create a test MetadataResponse with the specified brokers.
     /// </summary>

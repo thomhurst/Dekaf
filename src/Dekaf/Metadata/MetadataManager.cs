@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Runtime.CompilerServices;
 using Dekaf.Errors;
@@ -169,40 +170,95 @@ public sealed partial class MetadataManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Gets the negotiated API version for the specified API key.
-    /// Returns the minimum of the broker's max version and our supported version.
+    /// Attempts to get the highest API version supported by both the broker and client.
     /// Negotiated versions are cached for performance.
     /// </summary>
-    public short GetNegotiatedApiVersion(ApiKey apiKey, short ourMinVersion, short ourMaxVersion)
+    public bool TryGetNegotiatedApiVersion(
+        ApiKey apiKey,
+        short ourMinVersion,
+        short ourMaxVersion,
+        out short negotiatedVersion)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(ourMinVersion, ourMaxVersion);
+
         var cacheKey = (apiKey, ourMinVersion, ourMaxVersion);
 
         // Check cache first (fast path)
         if (_negotiatedVersionCache.TryGetValue(cacheKey, out var cached))
         {
-            return cached;
+            negotiatedVersion = cached;
+            return true;
         }
 
-        // Calculate and cache
-        short negotiated;
-        if (_brokerApiVersions.TryGetValue(apiKey, out var brokerVersions))
+        if (!_brokerApiVersions.TryGetValue(apiKey, out var brokerVersions))
         {
-            // Use the minimum of our max and broker's max
-            negotiated = Math.Min(ourMaxVersion, brokerVersions.MaxVersion);
-            // But not below our minimum or broker's minimum
-            negotiated = Math.Max(negotiated, ourMinVersion);
-            negotiated = Math.Max(negotiated, brokerVersions.MinVersion);
-        }
-        else
-        {
-            // Fall back to our minimum version if we don't have broker info yet
-            negotiated = ourMinVersion;
+            negotiatedVersion = default;
+            return false;
         }
 
-        // Cache it (benign race - same value computed)
-        _negotiatedVersionCache.TryAdd(cacheKey, negotiated);
-        return negotiated;
+        var lowestUsableVersion = Math.Max(ourMinVersion, brokerVersions.MinVersion);
+        var highestUsableVersion = Math.Min(ourMaxVersion, brokerVersions.MaxVersion);
+        if (lowestUsableVersion > highestUsableVersion)
+        {
+            negotiatedVersion = default;
+            return false;
+        }
+
+        // Benign race: concurrent callers calculate the same intersection.
+        _negotiatedVersionCache.TryAdd(cacheKey, highestUsableVersion);
+        negotiatedVersion = highestUsableVersion;
+        return true;
     }
+
+    /// <summary>
+    /// Gets the highest API version supported by both the broker and client.
+    /// </summary>
+    /// <exception cref="BrokerVersionException">
+    /// The broker omitted the API key or its supported range does not overlap the client range.
+    /// </exception>
+    public short GetNegotiatedApiVersion(ApiKey apiKey, short ourMinVersion, short ourMaxVersion)
+    {
+        // Keep this cache-hit path direct. Delegating to TryGetNegotiatedApiVersion measurably
+        // regresses request-path throughput even though both methods use the same negotiation rules.
+        var cacheKey = (apiKey, ourMinVersion, ourMaxVersion);
+        if (_negotiatedVersionCache.TryGetValue(cacheKey, out var negotiatedVersion))
+        {
+            return negotiatedVersion;
+        }
+
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(ourMinVersion, ourMaxVersion);
+
+        if (!_brokerApiVersions.TryGetValue(apiKey, out var brokerVersions))
+        {
+            ThrowApiAbsent(apiKey, ourMinVersion, ourMaxVersion);
+        }
+
+        var lowestUsableVersion = Math.Max(ourMinVersion, brokerVersions.MinVersion);
+        var highestUsableVersion = Math.Min(ourMaxVersion, brokerVersions.MaxVersion);
+        if (lowestUsableVersion > highestUsableVersion)
+        {
+            ThrowDisjointApiRange(apiKey, ourMinVersion, ourMaxVersion, brokerVersions);
+        }
+
+        _negotiatedVersionCache.TryAdd(cacheKey, highestUsableVersion);
+        return highestUsableVersion;
+    }
+
+    [DoesNotReturn]
+    private static void ThrowApiAbsent(ApiKey apiKey, short ourMinVersion, short ourMaxVersion) =>
+        throw new BrokerVersionException(
+            $"Broker does not support {apiKey} (API key {(short)apiKey}) for client " +
+            $"[{ourMinVersion}, {ourMaxVersion}]: API absent.");
+
+    [DoesNotReturn]
+    private static void ThrowDisjointApiRange(
+        ApiKey apiKey,
+        short ourMinVersion,
+        short ourMaxVersion,
+        (short MinVersion, short MaxVersion) brokerVersions) =>
+        throw new BrokerVersionException(
+            $"Broker does not support {apiKey} (API key {(short)apiKey}) for client " +
+            $"[{ourMinVersion}, {ourMaxVersion}]: broker [{brokerVersions.MinVersion}, {brokerVersions.MaxVersion}].");
 
     /// <summary>
     /// Returns the max finalized version for a broker feature, or 0 if the feature is not present.
