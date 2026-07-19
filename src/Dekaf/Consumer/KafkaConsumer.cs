@@ -4782,7 +4782,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         // Keep partitions marked while clearing. Background prefetches use this
         // marker to avoid advancing positions for data that will be discarded.
-        ApplyPendingDivergingEpochResets(partitionsToRemove);
+        var logTruncationException = ApplyPendingDivergingEpochResets(partitionsToRemove);
         ClearFetchBufferForPartitions(partitionsToRemove);
 
         foreach (var partition in partitionsToRemove)
@@ -4790,6 +4790,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 0);
         Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 0);
+
+        if (logTruncationException is not null)
+            throw logTruncationException;
+
         return true;
     }
 
@@ -4813,23 +4817,51 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return cleared;
     }
 
-    private void ApplyPendingDivergingEpochResets(IReadOnlyCollection<TopicPartition> partitions)
+    private LogTruncationException? ApplyPendingDivergingEpochResets(
+        IReadOnlyCollection<TopicPartition> partitions)
     {
+        List<TopicPartitionOffset>? truncationOffsets = null;
         foreach (var partition in partitions)
         {
             if (!_pendingDivergingEpochResets.TryRemove(partition, out var reset))
                 continue;
 
-            // Refetch unread common-prefix records that were buffered before the divergence
-            // response. Only offsets already yielded to the application are safe to skip.
-            var resumeOffset = _positions.GetValueOrDefault(partition, reset.EndOffset);
+            if (_options.AutoOffsetReset == AutoOffsetReset.None)
+            {
+                (truncationOffsets ??= []).Add(new TopicPartitionOffset(
+                    partition.Topic,
+                    partition.Partition,
+                    reset.EndOffset,
+                    reset.Epoch));
+                continue;
+            }
+
+            // Refetch unread common-prefix records. Cap positions from the corrected epoch at
+            // its boundary, but preserve records already delivered from a newer leader epoch.
+            var resumeOffset = BoundDivergingResumeOffset(
+                _positions.GetValueOrDefault(partition, reset.EndOffset),
+                GetLastConsumedLeaderEpoch(partition),
+                reset);
+
+            if (TryGetActiveConsumedPosition(partition, out var activePosition, out var activeLeaderEpoch))
+            {
+                resumeOffset = Math.Max(
+                    resumeOffset,
+                    BoundDivergingResumeOffset(activePosition, activeLeaderEpoch, reset));
+            }
 
             foreach (var pending in _pendingFetches)
             {
-                if (TryGetConsumedPosition(pending, out var pendingPartition, out var nextOffset, out _)
+                if (TryGetConsumedPosition(
+                        pending,
+                        out var pendingPartition,
+                        out var nextOffset,
+                        out var pendingLeaderEpoch)
                     && pendingPartition.Equals(partition))
                 {
-                    resumeOffset = Math.Max(resumeOffset, nextOffset);
+                    resumeOffset = Math.Max(
+                        resumeOffset,
+                        BoundDivergingResumeOffset(nextOffset, pendingLeaderEpoch, reset));
                 }
             }
 
@@ -4849,7 +4881,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 reset.EndOffset,
                 reset.Epoch);
         }
+
+        return truncationOffsets is null ? null : new LogTruncationException(truncationOffsets);
     }
+
+    private static long BoundDivergingResumeOffset(
+        long nextOffset,
+        int consumedLeaderEpoch,
+        (long EndOffset, int Epoch) reset) =>
+        nextOffset > reset.EndOffset && consumedLeaderEpoch <= reset.Epoch
+            ? reset.EndOffset
+            : nextOffset;
 
     private bool HasPendingCoordinatorRevocations() =>
         Volatile.Read(ref _coordinatorRevokedPartitionsPendingFetchClearPending) != 0;

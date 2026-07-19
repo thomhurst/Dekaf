@@ -257,13 +257,14 @@ foreach (var (tp, offset) in offsets)
 
 After broker failover, leader-epoch validation can report that a new leader's log ends before
 records already prefetched from the previous leader. Dekaf clears stale buffered records for the
-affected partition and resumes from the broker's corrected offset without rewinding records already
-yielded to the application.
+affected partition. When an automatic offset-reset policy is configured, Dekaf resumes from the
+broker's precise divergence offset and logs a warning. Offsets from the truncated tail can therefore
+appear again with different records; this is required to avoid silently skipping the replacement log.
 
-This recovery is internal. Dekaf logs a warning instead of surfacing a terminal
-`ConsumeException(OffsetOutOfRange)`. Applications that used that exception to detect log
-truncation should monitor warning logs instead. Other `OffsetOutOfRange` handling continues to
-follow the configured auto-offset-reset policy.
+With `AutoOffsetReset.None`, Dekaf throws `LogTruncationException` instead. Its
+`TruncationOffsets` identify the first divergent offset and last common leader epoch for each
+affected partition. Catch it, reconcile downstream state, then seek to the selected recovery offset.
+Other `OffsetOutOfRange` handling continues to follow the configured auto-offset-reset policy.
 
 ## Delivery Semantics
 

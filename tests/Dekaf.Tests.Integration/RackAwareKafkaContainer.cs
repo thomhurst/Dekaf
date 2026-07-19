@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Integration;
 
 public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposable
 {
-    private const string Image = "apache/kafka:4.2.1";
+    private static readonly string Image = $"apache/kafka:{KafkaContainerDefault.ImageTag}";
     private const int InternalBrokerPort = 9092;
     private const int ControllerPort = 9093;
     private const int ExternalBrokerPort = 19092;
@@ -150,6 +150,33 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
         return topic;
     }
 
+    public async Task<string> CreateUncleanElectionTopicAsync()
+    {
+        var topic = $"unclean-election-{Guid.NewGuid():N}";
+        await using var admin = CreateAdminClient();
+
+        await admin.CreateTopicsAsync([
+            new NewTopic
+            {
+                Name = topic,
+                NumPartitions = -1,
+                ReplicationFactor = -1,
+                ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>>
+                {
+                    [0] = [1, 2]
+                },
+                Configs = new Dictionary<string, string>
+                {
+                    ["min.insync.replicas"] = "1",
+                    ["unclean.leader.election.enable"] = "true"
+                }
+            }
+        ]).ConfigureAwait(false);
+
+        await WaitForTopicAssignmentAsync(admin, topic).ConfigureAwait(false);
+        return topic;
+    }
+
     public async Task<int> GetPartitionLeaderIdAsync(
         string topic,
         CancellationToken cancellationToken = default)
@@ -164,10 +191,26 @@ public sealed class RackAwareKafkaContainer : IAsyncInitializer, IAsyncDisposabl
 
     public async Task StartBrokerAsync(int nodeId, CancellationToken cancellationToken = default)
     {
+        await StartBrokerWithoutClusterWaitAsync(nodeId, cancellationToken).ConfigureAwait(false);
+
+        await WaitForClusterAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task StartBrokerWithoutClusterWaitAsync(
+        int nodeId,
+        CancellationToken cancellationToken = default)
+    {
         var broker = GetBroker(nodeId);
         if (broker.State != TestcontainersStates.Running)
             await broker.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
 
+    public async Task StartBrokersAsync(
+        IReadOnlyCollection<int> nodeIds,
+        CancellationToken cancellationToken = default)
+    {
+        await Task.WhenAll(nodeIds.Select(nodeId =>
+            StartBrokerWithoutClusterWaitAsync(nodeId, cancellationToken))).ConfigureAwait(false);
         await WaitForClusterAsync(cancellationToken).ConfigureAwait(false);
     }
 

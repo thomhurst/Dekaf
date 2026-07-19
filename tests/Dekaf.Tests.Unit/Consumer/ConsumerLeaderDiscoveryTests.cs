@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -582,7 +583,7 @@ public sealed class ConsumerLeaderDiscoveryTests
     }
 
     [Test]
-    public async Task ResetToDivergingEpoch_DoesNotRewindDeliveredPosition()
+    public async Task ResetToDivergingEpoch_CapsDeliveredPositionAtDivergence()
     {
         var pool = Substitute.For<IConnectionPool>();
         await using var metadataManager = CreateMetadataManager(pool);
@@ -594,8 +595,49 @@ public sealed class ConsumerLeaderDiscoveryTests
         InvokeResetToDivergingEpoch(consumer, partitionResponse);
 
         await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
-        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(43);
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(42);
         await Assert.That(GetLastConsumedLeaderEpoch(consumer)).IsEqualTo(-1);
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_PreservesActiveNewEpochPositionBeyondBoundary()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(pool, metadataManager);
+        var partition = new TopicPartition(Topic, 0);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 0)]);
+        PublishActiveConsumedPosition(consumer, partition, position: 26, leaderEpoch: 10);
+
+        InvokeResetToDivergingEpoch(
+            consumer,
+            CreateDivergingEpochResponse(epoch: 9, endOffset: 25));
+
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsTrue();
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(26);
+        await Assert.That(GetActiveConsumedPosition(consumer, partition).HasValue).IsFalse();
+    }
+
+    [Test]
+    public async Task ResetToDivergingEpoch_WithNoAutoReset_ThrowsLogTruncationException()
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(pool);
+        await using var consumer = CreateConsumer(
+            pool,
+            metadataManager,
+            autoOffsetReset: AutoOffsetReset.None);
+        consumer.IncrementalAssign([new TopicPartitionOffset(Topic, 0, 43, leaderEpoch: 6)]);
+
+        InvokeResetToDivergingEpoch(consumer, CreateDivergingEpochResponse());
+
+        var exception = await Assert.That(() => ClearFetchBufferForPendingCoordinatorRevocations(consumer))
+            .Throws<LogTruncationException>();
+        await Assert.That(exception!.TruncationOffsets).Contains(
+            new TopicPartitionOffset(Topic, 0, 42, leaderEpoch: 7));
+        await Assert.That(exception.ErrorCode).IsEqualTo(ErrorCode.OffsetOutOfRange);
+        await Assert.That(consumer.GetPosition(new TopicPartition(Topic, 0))).IsEqualTo(43);
+        await Assert.That(GetLastConsumedLeaderEpoch(consumer)).IsEqualTo(6);
     }
 
     [Test]
@@ -736,14 +778,16 @@ public sealed class ConsumerLeaderDiscoveryTests
         MetadataManager metadataManager,
         IDeserializer<string>? keyDeserializer = null,
         IConsumerInterceptor<string, string>? interceptor = null,
-        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Auto)
+        OffsetCommitMode offsetCommitMode = OffsetCommitMode.Auto,
+        AutoOffsetReset autoOffsetReset = AutoOffsetReset.Latest)
         => new(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
                 ClientId = "test-consumer",
                 Interceptors = interceptor is null ? null : [interceptor],
-                OffsetCommitMode = offsetCommitMode
+                OffsetCommitMode = offsetCommitMode,
+                AutoOffsetReset = autoOffsetReset
             },
             keyDeserializer ?? Serializers.String,
             Serializers.String,
@@ -999,6 +1043,20 @@ public sealed class ConsumerLeaderDiscoveryTests
         return ((long)arguments[1]!, (int)arguments[2]!);
     }
 
+    private static void PublishActiveConsumedPosition(
+        KafkaConsumer<string, string> consumer,
+        TopicPartition partition,
+        long position,
+        int leaderEpoch)
+    {
+        var method = typeof(KafkaConsumer<string, string>).GetMethod(
+            "PublishActiveConsumedPosition",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("PublishActiveConsumedPosition method not found");
+
+        method.CreateDelegate<Action<TopicPartition, long, int>>(consumer)(partition, position, leaderEpoch);
+    }
+
     private static bool ClearFetchBufferForPendingCoordinatorRevocations(
         KafkaConsumer<string, string> consumer)
     {
@@ -1008,7 +1066,7 @@ public sealed class ConsumerLeaderDiscoveryTests
             ?? throw new InvalidOperationException(
                 "ClearFetchBufferForPendingCoordinatorRevocations method not found");
 
-        return (bool)method.Invoke(consumer, [])!;
+        return method.CreateDelegate<Func<bool>>(consumer)();
     }
 
     private sealed class CallbackConsumerInterceptor : IConsumerInterceptor<string, string>
