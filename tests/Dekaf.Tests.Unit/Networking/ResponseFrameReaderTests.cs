@@ -74,6 +74,25 @@ public sealed class ResponseFrameReaderTests
     }
 
     [Test]
+    public async Task ReadBoundedFrameAsync_AbortCancelsMemoryAdmissionWait()
+    {
+        using var pool = new FetchBufferMemoryPool(100);
+        using var existing = await pool.ReserveAsync(100, CancellationToken.None);
+        var frame = BuildFrame(correlationId: 1, payloadSize: 60);
+        using var stream = new ScriptedReadStream([frame]);
+        using var reader = ResponseFrameTestHelpers.CreateReader(stream);
+
+        var read = reader.ReadBoundedFrameAsync(
+            _ => new ResponseFrameAdmission(pool, Discard: false)).AsTask();
+        await Assert.That(read.IsCompleted).IsFalse();
+
+        reader.Abort();
+
+        await Assert.That(async () => await read).Throws<OperationCanceledException>();
+        await Assert.That(pool.UsedBytes).IsEqualTo(100);
+    }
+
+    [Test]
     public async Task ReadFrameAsync_OversizedFetchProgressesOnlyAsSoleReservation()
     {
         using var pool = new FetchBufferMemoryPool(100);

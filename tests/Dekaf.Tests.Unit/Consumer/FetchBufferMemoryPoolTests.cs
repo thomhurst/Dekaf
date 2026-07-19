@@ -43,6 +43,23 @@ public sealed class FetchBufferMemoryPoolTests
     }
 
     [Test]
+    public async Task ReserveSlowAsync_RechecksCapacityBeforeWaiting()
+    {
+        using var pool = new FetchBufferMemoryPool(100);
+        var first = await pool.ReserveAsync(100, CancellationToken.None);
+
+        await Assert.That(pool.TryReserve(1)).IsFalse();
+        first.Dispose();
+
+        using var reservation = await pool
+            .ReserveSlowAsync(1, CancellationToken.None)
+            .AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.That(pool.UsedBytes).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Reservation_DisposeReleasesMemory()
     {
         using var pool = new FetchBufferMemoryPool(100);

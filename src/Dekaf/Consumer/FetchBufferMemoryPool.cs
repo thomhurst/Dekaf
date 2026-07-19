@@ -76,41 +76,46 @@ internal sealed class FetchBufferMemoryPool : IResponseMemoryPool, IDisposable
             return new ValueTask<IResponseMemoryReservation>(
                 FetchBufferMemoryReservation.Create(this, bytes));
 
-        return ReserveSlowAsync(this, bytes, cancellationToken);
+        return ReserveSlowAsync(bytes, cancellationToken);
     }
 
-    private static async ValueTask<IResponseMemoryReservation> ReserveSlowAsync(
-        FetchBufferMemoryPool pool,
+    internal async ValueTask<IResponseMemoryReservation> ReserveSlowAsync(
         int bytes,
         CancellationToken cancellationToken)
     {
-        Interlocked.Increment(ref pool._waiterCount);
-        pool.BeginDepletion();
+        Interlocked.Increment(ref _waiterCount);
         try
         {
+            // Capacity may have been released after ReserveAsync's fast-path check but
+            // before this waiter became visible to Release. Recheck before sleeping so
+            // that release cannot be lost in that registration gap.
+            if (TryReserve(bytes))
+                return FetchBufferMemoryReservation.Create(this, bytes);
+
+            BeginDepletion();
             while (true)
             {
-                await pool._memoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
+                await _memoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-                if (pool.TryReserve(bytes))
-                    return FetchBufferMemoryReservation.Create(pool, bytes);
+                if (TryReserve(bytes))
+                    return FetchBufferMemoryReservation.Create(this, bytes);
 
                 // The awakened waiter may need more memory than another waiter. Pass the
                 // edge-triggered signal to an already-queued waiter before waiting again.
-                if (Volatile.Read(ref pool._waiterCount) > 1)
-                    pool.SignalMemoryAvailable();
+                if (Volatile.Read(ref _waiterCount) > 1)
+                    SignalMemoryAvailable();
             }
         }
         finally
         {
-            if (Interlocked.Decrement(ref pool._waiterCount) == 0)
+            if (Interlocked.Decrement(ref _waiterCount) == 0)
             {
-                pool.EndDepletion();
-                if (Volatile.Read(ref pool._waiterCount) > 0)
-                    pool.BeginDepletion();
+                EndDepletion();
+                if (Volatile.Read(ref _waiterCount) > 0)
+                    BeginDepletion();
             }
-            else if (Volatile.Read(ref pool._disposed) != 0 || pool.FreeBytes > 0)
-                pool.SignalMemoryAvailable();
+            else if (Volatile.Read(ref _disposed) != 0 || FreeBytes > 0)
+                SignalMemoryAvailable();
         }
     }
 

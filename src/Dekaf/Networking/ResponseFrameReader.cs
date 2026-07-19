@@ -27,8 +27,8 @@ namespace Dekaf.Networking;
 /// request more than the frame's remaining bytes, so the source is never over-read.
 /// <para/>
 /// <b>Threading:</b> single consumer — only the connection's receive loop calls
-/// <see cref="ReadFrameAsync"/>. Reads are not cancellable; the owner interrupts an
-/// in-flight read by calling <see cref="Abort"/>.
+/// <see cref="ReadFrameAsync"/>. Source reads are not cancellable; <see cref="Abort"/>
+/// cancels admission waits and interrupts an in-flight source read.
 /// </summary>
 internal sealed class ResponseFrameReader : IDisposable
 {
@@ -36,6 +36,7 @@ internal sealed class ResponseFrameReader : IDisposable
     private readonly Stream? _stream;
     private readonly ResponseBufferPool _responseBufferPool;
     private readonly Action<int>? _onBytesReceived;
+    private readonly CancellationTokenSource _abortCts = new();
 
     private IMemoryOwner<byte>? _bufferOwner;
     private readonly Memory<byte> _buffer;
@@ -220,7 +221,7 @@ internal sealed class ResponseFrameReader : IDisposable
             if (admission.MemoryPool is not null)
             {
                 _frameReservation = await admission.MemoryPool
-                    .ReserveAsync(frameSize, CancellationToken.None)
+                    .ReserveAsync(frameSize, _abortCts.Token)
                     .ConfigureAwait(false);
             }
 
@@ -330,17 +331,27 @@ internal sealed class ResponseFrameReader : IDisposable
     }
 
     /// <summary>
-    /// Faults any in-flight or future source read. Idempotent and thread-safe; called from
-    /// the receive-timeout timer and from disposal. Reads are deliberately not cancellable —
-    /// closing the socket aborts a pending receive on all platforms without blocking the
-    /// caller, the same wake-up mechanism the old read pump relied on for teardown. For
-    /// stream-only readers (tests) the stream is disposed instead, the one case where this
-    /// class touches the source's lifetime.
+    /// Cancels any response-memory admission wait and faults any in-flight or future source
+    /// read. Idempotent and thread-safe; called from the receive-timeout timer and from
+    /// disposal. Source reads are deliberately not cancellable — closing the socket aborts
+    /// a pending receive on all platforms without blocking the caller, the same wake-up
+    /// mechanism the old read pump relied on for teardown. For stream-only readers (tests)
+    /// the stream is disposed instead, the one case where this class touches the source's
+    /// lifetime.
     /// </summary>
     public void Abort()
     {
         if (Interlocked.Exchange(ref _aborted, 1) != 0)
             return;
+
+        try
+        {
+            _abortCts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Dispose completed before a concurrent late abort.
+        }
 
         try
         {
@@ -374,6 +385,7 @@ internal sealed class ResponseFrameReader : IDisposable
         AbandonInProgressFrame();
         _bufferOwner?.Dispose();
         _bufferOwner = null;
+        _abortCts.Dispose();
     }
 
     private void AbandonInProgressFrame()
