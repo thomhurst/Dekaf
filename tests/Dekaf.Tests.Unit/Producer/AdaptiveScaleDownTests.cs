@@ -160,10 +160,9 @@ public sealed class AdaptiveScaleDownTests
 
         try
         {
-            // Keep the live loop in partition-limited state so it cannot independently
-            // end and flush the reflection-driven diagnostic window before disposal.
-            GetField<HashSet<TopicPartition>>(sender, "_knownPartitions")
-                .Add(new TopicPartition(Topic, 0));
+            sender.RequestCancellation();
+            await GetField<Task>(sender, "_sendLoopTask");
+
             var observe = typeof(BrokerSender).GetMethod(
                 "ObservePartitionLimitedPressure",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;

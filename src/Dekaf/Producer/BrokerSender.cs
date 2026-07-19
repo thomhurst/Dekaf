@@ -5124,6 +5124,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogBatchCleanupStepFailed(ex, _brokerId);
         }
 
+        // The final loop iteration is not guaranteed to run the scale controller after
+        // cancellation. Flush any partial diagnostic window explicitly once its writer exits.
+        EndPartitionLimitedDiagnosticState(MonotonicClock.GetMilliseconds());
+
         var deferredPendingCount = Volatile.Read(ref _totalPendingResponseCount);
         if (deferredPendingCount > 0 && !_sendLoopTask.IsCompleted)
         {
