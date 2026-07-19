@@ -157,6 +157,333 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    public async Task AddProducerFromConfluentConfig_TranslatesProducerAndSecurityOptions()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Aspire:Confluent:Kafka:Producer:Config:BootstrapServers"] = "broker1:9092,broker2:9092",
+            ["Aspire:Confluent:Kafka:Producer:Config:ClientId"] = "aspire-producer",
+            ["Aspire:Confluent:Kafka:Producer:Config:Acks"] = "Leader",
+            ["Aspire:Confluent:Kafka:Producer:Config:EnableIdempotence"] = "false",
+            ["Aspire:Confluent:Kafka:Producer:Config:LingerMs"] = "17",
+            ["Aspire:Confluent:Kafka:Producer:Config:BatchSize"] = "65536",
+            ["Aspire:Confluent:Kafka:Producer:Config:QueueBufferingMaxKbytes"] = "2048",
+            ["Aspire:Confluent:Kafka:Producer:Config:MessageTimeoutMs"] = "45000",
+            ["Aspire:Confluent:Kafka:Producer:Config:MessageSendMaxRetries"] = "12",
+            ["Aspire:Confluent:Kafka:Producer:Config:MaxInFlight"] = "3",
+            ["Aspire:Confluent:Kafka:Producer:Config:CompressionType"] = "Zstd",
+            ["Aspire:Confluent:Kafka:Producer:Config:Partitioner"] = "Murmur2Random",
+            ["Aspire:Confluent:Kafka:Producer:Config:MetadataMaxAgeMs"] = "90000",
+            ["Aspire:Confluent:Kafka:Producer:Config:SocketConnectionSetupTimeoutMs"] = "7000",
+            ["Aspire:Confluent:Kafka:Producer:Config:SocketKeepaliveEnable"] = "true",
+            ["Aspire:Confluent:Kafka:Producer:Config:SocketNagleDisable"] = "true",
+            ["Aspire:Confluent:Kafka:Producer:Config:SocketSendBufferBytes"] = "32768",
+            ["Aspire:Confluent:Kafka:Producer:Config:SecurityProtocol"] = "SaslSsl",
+            ["Aspire:Confluent:Kafka:Producer:Config:SaslMechanism"] = "ScramSha512",
+            ["Aspire:Confluent:Kafka:Producer:Config:SaslUsername"] = "user",
+            ["Aspire:Confluent:Kafka:Producer:Config:SaslPassword"] = "password",
+            ["Aspire:Confluent:Kafka:Producer:Config:SslCaLocation"] = "ca.pem",
+            ["Aspire:Confluent:Kafka:Producer:Config:SslEndpointIdentificationAlgorithm"] = "None"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Aspire:Confluent:Kafka:Producer:Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+
+        await Assert.That(options.BootstrapServers).IsEquivalentTo(["broker1:9092", "broker2:9092"]);
+        await Assert.That(options.ClientId).IsEqualTo("aspire-producer");
+        await Assert.That(options.Acks).IsEqualTo(Acks.Leader);
+        await Assert.That(options.EnableIdempotence).IsFalse();
+        await Assert.That(options.LingerMs).IsEqualTo(17);
+        await Assert.That(options.BatchSize).IsEqualTo(65536);
+        await Assert.That(options.BufferMemory).IsEqualTo(2UL * 1024 * 1024);
+        await Assert.That(options.DeliveryTimeoutMs).IsEqualTo(45000);
+        await Assert.That(options.Retries).IsEqualTo(12);
+        await Assert.That(options.MaxInFlightRequestsPerConnection).IsEqualTo(3);
+        await Assert.That(options.CompressionType).IsEqualTo(CompressionType.Zstd);
+        await Assert.That(options.Partitioner).IsEqualTo(PartitionerType.Murmur2Random);
+        await Assert.That(options.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(7));
+        await Assert.That(options.EnableTcpKeepAlive).IsTrue();
+        await Assert.That(options.SocketSendBufferBytes).IsEqualTo(32768);
+        await Assert.That(options.UseTls).IsTrue();
+        await Assert.That(options.TlsConfig!.CaCertificatePath).IsEqualTo("ca.pem");
+        await Assert.That(options.TlsConfig.ValidateServerCertificateHostName).IsFalse();
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha512);
+        await Assert.That(options.SaslUsername).IsEqualTo("user");
+        await Assert.That(options.SaslPassword).IsEqualTo("password");
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_FluentConfigurationWins()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:ClientId"] = "json-client"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config"),
+            producer => producer.WithClientId("fluent-client")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.ClientId).IsEqualTo("fluent-client");
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_KeyedRegistration_BindsOptions()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:ClientId"] = "keyed-client"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            "orders",
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var producer = provider.GetRequiredKeyedService<IKafkaProducer<string, string>>("orders");
+        await Assert.That(GetProducerOptions(producer).ClientId).IsEqualTo("keyed-client");
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_UsesConfluentIdempotenceDefault()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:Acks"] = "None"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.EnableIdempotence).IsFalse();
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_TransactionalIdEnablesIdempotenceByDefault()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:TransactionalId"] = "transactional-producer"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.EnableIdempotence).IsTrue();
+        await Assert.That(options.TransactionalId).IsEqualTo("transactional-producer");
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_DefaultCompressionLevelUsesCodecDefault()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:CompressionType"] = "Gzip",
+            ["Config:CompressionLevel"] = "-1"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.CompressionType).IsEqualTo(CompressionType.Gzip);
+        await Assert.That(options.CompressionLevel).IsNull();
+    }
+
+    [Test]
+    [Arguments("fnv1a", PartitionerType.Fnv1A)]
+    [Arguments("fnv1a_random", PartitionerType.Fnv1ARandom)]
+    public async Task AddProducerFromConfluentConfig_TranslatesFnvPartitioners(
+        string configuredValue,
+        PartitionerType expected)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:Partitioner"] = configuredValue
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.Partitioner).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_UnsupportedProperty_FailsFast()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:EnableBackgroundPoll"] = "false"
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(configuration.GetSection("Config"))))
+            .Throws<NotSupportedException>()
+            .WithMessageContaining("EnableBackgroundPoll");
+    }
+
+    [Test]
+    [Arguments("MessageTimeoutMs", "0")]
+    [Arguments("SocketNagleDisable", "false")]
+    [Arguments("CompressionType", "Brotli")]
+    [Arguments("Partitioner", "RoundRobin")]
+    public async Task AddProducerFromConfluentConfig_InexactValue_FailsFast(
+        string property,
+        string value)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            [$"Config:{property}"] = value
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(configuration.GetSection("Config"))))
+            .Throws<NotSupportedException>()
+            .WithMessageContaining(property);
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_ZeroConnectionIdle_DisablesReaping()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:ConnectionsMaxIdleMs"] = "0"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.ConnectionsMaxIdleMs).IsEqualTo(-1);
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_TranslatesOidcSecurity()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:SecurityProtocol"] = "SaslSsl",
+            ["Config:SaslMechanism"] = "OAuthBearer",
+            ["Config:SaslOauthbearerMethod"] = "Oidc",
+            ["Config:SaslOauthbearerGrantType"] = "ClientCredentials",
+            ["Config:SaslOauthbearerTokenEndpointUrl"] = "https://identity.example/token",
+            ["Config:SaslOauthbearerClientId"] = "client-id",
+            ["Config:SaslOauthbearerClientSecret"] = "client-secret",
+            ["Config:SaslOauthbearerScope"] = "kafka"
+        });
+
+        services.AddDekaf(builder => builder.AddProducerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetProducerOptions(provider.GetRequiredService<IKafkaProducer<string, string>>());
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.OAuthBearer);
+        await Assert.That(options.OAuthBearerConfig!.TokenEndpointUrl)
+            .IsEqualTo("https://identity.example/token");
+        await Assert.That(options.OAuthBearerConfig.ClientId).IsEqualTo("client-id");
+        await Assert.That(options.OAuthBearerConfig.ClientSecret).IsEqualTo("client-secret");
+        await Assert.That(options.OAuthBearerConfig.Scope).IsEqualTo("kafka");
+    }
+
+    [Test]
+    [Arguments("SslCaLocation", "ca.pem", "TLS")]
+    [Arguments("SaslUsername", "user", "SASL")]
+    public async Task AddProducerFromConfluentConfig_SecuritySettingWithoutProtocol_FailsFast(
+        string property,
+        string value,
+        string expectedMessage)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            [$"Config:{property}"] = value
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(
+                    configuration.GetSection("Config"))))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining(expectedMessage);
+    }
+
+    [Test]
+    public async Task AddProducerFromConfluentConfig_CertificateAndKeystore_FailsFast()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:SecurityProtocol"] = "Ssl",
+            ["Config:SslCertificateLocation"] = "client.pem",
+            ["Config:SslKeystoreLocation"] = "client.p12"
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(
+                    configuration.GetSection("Config"))))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("cannot both be configured");
+    }
+
+    [Test]
+    [Arguments("SaslUsername", "user")]
+    [Arguments("SaslPassword", "password")]
+    public async Task AddProducerFromConfluentConfig_IncompletePlainCredentials_FailsFast(
+        string property,
+        string value)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:SecurityProtocol"] = "SaslPlaintext",
+            ["Config:SaslMechanism"] = "Plain",
+            [$"Config:{property}"] = value
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddProducerFromConfluentConfig<string, string>(
+                    configuration.GetSection("Config"))))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("SaslUsername and SaslPassword");
+    }
+
+    [Test]
     public async Task AddProducer_WithTypedOptions_BindsOptions()
     {
         var services = new ServiceCollection();
