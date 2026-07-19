@@ -16,18 +16,30 @@ namespace Dekaf.Serialization;
 /// </remarks>
 internal sealed class CachingStringDeserializer : ISerde<string>
 {
-    private readonly ISerde<string> _inner;
-    private readonly int _maxCachedBytes;
+    internal const int AdmissionProbeLimit = 256;
+    internal const int BypassInterval = 64 * 1_024;
+
+    private readonly ISerde<string> _configuredInner;
+    // Swapping the existing cold-path target keeps Deserialize's cached-hit JIT shape unchanged.
+    private readonly ISerde<string> _bypassSerde;
+    private readonly int _configuredMaxCachedBytes;
     private readonly int _maxCachedEntries;
     private readonly ConcurrentDictionary<Hash128Key, string> _cache = new();
+    private ISerde<string> _inner;
+    private int _maxCachedBytes;
     private int _cacheCount;
+    private int _admissionsRemaining = AdmissionProbeLimit;
+    private int _bypassRemaining;
 
     internal CachingStringDeserializer(
         ISerde<string> inner,
         int maxCachedBytes,
         int maxCachedEntries)
     {
+        _configuredInner = inner;
         _inner = inner;
+        _bypassSerde = new BypassSerde(this);
+        _configuredMaxCachedBytes = maxCachedBytes;
         _maxCachedBytes = maxCachedBytes;
         _maxCachedEntries = maxCachedEntries;
     }
@@ -57,9 +69,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         var hash = ComputeHash(span);
 
         if (_cache.TryGetValue(hash, out var cachedValue))
-        {
             return cachedValue;
-        }
 
         var result = _inner.Deserialize(data, context);
 
@@ -70,10 +80,47 @@ internal sealed class CachingStringDeserializer : ISerde<string>
             if (_cache.TryAdd(hash, result))
             {
                 Interlocked.Increment(ref _cacheCount);
+                ObserveAdmission();
             }
         }
 
         return result;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private string DeserializeWhileBypassing(ReadOnlyMemory<byte> data, SerializationContext context)
+    {
+        var remaining = _bypassRemaining - 1;
+        if (remaining <= 0)
+        {
+            _bypassRemaining = 0;
+            _inner = _configuredInner;
+            _maxCachedBytes = _configuredMaxCachedBytes;
+        }
+        else
+        {
+            _bypassRemaining = remaining;
+        }
+
+        return _configuredInner.Deserialize(data, context);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ObserveAdmission()
+    {
+        // Approximate by design: racing callers may slightly shift the probe and
+        // bypass boundaries, but no synchronization belongs on this hot path.
+        var remaining = _admissionsRemaining - 1;
+        if (remaining <= 0)
+        {
+            _admissionsRemaining = AdmissionProbeLimit;
+            _bypassRemaining = BypassInterval;
+            _inner = _bypassSerde;
+            _maxCachedBytes = -1;
+            return;
+        }
+
+        _admissionsRemaining = remaining;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -87,4 +134,24 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     }
 
     private readonly record struct Hash128Key(ulong Low, ulong High);
+
+    private sealed class BypassSerde(CachingStringDeserializer owner) : ISerde<string>
+    {
+        public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
+            where TWriter : System.Buffers.IBufferWriter<byte>
+#if !NETSTANDARD2_0
+            , allows ref struct
+#endif
+        {
+            owner._configuredInner.Serialize(value, ref destination, context);
+        }
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            if (data.Length == 0 || data.Length > owner._configuredMaxCachedBytes)
+                return owner._configuredInner.Deserialize(data, context);
+
+            return owner.DeserializeWhileBypassing(data, context);
+        }
+    }
 }

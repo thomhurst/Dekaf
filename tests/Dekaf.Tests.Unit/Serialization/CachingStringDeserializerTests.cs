@@ -84,13 +84,18 @@ public class CachingStringDeserializerTests
     [Test]
     public async Task MaxCachedEntries_StopsNewEntries()
     {
-        var sut = CreateKeyCache();
+        const int maxEntries = 16;
+        var sut = new CachingStringDeserializer(
+            Serializers.String,
+            maxCachedBytes: 128,
+            maxCachedEntries: maxEntries);
         var context = KeyContext();
 
-        // Fill the cache to capacity (16,384 entries).
-        for (var i = 0; i < 16_384; i++)
+        for (var i = 0; i < maxEntries; i++)
         {
-            sut.Deserialize(ToUtf8($"key-{i}"), context);
+            var data = ToUtf8($"key-{i}");
+            sut.Deserialize(data, context);
+            sut.Deserialize(data, context);
         }
 
         // The next unique key should still return the correct value but not be cached.
@@ -102,6 +107,57 @@ public class CachingStringDeserializerTests
         await Assert.That(second).IsEqualTo("overflow-key");
         // Not cached — different string instances from the inner deserializer.
         await Assert.That(ReferenceEquals(first, second)).IsFalse();
+    }
+
+    [Test]
+    public async Task HighCardinalityKeys_BypassCacheAfterAdmissionProbeLimit()
+    {
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+
+        for (var i = 0; i < CachingStringDeserializer.AdmissionProbeLimit; i++)
+            sut.Deserialize(ToUtf8($"unique-{i}"), context);
+
+        var data = ToUtf8("bypassed");
+        var first = sut.Deserialize(data, context);
+        var second = sut.Deserialize(data, context);
+
+        await Assert.That(first).IsEqualTo("bypassed");
+        await Assert.That(ReferenceEquals(first, second)).IsFalse();
+    }
+
+    [Test]
+    public async Task LowCardinalityKeys_RemainCachedPastAdmissionProbeLimit()
+    {
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+        var data = ToUtf8("repeated");
+        var first = sut.Deserialize(data, context);
+        var allReferencesCached = true;
+
+        for (var i = 0; i < CachingStringDeserializer.AdmissionProbeLimit * 2; i++)
+            allReferencesCached &= ReferenceEquals(first, sut.Deserialize(data, context));
+
+        await Assert.That(allReferencesCached).IsTrue();
+    }
+
+    [Test]
+    public async Task Bypass_ReprobesAndRecoversWhenKeysBecomeRepetitive()
+    {
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+
+        for (var i = 0; i < CachingStringDeserializer.AdmissionProbeLimit; i++)
+            sut.Deserialize(ToUtf8($"unique-{i}"), context);
+
+        var repeated = ToUtf8("new-repeated-key");
+        for (var i = 0; i < CachingStringDeserializer.BypassInterval; i++)
+            sut.Deserialize(repeated, context);
+
+        var firstProbe = sut.Deserialize(repeated, context);
+        var secondProbe = sut.Deserialize(repeated, context);
+
+        await Assert.That(ReferenceEquals(firstProbe, secondProbe)).IsTrue();
     }
 
     [Test]
