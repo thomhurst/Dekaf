@@ -1191,6 +1191,27 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ConnectionLockWait_CallerCancellationRemainsOperationCanceled()
+    {
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromMilliseconds(100)
+            });
+        using var connectionLock = new SemaphoreSlim(0, 1);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var waitForLock = typeof(ConnectionPool).GetMethod(
+            "WaitForConnectionLockAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await Assert.That(() =>
+                ((ValueTask)waitForLock.Invoke(pool, [connectionLock, cancellation.Token])!).AsTask())
+            .Throws<OperationCanceledException>();
+    }
+
+    [Test]
     public async Task ConnectionSetupTimeout_GroupHardStopsFactoryThatIgnoresCancellation()
     {
         var releaseFactory = new TaskCompletionSource(
@@ -1542,7 +1563,10 @@ public sealed class ConnectionPoolTests
         await factoryStarted.Task;
 
         var contender = pool.GetConnectionAsync("broker-a", 9092).AsTask();
-        await Assert.That(async () => await contender).Throws<OperationCanceledException>();
+        var exception = await Assert.That(async () => await contender).Throws<KafkaException>();
+
+        await Assert.That(exception).IsNotNull();
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
 
         try { await lockHolder; }
         catch { /* Only the contending caller's bounded wait is under test. */ }
