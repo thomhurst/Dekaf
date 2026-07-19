@@ -27,8 +27,8 @@ public class CachingStringDeserializerTests
         SerializationContext context)
     {
         var lookupCount = CachingStringDeserializer.AdmissionProbeLimit
-            + (CachingStringDeserializer.ProbeLookupCount * 2)
-            + KeyCacheMaxEntries;
+            + CachingStringDeserializer.ProbeLookupCount
+            + CachingStringDeserializer.CalculateReuseProbeLookupCount(KeyCacheMaxEntries);
 
         for (var uniqueKey = 0; uniqueKey < lookupCount; uniqueKey++)
             deserializer.Deserialize(ToUtf8($"unique-{uniqueKey}"), context);
@@ -168,8 +168,8 @@ public class CachingStringDeserializerTests
 
         var missesUntilBypass = CachingStringDeserializer.AdmissionProbeLimit
             - ValueCacheMaxEntries
-            + (CachingStringDeserializer.ProbeLookupCount * 2)
-            + ValueCacheMaxEntries;
+            + CachingStringDeserializer.ProbeLookupCount
+            + CachingStringDeserializer.CalculateReuseProbeLookupCount(ValueCacheMaxEntries);
         for (var i = 0; i < missesUntilBypass; i++)
             sut.Deserialize(ToUtf8($"saturated-miss-{i}"), context);
 
@@ -232,16 +232,16 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
-    public async Task NearCapacityCyclicKeys_ReachCachedReuseBeforeBypass()
+    public async Task HighYieldCyclicKeys_ReachCachedReuseBeforeBypass()
     {
-        const int keyCount = 18_000;
+        const int keyCount = 20_000;
         var sut = CreateKeyCache();
         var context = KeyContext();
-        var firstKey = ToUtf8("near-capacity-0");
+        var firstKey = ToUtf8("high-yield-0");
         var firstReference = sut.Deserialize(firstKey, context);
 
         for (var i = 1; i < keyCount; i++)
-            sut.Deserialize(ToUtf8($"near-capacity-{i}"), context);
+            sut.Deserialize(ToUtf8($"high-yield-{i}"), context);
 
         var reusedReference = sut.Deserialize(firstKey, context);
 
@@ -291,7 +291,8 @@ public class CachingStringDeserializerTests
             sut.Deserialize(ToUtf8($"probe-start-{i}"), context);
 
         var oversized = ToUtf8(new string('x', 129));
-        var lookupsUntilBypass = (CachingStringDeserializer.ProbeLookupCount * 2) + ValueCacheMaxEntries;
+        var lookupsUntilBypass = CachingStringDeserializer.ProbeLookupCount
+            + CachingStringDeserializer.CalculateReuseProbeLookupCount(ValueCacheMaxEntries);
         for (var i = 0; i < lookupsUntilBypass; i++)
             sut.Deserialize(oversized, context);
 
@@ -304,8 +305,8 @@ public class CachingStringDeserializerTests
         var sut = CreateSmallKeyCache();
         var context = KeyContext();
         var lookupsUntilBypass = CachingStringDeserializer.AdmissionProbeLimit
-            + (CachingStringDeserializer.ProbeLookupCount * 2)
-            + ValueCacheMaxEntries;
+            + CachingStringDeserializer.ProbeLookupCount
+            + CachingStringDeserializer.CalculateReuseProbeLookupCount(ValueCacheMaxEntries);
         for (var i = 0; i < lookupsUntilBypass; i++)
             sut.Deserialize(ToUtf8($"bypass-start-{i}"), context);
 

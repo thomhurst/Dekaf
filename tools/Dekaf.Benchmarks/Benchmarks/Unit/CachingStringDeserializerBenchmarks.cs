@@ -9,8 +9,10 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 10, iterationCount: 10)]
 public class CachingStringDeserializerBenchmarks
 {
-    private const int UniqueKeyCount = 65_536;
-    private const int UniquePassCount = 10;
+    // Long enough to include the threshold-derived reuse probe and a sustained bypass
+    // phase, while keeping total operations per invocation close to the original harness.
+    private const int UniqueKeyCount = 512 * 1_024;
+    private const int UniquePassCount = 2;
     private const int BoundedKeyCount = 1_000;
 
     private readonly SerializationContext _context = new()

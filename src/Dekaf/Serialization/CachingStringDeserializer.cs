@@ -19,7 +19,9 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     internal const int AdmissionProbeLimit = 256;
     internal const int ProbeLookupCount = 1_024;
     internal const int MinimumProbeHits = (ProbeLookupCount + 9) / 10;
-    internal const int BypassInterval = 64 * 1_024;
+    // The default cache's threshold-safe reuse scan can reach ~164K lookups. A 512K
+    // bypass gives sustained unique traffic a greater than 3:1 bypass/probe duty cycle.
+    internal const int BypassInterval = 512 * 1_024;
 
     private readonly ISerde<string> _configuredInner;
     // Swapping the existing cold-path target keeps Deserialize's cached-hit JIT shape unchanged.
@@ -200,14 +202,21 @@ internal sealed class CachingStringDeserializer : ISerde<string>
 
     private void StartReuseProbe()
     {
-        // The primary probe may consume the beginning of a near-capacity cycle before
-        // reuse observation starts. Include that window so the probe can reach entries
-        // cached before the primary probe instead of retiring a high-yield generation.
-        _probeRemaining = _maxCachedEntries > int.MaxValue - ProbeLookupCount
-            ? int.MaxValue
-            : _maxCachedEntries + ProbeLookupCount;
+        // A cache with the minimum accepted hit rate can take cache capacity divided by
+        // that rate lookups to repeat. Observe that full cycle, plus the primary-probe
+        // prefix, before declaring the retained generation cold.
+        _probeRemaining = CalculateReuseProbeLookupCount(_maxCachedEntries);
         _probeHits = 0;
         _isReuseProbe = true;
+    }
+
+    internal static int CalculateReuseProbeLookupCount(int maxCachedEntries)
+    {
+        var maximumUsefulCycleLength =
+            ((long)maxCachedEntries * ProbeLookupCount + MinimumProbeHits - 1)
+            / MinimumProbeHits;
+        var lookupCount = maximumUsefulCycleLength + ProbeLookupCount;
+        return lookupCount >= int.MaxValue ? int.MaxValue : (int)lookupCount;
     }
 
     private void StartBypass()
