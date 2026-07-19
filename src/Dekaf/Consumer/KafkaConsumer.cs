@@ -1085,6 +1085,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConcurrentDictionary<TopicPartition, PreferredReadReplicaState> _preferredReadReplicas = new();
     private readonly object _leaderRefreshTasksLock = new();
     private readonly ConcurrentDictionary<string, Task> _pendingLeaderRefreshTasks = new();
+    // Topic identity checks run once per immutable metadata snapshot, never per message.
+    // The semaphore serializes the consume and prefetch loops when a new snapshot arrives.
+    private readonly SemaphoreSlim _topicIdentityLock = new(1, 1);
+    private readonly Dictionary<string, Guid> _observedTopicIds = [];
+    private ClusterMetadataSnapshot? _observedTopicIdentitySnapshot;
     private int _assignmentEnsureVersion;
     private int _lastManualAssignmentEnsureVersion = -1;
     private int _lastCoordinatorAssignmentVersion = -1;
@@ -3291,6 +3296,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     topic,
                                     partitionResponse,
                                     response.NodeEndpoints).ConfigureAwait(false);
+                            }
+                            else if (IsTopicIdentityRefreshError(partitionResponse.ErrorCode))
+                            {
+                                await HandleTopicIdentityRefreshAsync(
+                                    topic,
+                                    topicResponse.TopicId,
+                                    tp,
+                                    fetchSessionHandler,
+                                    cancellationToken).ConfigureAwait(false);
                             }
                             else
                             {
@@ -6651,6 +6665,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
         Interlocked.Increment(ref _assignmentEnsureVersion);
         Volatile.Write(ref _lastCoordinatorAssignmentVersion, -1);
+        Volatile.Write(ref _observedTopicIdentitySnapshot, null);
     }
 
     /// <summary>
@@ -6791,6 +6806,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private async ValueTask<Dictionary<int, List<TopicPartition>>> GroupPartitionsByBrokerAsync(CancellationToken cancellationToken)
     {
+        await HandleTopicIdentityChangesAsync(cancellationToken).ConfigureAwait(false);
+
         // Check cache and capture version to detect concurrent invalidation
         int capturedVersion;
         TopicPartition[] assignmentArray;
@@ -6897,6 +6914,115 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             return result;
+        }
+    }
+
+    private async ValueTask HandleTopicIdentityChangesAsync(
+        CancellationToken cancellationToken,
+        string? rejectedTopic = null,
+        Guid rejectedTopicId = default)
+    {
+        var metadataSnapshot = _metadataManager.Metadata.CaptureSnapshot();
+        if (ReferenceEquals(metadataSnapshot, Volatile.Read(ref _observedTopicIdentitySnapshot)))
+            return;
+
+        await SemaphoreHelper.AcquireOrThrowDisposedAsync(
+            _topicIdentityLock,
+            nameof(KafkaConsumer<TKey, TValue>),
+            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            metadataSnapshot = _metadataManager.Metadata.CaptureSnapshot();
+            if (ReferenceEquals(metadataSnapshot, Volatile.Read(ref _observedTopicIdentitySnapshot)))
+                return;
+
+            if (rejectedTopic is { Length: > 0 } &&
+                rejectedTopicId != Guid.Empty &&
+                !_observedTopicIds.ContainsKey(rejectedTopic))
+            {
+                _observedTopicIds[rejectedTopic] = rejectedTopicId;
+            }
+
+            Dictionary<string, (Guid Previous, Guid Current)>? changedTopics = null;
+            var assignment = _assignmentSnapshot;
+            foreach (var partition in assignment)
+            {
+                if (!metadataSnapshot.Topics.TryGetValue(partition.Topic, out var topicInfo) ||
+                    topicInfo.TopicId == Guid.Empty)
+                {
+                    continue;
+                }
+
+                if (_observedTopicIds.TryGetValue(partition.Topic, out var previousTopicId) &&
+                    previousTopicId != Guid.Empty &&
+                    previousTopicId != topicInfo.TopicId)
+                {
+                    changedTopics ??= [];
+                    changedTopics[partition.Topic] = (previousTopicId, topicInfo.TopicId);
+                }
+                else
+                {
+                    _observedTopicIds[partition.Topic] = topicInfo.TopicId;
+                }
+            }
+
+            if (changedTopics is not null)
+            {
+                _coordinator?.RequestRejoin();
+
+                var recreatedPartitions = new HashSet<TopicPartition>();
+                foreach (var partition in assignment)
+                {
+                    if (changedTopics.ContainsKey(partition.Topic))
+                        recreatedPartitions.Add(partition);
+                }
+
+                ClearFetchBufferForPartitions(recreatedPartitions);
+                InvalidatePartitionCache();
+                InvalidateFetchRequestCache();
+                var fetchBufferEpoch = Volatile.Read(ref _fetchBufferEpoch);
+
+                foreach (var partition in recreatedPartitions)
+                {
+                    ClearStoredOffset(partition);
+                    _pendingRebalanceSeeks.TryRemove(partition, out _);
+                    _committed.TryRemove(partition, out _);
+                    _highWatermarks.TryRemove(partition, out _);
+                    _watermarks.TryRemove(partition, out _);
+                    _eofEmitted.TryRemove(partition, out _);
+
+                    var topicInfo = metadataSnapshot.Topics[partition.Topic];
+                    if ((uint)partition.Partition >= (uint)topicInfo.PartitionCount)
+                    {
+                        _positions.TryRemove(partition, out _);
+                        _fetchPositions.TryRemove(partition, out _);
+                        ClearLastConsumedLeaderEpoch(partition);
+                        continue;
+                    }
+
+                    await ResetOffsetOutOfRangeAsync(
+                        partition,
+                        fetchBufferEpoch,
+                        cancellationToken).ConfigureAwait(false);
+                    var identities = changedTopics[partition.Topic];
+                    var fetchPosition = _fetchPositions.GetValueOrDefault(partition, long.MinValue);
+                    LogTopicIdentityReset(
+                        partition.Topic,
+                        partition.Partition,
+                        identities.Previous,
+                        identities.Current,
+                        fetchPosition);
+                }
+
+                foreach (var (topic, identities) in changedTopics)
+                    _observedTopicIds[topic] = identities.Current;
+            }
+
+            Volatile.Write(ref _observedTopicIdentitySnapshot, metadataSnapshot);
+        }
+        finally
+        {
+            SemaphoreHelper.ReleaseSafely(_topicIdentityLock);
         }
     }
 
@@ -7143,6 +7269,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 topic,
                                 partitionResponse,
                                 response.NodeEndpoints).ConfigureAwait(false);
+                        }
+                        else if (IsTopicIdentityRefreshError(partitionResponse.ErrorCode))
+                        {
+                            await HandleTopicIdentityRefreshAsync(
+                                topic,
+                                topicResponse.TopicId,
+                                tp,
+                                fetchSessionHandler,
+                                cancellationToken).ConfigureAwait(false);
                         }
                         else
                         {
@@ -7442,6 +7577,35 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private static bool IsLeaderEpochRefreshError(ErrorCode errorCode) =>
         errorCode is ErrorCode.NotLeaderOrFollower or ErrorCode.FencedLeaderEpoch or ErrorCode.UnknownLeaderEpoch;
+
+    private static bool IsTopicIdentityRefreshError(ErrorCode errorCode) =>
+        errorCode is ErrorCode.UnknownTopicId or ErrorCode.UnknownTopicOrPartition;
+
+    private async ValueTask HandleTopicIdentityRefreshAsync(
+        string topic,
+        Guid rejectedTopicId,
+        TopicPartition partition,
+        FetchSessionHandler? fetchSessionHandler,
+        CancellationToken cancellationToken)
+    {
+        fetchSessionHandler?.HandleError();
+        ClearPreferredReadReplica(partition);
+
+        if (string.IsNullOrEmpty(topic) && rejectedTopicId != Guid.Empty)
+            topic = _metadataManager.Metadata.GetTopic(rejectedTopicId)?.Name ?? string.Empty;
+
+        if (string.IsNullOrEmpty(topic))
+            return;
+
+        await _metadataManager.RefreshMetadataAsync(
+            [topic],
+            forceRefresh: true,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        InvalidatePartitionCache();
+        await HandleTopicIdentityChangesAsync(cancellationToken, topic, rejectedTopicId)
+            .ConfigureAwait(false);
+    }
 
     private ValueTask HandleLeaderEpochRefreshAsync(
         string topic,
@@ -8720,6 +8884,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         _assignmentLock.Dispose();
         _initLock.Dispose();
+        _topicIdentityLock.Dispose();
         _prefetchMemoryAvailable.Dispose();
 
         if (_coordinator is not null)
@@ -8866,6 +9031,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "TopicId {TopicId} not found in local metadata, falling back to topic name from response")]
     private partial void LogUnknownTopicId(Guid topicId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Topic identity changed for {Topic}-{Partition} from {PreviousTopicId} to {CurrentTopicId}; reset fetch position to {FetchPosition}")]
+    private partial void LogTopicIdentityReset(
+        string topic,
+        int partition,
+        Guid previousTopicId,
+        Guid currentTopicId,
+        long fetchPosition);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ListOffsets error for {Topic}-{Partition}: {Error}")]
     private partial void LogListOffsetsError(string topic, int partition, ErrorCode error);
