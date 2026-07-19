@@ -266,7 +266,17 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                     cancellationToken));
             }
 
-            await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+            try
+            {
+                await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+            }
+            catch
+            {
+                // A broker task should normally return its failure in ShareFetchBrokerResult.
+                // Preserve every drained acknowledgement if an unexpected fault escapes.
+                RequeueAcknowledgements(pendingAcks);
+                throw;
+            }
 
             // Process every response before yielding. Session epochs and inline
             // acknowledgements must advance even when an earlier broker fills the poll budget.
@@ -301,11 +311,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                         response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
                     {
                         _sessionManager.ResetSession(brokerId);
-                        ClearActiveRenewedRecordsForBroker(brokerId);
                         // Note: _ackTracker may still hold pending acks from the now-invalid session.
                         // On next CommitAsync those acks will be sent with epoch 0 (new session).
-                        // Keep renewal state so a re-queued Renew can activate the record after the
-                        // new session accepts it.
+                        // Renewal records represent partition locks, not fetch-session membership.
+                        // Keep active records available for replay and pending Renew records ready
+                        // for activation after the new session accepts them.
                     }
                     RequeueAcknowledgements(sentAcks);
                     continue;
@@ -721,7 +731,18 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
                 if (attempt < RetryHelper.MaxRetries && response.ErrorCode.IsRetriable())
                 {
-                    await PrepareRequestRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+                    var retryError = await PrepareShareFetchRetryAsync(attempt, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (retryError is not null)
+                    {
+                        return new ShareFetchBrokerResult(
+                            brokerId,
+                            version,
+                            null,
+                            brokerAcks,
+                            retryError);
+                    }
+
                     continue;
                 }
 
@@ -735,15 +756,40 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             {
                 if (attempt < RetryHelper.MaxRetries && RetryHelper.IsRetriableRequestFailure(ex))
                 {
-                    await PrepareRequestRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+                    var retryError = await PrepareShareFetchRetryAsync(attempt, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (retryError is not null)
+                    {
+                        return new ShareFetchBrokerResult(
+                            brokerId,
+                            0,
+                            null,
+                            brokerAcks,
+                            retryError);
+                    }
+
                     continue;
                 }
 
                 LogFetchFailed(brokerId, ex);
                 _sessionManager.ResetSession(brokerId);
-                ClearActiveRenewedRecordsForBroker(brokerId);
                 return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, null);
             }
+        }
+    }
+
+    private async ValueTask<Exception?> PrepareShareFetchRetryAsync(
+        int zeroBasedAttempt,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await PrepareRequestRetryAsync(zeroBasedAttempt, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex;
         }
     }
 
@@ -849,7 +895,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                         or ErrorCode.InvalidShareSessionEpoch)
                     {
                         _sessionManager.ResetSession(brokerId);
-                        ClearActiveRenewedRecordsForBroker(brokerId);
                     }
                     else
                     {
@@ -1441,35 +1486,6 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     }
 
     private void ClearRenewedRecords() => _renewedRecords = null;
-
-    private void ClearActiveRenewedRecordsForBroker(int brokerId)
-    {
-        if (_renewedRecords is null)
-            return;
-
-        List<RenewedRecordKey>? removed = null;
-        foreach (var (key, state) in _renewedRecords)
-        {
-            if (!state.Active)
-                continue;
-
-            var leader = _metadataManager.Metadata.GetPartitionLeader(key.Topic, key.Partition);
-            if (leader?.NodeId != brokerId)
-                continue;
-
-            removed ??= [];
-            removed.Add(key);
-        }
-
-        if (removed is null)
-            return;
-
-        foreach (var key in removed)
-            _renewedRecords.Remove(key);
-
-        if (_renewedRecords.Count == 0)
-            _renewedRecords = null;
-    }
 
     /// <summary>
     /// Groups acknowledgement data by leader broker.

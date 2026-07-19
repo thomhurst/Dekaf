@@ -249,6 +249,89 @@ public sealed class ShareConsumerRenewalTests
     }
 
     [Test]
+    public async Task Poll_CancelledRetry_RequeuesFailedBrokerAndProcessesSuccessfulBroker()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var firstConnection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchException = new KafkaException(
+                ErrorCode.RequestTimedOut,
+                "simulated timeout"),
+            OnSend = cancellation.Cancel
+        };
+        var secondConnection = new CapturingConnection(ApiKey.ShareFetch, 2, brokerId: 2)
+        {
+            ShareFetchResponse = new ShareFetchResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Responses = [],
+                NodeEndpoints = []
+            }
+        };
+        await using var fixture = CreateFixture(
+            firstConnection,
+            secondConnection: secondConnection);
+        PrepareForPoll(
+            fixture.Consumer,
+            new TopicPartition("topic", 0),
+            new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Renew);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Accept);
+
+        await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await Assert.That(async () => await poll.MoveNextAsync())
+            .Throws<OperationCanceledException>();
+
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 0)]);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Poll_CancelledResponseRetry_RequeuesFailedBrokerAndProcessesSuccessfulBroker()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var firstConnection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = new ShareFetchResponse
+            {
+                ErrorCode = ErrorCode.RequestTimedOut,
+                Responses = [],
+                NodeEndpoints = []
+            },
+            OnSend = cancellation.Cancel
+        };
+        var secondConnection = new CapturingConnection(ApiKey.ShareFetch, 2, brokerId: 2)
+        {
+            ShareFetchResponse = new ShareFetchResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Responses = [],
+                NodeEndpoints = []
+            }
+        };
+        await using var fixture = CreateFixture(
+            firstConnection,
+            secondConnection: secondConnection);
+        PrepareForPoll(
+            fixture.Consumer,
+            new TopicPartition("topic", 0),
+            new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 42), AcknowledgeType.Renew);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 43), AcknowledgeType.Accept);
+
+        await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        await Assert.That(async () => await poll.MoveNextAsync())
+            .Throws<OperationCanceledException>();
+
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 0)]);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Poll_InlineAcknowledgementError_RequeuesAndDoesNotReplayRenewal()
     {
         using var cancellation = new CancellationTokenSource();
@@ -453,7 +536,7 @@ public sealed class ShareConsumerRenewalTests
     }
 
     [Test]
-    public async Task Poll_SessionLoss_DropsActiveRenewal()
+    public async Task Poll_SessionLoss_ReplaysActiveRenewal()
     {
         using var cancellation = new CancellationTokenSource();
         var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
@@ -470,14 +553,18 @@ public sealed class ShareConsumerRenewalTests
         var assignment = new HashSet<TopicPartition> { new("topic", 0) };
         PrepareForPoll(fixture.Consumer);
         fixture.Consumer.Subscribe("topic");
-        fixture.Consumer.Acknowledge(CreateRecord(), AcknowledgeType.Renew);
+        var record = CreateRecord();
+        fixture.Consumer.Acknowledge(record, AcknowledgeType.Renew);
         ApplySuccessfulAcknowledgements(fixture.Consumer, RenewalAcknowledgements());
 
         await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
         var moved = await poll.MoveNextAsync();
 
-        await Assert.That(moved).IsFalse();
-        await Assert.That(GetActiveRenewedRecords(fixture.Consumer, assignment)).IsEmpty();
+        await Assert.That(moved).IsTrue();
+        await Assert.That(ReferenceEquals(poll.Current, record)).IsTrue();
+        var active = GetActiveRenewedRecords(fixture.Consumer, assignment);
+        await Assert.That(active).HasSingleItem();
+        await Assert.That(ReferenceEquals(active[0], record)).IsTrue();
     }
 
     [Test]
@@ -915,6 +1002,7 @@ public sealed class ShareConsumerRenewalTests
         internal ShareAcknowledgeResponse? ShareAcknowledgeResponse { get; init; }
         internal Queue<ShareAcknowledgeResponse>? ShareAcknowledgeResponses { get; init; }
         internal List<ShareAcknowledgeRequest> ShareAcknowledgeRequests { get; } = [];
+        internal Exception? ShareFetchException { get; init; }
         internal Action? OnSend { get; init; }
 
         public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
@@ -981,6 +1069,9 @@ public sealed class ShareConsumerRenewalTests
                 _ => throw new NotSupportedException(typeof(TRequest).Name)
             };
             OnSend?.Invoke();
+            if (request is ShareFetchRequest && ShareFetchException is not null)
+                throw ShareFetchException;
+
             return new ValueTask<TResponse>((TResponse)response);
         }
 
