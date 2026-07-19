@@ -342,6 +342,84 @@ public sealed class OAuthBearerTokenProviderTests
     }
 
     [Test]
+    public async Task GetTokenAsync_WithUrlEncodingDisabled_PreservesRawBasicHeaderBytes()
+    {
+        var handler = new CapturingTokenEndpointHandler();
+        using var provider = new OAuthBearerTokenProvider(new OAuthBearerConfig
+        {
+            TokenEndpointUrl = "https://auth.example.test/token",
+            ClientId = "client id+:%",
+            ClientSecret = "sëcret +:%"
+        }, new HttpClient(handler));
+
+        _ = await provider.GetTokenAsync();
+
+        await Assert.That(handler.AuthorizationParameters.Single())
+            .IsEqualTo("Y2xpZW50IGlkKzolOnPDq2NyZXQgKzol");
+    }
+
+    [Test]
+    public async Task GetTokenAsync_WithUrlEncodingEnabled_EncodesBasicHeaderComponents()
+    {
+        var handler = new CapturingTokenEndpointHandler();
+        using var provider = new OAuthBearerTokenProvider(new OAuthBearerConfig
+        {
+            TokenEndpointUrl = "https://auth.example.test/token",
+            ClientId = "client id+:%",
+            ClientSecret = "sëcret +:%",
+            UrlEncodeHeaderCredentials = true
+        }, new HttpClient(handler));
+
+        _ = await provider.GetTokenAsync();
+
+        await Assert.That(handler.AuthorizationParameters.Single())
+            .IsEqualTo("Y2xpZW50K2lkJTJCJTNBJTI1OnMlQzMlQUJjcmV0KyUyQiUzQSUyNQ==");
+        await Assert.That(handler.Requests.Single()["client_id"]).IsEqualTo("client id+:%");
+    }
+
+    [Test]
+    [Arguments("", "secret", "OnNlY3JldA==")]
+    [Arguments("client", "", "Y2xpZW50Og==")]
+    public async Task GetTokenAsync_WithUrlEncodingEnabled_HandlesEmptyComponents(
+        string clientId,
+        string clientSecret,
+        string expectedHeader)
+    {
+        var handler = new CapturingTokenEndpointHandler();
+        using var provider = new OAuthBearerTokenProvider(new OAuthBearerConfig
+        {
+            TokenEndpointUrl = "https://auth.example.test/token",
+            ClientId = clientId,
+            ClientSecret = clientSecret,
+            UrlEncodeHeaderCredentials = true
+        }, new HttpClient(handler));
+
+        _ = await provider.GetTokenAsync();
+
+        await Assert.That(handler.AuthorizationParameters.Single()).IsEqualTo(expectedHeader);
+    }
+
+    [Test]
+    public async Task GetTokenAsync_WithUrlEncodingEnabled_RoundTripsAtRfcCompliantEndpoint()
+    {
+        const string ClientId = "client id+:%";
+        const string ClientSecret = "sëcret +:%";
+        var handler = new RfcCompliantTokenEndpointHandler(ClientId, ClientSecret);
+        using var provider = new OAuthBearerTokenProvider(new OAuthBearerConfig
+        {
+            TokenEndpointUrl = "https://auth.example.test/token",
+            ClientId = ClientId,
+            ClientSecret = ClientSecret,
+            UrlEncodeHeaderCredentials = true
+        }, new HttpClient(handler));
+
+        var token = await provider.GetTokenAsync();
+
+        await Assert.That(token.TokenValue).IsEqualTo("access-token");
+        await Assert.That(handler.CredentialsMatched).IsTrue();
+    }
+
+    [Test]
     public async Task GetTokenAsync_WhenClientAssertionIsRejected_DoesNotFallBackToSecret()
     {
         using var rsa = RSA.Create(2048);
@@ -560,6 +638,7 @@ public sealed class OAuthBearerTokenProviderTests
     {
         public List<IReadOnlyDictionary<string, string>> Requests { get; } = [];
         public List<string?> AuthorizationSchemes { get; } = [];
+        public List<string?> AuthorizationParameters { get; } = [];
         public int ExpiresInSeconds { get; init; } = 3600;
         public HttpStatusCode ResponseStatusCode { get; init; } = HttpStatusCode.OK;
 
@@ -570,6 +649,7 @@ public sealed class OAuthBearerTokenProviderTests
             var body = await request.Content!.ReadAsStringAsync(cancellationToken);
             Requests.Add(ParseForm(body));
             AuthorizationSchemes.Add(request.Headers.Authorization?.Scheme);
+            AuthorizationParameters.Add(request.Headers.Authorization?.Parameter);
 
             var count = Requests.Count;
             var json = $$"""{"access_token":"access-token-{{count}}","expires_in":{{ExpiresInSeconds}},"sub":"principal-{{count}}"}""";
@@ -591,6 +671,42 @@ public sealed class OAuthBearerTokenProviderTests
             }
 
             return result;
+        }
+
+        private static string DecodeFormValue(string value) =>
+            Uri.UnescapeDataString(value.Replace('+', ' '));
+    }
+
+    private sealed class RfcCompliantTokenEndpointHandler(
+        string expectedClientId,
+        string expectedClientSecret) : HttpMessageHandler
+    {
+        public bool CredentialsMatched { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var parameter = request.Headers.Authorization?.Parameter
+                ?? throw new InvalidOperationException("Basic Authorization header missing.");
+            var credentialBytes = Convert.FromBase64String(parameter);
+            var encodedCredentials = Encoding.UTF8.GetString(credentialBytes);
+            var components = encodedCredentials.Split(':', 2);
+            if (components.Length != 2)
+                throw new InvalidOperationException("Basic credentials separator missing.");
+
+            var clientId = DecodeFormValue(components[0]);
+            var clientSecret = DecodeFormValue(components[1]);
+            CredentialsMatched = clientId == expectedClientId && clientSecret == expectedClientSecret;
+
+            var statusCode = CredentialsMatched ? HttpStatusCode.OK : HttpStatusCode.Unauthorized;
+            return Task.FromResult(new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent(
+                    """{"access_token":"access-token","expires_in":3600,"sub":"principal"}""",
+                    Encoding.UTF8,
+                    "application/json")
+            });
         }
 
         private static string DecodeFormValue(string value) =>
