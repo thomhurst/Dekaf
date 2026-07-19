@@ -1018,7 +1018,7 @@ public sealed partial class ConnectionPool :
         CancellationToken cancellationToken)
     {
         var endpoint = new EndpointKey(host, port);
-        return await RunWithReconnectBackoffAsync(
+        var connection = await RunWithReconnectBackoffAsync(
             endpoint,
             brokerId,
             host,
@@ -1036,6 +1036,14 @@ public sealed partial class ConnectionPool :
                     cancellationToken),
                 cancellationToken),
             cancellationToken).ConfigureAwait(false);
+
+        // Publish only after the hard setup deadline has accepted the result. A factory
+        // that ignores cancellation may finish late, but that connection is never visible.
+        _connectionsByEndpoint[endpoint] = connection;
+        if (brokerId >= 0)
+            _connectionsById[brokerId] = connection;
+
+        return connection;
     }
 
     private async ValueTask<IKafkaConnection> CreateConnectionCoreAsync(
@@ -1057,12 +1065,6 @@ public sealed partial class ConnectionPool :
             if (_connectionFactory is not null)
             {
                 var factoryConnection = await _connectionFactory(brokerId, host, port, 0, cancellationToken).ConfigureAwait(false);
-                _connectionsByEndpoint[endpoint] = factoryConnection;
-                if (brokerId >= 0)
-                {
-                    _connectionsById[brokerId] = factoryConnection;
-                }
-
                 LogCreatedConnection(brokerId, host, port);
                 return factoryConnection;
             }
@@ -1080,12 +1082,6 @@ public sealed partial class ConnectionPool :
                 _metadataClusterIdentity);
 
             await connection.ConnectAsync(connectionSetupTimeout, cancellationToken).ConfigureAwait(false);
-
-            _connectionsByEndpoint[endpoint] = connection;
-            if (brokerId >= 0)
-            {
-                _connectionsById[brokerId] = connection;
-            }
 
             LogCreatedConnection(brokerId, host, port);
 
@@ -1206,11 +1202,13 @@ public sealed partial class ConnectionPool :
     {
         var initialMs = _connectionOptions.ConnectionTimeout.TotalMilliseconds;
         var maxMs = _connectionOptions.ConnectionTimeoutMax.TotalMilliseconds;
-        if (failureCount <= 0 || maxMs <= initialMs)
+        if (maxMs <= initialMs)
             return TimeSpan.FromMilliseconds(initialMs);
 
-        // Zero is the initial attempt; after the first failed setup, failureCount is one.
-        var exponent = Math.Min(failureCount, 30);
+        // KIP-601 applies jitter from attempt zero. Cap the exponent before jitter so a
+        // low random factor can still produce a value below max at the saturation point.
+        var maxExponent = Math.Log(maxMs / initialMs, 2);
+        var exponent = Math.Min(Math.Max(failureCount, 0), Math.Min(maxExponent, 30));
         var baseMs = initialMs * Math.Pow(2, exponent);
         var randomValue = Math.Clamp(_randomDouble(), 0, 1);
         var jitteredMs = baseMs * (0.8 + (randomValue * 0.4));

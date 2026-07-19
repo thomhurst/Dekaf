@@ -1056,16 +1056,22 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    [Arguments(0.0, 160.0)]
-    [Arguments(0.5, 200.0)]
-    [Arguments(0.999999, 239.99992)]
+    [Arguments(0, 0.0, 80.0)]
+    [Arguments(0, 0.5, 100.0)]
+    [Arguments(0, 0.999999, 119.99996)]
+    [Arguments(1, 0.0, 160.0)]
+    [Arguments(1, 0.5, 200.0)]
+    [Arguments(1, 0.999999, 239.99992)]
+    [Arguments(6, 0.0, 800.0)]
+    [Arguments(6, 0.999999, 1000.0)]
     public async Task CalculateConnectionSetupTimeout_UsesSymmetricTwentyPercentJitter(
+        int failureCount,
         double randomValue,
         double expectedMilliseconds)
     {
         await using var pool = CreateConnectionSetupTimeoutPool(randomValue: randomValue);
 
-        var timeout = pool.CalculateConnectionSetupTimeout(failureCount: 1);
+        var timeout = pool.CalculateConnectionSetupTimeout(failureCount);
 
         await Assert.That(timeout.TotalMilliseconds).IsEqualTo(expectedMilliseconds).Within(0.001);
     }
@@ -1151,6 +1157,56 @@ public sealed class ConnectionPoolTests
         {
             releaseFactory.TrySetResult();
         }
+    }
+
+    [Test]
+    public async Task ConnectionSetupTimeout_LateSuccessIsNeverPublished()
+    {
+        var releaseFirstFactory = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateConnectionDisposed = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var lateConnection = CreateConnectedConnection(-1, "broker-a", 9092);
+        lateConnection.DisposeAsync().Returns(_ =>
+        {
+            lateConnectionDisposed.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+        var freshConnection = CreateConnectedConnection(-1, "broker-a", 9092);
+        var attempts = 0;
+
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromMilliseconds(20),
+                ConnectionTimeoutMax = TimeSpan.FromMilliseconds(20),
+                ReconnectBackoff = TimeSpan.Zero,
+                ReconnectBackoffMax = TimeSpan.Zero
+            },
+            connectionsPerBroker: 1,
+            connectionFactory: async (_, _, _, _, _) =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    await releaseFirstFactory.Task;
+                    return lateConnection;
+                }
+
+                return freshConnection;
+            });
+
+        Func<Task> firstAttempt = () => pool.GetConnectionAsync("broker-a", 9092).AsTask();
+        await Assert.That(firstAttempt).Throws<KafkaException>()
+            .WithMessageContaining("Connection setup timeout after 20ms");
+
+        releaseFirstFactory.TrySetResult();
+        await lateConnectionDisposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var acquired = await pool.GetConnectionAsync("broker-a", 9092);
+
+        await Assert.That(acquired).IsSameReferenceAs(freshConnection);
+        await Assert.That(attempts).IsEqualTo(2);
     }
 
     [Test]
