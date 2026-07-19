@@ -538,7 +538,7 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             {
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    var result = consumer.Consume(TimeSpan.FromMilliseconds(200));
+                    var result = ConsumeClassicTolerant(consumer, TimeSpan.FromMilliseconds(200));
                     if (result is null)
                         continue;
 
@@ -559,6 +559,24 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             cancellationToken,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
+
+    private static ConfluentKafka.ConsumeResult<string, string>? ConsumeClassicTolerant(
+        ConfluentKafka.IConsumer<string, string> consumer,
+        TimeSpan timeout)
+    {
+        try
+        {
+            return consumer.Consume(timeout);
+        }
+        catch (ConfluentKafka.ConsumeException exception)
+            when (IsUnknownTopicError(exception.Error.Code))
+        {
+            // Metadata for the freshly created topic has not reached every broker yet.
+            // librdkafka surfaces this as an error event but keeps refreshing metadata,
+            // so treat it like an empty poll instead of a fatal consume failure.
+            return null;
+        }
+    }
 
     private static bool CommitClassicWithRetry(
         ConfluentKafka.IConsumer<string, string> consumer,
@@ -606,6 +624,11 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
         }
     }
 
+    private static bool IsUnknownTopicError(ConfluentKafka.ErrorCode errorCode) =>
+        errorCode.ToString() is
+            "UnknownTopicOrPart" or
+            "Local_UnknownTopic";
+
     private static bool IsTransientCoordinatorError(ConfluentKafka.ErrorCode errorCode) =>
         errorCode.ToString() is
             "CoordinatorLoadInProgress" or
@@ -637,7 +660,7 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             () =>
             {
                 while (!cancellationToken.IsCancellationRequested)
-                    _ = consumer.Consume(TimeSpan.FromMilliseconds(200));
+                    _ = ConsumeClassicTolerant(consumer, TimeSpan.FromMilliseconds(200));
             },
             cancellationToken,
             TaskCreationOptions.LongRunning,

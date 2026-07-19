@@ -1469,6 +1469,65 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     }
 
     [Test]
+    public async Task CommitOffsetsAsync_StaleMemberEpoch_RetriesWithRefreshedEpoch()
+    {
+        SetupFindCoordinator();
+        // Long heartbeat interval keeps the background loop quiet so the epoch transition
+        // below is driven solely by the commit stub.
+        SetupConsumerGroupHeartbeat(memberEpoch: 7, heartbeatIntervalMs: 60_000);
+        _metadataManager.SetApiVersion(ApiKey.OffsetCommit, 9, 9);
+
+        var options = CreateConsumerProtocolOptions(retryBackoffMs: 0, retryBackoffMaxMs: 0);
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        var capturedEpochs = new List<int>();
+        _connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                Arg.Any<OffsetCommitRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var request = callInfo.Arg<OffsetCommitRequest>()!;
+                capturedEpochs.Add(request.GenerationIdOrMemberEpoch);
+                if (capturedEpochs.Count == 1)
+                {
+                    // The coordinator bumped the member epoch (reassignment) after this
+                    // request was built; the client learns the new epoch from a heartbeat
+                    // while the commit retry waits for the refresh.
+                    SetPrivateField(coordinator, "_generationId", 8);
+                    return ValueTask.FromResult(new OffsetCommitResponse
+                    {
+                        Topics =
+                        [
+                            new OffsetCommitResponseTopic
+                            {
+                                Name = "test-topic",
+                                Partitions =
+                                [
+                                    new OffsetCommitResponsePartition
+                                    {
+                                        PartitionIndex = 0,
+                                        ErrorCode = ErrorCode.StaleMemberEpoch
+                                    }
+                                ]
+                            }
+                        ]
+                    });
+                }
+
+                return ValueTask.FromResult(new OffsetCommitResponse { Topics = [] });
+            });
+
+        await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
+
+        await coordinator.CommitOffsetsAsync(
+            [new TopicPartitionOffset("test-topic", 0, 1)],
+            CancellationToken.None);
+
+        await Assert.That(capturedEpochs).IsEquivalentTo([7, 8]);
+    }
+
+    [Test]
     public async Task CommitOffsetsAsync_OverdueBeforeHeartbeatExpiry_RejectsCommit()
     {
         SetupFindCoordinator();

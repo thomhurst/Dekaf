@@ -668,7 +668,6 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
     [Test]
     [Arguments(OffsetSpec.EarliestLocal, 0L)]
     [Arguments(OffsetSpec.LatestTiered, -1L)]
-    [Arguments(OffsetSpec.EarliestPendingUpload, -1L)]
     public async Task ListOffsetsAsync_StoragePosition_ReturnsExpectedOffsetWithoutTiering(
         OffsetSpec spec,
         long expectedOffset)
@@ -688,6 +687,14 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
 
         await Assert.That(offsets[topicPartition].Offset).IsEqualTo(expectedOffset);
     }
+
+    // EarliestPendingUpload requires ListOffsets v11, which brokers only expose from Kafka 4.2.
+    [Test]
+    [SupportsKafka(420)]
+    public Task ListOffsetsAsync_EarliestPendingUpload_ReturnsExpectedOffsetWithoutTiering() =>
+        ListOffsetsAsync_StoragePosition_ReturnsExpectedOffsetWithoutTiering(
+            OffsetSpec.EarliestPendingUpload,
+            expectedOffset: -1L);
 
     #endregion
 

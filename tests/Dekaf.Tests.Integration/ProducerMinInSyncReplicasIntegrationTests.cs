@@ -141,7 +141,11 @@ public sealed class ProducerMinInSyncReplicasIntegrationTests(RackAwareKafkaCont
             var duringOutage = await ProduceAsync(producer, topic, 1, cancellationToken).ConfigureAwait(false);
 
             await Assert.That(initial.Offset).IsEqualTo(0);
-            await Assert.That(duringOutage.Offset).IsEqualTo(1);
+            // The producer is non-idempotent with a 2s request timeout: a slow leader during
+            // the ISR shrink can time out the first attempt after the broker already appended
+            // it, and the retry then lands at a later offset. Delivery (not an exact offset)
+            // is the acks=leader guarantee under test.
+            await Assert.That(duringOutage.Offset).IsGreaterThanOrEqualTo(1);
         }
         finally
         {

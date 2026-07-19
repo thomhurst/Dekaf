@@ -7,7 +7,10 @@ namespace Dekaf.Tests.Integration;
 [Category("Admin")]
 public sealed class AdminControlPlaneVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    // ListConfigResources v1 (typed resource filtering) only exists from Kafka 4.1;
+    // 4.0 brokers expose ListClientMetricsResources (API key 74) at v0 only.
     [Test]
+    [SupportsKafka(410)]
     public async Task ListConfigResourcesAsync_V1Broker_ReturnsTypedBrokerResources()
     {
         await using var admin = KafkaContainer.CreateAdminClient();
