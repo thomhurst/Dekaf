@@ -260,15 +260,26 @@ public class KafkaConnectionCapabilityHandshakeTests
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        var releaseServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var serverStarted = new ManualResetEventSlim();
+        using var releaseServer = new ManualResetEventSlim();
 
-        var serverTask = Task.Run(async () =>
-        {
-            using var socket = await listener.AcceptSocketAsync(cancellationToken);
-            await using var stream = new NetworkStream(socket, ownsSocket: false);
-            _ = await ReadFrameAsync(stream, cancellationToken);
-            await releaseServer.Task.WaitAsync(cancellationToken);
-        }, cancellationToken);
+        var serverTask = Task.Factory.StartNew(
+            () =>
+            {
+                serverStarted.Set();
+                using var socket = listener.AcceptSocketAsync(cancellationToken)
+                    .AsTask().GetAwaiter().GetResult();
+                using var stream = new NetworkStream(socket, ownsSocket: false);
+                var length = new byte[sizeof(int)];
+                stream.ReadExactly(length);
+                var frame = new byte[BinaryPrimitives.ReadInt32BigEndian(length)];
+                stream.ReadExactly(frame);
+                releaseServer.Wait(cancellationToken);
+            },
+            cancellationToken,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+        serverStarted.Wait(cancellationToken);
 
         await using var connection = new KafkaConnection(
             1,
@@ -287,7 +298,7 @@ public class KafkaConnectionCapabilityHandshakeTests
         }
         finally
         {
-            releaseServer.TrySetResult();
+            releaseServer.Set();
         }
 
         await serverTask;
