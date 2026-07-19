@@ -496,6 +496,8 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
         await coordinator.StopHeartbeatAsync();
+        // Isolate the explicit heartbeat below from calls completed before the background loop stopped.
+        _connection.ClearReceivedCalls();
 
         var connectionRequested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var connectionAvailable = new TaskCompletionSource<IKafkaConnection>(
