@@ -832,9 +832,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
         int leaderEpoch,
         NodeEndpoint? leaderEndpoint = null)
     {
+        if (leaderId < 0 || leaderEpoch < 0)
+            return false;
+
         BrokerNode? broker = null;
         if (leaderEndpoint is not null)
         {
+            if (leaderEndpoint.NodeId != leaderId)
+                return false;
+
             broker = new BrokerNode
             {
                 NodeId = leaderEndpoint.NodeId,
@@ -842,6 +848,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 Port = leaderEndpoint.Port,
                 Rack = leaderEndpoint.Rack
             };
+
+            // Publish the route before the metadata snapshot can expose this broker as
+            // leader. Otherwise a concurrent fetch can observe the new leader ID while
+            // the connection pool still considers it unknown.
+            RegisterBroker(leaderEndpoint.NodeId, leaderEndpoint.Host, leaderEndpoint.Port);
         }
 
         return _metadata.TryUpdatePartitionLeader(topicName, partition, leaderId, leaderEpoch, broker);
