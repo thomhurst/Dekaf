@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Producer;
@@ -140,10 +141,7 @@ public sealed class Kip126BatchSplittingTests
             await Assert.That(child.RecordCount).IsEqualTo(4);
             await Assert.That(accumulator.BufferedBytes).IsEqualTo(child.DataSize);
 
-            child.CompleteSend(0, DateTimeOffset.UnixEpoch);
-            accumulator.ReleaseBatchMemory(child);
-            accumulator.OnBatchExitsPipeline(child);
-            accumulator.ReturnReadyBatch(child);
+            CompleteAndReturn(accumulator, child, baseOffset: 0);
             await flushTask;
             await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
         }
@@ -215,11 +213,8 @@ public sealed class Kip126BatchSplittingTests
             var baseOffset = 100L;
             foreach (var batch in drained)
             {
-                batch.CompleteSend(baseOffset, DateTimeOffset.UnixEpoch);
+                CompleteAndReturn(accumulator, batch, baseOffset);
                 baseOffset += batch.RecordCount;
-                accumulator.ReleaseBatchMemory(batch);
-                accumulator.OnBatchExitsPipeline(batch);
-                accumulator.ReturnReadyBatch(batch);
             }
 
             for (var i = 0; i < tasks.Length; i++)
@@ -236,6 +231,66 @@ public sealed class Kip126BatchSplittingTests
             await metadataManager.DisposeAsync();
             await sourcePool.DisposeAsync();
         }
+    }
+
+    [Test]
+    public async Task Drain_AdaptiveBatchExpandsLocally_SplitsAndReenqueues()
+    {
+        const string topic = "adaptive-local-split";
+        const int recordCount = 100;
+        const int maxRequestSize = 512;
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 256,
+            MaxRequestSize = maxRequestSize,
+            BufferMemory = 1024 * 1024,
+            CompressionType = CompressionType.Gzip,
+            LingerMs = 60_000
+        };
+        var codecs = new CompressionCodecRegistry();
+        codecs.Register(new SizeSensitiveCompressionCodec(maxRequestSize, options.BatchSize));
+        await using var accumulator = new RecordAccumulator(options, codecs);
+        await using var metadataManager = AccumulatorTestHelpers.CreateMetadataManager(topic, partitionCount: 1);
+
+        // Model a topic that has learned a strong ratio, allowing the adaptive parent
+        // to grow well beyond BatchSize before its actual compression ratio is known.
+        var estimator = AccumulatorTestHelpers.GetPrivateField<CompressionRatioEstimator>(
+            accumulator,
+            "_compressionRatioEstimator");
+        for (var i = 0; i < 200; i++)
+            estimator.Update(topic, CompressionType.Gzip, observedRatio: 0.1);
+
+        for (var i = 0; i < recordCount; i++)
+            await Assert.That(await AccumulatorTestHelpers.AppendNullRecordAsync(accumulator, topic)).IsTrue();
+        await AccumulatorTestHelpers.SealAllAsync(accumulator);
+
+        var readyNodes = await WaitForReadyNodeAsync(accumulator, metadataManager);
+        var firstDrain = new Dictionary<int, List<ReadyBatch>>();
+        accumulator.Drain(
+            metadataManager,
+            readyNodes,
+            maxRequestSize,
+            firstDrain,
+            new Stack<List<ReadyBatch>>());
+
+        await Assert.That(firstDrain).DoesNotContainKey(1);
+        await Assert.That(accumulator.HasPendingWork()).IsTrue();
+
+        var drainedRecords = 0;
+        var childCount = 0;
+        while (drainedRecords < recordCount)
+        {
+            var child = await DrainOneAsync(accumulator, metadataManager);
+            drainedRecords += child.RecordCount;
+            childCount++;
+            CompleteAndReturn(accumulator, child, drainedRecords - child.RecordCount);
+        }
+
+        await Assert.That(childCount).IsGreaterThan(1);
+        await Assert.That(drainedRecords).IsEqualTo(recordCount);
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        await Assert.That(accumulator.HasPendingWork()).IsFalse();
     }
 
     private static void Append(
@@ -265,15 +320,7 @@ public sealed class Kip126BatchSplittingTests
         RecordAccumulator accumulator,
         MetadataManager metadataManager)
     {
-        var readyNodes = new HashSet<int>();
-        await TestWait.UntilAsync(
-            () =>
-            {
-                readyNodes.Clear();
-                accumulator.Ready(metadataManager, readyNodes);
-                return readyNodes.Contains(1);
-            },
-            TimeSpan.FromSeconds(5));
+        var readyNodes = await WaitForReadyNodeAsync(accumulator, metadataManager);
 
         var drainResult = new Dictionary<int, List<ReadyBatch>>();
         accumulator.Drain(
@@ -283,5 +330,51 @@ public sealed class Kip126BatchSplittingTests
             drainResult,
             new Stack<List<ReadyBatch>>());
         return drainResult[1][0];
+    }
+
+    private static async Task<HashSet<int>> WaitForReadyNodeAsync(
+        RecordAccumulator accumulator,
+        MetadataManager metadataManager)
+    {
+        var readyNodes = new HashSet<int>();
+        await TestWait.UntilAsync(
+            () =>
+            {
+                readyNodes.Clear();
+                accumulator.Ready(metadataManager, readyNodes);
+                return readyNodes.Contains(1);
+            },
+            TimeSpan.FromSeconds(5));
+        return readyNodes;
+    }
+
+    private static void CompleteAndReturn(
+        RecordAccumulator accumulator,
+        ReadyBatch batch,
+        long baseOffset)
+    {
+        batch.CompleteSend(baseOffset, DateTimeOffset.UnixEpoch);
+        accumulator.ReleaseBatchMemory(batch);
+        accumulator.OnBatchExitsPipeline(batch);
+        accumulator.ReturnReadyBatch(batch);
+    }
+
+    private sealed class SizeSensitiveCompressionCodec(int expandedSize, int expandAboveBytes)
+        : ICompressionCodec
+    {
+        public CompressionType Type => CompressionType.Gzip;
+
+        public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+        {
+            var size = source.Length > expandAboveBytes ? expandedSize : 1;
+            destination.GetSpan(size)[..size].Clear();
+            destination.Advance(size);
+        }
+
+        public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
+        {
+            foreach (var segment in source)
+                destination.Write(segment.Span);
+        }
     }
 }

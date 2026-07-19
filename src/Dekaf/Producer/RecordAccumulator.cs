@@ -1971,7 +1971,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 if (oversizedBatch)
                 {
-                    FailOversizedBatch(batch, batchRequestSize, maxRequestSize);
+                    if (!SplitAndReenqueue(batch, batch.Generation))
+                        FailOversizedBatch(batch, batchRequestSize, maxRequestSize);
                     continue;
                 }
 
@@ -7097,7 +7098,7 @@ internal sealed class PartitionBatch
             ? Math.Clamp(options.InitialBatchRecordCapacity, 16, 16384)
             : ComputeInitialRecordCapacity(options.BatchSize);
 
-        CreateAppendBuffer(options);
+        CreateAppendBuffer(options, rentFullArenaFromPool: false);
         _recordCount = 0;
 
         // Rent arrays from pool - eliminates List allocations
@@ -7784,7 +7785,7 @@ internal sealed class PartitionBatch
         }
     }
 
-    private void CreateAppendBuffer(ProducerOptions options)
+    private void CreateAppendBuffer(ProducerOptions options, bool rentFullArenaFromPool = true)
     {
         if (options.BufferMemoryAllocationStrategy == BufferMemoryAllocationStrategy.Incremental)
         {
@@ -7796,7 +7797,10 @@ internal sealed class PartitionBatch
             _incrementalBuffer = null;
             // Compression-based expansion grows lazily only after the batch fills,
             // keeping idle partitions bounded by BatchSize.
-            _arena = BatchArena.RentOrCreate(GetNormalArenaCapacity(options));
+            var normalCapacity = GetNormalArenaCapacity(options);
+            _arena = rentFullArenaFromPool
+                ? BatchArena.RentOrCreate(normalCapacity)
+                : new BatchArena(normalCapacity);
         }
     }
 
