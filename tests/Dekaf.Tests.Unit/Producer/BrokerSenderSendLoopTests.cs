@@ -802,6 +802,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             completionSourcesCount: 1,
+            recordCount: 1,
             dataSize: 100);
         batch.TrySetMemoryReleased();
         return (batch, delivery);

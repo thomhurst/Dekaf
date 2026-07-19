@@ -532,6 +532,7 @@ public sealed class AdaptiveScaleDownTests
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             completionSourcesCount: 1,
+            recordCount: 1,
             dataSize: dataSize);
 
         batch.TrySetMemoryReleased(); // Skip accumulator memory tracking in tests

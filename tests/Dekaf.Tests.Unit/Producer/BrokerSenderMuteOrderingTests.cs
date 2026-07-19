@@ -570,13 +570,13 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
     private static MetadataResponse CreateRoutingMetadata(
         int partitionZeroLeader,
         int partitionThreeLeader = 1) => new()
-    {
-        Brokers =
+        {
+            Brokers =
         [
             new BrokerMetadata { NodeId = 1, Host = "broker-1", Port = 9093 },
             new BrokerMetadata { NodeId = 2, Host = "broker-2", Port = 9094 }
         ],
-        Topics =
+            Topics =
         [
             new TopicMetadata
             {
@@ -605,7 +605,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 ]
             }
         ]
-    };
+        };
 
     private static ReadyBatch CreateMinimalBatch(string topic, int partition)
     {
@@ -615,6 +615,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             new RecordBatch { Records = Array.Empty<Record>() },
             completionSourcesArray: null,
             completionSourcesCount: 0,
+            recordCount: 0,
             dataSize: 100);
         return batch;
     }
@@ -1014,6 +1015,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
                 new RecordBatch { Records = Array.Empty<Record>() },
                 completionSourcesArray: null,
                 completionSourcesCount: 0,
+                recordCount: 0,
                 dataSize: 100);
 
             var coalescedBatches = new ReadyBatch[4];

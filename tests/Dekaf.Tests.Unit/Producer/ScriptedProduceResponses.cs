@@ -183,6 +183,7 @@ public abstract class ScriptedProduceResponseFixture
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             messageCount,
+            recordCount: messageCount,
             dataSize: dataSize);
 
         if (markMemoryReleased)

@@ -3151,6 +3151,7 @@ public class RecordAccumulatorTests
             new RecordBatch { Records = Array.Empty<Record>() },
             sources,
             messageCount,
+            recordCount: messageCount,
             dataSize: 100);
 
         return batch;
@@ -3293,6 +3294,7 @@ public class RecordAccumulatorTests
                 new RecordBatch { Records = Array.Empty<Record>() },
                 newSources,
                 completionSourcesCount: 1,
+                recordCount: 1,
                 dataSize: 200);
 
             await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(0);

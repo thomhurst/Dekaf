@@ -2131,13 +2131,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return false;
         }
 
-        OnBatchExitsPipeline(source);
-        ReturnReadyBatch(source);
-
         var splitBytes = 0L;
         foreach (var child in splitBatches)
             splitBytes += child.DataSize;
         Interlocked.Add(ref _bufferedBytes, splitBytes);
+
+        OnBatchExitsPipeline(source);
+        ReleaseBatchMemory(source);
+        ReturnReadyBatch(source);
 
         var pd = GetOrCreateDeque(splitBatches[0].TopicPartition);
         using (var guard = new SpinLockGuard(ref pd.Lock))
@@ -7589,14 +7590,22 @@ internal sealed class PartitionBatch
         // losing callback/future ownership or returning incorrect record offsets.
         if (recordIndex >= _completionSources.Length)
         {
-            GrowArray(ref _completionSources, ref _recordCount, ProducerContainerPools.CompletionSources);
+            GrowArray(
+                ref _completionSources,
+                _recordCount,
+                recordIndex + 1,
+                ProducerContainerPools.CompletionSources);
         }
         if (hasCallback || _callbacks is not null)
         {
             _callbacks ??= ProducerContainerPools.Callbacks.Rent(_initialRecordCapacity);
             if (recordIndex >= _callbacks.Length)
             {
-                GrowArray(ref _callbacks!, ref _recordCount, ProducerContainerPools.Callbacks);
+                GrowArray(
+                    ref _callbacks!,
+                    _recordCount,
+                    recordIndex + 1,
+                    ProducerContainerPools.Callbacks);
             }
         }
 
@@ -7824,11 +7833,15 @@ internal sealed class PartitionBatch
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void GrowArray<T>(ref T[] array, ref int count, ArrayPool<T> pool)
+    private static void GrowArray<T>(
+        ref T[] array,
+        int count,
+        int requiredCapacity,
+        ArrayPool<T> pool)
     {
-        var newSize = array.Length * 2;
+        var newSize = Math.Max(checked(array.Length * 2), requiredCapacity);
         var newArray = pool.Rent(newSize);
-        Array.Copy(array, newArray, count);
+        Array.Copy(array, newArray, Math.Min(count, array.Length));
         pool.Return(array, clearArray: false);
         array = newArray;
     }
@@ -7945,12 +7958,12 @@ internal sealed class PartitionBatch
                 batch,
                 _completionSources,
                 _completionSourceCount,
+                _recordCount,
                 _estimatedSize,
                 _arena,
                 _callbacks,
                 _callbackCount,
                 _arrayReuseQueue,
-                _recordCount,
                 _createdStopwatchTimestamp,
                 _options.LingerMs * Stopwatch.Frequency / 1_000,
                 _incrementalBuffer);
@@ -8817,16 +8830,19 @@ internal sealed class ReadyBatch
         RecordBatch recordBatch,
         PooledValueTaskSource<RecordMetadata>[]? completionSourcesArray,
         int completionSourcesCount,
+        int recordCount,
         int dataSize,
         BatchArena? arena = null,
         Action<RecordMetadata, Exception?>?[]? callbacks = null,
         int callbackCount = 0,
         BatchArrayReuseQueue? arrayReuseQueue = null,
-        int recordCount = 0,
         long createdStopwatchTimestamp = 0,
         long lingerTicks = 0,
         IncrementalBatchBuffer? incrementalBuffer = null)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(recordCount, completionSourcesCount);
+        ArgumentOutOfRangeException.ThrowIfLessThan(recordCount, callbackCount);
+
         // The generation increment must happen BEFORE the lifecycle flags are cleared.
         // Stale-reference holders validate liveness by reading _returnedToPool first and
         // _generation second (see IsCurrentIncarnation). With the increment ordered first,
@@ -8859,7 +8875,7 @@ internal sealed class ReadyBatch
         _completionSourcesCount = completionSourcesCount;
         // Captured at seal time because the RecordBatch's record list may be recycled or
         // never materialized by the time a (possibly stale) Fail needs the count.
-        _recordCount = recordCount > 0 ? recordCount : completionSourcesCount;
+        _recordCount = recordCount;
         DataSize = dataSize;
         EncodedSize = dataSize;
         UnackedBudget = null;

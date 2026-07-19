@@ -3022,12 +3022,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         && batch.RecordCount > 1
                         && !batch.IsSendCompleted)
                     {
+                        var splitTopicPartition = batch.TopicPartition;
                         LogBatchSplit(
                             _brokerId,
-                            batch.TopicPartition.Topic,
-                            batch.TopicPartition.Partition,
+                            splitTopicPartition.Topic,
+                            splitTopicPartition.Partition,
                             batch.RecordCount);
-                        MutePartition(batch.TopicPartition);
+                        MutePartition(splitTopicPartition);
                         try
                         {
                             CompleteInflightEntry(batch);
@@ -3036,18 +3037,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 // Keep the BrokerSender fence until the first split retry is
                                 // coalesced, but let the accumulator drain the children that
                                 // were inserted ahead of newer partition work.
-                                _accumulator.UnmutePartition(batch.TopicPartition);
+                                _accumulator.UnmutePartition(splitTopicPartition);
                                 batches[j] = null!;
                                 continue;
                             }
                         }
                         catch
                         {
-                            UnmutePartition(batch.TopicPartition);
+                            UnmutePartition(splitTopicPartition);
                             throw;
                         }
 
-                        UnmutePartition(batch.TopicPartition);
+                        UnmutePartition(splitTopicPartition);
                     }
 
                     if (partitionResponse.ErrorCode.IsRetriable()

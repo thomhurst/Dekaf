@@ -66,6 +66,83 @@ public sealed class Kip126BatchSplittingTests
     }
 
     [Test]
+    public async Task FirstLateCallback_GrowsArrayToRecordIndex()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 64 * 1024,
+            InitialBatchRecordCapacity = 16
+        };
+        var batch = new PartitionBatch(new TopicPartition("late-callback", 0), options);
+        RecordMetadata callbackMetadata = default;
+
+        for (var i = 0; i < 100; i++)
+            Append(batch, i, completionSource: null, callback: null);
+        Append(batch, 100, completionSource: null, (metadata, _) => callbackMetadata = metadata);
+
+        var ready = batch.Complete()!;
+        ready.TrySetMemoryReleased();
+        ready.CompleteSend(500, DateTimeOffset.UnixEpoch);
+
+        await Assert.That(callbackMetadata.Offset).IsEqualTo(600);
+    }
+
+    [Test]
+    public async Task SplitAndReenqueue_ReplacesSourceBufferMemoryReservation()
+    {
+        const string topic = "kip-126-accounting";
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            BatchSize = 1000,
+            BufferMemory = 1024 * 1024,
+            CompressionType = CompressionType.None,
+            LingerMs = 60_000
+        };
+        var accumulator = new RecordAccumulator(options, new CompressionCodecRegistry());
+        var metadataManager = AccumulatorTestHelpers.CreateMetadataManager(topic, partitionCount: 1);
+        try
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                await Assert.That(await accumulator.AppendAsync(
+                    topic,
+                    partition: 0,
+                    timestamp: 1_000 + i,
+                    PooledMemory.Null,
+                    PooledMemory.Null,
+                    headers: null,
+                    headerCount: 0,
+                    completionSource: null,
+                    callback: null,
+                    CancellationToken.None)).IsTrue();
+            }
+
+            await AccumulatorTestHelpers.SealAllAsync(accumulator);
+            var source = await DrainOneAsync(accumulator, metadataManager);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(source.DataSize);
+
+            await Assert.That(accumulator.SplitAndReenqueue(source, source.Generation)).IsTrue();
+            var child = await DrainOneAsync(accumulator, metadataManager);
+
+            await Assert.That(child.RecordCount).IsEqualTo(4);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(child.DataSize);
+
+            child.CompleteSend(0, DateTimeOffset.UnixEpoch);
+            accumulator.ReleaseBatchMemory(child);
+            accumulator.OnBatchExitsPipeline(child);
+            accumulator.ReturnReadyBatch(child);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task SplitAndReenqueue_PreservesOrderSequencesAndDeliveryOwnership()
     {
         const string topic = "kip-126";
