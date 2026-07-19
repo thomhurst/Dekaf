@@ -270,7 +270,7 @@ public sealed class ReadyBatchIncarnationTests
             thrown = exception;
         }
 
-        await Assert.That(thrown?.InnerException).IsTypeOf<KafkaException>();
+        await Assert.That(thrown?.InnerException is KafkaException).IsTrue();
         await Assert.That(((KafkaException)thrown!.InnerException!).ErrorCode)
             .IsEqualTo(ErrorCode.UnknownTopicId);
         await Assert.That(recordBatches[0][0]).IsSameReferenceAs(knownTopicBatch.RecordBatch);

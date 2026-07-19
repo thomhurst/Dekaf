@@ -4087,8 +4087,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             // Send failed (connection error, timeout, etc.) — retry batches instead of permanently failing.
             // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
-            _pinnedConnections[connectionIndex] = null; // Invalidate only the broken connection
-            LogResponseFailed(ex, _brokerId);
+            if (ex is not LocalTopicIdMissException)
+            {
+                _pinnedConnections[connectionIndex] = null; // Invalidate only the broken connection
+                LogResponseFailed(ex, _brokerId);
+            }
 
             for (var i = 0; i < count; i++)
             {
@@ -4192,6 +4195,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         batch.RetryNotBefore = _getTimestamp() + (long)(delayMs * StopwatchTicksPerMillisecond);
         return delayMs;
     }
+
+    private sealed class LocalTopicIdMissException(string message)
+        : KafkaException(Protocol.ErrorCode.UnknownTopicId, message);
 
     /// <summary>
     /// Pre-allocated scratch space for building ProduceRequest without per-send allocations.
@@ -4334,8 +4340,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // exception-path ClearReferences() releases those batch references.
                         _lastTopicCount = Math.Max(_lastTopicCount, topicIdx);
                         _lastPartitionCount = Math.Max(_lastPartitionCount, partIdx);
-                        throw new KafkaException(
-                            ErrorCode.UnknownTopicId,
+                        throw new LocalTopicIdMissException(
                             $"Produce v{apiVersion} requires a current topic ID for '{topicName}'.");
                     }
 
