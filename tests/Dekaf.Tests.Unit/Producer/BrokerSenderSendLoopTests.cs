@@ -77,6 +77,64 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_TlsAuthenticationFailure_FailsBatchWithoutRetry(
+        CancellationToken cancellationToken)
+    {
+        var authenticationFailure = AuthenticationException.FromTlsHandshake(
+            "TLS handshake failed: certificate chain validation failed",
+            new System.Security.Authentication.AuthenticationException("certificate rejected"));
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns<ValueTask<IKafkaConnection>>(_ =>
+                ValueTask.FromException<IKafkaConnection>(authenticationFailure));
+        pool.GetConnectionByIndexAsync(Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns<ValueTask<IKafkaConnection>>(_ =>
+                ValueTask.FromException<IKafkaConnection>(authenticationFailure));
+
+        var options = CreateOptions(
+            deliveryTimeoutMs: 20_000,
+            requestTimeoutMs: 5_000,
+            useTls: true);
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var acknowledgement = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = CreateSender(
+            pool,
+            options,
+            accumulator,
+            (_, _, _, _, error) => acknowledgement.TrySetResult(error));
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", partition: 0));
+
+            var observed = await acknowledgement.Task.WaitAsync(cancellationToken);
+            await Assert.That(observed).IsSameReferenceAs(authenticationFailure);
+            await pool.Received(1).GetConnectionAsync(1, Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task AuthenticationFailure_FromSaslOverTls_RemainsRetriable()
+    {
+        var authenticationFailure = new AuthenticationException("OAuth token has expired");
+        var options = CreateOptions(
+            saslMechanism: SaslMechanism.OAuthBearer,
+            useTls: true);
+
+        var isFatal = BrokerSender.IsFatalAuthenticationFailure(authenticationFailure, options);
+
+        await Assert.That(isFatal).IsFalse();
+    }
+
+    [Test]
     public async Task DeliveryLatencyOrigin_SealWithinLinger_UsesSealNotCreation()
     {
         // Sealing within the configured linger: the origin stays the seal, so opted-in
@@ -857,7 +915,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         long? unackedByteBudgetCapOverride = null, long? scaleCooldownMsOverride = null,
         string? transactionalId = null, int lingerMs = 0,
         bool enableDeliveryDiagnostics = false,
-        SaslMechanism saslMechanism = SaslMechanism.None) => new()
+        SaslMechanism saslMechanism = SaslMechanism.None,
+        bool useTls = false) => new()
         {
             BootstrapServers = ["localhost:9092"],
             MaxInFlightRequestsPerConnection = maxInFlight,
@@ -875,7 +934,8 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
             UnackedByteBudgetCapOverride = unackedByteBudgetCapOverride,
             ScaleCooldownMsOverride = scaleCooldownMsOverride,
             TransactionalId = transactionalId,
-            SaslMechanism = saslMechanism
+            SaslMechanism = saslMechanism,
+            UseTls = useTls
         };
 
     private sealed class ThrowingCompressionCodec : ICompressionCodec

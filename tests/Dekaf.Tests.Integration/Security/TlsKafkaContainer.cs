@@ -20,6 +20,8 @@ namespace Dekaf.Tests.Integration.Security;
 /// </summary>
 public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
 {
+    private const ushort KafkaContainerPort = 9092;
+    private const string ServerKeystoreContainerPath = "/etc/kafka/secrets/server.p12";
     private KafkaContainer? _container;
     private TestCertificateGenerator? _certGenerator;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _createdTopics = new();
@@ -66,13 +68,13 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         _certGenerator = new TestCertificateGenerator();
 
         Console.WriteLine("[TlsKafkaContainer] Starting TLS-enabled Kafka container...");
+        var stableHostPort = GetFreeTcpPort();
 
         // Container paths for certificate files
         const string containerCertDir = "/etc/kafka/secrets";
         const string caCertContainerPath = $"{containerCertDir}/ca-cert.pem";
         const string serverCertContainerPath = $"{containerCertDir}/server-cert.pem";
         const string serverKeyContainerPath = $"{containerCertDir}/server-key.pem";
-        const string serverKeystoreContainerPath = $"{containerCertDir}/server.p12";
         const string truststoreContainerPath = $"{containerCertDir}/truststore.p12";
         const string clientCertContainerPath = $"{containerCertDir}/client-cert.pem";
         const string clientKeyContainerPath = $"{containerCertDir}/client-key.pem";
@@ -91,7 +93,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
             .WithEnvironment("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "PLAINTEXT:SSL,BROKER:PLAINTEXT,CONTROLLER:PLAINTEXT")
             // SSL configuration using PKCS12 keystore (Kafka supports PKCS12 natively)
             .WithEnvironment("KAFKA_SSL_KEYSTORE_TYPE", "PKCS12")
-            .WithEnvironment("KAFKA_SSL_KEYSTORE_LOCATION", serverKeystoreContainerPath)
+            .WithEnvironment("KAFKA_SSL_KEYSTORE_LOCATION", ServerKeystoreContainerPath)
             .WithEnvironment("KAFKA_SSL_KEYSTORE_PASSWORD", TestCertificateGenerator.StorePassword)
             .WithEnvironment("KAFKA_SSL_KEY_PASSWORD", TestCertificateGenerator.StorePassword)
             // Use a PEM truststore (the CA cert) rather than PKCS12: a .NET-exported cert-only
@@ -109,10 +111,13 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
             .WithResourceMapping(File.ReadAllBytes(_certGenerator.CaCertPemPath), caCertContainerPath)
             .WithResourceMapping(File.ReadAllBytes(serverCertPemPath), serverCertContainerPath)
             .WithResourceMapping(File.ReadAllBytes(serverKeyPemPath), serverKeyContainerPath)
-            .WithResourceMapping(File.ReadAllBytes(_certGenerator.ServerKeystorePath), serverKeystoreContainerPath)
+            .WithResourceMapping(File.ReadAllBytes(_certGenerator.ServerKeystorePath), ServerKeystoreContainerPath)
             .WithResourceMapping(File.ReadAllBytes(_certGenerator.ServerTruststorePath), truststoreContainerPath)
             .WithResourceMapping(File.ReadAllBytes(_certGenerator.ClientCertPemPath), clientCertContainerPath)
             .WithResourceMapping(File.ReadAllBytes(_certGenerator.ClientKeyPemPath), clientKeyContainerPath)
+            // Docker may assign a different ephemeral host port after stop/start. A fixed host
+            // binding keeps existing clients' advertised endpoint valid across certificate rotation.
+            .WithPortBinding(stableHostPort, KafkaContainerPort)
             .Build();
 
         await _container.StartAsync();
@@ -125,6 +130,36 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         await WaitForKafkaSslAsync();
     }
 
+    /// <summary>
+    /// Restarts the same broker after replacing its TLS server keystore.
+    /// Broker data and the mapped endpoint are retained across the restart.
+    /// </summary>
+    public async Task RestartWithServerCertificateAsync(X509Certificate2 serverCertificate)
+    {
+        var container = _container ?? throw new InvalidOperationException("Container not initialized");
+        if (!serverCertificate.HasPrivateKey)
+        {
+            throw new ArgumentException("The server certificate must contain its private key.", nameof(serverCertificate));
+        }
+
+        await container.StopAsync();
+        await container.CopyAsync(
+            serverCertificate.Export(X509ContentType.Pfx, TestCertificateGenerator.StorePassword),
+            ServerKeystoreContainerPath);
+        await container.StartAsync();
+        try
+        {
+            await WaitForKafkaSslAsync(maxAttempts: 10);
+        }
+        catch
+        {
+            var (stdout, stderr) = await container.GetLogsAsync();
+            Console.WriteLine($"[TlsKafkaContainer] Kafka stdout after failed restart:{Environment.NewLine}{stdout}");
+            Console.WriteLine($"[TlsKafkaContainer] Kafka stderr after failed restart:{Environment.NewLine}{stderr}");
+            throw;
+        }
+    }
+
     private static string ExtractHostPort(string address)
     {
         if (Uri.TryCreate(address, UriKind.Absolute, out var uri))
@@ -132,6 +167,20 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
             return $"{uri.Host}:{uri.Port}";
         }
         return address.TrimEnd('/');
+    }
+
+    private static int GetFreeTcpPort()
+    {
+        var listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        }
+        finally
+        {
+            listener.Stop();
+        }
     }
 
     /// <summary>
@@ -146,10 +195,9 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
             TargetHost = "localhost"
         };
 
-    private async Task WaitForKafkaSslAsync()
+    private async Task WaitForKafkaSslAsync(int maxAttempts = 30)
     {
         Console.WriteLine("[TlsKafkaContainer] Waiting for Kafka SSL listener to be ready...");
-        const int maxAttempts = 30;
 
         var colonIndex = BootstrapServers.LastIndexOf(':');
         var host = BootstrapServers[..colonIndex];

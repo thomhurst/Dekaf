@@ -139,7 +139,9 @@ internal sealed class TestCertificateGenerator : IDisposable
         X509Certificate2 caCert,
         string subjectName,
         bool isServer,
-        out string privateKeyPem)
+        out string privateKeyPem,
+        DateTimeOffset? notBefore = null,
+        DateTimeOffset? notAfter = null)
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(
@@ -200,8 +202,8 @@ internal sealed class TestCertificateGenerator : IDisposable
 
         using var cert = request.Create(
             caCert,
-            DateTimeOffset.UtcNow.AddMinutes(-5),
-            DateTimeOffset.UtcNow.AddYears(2),
+            notBefore ?? DateTimeOffset.UtcNow.AddMinutes(-5),
+            notAfter ?? DateTimeOffset.UtcNow.AddYears(2),
             serialNumber);
 
         // Combine signed certificate with private key
@@ -214,6 +216,20 @@ internal sealed class TestCertificateGenerator : IDisposable
             StorePassword,
             X509KeyStorageFlags.Exportable);
     }
+
+    /// <summary>
+    /// Generates another TLS server certificate signed by this generator's CA.
+    /// </summary>
+    public X509Certificate2 GenerateServerCertificate(
+        DateTimeOffset? notBefore = null,
+        DateTimeOffset? notAfter = null)
+        => GenerateSignedCertificate(
+            CaCertificate,
+            "CN=kafka-broker, O=Dekaf Test, C=US",
+            isServer: true,
+            out _,
+            notBefore,
+            notAfter);
 
     private void ExportCertificates()
     {

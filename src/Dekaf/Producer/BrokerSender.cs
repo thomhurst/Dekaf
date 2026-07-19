@@ -4059,15 +4059,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (!pendingResponseAdded)
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
-        catch (AuthenticationException ex) when (
-            ex.ErrorCode == ErrorCode.SaslAuthenticationFailed
-            && !_options.UsesDynamicSaslCredentials
-            && _options.SaslMechanism is SaslMechanism.Plain
-                or SaslMechanism.ScramSha256
-                or SaslMechanism.ScramSha512)
+        catch (AuthenticationException ex) when (IsFatalAuthenticationFailure(ex, _options))
         {
-            // A broker-rejected static PLAIN/SCRAM credential is fatal. Dynamic credential
-            // providers and other authentication-adjacent failures follow the normal retry path.
+            // TLS validation cannot succeed without a configuration/trust change, and a
+            // broker-rejected static PLAIN/SCRAM credential cannot repair itself. Surface both
+            // immediately instead of hiding the actionable error behind delivery timeout.
             _pinnedConnections[connectionIndex] = null;
             LogResponseFailed(ex, _brokerId);
             for (var i = 0; i < count; i++)
@@ -4163,6 +4159,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 ArrayPool<int>.Shared.Return(generations);
             }
         }
+    }
+
+    internal static bool IsFatalAuthenticationFailure(
+        AuthenticationException exception,
+        ProducerOptions options)
+    {
+        if (exception.ErrorCode == ErrorCode.SaslAuthenticationFailed)
+        {
+            return !options.UsesDynamicSaslCredentials
+                && options.SaslMechanism is SaslMechanism.Plain
+                    or SaslMechanism.ScramSha256
+                    or SaslMechanism.ScramSha512;
+        }
+
+        return exception.IsTlsHandshakeFailure;
     }
 
     private void PrepareDeferredNetworkRetry(ReadyBatch batch, HashSet<string> metadataRefreshTopics)
