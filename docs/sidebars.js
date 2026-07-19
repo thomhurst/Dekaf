@@ -40,6 +40,7 @@ const sidebars = {
         'configuration/producer-options',
         'configuration/consumer-options',
         'configuration/client-dns-lookup',
+        'configuration/confluent-migration',
       ],
     },
     {

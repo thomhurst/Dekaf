@@ -1,3 +1,4 @@
+using System.Text;
 using Dekaf.Admin;
 using Dekaf.Compression.Lz4;
 using Dekaf.Consumer;
@@ -805,6 +806,115 @@ public class DependencyInjectionTests
 
         await Assert.That(options.GroupId).IsEqualTo("json-group");
         await Assert.That(options.ClientId).IsEqualTo("fluent-client");
+    }
+
+    [Test]
+    public async Task AddConfluentConfigs_NestedAspireJson_BindsDefaultAndNamedClients()
+    {
+        const string json = """
+            {
+              "ConnectionStrings": {
+                "kafka": "aspire-default:9092",
+                "orders": "aspire-orders:9092"
+              },
+              "Aspire": {
+                "Confluent": {
+                  "Kafka": {
+                    "Producer": {
+                      "Config": {
+                        "BootstrapServers": "json-default:9092",
+                        "ClientId": "default-producer",
+                        "Acks": "All",
+                        "MessageSendMaxRetries": 7
+                      },
+                      "orders": {
+                        "Config": {
+                          "BootstrapServers": "json-orders:9092",
+                          "ClientId": "orders-producer",
+                          "CompressionType": "Lz4"
+                        }
+                      }
+                    },
+                    "Consumer": {
+                      "Config": {
+                        "BootstrapServers": "json-default:9092",
+                        "ClientId": "default-consumer",
+                        "GroupId": "default-group",
+                        "AutoOffsetReset": "Latest",
+                        "FetchMinBytes": 4096
+                      },
+                      "orders": {
+                        "Config": {
+                          "BootstrapServers": "json-orders:9092",
+                          "ClientId": "orders-consumer",
+                          "GroupId": "orders-group",
+                          "AutoOffsetReset": "Earliest"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """;
+        using var jsonStream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        var configuration = new ConfigurationBuilder()
+            .AddJsonStream(jsonStream)
+            .Build();
+        var ordersProducerConfiguration = new ConfigurationBuilder()
+            .AddConfiguration(configuration.GetSection("Aspire:Confluent:Kafka:Producer:Config"))
+            .AddConfiguration(configuration.GetSection("Aspire:Confluent:Kafka:Producer:orders:Config"))
+            .Build();
+        var ordersConsumerConfiguration = new ConfigurationBuilder()
+            .AddConfiguration(configuration.GetSection("Aspire:Confluent:Kafka:Consumer:Config"))
+            .AddConfiguration(configuration.GetSection("Aspire:Confluent:Kafka:Consumer:orders:Config"))
+            .Build();
+        var services = new ServiceCollection();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducerFromConfluentConfig<string, string>(
+                configuration.GetSection("Aspire:Confluent:Kafka:Producer:Config"),
+                producer => producer.WithBootstrapServers(configuration.GetConnectionString("kafka")!));
+            builder.AddConsumerFromConfluentConfig<string, string>(
+                configuration.GetSection("Aspire:Confluent:Kafka:Consumer:Config"),
+                consumer => consumer.WithBootstrapServers(configuration.GetConnectionString("kafka")!));
+            builder.AddProducerFromConfluentConfig<string, string>(
+                "orders",
+                ordersProducerConfiguration,
+                producer => producer.WithBootstrapServers(configuration.GetConnectionString("orders")!));
+            builder.AddConsumerFromConfluentConfig<string, string>(
+                "orders",
+                ordersConsumerConfiguration,
+                consumer => consumer.WithBootstrapServers(configuration.GetConnectionString("orders")!));
+        });
+
+        await using var provider = services.BuildServiceProvider();
+        var defaultProducer = GetProducerOptions(
+            provider.GetRequiredService<IKafkaProducer<string, string>>());
+        var defaultConsumer = GetConsumerOptions(
+            provider.GetRequiredService<IKafkaConsumer<string, string>>());
+        var ordersProducer = GetProducerOptions(
+            provider.GetRequiredKeyedService<IKafkaProducer<string, string>>("orders"));
+        var ordersConsumer = GetConsumerOptions(
+            provider.GetRequiredKeyedService<IKafkaConsumer<string, string>>("orders"));
+
+        await Assert.That(defaultProducer.BootstrapServers).IsEquivalentTo(["aspire-default:9092"]);
+        await Assert.That(defaultProducer.ClientId).IsEqualTo("default-producer");
+        await Assert.That(defaultProducer.Acks).IsEqualTo(Acks.All);
+        await Assert.That(defaultConsumer.BootstrapServers).IsEquivalentTo(["aspire-default:9092"]);
+        await Assert.That(defaultConsumer.GroupId).IsEqualTo("default-group");
+        await Assert.That(defaultConsumer.AutoOffsetReset).IsEqualTo(AutoOffsetReset.Latest);
+        await Assert.That(ordersProducer.BootstrapServers).IsEquivalentTo(["aspire-orders:9092"]);
+        await Assert.That(ordersProducer.ClientId).IsEqualTo("orders-producer");
+        await Assert.That(ordersProducer.CompressionType).IsEqualTo(CompressionType.Lz4);
+        await Assert.That(ordersProducer.Acks).IsEqualTo(Acks.All);
+        await Assert.That(ordersProducer.Retries).IsEqualTo(7);
+        await Assert.That(ordersConsumer.BootstrapServers).IsEquivalentTo(["aspire-orders:9092"]);
+        await Assert.That(ordersConsumer.ClientId).IsEqualTo("orders-consumer");
+        await Assert.That(ordersConsumer.GroupId).IsEqualTo("orders-group");
+        await Assert.That(ordersConsumer.AutoOffsetReset).IsEqualTo(AutoOffsetReset.Earliest);
+        await Assert.That(ordersConsumer.FetchMinBytes).IsEqualTo(4096);
     }
 
     [Test]
