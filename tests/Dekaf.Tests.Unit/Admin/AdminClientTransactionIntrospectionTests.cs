@@ -166,6 +166,7 @@ public sealed class AdminClientTransactionIntrospectionTests
         await Assert.That(descriptions.Keys).IsEquivalentTo(["tx-a", "tx-b"]);
         await Assert.That(descriptions["tx-a"].CoordinatorId).IsEqualTo(1);
         await Assert.That(descriptions["tx-b"].CoordinatorId).IsEqualTo(2);
+        await Assert.That(descriptions["tx-a"].TransactionLastUpdateTimeMs).IsEqualTo(1700000004321);
         await Assert.That(descriptions["tx-a"].TopicPartitions).IsEquivalentTo(
             [new TopicPartition("orders", 0), new TopicPartition("orders", 1)]);
 
@@ -173,6 +174,58 @@ public sealed class AdminClientTransactionIntrospectionTests
             Arg.Is<FindCoordinatorRequest>(r => r != null && r.Key == "tx-a" && r.KeyType == CoordinatorType.Transaction),
             Arg.Any<short>(),
             Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DescribeTransactionsAsync_V0Coordinator_UsesFallbackAndSurfacesUnknownLastUpdate()
+    {
+        var (admin, connections) = CreateAdminWithMockConnections(describeTransactionsMaxVersion: 0);
+        SetupTransactionCoordinatorLookup(connections[1], coordinatorId: 1);
+        connections[1].SendAsync<DescribeTransactionsRequest, DescribeTransactionsResponse>(
+                Arg.Any<DescribeTransactionsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(callInfo => ValueTask.FromResult(CreateDescribeTransactionsResponse(
+                callInfo.Arg<DescribeTransactionsRequest>()!,
+                producerId: 101,
+                lastUpdateTimeMs: null)));
+
+        var descriptions = await admin.DescribeTransactionsAsync(["tx-a"]);
+
+        await Assert.That(descriptions["tx-a"].TransactionLastUpdateTimeMs).IsNull();
+        await connections[1].Received(1).SendAsync<DescribeTransactionsRequest, DescribeTransactionsResponse>(
+            Arg.Any<DescribeTransactionsRequest>(),
+            0,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task DescribeTransactionsAsync_MultipleCoordinators_NegotiatesEachConnectionIndependently()
+    {
+        var metadata = CreateMetadataResponse();
+        var connections = new Dictionary<int, VersionedTransactionConnection>
+        {
+            [1] = new VersionedTransactionConnection(1, describeTransactionsMaxVersion: 0, metadata),
+            [2] = new VersionedTransactionConnection(2, describeTransactionsMaxVersion: 1, metadata)
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => ValueTask.FromResult<IKafkaConnection>(connections[call.ArgAt<int>(0)]));
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connections[1]));
+        var metadataManager = new MetadataManager(pool, ["localhost:9092"]);
+        metadataManager.Metadata.Update(metadata);
+        await using var admin = new AdminClient(
+            new AdminClientOptions { BootstrapServers = ["localhost:9092"] },
+            pool,
+            metadataManager);
+
+        var descriptions = await admin.DescribeTransactionsAsync(["tx-a", "tx-b"]);
+
+        await Assert.That(connections[1].DescribeTransactionsVersions).IsEquivalentTo([(short)0]);
+        await Assert.That(connections[2].DescribeTransactionsVersions).IsEquivalentTo([(short)1]);
+        await Assert.That(descriptions["tx-a"].TransactionLastUpdateTimeMs).IsNull();
+        await Assert.That(descriptions["tx-b"].TransactionLastUpdateTimeMs).IsEqualTo(1700000004321);
     }
 
     [Test]
@@ -569,7 +622,8 @@ public sealed class AdminClientTransactionIntrospectionTests
     private static DescribeTransactionsResponse CreateDescribeTransactionsResponse(
         DescribeTransactionsRequest request,
         long producerId,
-        ErrorCode errorCode = ErrorCode.None)
+        ErrorCode errorCode = ErrorCode.None,
+        long? lastUpdateTimeMs = 1700000004321)
     {
         return new DescribeTransactionsResponse
         {
@@ -580,6 +634,7 @@ public sealed class AdminClientTransactionIntrospectionTests
                 TransactionState = "Ongoing",
                 TransactionTimeoutMs = 60000,
                 TransactionStartTimeMs = 1700000000000,
+                TransactionLastUpdateTimeMs = lastUpdateTimeMs,
                 ProducerId = producerId,
                 ProducerEpoch = 3,
                 Topics =
@@ -665,7 +720,8 @@ public sealed class AdminClientTransactionIntrospectionTests
         bool includeDescribeProducersApi = true,
         bool includeInitProducerIdApi = true,
         bool includeWriteTxnMarkersApi = true,
-        short listTransactionsMaxVersion = 2)
+        short listTransactionsMaxVersion = 2,
+        short describeTransactionsMaxVersion = 1)
     {
         var connections = new Dictionary<int, IKafkaConnection>
         {
@@ -694,7 +750,7 @@ public sealed class AdminClientTransactionIntrospectionTests
         if (includeListTransactionsApi)
             metadataManager.SetApiVersion(ApiKey.ListTransactions, 0, listTransactionsMaxVersion);
         if (includeDescribeTransactionsApi)
-            metadataManager.SetApiVersion(ApiKey.DescribeTransactions, 0, 0);
+            metadataManager.SetApiVersion(ApiKey.DescribeTransactions, 0, describeTransactionsMaxVersion);
         if (includeDescribeProducersApi)
             metadataManager.SetApiVersion(ApiKey.DescribeProducers, 0, 0);
         if (includeInitProducerIdApi)
@@ -786,6 +842,109 @@ public sealed class AdminClientTransactionIntrospectionTests
         connection.Port.Returns(9090 + brokerId);
         connection.IsConnected.Returns(true);
         return connection;
+    }
+
+    private sealed class VersionedTransactionConnection(
+        int brokerId,
+        short describeTransactionsMaxVersion,
+        MetadataResponse metadata) : IKafkaConnection, IKafkaCapabilityProvider
+    {
+        public int BrokerId => brokerId;
+        public string Host => $"broker-{brokerId}";
+        public int Port => 9090 + brokerId;
+        public bool IsConnected => true;
+        public KafkaConnectionCapabilities Capabilities { get; } =
+            KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+            {
+                ErrorCode = ErrorCode.None,
+                ApiKeys =
+                [
+                    new ApiVersion(ApiKey.Metadata, 9, MetadataRequest.HighestSupportedVersion),
+                    new ApiVersion(ApiKey.FindCoordinator, 4, 5),
+                    new ApiVersion(ApiKey.DescribeTransactions, 0, describeTransactionsMaxVersion)
+                ]
+            });
+        internal List<short> DescribeTransactionsVersions { get; } = [];
+
+        public ValueTask<TResponse> SendAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse
+        {
+            IKafkaResponse response = request switch
+            {
+                MetadataRequest => metadata,
+                FindCoordinatorRequest findCoordinator => CreateFindCoordinatorResponse(findCoordinator),
+                DescribeTransactionsRequest describeTransactions => CreateDescribeResponse(
+                    describeTransactions,
+                    apiVersion),
+                _ => throw new NotSupportedException(typeof(TRequest).Name)
+            };
+            return ValueTask.FromResult((TResponse)response);
+        }
+
+        private static FindCoordinatorResponse CreateFindCoordinatorResponse(FindCoordinatorRequest request)
+        {
+            var coordinatorId = request.Key == "tx-b" ? 2 : 1;
+            return new FindCoordinatorResponse
+            {
+                Coordinators =
+                [
+                    new Coordinator
+                    {
+                        Key = request.Key,
+                        NodeId = coordinatorId,
+                        Host = $"broker-{coordinatorId}",
+                        Port = 9090 + coordinatorId,
+                        ErrorCode = ErrorCode.None
+                    }
+                ]
+            };
+        }
+
+        private DescribeTransactionsResponse CreateDescribeResponse(
+            DescribeTransactionsRequest request,
+            short apiVersion)
+        {
+            DescribeTransactionsVersions.Add(apiVersion);
+            return CreateDescribeTransactionsResponse(
+                request,
+                producerId: 100 + brokerId,
+                lastUpdateTimeMs: apiVersion >= 1 ? 1700000004321 : null);
+        }
+
+        public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
+
+        public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+            TRequest request,
+            short apiVersion,
+            CancellationToken cancellationToken = default)
+            where TRequest : IKafkaRequest<TResponse>
+            where TResponse : IKafkaResponse => throw new NotSupportedException();
     }
 
     private static void SetInstanceField<T>(object target, string name, T value)

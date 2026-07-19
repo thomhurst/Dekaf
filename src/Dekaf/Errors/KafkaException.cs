@@ -608,7 +608,7 @@ public sealed class AuthorizationException : KafkaException
 /// <summary>
 /// Exception thrown when serialization or deserialization fails.
 /// </summary>
-public sealed class SerializationException : KafkaException
+public class SerializationException : KafkaException
 {
     public SerializationException() : base()
     {
@@ -645,4 +645,176 @@ public sealed class SerializationException : KafkaException
     /// The component (key or value) that failed to serialize.
     /// </summary>
     public SerializationComponent Component { get; init; }
+}
+
+/// <summary>
+/// Identifies which record component failed deserialization.
+/// </summary>
+public enum DeserializationExceptionOrigin
+{
+    /// <summary>The record key failed deserialization.</summary>
+    Key,
+
+    /// <summary>The record value failed deserialization.</summary>
+    Value
+}
+
+/// <summary>
+/// Exception thrown when a consumed record key or value cannot be deserialized.
+/// Carries an owned snapshot of the failed record so callers can inspect, retry, skip,
+/// or publish it after the consumer releases its pooled fetch buffer.
+/// </summary>
+/// <remarks>
+/// <see cref="KeyData"/>, <see cref="ValueData"/>, and header values are copied only on
+/// deserialization failure. A <see langword="null"/> key or value remains <see langword="null"/>;
+/// an empty non-null key or value is represented by an empty array. The returned arrays are
+/// owned by this exception and remain valid for its lifetime.
+/// </remarks>
+public sealed class RecordDeserializationException : SerializationException
+{
+    /// <summary>
+    /// Creates a record deserialization exception and takes owned snapshots of the supplied data.
+    /// </summary>
+    public RecordDeserializationException(
+        DeserializationExceptionOrigin origin,
+        TopicPartition topicPartition,
+        long offset,
+        long timestampMs,
+        Consumer.TimestampType timestampType,
+        ReadOnlyMemory<byte>? keyData,
+        ReadOnlyMemory<byte>? valueData,
+        IReadOnlyList<Header>? headers,
+        Exception innerException)
+        : base(
+            CreateMessage(origin, topicPartition, offset),
+            innerException,
+            topicPartition.Topic,
+            ToSerializationComponent(origin))
+    {
+        Origin = origin;
+        TopicPartition = topicPartition;
+        Offset = offset;
+        TimestampMs = timestampMs;
+        TimestampType = timestampType;
+        KeyData = CopyData(keyData);
+        ValueData = CopyData(valueData);
+        Headers = CopyHeaders(headers);
+    }
+
+    internal RecordDeserializationException(
+        DeserializationExceptionOrigin origin,
+        TopicPartition topicPartition,
+        long offset,
+        long timestampMs,
+        Consumer.TimestampType timestampType,
+        ReadOnlyMemory<byte> keyData,
+        bool isKeyNull,
+        ReadOnlyMemory<byte> valueData,
+        bool isValueNull,
+        Header[]? headers,
+        int headerCount,
+        Exception innerException)
+        : base(
+            CreateMessage(origin, topicPartition, offset),
+            innerException,
+            topicPartition.Topic,
+            ToSerializationComponent(origin))
+    {
+        Origin = origin;
+        TopicPartition = topicPartition;
+        Offset = offset;
+        TimestampMs = timestampMs;
+        TimestampType = timestampType;
+        KeyData = isKeyNull ? null : keyData.ToArray();
+        ValueData = isValueNull ? null : valueData.ToArray();
+        Headers = CopyHeaders(headers, headerCount);
+    }
+
+    /// <summary>The record component whose deserializer failed.</summary>
+    public DeserializationExceptionOrigin Origin { get; }
+
+    /// <summary>The topic and partition containing the failed record.</summary>
+    public TopicPartition TopicPartition { get; }
+
+    /// <summary>The failed record offset.</summary>
+    public long Offset { get; }
+
+    /// <summary>The failed record timestamp as raw Unix milliseconds.</summary>
+    public long TimestampMs { get; }
+
+    /// <summary>The failed record timestamp.</summary>
+    public DateTimeOffset Timestamp => DateTimeOffset.FromUnixTimeMilliseconds(TimestampMs);
+
+    /// <summary>The failed record timestamp type.</summary>
+    public Consumer.TimestampType TimestampType { get; }
+
+    /// <summary>
+    /// Owned raw key bytes, or <see langword="null"/> when the Kafka record key was null.
+    /// </summary>
+    public byte[]? KeyData { get; }
+
+    /// <summary>
+    /// Owned raw value bytes, or <see langword="null"/> when the Kafka record value was null.
+    /// </summary>
+    public byte[]? ValueData { get; }
+
+    /// <summary>
+    /// Owned record headers in wire order. Duplicate keys and null values are preserved.
+    /// </summary>
+    public IReadOnlyList<Header> Headers { get; }
+
+    private static string CreateMessage(
+        DeserializationExceptionOrigin origin,
+        TopicPartition topicPartition,
+        long offset)
+        => $"Failed to deserialize record {GetOriginName(origin)} for " +
+           $"{topicPartition.Topic}-{topicPartition.Partition} at offset {offset}";
+
+    private static string GetOriginName(DeserializationExceptionOrigin origin) => origin switch
+    {
+        DeserializationExceptionOrigin.Key => "key",
+        DeserializationExceptionOrigin.Value => "value",
+        _ => throw new ArgumentOutOfRangeException(nameof(origin), origin, null)
+    };
+
+    private static SerializationComponent ToSerializationComponent(
+        DeserializationExceptionOrigin origin) => origin switch
+    {
+        DeserializationExceptionOrigin.Key => SerializationComponent.Key,
+        DeserializationExceptionOrigin.Value => SerializationComponent.Value,
+        _ => throw new ArgumentOutOfRangeException(nameof(origin), origin, null)
+    };
+
+    private static byte[]? CopyData(ReadOnlyMemory<byte>? data)
+        => data?.ToArray();
+
+    private static IReadOnlyList<Header> CopyHeaders(IReadOnlyList<Header>? headers)
+    {
+        if (headers is null || headers.Count == 0)
+            return Array.Empty<Header>();
+
+        var copy = new Header[headers.Count];
+        for (var i = 0; i < headers.Count; i++)
+            copy[i] = CopyHeader(headers[i]);
+
+        return new ReadOnlyCollection<Header>(copy);
+    }
+
+    private static IReadOnlyList<Header> CopyHeaders(Header[]? headers, int headerCount)
+    {
+        if (headers is null || headerCount == 0)
+            return Array.Empty<Header>();
+
+        var copy = new Header[headerCount];
+        for (var i = 0; i < headerCount; i++)
+            copy[i] = CopyHeader(headers[i]);
+
+        return new ReadOnlyCollection<Header>(copy);
+    }
+
+    private static Header CopyHeader(Header header)
+        => new(
+            header.Key,
+            header.IsValueNull ? ReadOnlyMemory<byte>.Empty : header.Value.ToArray(),
+            header.IsValueNull);
 }

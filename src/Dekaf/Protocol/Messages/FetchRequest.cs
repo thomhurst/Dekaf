@@ -1,3 +1,4 @@
+using System.Text;
 using Dekaf.Producer;
 
 namespace Dekaf.Protocol.Messages;
@@ -14,7 +15,7 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
 
     public static ApiKey ApiKey => ApiKey.Fetch;
     public static short LowestSupportedVersion => 12;
-    public static short HighestSupportedVersion => 16;
+    public static short HighestSupportedVersion => 18;
 
     /// <summary>
     /// Cluster ID (v12+).
@@ -116,11 +117,7 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
-        if (version >= 15)
-        {
-            ReplicaState?.Write(ref writer, version);
-        }
-        else
+        if (version < 15)
         {
             writer.WriteInt32(ReplicaId);
         }
@@ -144,8 +141,40 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
             version);
 
         writer.WriteCompactString(RackId ?? string.Empty);
-        writer.WriteEmptyTaggedFields();
+        WriteTaggedFields(ref writer, version);
     }
+
+    private void WriteTaggedFields(ref KafkaProtocolWriter writer, short version)
+    {
+        var clusterId = version >= 12 ? ClusterId : null;
+        var replicaState = version >= 15 ? ReplicaState : null;
+        writer.WriteUnsignedVarInt((clusterId is not null ? 1 : 0) + (replicaState is not null ? 1 : 0));
+
+        if (clusterId is not null)
+        {
+            var byteCount = Encoding.UTF8.GetByteCount(clusterId);
+            var compactSize = checked(GetUnsignedVarIntSize(byteCount + 1) + byteCount);
+            writer.WriteUnsignedVarInt(0);
+            writer.WriteUnsignedVarInt(compactSize);
+            writer.WriteCompactString(clusterId);
+        }
+
+        if (replicaState is not null)
+        {
+            writer.WriteUnsignedVarInt(1);
+            writer.WriteUnsignedVarInt(sizeof(int) + sizeof(long) + 1);
+            replicaState.Write(ref writer, version);
+        }
+    }
+
+    private static int GetUnsignedVarIntSize(int value) => value switch
+    {
+        < 0x80 => 1,
+        < 0x4000 => 2,
+        < 0x20_0000 => 3,
+        < 0x1000_0000 => 4,
+        _ => 5
+    };
 }
 
 /// <summary>
@@ -223,6 +252,16 @@ public sealed class FetchRequestPartition
     /// </summary>
     public required int PartitionMaxBytes { get; init; }
 
+    /// <summary>
+    /// Replica directory ID (v17+). Follower-fetcher field; normal consumers use the zero UUID default.
+    /// </summary>
+    public Guid ReplicaDirectoryId { get; internal init; }
+
+    /// <summary>
+    /// Follower-known high watermark (v18+). Follower-fetcher field; normal consumers use the maximum-value default.
+    /// </summary>
+    public long HighWatermark { get; internal init; } = long.MaxValue;
+
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteInt32(Partition);
@@ -231,7 +270,24 @@ public sealed class FetchRequestPartition
         writer.WriteInt32(LastFetchedEpoch);
         writer.WriteInt64(LogStartOffset);
         writer.WriteInt32(PartitionMaxBytes);
-        writer.WriteEmptyTaggedFields();
+
+        var hasReplicaDirectoryId = version >= 17 && ReplicaDirectoryId != Guid.Empty;
+        var hasHighWatermark = version >= 18 && HighWatermark != long.MaxValue;
+        writer.WriteUnsignedVarInt((hasReplicaDirectoryId ? 1 : 0) + (hasHighWatermark ? 1 : 0));
+
+        if (hasReplicaDirectoryId)
+        {
+            writer.WriteUnsignedVarInt(0);
+            writer.WriteUnsignedVarInt(16);
+            writer.WriteUuid(ReplicaDirectoryId);
+        }
+
+        if (hasHighWatermark)
+        {
+            writer.WriteUnsignedVarInt(1);
+            writer.WriteUnsignedVarInt(sizeof(long));
+            writer.WriteInt64(HighWatermark);
+        }
     }
 }
 

@@ -1226,6 +1226,7 @@ public sealed class AdminClient : IAdminClient
                         TransactionState = state.TransactionState,
                         TransactionTimeoutMs = state.TransactionTimeoutMs,
                         TransactionStartTimeMs = state.TransactionStartTimeMs,
+                        TransactionLastUpdateTimeMs = state.TransactionLastUpdateTimeMs,
                         ProducerId = state.ProducerId,
                         ProducerEpoch = state.ProducerEpoch,
                         CoordinatorId = coordinatorId,

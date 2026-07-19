@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
 using Dekaf.Protocol;
@@ -42,6 +43,29 @@ public sealed class FetchSessionHandlerTests
         await Assert.That(changed.Topics[0].Partitions).Count().IsEqualTo(1);
         await Assert.That(changed.Topics[0].Partitions[0].Partition).IsEqualTo(0);
         await Assert.That(changed.Topics[0].Partitions[0].FetchOffset).IsEqualTo(101);
+    }
+
+    [Test]
+    public async Task IncrementalSession_ContinuesAcrossV16AndV18Requests()
+    {
+        var handler = new FetchSessionHandler();
+        var topics = Topics(("topic-a", 0, 100, 1024));
+
+        handler.Build(topics, clusterMetadata: null);
+        handler.HandleResponse(Response(sessionId: 42));
+
+        var version18 = handler.Build(topics, clusterMetadata: null);
+        var version18Bytes = Serialize(version18, version: 18);
+        handler.HandleResponse(Response(sessionId: 42));
+
+        var version16 = handler.Build(topics, clusterMetadata: null);
+        var version16Bytes = Serialize(version16, version: 16);
+
+        await Assert.That(version18.SessionId).IsEqualTo(42);
+        await Assert.That(version18.SessionEpoch).IsEqualTo(1);
+        await Assert.That(version16.SessionId).IsEqualTo(42);
+        await Assert.That(version16.SessionEpoch).IsEqualTo(2);
+        await Assert.That(version18Bytes.Length).IsEqualTo(version16Bytes.Length);
     }
 
     [Test]
@@ -134,6 +158,23 @@ public sealed class FetchSessionHandlerTests
         ErrorCode = errorCode,
         Responses = []
     };
+
+    private static byte[] Serialize(FetchSessionBuildResult build, short version)
+    {
+        var request = new FetchRequest
+        {
+            MaxWaitMs = 500,
+            MinBytes = 1,
+            SessionId = build.SessionId,
+            SessionEpoch = build.SessionEpoch,
+            Topics = build.Topics,
+            ForgottenTopicsData = build.ForgottenTopicsData
+        };
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        request.Write(ref writer, version);
+        return buffer.WrittenSpan.ToArray();
+    }
 
     private static List<FetchRequestTopic> Topics(params (string Topic, int Partition, long Offset, int MaxBytes)[] partitions)
     {

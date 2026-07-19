@@ -97,7 +97,7 @@ public sealed class OffsetStoreTimingTests
         await Assert.That(TryConsumeOneFromPendingFetches(consumer, out var first)).IsTrue();
         await Assert.That(first.Offset).IsEqualTo(20L);
         await Assert.That(() => TryConsumeOneFromPendingFetches(consumer, out _))
-            .Throws<InvalidOperationException>();
+            .Throws<RecordDeserializationException>();
 
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
         await Assert.That(GetPositions(consumer)[tp]).IsEqualTo(21L);
@@ -133,7 +133,7 @@ public sealed class OffsetStoreTimingTests
         {
             await foreach (var result in consumer.ConsumeAsync(CancellationToken.None))
                 await Assert.That(result.Offset).IsEqualTo(20L);
-        }).Throws<InvalidOperationException>();
+        }).Throws<RecordDeserializationException>();
 
         await Assert.That(GetDirtyStoredOffsets(consumer)[tp]).IsEqualTo(21L);
         await Assert.That(GetPositions(consumer)[tp]).IsEqualTo(21L);
@@ -533,7 +533,7 @@ public sealed class OffsetStoreTimingTests
             {
                 records.MoveNext();
             }
-            catch (InvalidOperationException)
+            catch (RecordDeserializationException)
             {
                 threw = true;
             }
@@ -1010,7 +1010,7 @@ public sealed class OffsetStoreTimingTests
         consumer.Assign(partition);
 
         await Assert.That(async () => await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1)))
-            .Throws<InvalidOperationException>();
+            .Throws<RecordDeserializationException>();
         var replay = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
 
         await Assert.That(replay!.Value.Offset).IsEqualTo(0L);

@@ -1,3 +1,4 @@
+using Dekaf.Errors;
 using Dekaf.Serialization;
 
 namespace Dekaf.Consumer.DeadLetter;
@@ -40,6 +41,48 @@ public static class DeadLetterHeaders
     {
         // Hoisted: each Headers access on the readonly struct constructs a new lazy wrapper.
         var originalHeaders = result.Headers;
+        return Build(
+            originalHeaders,
+            result.Topic,
+            result.Partition,
+            result.Offset,
+            exception,
+            failureCount,
+            includeException);
+    }
+
+    /// <summary>
+    /// Builds DLQ headers directly from a failed deserialization record.
+    /// </summary>
+    /// <param name="exception">The record deserialization failure.</param>
+    /// <param name="failureCount">The number of processing failures.</param>
+    /// <param name="includeException">Whether to include exception details in headers.</param>
+    /// <returns>A Headers collection with original headers preserved and DLQ metadata appended.</returns>
+    public static Headers Build(
+        RecordDeserializationException exception,
+        int failureCount,
+        bool includeException)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return Build(
+            exception.Headers,
+            exception.TopicPartition.Topic,
+            exception.TopicPartition.Partition,
+            exception.Offset,
+            exception,
+            failureCount,
+            includeException);
+    }
+
+    private static Headers Build(
+        IReadOnlyList<Header> originalHeaders,
+        string topic,
+        int partition,
+        long offset,
+        Exception exception,
+        int failureCount,
+        bool includeException)
+    {
         var dlqHeaderCount = includeException ? 7 : 5;
         var headers = new Headers(originalHeaders.Count + dlqHeaderCount);
 
@@ -50,9 +93,9 @@ public static class DeadLetterHeaders
         }
 
         // Source metadata
-        var sourceTopic = RetryTopicHeaders.GetSourceTopic(originalHeaders) ?? result.Topic;
-        var sourcePartition = RetryTopicHeaders.GetSourcePartition(originalHeaders) ?? result.Partition;
-        var sourceOffset = RetryTopicHeaders.GetSourceOffset(originalHeaders) ?? result.Offset;
+        var sourceTopic = RetryTopicHeaders.GetSourceTopic(originalHeaders) ?? topic;
+        var sourcePartition = RetryTopicHeaders.GetSourcePartition(originalHeaders) ?? partition;
+        var sourceOffset = RetryTopicHeaders.GetSourceOffset(originalHeaders) ?? offset;
         headers.Add(SourceTopicKey, sourceTopic);
         headers.Add(SourcePartitionKey, DeadLetterHeaderFormatting.FormatInt(sourcePartition));
         headers.Add(SourceOffsetKey, DeadLetterHeaderFormatting.FormatLong(sourceOffset));

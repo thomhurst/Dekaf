@@ -114,8 +114,41 @@ public sealed class TransactionIntrospectionMessageTests
         await Assert.That(state.TransactionState).IsEqualTo("Ongoing");
         await Assert.That(state.ProducerId).IsEqualTo(77);
         await Assert.That(state.ProducerEpoch).IsEqualTo((short)3);
+        await Assert.That(state.TransactionLastUpdateTimeMs).IsNull();
         await Assert.That(state.Topics[0].Topic).IsEqualTo("orders");
         await Assert.That(state.Topics[0].Partitions).IsEquivalentTo([0, 1]);
+    }
+
+    [Test]
+    public async Task DescribeTransactionsResponse_V1_ParsesLastUpdateTimestamp()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        writer.WriteInt32(0);
+        writer.WriteUnsignedVarInt(2);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactString("tx-orders");
+        writer.WriteCompactString("CompleteCommit");
+        writer.WriteInt32(60000);
+        writer.WriteInt64(1700000000000);
+        writer.WriteInt64(1700000004321);
+        writer.WriteInt64(77);
+        writer.WriteInt16(3);
+        writer.WriteUnsignedVarInt(1);
+        writer.WriteEmptyTaggedFields();
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (DescribeTransactionsResponse)DescribeTransactionsResponse.Read(ref reader, version: 1);
+        var remaining = reader.Remaining;
+
+        var state = response.TransactionStates[0];
+        await Assert.That(state.TransactionState).IsEqualTo("CompleteCommit");
+        await Assert.That(state.TransactionStartTimeMs).IsEqualTo(1700000000000);
+        await Assert.That(state.TransactionLastUpdateTimeMs).IsEqualTo(1700000004321);
+        await Assert.That(state.ProducerId).IsEqualTo(77);
+        await Assert.That(remaining).IsEqualTo(0);
     }
 
     [Test]

@@ -1,0 +1,38 @@
+﻿Response: Dekaf.Protocol.Messages.DescribeTransactionsResponse
+API key: DescribeTransactions (65)
+Version: 1
+Header version: 1
+Body length: 89 bytes
+
+0000: 00 00 00 11 02 00 00 11  77 69 72 65 2D 74 72 61 |........wire-tra|
+0010: 6E 73 61 63 74 69 6F 6E  0F 43 6F 6D 70 6C 65 74 |nsaction.Complet|
+0020: 65 43 6F 6D 6D 69 74 00  00 EA 60 00 00 01 8B CF |eCommit...`.....|
+0030: E5 68 00 00 00 01 8B CF  E5 78 E1 00 00 00 00 00 |.h.......x......|
+0040: 00 00 4D 00 03 02 07 6F  72 64 65 72 73 03 00 00 |..M....orders...|
+0050: 00 00 00 00 00 01 00 00  00                      |.........|
+
+Decoded:
+{
+  "ThrottleTimeMs": 17,
+  "TransactionStates": [
+    {
+      "ErrorCode": "None",
+      "ProducerEpoch": 3,
+      "ProducerId": 77,
+      "Topics": [
+        {
+          "Partitions": [
+            0,
+            1
+          ],
+          "Topic": "orders"
+        }
+      ],
+      "TransactionLastUpdateTimeMs": 1700000004321,
+      "TransactionStartTimeMs": 1700000000000,
+      "TransactionState": "CompleteCommit",
+      "TransactionTimeoutMs": 60000,
+      "TransactionalId": "wire-transaction"
+    }
+  ]
+}

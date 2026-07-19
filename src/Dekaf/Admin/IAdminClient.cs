@@ -786,6 +786,14 @@ public sealed class TransactionDescription
     public required string TransactionState { get; init; }
     public int TransactionTimeoutMs { get; init; }
     public long TransactionStartTimeMs { get; init; }
+
+    /// <summary>
+    /// Unix timestamp in milliseconds when the broker last changed the transaction state,
+    /// for both ongoing and completed transactions.
+    /// Null when the coordinator responds with DescribeTransactions v0.
+    /// </summary>
+    public long? TransactionLastUpdateTimeMs { get; init; }
+
     public long ProducerId { get; init; }
     public short ProducerEpoch { get; init; }
     public int CoordinatorId { get; init; }
