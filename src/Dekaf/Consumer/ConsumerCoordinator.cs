@@ -1917,7 +1917,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
         await StopHeartbeatAsyncCore(cancellationToken).ConfigureAwait(false);
 
-        await _lock.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ResetMemberState();
