@@ -34,6 +34,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private readonly object _finalizedFeatureLock = new();
     private FinalizedFeatureSnapshot? _finalizedFeatures;
     private string? _finalizedFeatureClusterId;
+    private string? _trustedMetadataClusterId;
     private readonly SemaphoreSlim _initializeLock = new(1, 1);
     private volatile bool _initialized;
     private volatile bool _hasSuccessfulRefresh;
@@ -163,6 +164,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             observerPool.SetConnectionCapabilityObserver(ObserveConnectionCapabilities);
 
         ConfigureMetadataClusterCheck(connectionPool);
+        UpdateMetadataClusterId(connectionPool, Volatile.Read(ref _trustedMetadataClusterId));
     }
 
     private void ConfigureMetadataClusterCheck(IConnectionPool connectionPool)
@@ -183,6 +185,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private void UpdateMetadataClusterId(string? clusterId)
     {
+        Volatile.Write(ref _trustedMetadataClusterId, clusterId);
         UpdateMetadataClusterId(_connectionPool, clusterId);
         var additionalPool = Volatile.Read(ref _additionalBrokerRegistrationTarget);
         if (additionalPool is not null)
@@ -191,6 +194,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     private void BeginMetadataRebootstrap()
     {
+        Volatile.Write(ref _trustedMetadataClusterId, null);
         if (_connectionPool is IMetadataClusterIdentityPool identityPool)
             identityPool.BeginMetadataRebootstrap();
 
@@ -1323,10 +1327,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 endpoints.Add((broker.NodeId, broker.Host, broker.Port));
             }
 
-            // Bootstrap endpoints are unauthenticated by KIP-1242 and therefore only
-            // eligible before any broker metadata is known. Explicit rebootstrap uses
-            // freshly resolved bootstrap endpoints through ExecuteRebootstrapAsync.
-            if (currentBrokers.Count == 0)
+            // Once KIP-1242 has learned a trusted cluster identity, anonymous bootstrap
+            // endpoints cannot be a fallback for normal refreshes. Explicit rebootstrap
+            // uses freshly resolved bootstrap endpoints through ExecuteRebootstrapAsync.
+            var hasEnforcedClusterIdentity = _options.MetadataClusterCheckEnabled
+                && _options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap
+                && Volatile.Read(ref _trustedMetadataClusterId) is not null;
+            if (!hasEnforcedClusterIdentity)
             {
                 foreach (var endpoint in _bootstrapEndpoints)
                 {

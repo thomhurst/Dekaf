@@ -549,6 +549,33 @@ public sealed class MetadataRecoveryStrategyTests
         await Assert.That(identity.GetExpectedBrokerIdentity(7)).IsNull();
     }
 
+    [Test]
+    public async Task AdditionalPool_DoesNotTrustRebootstrapRequiredSnapshotClusterId()
+    {
+        await using var primaryPool = new ConnectionPool();
+        await using var additionalPool = new ConnectionPool();
+        await using var manager = new MetadataManager(
+            primaryPool,
+            ["localhost:9092"],
+            new MetadataOptions
+            {
+                MetadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap,
+                MetadataClusterCheckEnabled = true
+            });
+        manager.Metadata.Update(new MetadataResponse
+        {
+            ErrorCode = ErrorCode.RebootstrapRequired,
+            ClusterId = "untrusted-cluster",
+            Brokers = [],
+            Topics = []
+        });
+
+        manager.SetAdditionalBrokerRegistrationTarget(additionalPool);
+
+        var identity = GetField<MetadataClusterIdentity>(additionalPool, "_metadataClusterIdentity");
+        await Assert.That(identity.GetExpectedBrokerIdentity(7)).IsNull();
+    }
+
     #endregion
 
     #region Rebootstrap Trigger Timing

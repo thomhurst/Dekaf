@@ -31,6 +31,14 @@ public class MetadataManagerTests
             bootstrapServers: ["localhost:9092"]);
     }
 
+    private static void SetTrustedClusterId(MetadataManager manager, string clusterId) =>
+        typeof(MetadataManager).GetMethod(
+            "UpdateMetadataClusterId",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: [typeof(string)],
+            modifiers: null)!.Invoke(manager, [clusterId]);
+
     [Test]
     [Arguments((short)0, (short)3, (short)2, (short)6, (short)3)]
     [Arguments((short)2, (short)6, (short)0, (short)3, (short)3)]
@@ -169,6 +177,7 @@ public class MetadataManagerTests
             (2, "broker2", 9092),
             (3, "broker3", 9092));
         manager.Metadata.Update(response);
+        SetTrustedClusterId(manager, "cluster-a");
 
         var endpoints = manager.GetEndpointsToTry();
 
@@ -178,7 +187,6 @@ public class MetadataManagerTests
         await Assert.That(endpoints[0]).IsEquivalentTo((1, "broker1", 9092));
         await Assert.That(endpoints[1]).IsEquivalentTo((2, "broker2", 9092));
         await Assert.That(endpoints[2]).IsEquivalentTo((3, "broker3", 9092));
-
     }
 
     [Test]
@@ -230,8 +238,8 @@ public class MetadataManagerTests
         var endpoints2 = manager.GetEndpointsToTry();
 
         // Verify cache was invalidated and new broker appears
-        await Assert.That(endpoints1.Count).IsEqualTo(2);
-        await Assert.That(endpoints2.Count).IsEqualTo(3);
+        await Assert.That(endpoints1.Count).IsEqualTo(3); // 2 brokers + 1 bootstrap
+        await Assert.That(endpoints2.Count).IsEqualTo(4); // 3 brokers + 1 bootstrap
 
         // Verify new broker is in the list
         await Assert.That(endpoints2.Any(e => e.Host == "broker3" && e.Port == 9092)).IsTrue();
