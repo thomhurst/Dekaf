@@ -915,12 +915,6 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (_metadataManager.HasLegacyApiVersionSnapshot &&
-            !_metadataManager.HasApiKey(Protocol.ApiKey.ListTransactions))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support ListTransactions (API key 66).");
-        }
-
         var opts = options ?? new ListTransactionsOptions();
 
         return await WithRetryAsync(async () =>
@@ -1016,12 +1010,6 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (_metadataManager.HasLegacyApiVersionSnapshot &&
-            !_metadataManager.HasApiKey(Protocol.ApiKey.DescribeTransactions))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support DescribeTransactions (API key 65).");
-        }
-
         var transactionalIdList = transactionalIds.ToList();
         if (transactionalIdList.Count == 0)
         {
@@ -1100,12 +1088,6 @@ public sealed class AdminClient : IAdminClient
         ArgumentNullException.ThrowIfNull(partitions);
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
-        if (_metadataManager.HasLegacyApiVersionSnapshot &&
-            !_metadataManager.HasApiKey(Protocol.ApiKey.DescribeProducers))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support DescribeProducers (API key 61).");
-        }
 
         var partitionList = partitions.ToList();
         if (partitionList.Count == 0)
@@ -1210,12 +1192,6 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (_metadataManager.HasLegacyApiVersionSnapshot &&
-            !_metadataManager.HasApiKey(Protocol.ApiKey.InitProducerId))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support InitProducerId (API key 22).");
-        }
-
         var transactionalIdList = transactionalIds.ToList();
         if (transactionalIdList.Count == 0)
         {
@@ -1304,12 +1280,6 @@ public sealed class AdminClient : IAdminClient
         ArgumentNullException.ThrowIfNull(transaction);
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
-        if (_metadataManager.HasLegacyApiVersionSnapshot &&
-            !_metadataManager.HasApiKey(Protocol.ApiKey.WriteTxnMarkers))
-        {
-            throw new Errors.BrokerVersionException("Broker does not support WriteTxnMarkers (API key 27).");
-        }
 
         return await WithRetryAsync(async () =>
         {

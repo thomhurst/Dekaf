@@ -116,30 +116,6 @@ public class KafkaConnectionCapabilitiesTests
     }
 
     [Test]
-    public async Task LegacySnapshot_SeedsVersionlessMetadataApis()
-    {
-        var capabilities = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
-        {
-            ErrorCode = ErrorCode.None,
-            ApiKeys =
-            [
-                new ApiVersion(ApiKey.Metadata, 9, 13),
-                new ApiVersion(ApiKey.Produce, 3, 11)
-            ],
-            FinalizedFeatures = [new FinalizedFeature("transaction.version", 2, 0)]
-        });
-        await using var metadata = new MetadataManager(
-            Substitute.For<IConnectionPool>(),
-            ["unused:9092"]);
-
-        metadata.EnsureLegacyApiVersionSnapshot(capabilities);
-
-        await Assert.That(metadata.HasApiKey(ApiKey.Produce)).IsTrue();
-        await Assert.That(metadata.GetNegotiatedApiVersion(ApiKey.Produce, 3, 13)).IsEqualTo((short)11);
-        await Assert.That(metadata.GetFinalizedFeatureVersion("transaction.version")).IsEqualTo((short)2);
-    }
-
-    [Test]
     public async Task ConnectionPool_InFlightSendKeepsOriginalCapabilityGenerationDuringReplacement()
     {
         var releaseFirstSend = new TaskCompletionSource(

@@ -2154,9 +2154,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             TransactionVersionFeature);
         if (featureVersion != _currentTransactionFeatureVersion)
         {
-            throw new InvalidOperationException(
+            _transactionState = TransactionState.FatalError;
+            throw CreateTransactionException(
+                ErrorCode.UnsupportedVersion,
+                TransactionErrorClassification.Fatal,
                 "The coordinator transaction.version changed after producer initialization. " +
-                "Call InitTransactionsAsync() to acquire a fresh producer epoch before beginning another transaction.");
+                "Close the producer and initialize a new instance before beginning another transaction.");
         }
     }
 

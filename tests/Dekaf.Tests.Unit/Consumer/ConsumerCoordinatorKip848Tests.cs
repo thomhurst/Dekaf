@@ -266,6 +266,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
             Brokers = [new BrokerMetadata { NodeId = 0, Host = "localhost", Port = 9092 }],
             Topics = []
         });
+        SetupFindCoordinator();
 
         await using var coordinator = new ConsumerCoordinator(
             CreateConsumerProtocolOptions(), _connectionPool, noHeartbeatManager);
@@ -3109,6 +3110,7 @@ public sealed class ConsumerCoordinatorKip848Tests : IAsyncDisposable
     [Test]
     public async Task ConsumerProtocol_ServerSideRegex_BrokerWithoutV1_ThrowsBrokerVersionException()
     {
+        SetupFindCoordinator();
         var options = CreateConsumerProtocolOptions();
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
 

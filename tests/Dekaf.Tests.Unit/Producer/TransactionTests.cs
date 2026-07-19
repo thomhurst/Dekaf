@@ -496,6 +496,27 @@ public sealed class TransactionTests
     }
 
     [Test]
+    public async Task CommitAsync_FeatureDriftPreservesFatalState()
+    {
+        var preparedState = new PreparedTransactionState(42, 5);
+        await using var harness = BuildPreparedCompletionHarness(
+            preparedState,
+            currentProducerId: preparedState.ProducerId,
+            currentProducerEpoch: preparedState.ProducerEpoch);
+        harness.Producer._preparedTransactionState = PreparedTransactionState.Empty;
+        harness.Producer._transactionState = TransactionState.InTransaction;
+        await using var transaction = new Transaction<string, string>(harness.Producer);
+        SetFinalizedTransactionVersion(harness.Producer, 2);
+
+        var exception = await Assert.That(() => transaction.CommitAsync().AsTask())
+            .Throws<FatalTransactionException>();
+
+        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.UnsupportedVersion);
+        await Assert.That(harness.Producer._transactionState).IsEqualTo(TransactionState.FatalError);
+        await Assert.That(() => harness.Producer.BeginTransaction()).Throws<FatalTransactionException>();
+    }
+
+    [Test]
     public async Task CommitAfterRequestWrittenAsync_CallbackFailure_AbandonsResponse()
     {
         var preparedState = new PreparedTransactionState(1001, 4);

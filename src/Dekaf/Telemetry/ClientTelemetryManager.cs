@@ -249,14 +249,6 @@ internal sealed partial class ClientTelemetryManager : IAsyncDisposable
         Guid clientInstanceId,
         CancellationToken cancellationToken)
     {
-        if (_metadataManager.HasLegacyApiVersionSnapshot &&
-            (!_metadataManager.HasApiKey(ApiKey.GetTelemetrySubscriptions) ||
-             !_metadataManager.HasApiKey(ApiKey.PushTelemetry)))
-        {
-            Disable();
-            return null;
-        }
-
         try
         {
             var leasedConnection = await GetTelemetryConnectionAsync(cancellationToken).ConfigureAwait(false);

@@ -1562,23 +1562,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         string? subscribedTopicRegex,
         CancellationToken cancellationToken)
     {
-        if (_metadataManager.HasLegacyApiVersionSnapshot &&
-            !_metadataManager.HasApiKey(ApiKey.ConsumerGroupHeartbeat))
-        {
-            throw new BrokerVersionException(
-                "The connected Kafka broker does not support the ConsumerGroupHeartbeat API " +
-                "(KIP-848, introduced in Kafka 4.0). Dekaf's consumer requires Kafka 4.0 or later.");
-        }
-
-        if (_metadataManager.HasLegacyApiVersionSnapshot &&
-            subscribedTopicRegex is not null &&
-            !_metadataManager.SupportsApiVersion(ApiKey.ConsumerGroupHeartbeat, 1))
-        {
-            throw new BrokerVersionException(
-                "Server-side regex subscriptions require ConsumerGroupHeartbeat v1 " +
-                "(Kafka 4.1 or later). Use Subscribe(Func<string, bool>) for client-side filtering on older brokers.");
-        }
-
         UpdateSubscription(topics, subscribedTopicRegex);
 
         ConsumerHeartbeatResult heartbeatResult = default;
@@ -1677,7 +1660,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 }
                 catch (Exception ex) when (
                     ex is ObjectDisposedException ||
-                    (ex is Errors.KafkaException ke && ke is not Errors.GroupException && !cancellationToken.IsCancellationRequested))
+                    (ex is Errors.KafkaException ke &&
+                     ke is not Errors.GroupException and not BrokerVersionException &&
+                     !cancellationToken.IsCancellationRequested))
                 {
                     LogCoordinatorConnectionDisposed();
                     MarkCoordinatorUnknown();

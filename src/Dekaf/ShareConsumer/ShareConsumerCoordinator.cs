@@ -381,14 +381,6 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         StringSet topics,
         CancellationToken cancellationToken)
     {
-        if (_metadataManager.HasLegacyApiVersionSnapshot &&
-            !_metadataManager.HasApiKey(ApiKey.ShareGroupHeartbeat))
-        {
-            throw new BrokerVersionException(
-                "The connected Kafka broker does not support the ShareGroupHeartbeat API " +
-                "(KIP-932, introduced in Kafka 4.0). Share group consumption requires Kafka 4.0 or later.");
-        }
-
         _subscribedTopics = topics;
         Interlocked.Exchange(ref _subscriptionChanged, 1);
 
@@ -466,7 +458,9 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 }
                 catch (Exception ex) when (
                     ex is ObjectDisposedException ||
-                    (ex is KafkaException ke && ke is not GroupException && !cancellationToken.IsCancellationRequested))
+                    (ex is KafkaException ke &&
+                     ke is not GroupException and not BrokerVersionException &&
+                     !cancellationToken.IsCancellationRequested))
                 {
                     LogCoordinatorConnectionDisposed();
                     MarkCoordinatorUnknown();
