@@ -3881,7 +3881,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         catch (AuthenticationException ex) when (
             ex.ErrorCode == ErrorCode.SaslAuthenticationFailed
-            && _options.SaslCredentialProvider is null
+            && !_options.UsesDynamicSaslCredentials
             && _options.SaslMechanism is SaslMechanism.Plain
                 or SaslMechanism.ScramSha256
                 or SaslMechanism.ScramSha512)

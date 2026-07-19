@@ -662,7 +662,9 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         int maxConnectionsPerBroker,
         int producerMaxConnectionsPerBroker,
         int retryBackoffMs,
-        int retryBackoffMaxMs)
+        int retryBackoffMaxMs,
+        SaslMechanism saslMechanism,
+        bool usesDynamicSaslCredentials)
     {
         BootstrapServers = bootstrapServers;
         ConnectionPool = connectionPool;
@@ -675,6 +677,8 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         ProducerMaxConnectionsPerBroker = producerMaxConnectionsPerBroker;
         RetryBackoffMs = retryBackoffMs;
         RetryBackoffMaxMs = retryBackoffMaxMs;
+        SaslMechanism = saslMechanism;
+        UsesDynamicSaslCredentials = usesDynamicSaslCredentials;
     }
 
     public IReadOnlyList<string> BootstrapServers { get; }
@@ -688,6 +692,8 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
     public int ProducerMaxConnectionsPerBroker { get; }
     public int RetryBackoffMs { get; }
     public int RetryBackoffMaxMs { get; }
+    public SaslMechanism SaslMechanism { get; }
+    public bool UsesDynamicSaslCredentials { get; }
 
     public static KafkaClientInfrastructure Create(KafkaClientOptions options)
     {
@@ -743,7 +749,9 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             options.MaxConnectionsPerBroker,
             options.ProducerMaxConnectionsPerBroker,
             options.RetryBackoffMs,
-            options.RetryBackoffMaxMs);
+            options.RetryBackoffMaxMs,
+            options.SaslMechanism,
+            options.SaslCredentialProvider is not null);
     }
 
     private static ConnectionOptions CreateConnectionOptions(KafkaClientOptions options) => new()

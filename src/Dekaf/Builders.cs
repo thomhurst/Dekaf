@@ -113,6 +113,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _isMaxConnectionsPerBrokerConfigured = true;
         _retryBackoffMs = clientInfrastructure.RetryBackoffMs;
         _retryBackoffMaxMs = clientInfrastructure.RetryBackoffMaxMs;
+        _saslMechanism = clientInfrastructure.SaslMechanism;
     }
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -1382,6 +1383,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
             SaslCredentialProvider = _saslCredentialProvider,
+            UsesClientOwnedDynamicSaslCredentials =
+                _clientInfrastructure?.UsesDynamicSaslCredentials == true,
             SaslScramTokenAuth = _saslScramTokenAuth,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,

@@ -4,6 +4,7 @@ using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Security.Sasl;
 
 namespace Dekaf.Tests.Unit.Builder;
 
@@ -43,6 +44,35 @@ public sealed class KafkaClientBuilderTests
         var options = GetField<ProducerOptions>(producer, "_options");
 
         await Assert.That(options.MaxConnectionsPerBroker).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task RootClient_StaticSasl_CopiesProducerAuthModeWithoutCredentials()
+    {
+        await using var client = Kafka.Connect("localhost:9092", builder => builder
+            .WithSaslScramSha256("user", "password"));
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var options = GetField<ProducerOptions>(producer, "_options");
+
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.ScramSha256);
+        await Assert.That(options.UsesDynamicSaslCredentials).IsFalse();
+        await Assert.That(options.SaslUsername).IsNull();
+        await Assert.That(options.SaslPassword).IsNull();
+    }
+
+    [Test]
+    public async Task RootClient_DynamicSasl_CopiesProducerAuthModeWithoutProvider()
+    {
+        await using var client = Kafka.Connect("localhost:9092", builder => builder
+            .WithSaslPlain(static _ => ValueTask.FromResult(new SaslCredentials("user", "password"))));
+        await using var producer = client.CreateProducer<string, string>().Build();
+
+        var options = GetField<ProducerOptions>(producer, "_options");
+
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.Plain);
+        await Assert.That(options.UsesDynamicSaslCredentials).IsTrue();
+        await Assert.That(options.SaslCredentialProvider is null).IsTrue();
     }
 
     [Test]

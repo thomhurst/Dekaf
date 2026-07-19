@@ -498,6 +498,10 @@ public sealed class ProducerOptions
     /// </summary>
     public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
 
+    internal bool UsesClientOwnedDynamicSaslCredentials { get; init; }
+    internal bool UsesDynamicSaslCredentials =>
+        SaslCredentialProvider is not null || UsesClientOwnedDynamicSaslCredentials;
+
     /// <summary>
     /// Whether SCRAM authentication uses Kafka delegation token credentials.
     /// </summary>
