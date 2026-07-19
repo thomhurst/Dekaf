@@ -8,7 +8,7 @@ public sealed class DescribeTransactionsRequest : IKafkaRequest<DescribeTransact
 {
     public static ApiKey ApiKey => ApiKey.DescribeTransactions;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 0;
+    public static short HighestSupportedVersion => 1;
 
     public required IReadOnlyList<string> TransactionalIds { get; init; }
 

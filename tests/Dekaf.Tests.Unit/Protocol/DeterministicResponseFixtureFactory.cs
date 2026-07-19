@@ -23,6 +23,7 @@ internal static class DeterministicResponseFixtureFactory
             ["ApiVersionsResponse.v5"] = EncodeApiVersionsResponse(version: 5),
             ["DescribeConfigsResponse.v4"] = Encode(WriteDescribeConfigsResponse),
             ["DescribeGroupsResponse.v5"] = Encode(WriteDescribeGroupsResponse),
+            ["DescribeTransactionsResponse.v1"] = Encode(WriteDescribeTransactionsResponseV1),
             ["FetchResponse.v16"] = Encode(WriteFetchResponse),
             ["ListOffsetsResponse.v8"] = Encode(WriteListOffsetsResponse),
             ["ListOffsetsResponse.v9"] = Encode(WriteListOffsetsResponse),
@@ -539,6 +540,28 @@ internal static class DeterministicResponseFixtureFactory
         WriteCompactArrayLength(ref writer, 2);
         WriteDescribeGroup(ref writer, "wire-group", ErrorCode.None, includeMembers: true);
         WriteDescribeGroup(ref writer, "wire-group-b", ErrorCode.GroupIdNotFound, includeMembers: false);
+        WriteEmptyTaggedFields(ref writer);
+    }
+
+    private static void WriteDescribeTransactionsResponseV1(ref KafkaProtocolWriter writer)
+    {
+        writer.WriteInt32(17);
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactString("wire-transaction");
+        writer.WriteCompactString("CompleteCommit");
+        writer.WriteInt32(60_000);
+        writer.WriteInt64(1_700_000_000_000L);
+        writer.WriteInt64(1_700_000_004_321L);
+        writer.WriteInt64(77);
+        writer.WriteInt16(3);
+        WriteCompactArrayLength(ref writer, 1);
+        writer.WriteCompactString("orders");
+        WriteCompactArrayLength(ref writer, 2);
+        writer.WriteInt32(0);
+        writer.WriteInt32(1);
+        WriteEmptyTaggedFields(ref writer);
+        WriteEmptyTaggedFields(ref writer);
         WriteEmptyTaggedFields(ref writer);
     }
 

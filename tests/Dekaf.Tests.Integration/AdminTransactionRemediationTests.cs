@@ -11,6 +11,41 @@ namespace Dekaf.Tests.Integration;
 public sealed class AdminTransactionRemediationTests(KafkaTestContainer kafka) : TransactionalKafkaIntegrationTest(kafka)
 {
     [Test]
+    public async Task DescribeTransactionsAsync_V0Broker_ReturnsDescriptionWithoutLastUpdateTimestamp()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var txnId = $"admin-describe-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId(txnId)
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.InitTransactionsAsync();
+        await using var transaction = producer.BeginTransaction();
+        await transaction.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "describe-key",
+            Value = "describe-value"
+        }, CancellationToken.None);
+
+        await using var admin = KafkaContainer.CreateAdminClient();
+        var descriptions = await admin.DescribeTransactionsAsync([txnId]);
+        var description = descriptions[txnId];
+
+        await Assert.That(description.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(description.TransactionState).IsEqualTo("Ongoing");
+        await Assert.That(description.TransactionStartTimeMs).IsGreaterThan(0);
+        await Assert.That(description.TransactionLastUpdateTimeMs).IsNull();
+        await Assert.That(description.TopicPartitions).Contains(new TopicPartition(topic, 0));
+
+        await transaction.AbortAsync();
+    }
+
+    [Test]
     public async Task FenceProducersAsync_FencesActiveTransactionalProducer()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();

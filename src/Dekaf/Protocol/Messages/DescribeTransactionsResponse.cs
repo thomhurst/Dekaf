@@ -8,7 +8,7 @@ public sealed class DescribeTransactionsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.DescribeTransactions;
     public static short LowestSupportedVersion => 0;
-    public static short HighestSupportedVersion => 0;
+    public static short HighestSupportedVersion => 1;
 
     public int ThrottleTimeMs { get; init; }
     public required IReadOnlyList<DescribeTransactionsResponseState> TransactionStates { get; init; }
@@ -17,7 +17,8 @@ public sealed class DescribeTransactionsResponse : IKafkaResponse
     {
         var throttleTimeMs = reader.ReadInt32();
         var transactionStates = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => DescribeTransactionsResponseState.Read(ref r));
+            static (ref KafkaProtocolReader r, short v) => DescribeTransactionsResponseState.Read(ref r, v),
+            version);
 
         reader.SkipTaggedFields();
 
@@ -39,17 +40,19 @@ public sealed class DescribeTransactionsResponseState
     public required string TransactionState { get; init; }
     public int TransactionTimeoutMs { get; init; }
     public long TransactionStartTimeMs { get; init; }
+    public long? TransactionLastUpdateTimeMs { get; init; }
     public long ProducerId { get; init; }
     public short ProducerEpoch { get; init; }
     public required IReadOnlyList<DescribeTransactionsResponseTopic> Topics { get; init; }
 
-    public static DescribeTransactionsResponseState Read(ref KafkaProtocolReader reader)
+    public static DescribeTransactionsResponseState Read(ref KafkaProtocolReader reader, short version)
     {
         var errorCode = (ErrorCode)reader.ReadInt16();
         var transactionalId = reader.ReadCompactNonNullableString();
         var transactionState = reader.ReadCompactNonNullableString();
         var transactionTimeoutMs = reader.ReadInt32();
         var transactionStartTimeMs = reader.ReadInt64();
+        long? transactionLastUpdateTimeMs = version >= 1 ? reader.ReadInt64() : null;
         var producerId = reader.ReadInt64();
         var producerEpoch = reader.ReadInt16();
         var topics = reader.ReadCompactArray(
@@ -64,6 +67,7 @@ public sealed class DescribeTransactionsResponseState
             TransactionState = transactionState,
             TransactionTimeoutMs = transactionTimeoutMs,
             TransactionStartTimeMs = transactionStartTimeMs,
+            TransactionLastUpdateTimeMs = transactionLastUpdateTimeMs,
             ProducerId = producerId,
             ProducerEpoch = producerEpoch,
             Topics = topics
