@@ -116,6 +116,38 @@ public class KafkaConnectionCapabilitiesTests
     }
 
     [Test]
+    public async Task InitializeAsync_SeedsVersionlessCompatibilitySnapshot()
+    {
+        var capabilities = KafkaConnectionCapabilities.Create(new ApiVersionsResponse
+        {
+            ErrorCode = ErrorCode.None,
+            ApiKeys =
+            [
+                new ApiVersion(ApiKey.Metadata, 9, 13),
+                new ApiVersion(ApiKey.Fetch, 12, 16)
+            ],
+            FinalizedFeatures = [new FinalizedFeature("transaction.version", 2, 0)]
+        });
+        var connection = new CapabilityConnection(capabilities);
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync("unused", 9092, Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult<IKafkaConnection>(connection));
+        await using var metadata = new MetadataManager(
+            pool,
+            ["unused:9092"],
+            new MetadataOptions { EnableBackgroundRefresh = false });
+
+        await metadata.InitializeAsync();
+
+        await Assert.That(connection.ObservedApiVersion).IsEqualTo((short)13);
+        await Assert.That(metadata.HasApiKey(ApiKey.Fetch)).IsTrue();
+        await Assert.That(metadata.GetNegotiatedApiVersion(ApiKey.Fetch, 12, 18))
+            .IsEqualTo((short)16);
+        await Assert.That(metadata.GetFinalizedFeatureVersion("transaction.version"))
+            .IsEqualTo((short)2);
+    }
+
+    [Test]
     public async Task ConnectionPool_InFlightSendKeepsOriginalCapabilityGenerationDuringReplacement()
     {
         var releaseFirstSend = new TaskCompletionSource(
@@ -181,6 +213,7 @@ public class KafkaConnectionCapabilitiesTests
         public int Port => 9092;
         public bool IsConnected => true;
         public KafkaConnectionCapabilities Capabilities { get; } = capabilities;
+        public short ObservedApiVersion { get; private set; } = -1;
 
         public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 
@@ -189,7 +222,18 @@ public class KafkaConnectionCapabilitiesTests
             short apiVersion,
             CancellationToken cancellationToken = default)
             where TRequest : IKafkaRequest<TResponse>
-            where TResponse : IKafkaResponse => throw new NotSupportedException();
+            where TResponse : IKafkaResponse
+        {
+            if (request is not MetadataRequest)
+                throw new NotSupportedException();
+
+            ObservedApiVersion = apiVersion;
+            return ValueTask.FromResult((TResponse)(IKafkaResponse)new MetadataResponse
+            {
+                Brokers = [],
+                Topics = []
+            });
+        }
 
         public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
             TRequest request,

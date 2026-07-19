@@ -191,6 +191,7 @@ internal sealed class KafkaConnectionCapabilities
     }
 
     internal IReadOnlyList<FinalizedFeature> FinalizedFeatures => _finalizedFeatures;
+    internal int ApiRangeCount => _apiRanges.Length;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int Pack(short minVersion, short maxVersion)
