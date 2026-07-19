@@ -122,29 +122,6 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
-        var dueAt = DateTimeOffset.UtcNow.AddSeconds(5);
-        var inputs = new[]
-        {
-            new RetryTopicInput("retry-p0-a", 0, 0, dueAt),
-            new RetryTopicInput("retry-p0-b", 0, 1, dueAt),
-            new RetryTopicInput("retry-p1-a", 1, 0, dueAt),
-            new RetryTopicInput("retry-p1-b", 1, 1, dueAt)
-        };
-
-        foreach (var input in inputs)
-        {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = retryTopic,
-                Key = input.Value,
-                Value = input.Value,
-                Partition = input.Partition,
-                Headers = BuildRetryHeaders(sourceTopic, input.Partition, input.SourceOffset, retryDelay, input.DueAt)
-            }, CancellationToken.None);
-        }
-
-        await producer.FlushWithTimeoutAsync();
-
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(receivedMessages);
         builder.Services.AddSingleton<TestTopicHolder>(new TestTopicHolder(sourceTopic));
@@ -159,14 +136,54 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         });
 
         var host = builder.Build();
+        var consumer = host.Services.GetRequiredService<IKafkaConsumer<string, string>>();
         using var cts = new CancellationTokenSource();
         var hostTask = host.RunAsync(cts.Token);
 
         try
         {
+            var retryPartitions = new[]
+            {
+                new TopicPartition(retryTopic, 0),
+                new TopicPartition(retryTopic, 1)
+            };
+            await WaitForConditionAsync(
+                () => retryPartitions.All(consumer.Assignment.Contains),
+                TimeSpan.FromSeconds(30));
+
+            // Derive the due time only after assignment. On constrained NativeAOT runners,
+            // producer and host startup can otherwise consume the entire delay before the
+            // retry records are fetched, so the test never exercises pause/resume at all.
+            var dueAt = DateTimeOffset.UtcNow.AddSeconds(10);
+            var inputs = new[]
+            {
+                new RetryTopicInput("retry-p0-a", 0, 0, dueAt),
+                new RetryTopicInput("retry-p0-b", 0, 1, dueAt),
+                new RetryTopicInput("retry-p1-a", 1, 0, dueAt),
+                new RetryTopicInput("retry-p1-b", 1, 1, dueAt)
+            };
+
+            foreach (var input in inputs)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = retryTopic,
+                    Key = input.Value,
+                    Value = input.Value,
+                    Partition = input.Partition,
+                    Headers = BuildRetryHeaders(sourceTopic, input.Partition, input.SourceOffset, retryDelay, input.DueAt)
+                }, CancellationToken.None);
+            }
+
+            await producer.FlushWithTimeoutAsync();
+
+            await WaitForConditionAsync(
+                () => retryPartitions.All(consumer.Paused.Contains),
+                TimeSpan.FromSeconds(5));
+
             await WaitForConditionAsync(
                 () => receivedMessages.Count >= inputs.Length,
-                TimeSpan.FromSeconds(45));
+                TimeSpan.FromSeconds(30));
 
             await Assert.That(receivedMessages.Select(m => m.Value))
                 .IsEquivalentTo(inputs.Select(i => i.Value));
