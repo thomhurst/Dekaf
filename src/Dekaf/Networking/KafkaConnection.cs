@@ -89,7 +89,7 @@ public sealed partial class KafkaConnection :
     private readonly bool _responseMemoryAdmissionsEnabled;
     private readonly Func<int, ResponseFrameAdmission> _responseFrameAdmission;
     private readonly Func<Task, TimeSpan, Task> _waitForAbandonedWriteAsync;
-    private readonly BrokerThrottleState _brokerThrottleState;
+    private BrokerThrottleState _brokerThrottleState;
 
     private Socket? _socket;
     private string? _resolvedTargetHost;
@@ -269,6 +269,17 @@ public sealed partial class KafkaConnection :
         _receiveTimeoutStopwatchTicks =
             (long)(_options.RequestTimeout.Ticks * (double)Stopwatch.Frequency / TimeSpan.TicksPerSecond);
     }
+
+    private BrokerThrottleState BrokerThrottleState
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => Volatile.Read(ref _brokerThrottleState);
+    }
+
+    internal BrokerThrottleState BrokerThrottleStateForTest => BrokerThrottleState;
+
+    internal void UpdateBrokerThrottleState(BrokerThrottleState brokerThrottleState) =>
+        Volatile.Write(ref _brokerThrottleState, brokerThrottleState);
 
     /// <inheritdoc cref="KafkaConnection(string, int, string?, ConnectionOptions?, ILogger{KafkaConnection}?, ulong, int, int)"/>
     public KafkaConnection(
@@ -552,7 +563,7 @@ public sealed partial class KafkaConnection :
         if (requireReady ? !IsConnected : !(_socket?.Connected ?? false))
             throw new InvalidOperationException("Not connected");
 
-        await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
+        await BrokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
             .ConfigureAwait(false);
 
         using var operation = TrackOperation();
@@ -694,7 +705,7 @@ public sealed partial class KafkaConnection :
         if (!IsConnected)
             throw new InvalidOperationException("Not connected");
 
-        await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
+        await BrokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
             .ConfigureAwait(false);
 
         using var operation = TrackOperation();
@@ -806,7 +817,7 @@ public sealed partial class KafkaConnection :
         if (!IsConnected)
             throw new InvalidOperationException("Not connected");
 
-        await _brokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
+        await BrokerThrottleState.WaitAsync(cancellationToken, _pendingRequestSlotCts.Token)
             .ConfigureAwait(false);
 
         using var operation = TrackOperation();
@@ -1329,7 +1340,7 @@ public sealed partial class KafkaConnection :
                 KafkaMessageMetadata<TRequest, TResponse>.ApiKey,
                 apiVersion))
         {
-            _brokerThrottleState.Observe(
+            BrokerThrottleState.Observe(
                 KafkaMessageMetadata<TRequest, TResponse>.GetThrottleTimeMs(response));
         }
     }

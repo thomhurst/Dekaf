@@ -1,3 +1,4 @@
+using System.Reflection;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Telemetry;
@@ -192,6 +193,49 @@ public sealed class BrokerThrottleStateTests
         var aliasedEndpointState = pool.GetBrokerThrottleStateForTest(-1, "new-host", 9093);
         await Assert.That(ReferenceEquals(aliasedEndpointState, canonicalState)).IsTrue();
         await Assert.That(canonicalState.GetRemainingMilliseconds()).IsGreaterThan(9_000);
+    }
+
+    [Test]
+    public async Task RegisterBroker_ChangedEndpointRetargetsLiveBootstrapConnection()
+    {
+        await using var pool = new ConnectionPool();
+        pool.RegisterBroker(1, "old-host", 9092);
+        var canonicalState = pool.GetBrokerThrottleStateForTest(1, "old-host", 9092);
+        var bootstrapState = pool.GetBrokerThrottleStateForTest(-1, "new-host", 9093);
+        await using var connection = new KafkaConnection(
+            brokerId: -1,
+            host: "new-host",
+            port: 9093,
+            clientId: null,
+            options: null,
+            logger: null,
+            responseBufferPool: ResponseBufferPool.Default,
+            brokerThrottleState: bootstrapState);
+        TrackEndpointConnection(pool, "new-host", 9093, connection);
+
+        pool.RegisterBroker(1, "new-host", 9093);
+
+        await Assert.That(connection.BrokerThrottleStateForTest)
+            .IsSameReferenceAs(canonicalState);
+    }
+
+    private static void TrackEndpointConnection(
+        ConnectionPool pool,
+        string host,
+        int port,
+        IKafkaConnection connection)
+    {
+        var endpointType = typeof(ConnectionPool).GetNestedType(
+            "EndpointKey",
+            BindingFlags.NonPublic)!;
+        var endpoint = Activator.CreateInstance(endpointType, host, port)!;
+        var connections = typeof(ConnectionPool).GetField(
+            "_connectionsByEndpoint",
+            BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(pool)!;
+        connections.GetType().GetProperty("Item")!.SetValue(
+            connections,
+            connection,
+            [endpoint]);
     }
 
     private static ClientTelemetryMetric Metric(

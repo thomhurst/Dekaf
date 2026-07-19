@@ -184,6 +184,11 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
         {
             brokerState.MergeFrom(endpointState);
             _bootstrapThrottleStates[endpoint] = brokerState;
+            if (_connectionsByEndpoint.TryGetValue(endpoint, out var existingConnection)
+                && existingConnection is KafkaConnection kafkaConnection)
+            {
+                kafkaConnection.UpdateBrokerThrottleState(brokerState);
+            }
         }
 
         return brokerState;
@@ -844,6 +849,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
                 GetBrokerThrottleState(brokerId, endpoint));
 
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            connection.UpdateBrokerThrottleState(GetBrokerThrottleState(brokerId, endpoint));
 
             LogCreatedConnectionForGroup(index, brokerId, host, port);
 
@@ -1025,6 +1031,7 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
                 GetBrokerThrottleState(brokerId, endpoint));
 
             await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            connection.UpdateBrokerThrottleState(GetBrokerThrottleState(brokerId, endpoint));
 
             _connectionsByEndpoint[endpoint] = connection;
             if (brokerId >= 0)
