@@ -1517,6 +1517,82 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    [NotInParallel]
+    public async Task ConnectionSetupTimeout_GroupBackoffLongerThanRoundStillAttempts()
+    {
+        const int connectionsPerBroker = 2;
+        var attempts = 0;
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromMilliseconds(20),
+                ConnectionTimeoutMax = TimeSpan.FromMilliseconds(500),
+                ReconnectBackoff = TimeSpan.FromMilliseconds(100),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(100)
+            },
+            connectionsPerBroker,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                if (Interlocked.Increment(ref attempts) <= connectionsPerBroker)
+                    throw new InvalidOperationException("broker down");
+
+                return ValueTask.FromResult(CreateConnectedConnection(brokerId, host, port));
+            },
+            randomDouble: static () => 0.5);
+        pool.RegisterBroker(1, "broker-a", 9092);
+
+        Func<Task> firstRound = () => pool.GetConnectionAsync(1).AsTask();
+        await Assert.That(firstRound).Throws<InvalidOperationException>();
+
+        var connection = await pool.GetConnectionAsync(1);
+
+        await Assert.That(connection.IsConnected).IsTrue();
+        await Assert.That(attempts).IsEqualTo(4);
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task ConnectionSetupTimeout_ScaleBackoffLongerThanRoundStillAttempts()
+    {
+        const int initialConnections = 2;
+        var scaling = 0;
+        var scaleAttempts = 0;
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromMilliseconds(20),
+                ConnectionTimeoutMax = TimeSpan.FromMilliseconds(500),
+                ReconnectBackoff = TimeSpan.FromMilliseconds(100),
+                ReconnectBackoffMax = TimeSpan.FromMilliseconds(100)
+            },
+            connectionsPerBroker: initialConnections,
+            connectionFactory: (brokerId, host, port, _, _) =>
+            {
+                if (Volatile.Read(ref scaling) != 0
+                    && Interlocked.Increment(ref scaleAttempts) <= initialConnections)
+                {
+                    throw new InvalidOperationException("broker down");
+                }
+
+                return ValueTask.FromResult(CreateConnectedConnection(brokerId, host, port));
+            },
+            randomDouble: static () => 0.5);
+        pool.RegisterBroker(1, "broker-a", 9092);
+        _ = await pool.GetConnectionAsync(1);
+        Volatile.Write(ref scaling, 1);
+
+        Func<Task> firstRound = () => pool.ScaleConnectionGroupAsync(1, newCount: 4).AsTask();
+        await Assert.That(firstRound).Throws<InvalidOperationException>();
+
+        var count = await pool.ScaleConnectionGroupAsync(1, newCount: 4);
+
+        await Assert.That(count).IsEqualTo(4);
+        await Assert.That(scaleAttempts).IsEqualTo(4);
+    }
+
+    [Test]
     public async Task ReconnectBackoff_FailureStateIsIsolatedByBrokerAtSharedEndpoint()
     {
         var observedBackoffs = new List<TimeSpan>();

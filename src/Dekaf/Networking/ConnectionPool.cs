@@ -581,7 +581,7 @@ public sealed partial class ConnectionPool :
 
             await WaitForConnectionGroupSetupAsync(
                     tasks,
-                    setupTimeout,
+                    _connectionOptions.ConnectionTimeoutMax,
                     setupRoundCts,
                     brokerId,
                     brokerInfo.Host,
@@ -636,7 +636,7 @@ public sealed partial class ConnectionPool :
 
     private static async ValueTask WaitForConnectionGroupSetupAsync(
         Task<IKafkaConnection>[] tasks,
-        TimeSpan setupTimeout,
+        TimeSpan operationTimeout,
         CancellationTokenSource setupRoundCts,
         int brokerId,
         string host,
@@ -646,13 +646,13 @@ public sealed partial class ConnectionPool :
         try
         {
             await Task.WhenAll(tasks)
-                .WaitAsync(setupTimeout, cancellationToken)
+                .WaitAsync(operationTimeout, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
             setupRoundCts.Cancel();
-            throw CreateConnectionSetupTimeoutException(setupTimeout, brokerId, host, port);
+            throw CreateConnectionSetupTimeoutException(operationTimeout, brokerId, host, port);
         }
     }
 
@@ -717,7 +717,7 @@ public sealed partial class ConnectionPool :
             {
                 await WaitForConnectionGroupSetupAsync(
                         tasks,
-                        setupTimeout,
+                        _connectionOptions.ConnectionTimeoutMax,
                         setupRoundCts,
                         brokerId,
                         brokerInfo.Host,
