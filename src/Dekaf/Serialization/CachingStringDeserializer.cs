@@ -97,6 +97,13 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private string DeserializeWhileBypassing(ReadOnlyMemory<byte> data, SerializationContext context)
     {
+        ObserveBypassLookup();
+        return _configuredInner.Deserialize(data, context);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ObserveBypassLookup()
+    {
         var remaining = _bypassRemaining - 1;
         if (remaining <= 0)
         {
@@ -107,8 +114,6 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         {
             _bypassRemaining = remaining;
         }
-
-        return _configuredInner.Deserialize(data, context);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -248,7 +253,10 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             if (data.Length == 0 || data.Length > owner._configuredMaxCachedBytes)
+            {
+                owner.ObserveProbeLookup(hit: false);
                 return owner._configuredInner.Deserialize(data, context);
+            }
 
             return owner.DeserializeWhileProbing(data, context);
         }
@@ -268,7 +276,10 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
         {
             if (data.Length == 0 || data.Length > owner._configuredMaxCachedBytes)
+            {
+                owner.ObserveBypassLookup();
                 return owner._configuredInner.Deserialize(data, context);
+            }
 
             return owner.DeserializeWhileBypassing(data, context);
         }

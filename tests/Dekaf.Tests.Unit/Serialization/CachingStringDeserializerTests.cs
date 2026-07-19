@@ -37,6 +37,9 @@ public class CachingStringDeserializerTests
     private static CachingStringDeserializer CreateValueCache() =>
         new(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: ValueCacheMaxEntries);
 
+    private static CachingStringDeserializer CreateSmallKeyCache() =>
+        new(Serializers.String, maxCachedBytes: 128, maxCachedEntries: ValueCacheMaxEntries);
+
     private static IDeserializer<string> GetValueDeserializer(IKafkaConsumer<string, string> consumer)
     {
         var field = typeof(KafkaConsumer<string, string>).GetField(
@@ -45,6 +48,16 @@ public class CachingStringDeserializerTests
             ?? throw new InvalidOperationException("_valueDeserializer field not found.");
 
         return (IDeserializer<string>)field.GetValue(consumer)!;
+    }
+
+    private static string GetInnerModeName(CachingStringDeserializer deserializer)
+    {
+        var field = typeof(CachingStringDeserializer).GetField(
+            "_inner",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_inner field not found.");
+
+        return field.GetValue(deserializer)!.GetType().Name;
     }
 
     [Test]
@@ -248,6 +261,44 @@ public class CachingStringDeserializerTests
         var secondProbe = sut.Deserialize(repeated, context);
 
         await Assert.That(ReferenceEquals(firstProbe, secondProbe)).IsTrue();
+    }
+
+    [Test]
+    public async Task Probe_OversizedPayloadsAdvanceToBypass()
+    {
+        var sut = CreateSmallKeyCache();
+        var context = KeyContext();
+
+        for (var i = 0; i < CachingStringDeserializer.AdmissionProbeLimit; i++)
+            sut.Deserialize(ToUtf8($"probe-start-{i}"), context);
+
+        var oversized = ToUtf8(new string('x', 129));
+        var lookupsUntilBypass = CachingStringDeserializer.ProbeLookupCount + ValueCacheMaxEntries;
+        for (var i = 0; i < lookupsUntilBypass; i++)
+            sut.Deserialize(oversized, context);
+
+        await Assert.That(GetInnerModeName(sut)).IsEqualTo("BypassSerde");
+    }
+
+    [Test]
+    public async Task Bypass_EmptyPayloadsAdvanceToRecoveryProbe()
+    {
+        var sut = CreateSmallKeyCache();
+        var context = KeyContext();
+        var lookupsUntilBypass = CachingStringDeserializer.AdmissionProbeLimit
+            + CachingStringDeserializer.ProbeLookupCount
+            + ValueCacheMaxEntries;
+        for (var i = 0; i < lookupsUntilBypass; i++)
+            sut.Deserialize(ToUtf8($"bypass-start-{i}"), context);
+
+        for (var i = 0; i < CachingStringDeserializer.BypassInterval; i++)
+            sut.Deserialize(ReadOnlyMemory<byte>.Empty, context);
+
+        var eligible = ToUtf8("eligible-after-empty-bypass");
+        var first = sut.Deserialize(eligible, context);
+        var second = sut.Deserialize(eligible, context);
+
+        await Assert.That(ReferenceEquals(first, second)).IsTrue();
     }
 
     [Test]
