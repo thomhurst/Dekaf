@@ -1,6 +1,7 @@
 using Dekaf.Internal;
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace Dekaf.Tests.Unit.Internal;
 
@@ -109,30 +110,40 @@ public class LockFreeStackTests
         // LockFreeStack's steady-state operations contribute to its allocation counter.
         using (ExecutionContext.SuppressFlow())
         {
-            allocationProbe = Task.Factory.StartNew(static () =>
-            {
-                var stack = new LockFreeStack<Item>(1);
-                var item = new Item { Value = 42 };
-
-                for (var i = 0; i < 100; i++)
-                {
-                    stack.TryPush(item);
-                    stack.TryPop(out _);
-                }
-
-                var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
-                for (var i = 0; i < 10_000; i++)
-                {
-                    stack.TryPush(item);
-                    stack.TryPop(out _);
-                }
-
-                return GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
-            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            allocationProbe = Task.Factory.StartNew(
+                MeasureSteadyStateAllocations,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
         }
 
         var allocated = await allocationProbe;
         await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    // Compile the complete probe at the optimized tier before it starts. Otherwise
+    // suite-wide JIT load can delay tier promotion until the measured loop and make
+    // runtime transition work look like a LockFreeStack allocation.
+    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
+    private static long MeasureSteadyStateAllocations()
+    {
+        var stack = new LockFreeStack<Item>(1);
+        var item = new Item { Value = 42 };
+
+        for (var i = 0; i < 100; i++)
+        {
+            stack.TryPush(item);
+            stack.TryPop(out _);
+        }
+
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 10_000; i++)
+        {
+            stack.TryPush(item);
+            stack.TryPop(out _);
+        }
+
+        return GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
     }
 
     [Test]
