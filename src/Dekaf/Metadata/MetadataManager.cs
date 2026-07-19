@@ -1226,10 +1226,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 consecutiveFailures++;
                 LogBackgroundMetadataRefreshFailed(ex, consecutiveFailures);
 
-                var backoffMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
-                    _options.RetryBackoffMs,
-                    _options.RetryBackoffMaxMs,
-                    consecutiveFailures);
+                // Background refresh has a deliberately slower policy than individual request
+                // retries: preserve the existing 5-second step and 60-second outage cap.
+                var backoffMs = (int)Math.Min(consecutiveFailures * 5_000L, 60_000L);
                 try
                 {
                     await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);

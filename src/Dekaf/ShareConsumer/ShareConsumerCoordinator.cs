@@ -1,10 +1,11 @@
 using System.Diagnostics;
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
-using Dekaf.Consumer;
+using Dekaf.Retry;
 using Microsoft.Extensions.Logging;
 #if NETSTANDARD2_0
 using StringSet = System.Collections.Generic.IReadOnlyCollection<string>;
@@ -130,7 +131,6 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
         };
 
         const int maxRetries = 5;
-        var retryDelayMs = 100;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
@@ -167,10 +167,10 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             if (errorCode == ErrorCode.CoordinatorNotAvailable ||
                 errorCode == ErrorCode.CoordinatorLoadInProgress)
             {
+                var retryDelayMs = CalculateRequestRetryBackoff(attempt + 1);
                 LogCoordinatorNotAvailableRetry(attempt + 1, maxRetries, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 1000);
                 continue;
             }
 
@@ -195,6 +195,12 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             GroupId = _options.GroupId
         };
     }
+
+    private int CalculateRequestRetryBackoff(int failureCount) =>
+        ExponentialRetryBackoff.CalculateDelayMilliseconds(
+            _options.RetryBackoffMs,
+            _options.RetryBackoffMaxMs,
+            failureCount);
 
     /// <summary>
     /// Serializes heartbeat loop starts to prevent concurrent callers from orphaning a loop.
@@ -396,7 +402,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
             // inactivity timeout (default 45s), not a dedicated join timeout — but it provides
             // a reasonable upper bound for how long we should wait for an assignment.
             var timeout = TimeSpan.FromMilliseconds(_options.SessionTimeoutMs);
-            var retryDelayMs = 200;
+            var retryFailureCount = 0;
 
             while (_state != CoordinatorState.Stable)
             {
@@ -433,6 +439,7 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                         // Broker accepted us but hasn't assigned partitions yet.
                         // Wait before re-sending heartbeat.
                         LogWaitingForAssignment();
+                        var retryDelayMs = CalculateRequestRetryBackoff(++retryFailureCount);
                         await Task.Delay(
                             GetWaitForAssignmentDelayMs(retryDelayMs, _heartbeatIntervalMs),
                             cancellationToken).ConfigureAwait(false);
@@ -453,8 +460,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 {
                     LogRetriableCoordinatorError(ex.ErrorCode);
                     MarkCoordinatorUnknown();
+                    var retryDelayMs = CalculateRequestRetryBackoff(++retryFailureCount);
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 }
                 catch (Exception ex) when (
                     ex is ObjectDisposedException ||
@@ -464,8 +471,8 @@ internal sealed partial class ShareConsumerCoordinator : IAsyncDisposable
                 {
                     LogCoordinatorConnectionDisposed();
                     MarkCoordinatorUnknown();
+                    var retryDelayMs = CalculateRequestRetryBackoff(++retryFailureCount);
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 }
             }
         }

@@ -24,7 +24,8 @@ internal sealed class PrefetchFailureTracker
         Func<double>? randomDouble = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(terminalThreshold, 1);
-        ExponentialRetryBackoff.Validate(initialDelayMs, maxDelayMs);
+        ArgumentOutOfRangeException.ThrowIfLessThan(initialDelayMs, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxDelayMs, initialDelayMs);
 
         _terminalThreshold = terminalThreshold;
         _initialDelayMs = initialDelayMs;

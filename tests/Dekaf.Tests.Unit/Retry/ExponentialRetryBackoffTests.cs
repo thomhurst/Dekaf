@@ -22,7 +22,7 @@ public sealed class ExponentialRetryBackoffTests
     }
 
     [Test]
-    public async Task RepeatedFailures_DoubleBeforeJitterAndCap()
+    public async Task RepeatedFailures_DoubleAndCapBeforeJitter()
     {
         var secondFailure = ExponentialRetryBackoff.CalculateDelayMilliseconds(100, 1000, 2, 0.5);
         var fourthFailureLowJitter = ExponentialRetryBackoff.CalculateDelayMilliseconds(100, 1000, 4, 0.0);
@@ -30,17 +30,18 @@ public sealed class ExponentialRetryBackoffTests
 
         await Assert.That(secondFailure).IsEqualTo(200);
         await Assert.That(fourthFailureLowJitter).IsEqualTo(640);
-        await Assert.That(fifthFailureLowJitter).IsEqualTo(1000);
+        await Assert.That(fifthFailureLowJitter).IsEqualTo(800);
     }
 
     [Test]
-    public async Task InitialAtOrAboveMaximum_UsesMaximumWithoutJitter()
+    [Arguments(0.0, 800.0)]
+    [Arguments(0.5, 1000.0)]
+    [Arguments(1.0, 1200.0)]
+    public async Task AtMaximum_PreservesTwentyPercentJitter(double randomValue, double expectedDelayMs)
     {
-        var equal = ExponentialRetryBackoff.CalculateDelayMilliseconds(1000, 1000, 1, 0.0);
-        var above = ExponentialRetryBackoff.CalculateDelayMilliseconds(2000, 1000, 10, 1.0);
+        var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(100, 1000, 10, randomValue);
 
-        await Assert.That(equal).IsEqualTo(1000);
-        await Assert.That(above).IsEqualTo(1000);
+        await Assert.That(delayMs).IsEqualTo(expectedDelayMs).Within(0.001);
     }
 
     [Test]
@@ -52,7 +53,7 @@ public sealed class ExponentialRetryBackoffTests
             failureCount: int.MaxValue,
             randomValue: 0.0);
 
-        await Assert.That(delayMs).IsEqualTo(int.MaxValue);
+        await Assert.That(delayMs).IsEqualTo(int.MaxValue * 0.8).Within(0.001);
     }
 
     [Test]

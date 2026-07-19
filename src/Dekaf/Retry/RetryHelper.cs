@@ -24,8 +24,7 @@ internal static class RetryHelper
         int retryBackoffMs = 100,
         int retryBackoffMaxMs = 1000,
         Func<CancellationToken, ValueTask>? onRetry = null,
-        int maxRetries = MaxRetries,
-        Func<int, int, int, int>? calculateDelayMilliseconds = null)
+        int maxRetries = MaxRetries)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -41,11 +40,10 @@ internal static class RetryHelper
                 if (onRetry is not null)
                     await onRetry(cancellationToken).ConfigureAwait(false);
 
-                var delayMs = CalculateDelayMilliseconds(
+                var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                     retryBackoffMs,
                     retryBackoffMaxMs,
-                    attempt + 1,
-                    calculateDelayMilliseconds);
+                    attempt + 1);
                 await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -68,8 +66,7 @@ internal static class RetryHelper
         int retryBackoffMaxMs = 1000,
         Func<CancellationToken, ValueTask>? onRetry = null,
         int maxRetries = MaxRetries,
-        Func<KafkaException, bool>? shouldRefreshMetadata = null,
-        Func<int, int, int, int>? calculateDelayMilliseconds = null)
+        Func<KafkaException, bool>? shouldRefreshMetadata = null)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -88,26 +85,14 @@ internal static class RetryHelper
                 if (onRetry is not null)
                     await onRetry(cancellationToken).ConfigureAwait(false);
 
-                var delayMs = CalculateDelayMilliseconds(
+                var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                     retryBackoffMs,
                     retryBackoffMaxMs,
-                    attempt + 1,
-                    calculateDelayMilliseconds);
+                    attempt + 1);
                 await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
             }
         }
     }
-
-    private static int CalculateDelayMilliseconds(
-        int retryBackoffMs,
-        int retryBackoffMaxMs,
-        int failureCount,
-        Func<int, int, int, int>? calculateDelayMilliseconds)
-        => calculateDelayMilliseconds?.Invoke(retryBackoffMs, retryBackoffMaxMs, failureCount)
-           ?? ExponentialRetryBackoff.CalculateDelayMilliseconds(
-               retryBackoffMs,
-               retryBackoffMaxMs,
-               failureCount);
 
     internal static bool IsRetriableRequestFailure(Exception exception)
         => exception is IOException or System.Net.Sockets.SocketException or TimeoutException

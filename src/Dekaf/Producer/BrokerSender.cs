@@ -96,6 +96,8 @@ internal readonly record struct TransactionPartitionEnrollmentResult(
 /// </remarks>
 internal sealed partial class BrokerSender : IAsyncDisposable
 {
+    private static readonly double StopwatchTicksPerMillisecond = Stopwatch.Frequency / 1000.0;
+
     /// <summary>
     /// Timeout for SendCoalescedAsync which only does TCP write + response task wiring.
     /// Longer than this indicates a broken/stale connection. Reduced from 5000ms to 1500ms
@@ -3408,6 +3410,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (inlineLeaderApplied && batch.RetryFailureCount == 0)
             {
                 LogRetriableErrorWithoutBackoff(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                // The inline leader update is the first retry attempt, matching ApplyRetryBackoff's
+                // pre-increment convention. A later failure therefore starts at failure count 2.
                 batch.RetryFailureCount = 1;
                 batch.RetryNotBefore = 0;
             }
@@ -3978,8 +3982,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _options.RetryBackoffMs,
             _options.RetryBackoffMaxMs,
             ++batch.RetryFailureCount);
-        batch.RetryNotBefore = _getTimestamp() +
-            (long)(delayMs * (Stopwatch.Frequency / 1000.0));
+        batch.RetryNotBefore = _getTimestamp() + (long)(delayMs * StopwatchTicksPerMillisecond);
         return delayMs;
     }
 

@@ -19,11 +19,13 @@ internal static class ExponentialRetryBackoff
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int CalculateDelayMilliseconds(int initialDelayMs, int maximumDelayMs, int failureCount)
-        => (int)CalculateDelayMilliseconds(
-            initialDelayMs,
-            maximumDelayMs,
-            failureCount,
-            Random.Shared.NextDouble());
+        => (int)Math.Min(
+            int.MaxValue,
+            CalculateDelayMilliseconds(
+                initialDelayMs,
+                maximumDelayMs,
+                failureCount,
+                Random.Shared.NextDouble()));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static double CalculateDelayMilliseconds(
@@ -35,13 +37,10 @@ internal static class ExponentialRetryBackoff
         if (initialDelayMs <= 0 || maximumDelayMs <= 0)
             return 0;
 
-        if (initialDelayMs >= maximumDelayMs)
-            return maximumDelayMs;
-
         var exponent = Math.Min(Math.Max(failureCount - 1, 0), MaximumExponent);
         var exponentialDelayMs = initialDelayMs * Math.Pow(2, exponent);
+        var cappedDelayMs = Math.Min(maximumDelayMs, exponentialDelayMs);
         var unitRandom = double.IsNaN(randomValue) ? 0.5 : Math.Clamp(randomValue, 0, 1);
-        var jitteredDelayMs = exponentialDelayMs * (MinimumJitterFactor + (unitRandom * JitterFactorRange));
-        return Math.Min(maximumDelayMs, jitteredDelayMs);
+        return cappedDelayMs * (MinimumJitterFactor + (unitRandom * JitterFactorRange));
     }
 }

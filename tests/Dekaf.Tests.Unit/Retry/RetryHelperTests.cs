@@ -73,38 +73,6 @@ public sealed class RetryHelperTests
     }
 
     [Test]
-    public async Task Success_ResetsFailureSequenceForNextOperation()
-    {
-        await using var metadataManager = CreateUnavailableMetadataManager();
-        var failureCounts = new List<int>();
-        var attempts = 0;
-        int CalculateDelay(int initialDelayMs, int maximumDelayMs, int failureCount)
-        {
-            _ = initialDelayMs;
-            _ = maximumDelayMs;
-            failureCounts.Add(failureCount);
-            return 0;
-        }
-
-        for (var invocation = 0; invocation < 2; invocation++)
-        {
-            attempts = 0;
-            await RetryHelper.WithRetryAsync(
-                () => Interlocked.Increment(ref attempts) == 1
-                    ? ValueTask.FromException(CreateRequestTimeout())
-                    : ValueTask.CompletedTask,
-                metadataManager,
-                CancellationToken.None,
-                retryBackoffMs: 100,
-                retryBackoffMaxMs: 1000,
-                maxRetries: 1,
-                calculateDelayMilliseconds: CalculateDelay);
-        }
-
-        await Assert.That(failureCounts).IsEquivalentTo([1, 1]);
-    }
-
-    [Test]
     public async Task CancellationDuringBackoff_StopsRetrying()
     {
         await using var metadataManager = CreateUnavailableMetadataManager();

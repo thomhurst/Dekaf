@@ -820,10 +820,12 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    [Arguments(0.0)]
-    [Arguments(0.5)]
-    [Arguments(0.999999)]
-    public async Task CalculateReconnectBackoffDelay_FixedBackoffDoesNotApplyJitter(double randomValue)
+    [Arguments(0.0, 98.4)]
+    [Arguments(0.5, 123.0)]
+    [Arguments(0.999999, 147.5999508)]
+    public async Task CalculateReconnectBackoffDelay_FixedBackoffAppliesJitter(
+        double randomValue,
+        double expectedMilliseconds)
     {
         await using var pool = CreateReconnectBackoffPool(
             reconnectBackoffMs: 123,
@@ -832,7 +834,7 @@ public sealed class ConnectionPoolTests
 
         var delay = pool.CalculateReconnectBackoffDelay(failureCount: 10);
 
-        await Assert.That(delay).IsEqualTo(TimeSpan.FromMilliseconds(123));
+        await Assert.That(delay.TotalMilliseconds).IsEqualTo(expectedMilliseconds).Within(0.001);
     }
 
     [Test]
@@ -860,7 +862,7 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    public async Task CalculateReconnectBackoffDelay_CapsJitterAtConfiguredMaximum()
+    public async Task CalculateReconnectBackoffDelay_CapsBaseBeforeJitter()
     {
         await using var pool = CreateReconnectBackoffPool(
             reconnectBackoffMs: 100,
@@ -869,7 +871,7 @@ public sealed class ConnectionPoolTests
 
         var delay = pool.CalculateReconnectBackoffDelay(failureCount: 2);
 
-        await Assert.That(delay).IsEqualTo(TimeSpan.FromMilliseconds(150));
+        await Assert.That(delay.TotalMilliseconds).IsEqualTo(179.99994).Within(0.001);
     }
 
     [Test]

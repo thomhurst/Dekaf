@@ -84,6 +84,16 @@ public sealed class PrefetchFailureTrackerTests
         await Assert.That(decision.Count).IsEqualTo(1);
     }
 
+    [Test]
+    [Arguments(0, 100)]
+    [Arguments(100, 99)]
+    public async Task Constructor_InvalidBackoff_Throws(int initialDelayMs, int maxDelayMs)
+    {
+        var create = () => new PrefetchFailureTracker(3, initialDelayMs, maxDelayMs, NoJitter);
+
+        await Assert.That(create).Throws<ArgumentOutOfRangeException>();
+    }
+
     private static PrefetchFailureTracker CreateTracker()
         => new(terminalThreshold: 3, initialDelayMs: 100, maxDelayMs: 5_000, NoJitter);
 }
