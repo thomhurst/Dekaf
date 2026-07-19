@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using Dekaf.Internal;
 using Dekaf.Protocol;
+using Dekaf.Retry;
 using Dekaf.Security.Sasl;
 using Dekaf.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -1093,18 +1094,12 @@ public sealed partial class ConnectionPool : IConnectionPool, IConnectionPoolDia
     {
         var minMs = _connectionOptions.ReconnectBackoff.TotalMilliseconds;
         var maxMs = _connectionOptions.ReconnectBackoffMax.TotalMilliseconds;
-        if (minMs <= 0 || maxMs <= 0)
-            return TimeSpan.Zero;
-
-        if (maxMs <= minMs)
-            return TimeSpan.FromMilliseconds(maxMs);
-
-        var exponent = Math.Min(failureCount - 1, 30);
-        var baseMs = Math.Min(maxMs, minMs * Math.Pow(2, exponent));
-        var randomValue = Math.Clamp(_randomDouble(), 0, 1);
-        var jitteredMs = baseMs * (0.8 + (randomValue * 0.4));
-
-        return TimeSpan.FromMilliseconds(Math.Min(maxMs, jitteredMs));
+        var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+            minMs,
+            maxMs,
+            failureCount,
+            _randomDouble());
+        return TimeSpan.FromMilliseconds(delayMs);
     }
 
     private static long ToStopwatchTicks(TimeSpan delay)

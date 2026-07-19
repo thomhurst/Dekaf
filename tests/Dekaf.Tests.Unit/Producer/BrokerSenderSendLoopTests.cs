@@ -613,6 +613,15 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
                     sender!.Enqueue(CreateTestBatch(valueTaskSourcePool, "test-topic", 1));
             });
 
+        // EnqueueBulk publishes separate channel events. Seed the known wave width before
+        // publishing so the live sender cannot dispatch the first event before its sibling
+        // has been written and thereby turn setup timing into an extra request.
+        var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
+            "_knownPartitions",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+        knownPartitions.Add(new TopicPartition("test-topic", 0));
+        knownPartitions.Add(new TopicPartition("test-topic", 1));
+
         try
         {
             sender.EnqueueBulk(

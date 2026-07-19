@@ -812,8 +812,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private const int MaxConsecutivePrefetchErrors = 50;
     private const int MaxConsecutiveEmptyParsedFetches = 3;
     private const int MaxRepeatedDeterministicPrefetchFailures = 3;
-    private const int InitialPrefetchFailureBackoffMs = 100;
-    private const int MaxPrefetchFailureBackoffMs = 5_000;
     private const long FilterRefreshIntervalMilliseconds = 30_000;
     private static readonly TimeSpan PartitionStopListenerTimeout = TimeSpan.FromSeconds(5);
 
@@ -964,10 +962,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private readonly ConcurrentDictionary<(int BrokerId, int ConnectionIndex), FetchPartitionOrderState>
         _fetchPartitionOrderStates = new();
     private readonly StuckFetchPositionTracker _stuckFetchPositionTracker = new(MaxConsecutiveEmptyParsedFetches);
-    private readonly PrefetchFailureTracker _prefetchFailureTracker = new(
-        MaxRepeatedDeterministicPrefetchFailures,
-        InitialPrefetchFailureBackoffMs,
-        MaxPrefetchFailureBackoffMs);
+    private readonly PrefetchFailureTracker _prefetchFailureTracker;
 
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
@@ -1174,6 +1169,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             telemetryMetricCollector: telemetryMetricCollector,
             responseMemoryAdmissionsEnabled: true);
 
+        metadataOptions ??= new MetadataOptions
+        {
+            RetryBackoffMs = options.RetryBackoffMs,
+            RetryBackoffMaxMs = options.RetryBackoffMaxMs
+        };
         var metadataManager = new MetadataManager(
             connectionPool,
             options.BootstrapServers,
@@ -1264,6 +1264,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _fetchBufferMemoryPool,
             options.ClientId,
             options.GroupId);
+        ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
+        _prefetchFailureTracker = new PrefetchFailureTracker(
+            MaxRepeatedDeterministicPrefetchFailures,
+            options.RetryBackoffMs,
+            options.RetryBackoffMaxMs);
         _currentQueuedMaxBytes = (long)((ulong)options.QueuedMaxMessagesKbytes * 1024UL);
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
@@ -5300,7 +5305,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             _watermarks[topicPartition] = watermarks;
 
             return watermarks;
-        }, _metadataManager, cancellationToken).ConfigureAwait(false);
+        }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -5830,7 +5836,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             return partitionResponse.Offset;
-        }, _metadataManager, cancellationToken);
+        }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs);
     }
 
     internal static KafkaException CreateOffsetResolutionUnavailableException(TopicPartition partition) =>
@@ -7576,7 +7582,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// been yielded but not yet processed (or prefetched but not yet yielded) can never be
     /// committed by this loop. Commits are skipped unless the coordinator is Stable, which
     /// prevents committing with a stale generation mid-rebalance. On failure it retries
-    /// once after 200ms, then waits for the next interval.
+    /// once after the configured request backoff, then waits for the next interval.
     /// </summary>
     private async Task AutoCommitLoopAsync(CancellationToken cancellationToken)
     {
@@ -7613,7 +7619,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             LogAutoCommitFailed(ex);
             try
             {
-                await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _options.RetryBackoffMs,
+                    _options.RetryBackoffMaxMs,
+                    failureCount: 1);
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
                 await CommitStoredOffsetsAsync(cancellationToken).ConfigureAwait(false);
             }
             catch { /* Best effort — will retry on next interval */ }
@@ -7727,7 +7737,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 {
                     LogCommitOffsetsDuringCloseFailed(ex, attempt + 1);
                     if (attempt < 2)
-                        await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                    {
+                        var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                            _options.RetryBackoffMs,
+                            _options.RetryBackoffMaxMs,
+                            attempt + 1);
+                        await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                    }
                 }
             }
         }
@@ -7858,7 +7874,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             }
 
             return results;
-        }, _metadataManager, cancellationToken).ConfigureAwait(false);
+        }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs)
+            .ConfigureAwait(false);
     }
 
     private async ValueTask<Dictionary<TopicPartition, long>> GetOffsetsForTimesFromBrokerAsync(

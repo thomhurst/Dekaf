@@ -35,6 +35,7 @@ public sealed class AdminClient : IAdminClient
 
     public AdminClient(AdminClientOptions options, ILoggerFactory? loggerFactory = null, MetadataOptions? metadataOptions = null)
     {
+        ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         var reconnectBackoffMaxMs = ReconnectBackoffValidation.ResolveMaximumMilliseconds(
             options.ReconnectBackoffMs,
             options.ReconnectBackoffMaxMs,
@@ -75,6 +76,11 @@ public sealed class AdminClient : IAdminClient
             },
             loggerFactory);
 
+        metadataOptions ??= new MetadataOptions
+        {
+            RetryBackoffMs = options.RetryBackoffMs,
+            RetryBackoffMaxMs = options.RetryBackoffMaxMs
+        };
         _metadataManager = new MetadataManager(
             _connectionPool,
             options.BootstrapServers,
@@ -96,6 +102,7 @@ public sealed class AdminClient : IAdminClient
         ILoggerFactory? loggerFactory = null,
         bool ownsResources = false)
     {
+        ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         _options = options;
         _logger = loggerFactory?.CreateLogger<AdminClient>();
         _connectionPool = connectionPool;
@@ -306,11 +313,18 @@ public sealed class AdminClient : IAdminClient
             if (allReady)
                 return;
 
-            await Task.Delay(RetryHelper.RetryDelayMs, cancellationToken).ConfigureAwait(false);
+            if (attempt + 1 < leaderWaitRetries)
+            {
+                var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _options.RetryBackoffMs,
+                    _options.RetryBackoffMaxMs,
+                    attempt + 1);
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
-            $"Topic(s) {string.Join(", ", topicNames)} did not have all partition leaders elected after {leaderWaitRetries * RetryHelper.RetryDelayMs}ms");
+            $"Topic(s) {string.Join(", ", topicNames)} did not have all partition leaders elected after {leaderWaitRetries} attempts");
     }
 
     private async ValueTask<bool> TopicHasAtLeastPartitionCountAsync(
@@ -4337,10 +4351,20 @@ public sealed class AdminClient : IAdminClient
     }
 
     private ValueTask WithRetryAsync(Func<ValueTask> operation, CancellationToken cancellationToken)
-        => RetryHelper.WithRetryAsync(operation, _metadataManager, cancellationToken);
+        => RetryHelper.WithRetryAsync(
+            operation,
+            _metadataManager,
+            cancellationToken,
+            _options.RetryBackoffMs,
+            _options.RetryBackoffMaxMs);
 
     private ValueTask<T> WithRetryAsync<T>(Func<ValueTask<T>> operation, CancellationToken cancellationToken)
-        => RetryHelper.WithRetryAsync(operation, _metadataManager, cancellationToken);
+        => RetryHelper.WithRetryAsync(
+            operation,
+            _metadataManager,
+            cancellationToken,
+            _options.RetryBackoffMs,
+            _options.RetryBackoffMaxMs);
 
     private static WriteTxnMarkersResponsePartition FindAbortTransactionPartition(
         WriteTxnMarkersResponse response,
@@ -4604,6 +4628,18 @@ public sealed class AdminClientOptions
     public required IReadOnlyList<string> BootstrapServers { get; init; }
     public string? ClientId { get; init; } = "dekaf-admin";
     public int RequestTimeoutMs { get; init; } = 30000;
+
+    /// <summary>
+    /// Initial delay in milliseconds for retrying failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
+    /// </summary>
+    public int RetryBackoffMs { get; init; } = 100;
+
+    /// <summary>
+    /// Maximum delay in milliseconds for retrying repeatedly failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.max.ms</c>.
+    /// </summary>
+    public int RetryBackoffMaxMs { get; init; } = 1000;
     public int ReconnectBackoffMs
     {
         get => _reconnectBackoffMs;
@@ -4736,6 +4772,8 @@ public sealed class AdminClientBuilder
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private int _requestTimeoutMs = 30000;
+    private int _retryBackoffMs = 100;
+    private int _retryBackoffMaxMs = 1000;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
@@ -4773,6 +4811,8 @@ public sealed class AdminClientBuilder
         _clientInfrastructure = clientInfrastructure;
         _bootstrapServers = clientInfrastructure.BootstrapServers;
         _loggerFactory = clientInfrastructure.LoggerFactory;
+        _retryBackoffMs = clientInfrastructure.RetryBackoffMs;
+        _retryBackoffMaxMs = clientInfrastructure.RetryBackoffMaxMs;
     }
 
     public AdminClientBuilder WithBootstrapServers(string servers)
@@ -5121,6 +5161,34 @@ public sealed class AdminClientBuilder
     }
 
     /// <summary>
+    /// Sets the initial delay for retrying failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
+    /// </summary>
+    public AdminClientBuilder WithRetryBackoff(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        if (backoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+        _retryBackoffMs = (int)backoff.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum delay for retrying repeatedly failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.max.ms</c>.
+    /// </summary>
+    public AdminClientBuilder WithRetryBackoffMax(TimeSpan backoff)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        if (backoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+        _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the initial delay before reconnecting to a broker after a connection failure.
     /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to zero to disable the delay.
     /// When the maximum is not configured, it uses this value and disables exponential growth.
@@ -5251,6 +5319,7 @@ public sealed class AdminClientBuilder
             _reconnectBackoffMaxMs,
             _reconnectBackoffConfigured,
             _reconnectBackoffMaxConfigured);
+        ExponentialRetryBackoff.Validate(_retryBackoffMs, _retryBackoffMaxMs);
 
         GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
 
@@ -5259,6 +5328,8 @@ public sealed class AdminClientBuilder
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId,
             RequestTimeoutMs = _requestTimeoutMs,
+            RetryBackoffMs = _retryBackoffMs,
+            RetryBackoffMaxMs = _retryBackoffMaxMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             ConnectionsMaxIdleMs = _connectionsMaxIdleMs,
@@ -5289,7 +5360,9 @@ public sealed class AdminClientBuilder
             MetadataRefreshInterval = _metadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
-            ClientDnsLookup = _clientDnsLookup
+            ClientDnsLookup = _clientDnsLookup,
+            RetryBackoffMs = _retryBackoffMs,
+            RetryBackoffMaxMs = _retryBackoffMaxMs
         };
 
         return _clientInfrastructure is null

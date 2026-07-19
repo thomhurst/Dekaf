@@ -21,6 +21,8 @@ public sealed class RetryHelperTests
                 : ValueTask.FromResult(42),
             metadataManager,
             CancellationToken.None,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
             maxRetries: 1);
 
         await Assert.That(result).IsEqualTo(42);
@@ -42,10 +44,87 @@ public sealed class RetryHelperTests
                 },
                 metadataManager,
                 CancellationToken.None,
+                retryBackoffMs: 0,
+                retryBackoffMaxMs: 0,
                 maxRetries: 1));
 
         await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
         await Assert.That(attempts).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task TransportFailure_RetriesOriginalOperation()
+    {
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var attempts = 0;
+
+        var result = await RetryHelper.WithRetryAsync(
+            () => Interlocked.Increment(ref attempts) == 1
+                ? ValueTask.FromException<int>(new IOException("connection reset"))
+                : ValueTask.FromResult(42),
+            metadataManager,
+            CancellationToken.None,
+            retryBackoffMs: 0,
+            retryBackoffMaxMs: 0,
+            maxRetries: 1);
+
+        await Assert.That(result).IsEqualTo(42);
+        await Assert.That(attempts).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task Success_ResetsFailureSequenceForNextOperation()
+    {
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        var failureCounts = new List<int>();
+        var attempts = 0;
+        int CalculateDelay(int initialDelayMs, int maximumDelayMs, int failureCount)
+        {
+            _ = initialDelayMs;
+            _ = maximumDelayMs;
+            failureCounts.Add(failureCount);
+            return 0;
+        }
+
+        for (var invocation = 0; invocation < 2; invocation++)
+        {
+            attempts = 0;
+            await RetryHelper.WithRetryAsync(
+                () => Interlocked.Increment(ref attempts) == 1
+                    ? ValueTask.FromException(CreateRequestTimeout())
+                    : ValueTask.CompletedTask,
+                metadataManager,
+                CancellationToken.None,
+                retryBackoffMs: 100,
+                retryBackoffMaxMs: 1000,
+                maxRetries: 1,
+                calculateDelayMilliseconds: CalculateDelay);
+        }
+
+        await Assert.That(failureCounts).IsEquivalentTo([1, 1]);
+    }
+
+    [Test]
+    public async Task CancellationDuringBackoff_StopsRetrying()
+    {
+        await using var metadataManager = CreateUnavailableMetadataManager();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(20));
+        var attempts = 0;
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await RetryHelper.WithRetryAsync(
+                () =>
+                {
+                    Interlocked.Increment(ref attempts);
+                    return ValueTask.FromException(CreateRequestTimeout());
+                },
+                metadataManager,
+                cancellation.Token,
+                retryBackoffMs: 1000,
+                retryBackoffMaxMs: 1000,
+                maxRetries: 3));
+
+        await Assert.That(attempts).IsEqualTo(1);
     }
 
     private static MetadataManager CreateUnavailableMetadataManager()

@@ -277,6 +277,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             pipeMemoryBucketCapacity: sharedPoolSizes.PipeMemoryArraysPerBucket,
             telemetryMetricCollector: telemetryMetricCollector);
 
+        metadataOptions ??= new MetadataOptions
+        {
+            RetryBackoffMs = options.RetryBackoffMs,
+            RetryBackoffMaxMs = options.RetryBackoffMaxMs,
+            InitTimeoutMs = options.MaxBlockMs
+        };
         var metadataManager = new MetadataManager(
             connectionPool,
             options.BootstrapServers,
@@ -296,6 +302,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         IDekafMemoryBudget memoryBudget,
         Func<IReadOnlyList<TopicPartition>, CancellationToken, ValueTask>? addPartitionsToTransaction = null)
     {
+        ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         _options = options;
         _addPartitionsToTransaction = addPartitionsToTransaction ?? AddPartitionsToTransactionAsync;
         _keySerializer = keySerializer;
@@ -2163,12 +2170,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
     }
 
+    private int CalculateRequestRetryBackoff(int zeroBasedAttempt)
+        => ExponentialRetryBackoff.CalculateDelayMilliseconds(
+            _options.RetryBackoffMs,
+            _options.RetryBackoffMaxMs,
+            zeroBasedAttempt + 1);
+
     internal async ValueTask ReinitializeProducerIdAsync(
         CancellationToken cancellationToken,
         bool keepPreparedTransaction = false)
     {
         const int maxRetries = 10;
-        var retryDelayMs = 100;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
@@ -2199,12 +2211,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
                 if (classification == TransactionErrorClassification.Retriable)
                 {
+                    if (attempt == maxRetries - 1)
+                        break;
+
+                    var retryDelayMs = CalculateRequestRetryBackoff(attempt);
                     if (response.ErrorCode == ErrorCode.NotCoordinator)
                     {
                         LogInitProducerIdNotCoordinator(attempt + 1, maxRetries);
 
                         await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                        retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                         await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -2212,7 +2227,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     LogInitProducerIdRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
 
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                     continue;
                 }
 
@@ -2268,7 +2282,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         };
 
         const int maxRetries = 5;
-        var retryDelayMs = 100;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
@@ -2291,10 +2304,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (errorCode is ErrorCode.CoordinatorNotAvailable or ErrorCode.NotCoordinator)
             {
+                if (attempt == maxRetries - 1)
+                    break;
+
+                var retryDelayMs = CalculateRequestRetryBackoff(attempt);
                 LogTransactionCoordinatorNotAvailable(errorCode, attempt + 1, maxRetries, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 1000);
                 continue;
             }
 
@@ -2356,7 +2372,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         };
 
         const int maxRetries = 5;
-        var retryDelayMs = 100;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
@@ -2415,10 +2430,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return; // Success
             }
 
+            if (attempt == maxRetries - 1)
+                break;
+
+            var retryDelayMs = CalculateRequestRetryBackoff(attempt);
             LogAddPartitionsToTxnRetriableError(attempt + 1, maxRetries, retryDelayMs);
 
             await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-            retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
         }
 
         throw new TransactionException(ErrorCode.ConcurrentTransactions,
@@ -2458,7 +2476,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         CancellationToken cancellationToken)
     {
         const int maxRetries = 5;
-        var retryDelayMs = 100;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
@@ -2544,18 +2561,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             ThrowIfNonRetriableTransactionError(response.ErrorCode,
                 $"EndTxn ({(committed ? "commit" : "abort")})", _currentTransactionUsesTV2);
 
+            if (attempt == maxRetries - 1)
+                break;
+
+            var retryDelayMs = CalculateRequestRetryBackoff(attempt);
             if (response.ErrorCode == ErrorCode.NotCoordinator)
             {
                 LogEndTxnNotCoordinator(attempt + 1, maxRetries);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
             LogEndTxnRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
             await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-            retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
             continue;
         }
 
@@ -2577,7 +2596,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // TransactionErrorClassifier (the single source of retriability for transactional ops) rather
         // than RetryHelper, whose IsRetriable predicate does not cover codes like ConcurrentTransactions.
         const int maxRetries = 5;
-        var retryDelayMs = 100;
         var tv2 = _currentTransactionUsesTV2;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
@@ -2602,10 +2620,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 // Retriable -> back off and restart the sequence; fatal/abortable -> throws typed exception.
                 ThrowIfNonRetriableTransactionError(addOffsetsResponse.ErrorCode, "AddOffsetsToTxn", tv2);
+                if (attempt == maxRetries - 1)
+                    break;
+                var retryDelayMs = CalculateRequestRetryBackoff(attempt);
                 if (addOffsetsResponse.ErrorCode == ErrorCode.NotCoordinator)
                     await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 continue;
             }
 
@@ -2626,8 +2646,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             if (findCoordResponse.Coordinators.Count == 0)
             {
                 // Treat an empty coordinator set as transiently unavailable and retry.
+                if (attempt == maxRetries - 1)
+                    break;
+                var retryDelayMs = CalculateRequestRetryBackoff(attempt);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 continue;
             }
 
@@ -2638,8 +2660,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 ThrowIfNonRetriableTransactionError(coord.ErrorCode,
                     $"FindCoordinator for consumer group '{consumerGroupId}'", tv2);
+                if (attempt == maxRetries - 1)
+                    break;
+                var retryDelayMs = CalculateRequestRetryBackoff(attempt);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 continue;
             }
 
@@ -2709,10 +2733,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             if (commitError.HasValue)
             {
                 ThrowIfNonRetriableTransactionError(commitError.Value, commitContext!, tv2);
+                if (attempt == maxRetries - 1)
+                    break;
+                var retryDelayMs = CalculateRequestRetryBackoff(attempt);
                 if (commitError.Value == ErrorCode.NotCoordinator)
                     await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 continue;
             }
 
@@ -3286,7 +3312,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         CancellationToken cancellationToken)
     {
         const int maxRetries = 5;
-        var retryDelayMs = 100;
         var retryDeadline = Stopwatch.GetTimestamp() + _options.DeliveryTimeoutTicks;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
@@ -3300,12 +3325,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 && IsRetriablePartitionEnrollmentException(exception)
                 && Stopwatch.GetTimestamp() < retryDeadline)
             {
+                var retryDelayMs = CalculateRequestRetryBackoff(attempt);
                 LogAddPartitionsToTxnTransportRetry(attempt + 1, retryDelayMs);
                 var remainingTicks = retryDeadline - Stopwatch.GetTimestamp();
                 var remainingMs = Math.Max(1, remainingTicks * 1000d / Stopwatch.Frequency);
                 await Task.Delay((int)Math.Min(retryDelayMs, remainingMs), cancellationToken)
                     .ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
             }
         }
     }
@@ -3767,7 +3792,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Retry with backoff for retriable errors (e.g. CoordinatorLoadInProgress during broker startup)
-            var retryDelayMs = _options.RetryBackoffMs;
+            var consecutiveFailures = 0;
 
             while (true)
             {
@@ -3815,10 +3840,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         $"Failed to initialize idempotent producer: {response.ErrorCode}");
                 }
 
+                var retryDelayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _options.RetryBackoffMs,
+                    _options.RetryBackoffMaxMs,
+                    ++consecutiveFailures);
                 LogInitProducerIdRetriable(response.ErrorCode, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, _options.RetryBackoffMaxMs);
             }
         }
         finally
@@ -3888,7 +3916,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return (_producerId, _producerEpoch);
             }
 
-            var retryDelayMs = _options.RetryBackoffMs;
+            var consecutiveFailures = 0;
 
             while (true)
             {
@@ -3933,10 +3961,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         $"Failed to bump producer epoch: {response.ErrorCode}");
                 }
 
+                var retryDelayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+                    _options.RetryBackoffMs,
+                    _options.RetryBackoffMaxMs,
+                    ++consecutiveFailures);
                 LogBumpEpochRetriable(response.ErrorCode, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                retryDelayMs = Math.Min(retryDelayMs * 2, _options.RetryBackoffMaxMs);
             }
         }
         finally

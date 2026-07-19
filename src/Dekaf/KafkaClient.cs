@@ -7,6 +7,7 @@ using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
@@ -80,6 +81,8 @@ public sealed class KafkaClientBuilder
     private IReadOnlyList<string> _bootstrapServers = [];
     private string? _clientId;
     private int _requestTimeoutMs = 30000;
+    private int _retryBackoffMs = 100;
+    private int _retryBackoffMaxMs = 1000;
     private int _reconnectBackoffMs = 50;
     private int _reconnectBackoffMaxMs = 1000;
     private bool _reconnectBackoffConfigured;
@@ -140,6 +143,32 @@ public sealed class KafkaClientBuilder
         ArgumentOutOfRangeException.ThrowIfGreaterThan(timeout.TotalMilliseconds, int.MaxValue, nameof(timeout));
 
         _requestTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the initial delay for retrying failed broker requests for clients sharing this connection.
+    /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
+    /// </summary>
+    public KafkaClientBuilder WithRetryBackoff(TimeSpan backoff)
+    {
+        if (backoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(backoff), "Retry backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+        _retryBackoffMs = (int)backoff.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum delay for retrying repeatedly failed broker requests for shared clients.
+    /// Equivalent to Kafka's <c>retry.backoff.max.ms</c>.
+    /// </summary>
+    public KafkaClientBuilder WithRetryBackoffMax(TimeSpan backoff)
+    {
+        if (backoff < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(backoff), "Maximum retry backoff cannot be negative");
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(backoff.TotalMilliseconds, int.MaxValue, nameof(backoff));
+        _retryBackoffMaxMs = (int)backoff.TotalMilliseconds;
         return this;
     }
 
@@ -488,6 +517,7 @@ public sealed class KafkaClientBuilder
             _reconnectBackoffMaxMs,
             _reconnectBackoffConfigured,
             _reconnectBackoffMaxConfigured);
+        ExponentialRetryBackoff.Validate(_retryBackoffMs, _retryBackoffMaxMs);
 
         GssapiConfig.ValidateForBuild(_saslMechanism, _gssapiConfig);
 
@@ -496,6 +526,8 @@ public sealed class KafkaClientBuilder
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId,
             RequestTimeoutMs = _requestTimeoutMs,
+            RetryBackoffMs = _retryBackoffMs,
+            RetryBackoffMaxMs = _retryBackoffMaxMs,
             ReconnectBackoffMs = _reconnectBackoffMs,
             ReconnectBackoffMaxMs = reconnectBackoffMaxMs,
             UseTls = _useTls,
@@ -537,6 +569,8 @@ internal sealed class KafkaClientOptions
     public required IReadOnlyList<string> BootstrapServers { get; init; }
     public string? ClientId { get; init; }
     public int RequestTimeoutMs { get; init; }
+    public int RetryBackoffMs { get; init; }
+    public int RetryBackoffMaxMs { get; init; }
     public int ReconnectBackoffMs { get; init; }
     public int ReconnectBackoffMaxMs { get; init; }
     public bool UseTls { get; init; }
@@ -585,7 +619,9 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         ILoggerFactory? loggerFactory,
         int connectionsPerBroker,
         int maxConnectionsPerBroker,
-        int producerMaxConnectionsPerBroker)
+        int producerMaxConnectionsPerBroker,
+        int retryBackoffMs,
+        int retryBackoffMaxMs)
     {
         BootstrapServers = bootstrapServers;
         ConnectionPool = connectionPool;
@@ -596,6 +632,8 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
         ConnectionsPerBroker = connectionsPerBroker;
         MaxConnectionsPerBroker = maxConnectionsPerBroker;
         ProducerMaxConnectionsPerBroker = producerMaxConnectionsPerBroker;
+        RetryBackoffMs = retryBackoffMs;
+        RetryBackoffMaxMs = retryBackoffMaxMs;
     }
 
     public IReadOnlyList<string> BootstrapServers { get; }
@@ -607,6 +645,8 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
     public int ConnectionsPerBroker { get; }
     public int MaxConnectionsPerBroker { get; }
     public int ProducerMaxConnectionsPerBroker { get; }
+    public int RetryBackoffMs { get; }
+    public int RetryBackoffMaxMs { get; }
 
     public static KafkaClientInfrastructure Create(KafkaClientOptions options)
     {
@@ -639,7 +679,9 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             MetadataRefreshInterval = options.MetadataMaxAge ?? TimeSpan.FromMinutes(15),
             MetadataRecoveryStrategy = options.MetadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = options.MetadataRecoveryRebootstrapTriggerMs,
-            ClientDnsLookup = options.ClientDnsLookup
+            ClientDnsLookup = options.ClientDnsLookup,
+            RetryBackoffMs = options.RetryBackoffMs,
+            RetryBackoffMaxMs = options.RetryBackoffMaxMs
         };
 
         var metadataManager = new MetadataManager(
@@ -658,7 +700,9 @@ internal sealed class KafkaClientInfrastructure : IAsyncDisposable
             options.LoggerFactory,
             options.ConnectionsPerBroker,
             options.MaxConnectionsPerBroker,
-            options.ProducerMaxConnectionsPerBroker);
+            options.ProducerMaxConnectionsPerBroker,
+            options.RetryBackoffMs,
+            options.RetryBackoffMaxMs);
     }
 
     private static ConnectionOptions CreateConnectionOptions(KafkaClientOptions options) => new()

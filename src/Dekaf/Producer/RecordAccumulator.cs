@@ -8327,6 +8327,9 @@ internal sealed class ReadyBatch
     /// </summary>
     internal long RetryNotBefore { get; set; }
 
+    /// <summary>Number of consecutive failed requests for this batch.</summary>
+    internal int RetryFailureCount { get; set; }
+
     /// <summary>
     /// Stopwatch timestamp when the accumulator batch was created. Used for absolute delivery
     /// deadline computation in ProcessCompletedResponses (prevents infinite retries with relative
@@ -8619,6 +8622,7 @@ internal sealed class ReadyBatch
         Volatile.Write(ref _loopExitRecoveryRegistered, 0);
         LoopExitRedeliveryOrder = 0;
         RetryNotBefore = 0;
+        RetryFailureCount = 0;
         _diagTraceLen = 0;
 
         // NOTE: _cleanedUp, _completed, and _sendCompleted are NOT reset here. They stay

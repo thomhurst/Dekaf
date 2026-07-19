@@ -206,6 +206,18 @@ public sealed class ConsumerOptions
     public int RequestTimeoutMs { get; init; } = 30000;
 
     /// <summary>
+    /// Initial delay in milliseconds for retrying failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.ms</c>.
+    /// </summary>
+    public int RetryBackoffMs { get; init; } = 100;
+
+    /// <summary>
+    /// Maximum delay in milliseconds for retrying repeatedly failed broker requests.
+    /// Equivalent to Kafka's <c>retry.backoff.max.ms</c>.
+    /// </summary>
+    public int RetryBackoffMaxMs { get; init; } = 1000;
+
+    /// <summary>
     /// Initial delay in milliseconds before reconnecting to a broker after a connection failure.
     /// Equivalent to Kafka's <c>reconnect.backoff.ms</c>. Set to 0 to disable the delay.
     /// When set without <see cref="ReconnectBackoffMaxMs"/>, the maximum uses this value.

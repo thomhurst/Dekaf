@@ -6,6 +6,7 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using Dekaf.Retry;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
 #if NETSTANDARD2_0
@@ -102,6 +103,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         var metadataManager = new MetadataManager(
             connectionPool,
             options.BootstrapServers,
+            new MetadataOptions
+            {
+                RetryBackoffMs = options.RetryBackoffMs,
+                RetryBackoffMaxMs = options.RetryBackoffMaxMs
+            },
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
         return (connectionPool, metadataManager);
@@ -127,6 +133,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         ILoggerFactory? loggerFactory,
         bool ownsInfrastructure)
     {
+        ExponentialRetryBackoff.Validate(options.RetryBackoffMs, options.RetryBackoffMaxMs);
         _options = options;
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
@@ -547,40 +554,49 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         Dictionary<TopicPartition, List<AcknowledgementBatchData>>? pendingAcks,
         CancellationToken cancellationToken)
     {
-        try
+        for (var attempt = 0; ; attempt++)
         {
-            using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
-                .ConfigureAwait(false);
-            var connection = connectionLease.Connection;
-            var version = _metadataManager.GetNegotiatedApiVersion(
-                connection,
-                ApiKey.ShareFetch,
-                ShareFetchRequest.LowestSupportedVersion,
-                ShareFetchRequest.HighestSupportedVersion);
-            var maxRecords = version >= 1 ? _options.MaxPollRecords : 0;
-            var request = new ShareFetchRequest
+            try
             {
-                GroupId = _options.GroupId,
-                MemberId = _coordinator.MemberId!,
-                ShareSessionEpoch = _sessionManager.GetSessionEpoch(brokerId),
-                MaxWaitMs = _options.FetchMaxWaitMs,
-                MinBytes = _options.FetchMinBytes,
-                MaxBytes = _options.FetchMaxBytes,
-                MaxRecords = maxRecords,
-                BatchSize = maxRecords,
-                ShareAcquireMode = (sbyte)_options.ShareAcquireMode,
-                Topics = BuildShareFetchTopics(partitions, pendingAcks, version)
-            };
-            var response = (ShareFetchResponse)await connection
-                .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
-                .ConfigureAwait(false);
-            return (brokerId, response);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException and not BrokerVersionException)
-        {
-            LogFetchFailed(brokerId, ex);
-            _sessionManager.ResetSession(brokerId);
-            return (brokerId, null);
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
+                    .ConfigureAwait(false);
+                var connection = connectionLease.Connection;
+                var version = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    ApiKey.ShareFetch,
+                    ShareFetchRequest.LowestSupportedVersion,
+                    ShareFetchRequest.HighestSupportedVersion);
+                var maxRecords = version >= 1 ? _options.MaxPollRecords : 0;
+                var request = new ShareFetchRequest
+                {
+                    GroupId = _options.GroupId,
+                    MemberId = _coordinator.MemberId!,
+                    ShareSessionEpoch = _sessionManager.GetSessionEpoch(brokerId),
+                    MaxWaitMs = _options.FetchMaxWaitMs,
+                    MinBytes = _options.FetchMinBytes,
+                    MaxBytes = _options.FetchMaxBytes,
+                    MaxRecords = maxRecords,
+                    BatchSize = maxRecords,
+                    ShareAcquireMode = (sbyte)_options.ShareAcquireMode,
+                    Topics = BuildShareFetchTopics(partitions, pendingAcks, version)
+                };
+                var response = (ShareFetchResponse)await connection
+                    .SendAsync<ShareFetchRequest, ShareFetchResponse>(request, version, cancellationToken)
+                    .ConfigureAwait(false);
+                return (brokerId, response);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException and not BrokerVersionException)
+            {
+                if (attempt < RetryHelper.MaxRetries && RetryHelper.IsRetriableRequestFailure(ex))
+                {
+                    await PrepareRequestRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                LogFetchFailed(brokerId, ex);
+                _sessionManager.ResetSession(brokerId);
+                return (brokerId, null);
+            }
         }
     }
 
@@ -656,25 +672,64 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             Topics = topics
         };
 
-        using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
-            .ConfigureAwait(false);
-        var connection = connectionLease.Connection;
-        var shareAckVersion = _metadataManager.GetNegotiatedApiVersion(
-            connection,
-            ApiKey.ShareAcknowledge,
-            ShareAcknowledgeRequest.LowestSupportedVersion,
-            ShareAcknowledgeRequest.HighestSupportedVersion);
-
-        var response = (ShareAcknowledgeResponse)await connection
-            .SendAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(
-                request, shareAckVersion, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (response.ErrorCode != ErrorCode.None)
+        for (var attempt = 0; ; attempt++)
         {
-            throw KafkaException.FromErrorCode(response.ErrorCode,
-                $"ShareAcknowledge failed for broker {brokerId}: {response.ErrorCode} - {response.ErrorMessage}");
+            try
+            {
+                using var connectionLease = await _connectionPool.LeaseConnectionAsync(brokerId, cancellationToken)
+                    .ConfigureAwait(false);
+                var connection = connectionLease.Connection;
+                var shareAckVersion = _metadataManager.GetNegotiatedApiVersion(
+                    connection,
+                    ApiKey.ShareAcknowledge,
+                    ShareAcknowledgeRequest.LowestSupportedVersion,
+                    ShareAcknowledgeRequest.HighestSupportedVersion);
+
+                var response = (ShareAcknowledgeResponse)await connection
+                    .SendAsync<ShareAcknowledgeRequest, ShareAcknowledgeResponse>(
+                        request, shareAckVersion, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (response.ErrorCode != ErrorCode.None)
+                {
+                    throw KafkaException.FromErrorCode(response.ErrorCode,
+                        $"ShareAcknowledge failed for broker {brokerId}: {response.ErrorCode} - {response.ErrorMessage}");
+                }
+
+                return;
+            }
+            catch (Exception ex) when (attempt < RetryHelper.MaxRetries
+                                       && RetryHelper.IsRetriableRequestFailure(ex))
+            {
+                await PrepareRequestRetryAsync(attempt, cancellationToken).ConfigureAwait(false);
+            }
         }
+    }
+
+    private async ValueTask PrepareRequestRetryAsync(int zeroBasedAttempt, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex) when (
+            ex is not ObjectDisposedException
+            && !cancellationToken.IsCancellationRequested)
+        {
+            // Best-effort: preserve the original request failure if retries exhaust.
+        }
+        catch (Exception ex) when (
+            RetryHelper.IsRetriableRequestFailure(ex)
+            && !cancellationToken.IsCancellationRequested)
+        {
+            // Same best-effort behavior for transient transport failures.
+        }
+
+        var delayMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
+            _options.RetryBackoffMs,
+            _options.RetryBackoffMaxMs,
+            zeroBasedAttempt + 1);
+        await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

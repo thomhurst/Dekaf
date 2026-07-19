@@ -801,7 +801,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                         }
                     }
                 }
-            }, _metadataManager, cancellationToken, onRetry: FindCoordinatorAsync).ConfigureAwait(false);
+            }, _metadataManager, cancellationToken, _options.RetryBackoffMs, _options.RetryBackoffMaxMs,
+                onRetry: FindCoordinatorAsync).ConfigureAwait(false);
         }
         finally
         {
@@ -1002,6 +1003,8 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 },
                 _metadataManager,
                 operationToken,
+                _options.RetryBackoffMs,
+                _options.RetryBackoffMaxMs,
                 onRetry: RecoverOffsetFetchAsync,
                 shouldRefreshMetadata: ShouldRefreshMetadataForOffsetFetchRetry).ConfigureAwait(false);
             }

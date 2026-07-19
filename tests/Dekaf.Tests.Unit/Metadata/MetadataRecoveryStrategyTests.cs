@@ -197,6 +197,18 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
+    public async Task AdminClientOptions_RetryBackoff_DefaultsTo100And1000()
+    {
+        var options = new Dekaf.Admin.AdminClientOptions
+        {
+            BootstrapServers = ["localhost:9092"]
+        };
+
+        await Assert.That(options.RetryBackoffMs).IsEqualTo(100);
+        await Assert.That(options.RetryBackoffMaxMs).IsEqualTo(1000);
+    }
+
+    [Test]
     public async Task AdminClientOptions_ReconnectBackoffMaxMs_DefaultsTo1000()
     {
         var options = new Dekaf.Admin.AdminClientOptions

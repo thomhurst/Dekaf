@@ -4,28 +4,28 @@ namespace Dekaf.Retry;
 
 /// <summary>
 /// Centralized retry logic for retriable Kafka errors.
-/// Catches <see cref="KafkaException"/> where <see cref="KafkaException.IsRetriable"/> is true,
-/// refreshes metadata, and retries up to <see cref="MaxRetries"/> times with a jittered delay.
-/// The effective delay per retry is <see cref="RetryDelayMs"/> + [0, 100)ms random jitter.
+/// Catches retriable Kafka and transport failures,
+/// refreshes metadata, and retries up to <see cref="MaxRetries"/> times with KIP-580 backoff.
 /// </summary>
 internal static class RetryHelper
 {
     internal const int MaxRetries = 3;
-    internal const int RetryDelayMs = 500;
 
     /// <summary>
     /// Executes an async operation with retry logic for retriable Kafka errors.
     /// On retriable failure, refreshes metadata, invokes the optional <paramref name="onRetry"/>
-    /// callback (e.g. to re-discover a coordinator), and retries after a jittered delay
-    /// of <see cref="RetryDelayMs"/> + [0, 100)ms.
+    /// callback (e.g. to re-discover a coordinator), and retries after KIP-580 backoff.
     /// </summary>
     /// <param name="maxRetries">Maximum number of retries. Defaults to <see cref="MaxRetries"/> (3).</param>
     internal static async ValueTask WithRetryAsync(
         Func<ValueTask> operation,
         MetadataManager metadataManager,
         CancellationToken cancellationToken,
+        int retryBackoffMs = 100,
+        int retryBackoffMaxMs = 1000,
         Func<CancellationToken, ValueTask>? onRetry = null,
-        int maxRetries = MaxRetries)
+        int maxRetries = MaxRetries,
+        Func<int, int, int, int>? calculateDelayMilliseconds = null)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -34,15 +34,19 @@ internal static class RetryHelper
                 await operation().ConfigureAwait(false);
                 return;
             }
-            catch (KafkaException ex) when (ex.IsRetriable && attempt < maxRetries)
+            catch (Exception ex) when (IsRetriableRequestFailure(ex) && attempt < maxRetries)
             {
                 await RefreshMetadataForRetryAsync(metadataManager, cancellationToken).ConfigureAwait(false);
 
                 if (onRetry is not null)
                     await onRetry(cancellationToken).ConfigureAwait(false);
 
-                var jitter = Random.Shared.Next(0, 100);
-                await Task.Delay(RetryDelayMs + jitter, cancellationToken).ConfigureAwait(false);
+                var delayMs = CalculateDelayMilliseconds(
+                    retryBackoffMs,
+                    retryBackoffMaxMs,
+                    attempt + 1,
+                    calculateDelayMilliseconds);
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -50,8 +54,7 @@ internal static class RetryHelper
     /// <summary>
     /// Executes an async operation with retry logic for retriable Kafka errors,
     /// returning a result on success. On retriable failure, refreshes metadata,
-    /// invokes the optional <paramref name="onRetry"/> callback, and retries after a jittered delay
-    /// of <see cref="RetryDelayMs"/> + [0, 100)ms.
+    /// invokes the optional <paramref name="onRetry"/> callback, and retries after KIP-580 backoff.
     /// </summary>
     /// <param name="maxRetries">Maximum number of retries. Defaults to <see cref="MaxRetries"/> (3).</param>
     /// <param name="shouldRefreshMetadata">
@@ -61,9 +64,12 @@ internal static class RetryHelper
         Func<ValueTask<T>> operation,
         MetadataManager metadataManager,
         CancellationToken cancellationToken,
+        int retryBackoffMs = 100,
+        int retryBackoffMaxMs = 1000,
         Func<CancellationToken, ValueTask>? onRetry = null,
         int maxRetries = MaxRetries,
-        Func<KafkaException, bool>? shouldRefreshMetadata = null)
+        Func<KafkaException, bool>? shouldRefreshMetadata = null,
+        Func<int, int, int, int>? calculateDelayMilliseconds = null)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -71,9 +77,10 @@ internal static class RetryHelper
             {
                 return await operation().ConfigureAwait(false);
             }
-            catch (KafkaException ex) when (ex.IsRetriable && attempt < maxRetries)
+            catch (Exception ex) when (IsRetriableRequestFailure(ex) && attempt < maxRetries)
             {
-                if (shouldRefreshMetadata?.Invoke(ex) ?? true)
+                if (ex is not KafkaException kafkaException ||
+                    shouldRefreshMetadata?.Invoke(kafkaException) != false)
                 {
                     await RefreshMetadataForRetryAsync(metadataManager, cancellationToken).ConfigureAwait(false);
                 }
@@ -81,11 +88,30 @@ internal static class RetryHelper
                 if (onRetry is not null)
                     await onRetry(cancellationToken).ConfigureAwait(false);
 
-                var jitter = Random.Shared.Next(0, 100);
-                await Task.Delay(RetryDelayMs + jitter, cancellationToken).ConfigureAwait(false);
+                var delayMs = CalculateDelayMilliseconds(
+                    retryBackoffMs,
+                    retryBackoffMaxMs,
+                    attempt + 1,
+                    calculateDelayMilliseconds);
+                await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
             }
         }
     }
+
+    private static int CalculateDelayMilliseconds(
+        int retryBackoffMs,
+        int retryBackoffMaxMs,
+        int failureCount,
+        Func<int, int, int, int>? calculateDelayMilliseconds)
+        => calculateDelayMilliseconds?.Invoke(retryBackoffMs, retryBackoffMaxMs, failureCount)
+           ?? ExponentialRetryBackoff.CalculateDelayMilliseconds(
+               retryBackoffMs,
+               retryBackoffMaxMs,
+               failureCount);
+
+    internal static bool IsRetriableRequestFailure(Exception exception)
+        => exception is IOException or System.Net.Sockets.SocketException or TimeoutException
+           || exception is KafkaException { IsRetriable: true };
 
     private static async ValueTask RefreshMetadataForRetryAsync(
         MetadataManager metadataManager,
@@ -101,6 +127,12 @@ internal static class RetryHelper
         {
             // Refresh is best-effort. Keep retrying the original operation so its typed
             // Kafka failure remains the final error when every broker is unavailable.
+        }
+        catch (Exception ex) when (
+            IsRetriableRequestFailure(ex)
+            && !cancellationToken.IsCancellationRequested)
+        {
+            // Same best-effort behavior for transient transport failures.
         }
     }
 }
