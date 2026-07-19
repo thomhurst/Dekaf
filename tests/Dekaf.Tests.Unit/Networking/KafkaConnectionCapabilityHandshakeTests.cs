@@ -472,11 +472,19 @@ public class KafkaConnectionCapabilityHandshakeTests
                 using var socket = listener.AcceptSocketAsync(cancellationToken)
                     .AsTask().GetAwaiter().GetResult();
                 using var stream = new NetworkStream(socket, ownsSocket: false);
-                var length = new byte[sizeof(int)];
-                stream.ReadExactly(length);
-                var frame = new byte[BinaryPrimitives.ReadInt32BigEndian(length)];
-                stream.ReadExactly(frame);
-                releaseServer.Wait(cancellationToken);
+                try
+                {
+                    var length = new byte[sizeof(int)];
+                    stream.ReadExactly(length);
+                    var frame = new byte[BinaryPrimitives.ReadInt32BigEndian(length)];
+                    stream.ReadExactly(frame);
+                    releaseServer.Wait(cancellationToken);
+                }
+                catch (IOException)
+                {
+                    // The expected client-side timeout may close the socket before the
+                    // mock server finishes reading the request (including end-of-stream).
+                }
             },
             cancellationToken,
             TaskCreationOptions.LongRunning,
@@ -487,7 +495,7 @@ public class KafkaConnectionCapabilityHandshakeTests
             1,
             "127.0.0.1",
             port,
-            options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(500) });
+            options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(50) });
 
         try
         {
