@@ -723,6 +723,65 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task EnsureAssignmentAsync_LateClassificationWithoutPolicy_PreservesPositionAndBuffers()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        metadataManager.SetApiVersion(
+            ApiKey.ListOffsets,
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetchWithoutCommits(connection);
+        var requestedTimestamps = new ConcurrentQueue<long>();
+        connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                Arg.Any<ListOffsetsRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var request = call.ArgAt<ListOffsetsRequest>(0);
+                var partition = request.Topics[0].Partitions[0];
+                requestedTimestamps.Enqueue(partition.Timestamp);
+                return ValueTask.FromResult(CreateListOffsetsResponse(partition.PartitionIndex, 100));
+            });
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var partition = new TopicPartition("test-topic", 0);
+        var pendingFetch = CreateFetch(partition: 0, baseOffset: 100, value: "pending");
+        var prefetchedFetch = CreateFetch(partition: 0, baseOffset: 101, value: "prefetched");
+        GetPendingFetches(consumer).Enqueue(pendingFetch);
+        await Assert.That(GetPrefetchBuffer(consumer).TryWrite(prefetchedFetch)).IsTrue();
+        SetPrefetchedBytes(
+            consumer,
+            KafkaConsumer<string, string>.EstimatePendingFetchBytes(prefetchedFetch));
+
+        var coordinator = GetCoordinator(consumer);
+        ProcessCoordinatorAssignment(coordinator, CreateAssignmentWithNewPartitions([0], [0]));
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+        var (_, _, _, pendingClassifications) =
+            await coordinator.GetAssignmentSnapshotAndDrainRevocationsAsync(CancellationToken.None);
+
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(100L);
+        await Assert.That(GetPendingFetches(consumer)).Contains(pendingFetch);
+        await Assert.That(GetPrefetchBuffer(consumer).TryRead(out var retainedPrefetch)).IsTrue();
+        await Assert.That(retainedPrefetch).IsSameReferenceAs(prefetchedFetch);
+        await Assert.That(ClearFetchBufferForPendingCoordinatorRevocations(consumer)).IsFalse();
+        await Assert.That(requestedTimestamps).IsEquivalentTo([TopicPartitionTimestamp.Latest]);
+        await Assert.That(pendingClassifications).IsEmpty();
+
+        retainedPrefetch!.Dispose();
+        SetPrefetchedBytes(consumer, 0);
+    }
+
+    [Test]
     public async Task EnsureAssignmentAsync_PartialInitializationFailure_AcknowledgesSuccessfulPartitions()
     {
         var connectionPool = Substitute.For<IConnectionPool>();

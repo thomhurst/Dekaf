@@ -5609,6 +5609,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         unacknowledgedCoordinatorRevocations = (coordinator, coordinatorRevocations);
                     }
 
+                    // A broker can classify expanded partitions even when the client has not
+                    // configured a distinct reset policy. Acknowledge that advisory metadata,
+                    // but keep initialized positions and buffered data untouched.
+                    if (_options.AutoOffsetResetNewPartitions is null
+                        && newlyExpandedPartitions.Count != 0)
+                    {
+                        coordinator.AcknowledgeInitializedPartitions(
+                            newlyExpandedPartitions,
+                            coordinatorAssignmentVersion);
+                        newlyExpandedPartitions = [];
+                    }
+
                     // Set equality alone is insufficient: the assignment can change away and back
                     // between polls. Unseen revocations require stale-fetch cleanup and position reset.
                     if (_assignment.SetEquals(coordinatorAssignment)

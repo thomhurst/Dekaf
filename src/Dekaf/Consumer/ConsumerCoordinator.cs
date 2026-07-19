@@ -269,7 +269,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     }
 
     internal void AcknowledgeInitializedPartitions(
-        IReadOnlyList<TopicPartition> initializedPartitions,
+        IReadOnlyCollection<TopicPartition> initializedPartitions,
         int assignmentVersion)
     {
         if (initializedPartitions.Count == 0)
