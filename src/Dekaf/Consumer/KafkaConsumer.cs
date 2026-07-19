@@ -4932,7 +4932,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     internal void StageRebalanceSeek(TopicPartitionOffset offset)
     {
         var partition = new TopicPartition(offset.Topic, offset.Partition);
-        _assignmentLock.Wait();
+        SemaphoreHelper.AcquireOrThrowDisposed(
+            _assignmentLock,
+            nameof(KafkaConsumer<TKey, TValue>));
         try
         {
             _pendingRebalanceSeeks[partition] = offset;
@@ -5195,6 +5197,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 // Coordinator revocation supersedes any correction from the old assignment.
                 // Keep the revocation marker so the consume loop still drains stale buffers.
+                _pendingRebalanceSeeks.TryRemove(partition, out _);
                 _pendingDivergingEpochResets.TryRemove(partition, out _);
                 _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
             }
@@ -6261,13 +6264,20 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         if (!_pendingRebalanceSeeks.TryRemove(partition, out var offset))
             return;
 
-        if (offset.LeaderEpoch >= 0)
-            SetLastConsumedLeaderEpoch(partition, offset.LeaderEpoch);
-        else
-            ClearLastConsumedLeaderEpoch(partition);
-        SetPosition(partition, offset.Offset, dirty: true);
-        _fetchPositions[partition] = offset.Offset;
-        _eofEmitted.TryRemove(partition, out _);
+        // Keep invalidation, buffer drain, and position replacement atomic with prefetch publication.
+        // The immediate path can run after this partition has already prefetched records.
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            ClearFetchBufferForPartitions([partition]);
+
+            if (offset.LeaderEpoch >= 0)
+                SetLastConsumedLeaderEpoch(partition, offset.LeaderEpoch);
+            else
+                ClearLastConsumedLeaderEpoch(partition);
+            SetPosition(partition, offset.Offset, dirty: true);
+            _fetchPositions[partition] = offset.Offset;
+            _eofEmitted.TryRemove(partition, out _);
+        }
     }
 
     private async ValueTask<long> GetResetOffsetAsync(

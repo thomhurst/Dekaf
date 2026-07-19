@@ -179,6 +179,47 @@ public sealed class ConsumerAssignmentFastPathTests
     }
 
     [Test]
+    public async Task StageRebalanceSeek_SyncedAssignment_DiscardsStalePendingFetch()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        var connection = Substitute.For<IKafkaConnection>();
+        SetupConnectionPool(connectionPool, connection);
+
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        SetupFindCoordinator(connection);
+        SetupConsumerGroupHeartbeat(connection, CreateAssignment(0));
+        SetupOffsetFetch(connection);
+
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        consumer.Subscribe("test-topic");
+        await consumer.EnsureAssignmentAsync(CancellationToken.None);
+
+        var partition = new TopicPartition("test-topic", 0);
+        GetPendingFetches(consumer).Enqueue(
+            CreateFetch(partition: 0, baseOffset: 10, value: "stale"));
+
+        consumer.StageRebalanceSeek(new TopicPartitionOffset(partition.Topic, partition.Partition, 42));
+
+        await Assert.That(GetPendingFetches(consumer)).IsEmpty();
+        await Assert.That(GetFetchPositions(consumer)[partition]).IsEqualTo(42L);
+        await Assert.That(consumer.GetPosition(partition)).IsEqualTo(42L);
+    }
+
+    [Test]
+    public async Task StageRebalanceSeek_RevokedBeforeSync_DiscardsPendingSeek()
+    {
+        var connectionPool = Substitute.For<IConnectionPool>();
+        await using var metadataManager = CreateMetadataManager(connectionPool);
+        await using var consumer = CreateGroupConsumer(connectionPool, metadataManager);
+        var partition = new TopicPartition("test-topic", 0);
+
+        consumer.StageRebalanceSeek(new TopicPartitionOffset(partition.Topic, partition.Partition, 42));
+        QueueCoordinatorRevokedPartitionsForFetchClear(consumer, [partition]);
+
+        await Assert.That(consumer.GetRebalancePosition(partition)).IsNull();
+    }
+
+    [Test]
     public async Task EnsureAssignmentAsync_ChangedCoordinatorAssignment_RequiresAssignmentLock()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
