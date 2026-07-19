@@ -522,6 +522,64 @@ public sealed class DekafBuilder
             configureDeadLetterQueue);
     }
 
+    /// <summary>
+    /// Adds a consumer configured from an <see cref="IConfiguration"/> section shaped like
+    /// Confluent.Kafka <c>ConsumerConfig</c>. Fluent configuration runs after translation.
+    /// </summary>
+    /// <remarks>
+    /// This adapter does not reference Confluent.Kafka. Settings without an exact Dekaf
+    /// equivalent are rejected instead of being silently ignored.
+    /// </remarks>
+    /// <param name="configuration">The Confluent <c>ConsumerConfig</c> JSON section.</param>
+    /// <param name="configure">Optional additional consumer configuration.</param>
+    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for hosted consumer services.</param>
+    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
+    public DekafBuilder AddConsumerFromConfluentConfig<TKey, TValue>(
+        IConfiguration configuration,
+        Action<ConsumerBuilder<TKey, TValue>>? configure = null,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return AddConsumer<TKey, TValue>(
+            consumer =>
+            {
+                ConfluentConfigurationBinding.ApplyConsumer(configuration, consumer);
+                configure?.Invoke(consumer);
+            },
+            configureDeadLetterQueue);
+    }
+
+    /// <summary>
+    /// Adds a keyed consumer configured from an <see cref="IConfiguration"/> section shaped like
+    /// Confluent.Kafka <c>ConsumerConfig</c>. Fluent configuration runs after translation.
+    /// </summary>
+    /// <param name="serviceKey">Key used to resolve the consumer through keyed DI.</param>
+    /// <param name="configuration">The Confluent <c>ConsumerConfig</c> JSON section.</param>
+    /// <param name="configure">Optional additional consumer configuration.</param>
+    /// <param name="configureDeadLetterQueue">Optional dead letter queue configuration for hosted consumer services.</param>
+    [RequiresDynamicCode(ConfigurationBindingRequiresDynamicCode)]
+    [RequiresUnreferencedCode(ConfigurationBindingRequiresUnreferencedCode)]
+    public DekafBuilder AddConsumerFromConfluentConfig<TKey, TValue>(
+        object serviceKey,
+        IConfiguration configuration,
+        Action<ConsumerBuilder<TKey, TValue>>? configure = null,
+        Action<DeadLetterQueueBuilder>? configureDeadLetterQueue = null)
+    {
+        ArgumentNullException.ThrowIfNull(serviceKey);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return AddConsumer<TKey, TValue>(
+            serviceKey,
+            consumer =>
+            {
+                ConfluentConfigurationBinding.ApplyConsumer(configuration, consumer);
+                configure?.Invoke(consumer);
+            },
+            configureDeadLetterQueue);
+    }
+
     private DekafBuilder AddConsumerCore<TKey, TValue>(
         object? serviceKey,
         bool isKeyed,

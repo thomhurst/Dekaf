@@ -692,6 +692,182 @@ public class DependencyInjectionTests
     #region AddConsumer Tests
 
     [Test]
+    public async Task AddConsumerFromConfluentConfig_TranslatesAspireConsumerAndSecurityOptions()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Aspire:Confluent:Kafka:Consumer:Config:BootstrapServers"] = "broker1:9092,broker2:9092",
+            ["Aspire:Confluent:Kafka:Consumer:Config:ClientId"] = "aspire-consumer",
+            ["Aspire:Confluent:Kafka:Consumer:Config:GroupId"] = "orders",
+            ["Aspire:Confluent:Kafka:Consumer:Config:GroupInstanceId"] = "orders-1",
+            ["Aspire:Confluent:Kafka:Consumer:Config:GroupProtocol"] = "Consumer",
+            ["Aspire:Confluent:Kafka:Consumer:Config:PartitionAssignmentStrategy"] = "Range",
+            ["Aspire:Confluent:Kafka:Consumer:Config:EnableAutoCommit"] = "false",
+            ["Aspire:Confluent:Kafka:Consumer:Config:EnableAutoOffsetStore"] = "false",
+            ["Aspire:Confluent:Kafka:Consumer:Config:AutoCommitIntervalMs"] = "7000",
+            ["Aspire:Confluent:Kafka:Consumer:Config:AutoOffsetReset"] = "Earliest",
+            ["Aspire:Confluent:Kafka:Consumer:Config:FetchMinBytes"] = "1024",
+            ["Aspire:Confluent:Kafka:Consumer:Config:FetchMaxBytes"] = "2097152",
+            ["Aspire:Confluent:Kafka:Consumer:Config:MaxPartitionFetchBytes"] = "1048576",
+            ["Aspire:Confluent:Kafka:Consumer:Config:FetchWaitMaxMs"] = "350",
+            ["Aspire:Confluent:Kafka:Consumer:Config:MaxPollIntervalMs"] = "240000",
+            ["Aspire:Confluent:Kafka:Consumer:Config:QueuedMinMessages"] = "1200",
+            ["Aspire:Confluent:Kafka:Consumer:Config:QueuedMaxMessagesKbytes"] = "8192",
+            ["Aspire:Confluent:Kafka:Consumer:Config:EnablePartitionEof"] = "true",
+            ["Aspire:Confluent:Kafka:Consumer:Config:CheckCrcs"] = "true",
+            ["Aspire:Confluent:Kafka:Consumer:Config:IsolationLevel"] = "ReadUncommitted",
+            ["Aspire:Confluent:Kafka:Consumer:Config:SocketConnectionSetupTimeoutMs"] = "20000",
+            ["Aspire:Confluent:Kafka:Consumer:Config:SecurityProtocol"] = "SaslSsl",
+            ["Aspire:Confluent:Kafka:Consumer:Config:SaslMechanism"] = "Plain",
+            ["Aspire:Confluent:Kafka:Consumer:Config:SaslUsername"] = "user",
+            ["Aspire:Confluent:Kafka:Consumer:Config:SaslPassword"] = "password",
+            ["Aspire:Confluent:Kafka:Consumer:Config:SslCaLocation"] = "ca.pem"
+        });
+
+        services.AddDekaf(builder => builder.AddConsumerFromConfluentConfig<string, string>(
+            configuration.GetSection("Aspire:Confluent:Kafka:Consumer:Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetConsumerOptions(provider.GetRequiredService<IKafkaConsumer<string, string>>());
+
+        await Assert.That(options.BootstrapServers).IsEquivalentTo(["broker1:9092", "broker2:9092"]);
+        await Assert.That(options.ClientId).IsEqualTo("aspire-consumer");
+        await Assert.That(options.GroupId).IsEqualTo("orders");
+        await Assert.That(options.GroupInstanceId).IsEqualTo("orders-1");
+        await Assert.That(options.GroupRemoteAssignor).IsEqualTo("range");
+        await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Manual);
+        await Assert.That(options.EnableAutoOffsetStore).IsFalse();
+        await Assert.That(options.OffsetStoreTiming).IsEqualTo(OffsetStoreTiming.OnDelivery);
+        await Assert.That(options.AutoCommitIntervalMs).IsEqualTo(7000);
+        await Assert.That(options.AutoOffsetReset).IsEqualTo(AutoOffsetReset.Earliest);
+        await Assert.That(options.FetchMinBytes).IsEqualTo(1024);
+        await Assert.That(options.FetchMaxBytes).IsEqualTo(2097152);
+        await Assert.That(options.MaxPartitionFetchBytes).IsEqualTo(1048576);
+        await Assert.That(options.FetchMaxWaitMs).IsEqualTo(350);
+        await Assert.That(options.MaxPollIntervalMs).IsEqualTo(240000);
+        await Assert.That(options.QueuedMinMessages).IsEqualTo(1200);
+        await Assert.That(options.QueuedMaxMessagesKbytes).IsEqualTo(8192);
+        await Assert.That(options.EnablePartitionEof).IsTrue();
+        await Assert.That(options.CheckCrcs).IsTrue();
+        await Assert.That(options.IsolationLevel).IsEqualTo(IsolationLevel.ReadUncommitted);
+        await Assert.That(options.ConnectionTimeout).IsEqualTo(TimeSpan.FromSeconds(20));
+        await Assert.That(options.UseTls).IsTrue();
+        await Assert.That(options.TlsConfig!.CaCertificatePath).IsEqualTo("ca.pem");
+        await Assert.That(options.SaslMechanism).IsEqualTo(SaslMechanism.Plain);
+        await Assert.That(options.SaslUsername).IsEqualTo("user");
+        await Assert.That(options.SaslPassword).IsEqualTo("password");
+    }
+
+    [Test]
+    public async Task AddConsumerFromConfluentConfig_UsesConfluentConsumerDefaults()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:GroupId"] = "orders"
+        });
+
+        services.AddDekaf(builder => builder.AddConsumerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetConsumerOptions(provider.GetRequiredService<IKafkaConsumer<string, string>>());
+
+        await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
+        await Assert.That(options.EnableAutoOffsetStore).IsTrue();
+        await Assert.That(options.OffsetStoreTiming).IsEqualTo(OffsetStoreTiming.OnDelivery);
+        await Assert.That(options.FetchMaxWaitMs).IsEqualTo(500);
+        await Assert.That(options.CheckCrcs).IsFalse();
+        await Assert.That(options.IsolationLevel).IsEqualTo(IsolationLevel.ReadCommitted);
+    }
+
+    [Test]
+    public async Task AddConsumerFromConfluentConfig_KeyedRegistration_FluentConfigurationWins()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:GroupId"] = "json-group",
+            ["Config:ClientId"] = "json-client"
+        });
+
+        services.AddDekaf(builder => builder.AddConsumerFromConfluentConfig<string, string>(
+            "orders",
+            configuration.GetSection("Config"),
+            consumer => consumer.WithClientId("fluent-client")));
+
+        await using var provider = services.BuildServiceProvider();
+        var consumer = provider.GetRequiredKeyedService<IKafkaConsumer<string, string>>("orders");
+        var options = GetConsumerOptions(consumer);
+
+        await Assert.That(options.GroupId).IsEqualTo("json-group");
+        await Assert.That(options.ClientId).IsEqualTo("fluent-client");
+    }
+
+    [Test]
+    public async Task AddConsumerFromConfluentConfig_ZeroAutoCommitInterval_DisablesAutoCommit()
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            ["Config:AutoCommitIntervalMs"] = "0"
+        });
+
+        services.AddDekaf(builder => builder.AddConsumerFromConfluentConfig<string, string>(
+            configuration.GetSection("Config")));
+
+        await using var provider = services.BuildServiceProvider();
+        var options = GetConsumerOptions(provider.GetRequiredService<IKafkaConsumer<string, string>>());
+        await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Manual);
+    }
+
+    [Test]
+    [Arguments("FetchErrorBackoffMs")]
+    [Arguments("MaxInFlight")]
+    [Arguments("MessageMaxBytes")]
+    [Arguments("RequestTimeoutMs")]
+    public async Task AddConsumerFromConfluentConfig_UnsupportedProperty_FailsFast(string property)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            [$"Config:{property}"] = "500"
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddConsumerFromConfluentConfig<string, string>(configuration.GetSection("Config"))))
+            .Throws<NotSupportedException>()
+            .WithMessageContaining(property);
+    }
+
+    [Test]
+    [Arguments("GroupProtocol", "Classic")]
+    [Arguments("PartitionAssignmentStrategy", "CooperativeSticky")]
+    [Arguments("GroupRemoteAssignor", "roundrobin")]
+    [Arguments("ConsumeResultFields", "headers")]
+    public async Task AddConsumerFromConfluentConfig_InexactValue_FailsFast(
+        string property,
+        string value)
+    {
+        var services = new ServiceCollection();
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Config:BootstrapServers"] = "broker1:9092",
+            [$"Config:{property}"] = value
+        });
+
+        await Assert.That(() => services.AddDekaf(builder =>
+                builder.AddConsumerFromConfluentConfig<string, string>(configuration.GetSection("Config"))))
+            .Throws<NotSupportedException>()
+            .WithMessageContaining(property);
+    }
+
+    [Test]
     public async Task AddConsumer_RegistersAsSingleton()
     {
         var services = new ServiceCollection();

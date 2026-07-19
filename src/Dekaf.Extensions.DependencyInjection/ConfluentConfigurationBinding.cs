@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using Dekaf.Consumer;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
@@ -14,6 +16,8 @@ namespace Dekaf.Extensions.DependencyInjection;
 [RequiresUnreferencedCode(DekafConfigurationBinding.RequiresUnreferencedCodeMessage)]
 internal static class ConfluentConfigurationBinding
 {
+    private const int ConfluentFetchWaitMaxMsDefault = 500;
+
     private static readonly HashSet<string> s_clientProperties = new(StringComparer.OrdinalIgnoreCase)
     {
         "BootstrapServers",
@@ -22,8 +26,6 @@ internal static class ConfluentConfigurationBinding
         "ClientRack",
         "ConnectionsMaxIdleMs",
         "EnableSslCertificateVerification",
-        "MaxInFlight",
-        "MessageMaxBytes",
         "MetadataMaxAgeMs",
         "MetadataRecoveryRebootstrapTriggerMs",
         "MetadataRecoveryStrategy",
@@ -66,6 +68,8 @@ internal static class ConfluentConfigurationBinding
         "CompressionType",
         "EnableIdempotence",
         "LingerMs",
+        "MaxInFlight",
+        "MessageMaxBytes",
         "MessageSendMaxRetries",
         "MessageTimeoutMs",
         "Partitioner",
@@ -73,6 +77,31 @@ internal static class ConfluentConfigurationBinding
         "RequestTimeoutMs",
         "TransactionTimeoutMs",
         "TransactionalId"
+    };
+
+    private static readonly HashSet<string> s_consumerProperties = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "AutoCommitIntervalMs",
+        "AutoOffsetReset",
+        "CheckCrcs",
+        "ConsumeResultFields",
+        "EnableAutoCommit",
+        "EnableAutoOffsetStore",
+        "EnablePartitionEof",
+        "FetchMaxBytes",
+        "FetchMinBytes",
+        "FetchWaitMaxMs",
+        "GroupId",
+        "GroupInstanceId",
+        "GroupProtocol",
+        "GroupProtocolType",
+        "GroupRemoteAssignor",
+        "IsolationLevel",
+        "MaxPartitionFetchBytes",
+        "MaxPollIntervalMs",
+        "PartitionAssignmentStrategy",
+        "QueuedMaxMessagesKbytes",
+        "QueuedMinMessages"
     };
 
     public static void ApplyProducer<TKey, TValue>(
@@ -127,13 +156,76 @@ internal static class ConfluentConfigurationBinding
         if (TryGetEnum(configuration, "Partitioner", out ConfluentPartitioner partitioner))
             builder.WithPartitioner(MapPartitioner(partitioner));
 
-        ApplySharedClient(configuration, builder);
-        ApplySecurity(configuration, builder);
+        var clientBuilder = new ProducerClientBuilder<TKey, TValue>(builder);
+        ApplySharedClient(configuration, clientBuilder);
+        ApplySecurity(configuration, clientBuilder);
     }
 
-    private static void ApplySharedClient<TKey, TValue>(
+    public static void ApplyConsumer<TKey, TValue>(
         IConfiguration configuration,
-        ProducerBuilder<TKey, TValue> builder)
+        ConsumerBuilder<TKey, TValue> builder)
+    {
+        ValidateConsumerProperties(configuration);
+
+        if (TryGet(configuration, "GroupId", out string groupId))
+            builder.WithGroupId(groupId);
+        if (TryGet(configuration, "GroupInstanceId", out string groupInstanceId))
+            builder.WithGroupInstanceId(groupInstanceId);
+
+        ApplyGroupProtocol(configuration, builder);
+
+        var autoCommitEnabled = !TryGet(configuration, "EnableAutoCommit", out bool enableAutoCommit) ||
+                                enableAutoCommit;
+        if (TryGet(configuration, "AutoCommitIntervalMs", out int autoCommitIntervalMs))
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(autoCommitIntervalMs);
+            if (autoCommitIntervalMs == 0)
+                autoCommitEnabled = false;
+            else
+                builder.WithAutoCommitInterval(TimeSpan.FromMilliseconds(autoCommitIntervalMs));
+        }
+
+        builder.WithOffsetCommitMode(autoCommitEnabled ? OffsetCommitMode.Auto : OffsetCommitMode.Manual);
+        // librdkafka stores offsets when records are delivered, unlike Dekaf's safer default.
+        builder.WithOffsetStoreTiming(OffsetStoreTiming.OnDelivery);
+        if (TryGet(configuration, "EnableAutoOffsetStore", out bool enableAutoOffsetStore))
+            builder.WithAutoOffsetStore(enableAutoOffsetStore);
+        if (TryGetEnum(configuration, "AutoOffsetReset", out ConfluentAutoOffsetReset autoOffsetReset))
+            builder.WithAutoOffsetReset(MapAutoOffsetReset(autoOffsetReset));
+        if (TryGet(configuration, "FetchMinBytes", out int fetchMinBytes))
+            builder.WithFetchMinBytes(fetchMinBytes);
+        if (TryGet(configuration, "FetchMaxBytes", out int fetchMaxBytes))
+            builder.WithFetchMaxBytes(fetchMaxBytes);
+        if (TryGet(configuration, "MaxPartitionFetchBytes", out int maxPartitionFetchBytes))
+            builder.WithMaxPartitionFetchBytes(maxPartitionFetchBytes);
+        builder.WithFetchMaxWait(TimeSpan.FromMilliseconds(
+            TryGet(configuration, "FetchWaitMaxMs", out int fetchWaitMaxMs)
+                ? fetchWaitMaxMs
+                : ConfluentFetchWaitMaxMsDefault));
+        if (TryGet(configuration, "MaxPollIntervalMs", out int maxPollIntervalMs))
+            builder.WithMaxPollInterval(TimeSpan.FromMilliseconds(maxPollIntervalMs));
+        if (TryGet(configuration, "QueuedMinMessages", out int queuedMinMessages))
+            builder.WithQueuedMinMessages(queuedMinMessages);
+        if (TryGet(configuration, "QueuedMaxMessagesKbytes", out int queuedMaxMessagesKbytes))
+            builder.WithQueuedMaxMessagesKbytes(queuedMaxMessagesKbytes);
+        if (TryGet(configuration, "EnablePartitionEof", out bool enablePartitionEof))
+            builder.WithPartitionEof(enablePartitionEof);
+        builder.WithCheckCrcs(TryGet(configuration, "CheckCrcs", out bool checkCrcs) && checkCrcs);
+        builder.WithIsolationLevel(
+            TryGetEnum(configuration, "IsolationLevel", out IsolationLevel isolationLevel)
+                ? isolationLevel
+                : IsolationLevel.ReadCommitted);
+        ValidateConsumeResultFields(configuration);
+
+        var clientBuilder = new ConsumerClientBuilder<TKey, TValue>(builder);
+        ApplySharedClient(configuration, clientBuilder);
+        ApplySecurity(configuration, clientBuilder);
+    }
+
+    private static void ApplySharedClient<TBuilder>(
+        IConfiguration configuration,
+        TBuilder builder)
+        where TBuilder : struct, IConfluentClientBuilder
     {
         if (TryGet(configuration, "BootstrapServers", out string bootstrapServers))
             builder.WithBootstrapServers(bootstrapServers);
@@ -190,9 +282,10 @@ internal static class ConfluentConfigurationBinding
             builder.WithSocketReceiveBufferBytes(socketReceiveBufferBytes);
     }
 
-    private static void ApplySecurity<TKey, TValue>(
+    private static void ApplySecurity<TBuilder>(
         IConfiguration configuration,
-        ProducerBuilder<TKey, TValue> builder)
+        TBuilder builder)
+        where TBuilder : struct, IConfluentClientBuilder
     {
         var protocol = GetSecurityProtocol(configuration);
         var tlsEnabled = protocol is ConfluentSecurityProtocol.Ssl or ConfluentSecurityProtocol.SaslSsl;
@@ -272,7 +365,7 @@ internal static class ConfluentConfigurationBinding
                 throw UnsupportedValue("SaslMechanism", mechanism.ToString());
         }
 
-        builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIamConfig: null);
+        builder.WithSaslOptions(mechanism, username, password, gssapi, oauth);
     }
 
     private static TlsConfig CreateTlsConfig(IConfiguration configuration)
@@ -412,15 +505,87 @@ internal static class ConfluentConfigurationBinding
 
     private static void ValidateProducerProperties(IConfiguration configuration)
     {
+        ValidateProperties(configuration, s_producerProperties, "ProducerConfig");
+    }
+
+    private static void ValidateConsumerProperties(IConfiguration configuration)
+    {
+        ValidateProperties(configuration, s_consumerProperties, "ConsumerConfig");
+    }
+
+    private static void ValidateProperties(
+        IConfiguration configuration,
+        IReadOnlySet<string> roleProperties,
+        string configType)
+    {
         foreach (var child in configuration.GetChildren())
         {
-            if (!s_clientProperties.Contains(child.Key) && !s_producerProperties.Contains(child.Key))
-            {
-                throw new NotSupportedException(
-                    $"Confluent ProducerConfig property '{child.Key}' has no exact Dekaf equivalent. " +
-                    "Remove it or configure the corresponding Dekaf builder API explicitly.");
-            }
+            if (s_clientProperties.Contains(child.Key) || roleProperties.Contains(child.Key))
+                continue;
+
+            throw new NotSupportedException(
+                $"Confluent {configType} property '{child.Key}' has no exact Dekaf equivalent. " +
+                "Remove it or configure the corresponding Dekaf builder API explicitly.");
         }
+    }
+
+    private static void ApplyGroupProtocol<TKey, TValue>(
+        IConfiguration configuration,
+        ConsumerBuilder<TKey, TValue> builder)
+    {
+        if (TryGetEnum(configuration, "GroupProtocol", out ConfluentGroupProtocol groupProtocol) &&
+            groupProtocol != ConfluentGroupProtocol.Consumer)
+        {
+            throw UnsupportedValue("GroupProtocol", groupProtocol.ToString());
+        }
+
+        var groupProtocolType = Get(configuration, "GroupProtocolType");
+        if (groupProtocolType is not null &&
+            !groupProtocolType.Equals("consumer", StringComparison.OrdinalIgnoreCase))
+        {
+            throw UnsupportedValue("GroupProtocolType", groupProtocolType);
+        }
+
+        string? assignor = null;
+        if (TryGetEnum(
+                configuration,
+                "PartitionAssignmentStrategy",
+                out ConfluentPartitionAssignmentStrategy assignmentStrategy))
+        {
+            if (assignmentStrategy != ConfluentPartitionAssignmentStrategy.Range)
+                throw UnsupportedValue("PartitionAssignmentStrategy", assignmentStrategy.ToString());
+            assignor = "range";
+        }
+
+        var remoteAssignor = Get(configuration, "GroupRemoteAssignor");
+        if (remoteAssignor is not null)
+        {
+            if (!remoteAssignor.Equals("range", StringComparison.OrdinalIgnoreCase) &&
+                !remoteAssignor.Equals("uniform", StringComparison.OrdinalIgnoreCase))
+            {
+                throw UnsupportedValue("GroupRemoteAssignor", remoteAssignor);
+            }
+
+            if (assignor is not null && !remoteAssignor.Equals(assignor, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "PartitionAssignmentStrategy and GroupRemoteAssignor select different assignors.");
+            }
+
+            assignor = remoteAssignor.Equals("range", StringComparison.OrdinalIgnoreCase)
+                ? "range"
+                : "uniform";
+        }
+
+        if (assignor is not null)
+            builder.WithGroupRemoteAssignor(assignor);
+    }
+
+    private static void ValidateConsumeResultFields(IConfiguration configuration)
+    {
+        var fields = Get(configuration, "ConsumeResultFields");
+        if (fields is not null && !fields.Equals("all", StringComparison.OrdinalIgnoreCase))
+            throw UnsupportedValue("ConsumeResultFields", fields);
     }
 
     private static bool HasAny(IConfiguration configuration, params string[] keys)
@@ -496,6 +661,15 @@ internal static class ConfluentConfigurationBinding
             _ => throw new UnreachableException()
         };
 
+    private static AutoOffsetReset MapAutoOffsetReset(ConfluentAutoOffsetReset autoOffsetReset) =>
+        autoOffsetReset switch
+        {
+            ConfluentAutoOffsetReset.Earliest => AutoOffsetReset.Earliest,
+            ConfluentAutoOffsetReset.Latest => AutoOffsetReset.Latest,
+            ConfluentAutoOffsetReset.Error => AutoOffsetReset.None,
+            _ => throw new UnreachableException()
+        };
+
     private static NotSupportedException UnsupportedValue(string key, string value) =>
         new($"Confluent property '{key}' value '{value}' has no exact Dekaf equivalent.");
 
@@ -525,5 +699,114 @@ internal static class ConfluentConfigurationBinding
         Murmur2Random,
         Fnv1a,
         Fnv1aRandom
+    }
+
+    private enum ConfluentAutoOffsetReset
+    {
+        Earliest,
+        Latest,
+        Error
+    }
+
+    private enum ConfluentGroupProtocol
+    {
+        Classic,
+        Consumer
+    }
+
+    private enum ConfluentPartitionAssignmentStrategy
+    {
+        Range,
+        RoundRobin,
+        CooperativeSticky
+    }
+
+    private interface IConfluentClientBuilder
+    {
+        void WithBootstrapServers(string servers);
+        void WithClientId(string clientId);
+        void WithClientRack(string clientRack);
+        void WithClientDnsLookup(ClientDnsLookup lookup);
+        void WithConnectionsMaxIdle(TimeSpan idle);
+        void WithMetadataMaxAge(TimeSpan interval);
+        void WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy);
+        void WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger);
+        void WithRetryBackoff(TimeSpan backoff);
+        void WithRetryBackoffMax(TimeSpan backoff);
+        void WithReconnectBackoff(TimeSpan backoff);
+        void WithReconnectBackoffMax(TimeSpan backoff);
+        void WithConnectionTimeout(TimeSpan timeout);
+        void WithTcpKeepAlive(bool enabled);
+        void WithSocketSendBufferBytes(int bytes);
+        void WithSocketReceiveBufferBytes(int bytes);
+        void UseTls(TlsConfig config);
+        void WithSaslOptions(
+            SaslMechanism mechanism,
+            string? username,
+            string? password,
+            GssapiConfig? gssapi,
+            OAuthBearerConfig? oauth);
+    }
+
+    private readonly struct ProducerClientBuilder<TKey, TValue>(ProducerBuilder<TKey, TValue> builder)
+        : IConfluentClientBuilder
+    {
+        public void WithBootstrapServers(string servers) => builder.WithBootstrapServers(servers);
+        public void WithClientId(string clientId) => builder.WithClientId(clientId);
+        public void WithClientRack(string clientRack) => builder.WithClientRack(clientRack);
+        public void WithClientDnsLookup(ClientDnsLookup lookup) => builder.WithClientDnsLookup(lookup);
+        public void WithConnectionsMaxIdle(TimeSpan idle) => builder.WithConnectionsMaxIdle(idle);
+        public void WithMetadataMaxAge(TimeSpan interval) => builder.WithMetadataMaxAge(interval);
+        public void WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy) =>
+            builder.WithMetadataRecoveryStrategy(strategy);
+        public void WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger) =>
+            builder.WithMetadataRecoveryRebootstrapTrigger(trigger);
+        public void WithRetryBackoff(TimeSpan backoff) => builder.WithRetryBackoff(backoff);
+        public void WithRetryBackoffMax(TimeSpan backoff) => builder.WithRetryBackoffMax(backoff);
+        public void WithReconnectBackoff(TimeSpan backoff) => builder.WithReconnectBackoff(backoff);
+        public void WithReconnectBackoffMax(TimeSpan backoff) => builder.WithReconnectBackoffMax(backoff);
+        public void WithConnectionTimeout(TimeSpan timeout) => builder.WithConnectionTimeout(timeout);
+        public void WithTcpKeepAlive(bool enabled) => builder.WithTcpKeepAlive(enabled);
+        public void WithSocketSendBufferBytes(int bytes) => builder.WithSocketSendBufferBytes(bytes);
+        public void WithSocketReceiveBufferBytes(int bytes) => builder.WithSocketReceiveBufferBytes(bytes);
+        public void UseTls(TlsConfig config) => builder.UseTls(config);
+        public void WithSaslOptions(
+            SaslMechanism mechanism,
+            string? username,
+            string? password,
+            GssapiConfig? gssapi,
+            OAuthBearerConfig? oauth) =>
+            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIamConfig: null);
+    }
+
+    private readonly struct ConsumerClientBuilder<TKey, TValue>(ConsumerBuilder<TKey, TValue> builder)
+        : IConfluentClientBuilder
+    {
+        public void WithBootstrapServers(string servers) => builder.WithBootstrapServers(servers);
+        public void WithClientId(string clientId) => builder.WithClientId(clientId);
+        public void WithClientRack(string clientRack) => builder.WithClientRack(clientRack);
+        public void WithClientDnsLookup(ClientDnsLookup lookup) => builder.WithClientDnsLookup(lookup);
+        public void WithConnectionsMaxIdle(TimeSpan idle) => builder.WithConnectionsMaxIdle(idle);
+        public void WithMetadataMaxAge(TimeSpan interval) => builder.WithMetadataMaxAge(interval);
+        public void WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy) =>
+            builder.WithMetadataRecoveryStrategy(strategy);
+        public void WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger) =>
+            builder.WithMetadataRecoveryRebootstrapTrigger(trigger);
+        public void WithRetryBackoff(TimeSpan backoff) => builder.WithRetryBackoff(backoff);
+        public void WithRetryBackoffMax(TimeSpan backoff) => builder.WithRetryBackoffMax(backoff);
+        public void WithReconnectBackoff(TimeSpan backoff) => builder.WithReconnectBackoff(backoff);
+        public void WithReconnectBackoffMax(TimeSpan backoff) => builder.WithReconnectBackoffMax(backoff);
+        public void WithConnectionTimeout(TimeSpan timeout) => builder.WithConnectionTimeout(timeout);
+        public void WithTcpKeepAlive(bool enabled) => builder.WithTcpKeepAlive(enabled);
+        public void WithSocketSendBufferBytes(int bytes) => builder.WithSocketSendBufferBytes(bytes);
+        public void WithSocketReceiveBufferBytes(int bytes) => builder.WithSocketReceiveBufferBytes(bytes);
+        public void UseTls(TlsConfig config) => builder.UseTls(config);
+        public void WithSaslOptions(
+            SaslMechanism mechanism,
+            string? username,
+            string? password,
+            GssapiConfig? gssapi,
+            OAuthBearerConfig? oauth) =>
+            builder.WithSaslOptions(mechanism, username, password, gssapi, oauth, awsMskIamConfig: null);
     }
 }
