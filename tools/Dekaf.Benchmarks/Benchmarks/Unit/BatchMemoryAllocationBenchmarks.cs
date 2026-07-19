@@ -52,7 +52,7 @@ public class BatchMemoryAllocationBenchmarks
 
         if (AllocationStrategy == BufferMemoryAllocationStrategy.Incremental)
         {
-            IncrementalBatchBuffer.RatchetPoolSize(poolSize * 2);
+            IncrementalBatchBuffer.RatchetPoolSize(poolSize * 2, _options.BatchSize);
             IncrementalBatchBuffer.PreWarm(poolSize * 2, _options.BatchSize);
         }
         else
