@@ -216,6 +216,39 @@ public sealed class ShareConsumerRenewalTests
     }
 
     [Test]
+    public async Task Poll_BrokerFailure_RequeuesOnlyFailedBrokerAcknowledgements()
+    {
+        var firstConnection = new CapturingConnection(ApiKey.ShareFetch, 1);
+        var secondConnection = new CapturingConnection(ApiKey.ShareFetch, 2, brokerId: 2)
+        {
+            ShareFetchResponse = new ShareFetchResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Responses = [],
+                NodeEndpoints = []
+            }
+        };
+        await using var fixture = CreateFixture(
+            firstConnection,
+            secondConnection: secondConnection);
+        PrepareForPoll(
+            fixture.Consumer,
+            new TopicPartition("topic", 0),
+            new TopicPartition("topic", 1));
+        fixture.Consumer.Subscribe("topic");
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 0, offset: 40), AcknowledgeType.Renew);
+        fixture.Consumer.Acknowledge(CreateRecord(partition: 1, offset: 41), AcknowledgeType.Accept);
+
+        await using var poll = fixture.Consumer.PollAsync().GetAsyncEnumerator();
+        await Assert.That(async () => await poll.MoveNextAsync())
+            .Throws<BrokerVersionException>();
+
+        var pending = FlushPendingAcknowledgements(fixture.Consumer);
+        await Assert.That(pending.Keys).IsEquivalentTo([new TopicPartition("topic", 0)]);
+        await Assert.That(GetSessionEpoch(fixture.Consumer, 2)).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Poll_InlineAcknowledgementError_RequeuesAndDoesNotReplayRenewal()
     {
         using var cancellation = new CancellationTokenSource();
@@ -417,6 +450,34 @@ public sealed class ShareConsumerRenewalTests
         var active = GetActiveRenewedRecords(fixture.Consumer, assignment);
         await Assert.That(active).HasSingleItem();
         await Assert.That(ReferenceEquals(active[0], record)).IsTrue();
+    }
+
+    [Test]
+    public async Task Poll_SessionLoss_DropsActiveRenewal()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var connection = new CapturingConnection(ApiKey.ShareFetch, 2)
+        {
+            ShareFetchResponse = new ShareFetchResponse
+            {
+                ErrorCode = ErrorCode.ShareSessionNotFound,
+                Responses = [],
+                NodeEndpoints = []
+            },
+            OnSend = cancellation.Cancel
+        };
+        await using var fixture = CreateFixture(connection);
+        var assignment = new HashSet<TopicPartition> { new("topic", 0) };
+        PrepareForPoll(fixture.Consumer);
+        fixture.Consumer.Subscribe("topic");
+        fixture.Consumer.Acknowledge(CreateRecord(), AcknowledgeType.Renew);
+        ApplySuccessfulAcknowledgements(fixture.Consumer, RenewalAcknowledgements());
+
+        await using var poll = fixture.Consumer.PollAsync(cancellation.Token).GetAsyncEnumerator();
+        var moved = await poll.MoveNextAsync();
+
+        await Assert.That(moved).IsFalse();
+        await Assert.That(GetActiveRenewedRecords(fixture.Consumer, assignment)).IsEmpty();
     }
 
     [Test]

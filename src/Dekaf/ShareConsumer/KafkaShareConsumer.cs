@@ -258,19 +258,15 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
             foreach (var (brokerId, partitions) in partitionsByBroker)
             {
-                fetchTasks.Add(SendShareFetchForPartitionsAsync(brokerId, partitions, pendingAcks, cancellationToken));
+                var brokerAcks = SelectAcknowledgements(pendingAcks, partitions);
+                fetchTasks.Add(SendShareFetchForBrokerAsync(
+                    brokerId,
+                    partitions,
+                    brokerAcks,
+                    cancellationToken));
             }
 
-            try
-            {
-                await Task.WhenAll(fetchTasks).ConfigureAwait(false);
-            }
-            catch
-            {
-                if (pendingAcks is not null)
-                    _ackTracker.RequeueAcks(pendingAcks);
-                throw;
-            }
+            await Task.WhenAll(fetchTasks).ConfigureAwait(false);
 
             // Process every response before yielding. Session epochs and inline
             // acknowledgements must advance even when an earlier broker fills the poll budget.
@@ -278,10 +274,18 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             List<ShareConsumeResult<TKey, TValue>>? fetchedRecords = _renewedRecords is null
                 ? null
                 : new List<ShareConsumeResult<TKey, TValue>>(_options.MaxPollRecords);
+            Exception? firstFetchError = null;
 
             foreach (var fetchTask in fetchTasks)
             {
-                var (brokerId, version, response, sentAcks) = fetchTask.Result;
+                var (brokerId, version, response, sentAcks, error) = fetchTask.Result;
+
+                if (error is not null)
+                {
+                    RequeueAcknowledgements(sentAcks);
+                    firstFetchError ??= error;
+                    continue;
+                }
 
                 if (response is null)
                 {
@@ -297,6 +301,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                         response.ErrorCode == ErrorCode.InvalidShareSessionEpoch)
                     {
                         _sessionManager.ResetSession(brokerId);
+                        ClearActiveRenewedRecordsForBroker(brokerId);
                         // Note: _ackTracker may still hold pending acks from the now-invalid session.
                         // On next CommitAsync those acks will be sent with epoch 0 (new session).
                         // Keep renewal state so a re-queued Renew can activate the record after the
@@ -331,11 +336,14 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                 }
             }
 
+            if (firstFetchError is not null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstFetchError).Throw();
+
             // Parse records only after all broker bookkeeping is complete. This second broker scan
             // is per poll, not per message, and avoids buffering records when no renewal is active.
             foreach (var fetchTask in fetchTasks)
             {
-                var (_, _, response, _) = fetchTask.Result;
+                var (_, _, response, _, _) = fetchTask.Result;
                 if (response is null || response.ErrorCode != ErrorCode.None)
                     continue;
 
@@ -659,6 +667,24 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         CancellationToken cancellationToken)
     {
         var brokerAcks = SelectAcknowledgements(pendingAcks, partitions);
+        var result = await SendShareFetchForBrokerAsync(
+                brokerId,
+                partitions,
+                brokerAcks,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (result.Error is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(result.Error).Throw();
+
+        return result;
+    }
+
+    private async Task<ShareFetchBrokerResult> SendShareFetchForBrokerAsync(
+        int brokerId,
+        List<TopicPartition> partitions,
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? brokerAcks,
+        CancellationToken cancellationToken)
+    {
         var isRenewAck = ContainsRenewAcknowledgement(brokerAcks);
 
         for (var attempt = 0; ; attempt++)
@@ -699,9 +725,13 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                     continue;
                 }
 
-                return new ShareFetchBrokerResult(brokerId, version, response, brokerAcks);
+                return new ShareFetchBrokerResult(brokerId, version, response, brokerAcks, null);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException and not BrokerVersionException)
+            catch (Exception ex) when (ex is OperationCanceledException or BrokerVersionException)
+            {
+                return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, ex);
+            }
+            catch (Exception ex)
             {
                 if (attempt < RetryHelper.MaxRetries && RetryHelper.IsRetriableRequestFailure(ex))
                 {
@@ -711,7 +741,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
                 LogFetchFailed(brokerId, ex);
                 _sessionManager.ResetSession(brokerId);
-                return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks);
+                ClearActiveRenewedRecordsForBroker(brokerId);
+                return new ShareFetchBrokerResult(brokerId, 0, null, brokerAcks, null);
             }
         }
     }
@@ -818,6 +849,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
                         or ErrorCode.InvalidShareSessionEpoch)
                     {
                         _sessionManager.ResetSession(brokerId);
+                        ClearActiveRenewedRecordsForBroker(brokerId);
                     }
                     else
                     {
@@ -1303,7 +1335,10 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         var key = new RenewedRecordKey(record.Topic, record.Partition, record.Offset);
         _renewedRecords ??= [];
         if (_renewedRecords.TryGetValue(key, out var state))
+        {
             state.Record = record;
+            state.Active = false;
+        }
         else
             _renewedRecords[key] = new RenewedRecordState(record);
 
@@ -1406,6 +1441,35 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     }
 
     private void ClearRenewedRecords() => _renewedRecords = null;
+
+    private void ClearActiveRenewedRecordsForBroker(int brokerId)
+    {
+        if (_renewedRecords is null)
+            return;
+
+        List<RenewedRecordKey>? removed = null;
+        foreach (var (key, state) in _renewedRecords)
+        {
+            if (!state.Active)
+                continue;
+
+            var leader = _metadataManager.Metadata.GetPartitionLeader(key.Topic, key.Partition);
+            if (leader?.NodeId != brokerId)
+                continue;
+
+            removed ??= [];
+            removed.Add(key);
+        }
+
+        if (removed is null)
+            return;
+
+        foreach (var key in removed)
+            _renewedRecords.Remove(key);
+
+        if (_renewedRecords.Count == 0)
+            _renewedRecords = null;
+    }
 
     /// <summary>
     /// Groups acknowledgement data by leader broker.
@@ -1558,7 +1622,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         int BrokerId,
         short Version,
         ShareFetchResponse? Response,
-        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? SentAcknowledgements);
+        Dictionary<TopicPartition, List<AcknowledgementBatchData>>? SentAcknowledgements,
+        Exception? Error);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void ThrowIfNotInitialized()
