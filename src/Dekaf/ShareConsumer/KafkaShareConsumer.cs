@@ -382,7 +382,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
         {
             try
             {
-                await SendAcknowledgeAsync(kvp.Key, kvp.Value, cancellationToken)
+                await SendAcknowledgeAsync(
+                        kvp.Key,
+                        kvp.Value,
+                        retryRetriableFailures: true,
+                        cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
                 return (Acks: kvp.Value, Error: (Exception?)null);
             }
@@ -537,7 +541,11 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
             {
                 try
                 {
-                    await SendAcknowledgeAsync(brokerId, acks, CancellationToken.None)
+                    await SendAcknowledgeAsync(
+                            brokerId,
+                            acks,
+                            retryRetriableFailures: false,
+                            cancellationToken: CancellationToken.None)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -666,6 +674,7 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
     private async Task SendAcknowledgeAsync(
         int brokerId,
         Dictionary<TopicPartition, List<AcknowledgementBatchData>> topicAcks,
+        bool retryRetriableFailures,
         CancellationToken cancellationToken)
     {
         var topics = BuildShareAcknowledgeTopics(topicAcks);
@@ -705,7 +714,8 @@ internal sealed partial class KafkaShareConsumer<TKey, TValue> : IKafkaShareCons
 
                 return;
             }
-            catch (Exception ex) when (attempt < RetryHelper.MaxRetries
+            catch (Exception ex) when (retryRetriableFailures
+                                       && attempt < RetryHelper.MaxRetries
                                        && RetryHelper.IsRetriableRequestFailure(ex))
             {
                 await PrepareRequestRetryAsync(attempt, cancellationToken).ConfigureAwait(false);

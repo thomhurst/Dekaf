@@ -157,6 +157,76 @@ public sealed class ShareConsumerConnectionOwnershipTests
         await Assert.That(connection.LeaseCount).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task Unsubscribe_RetriableReleaseFailure_DoesNotRetry()
+    {
+        var options = new ShareConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            GroupId = "share-group",
+            ConnectionsPerBroker = 2,
+            RetryBackoffMs = 0,
+            RetryBackoffMaxMs = 0
+        };
+        var connection = new LeaseTrackingConnection(
+            new ApiVersion(
+                ApiKey.ShareAcknowledge,
+                ShareAcknowledgeRequest.LowestSupportedVersion,
+                ShareAcknowledgeRequest.HighestSupportedVersion))
+        {
+            ShareAcknowledgeResponse = new ShareAcknowledgeResponse
+            {
+                ErrorCode = ErrorCode.CoordinatorLoadInProgress,
+                Responses = [],
+                NodeEndpoints = []
+            }
+        };
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(1, Arg.Any<CancellationToken>()).Returns(connection);
+        pool.GetConnectionAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+        await using var metadataManager = new MetadataManager(pool, options.BootstrapServers);
+        metadataManager.Metadata.Update(new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "localhost", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "test-topic",
+                    Partitions =
+                    [
+                        new PartitionMetadata
+                        {
+                            ErrorCode = ErrorCode.None,
+                            PartitionIndex = 0,
+                            LeaderId = 1,
+                            ReplicaNodes = [1],
+                            IsrNodes = [1]
+                        }
+                    ]
+                }
+            ]
+        });
+        var consumer = new KafkaShareConsumer<string, string>(
+            options,
+            Substitute.For<IDeserializer<string>>(),
+            Substitute.For<IDeserializer<string>>(),
+            pool,
+            metadataManager);
+        var acknowledgementTracker = (AcknowledgementTracker)typeof(KafkaShareConsumer<string, string>)
+            .GetField("_ackTracker", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(consumer)!;
+        acknowledgementTracker.TrackDeliveredRecords(new TopicPartition("test-topic", 0), 1, 1);
+
+        consumer.Unsubscribe();
+        await consumer.DisposeAsync();
+
+        await Assert.That(connection.ShareAcknowledgeSendCount).IsEqualTo(1);
+        await Assert.That(connection.LeaseCount).IsEqualTo(0);
+    }
+
     private static Task InvokeSendShareFetchForPartitionsAsync(
         KafkaShareConsumer<string, string> consumer)
     {
@@ -213,7 +283,9 @@ public sealed class ShareConsumerConnectionOwnershipTests
         public int LeaseCount => Volatile.Read(ref _leaseCount);
         public int LeaseCountDuringSend { get; private set; }
         public int ShareFetchSendCount { get; private set; }
+        public int ShareAcknowledgeSendCount { get; private set; }
         public Queue<ShareFetchResponse>? ShareFetchResponses { get; init; }
+        public ShareAcknowledgeResponse? ShareAcknowledgeResponse { get; init; }
 
         int IRetirableKafkaConnection.LeaseCount => LeaseCount;
         int IRetirableKafkaConnection.ActiveOperationCount => 0;
@@ -254,6 +326,7 @@ public sealed class ShareConsumerConnectionOwnershipTests
                     ErrorCode = ErrorCode.None
                 },
                 ShareFetchRequest => GetShareFetchResponse(),
+                ShareAcknowledgeRequest => GetShareAcknowledgeResponse(),
                 MetadataRequest => new MetadataResponse { Brokers = [], Topics = [] },
                 _ => throw new NotSupportedException(typeof(TRequest).Name)
             };
@@ -271,6 +344,17 @@ public sealed class ShareConsumerConnectionOwnershipTests
                     Responses = [],
                     NodeEndpoints = []
                 };
+        }
+
+        private ShareAcknowledgeResponse GetShareAcknowledgeResponse()
+        {
+            ShareAcknowledgeSendCount++;
+            return ShareAcknowledgeResponse ?? new ShareAcknowledgeResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Responses = [],
+                NodeEndpoints = []
+            };
         }
 
         public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
