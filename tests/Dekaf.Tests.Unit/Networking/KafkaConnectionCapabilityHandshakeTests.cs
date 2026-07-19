@@ -94,6 +94,47 @@ public class KafkaConnectionCapabilityHandshakeTests
 
     [Test]
     [Timeout(5_000)]
+    public async Task ConnectAsync_WhenNegotiationTimesOut_ThrowsKafkaException(
+        CancellationToken cancellationToken)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var releaseServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var serverTask = Task.Run(async () =>
+        {
+            using var socket = await listener.AcceptSocketAsync(cancellationToken);
+            await using var stream = new NetworkStream(socket, ownsSocket: false);
+            _ = await ReadFrameAsync(stream, cancellationToken);
+            await releaseServer.Task.WaitAsync(cancellationToken);
+        }, cancellationToken);
+
+        await using var connection = new KafkaConnection(
+            1,
+            "127.0.0.1",
+            port,
+            options: new ConnectionOptions { RequestTimeout = TimeSpan.FromMilliseconds(50) });
+
+        try
+        {
+            var exception = await Assert.That(async () => await connection.ConnectAsync(cancellationToken))
+                .Throws<KafkaException>();
+
+            await Assert.That(exception).IsNotNull();
+            await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
+            await Assert.That(connection.IsConnected).IsFalse();
+        }
+        finally
+        {
+            releaseServer.TrySetResult();
+        }
+
+        await serverTask;
+    }
+
+    [Test]
+    [Timeout(5_000)]
     public async Task ConnectionPool_ReconnectUsesOnlyNewCapabilityGeneration(
         CancellationToken cancellationToken)
     {

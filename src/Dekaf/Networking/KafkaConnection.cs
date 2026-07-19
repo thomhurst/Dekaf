@@ -618,11 +618,22 @@ public sealed partial class KafkaConnection :
             ClientSoftwareVersion = typeof(KafkaConnection).Assembly.GetName().Version?.ToString() ?? "0.0.0"
         };
 
-        var response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
-            request,
-            apiVersion: 3,
-            requireReady: false,
-            cancellationToken).ConfigureAwait(false);
+        ApiVersionsResponse response;
+        try
+        {
+            response = await SendAsyncCore<ApiVersionsRequest, ApiVersionsResponse>(
+                request,
+                apiVersion: 3,
+                requireReady: false,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException ex)
+        {
+            throw new KafkaException(
+                ErrorCode.RequestTimedOut,
+                $"ApiVersions negotiation timed out for {_host}:{_port}",
+                ex);
+        }
 
         return KafkaConnectionCapabilities.Create(response);
     }
