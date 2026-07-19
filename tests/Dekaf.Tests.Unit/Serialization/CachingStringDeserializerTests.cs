@@ -257,6 +257,28 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
+    public async Task ReuseProbe_CacheFilledDuringWindow_CountsAdmissionsAsReuseEvidence()
+    {
+        const int keyCount = 100_000;
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+        var firstKey = ToUtf8("fill-window-0");
+        var firstReference = sut.Deserialize(firstKey, context);
+
+        for (var i = 1; i < keyCount; i++)
+            sut.Deserialize(ToUtf8($"fill-window-{i}"), context);
+
+        var reuseLookupLimit = CachingStringDeserializer.CalculateReuseProbeLookupCount(KeyCacheMaxEntries);
+        for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
+            sut.Deserialize(ToUtf8($"fill-window-{i % keyCount}"), context);
+
+        var reusedReference = sut.Deserialize(firstKey, context);
+
+        await Assert.That(GetInnerModeName(sut)).IsNotEqualTo("BypassSerde");
+        await Assert.That(ReferenceEquals(firstReference, reusedReference)).IsTrue();
+    }
+
+    [Test]
     public async Task ReuseProbe_OneCoincidentalHit_DoesNotRestoreCache()
     {
         var sut = CreateSmallKeyCache();

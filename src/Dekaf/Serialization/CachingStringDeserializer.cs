@@ -35,6 +35,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
     private int _missesUntilProbe = AdmissionProbeLimit;
     private int _probeRemaining;
     private int _probeHits;
+    private int _reuseProbeAdmissions;
     private int _minimumReuseProbeHits;
     private bool _isReuseProbe;
     private int _bypassRemaining;
@@ -131,27 +132,35 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         }
 
         var result = _configuredInner.Deserialize(data, context);
+        var admitted = false;
         if (Volatile.Read(ref cache.Count) < _maxCachedEntries)
         {
             if (cache.Entries.TryAdd(hash, result))
+            {
                 Interlocked.Increment(ref cache.Count);
+                admitted = true;
+            }
         }
 
-        ObserveProbeLookup(hit: false);
+        ObserveProbeLookup(hit: false, admitted);
         return result;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void ObserveProbeLookup(bool hit)
+    private void ObserveProbeLookup(bool hit, bool admitted = false)
     {
         if (hit)
-        {
             _probeHits++;
-            if (_isReuseProbe && _probeHits >= _minimumReuseProbeHits)
-            {
-                RestoreCache();
-                return;
-            }
+        else if (_isReuseProbe && admitted)
+            _reuseProbeAdmissions++;
+
+        // A newly admitted entry could not hit on its first occurrence. Count that fill
+        // once when evaluating a reuse window, without letting primary-probe fills pass.
+        if (_isReuseProbe
+            && (long)_probeHits + _reuseProbeAdmissions >= _minimumReuseProbeHits)
+        {
+            RestoreCache();
+            return;
         }
 
         var remaining = _probeRemaining - 1;
@@ -208,6 +217,7 @@ internal sealed class CachingStringDeserializer : ISerde<string>
         // prefix, before declaring the retained generation cold.
         _probeRemaining = CalculateReuseProbeLookupCount(_maxCachedEntries);
         _probeHits = 0;
+        _reuseProbeAdmissions = 0;
         _minimumReuseProbeHits = CalculateMinimumReuseProbeHits(_probeRemaining);
         _isReuseProbe = true;
     }
