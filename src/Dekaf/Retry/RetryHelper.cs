@@ -1,4 +1,5 @@
 using Dekaf.Metadata;
+using Dekaf.Networking;
 
 namespace Dekaf.Retry;
 
@@ -95,8 +96,28 @@ internal static class RetryHelper
     }
 
     internal static bool IsRetriableRequestFailure(Exception exception)
-        => exception is IOException or System.Net.Sockets.SocketException or TimeoutException
-           || exception is KafkaException { IsRetriable: true };
+    {
+        if (exception is KafkaException kafkaException)
+            return kafkaException.IsRetriable;
+
+        if (exception is IOException
+            or System.Net.Sockets.SocketException
+            or TimeoutException
+            or DnsResolutionException)
+            return true;
+
+        if (exception is AggregateException aggregateException)
+        {
+            foreach (var innerException in aggregateException.InnerExceptions)
+            {
+                if (IsRetriableRequestFailure(innerException))
+                    return true;
+            }
+        }
+
+        return exception.InnerException is not null
+            && IsRetriableRequestFailure(exception.InnerException);
+    }
 
     private static async ValueTask RefreshMetadataForRetryAsync(
         MetadataManager metadataManager,

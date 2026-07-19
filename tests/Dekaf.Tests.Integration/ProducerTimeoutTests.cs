@@ -63,30 +63,30 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
     }
 
     [Test]
-    public async Task MaxBlock_ExceededWaitingForMetadata_ErrorPropagated()
+    public async Task BootstrapResolveTimeout_ExceededWaitingForMetadata_ErrorPropagated()
     {
         // Arrange & Act - Resolve the invalid bootstrap server deterministically so metadata lookup will fail.
-        // BuildAsync() eagerly initializes, retrying metadata until MaxBlock expires
-        // (Java max.block.ms parity), then surfaces a timeout rather than hanging.
+        // KIP-909 gives bootstrap DNS resolution an independent deadline, then surfaces
+        // the dedicated resolution exception rather than hanging.
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+        var exception = await Assert.ThrowsAsync<BootstrapResolutionException>(async () =>
         {
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers("invalid-host-that-does-not-exist:9092")
                 .WithDnsResolver(new ClientDnsEndpointResolver(new FailingDnsLookup()))
-                .WithClientId("test-maxblock-exceeded")
-                .WithMaxBlock(TimeSpan.FromSeconds(2))
+                .WithClientId("test-bootstrap-resolve-timeout")
+                .WithBootstrapResolveTimeout(TimeSpan.FromSeconds(2))
                 .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
         });
 
         sw.Stop();
 
-        // The timeout should identify the metadata phase and carry the underlying
-        // failure. The injected resolver avoids depending on the host DNS timeout.
-        // The key invariant is that the error does NOT hang indefinitely.
-        await Assert.That(exception!.TimeoutKind).IsEqualTo(TimeoutKind.Metadata);
+        // The injected resolver avoids depending on the host DNS timeout.
+        await Assert.That(exception!.Timeout).IsEqualTo(TimeSpan.FromSeconds(2));
+        await Assert.That(exception.UnresolvedBootstrapServers)
+            .IsEquivalentTo(["invalid-host-that-does-not-exist:9092"]);
         await Assert.That(exception.InnerException).IsNotNull();
         await Assert.That(sw.Elapsed.TotalSeconds).IsGreaterThanOrEqualTo(2);
         await Assert.That(sw.Elapsed.TotalSeconds).IsLessThan(30);

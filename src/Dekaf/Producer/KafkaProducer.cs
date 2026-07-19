@@ -303,6 +303,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             MetadataClusterCheckEnabled = options.MetadataClusterCheckEnabled,
             RetryBackoffMs = options.RetryBackoffMs,
             RetryBackoffMaxMs = options.RetryBackoffMaxMs,
+            BootstrapResolveTimeoutMs = options.BootstrapResolveTimeoutMs,
             InitTimeoutMs = options.MaxBlockMs
         };
         var metadataManager = new MetadataManager(
@@ -3658,8 +3659,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     private static bool IsRetriablePartitionEnrollmentException(Exception exception) =>
-        exception is IOException or System.Net.Sockets.SocketException or TimeoutException
-        || exception is KafkaException { IsRetriable: true };
+        RetryHelper.IsRetriableRequestFailure(exception);
 
     private Action<Exception?>[] ResetPartitionEnrollmentState()
     {

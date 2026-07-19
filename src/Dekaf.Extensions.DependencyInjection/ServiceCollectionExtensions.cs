@@ -754,6 +754,12 @@ public sealed class AdminClientServiceBuilder
         return this;
     }
 
+    public AdminClientServiceBuilder WithBootstrapResolveTimeout(TimeSpan timeout)
+    {
+        _builder.WithBootstrapResolveTimeout(timeout);
+        return this;
+    }
+
     public AdminClientServiceBuilder RegisterMetricForSubscription(ApplicationTelemetryMetric metric)
     {
         _builder.RegisterMetricForSubscription(metric);
@@ -879,6 +885,7 @@ internal static class DekafOptionsBinding
         builder.WithMetadataClusterCheck(options.MetadataClusterCheckEnabled);
         builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
         builder.WithClientDnsLookup(options.ClientDnsLookup);
+        builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(options.BootstrapResolveTimeoutMs));
         if (options.EnableAdaptiveConnections)
             builder.WithAdaptiveConnections(options.MaxConnectionsPerBroker);
         else
@@ -981,6 +988,7 @@ internal static class DekafOptionsBinding
         builder.WithMetadataClusterCheck(options.MetadataClusterCheckEnabled);
         builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
         builder.WithClientDnsLookup(options.ClientDnsLookup);
+        builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(options.BootstrapResolveTimeoutMs));
         builder.WithPrefetchPipelineDepth(options.PrefetchPipelineDepth);
         builder.WithConnectionsPerBroker(options.ConnectionsPerBroker);
         if (options.EnableAdaptiveConnections)
@@ -1048,6 +1056,7 @@ internal static class DekafOptionsBinding
         builder.WithMetadataClusterCheck(options.MetadataClusterCheckEnabled);
         builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(options.MetadataRecoveryRebootstrapTriggerMs));
         builder.WithClientDnsLookup(options.ClientDnsLookup);
+        builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(options.BootstrapResolveTimeoutMs));
         foreach (var metric in options.ApplicationMetrics)
             builder.RegisterMetricForSubscription(metric);
     }
@@ -1272,6 +1281,8 @@ internal static class DekafConfigurationBinding
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(ProducerOptions.ClientDnsLookup), out var clientDnsLookup))
             builder.WithClientDnsLookup(clientDnsLookup);
+        if (TryGetValue<int>(configuration, nameof(ProducerOptions.BootstrapResolveTimeoutMs), out var bootstrapResolveTimeoutMs))
+            builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
         ApplyAdaptiveConnections(
             configuration,
             nameof(ProducerOptions.EnableAdaptiveConnections),
@@ -1396,6 +1407,8 @@ internal static class DekafConfigurationBinding
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(ConsumerOptions.ClientDnsLookup), out var clientDnsLookup))
             builder.WithClientDnsLookup(clientDnsLookup);
+        if (TryGetValue<int>(configuration, nameof(ConsumerOptions.BootstrapResolveTimeoutMs), out var bootstrapResolveTimeoutMs))
+            builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.PrefetchPipelineDepth), out var prefetchPipelineDepth))
             builder.WithPrefetchPipelineDepth(prefetchPipelineDepth);
         if (TryGetValue<int>(configuration, nameof(ConsumerOptions.ConnectionsPerBroker), out var connectionsPerBroker))
@@ -1441,6 +1454,8 @@ internal static class DekafConfigurationBinding
             builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(rebootstrapMs));
         if (TryGetValue<ClientDnsLookup>(configuration, nameof(AdminClientOptions.ClientDnsLookup), out var clientDnsLookup))
             builder.WithClientDnsLookup(clientDnsLookup);
+        if (TryGetValue<int>(configuration, nameof(AdminClientOptions.BootstrapResolveTimeoutMs), out var bootstrapResolveTimeoutMs))
+            builder.WithBootstrapResolveTimeout(TimeSpan.FromMilliseconds(bootstrapResolveTimeoutMs));
     }
 
     private static void ApplyTls<TBuilder>(

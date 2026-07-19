@@ -381,7 +381,17 @@ public sealed partial class KafkaConnection :
 
         using var connectTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         connectTimeoutCts.CancelAfter(_options.ConnectionTimeout);
-        var (socket, targetHost) = await ConnectSocketAsync(connectTimeoutCts.Token).ConfigureAwait(false);
+        (Socket socket, string targetHost) socketResult;
+        try
+        {
+            socketResult = await ConnectSocketAsync(connectTimeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (DnsResolutionException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException("DNS resolution was cancelled.", ex, cancellationToken);
+        }
+
+        var (socket, targetHost) = socketResult;
         _socket = socket;
         _resolvedTargetHost = targetHost;
 
@@ -485,12 +495,23 @@ public sealed partial class KafkaConnection :
 
     private async ValueTask<(Socket Socket, string TargetHost)> ConnectSocketAsync(CancellationToken cancellationToken)
     {
-        var endpoints = await _options.DnsResolver
-            .ResolveAsync(_host, _port, _options.ClientDnsLookup, cancellationToken)
-            .ConfigureAwait(false);
+        IReadOnlyList<ClientDnsEndpoint> endpoints;
+        try
+        {
+            endpoints = await _options.DnsResolver
+                .ResolveAsync(_host, _port, _options.ClientDnsLookup, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            throw new DnsResolutionException(_host, _port, ex);
+        }
 
         if (endpoints.Count == 0)
-            throw new SocketException((int)SocketError.HostNotFound);
+            throw new DnsResolutionException(
+                _host,
+                _port,
+                new SocketException((int)SocketError.HostNotFound));
 
         Exception? lastException = null;
         foreach (var endpoint in endpoints)

@@ -75,6 +75,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private bool _metadataClusterCheckEnabled = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
+    private int _bootstrapResolveTimeoutMs = 120000;
     private ClientDnsEndpointResolver _dnsResolver = ClientDnsEndpointResolver.Default;
     private bool _enableIdempotence = true;
     private int _connectionsPerBroker = 1;
@@ -116,6 +117,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _isMaxConnectionsPerBrokerConfigured = true;
         _retryBackoffMs = clientInfrastructure.RetryBackoffMs;
         _retryBackoffMaxMs = clientInfrastructure.RetryBackoffMaxMs;
+        _bootstrapResolveTimeoutMs = clientInfrastructure.BootstrapResolveTimeoutMs;
         _saslMechanism = clientInfrastructure.SaslMechanism;
     }
 
@@ -913,6 +915,19 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Sets the KIP-909 deadline for resolving an initial bootstrap server DNS name.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithBootstrapResolveTimeout(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _bootstrapResolveTimeoutMs = ConnectionOptionValidation.ToNonNegativeMilliseconds(
+            timeout,
+            nameof(timeout),
+            "Bootstrap resolution timeout cannot be negative");
+        return this;
+    }
+
     internal ProducerBuilder<TKey, TValue> WithDnsResolver(ClientDnsEndpointResolver resolver)
     {
         ThrowIfClientOwnedConnectionSettings();
@@ -1447,6 +1462,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
+            BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
             DnsResolver = _dnsResolver,
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
@@ -1468,6 +1484,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
+            BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
             DnsResolver = _dnsResolver,
             RetryBackoffMs = _retryBackoffMs,
             RetryBackoffMaxMs = _retryBackoffMaxMs,
@@ -1635,6 +1652,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private bool _metadataClusterCheckEnabled = true;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
+    private int _bootstrapResolveTimeoutMs = 120000;
     private ClientDnsEndpointResolver _dnsResolver = ClientDnsEndpointResolver.Default;
     private readonly List<string> _topicsToSubscribe = [];
     private string? _topicPatternToSubscribe;
@@ -1675,6 +1693,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _maxConnectionsPerBroker = clientInfrastructure.MaxConnectionsPerBroker;
         _retryBackoffMs = clientInfrastructure.RetryBackoffMs;
         _retryBackoffMaxMs = clientInfrastructure.RetryBackoffMaxMs;
+        _bootstrapResolveTimeoutMs = clientInfrastructure.BootstrapResolveTimeoutMs;
     }
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -2618,6 +2637,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Sets the KIP-909 deadline for resolving an initial bootstrap server DNS name.
+    /// </summary>
+    public ConsumerBuilder<TKey, TValue> WithBootstrapResolveTimeout(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _bootstrapResolveTimeoutMs = ConnectionOptionValidation.ToNonNegativeMilliseconds(
+            timeout,
+            nameof(timeout),
+            "Bootstrap resolution timeout cannot be negative");
+        return this;
+    }
+
     internal ConsumerBuilder<TKey, TValue> WithDnsResolver(ClientDnsEndpointResolver resolver)
     {
         ThrowIfClientOwnedConnectionSettings();
@@ -3160,6 +3192,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
+            BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
             DnsResolver = _dnsResolver,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
             RetryPolicy = _retryPolicy,
@@ -3179,6 +3212,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             ClientDnsLookup = _clientDnsLookup,
+            BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
             DnsResolver = _dnsResolver,
             RetryBackoffMs = _retryBackoffMs,
             RetryBackoffMaxMs = _retryBackoffMaxMs
@@ -3315,6 +3349,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private RemoteCertificateValidationCallback? _remoteCertificateValidationCallback;
     private ClientDnsLookup _clientDnsLookup = ClientDnsLookup.UseAllDnsIps;
     private bool _metadataClusterCheckEnabled = true;
+    private int _bootstrapResolveTimeoutMs = 120000;
     private IRetryPolicy? _retryPolicy;
     private readonly List<string> _topicsToSubscribe = [];
 
@@ -3330,6 +3365,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _connectionsPerBroker = clientInfrastructure.ConnectionsPerBroker;
         _retryBackoffMs = clientInfrastructure.RetryBackoffMs;
         _retryBackoffMaxMs = clientInfrastructure.RetryBackoffMaxMs;
+        _bootstrapResolveTimeoutMs = clientInfrastructure.BootstrapResolveTimeoutMs;
     }
 
     public ShareConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -3832,6 +3868,19 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Sets the KIP-909 deadline for resolving an initial bootstrap server DNS name.
+    /// </summary>
+    public ShareConsumerBuilder<TKey, TValue> WithBootstrapResolveTimeout(TimeSpan timeout)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _bootstrapResolveTimeoutMs = ConnectionOptionValidation.ToNonNegativeMilliseconds(
+            timeout,
+            nameof(timeout),
+            "Bootstrap resolution timeout cannot be negative");
+        return this;
+    }
+
     public ShareConsumerBuilder<TKey, TValue> WithRetryPolicy(IRetryPolicy retryPolicy)
     {
         _retryPolicy = retryPolicy;
@@ -3932,6 +3981,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             ConnectionsPerBroker = _connectionsPerBroker,
             ClientDnsLookup = _clientDnsLookup,
             MetadataClusterCheckEnabled = _metadataClusterCheckEnabled,
+            BootstrapResolveTimeoutMs = _bootstrapResolveTimeoutMs,
             RetryPolicy = _retryPolicy
         };
 
