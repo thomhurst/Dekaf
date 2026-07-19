@@ -1639,6 +1639,8 @@ public sealed class AdaptiveScaleDownTests
             return ValueTask.CompletedTask;
         });
         var sender = CreateSender(pool, options, accumulator, onAcknowledgement: null);
+        sender.RequestCancellation();
+        await GetField<Task>(sender, "_sendLoopTask");
 
         try
         {
