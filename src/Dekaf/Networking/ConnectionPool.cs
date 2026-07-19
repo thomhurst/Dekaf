@@ -1209,7 +1209,8 @@ public sealed partial class ConnectionPool :
         SemaphoreSlim connectionLock,
         CancellationToken cancellationToken)
     {
-        using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
+        var lockTimeout = _connectionOptions.ConnectionTimeoutMax;
+        using var timeoutCts = new CancellationTokenSource(lockTimeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             timeoutCts.Token);
@@ -1221,7 +1222,7 @@ public sealed partial class ConnectionPool :
         {
             throw new KafkaException(
                 ErrorCode.RequestTimedOut,
-                $"Timed out after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms waiting for a connection lock");
+                $"Timed out after {(int)lockTimeout.TotalMilliseconds}ms waiting for a connection lock");
         }
     }
 

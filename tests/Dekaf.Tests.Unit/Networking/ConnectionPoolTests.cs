@@ -1191,6 +1191,27 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
+    public async Task ConnectionLockTimeout_UsesConfiguredMaximum()
+    {
+        await using var pool = new ConnectionPool(
+            clientId: "test-client",
+            connectionOptions: new ConnectionOptions
+            {
+                ConnectionTimeout = TimeSpan.FromMilliseconds(10),
+                ConnectionTimeoutMax = TimeSpan.FromMilliseconds(40)
+            });
+        using var connectionLock = new SemaphoreSlim(0, 1);
+        var waitForLock = typeof(ConnectionPool).GetMethod(
+            "WaitForConnectionLockAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        await Assert.That(() =>
+                ((ValueTask)waitForLock.Invoke(pool, [connectionLock, CancellationToken.None])!).AsTask())
+            .Throws<KafkaException>()
+            .WithMessageContaining("Timed out after 40ms");
+    }
+
+    [Test]
     public async Task ConnectionLockWait_CallerCancellationRemainsOperationCanceled()
     {
         await using var pool = new ConnectionPool(
@@ -1565,43 +1586,6 @@ public sealed class ConnectionPoolTests
             TimeSpan.FromMilliseconds(200),
             TimeSpan.FromMilliseconds(200)
         });
-    }
-
-    [Test]
-    public async Task ConnectionCreationLock_ContentionRemainsBoundedByInitialTimeout()
-    {
-        var factoryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var options = new ConnectionOptions
-        {
-            ConnectionTimeout = TimeSpan.FromMilliseconds(100),
-            ConnectionTimeoutMax = TimeSpan.FromMilliseconds(100),
-            ReconnectBackoff = TimeSpan.Zero,
-            ReconnectBackoffMax = TimeSpan.Zero
-        };
-        await using var pool = new ConnectionPool(
-            clientId: "test-client",
-            connectionOptions: options,
-            connectionsPerBroker: 1,
-            connectionFactory: async (brokerId, host, port, _, cancellationToken) =>
-            {
-                factoryStarted.TrySetResult();
-                await Task.Delay(TimeSpan.FromMilliseconds(80), cancellationToken);
-                var connection = CreateConnectedConnection(brokerId, host, port);
-                connection.IsConnected.Returns(false);
-                return connection;
-            });
-
-        var lockHolder = pool.GetConnectionAsync("broker-a", 9092).AsTask();
-        await factoryStarted.Task;
-
-        var contender = pool.GetConnectionAsync("broker-a", 9092).AsTask();
-        var exception = await Assert.That(async () => await contender).Throws<KafkaException>();
-
-        await Assert.That(exception).IsNotNull();
-        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.RequestTimedOut);
-
-        try { await lockHolder; }
-        catch { /* Only the contending caller's bounded wait is under test. */ }
     }
 
     [Test]
