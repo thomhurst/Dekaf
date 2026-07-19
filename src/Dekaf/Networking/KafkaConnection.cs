@@ -421,8 +421,13 @@ public sealed partial class KafkaConnection :
                 await sslStream.AuthenticateAsClientAsync(sslOptions, setupCancellationToken).ConfigureAwait(false);
 #endif
             }
-            catch (System.Security.Authentication.AuthenticationException ex)
+            catch (Exception ex)
             {
+                await DisposeFailedTlsStreamAsync(sslStream).ConfigureAwait(false);
+
+                if (ex is not System.Security.Authentication.AuthenticationException authenticationException)
+                    throw;
+
                 // TLS handshake failures surface here — primarily a rejected certificate, but .NET
                 // also throws this type for negotiation/protocol mismatches. We deliberately treat
                 // them all as fatal: TLS configuration is cluster-wide, so the same failure would
@@ -430,8 +435,9 @@ public sealed partial class KafkaConnection :
                 // Wrap as a Dekaf AuthenticationException (a KafkaException) so callers can catch it
                 // and metadata refresh treats it as fatal instead of masking it behind a generic
                 // "failed to refresh metadata" error.
-                await sslStream.DisposeAsync().ConfigureAwait(false);
-                throw new AuthenticationException($"TLS handshake failed: {ex.Message}", ex);
+                throw new AuthenticationException(
+                    $"TLS handshake failed: {authenticationException.Message}",
+                    authenticationException);
             }
             networkStream = sslStream;
             _isTls = true;
@@ -496,6 +502,9 @@ public sealed partial class KafkaConnection :
 
         LogConnected(_host, _port);
     }
+
+    internal static ValueTask DisposeFailedTlsStreamAsync(SslStream sslStream)
+        => sslStream.DisposeAsync();
 
     private async ValueTask<(Socket Socket, string TargetHost)> ConnectSocketAsync(CancellationToken cancellationToken)
     {

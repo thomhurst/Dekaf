@@ -1261,6 +1261,17 @@ public sealed class KafkaConnectionTests
     }
 
     [Test]
+    public async Task DisposeFailedTlsStreamAsync_DisposesTlsAndInnerStreams()
+    {
+        var innerStream = new DisposeTrackingStream();
+        var sslStream = new SslStream(innerStream, leaveInnerStreamOpen: false);
+
+        await KafkaConnection.DisposeFailedTlsStreamAsync(sslStream);
+
+        await Assert.That(innerStream.DisposeCount).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task BuildRemoteCertificateValidationCallback_WhenHostNameValidationEnabledWithoutCustomPolicy_ReturnsNull()
     {
         await using var connection = new KafkaConnection(
@@ -1681,6 +1692,19 @@ public sealed class KafkaConnectionTests
                 _pendingWrite.TrySetException(new IOException("write aborted"));
                 _disposed.TrySetResult();
             }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class DisposeTrackingStream : MemoryStream
+    {
+        public int DisposeCount { get; private set; }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                DisposeCount++;
 
             base.Dispose(disposing);
         }
