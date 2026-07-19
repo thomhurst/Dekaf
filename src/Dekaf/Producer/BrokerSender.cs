@@ -4325,6 +4325,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         || topicMetadata is null
                         || topicMetadata.TopicId == Guid.Empty)
                     {
+                        // Preserve the successfully-populated prefix so the caller's
+                        // exception-path ClearReferences() releases those batch references.
+                        _lastTopicCount = Math.Max(_lastTopicCount, topicIdx);
+                        _lastPartitionCount = Math.Max(_lastPartitionCount, partIdx);
                         throw new KafkaException(
                             ErrorCode.UnknownTopicId,
                             $"Produce v{apiVersion} requires a current topic ID for '{topicName}'.");
