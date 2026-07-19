@@ -271,12 +271,25 @@ internal sealed class StickyPartitionTracker
         if (localPartitionCount == 0)
             return null;
 
-        var start = NextSequentialPartition(partitionCount);
-        for (var offset = 0; offset < partitionCount; offset++)
+        if (currentPartition is { } current
+            && localPartitionCount > 1
+            && IsLocalPartition(topic, current))
         {
-            var partition = (start + offset) % partitionCount;
-            if (IsLocalPartition(topic, partition)
-                && (localPartitionCount == 1 || currentPartition != partition))
+            for (var offset = 1; offset < partitionCount; offset++)
+            {
+                var partition = (current + offset) % partitionCount;
+                if (IsLocalPartition(topic, partition))
+                    return partition;
+            }
+        }
+
+        var localOrdinal = NextSequentialPartition(localPartitionCount);
+        for (var partition = 0; partition < partitionCount; partition++)
+        {
+            if (!IsLocalPartition(topic, partition))
+                continue;
+
+            if (localOrdinal-- == 0)
                 return partition;
         }
 

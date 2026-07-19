@@ -157,6 +157,26 @@ public class DefaultPartitionerTests
     }
 
     [Test]
+    public async Task RackAwarePartitioning_UnevenLocalLeadersRotateUniformly()
+    {
+        var partitioner = CreateRackAwarePartitioner(stickyBatchSize: 1);
+        var uniform = (IUniformStickyPartitioner)partitioner;
+        uniform.SetPartitionLeaderRackProvider(
+            (_, partition) => partition is 0 or 9 ? "rack-a" : "rack-b");
+        var selections = new int[10];
+
+        for (var i = 0; i < 100; i++)
+        {
+            var partition = partitioner.Partition(Topic, ReadOnlySpan<byte>.Empty, keyIsNull: true, partitionCount: 10);
+            selections[partition]++;
+            uniform.OnRecordAppended(Topic, partition, bytes: 1, partitionCount: 10);
+        }
+
+        await Assert.That(selections[0]).IsEqualTo(50);
+        await Assert.That(selections[9]).IsEqualTo(50);
+    }
+
+    [Test]
     public async Task RackAwarePartitioning_PreservesKeyHashing()
     {
         var partitioner = CreateRackAwarePartitioner();
