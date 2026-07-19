@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Runtime.CompilerServices;
+using Dekaf.Errors;
 using Dekaf.Serialization;
 
 namespace Dekaf.Consumer
@@ -168,6 +169,33 @@ namespace Dekaf.Consumer
             return new Enumerator(this);
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private void ThrowAfterDeserializationFailure(PendingFetchData pending, long offset, Exception exception)
+        {
+            if (exception is not OperationCanceledException)
+            {
+                ref readonly var record = ref pending.CurrentRecord;
+                exception = ConsumeResult<TKey, TValue>.CreateDeserializationException(
+                    ConsumeResult<TKey, TValue>.LastDeserializationOrigin,
+                    pending.Topic,
+                    pending.PartitionIndex,
+                    offset,
+                    pending.CurrentBaseTimestamp + record.TimestampDelta,
+                    pending.CurrentTimestampType,
+                    record.Key,
+                    record.IsKeyNull,
+                    record.Value,
+                    record.IsValueNull,
+                    headers: null,
+                    record.Headers,
+                    record.HeaderCount,
+                    exception);
+            }
+
+            _rewindAfterDeliveryFailure?.Invoke(pending, offset);
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception).Throw();
+        }
+
         IEnumerator<ConsumeResult<TKey, TValue>> IEnumerable<ConsumeResult<TKey, TValue>>.GetEnumerator()
         {
             return GetEnumerator();
@@ -266,11 +294,11 @@ namespace Dekaf.Consumer
                         keyDeserializer: _batch._keyDeserializer,
                         valueDeserializer: _batch._valueDeserializer);
                 }
-                catch
+                catch (Exception ex)
                 {
                     _canContinue = false;
-                    _batch._rewindAfterDeliveryFailure?.Invoke(pending, offset);
-                    throw;
+                    _batch.ThrowAfterDeserializationFailure(pending, offset, ex);
+                    return false;
                 }
 
                 if (!_batch._iterationGuard.IsCurrent(pending.TopicPartition, ref _observedVersion))

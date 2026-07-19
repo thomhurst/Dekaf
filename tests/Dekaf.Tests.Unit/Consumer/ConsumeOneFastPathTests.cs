@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Diagnostics;
+using Dekaf.Errors;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Dekaf.Tests.Unit.Producer;
@@ -487,20 +488,98 @@ public sealed class ConsumeOneFastPathTests
     }
 
     [Test]
-    public async Task ConsumeOneAsync_DeserializerInvalidDataException_Propagates()
+    public async Task ConsumeOneAsync_DeserializerInvalidDataException_ProvidesRecordContext()
+    {
+        var record = CreateRecord(
+            0,
+            "key",
+            "value",
+            [
+                new Header("trace-id", Encoding.UTF8.GetBytes("abc")),
+                new Header("nullable", (byte[]?)null)
+            ]);
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(0, record)
+        ]);
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            valueDeserializer: new InvalidDataThrowingDeserializer());
+
+        var exception = (await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None))
+            .Throws<RecordDeserializationException>())!;
+
+        await Assert.That(exception.Origin).IsEqualTo(DeserializationExceptionOrigin.Value);
+        await Assert.That(exception.TopicPartition).IsEqualTo(new TopicPartition(Topic, Partition));
+        await Assert.That(exception.Offset).IsEqualTo(0L);
+        await Assert.That(exception.KeyData).IsEquivalentTo(Encoding.UTF8.GetBytes("key"));
+        await Assert.That(exception.ValueData).IsEquivalentTo(Encoding.UTF8.GetBytes("value"));
+        await Assert.That(exception.TimestampMs).IsEqualTo(1_700_000_000_000L);
+        await Assert.That(exception.Headers[0].Key).IsEqualTo("trace-id");
+        await Assert.That(Encoding.UTF8.GetString(exception.Headers[0].Value.Span)).IsEqualTo("abc");
+        await Assert.That(exception.Headers[1].IsValueNull).IsTrue();
+        await Assert.That(exception.InnerException).IsTypeOf<InvalidDataException>();
+        await Assert.That(exception.InnerException!.Message).Contains("user deserializer");
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_KeyDeserializerFailure_ReportsKeyOrigin()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(7, CreateRecord(1, "bad-key", "value"))
+        ]);
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            keyDeserializer: new InvalidDataThrowingDeserializer());
+
+        var exception = (await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None))
+            .Throws<RecordDeserializationException>())!;
+
+        await Assert.That(exception.Origin).IsEqualTo(DeserializationExceptionOrigin.Key);
+        await Assert.That(exception.Component).IsEqualTo(SerializationComponent.Key);
+        await Assert.That(exception.Offset).IsEqualTo(8L);
+        await Assert.That(exception.KeyData).IsEquivalentTo(Encoding.UTF8.GetBytes("bad-key"));
+        await Assert.That(exception.ValueData).IsEquivalentTo(Encoding.UTF8.GetBytes("value"));
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_AsyncDeserializerFailure_ProvidesRecordContext()
+    {
+        var fetch = PendingFetchData.Create(Topic, Partition,
+        [
+            CreateBatch(10, CreateRecord(2, "key", "value"))
+        ]);
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            asyncValueDeserializer: new InvalidDataThrowingAsyncDeserializer());
+
+        var exception = (await Assert.That(async () =>
+                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None))
+            .Throws<RecordDeserializationException>())!;
+
+        await Assert.That(exception.Origin).IsEqualTo(DeserializationExceptionOrigin.Value);
+        await Assert.That(exception.Offset).IsEqualTo(12L);
+        await Assert.That(exception.ValueData).IsEquivalentTo(Encoding.UTF8.GetBytes("value"));
+        await Assert.That(exception.InnerException).IsTypeOf<InvalidDataException>();
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_AsyncDeserializerCancellation_IsNotWrapped()
     {
         var fetch = PendingFetchData.Create(Topic, Partition,
         [
             CreateBatch(0, CreateRecord(0, "key", "value"))
         ]);
-        await using var consumer = CreateInitializedConsumerWithValueDeserializer(
-            new InvalidDataThrowingDeserializer(),
-            fetch);
+        await using var consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            asyncValueDeserializer: new CancellationThrowingAsyncDeserializer());
 
         await Assert.That(async () =>
-            await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None))
-            .Throws<InvalidDataException>()
-            .WithMessageContaining("user deserializer");
+                await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1), CancellationToken.None))
+            .Throws<OperationCanceledException>();
     }
 
     private static KafkaConsumer<string, string> CreateInitializedConsumer(params PendingFetchData[] fetches)
@@ -578,9 +657,11 @@ public sealed class ConsumeOneFastPathTests
         return consumer;
     }
 
-    private static KafkaConsumer<string, string> CreateInitializedConsumerWithValueDeserializer(
-        IDeserializer<string> valueDeserializer,
-        PendingFetchData fetch)
+    private static KafkaConsumer<string, string> CreateInitializedConsumerWithDeserializers(
+        PendingFetchData fetch,
+        IDeserializer<string>? keyDeserializer = null,
+        IDeserializer<string>? valueDeserializer = null,
+        IAsyncDeserializer<string>? asyncValueDeserializer = null)
     {
         var consumer = new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -590,8 +671,9 @@ public sealed class ConsumeOneFastPathTests
                 QueuedMinMessages = 1,
                 FetchMaxWaitMs = 200
             },
-            Serializers.String,
-            valueDeserializer);
+            keyDeserializer ?? Serializers.String,
+            valueDeserializer ?? Serializers.String,
+            asyncValueDeserializer: asyncValueDeserializer);
 
         SetInitialized(consumer);
         AssignTestPartition(consumer);
@@ -642,6 +724,24 @@ public sealed class ConsumeOneFastPathTests
     {
         public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
             throw new InvalidDataException("user deserializer failed");
+    }
+
+    private sealed class InvalidDataThrowingAsyncDeserializer : IAsyncDeserializer<string>
+    {
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromException<string>(new InvalidDataException("async user deserializer failed"));
+    }
+
+    private sealed class CancellationThrowingAsyncDeserializer : IAsyncDeserializer<string>
+    {
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromException<string>(new OperationCanceledException(cancellationToken));
     }
 
     private static void AssignTestPartition(KafkaConsumer<string, string> consumer)
@@ -836,7 +936,7 @@ public sealed class ConsumeOneFastPathTests
         };
     }
 
-    private static Record CreateRecord(int offsetDelta, string key, string value)
+    private static Record CreateRecord(int offsetDelta, string key, string value, Header[]? headers = null)
     {
         return new Record
         {
@@ -846,8 +946,8 @@ public sealed class ConsumeOneFastPathTests
             IsKeyNull = false,
             Value = Encoding.UTF8.GetBytes(value),
             IsValueNull = false,
-            Headers = null,
-            HeaderCount = 0
+            Headers = headers,
+            HeaderCount = headers?.Length ?? 0
         };
     }
 
