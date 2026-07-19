@@ -8,7 +8,7 @@ public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>
 {
     public static ApiKey ApiKey => ApiKey.ListOffsets;
     public static short LowestSupportedVersion => 6;
-    public static short HighestSupportedVersion => 8;
+    public static short HighestSupportedVersion => 11;
 
     /// <summary>
     /// Broker ID of the follower, or -1 if this request is from a consumer.
@@ -25,6 +25,11 @@ public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>
     /// </summary>
     public required IReadOnlyList<ListOffsetsRequestTopic> Topics { get; init; }
 
+    /// <summary>
+    /// Maximum time the broker may wait for remote-storage reads (v10+).
+    /// </summary>
+    public int TimeoutMs { get; init; }
+
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         writer.WriteInt32(ReplicaId);
@@ -35,8 +40,31 @@ public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>
                     Topics,
                     static (ref KafkaProtocolWriter w, ListOffsetsRequestTopic t, short v) => t.Write(ref w, v),
                     version);
+
+        if (version >= 10)
+            writer.WriteInt32(TimeoutMs);
+
         writer.WriteEmptyTaggedFields();
     }
+}
+
+internal static class ListOffsetsTimestamp
+{
+    internal const long Latest = -1;
+    internal const long Earliest = -2;
+    internal const long MaxTimestamp = -3;
+    internal const long EarliestLocal = -4;
+    internal const long LatestTiered = -5;
+    internal const long EarliestPendingUpload = -6;
+}
+
+internal static class ListOffsetsSpecVersion
+{
+    internal const short EarliestOrLatest = 6;
+    internal const short MaxTimestamp = 7;
+    internal const short EarliestLocal = 8;
+    internal const short LatestTiered = 9;
+    internal const short EarliestPendingUpload = 11;
 }
 
 /// <summary>

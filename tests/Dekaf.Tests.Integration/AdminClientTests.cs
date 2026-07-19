@@ -665,6 +665,30 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await Assert.That(offsets).ContainsKey(new TopicPartition(topic, 2));
     }
 
+    [Test]
+    [Arguments(OffsetSpec.EarliestLocal, 0L)]
+    [Arguments(OffsetSpec.LatestTiered, -1L)]
+    [Arguments(OffsetSpec.EarliestPendingUpload, -1L)]
+    public async Task ListOffsetsAsync_StoragePosition_ReturnsExpectedOffsetWithoutTiering(
+        OffsetSpec spec,
+        long expectedOffset)
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        await using var admin = CreateAdminClient();
+        var topicPartition = new TopicPartition(topic, 0);
+
+        var offsets = await admin.ListOffsetsAsync(
+        [
+            new TopicPartitionOffsetSpec
+            {
+                TopicPartition = topicPartition,
+                Spec = spec
+            }
+        ]).ConfigureAwait(false);
+
+        await Assert.That(offsets[topicPartition].Offset).IsEqualTo(expectedOffset);
+    }
+
     #endregion
 
     #region ElectLeaders Tests

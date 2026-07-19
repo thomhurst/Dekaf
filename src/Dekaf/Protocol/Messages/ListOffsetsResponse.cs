@@ -7,7 +7,7 @@ public sealed class ListOffsetsResponse : IKafkaResponse
 {
     public static ApiKey ApiKey => ApiKey.ListOffsets;
     public static short LowestSupportedVersion => 6;
-    public static short HighestSupportedVersion => 8;
+    public static short HighestSupportedVersion => 11;
 
     /// <summary>
     /// Throttle time in milliseconds (v2+).
