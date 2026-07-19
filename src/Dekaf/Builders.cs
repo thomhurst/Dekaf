@@ -57,6 +57,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private Func<CancellationToken, ValueTask<SaslCredentials>>? _saslCredentialProvider;
     private bool _saslScramTokenAuth;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
@@ -605,6 +606,19 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ProducerBuilder<TKey, TValue> WithSaslPlain(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.Plain;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -615,6 +629,19 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ProducerBuilder<TKey, TValue> WithSaslScramSha256(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -625,6 +652,19 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ProducerBuilder<TKey, TValue> WithSaslScramSha512(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -635,6 +675,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = tokenId;
         _saslPassword = tokenHmac;
+        _saslCredentialProvider = null;
         _saslScramTokenAuth = true;
         return this;
     }
@@ -645,6 +686,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = tokenId;
         _saslPassword = tokenHmac;
+        _saslCredentialProvider = null;
         _saslScramTokenAuth = true;
         return this;
     }
@@ -1168,6 +1210,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = mechanism;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
         _saslScramTokenAuth = saslScramTokenAuth;
@@ -1337,6 +1380,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            SaslCredentialProvider = _saslCredentialProvider,
             SaslScramTokenAuth = _saslScramTokenAuth,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
@@ -1496,6 +1540,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private Func<CancellationToken, ValueTask<SaslCredentials>>? _saslCredentialProvider;
     private bool _saslScramTokenAuth;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
@@ -1996,6 +2041,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ConsumerBuilder<TKey, TValue> WithSaslPlain(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.Plain;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -2006,6 +2064,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ConsumerBuilder<TKey, TValue> WithSaslScramSha256(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -2016,6 +2087,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ConsumerBuilder<TKey, TValue> WithSaslScramSha512(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -2026,6 +2110,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = tokenId;
         _saslPassword = tokenHmac;
+        _saslCredentialProvider = null;
         _saslScramTokenAuth = true;
         return this;
     }
@@ -2036,6 +2121,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = tokenId;
         _saslPassword = tokenHmac;
+        _saslCredentialProvider = null;
         _saslScramTokenAuth = true;
         return this;
     }
@@ -2751,6 +2837,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _saslMechanism = mechanism;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
         _gssapiConfig = gssapiConfig;
         _oauthConfig = oauthConfig;
         _saslScramTokenAuth = saslScramTokenAuth;
@@ -2871,6 +2958,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            SaslCredentialProvider = _saslCredentialProvider,
             SaslScramTokenAuth = _saslScramTokenAuth,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
@@ -3008,6 +3096,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private Func<CancellationToken, ValueTask<SaslCredentials>>? _saslCredentialProvider;
     private bool _saslScramTokenAuth;
     private GssapiConfig? _gssapiConfig;
     private OAuthBearerConfig? _oauthConfig;
@@ -3299,6 +3388,19 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.Plain;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSaslPlain(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.Plain;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -3309,6 +3411,19 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSaslScram256(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -3319,6 +3434,19 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
+        _saslCredentialProvider = null;
+        _saslScramTokenAuth = false;
+        return this;
+    }
+
+    public ShareConsumerBuilder<TKey, TValue> WithSaslScram512(
+        Func<CancellationToken, ValueTask<SaslCredentials>> credentialProvider)
+    {
+        ThrowIfClientOwnedConnectionSettings();
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslCredentialProvider = credentialProvider ?? throw new ArgumentNullException(nameof(credentialProvider));
+        _saslUsername = null;
+        _saslPassword = null;
         _saslScramTokenAuth = false;
         return this;
     }
@@ -3332,6 +3460,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha256;
         _saslUsername = tokenId;
         _saslPassword = tokenHmac;
+        _saslCredentialProvider = null;
         _saslScramTokenAuth = true;
         return this;
     }
@@ -3345,6 +3474,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = tokenId;
         _saslPassword = tokenHmac;
+        _saslCredentialProvider = null;
         _saslScramTokenAuth = true;
         return this;
     }
@@ -3586,6 +3716,7 @@ public sealed class ShareConsumerBuilder<TKey, TValue>
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            SaslCredentialProvider = _saslCredentialProvider,
             SaslScramTokenAuth = _saslScramTokenAuth,
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,

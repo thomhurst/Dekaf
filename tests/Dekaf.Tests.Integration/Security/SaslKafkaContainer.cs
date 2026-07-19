@@ -75,6 +75,34 @@ public class SaslKafkaContainer : KafkaTestContainer
             .Build();
     }
 
+    public async Task UpsertScramSha256CredentialAsync(string user, string password)
+    {
+        await using var admin = CreateAdminClient();
+        await admin.AlterUserScramCredentialsAsync(
+        [
+            new UserScramCredentialUpsertion
+            {
+                User = user,
+                Mechanism = ScramMechanism.ScramSha256,
+                Iterations = 4096,
+                Password = password
+            }
+        ]).ConfigureAwait(false);
+    }
+
+    public async Task DeleteScramSha256CredentialAsync(string user)
+    {
+        await using var admin = CreateAdminClient();
+        await admin.AlterUserScramCredentialsAsync(
+        [
+            new UserScramCredentialDeletion
+            {
+                User = user,
+                Mechanism = ScramMechanism.ScramSha256
+            }
+        ]).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// After the base container is started and TCP-ready, verify SASL/PLAIN authentication
     /// works, create SCRAM credentials, and wait for each mechanism to propagate.

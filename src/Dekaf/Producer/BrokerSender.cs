@@ -3878,6 +3878,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (!pendingResponseAdded)
                 ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
+        catch (AuthenticationException ex)
+        {
+            // Authentication failures are fatal for the configured credentials. Retrying the
+            // same credentials until delivery timeout hides the actionable exception and creates
+            // a reconnect storm.
+            _pinnedConnections[connectionIndex] = null;
+            LogResponseFailed(ex, _brokerId);
+            for (var i = 0; i < count; i++)
+            {
+                var batch = batches[i];
+                if (batch is null || !batch.IsCurrentIncarnation(generations[i]))
+                    continue;
+
+                UnmutePartition(batch.TopicPartition);
+                try { FailAndCleanupBatch(batch, ex); }
+                catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+            }
+
+            scratch.ClearReferences();
+
+            if (!pendingResponseAdded)
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+        }
         catch (Exception ex)
         {
             // Send failed (connection error, timeout, etc.) — retry batches instead of permanently failing.

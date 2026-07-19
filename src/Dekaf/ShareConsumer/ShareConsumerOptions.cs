@@ -172,6 +172,8 @@ public sealed class ShareConsumerOptions
     /// </summary>
     public string? SaslPassword { get; init; }
 
+    public Func<CancellationToken, ValueTask<SaslCredentials>>? SaslCredentialProvider { get; init; }
+
     /// <summary>
     /// Whether SCRAM authentication uses Kafka delegation token credentials.
     /// </summary>

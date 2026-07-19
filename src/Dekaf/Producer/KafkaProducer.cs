@@ -25,6 +25,8 @@ namespace Dekaf.Producer;
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>, IProducerDiagnostics, IProducerFastPath<TKey, TValue>, IBudgetedInstance
 {
+    internal ValueTask CloseConnectionsForTestingAsync() => _connectionPool.CloseAllAsync();
+
     /// <summary>
     /// Sentinel return value from <see cref="TryProduceSyncCore"/> indicating that the
     /// buffer is full and the caller should fall back to the async path (ReserveMemoryAsync).
@@ -260,6 +262,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,
+                SaslCredentialProvider = options.SaslCredentialProvider,
                 SaslScramTokenAuth = options.SaslScramTokenAuth,
                 GssapiConfig = options.GssapiConfig,
                 OAuthBearerConfig = options.OAuthBearerConfig,
