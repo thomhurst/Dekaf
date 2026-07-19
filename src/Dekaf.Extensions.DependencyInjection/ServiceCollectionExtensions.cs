@@ -914,7 +914,13 @@ internal static class DekafOptionsBinding
         else
             builder.WithAutoOffsetReset(options.AutoOffsetReset);
         if (options.AutoOffsetResetNewPartitions == AutoOffsetReset.ByDuration)
-            builder.WithAutoOffsetResetNewPartitionsByDuration(options.AutoOffsetResetNewPartitionsDuration ?? TimeSpan.Zero);
+        {
+            var duration = options.AutoOffsetResetNewPartitionsDuration
+                ?? throw new InvalidOperationException(
+                    $"{nameof(ConsumerOptions.AutoOffsetResetNewPartitionsDuration)} is required when " +
+                    $"{nameof(ConsumerOptions.AutoOffsetResetNewPartitions)} is {nameof(AutoOffsetReset.ByDuration)}.");
+            builder.WithAutoOffsetResetNewPartitionsByDuration(duration);
+        }
         else if (options.AutoOffsetResetNewPartitions is { } newPartitionPolicy)
             builder.WithAutoOffsetResetNewPartitions(newPartitionPolicy);
         builder.WithFetchMinBytes(options.FetchMinBytes);

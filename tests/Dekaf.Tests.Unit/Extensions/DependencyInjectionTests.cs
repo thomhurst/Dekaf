@@ -416,6 +416,25 @@ public class DependencyInjectionTests
     }
 
     [Test]
+    public async Task AddConsumer_WithTypedNewPartitionDurationMissing_ThrowsInvalidOperationException()
+    {
+        var services = new ServiceCollection();
+        var options = new ConsumerOptions
+        {
+            BootstrapServers = ["broker1:9092"],
+            GroupId = "typed-group",
+            AutoOffsetResetNewPartitions = AutoOffsetReset.ByDuration
+        };
+
+        await Assert.That(() => services.AddDekaf(builder =>
+            {
+                builder.AddConsumer<string, string>(options);
+            }))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("AutoOffsetResetNewPartitionsDuration is required");
+    }
+
+    [Test]
     public async Task AddConsumer_WithTypedOptionsAndMismatchedInterceptor_ThrowsInvalidOperationException()
     {
         var services = new ServiceCollection();
