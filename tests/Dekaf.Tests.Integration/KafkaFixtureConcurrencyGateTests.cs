@@ -1,6 +1,6 @@
 namespace Dekaf.Tests.Integration;
 
-[Category("Infrastructure")]
+[Category("Retry")]
 public sealed class KafkaFixtureConcurrencyGateTests
 {
     [Test]
