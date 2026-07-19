@@ -513,6 +513,8 @@ public sealed partial class MetadataManager : IAsyncDisposable
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposalCts.Token);
             var initializationToken = linkedCts.Token;
             var metadataStartedAt = Stopwatch.GetTimestamp();
+            var bootstrapStartedAt = GetOrStartBootstrapResolutionTimer();
+            var bootstrapResolutionCompleted = false;
             var metadataFailureCount = 0;
             var bootstrapFailureCount = 0;
 
@@ -525,37 +527,39 @@ public sealed partial class MetadataManager : IAsyncDisposable
                         metadataFailureCount + bootstrapFailureCount + 1);
                     try
                     {
-                        await RefreshMetadataAsync(initializationToken).ConfigureAwait(false);
+                        if (bootstrapResolutionCompleted)
+                        {
+                            await RefreshMetadataAsync(initializationToken).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            var bootstrapRemainingMs = _options.BootstrapResolveTimeoutMs
+                                - Stopwatch.GetElapsedTime(bootstrapStartedAt).TotalMilliseconds;
+                            var metadataRemainingMs = _options.InitTimeoutMs
+                                - Stopwatch.GetElapsedTime(metadataStartedAt).TotalMilliseconds;
+                            await RefreshMetadataWithinBootstrapDeadlineAsync(
+                                    Math.Max(0, Math.Min(bootstrapRemainingMs, metadataRemainingMs)),
+                                    initializationToken)
+                                .ConfigureAwait(false);
+                        }
                         break;
                     }
                     catch (BootstrapResolutionPendingException ex) when (!initializationToken.IsCancellationRequested)
                     {
-                        var bootstrapStartedAt = GetOrStartBootstrapResolutionTimer();
                         var bootstrapElapsed = Stopwatch.GetElapsedTime(bootstrapStartedAt);
                         var bootstrapRemainingMs = _options.BootstrapResolveTimeoutMs - bootstrapElapsed.TotalMilliseconds;
                         var metadataElapsed = Stopwatch.GetElapsedTime(metadataStartedAt);
                         var metadataRemainingMs = _options.InitTimeoutMs - metadataElapsed.TotalMilliseconds;
                         var remainingMs = Math.Min(bootstrapRemainingMs, metadataRemainingMs);
-                        if (remainingMs <= 0 && metadataRemainingMs <= bootstrapRemainingMs)
-                        {
-                            LogMetadataInitializationAbandoned(ex, metadataFailureCount + bootstrapFailureCount + 1);
-                            throw new KafkaTimeoutException(
-                                TimeoutKind.Metadata,
-                                metadataElapsed,
-                                TimeSpan.FromMilliseconds(_options.InitTimeoutMs),
-                                $"Failed to fetch initial metadata within {_options.InitTimeoutMs}ms. " +
-                                "Ensure the Kafka cluster is reachable and the bootstrap servers are correct.",
-                                ex);
-                        }
-
                         if (remainingMs <= 0)
-                        {
-                            LogBootstrapResolutionExpired(bootstrapElapsed.TotalMilliseconds);
-                            throw new BootstrapResolutionException(
+                            throw CreateBootstrapDeadlineException(
                                 ex.UnresolvedBootstrapServers,
-                                TimeSpan.FromMilliseconds(_options.BootstrapResolveTimeoutMs),
-                                ex.InnerException ?? ex);
-                        }
+                                ex,
+                                bootstrapElapsed,
+                                bootstrapRemainingMs,
+                                metadataElapsed,
+                                metadataRemainingMs,
+                                metadataFailureCount + bootstrapFailureCount + 1);
 
                         var backoffMs = ExponentialRetryBackoff.CalculateDelayMilliseconds(
                             _options.RetryBackoffMs,
@@ -571,8 +575,29 @@ public sealed partial class MetadataManager : IAsyncDisposable
                         // overall initialization deadline (for example max.block.ms) still applies.
                         metadataFailureCount = 0;
                     }
+                    catch (OperationCanceledException ex) when (
+                        !initializationToken.IsCancellationRequested
+                        && !bootstrapResolutionCompleted
+                        && IsDnsResolutionFailure(ex))
+                    {
+                        var bootstrapElapsed = Stopwatch.GetElapsedTime(bootstrapStartedAt);
+                        var bootstrapRemainingMs = _options.BootstrapResolveTimeoutMs - bootstrapElapsed.TotalMilliseconds;
+                        var metadataElapsed = Stopwatch.GetElapsedTime(metadataStartedAt);
+                        var metadataRemainingMs = _options.InitTimeoutMs - metadataElapsed.TotalMilliseconds;
+                        throw CreateBootstrapDeadlineException(
+                            _originalBootstrapHostnames,
+                            ex,
+                            bootstrapElapsed,
+                            bootstrapRemainingMs,
+                            metadataElapsed,
+                            metadataRemainingMs,
+                            metadataFailureCount + bootstrapFailureCount + 1);
+                    }
                     catch (Exception ex) when (!IsFatalMetadataError(ex) && !initializationToken.IsCancellationRequested)
                     {
+                        // Any non-DNS failure proves resolution completed. Stop applying the
+                        // bootstrap DNS deadline to connection, authentication, and metadata work.
+                        bootstrapResolutionCompleted = true;
                         if (metadataFailureCount >= _options.MaxInitRetries)
                         {
                             LogMetadataInitializationAbandoned(ex, metadataFailureCount + 1);
@@ -1071,6 +1096,57 @@ public sealed partial class MetadataManager : IAsyncDisposable
         var now = Stopwatch.GetTimestamp();
         var existing = Interlocked.CompareExchange(ref _bootstrapResolutionStartedAt, now, 0);
         return existing == 0 ? now : existing;
+    }
+
+    private async ValueTask RefreshMetadataWithinBootstrapDeadlineAsync(
+        double remainingMs,
+        CancellationToken cancellationToken)
+    {
+        using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadlineCts.CancelAfter(TimeSpan.FromMilliseconds(remainingMs));
+        try
+        {
+            await RefreshMetadataAsync(deadlineCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (
+            !cancellationToken.IsCancellationRequested
+            && !IsDnsResolutionFailure(ex))
+        {
+            // The DNS lookup completed and the shared deadline expired in a later connection
+            // phase. Translate this into a normal retriable initialization failure so future
+            // attempts use only the metadata initialization deadline.
+            throw new TimeoutException("Bootstrap connection attempt exceeded the DNS deadline after resolution.", ex);
+        }
+    }
+
+    private Exception CreateBootstrapDeadlineException(
+        IReadOnlyList<string> unresolvedBootstrapServers,
+        Exception innerException,
+        TimeSpan bootstrapElapsed,
+        double bootstrapRemainingMs,
+        TimeSpan metadataElapsed,
+        double metadataRemainingMs,
+        int attemptCount)
+    {
+        if (metadataRemainingMs <= bootstrapRemainingMs)
+        {
+            LogMetadataInitializationAbandoned(innerException, attemptCount);
+            return new KafkaTimeoutException(
+                TimeoutKind.Metadata,
+                metadataElapsed,
+                TimeSpan.FromMilliseconds(_options.InitTimeoutMs),
+                $"Failed to fetch initial metadata within {_options.InitTimeoutMs}ms. " +
+                "Ensure the Kafka cluster is reachable and the bootstrap servers are correct.",
+                innerException);
+        }
+
+        LogBootstrapResolutionExpired(bootstrapElapsed.TotalMilliseconds);
+        return new BootstrapResolutionException(
+            unresolvedBootstrapServers,
+            TimeSpan.FromMilliseconds(_options.BootstrapResolveTimeoutMs),
+            innerException is BootstrapResolutionPendingException { InnerException: not null } pending
+                ? pending.InnerException!
+                : innerException);
     }
 
     private static bool IsDnsResolutionFailure(Exception exception)

@@ -612,6 +612,39 @@ public class MetadataManagerTests
     }
 
     [Test]
+    [Timeout(5_000)]
+    public async Task InitializeAsync_FirstBootstrapDnsAttempt_RespectsDedicatedDeadline(
+        CancellationToken cancellationToken)
+    {
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync("slow-host", 9092, Arg.Any<CancellationToken>())
+            .Returns(call => WaitForDnsCancellationAsync(
+                "slow-host",
+                9092,
+                call.Arg<CancellationToken>()));
+
+        await using var manager = new MetadataManager(
+            pool,
+            ["slow-host:9092"],
+            new MetadataOptions
+            {
+                EnableBackgroundRefresh = false,
+                InitTimeoutMs = 1000,
+                BootstrapResolveTimeoutMs = 20,
+                RetryBackoffMs = 0,
+                RetryBackoffMaxMs = 0
+            });
+        var startedAt = Stopwatch.GetTimestamp();
+
+        var exception = await Assert.That(() => manager.InitializeAsync(cancellationToken).AsTask())
+            .Throws<BootstrapResolutionException>();
+
+        await Assert.That(exception!.Timeout).IsEqualTo(TimeSpan.FromMilliseconds(20));
+        await Assert.That(exception.UnresolvedBootstrapServers).IsEquivalentTo(["slow-host:9092"]);
+        await Assert.That(Stopwatch.GetElapsedTime(startedAt)).IsLessThan(TimeSpan.FromSeconds(1));
+    }
+
+    [Test]
     public async Task InitializeAsync_OneResolvableBootstrapHost_Succeeds()
     {
         var pool = Substitute.For<IConnectionPool>();
@@ -1068,6 +1101,22 @@ public class MetadataManagerTests
 
     private static DnsResolutionException CreateDnsFailure(string host, int port) =>
         new(host, port, new SocketException((int)SocketError.HostNotFound));
+
+    private static async ValueTask<IKafkaConnection> WaitForDnsCancellationAsync(
+        string host,
+        int port,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The DNS deadline did not cancel the lookup.");
+        }
+        catch (OperationCanceledException ex)
+        {
+            throw new DnsResolutionException(host, port, ex);
+        }
+    }
 
     private static IKafkaConnection CreateSuccessfulMetadataConnection(string host, int port)
     {
