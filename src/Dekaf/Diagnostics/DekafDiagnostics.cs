@@ -48,11 +48,13 @@ public static class DekafDiagnostics
     internal const string MessagingSystemValue = "kafka";
 
     // messaging.operation.type well-known values / messaging.operation.name values.
-    // Consume spans are "process" operations, not "receive": the activity brackets
-    // message delivery and the caller's handling (it stays current while user code
-    // runs), which the semconv models as process/CONSUMER. "poll" remains the
-    // operation name for consumed-message metrics, where it names the delivering call.
+    // Consume spans come in two flavors matching their activity lifetimes:
+    // the streaming ConsumeAsync span stays current while user code handles the
+    // record, so it is a "process" span (CONSUMER kind); the ConsumeOne span ends
+    // before the record is returned, so it is a "receive" span named "poll"
+    // (CLIENT kind). "poll" is also the operation name on consumed-message metrics.
     internal const string OperationTypeSend = "send";
+    internal const string OperationTypeReceive = "receive";
     internal const string OperationTypeProcess = "process";
     internal const string OperationNameSend = "send";
     internal const string OperationNameProcess = "process";
@@ -75,6 +77,9 @@ public static class DekafDiagnostics
 
     /// <inheritdoc cref="SendSpanName"/>
     internal static string ProcessSpanName(string topic) => string.Concat(OperationNameProcess, " ", topic);
+
+    /// <inheritdoc cref="SendSpanName"/>
+    internal static string PollSpanName(string topic) => string.Concat(OperationNamePoll, " ", topic);
 
     /// <summary>
     /// Tag set for messaging.client.* instruments: the spec-required messaging.system and

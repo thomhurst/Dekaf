@@ -46,9 +46,10 @@ Dekaf emits spans following the [OpenTelemetry messaging semantic conventions](h
 | Span | Kind | When |
 |------|------|------|
 | `send {topic}` | `Producer` | Each `ProduceAsync` / `Send` |
-| `process {topic}` | `Consumer` | Each consumed message |
+| `process {topic}` | `Consumer` | Each message from streaming `ConsumeAsync` |
+| `poll {topic}` | `Client` | Each message from `ConsumeOne` / `ConsumeOneAsync` |
 
-Consume spans are `process` operations, not `receive`: in the streaming `ConsumeAsync` path the span stays current while your handler runs and is ended when the next record is requested, so its duration covers message handling and any spans your handler creates are parented under it. The spec's span-kind table maps `process` to `CONSUMER`.
+The two consume flavors match the span's actual lifetime. In the streaming `ConsumeAsync` path the span stays current while your handler runs and is ended when the next record is requested — a `process` operation (`CONSUMER` kind) whose duration covers message handling; any spans your handler creates are parented under it. In the single-record `ConsumeOne` paths the span ends before the record is returned, covering only delivery and deserialization — a `receive` operation (`CLIENT` kind).
 
 ### Trace Context Propagation
 
@@ -58,11 +59,11 @@ Producer spans inject W3C `traceparent` (and `tracestate`) headers into the outg
 
 Both spans set `messaging.system = kafka` plus:
 
-| Attribute | Send | Process |
-|-----------|------|---------|
+| Attribute | Send | Process / Poll |
+|-----------|------|----------------|
 | `messaging.destination.name` (topic) | ✓ | ✓ |
-| `messaging.operation.name` | `send` | `process` |
-| `messaging.operation.type` | `send` | `process` |
+| `messaging.operation.name` | `send` | `process` / `poll` |
+| `messaging.operation.type` | `send` | `process` / `receive` |
 | `messaging.client.id` | ✓ | ✓ |
 | `messaging.kafka.message.key` | ✓ (string-convertible keys) | |
 | `messaging.destination.partition.id` | ✓ (on delivery) | ✓ |

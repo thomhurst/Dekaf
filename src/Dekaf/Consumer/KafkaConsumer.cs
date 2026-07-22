@@ -1061,6 +1061,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Cached activity names per topic to avoid repeated string interpolation in fetch paths
     // Instance-level to avoid unbounded growth with dynamic topic names across consumer instances
     private readonly ConcurrentDictionary<string, string> _activityNameCache = new();
+    private readonly ConcurrentDictionary<string, string> _pollActivityNameCache = new();
 
     // Interceptors - stored as typed array for zero-allocation iteration
     private readonly IConsumerInterceptor<TKey, TValue>[]? _interceptors;
@@ -2119,7 +2120,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     pending,
                                     pending.HeaderGeneration);
                                 activity = StartConsumeActivity(pending, headers, offset,
-                                    record.Value.Length, record.IsValueNull);
+                                    record.Value.Length, record.IsValueNull, isProcessSpan: true);
                                 if (activity is not null)
                                     previousActivity = activity;
                             }
@@ -4337,7 +4338,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 pending,
                                 pending.HeaderGeneration);
                             activity = StartConsumeActivity(pending, headers, offset,
-                                valueData.Length, isValueNull);
+                                valueData.Length, isValueNull, isProcessSpan: false);
                         }
 
                         // User deserialization begins in this constructor. Its exceptions
@@ -4492,7 +4493,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 pending,
                                 pending.HeaderGeneration);
                             activity = StartConsumeActivity(pending, headers, offset,
-                                valueData.Length, isValueNull);
+                                valueData.Length, isValueNull, isProcessSpan: false);
                         }
 
                         // User deserialization begins in this await. Its exceptions must
@@ -7542,16 +7543,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         IReadOnlyList<Header>? headers,
         long offset,
         int valueLength,
-        bool isTombstone)
+        bool isTombstone,
+        bool isProcessSpan)
     {
         // Use span links (not parent-child) per OTel messaging semantic conventions:
         // the consumer span gets its own trace root, linked to the producer span.
-        // This is a "process" span (CONSUMER kind): it stays current while the
-        // caller handles the record — in the streaming path it is disposed on the
-        // next MoveNext, so its duration includes user processing and child spans
-        // created by the handler parent under it. It is deliberately NOT a
-        // "receive" (CLIENT) span; that would misreport handling time as poll latency.
+        // Two flavors, matching the activity's actual lifetime at the call site:
+        // - Streaming ConsumeAsync (isProcessSpan): the activity stays current while
+        //   the caller handles the record and is disposed on the next MoveNext, so it
+        //   is a "process" span (CONSUMER kind) and handler child spans parent under it.
+        // - ConsumeOne (sync + async): the activity ends in a finally before the record
+        //   is returned, covering only delivery/deserialization — a "receive" span
+        //   named "poll" (CLIENT kind). Labeling it "process" would report
+        //   non-processing spans as processing; labeling the streaming span "receive"
+        //   would report handling time as poll latency.
         var producerContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
+        var activityName = isProcessSpan
+            ? pending.ActivityName
+            : _pollActivityNameCache.GetOrAdd(pending.Topic, static t => Diagnostics.DekafDiagnostics.PollSpanName(t));
+        var activityKind = isProcessSpan
+            ? System.Diagnostics.ActivityKind.Consumer
+            : System.Diagnostics.ActivityKind.Client;
         System.Diagnostics.Activity? activity;
         var savedActivity = System.Diagnostics.Activity.Current;
         System.Diagnostics.Activity.Current = null;
@@ -7560,8 +7572,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             if (producerContext.HasValue)
             {
                 activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-                    pending.ActivityName,
-                    System.Diagnostics.ActivityKind.Consumer,
+                    activityName,
+                    activityKind,
                     parentContext: default(System.Diagnostics.ActivityContext),
                     tags: null,
                     links: [new System.Diagnostics.ActivityLink(producerContext.Value)]);
@@ -7569,8 +7581,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
             {
                 activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-                    pending.ActivityName,
-                    System.Diagnostics.ActivityKind.Consumer);
+                    activityName,
+                    activityKind);
             }
         }
         finally
@@ -7582,8 +7594,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationName, Diagnostics.DekafDiagnostics.OperationNameProcess);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, Diagnostics.DekafDiagnostics.OperationTypeProcess);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationName, isProcessSpan
+                ? Diagnostics.DekafDiagnostics.OperationNameProcess
+                : Diagnostics.DekafDiagnostics.OperationNamePoll);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, isProcessSpan
+                ? Diagnostics.DekafDiagnostics.OperationTypeProcess
+                : Diagnostics.DekafDiagnostics.OperationTypeReceive);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaOffset, offset);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, isTombstone ? 0 : valueLength);

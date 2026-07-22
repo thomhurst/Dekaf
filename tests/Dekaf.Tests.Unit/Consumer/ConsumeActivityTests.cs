@@ -13,19 +13,19 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class ConsumeActivityTests
 {
     [Test]
-    public async Task StartConsumeActivity_TombstoneRecord_SetsConsumerKindTombstoneAndZeroBodySize()
+    public async Task StartConsumeActivity_ProcessSpan_TombstoneRecord_SetsConsumerKindTombstoneAndZeroBodySize()
     {
         using var listener = CreateListener();
 
         await using var consumer = CreateConsumer();
         using var pending = PendingFetchData.Create("orders", partitionIndex: 0, batches: Array.Empty<RecordBatch>());
 
-        using var activity = InvokeStartConsumeActivity(consumer, pending, offset: 42, valueLength: 0, isTombstone: true);
+        using var activity = InvokeStartConsumeActivity(
+            consumer, pending, offset: 42, valueLength: 0, isTombstone: true, isProcessSpan: true);
 
         await Assert.That(activity).IsNotNull();
-        // Process span: brackets the caller's handling of the record, so the semconv
-        // span-kind table maps it to CONSUMER ("receive"/CLIENT would misreport
-        // handling time as poll latency).
+        // Streaming-path process span: brackets the caller's handling of the record,
+        // so the semconv span-kind table maps it to CONSUMER.
         await Assert.That(activity!.Kind).IsEqualTo(ActivityKind.Consumer);
         await Assert.That(activity.OperationName).IsEqualTo("process orders");
         await Assert.That(activity.GetTagItem("messaging.operation.name")).IsEqualTo("process");
@@ -36,19 +36,42 @@ public sealed class ConsumeActivityTests
     }
 
     [Test]
-    public async Task StartConsumeActivity_RegularRecord_SetsBodySizeToValueLengthWithoutTombstone()
+    public async Task StartConsumeActivity_ProcessSpan_RegularRecord_SetsBodySizeToValueLengthWithoutTombstone()
     {
         using var listener = CreateListener();
 
         await using var consumer = CreateConsumer();
         using var pending = PendingFetchData.Create("orders", partitionIndex: 0, batches: Array.Empty<RecordBatch>());
 
-        using var activity = InvokeStartConsumeActivity(consumer, pending, offset: 7, valueLength: 512, isTombstone: false);
+        using var activity = InvokeStartConsumeActivity(
+            consumer, pending, offset: 7, valueLength: 512, isTombstone: false, isProcessSpan: true);
 
         await Assert.That(activity).IsNotNull();
         await Assert.That(activity!.Kind).IsEqualTo(ActivityKind.Consumer);
         await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(512);
         await Assert.That(activity.GetTagItem("messaging.kafka.message.tombstone")).IsNull();
+    }
+
+    [Test]
+    public async Task StartConsumeActivity_ReceiveSpan_UsesPollNameAndClientKind()
+    {
+        using var listener = CreateListener();
+
+        await using var consumer = CreateConsumer();
+        using var pending = PendingFetchData.Create("orders", partitionIndex: 0, batches: Array.Empty<RecordBatch>());
+
+        using var activity = InvokeStartConsumeActivity(
+            consumer, pending, offset: 9, valueLength: 64, isTombstone: false, isProcessSpan: false);
+
+        await Assert.That(activity).IsNotNull();
+        // ConsumeOne-path receive span: the activity ends before the record is
+        // returned to the caller, so it is a "receive" operation — CLIENT kind.
+        await Assert.That(activity!.Kind).IsEqualTo(ActivityKind.Client);
+        await Assert.That(activity.OperationName).IsEqualTo("poll orders");
+        await Assert.That(activity.GetTagItem("messaging.operation.name")).IsEqualTo("poll");
+        await Assert.That(activity.GetTagItem("messaging.operation.type")).IsEqualTo("receive");
+        await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(64);
+        await Assert.That(activity.GetTagItem("messaging.kafka.offset")).IsEqualTo(9L);
     }
 
     private static ActivityListener CreateListener()
@@ -77,7 +100,8 @@ public sealed class ConsumeActivityTests
         PendingFetchData pending,
         long offset,
         int valueLength,
-        bool isTombstone)
+        bool isTombstone,
+        bool isProcessSpan)
     {
         var method = typeof(KafkaConsumer<string, string>).GetMethod(
             "StartConsumeActivity",
@@ -85,6 +109,6 @@ public sealed class ConsumeActivityTests
 
         return (Activity?)method!.Invoke(
             consumer,
-            [pending, null, offset, valueLength, isTombstone]);
+            [pending, null, offset, valueLength, isTombstone, isProcessSpan]);
     }
 }
