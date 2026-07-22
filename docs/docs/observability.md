@@ -46,9 +46,9 @@ Dekaf emits spans following the [OpenTelemetry messaging semantic conventions](h
 | Span | Kind | When |
 |------|------|------|
 | `send {topic}` | `Producer` | Each `ProduceAsync` / `Send` |
-| `poll {topic}` | `Client` | Each consumed message |
+| `process {topic}` | `Consumer` | Each consumed message |
 
-Poll spans use kind `Client` because the spec's span-kind table maps `receive` operations to `CLIENT`; `CONSUMER` is reserved for `process` spans wrapping application handling.
+Consume spans are `process` operations, not `receive`: in the streaming `ConsumeAsync` path the span stays current while your handler runs and is ended when the next record is requested, so its duration covers message handling and any spans your handler creates are parented under it. The spec's span-kind table maps `process` to `CONSUMER`.
 
 ### Trace Context Propagation
 
@@ -58,11 +58,11 @@ Producer spans inject W3C `traceparent` (and `tracestate`) headers into the outg
 
 Both spans set `messaging.system = kafka` plus:
 
-| Attribute | Send | Poll |
-|-----------|------|------|
+| Attribute | Send | Process |
+|-----------|------|---------|
 | `messaging.destination.name` (topic) | ✓ | ✓ |
-| `messaging.operation.name` | `send` | `poll` |
-| `messaging.operation.type` | `send` | `receive` |
+| `messaging.operation.name` | `send` | `process` |
+| `messaging.operation.type` | `send` | `process` |
 | `messaging.client.id` | ✓ | ✓ |
 | `messaging.kafka.message.key` | ✓ (string-convertible keys) | |
 | `messaging.destination.partition.id` | ✓ (on delivery) | ✓ |

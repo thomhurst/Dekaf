@@ -291,7 +291,7 @@ internal sealed class PendingFetchData : IDisposable
     [MethodImpl(MethodImplOptions.NoInlining)]
     private string CreateActivityName()
     {
-        var activityName = Diagnostics.DekafDiagnostics.PollSpanName(Topic);
+        var activityName = Diagnostics.DekafDiagnostics.ProcessSpanName(Topic);
         _activityName = activityName;
         return activityName;
     }
@@ -3258,7 +3258,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (string.IsNullOrEmpty(topic))
                         continue;
 
-                    var activityName = _activityNameCache.GetOrAdd(topic, static t => Diagnostics.DekafDiagnostics.PollSpanName(t));
+                    var activityName = _activityNameCache.GetOrAdd(topic, static t => Diagnostics.DekafDiagnostics.ProcessSpanName(t));
 
                     foreach (var partitionResponse in topicResponse.Partitions)
                     {
@@ -7360,7 +7360,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (string.IsNullOrEmpty(topic))
                     continue;
 
-                var activityName = _activityNameCache.GetOrAdd(topic, static t => Diagnostics.DekafDiagnostics.PollSpanName(t));
+                var activityName = _activityNameCache.GetOrAdd(topic, static t => Diagnostics.DekafDiagnostics.ProcessSpanName(t));
 
                 foreach (var partitionResponse in topicResponse.Partitions)
                 {
@@ -7546,8 +7546,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         // Use span links (not parent-child) per OTel messaging semantic conventions:
         // the consumer span gets its own trace root, linked to the producer span.
-        // Kind is Client, not Consumer — the semconv span-kind table maps "receive"
-        // operations to CLIENT; CONSUMER is reserved for "process" spans.
+        // This is a "process" span (CONSUMER kind): it stays current while the
+        // caller handles the record — in the streaming path it is disposed on the
+        // next MoveNext, so its duration includes user processing and child spans
+        // created by the handler parent under it. It is deliberately NOT a
+        // "receive" (CLIENT) span; that would misreport handling time as poll latency.
         var producerContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
         System.Diagnostics.Activity? activity;
         var savedActivity = System.Diagnostics.Activity.Current;
@@ -7558,7 +7561,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
                     pending.ActivityName,
-                    System.Diagnostics.ActivityKind.Client,
+                    System.Diagnostics.ActivityKind.Consumer,
                     parentContext: default(System.Diagnostics.ActivityContext),
                     tags: null,
                     links: [new System.Diagnostics.ActivityLink(producerContext.Value)]);
@@ -7567,7 +7570,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
                     pending.ActivityName,
-                    System.Diagnostics.ActivityKind.Client);
+                    System.Diagnostics.ActivityKind.Consumer);
             }
         }
         finally
@@ -7579,8 +7582,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationName, Diagnostics.DekafDiagnostics.OperationNamePoll);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, Diagnostics.DekafDiagnostics.OperationTypeReceive);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationName, Diagnostics.DekafDiagnostics.OperationNameProcess);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, Diagnostics.DekafDiagnostics.OperationTypeProcess);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaOffset, offset);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, isTombstone ? 0 : valueLength);

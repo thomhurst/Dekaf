@@ -47,10 +47,15 @@ public static class DekafDiagnostics
 
     internal const string MessagingSystemValue = "kafka";
 
-    // messaging.operation.type well-known values / messaging.operation.name values
+    // messaging.operation.type well-known values / messaging.operation.name values.
+    // Consume spans are "process" operations, not "receive": the activity brackets
+    // message delivery and the caller's handling (it stays current while user code
+    // runs), which the semconv models as process/CONSUMER. "poll" remains the
+    // operation name for consumed-message metrics, where it names the delivering call.
     internal const string OperationTypeSend = "send";
-    internal const string OperationTypeReceive = "receive";
+    internal const string OperationTypeProcess = "process";
     internal const string OperationNameSend = "send";
+    internal const string OperationNameProcess = "process";
     internal const string OperationNamePoll = "poll";
 
     // OTel semantic convention attribute names — exceptions
@@ -69,7 +74,7 @@ public static class DekafDiagnostics
     internal static string SendSpanName(string topic) => string.Concat(OperationNameSend, " ", topic);
 
     /// <inheritdoc cref="SendSpanName"/>
-    internal static string PollSpanName(string topic) => string.Concat(OperationNamePoll, " ", topic);
+    internal static string ProcessSpanName(string topic) => string.Concat(OperationNameProcess, " ", topic);
 
     /// <summary>
     /// Tag set for messaging.client.* instruments: the spec-required messaging.system and

@@ -96,10 +96,10 @@ public sealed class DekafDiagnosticsTests
         ActivitySource.AddActivityListener(listener);
 
         // OTel semantic convention: "{operation name} {destination}" for consumer spans
-        using var activity = DekafDiagnostics.Source.StartActivity("poll orders", ActivityKind.Client);
+        using var activity = DekafDiagnostics.Source.StartActivity("process orders", ActivityKind.Consumer);
         await Assert.That(activity).IsNotNull();
-        await Assert.That(activity!.OperationName).IsEqualTo("poll orders");
-        await Assert.That(activity.Kind).IsEqualTo(ActivityKind.Client);
+        await Assert.That(activity!.OperationName).IsEqualTo("process orders");
+        await Assert.That(activity.Kind).IsEqualTo(ActivityKind.Consumer);
     }
 
     [Test]
@@ -148,14 +148,14 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        using var activity = DekafDiagnostics.Source.StartActivity("poll my-topic", ActivityKind.Client);
+        using var activity = DekafDiagnostics.Source.StartActivity("process my-topic", ActivityKind.Consumer);
         await Assert.That(activity).IsNotNull();
 
         // Simulate what the consumer does (using string values for tag retrieval compatibility)
         activity!.SetTag(DekafDiagnostics.MessagingSystem, DekafDiagnostics.MessagingSystemValue);
         activity.SetTag(DekafDiagnostics.MessagingDestinationName, "my-topic");
-        activity.SetTag(DekafDiagnostics.MessagingOperationName, DekafDiagnostics.OperationNamePoll);
-        activity.SetTag(DekafDiagnostics.MessagingOperationType, DekafDiagnostics.OperationTypeReceive);
+        activity.SetTag(DekafDiagnostics.MessagingOperationName, DekafDiagnostics.OperationNameProcess);
+        activity.SetTag(DekafDiagnostics.MessagingOperationType, DekafDiagnostics.OperationTypeProcess);
         activity.SetTag(DekafDiagnostics.MessagingClientId, "my-consumer");
         activity.SetTag(DekafDiagnostics.MessagingDestinationPartitionId, "0");
         activity.SetTag(DekafDiagnostics.MessagingKafkaOffset, "100");
@@ -165,8 +165,8 @@ public sealed class DekafDiagnosticsTests
         var tags = activity.Tags.ToDictionary(t => t.Key, t => t.Value);
         await Assert.That(tags["messaging.system"]).IsEqualTo("kafka");
         await Assert.That(tags["messaging.destination.name"]).IsEqualTo("my-topic");
-        await Assert.That(tags["messaging.operation.name"]).IsEqualTo("poll");
-        await Assert.That(tags["messaging.operation.type"]).IsEqualTo("receive");
+        await Assert.That(tags["messaging.operation.name"]).IsEqualTo("process");
+        await Assert.That(tags["messaging.operation.type"]).IsEqualTo("process");
         await Assert.That(tags["messaging.client.id"]).IsEqualTo("my-consumer");
         await Assert.That(tags["messaging.destination.partition.id"]).IsEqualTo("0");
         await Assert.That(tags["messaging.kafka.offset"]).IsEqualTo("100");
@@ -211,8 +211,8 @@ public sealed class DekafDiagnosticsTests
         // Consumer creates span with link (not parent-child) per OTel conventions
         var links = new[] { new ActivityLink(producerContext!.Value) };
         using var consumerActivity = DekafDiagnostics.Source.StartActivity(
-            "poll orders",
-            ActivityKind.Client,
+            "process orders",
+            ActivityKind.Consumer,
             parentContext: default(ActivityContext),
             tags: null,
             links: links);
@@ -243,8 +243,8 @@ public sealed class DekafDiagnosticsTests
 
         // Consumer span without extracted producer context (no traceparent header)
         using var consumerActivity = DekafDiagnostics.Source.StartActivity(
-            "poll orders",
-            ActivityKind.Client,
+            "process orders",
+            ActivityKind.Consumer,
             parentContext: default(ActivityContext),
             tags: null,
             links: null);

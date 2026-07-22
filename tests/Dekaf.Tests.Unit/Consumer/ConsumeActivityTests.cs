@@ -13,7 +13,7 @@ namespace Dekaf.Tests.Unit.Consumer;
 public sealed class ConsumeActivityTests
 {
     [Test]
-    public async Task StartConsumeActivity_TombstoneRecord_SetsClientKindTombstoneAndZeroBodySize()
+    public async Task StartConsumeActivity_TombstoneRecord_SetsConsumerKindTombstoneAndZeroBodySize()
     {
         using var listener = CreateListener();
 
@@ -23,11 +23,13 @@ public sealed class ConsumeActivityTests
         using var activity = InvokeStartConsumeActivity(consumer, pending, offset: 42, valueLength: 0, isTombstone: true);
 
         await Assert.That(activity).IsNotNull();
-        // Semconv span-kind table: "receive" operations are CLIENT, not CONSUMER.
-        await Assert.That(activity!.Kind).IsEqualTo(ActivityKind.Client);
-        await Assert.That(activity.OperationName).IsEqualTo("poll orders");
-        await Assert.That(activity.GetTagItem("messaging.operation.name")).IsEqualTo("poll");
-        await Assert.That(activity.GetTagItem("messaging.operation.type")).IsEqualTo("receive");
+        // Process span: brackets the caller's handling of the record, so the semconv
+        // span-kind table maps it to CONSUMER ("receive"/CLIENT would misreport
+        // handling time as poll latency).
+        await Assert.That(activity!.Kind).IsEqualTo(ActivityKind.Consumer);
+        await Assert.That(activity.OperationName).IsEqualTo("process orders");
+        await Assert.That(activity.GetTagItem("messaging.operation.name")).IsEqualTo("process");
+        await Assert.That(activity.GetTagItem("messaging.operation.type")).IsEqualTo("process");
         await Assert.That((bool?)activity.GetTagItem("messaging.kafka.message.tombstone")).IsTrue();
         await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(0);
         await Assert.That(activity.GetTagItem("messaging.kafka.offset")).IsEqualTo(42L);
@@ -44,7 +46,7 @@ public sealed class ConsumeActivityTests
         using var activity = InvokeStartConsumeActivity(consumer, pending, offset: 7, valueLength: 512, isTombstone: false);
 
         await Assert.That(activity).IsNotNull();
-        await Assert.That(activity!.Kind).IsEqualTo(ActivityKind.Client);
+        await Assert.That(activity!.Kind).IsEqualTo(ActivityKind.Consumer);
         await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(512);
         await Assert.That(activity.GetTagItem("messaging.kafka.message.tombstone")).IsNull();
     }
