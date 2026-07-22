@@ -20,7 +20,8 @@ public class OutboxServiceCollectionExtensionsTests
                 .WithPartitioner(PartitionerType.RoundRobin)
                 .WithPartitionerIgnoreKeys()
                 .WithCustomPartitioner(new RoundRobinPartitioner())
-                .WithTransactionalId("caller-transactional-id"),
+                .WithTransactionalId("caller-transactional-id")
+                .WithTwoPhaseCommit(),
             loggerFactory: null);
 
         // ProducerBuilder exposes no options getter, so pin the invariant via the private
@@ -33,8 +34,10 @@ public class OutboxServiceCollectionExtensionsTests
         await Assert.That(ReadField<IPartitioner?>(builder, "_customPartitioner"))
             .IsTypeOf<Murmur2RandomPartitioner>();
         // Also pins that WithTransactionalId(null!) still clears the id - if the builder
-        // ever rejects null there, this enforcement needs a new mechanism.
+        // ever rejects null there, this enforcement needs a new mechanism. Two-phase commit
+        // must be cleared with it, or Build() rejects the combination at startup.
         await Assert.That(ReadField<string?>(builder, "_transactionalId")).IsNull();
+        await Assert.That(ReadField<bool>(builder, "_enableTwoPhaseCommit")).IsFalse();
     }
 
     private static T ReadField<T>(object instance, string fieldName)

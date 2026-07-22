@@ -64,8 +64,9 @@ public static class OutboxServiceCollectionExtensions
         // never initializes or drives transactions - produce would fail (or bypass the
         // idempotent sequencing the prefix accounting relies on). Cleared back to the
         // non-transactional default; the null-forgiveness is deliberate (the setter is a
-        // plain assignment) and the enforcement test pins it.
-        builder.WithTransactionalId(null!);
+        // plain assignment) and the enforcement test pins it. Two-phase commit is cleared
+        // with it - Build() rejects the flag without a transactional id.
+        builder.WithTransactionalId(null!).WithTwoPhaseCommit(false);
 
         return builder
             .WithAcks(Acks.All)

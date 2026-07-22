@@ -252,9 +252,20 @@ public class KafkaConnectionCapabilitiesTests
         var connection = new CapabilityConnection(
             CreateCapabilities(new ApiVersion(ApiKey.Produce, 3, 7)));
 
-        _ = metadata.GetNegotiatedApiVersion(connection, ApiKey.Produce, 3, 13);
-        var before = GC.GetAllocatedBytesForCurrentThread();
+        // Full warm-up pass before measuring: a single warm call leaves tiered
+        // compilation/OSR promotion of the loop itself to land mid-probe under full-suite
+        // load, attributing JIT-triggered allocations to this thread (issue #2377).
         var versionSum = 0;
+        for (var i = 0; i < 10_000; i++)
+        {
+            versionSum += metadata.GetNegotiatedApiVersion(
+                connection,
+                ApiKey.Produce,
+                3,
+                13);
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 10_000; i++)
         {
             versionSum += metadata.GetNegotiatedApiVersion(
