@@ -546,7 +546,7 @@ jobs:
   # build job computed.
   publish:
     name: Publish NuGet
-    needs: [build, unit-net8, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality]
+    needs: [build, unit-net8, leak-gates-debug, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     runs-on: ubuntu-latest
     timeout-minutes: 45
