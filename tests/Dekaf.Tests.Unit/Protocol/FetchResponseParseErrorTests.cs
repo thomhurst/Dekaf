@@ -35,7 +35,7 @@ public sealed class FetchResponseParseErrorTests
             InstrumentPublished = (instrument, meterListener) =>
             {
                 if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
-                    instrument.Name == "messaging.consumer.batch.parse.errors")
+                    instrument.Name == "dekaf.consumer.batch.parse.errors")
                 {
                     meterListener.EnableMeasurementEvents(instrument);
                 }

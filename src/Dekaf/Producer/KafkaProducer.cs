@@ -955,9 +955,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             EmitProduceSuccessMetrics(topic, metadata, startTimestamp);
             return metadata;
         }
-        catch
+        catch (Exception ex)
         {
-            Diagnostics.DekafMetrics.ProduceErrors.Add(1, GetMetricTags(topic));
+            EmitProduceErrorMetrics(topic, startTimestamp, ex);
             throw;
         }
     }
@@ -979,11 +979,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             var metadata = await completion.Task.ConfigureAwait(false);
 
-            // Success: record metrics and set activity tags
+            // Success: record metrics and set activity tags. Span status stays unset —
+            // OTel says instrumentation should not set Ok on successful spans.
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, metadata.Partition);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, metadata.Offset);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, metadata.KeySize + metadata.ValueSize);
-            activity.SetStatus(ActivityStatusCode.Ok);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaOffset, metadata.Offset);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, metadata.ValueSize);
 
             EmitProduceSuccessMetrics(topic, metadata, startTimestamp);
 
@@ -992,7 +992,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch (Exception ex)
         {
             Diagnostics.DekafDiagnostics.RecordException(activity, ex);
-            Diagnostics.DekafMetrics.ProduceErrors.Add(1, GetMetricTags(topic));
+            EmitProduceErrorMetrics(topic, startTimestamp, ex);
 
             throw;
         }
@@ -1018,11 +1018,22 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds, tagList);
     }
 
+    /// <summary>
+    /// Error path only. Failed operations record duration with error.type per the
+    /// messaging semconv; the TagList is a stack struct, so no heap allocation.
+    /// </summary>
+    private void EmitProduceErrorMetrics(string topic, long startTimestamp, Exception ex)
+    {
+        var tagList = GetMetricTags(topic);
+        tagList.Add(Diagnostics.DekafDiagnostics.ErrorType, ex.GetType().FullName);
+        Diagnostics.DekafMetrics.ProduceErrors.Add(1, tagList);
+        Diagnostics.DekafMetrics.OperationDuration.Record(
+            Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds, tagList);
+    }
+
     private TagList GetMetricTags(string topic)
-        => _metricTagsCache.GetOrAdd(topic, static t => new TagList
-        {
-            { Diagnostics.DekafDiagnostics.MessagingDestinationName, t }
-        });
+        => _metricTagsCache.GetOrAdd(topic, static t => Diagnostics.DekafDiagnostics.ClientMetricTags(
+            Diagnostics.DekafDiagnostics.OperationNameSend, t));
 
     /// <summary>
     /// Attempts synchronous produce for awaited ProduceAsync when metadata is cached.
@@ -1557,13 +1568,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "publish");
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationName, Diagnostics.DekafDiagnostics.OperationNameSend);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, Diagnostics.DekafDiagnostics.OperationTypeSend);
             if (_options.ClientId is not null)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
             if (message.Key is string stringKey)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, stringKey);
             else if (message.Key is not null and not byte[])
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
+            if (message.Value is null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaTombstone, Diagnostics.DekafDiagnostics.BoxedTrue);
             message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
         }
 
@@ -1571,7 +1585,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     private string GetPublishActivityName(string topic)
-        => _activityNameCache.GetOrAdd(topic, static t => $"{t} publish");
+        => _activityNameCache.GetOrAdd(topic, static t => Diagnostics.DekafDiagnostics.SendSpanName(t));
 
     /// <summary>
     /// Invokes OnAcknowledgement interceptors for all messages in a batch.

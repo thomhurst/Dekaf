@@ -59,5 +59,5 @@ internal sealed class ProducerStateSource
     }
 
     private static KeyValuePair<string, object?> BrokerTag(int brokerId)
-        => new(DekafDiagnostics.MessagingKafkaBrokerId, brokerId);
+        => new(DekafDiagnostics.DekafBrokerId, brokerId);
 }

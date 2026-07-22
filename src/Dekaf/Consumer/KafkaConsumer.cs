@@ -291,7 +291,7 @@ internal sealed class PendingFetchData : IDisposable
     [MethodImpl(MethodImplOptions.NoInlining)]
     private string CreateActivityName()
     {
-        var activityName = string.Concat(Topic, " receive");
+        var activityName = Diagnostics.DekafDiagnostics.PollSpanName(Topic);
         _activityName = activityName;
         return activityName;
     }
@@ -2118,7 +2118,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     record.HeaderCount,
                                     pending,
                                     pending.HeaderGeneration);
-                                activity = StartConsumeActivity(pending, headers, offset, messageBytes);
+                                activity = StartConsumeActivity(pending, headers, offset,
+                                    record.Value.Length, record.IsValueNull);
                                 if (activity is not null)
                                     previousActivity = activity;
                             }
@@ -3257,7 +3258,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     if (string.IsNullOrEmpty(topic))
                         continue;
 
-                    var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
+                    var activityName = _activityNameCache.GetOrAdd(topic, static t => Diagnostics.DekafDiagnostics.PollSpanName(t));
 
                     foreach (var partitionResponse in topicResponse.Partitions)
                     {
@@ -4335,7 +4336,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 pooledHeaderCount,
                                 pending,
                                 pending.HeaderGeneration);
-                            activity = StartConsumeActivity(pending, headers, offset, messageBytes);
+                            activity = StartConsumeActivity(pending, headers, offset,
+                                valueData.Length, isValueNull);
                         }
 
                         // User deserialization begins in this constructor. Its exceptions
@@ -4489,7 +4491,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 pooledHeaderCount,
                                 pending,
                                 pending.HeaderGeneration);
-                            activity = StartConsumeActivity(pending, headers, offset, messageBytes);
+                            activity = StartConsumeActivity(pending, headers, offset,
+                                valueData.Length, isValueNull);
                         }
 
                         // User deserialization begins in this await. Its exceptions must
@@ -4991,8 +4994,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
         if (!_metricTagsCache.TryGetValue(fetch.Topic, out var metricTags))
         {
-            metricTags = new System.Diagnostics.TagList
-                { { Diagnostics.DekafDiagnostics.MessagingDestinationName, fetch.Topic } };
+            metricTags = Diagnostics.DekafDiagnostics.ClientMetricTags(
+                Diagnostics.DekafDiagnostics.OperationNamePoll, fetch.Topic);
             _metricTagsCache[fetch.Topic] = metricTags;
         }
         Diagnostics.DekafMetrics.MessagesReceived.Add(messageCount, metricTags);
@@ -5012,7 +5015,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private TagList GetFetchDurationMetricTags(int brokerId) =>
         _fetchDurationMetricTagsCache.GetOrAdd(
             brokerId,
-            static id => new TagList { { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, id } });
+            static id => new TagList { { Diagnostics.DekafDiagnostics.DekafBrokerId, id } });
 
     public void Seek(TopicPartitionOffset offset)
     {
@@ -7357,7 +7360,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 if (string.IsNullOrEmpty(topic))
                     continue;
 
-                var activityName = _activityNameCache.GetOrAdd(topic, static t => $"{t} receive");
+                var activityName = _activityNameCache.GetOrAdd(topic, static t => Diagnostics.DekafDiagnostics.PollSpanName(t));
 
                 foreach (var partitionResponse in topicResponse.Partitions)
                 {
@@ -7538,7 +7541,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         PendingFetchData pending,
         IReadOnlyList<Header>? headers,
         long offset,
-        int messageBytes)
+        int valueLength,
+        bool isTombstone)
     {
         // Use span links (not parent-child) per OTel messaging semantic conventions:
         // the consumer span gets its own trace root, linked to the producer span.
@@ -7573,10 +7577,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         {
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "receive");
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationName, Diagnostics.DekafDiagnostics.OperationNamePoll);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, Diagnostics.DekafDiagnostics.OperationTypeReceive);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, offset);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, messageBytes);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaOffset, offset);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, isTombstone ? 0 : valueLength);
+            if (isTombstone)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaTombstone, Diagnostics.DekafDiagnostics.BoxedTrue);
             if (_options.ClientId is not null)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
             if (_options.GroupId is not null)

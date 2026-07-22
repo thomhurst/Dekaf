@@ -410,7 +410,7 @@ internal static class StressTestHelpers
             catch (Exception ex)
             {
                 // Detail only: the failure count is already captured via the producer's
-                // messaging.client.sent.errors metric (DekafDeliveryErrorListener), and
+                // dekaf.producer.send.errors metric (DekafDeliveryErrorListener), and
                 // this message was accepted into MessageCount before delivery failed.
                 throughput.RecordDeliveryErrorDetail(ex, "SampleDeliveryLatency", messageIndex);
             }

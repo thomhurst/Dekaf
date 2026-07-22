@@ -9492,7 +9492,7 @@ internal sealed class ReadyBatch
 
             // Records without a completion source (fire-and-forget and callback appends) have
             // no awaiter that will observe this failure, so count them here — otherwise
-            // messaging.client.sent.errors never reflects fire-and-forget delivery failures.
+            // dekaf.producer.send.errors never reflects fire-and-forget delivery failures.
             // ProduceAsync records are excluded: each awaiter increments the counter itself.
             var unobservedRecords = _recordCount - _completionSourcesCount;
             if (Diagnostics.DekafMetrics.ProduceErrors.Enabled && unobservedRecords > 0)

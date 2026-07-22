@@ -359,7 +359,7 @@ public sealed class ConsumeOneFastPathTests
         {
             if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
                 (instrument.Name == "messaging.client.consumed.messages" ||
-                 instrument.Name == "messaging.client.consumed.bytes"))
+                 instrument.Name == "dekaf.consumer.consumed.bytes"))
             {
                 meterListener.EnableMeasurementEvents(instrument);
             }
@@ -371,7 +371,7 @@ public sealed class ConsumeOneFastPathTests
 
             if (instrument.Name == "messaging.client.consumed.messages")
                 messagesReceived.Add(measurement);
-            else if (instrument.Name == "messaging.client.consumed.bytes")
+            else if (instrument.Name == "dekaf.consumer.consumed.bytes")
                 bytesReceived.Add(measurement);
         });
         listener.Start();

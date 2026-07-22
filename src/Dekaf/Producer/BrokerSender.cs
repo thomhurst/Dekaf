@@ -5339,7 +5339,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private TagList BrokerIdTags() => new()
     {
-        { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, _brokerId }
+        { Diagnostics.DekafDiagnostics.DekafBrokerId, _brokerId }
     };
 
     public async ValueTask DisposeAsync()

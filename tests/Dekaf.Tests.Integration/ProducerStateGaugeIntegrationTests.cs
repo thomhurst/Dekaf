@@ -140,7 +140,7 @@ public sealed class ProducerStateGaugeIntegrationTests(KafkaTestContainer kafka)
         {
             if (tag.Key == DekafDiagnostics.MessagingClientId)
                 clientId = tag.Value as string;
-            else if (tag.Key == DekafDiagnostics.MessagingKafkaBrokerId)
+            else if (tag.Key == DekafDiagnostics.DekafBrokerId)
                 brokerId = tag.Value;
         }
 

@@ -5,7 +5,7 @@ namespace Dekaf.StressTests.Metrics;
 
 /// <summary>
 /// Counts Dekaf delivery failures into a <see cref="ThroughputTracker"/> by listening to
-/// the producer's <c>messaging.client.sent.errors</c> metric. Fire-and-forget appends have
+/// the producer's <c>dekaf.producer.send.errors</c> metric. Fire-and-forget appends have
 /// no awaiter or callback, so this metric is the only signal that an accepted message was
 /// never delivered — without it a produce run can lose messages with a zero error count.
 /// Cost: free on the FireAsync hot path (failures are counted once per failed batch), but
