@@ -239,6 +239,32 @@ public class OutboxRelayServiceTests
     }
 
     [Test]
+    public async Task Relay_BatchFetchOutlastingLease_DiscardsBatchInsteadOfPublishing()
+    {
+        var time = new FakeOutboxTimeProvider();
+        var store = new FakeStore();
+        store.Enqueue(Row(1));
+        // The first two batch fetches stall past the whole 60s lease: their rows must be
+        // discarded unpublished (a peer may own the bucket) and republished after recovery.
+        var fetches = 0;
+        store.OnBatchReturned = () =>
+        {
+            if (++fetches <= 2)
+                time.Advance(TimeSpan.FromSeconds(65));
+        };
+        var publisher = new FakePublisher();
+
+        await using (await StartRelayAsync(store, publisher, FastOptions(), time))
+        {
+            await store.WaitForEmptyAsync(SignalTimeout);
+        }
+
+        await Assert.That(store.MarkedIds.ToArray()).IsEquivalentTo(new long[] { 1 });
+        // Exactly one publish: the two stalled fetches never reached the publisher.
+        await Assert.That(publisher.PublishCalls).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Relay_MarksSameInstancesReturnedByStore_SoStoresCanSubclass()
     {
         // NoSQL stores identify rows by downcasting to their own OutboxMessage subclass;

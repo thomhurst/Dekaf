@@ -235,6 +235,16 @@ public sealed partial class OutboxRelayService : BackgroundService
             if (batch.Count == 0)
                 break;
 
+            // The fetch itself may have stalled past the lease. Unlike an in-flight
+            // publish (whose append cannot be fenced), this window closes for free with a
+            // recheck before the first produce starts.
+            if (LeaseAge() >= _options.LeaseDuration)
+            {
+                LogLeaseExpiredDuringBatchFetch(_options.LeaseDuration);
+                ResetLeaseState();
+                return new CycleResult(publishedAny, HadError: true);
+            }
+
             firstBatch = false;
 
             var result = await _publisher.PublishAsync(batch, _options.MessageIdHeaderName, cancellationToken)
@@ -304,4 +314,7 @@ public sealed partial class OutboxRelayService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Lease acquisition took longer than LeaseDuration ({LeaseDuration}); the leases were expired before they could be used. Publishing is paused - raise LeaseDuration above the store's worst-case latency")]
     private partial void LogLeaseExpiredBeforeAcquisitionReturned(TimeSpan leaseDuration);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Fetching a batch outlasted LeaseDuration ({LeaseDuration}); the fetched rows were discarded unpublished because the lease may already be claimed by a peer - raise LeaseDuration above the store's worst-case latency")]
+    private partial void LogLeaseExpiredDuringBatchFetch(TimeSpan leaseDuration);
 }
