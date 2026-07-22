@@ -63,6 +63,6 @@
   </ItemGroup>
   <ItemGroup>
     <!-- Transitive pin: the e_sqlite3 versions EF Core's Sqlite provider pulls in carry GHSA-2m69-gcr7-jv3q. -->
-    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.4" />
   </ItemGroup>
 </Project>
