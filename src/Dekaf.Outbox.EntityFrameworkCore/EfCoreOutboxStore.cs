@@ -65,7 +65,11 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var fairShare = OutboxFairShare.Compute(request.BucketCount, activeRelayIds, request.RelayId);
 
+        // Bounded to the active range: stale lease rows left behind by a larger previous
+        // BucketCount must not participate in fair share or be renewed as owned buckets,
+        // or a relay could satisfy its whole share with buckets that no longer exist.
         var snapshot = await leases.AsNoTracking()
+            .Where(l => l.Bucket >= 0 && l.Bucket < request.BucketCount)
             .OrderBy(l => l.Bucket)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
 
@@ -116,8 +120,9 @@ public sealed class EfCoreOutboxStore<TContext> : IOutboxStore
         }
 
         // Read back the true owned set: it reflects lost claim races and stolen leases.
+        // Same range bound as the snapshot so stale out-of-range leases never reach the relay.
         return await leases
-            .Where(l => l.Owner == request.RelayId)
+            .Where(l => l.Owner == request.RelayId && l.Bucket >= 0 && l.Bucket < request.BucketCount)
             .Select(l => l.Bucket)
             .OrderBy(b => b)
             .ToListAsync(cancellationToken).ConfigureAwait(false);

@@ -211,6 +211,34 @@ public class OutboxRelayServiceTests
     }
 
     [Test]
+    public async Task Relay_AcquisitionOutlastingLeaseDuration_PausesInsteadOfPublishingDead()
+    {
+        var time = new FakeOutboxTimeProvider();
+        var store = new FakeStore();
+        store.Enqueue(Row(1));
+        // The first two acquisitions take longer than the whole 60s lease duration: their
+        // leases are dead on arrival and publishing under them would break single-writer.
+        // The relay must pause (no publish) and recover once the store speeds up.
+        var acquisitions = 0;
+        store.OnLeaseAcquired = () =>
+        {
+            if (++acquisitions <= 2)
+                time.Advance(TimeSpan.FromSeconds(65));
+        };
+        var publisher = new FakePublisher();
+
+        await using (await StartRelayAsync(store, publisher, FastOptions(), time))
+        {
+            await store.WaitForEmptyAsync(SignalTimeout);
+        }
+
+        await Assert.That(store.MarkedIds.ToArray()).IsEquivalentTo(new long[] { 1 });
+        // Exactly one publish: nothing was published under the two dead leases.
+        await Assert.That(publisher.PublishCalls).IsEqualTo(1);
+        await Assert.That(store.LeaseCalls).IsGreaterThanOrEqualTo(3);
+    }
+
+    [Test]
     public async Task Relay_MarksSameInstancesReturnedByStore_SoStoresCanSubclass()
     {
         // NoSQL stores identify rows by downcasting to their own OutboxMessage subclass;

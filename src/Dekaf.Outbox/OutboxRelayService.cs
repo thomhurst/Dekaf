@@ -136,6 +136,17 @@ public sealed partial class OutboxRelayService : BackgroundService
     {
         await RefreshLeasesIfDueAsync(cancellationToken).ConfigureAwait(false);
 
+        if (_ownedBuckets.Count > 0 && LeaseAge() >= _options.LeaseDuration)
+        {
+            // The acquisition itself outlasted the lease: the rows the store wrote are
+            // already claimable by peers, so publishing would break single-writer ordering.
+            // Correct but must be loud - sustained store latency at this level otherwise
+            // stalls the relay silently. Treated as an error so ErrorBackoff paces retries.
+            LogLeaseExpiredBeforeAcquisitionReturned(_options.LeaseDuration);
+            ResetLeaseState();
+            return new CycleResult(PublishedAny: false, HadError: true);
+        }
+
         if (_ownedBuckets.Count == 0)
             return new CycleResult(PublishedAny: false, HadError: false);
 
@@ -290,4 +301,7 @@ public sealed partial class OutboxRelayService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Outbox publisher initialization failed; retrying after backoff")]
     private partial void LogPublisherInitializationFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Lease acquisition took longer than LeaseDuration ({LeaseDuration}); the leases were expired before they could be used. Publishing is paused - raise LeaseDuration above the store's worst-case latency")]
+    private partial void LogLeaseExpiredBeforeAcquisitionReturned(TimeSpan leaseDuration);
 }

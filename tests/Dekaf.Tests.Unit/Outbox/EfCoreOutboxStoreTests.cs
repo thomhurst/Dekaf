@@ -172,6 +172,33 @@ public class EfCoreOutboxStoreTests
     }
 
     [Test]
+    public async Task StaleLeaseRowsBeyondBucketCount_NeverParticipateInFairShare()
+    {
+        using var db = new SqliteOutboxDatabase();
+        // Leftovers from a previous 12-bucket deployment: stale lease rows 8..11, some
+        // still "owned". They must neither count toward this relay's share nor be renewed.
+        await using (var context = db.CreateContext())
+        {
+            for (var bucket = 8; bucket < 12; bucket++)
+            {
+                context.Set<OutboxLease>().Add(new OutboxLease
+                {
+                    Bucket = bucket,
+                    Owner = bucket % 2 == 0 ? "ghost-relay" : null,
+                    ExpiresAtUtc = DateTimeOffset.MinValue
+                });
+            }
+
+            await context.SaveChangesAsync();
+        }
+
+        var store = db.CreateStore();
+        var owned = await store.AcquireBucketLeasesAsync(Request("relay-a", bucketCount: 4));
+
+        await Assert.That(owned).IsEquivalentTo(AllBuckets);
+    }
+
+    [Test]
     public async Task TransientHeartbeatFailure_IsNotSwallowed_RetrySucceeds()
     {
         // A DbUpdateException that created nothing must not be misread as a benign
