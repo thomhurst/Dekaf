@@ -41,6 +41,18 @@ public class OutboxHeaderCodecTests
     }
 
     [Test]
+    public async Task Decode_CountExceedingRemainingBytes_ThrowsInsteadOfAllocating()
+    {
+        // A corrupt 5-byte blob claiming int.MaxValue headers must be rejected as
+        // malformed, not turned into an enormous allocation.
+        var blob = new byte[5];
+        blob[0] = 1;
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(blob.AsSpan(1), int.MaxValue);
+
+        await Assert.That(() => OutboxHeaderCodec.Decode(blob)).Throws<FormatException>();
+    }
+
+    [Test]
     public async Task RoundTrip_PreservesKeysValuesAndOrder()
     {
         var headers = new Headers()

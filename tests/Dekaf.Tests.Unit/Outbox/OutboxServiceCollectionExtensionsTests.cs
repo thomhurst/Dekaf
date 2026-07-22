@@ -10,7 +10,8 @@ public class OutboxServiceCollectionExtensionsTests
     public async Task RelayProducerBuilder_CallerCannotDowngradeDeliveryGuarantees()
     {
         // A delegate that tries to disable every guarantee the outbox depends on: durable
-        // acks, per-partition sequencing, and key-respecting partitioning.
+        // acks, per-partition sequencing, key-respecting partitioning, and non-transactional
+        // operation (the relay never drives transactions).
         var builder = OutboxServiceCollectionExtensions.CreateRelayProducerBuilder(
             producer => producer
                 .WithBootstrapServers("localhost:1")
@@ -18,7 +19,8 @@ public class OutboxServiceCollectionExtensionsTests
                 .WithIdempotence(false)
                 .WithPartitioner(PartitionerType.RoundRobin)
                 .WithPartitionerIgnoreKeys()
-                .WithCustomPartitioner(new RoundRobinPartitioner()),
+                .WithCustomPartitioner(new RoundRobinPartitioner())
+                .WithTransactionalId("caller-transactional-id"),
             loggerFactory: null);
 
         // ProducerBuilder exposes no options getter, so pin the invariant via the private
@@ -30,6 +32,9 @@ public class OutboxServiceCollectionExtensionsTests
         // so pinning it pins the effective partitioning behavior.
         await Assert.That(ReadField<IPartitioner?>(builder, "_customPartitioner"))
             .IsTypeOf<Murmur2RandomPartitioner>();
+        // Also pins that WithTransactionalId(null!) still clears the id - if the builder
+        // ever rejects null there, this enforcement needs a new mechanism.
+        await Assert.That(ReadField<string?>(builder, "_transactionalId")).IsNull();
     }
 
     private static T ReadField<T>(object instance, string fieldName)

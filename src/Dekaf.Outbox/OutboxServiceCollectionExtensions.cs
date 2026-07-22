@@ -60,6 +60,13 @@ public static class OutboxServiceCollectionExtensions
         // Placement for non-empty keys is identical (both are Kafka's Murmur2); null keys
         // spread randomly and carry no ordering requirement. A custom partitioner set here
         // takes precedence over anything the delegate configured.
+        // A transactional id would make the relay producer transactional, but the relay
+        // never initializes or drives transactions - produce would fail (or bypass the
+        // idempotent sequencing the prefix accounting relies on). Cleared back to the
+        // non-transactional default; the null-forgiveness is deliberate (the setter is a
+        // plain assignment) and the enforcement test pins it.
+        builder.WithTransactionalId(null!);
+
         return builder
             .WithAcks(Acks.All)
             .WithIdempotence(true)
