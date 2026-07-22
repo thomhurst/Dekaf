@@ -244,6 +244,66 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The produce-path leak gates carry ProducerDebugCounters balance assertions
+  # (rent/return parity, zero duplicate pool returns, completion-source
+  # conservation) that are [Conditional("DEBUG")] — compiled out of the Release
+  # binaries every other job runs. This leg builds the unit test project in
+  # Debug so those invariants actually execute. Free runner; builds only the
+  # test project (ProjectReference pulls Dekaf in Debug).
+  leak-gates-debug:
+    name: Leak Gates (Debug counters)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/Directory.Build.props', '**/Directory.Build.targets') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Build unit tests (Debug)
+        run: dotnet build tests/Dekaf.Tests.Unit --configuration Debug
+
+      - name: Run leak gates with debug counters
+        run: >-
+          ./tests/Dekaf.Tests.Unit/bin/Debug/net10.0/Dekaf.Tests.Unit
+          --hangdump --hangdump-timeout 10m
+          --treenode-filter
+          "/*/*/(ProducerMemoryLeakGateTests|ProducerLeakUnderLoadTests|ProducerLeakEdgeCaseTests|ProducerBatchLifecycleHammerTests|BrokerSenderLeakGateTests)/*"
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-leak-gates-debug
+          path: |
+            **/TestResults/**
+            **/test-results/**
+          retention-days: 7
+
+      - name: Upload HangDump artifacts
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hangdump-artifacts-leak-gates-debug
+          path: |
+            **/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Integration categories run via the shared group definitions in
   # integration-groups.yml against the prebuilt binaries (no rebuild).
   # PRs run net10.0 only; pushes to main add net8.0. NuGet publish dispatches
@@ -486,7 +546,7 @@ jobs:
   # build job computed.
   publish:
     name: Publish NuGet
-    needs: [build, unit-net8, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality]
+    needs: [build, unit-net8, leak-gates-debug, aot-smoke, aot-integration-publish, release-matrix, release-matrix-aot, code-quality]
     if: github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -562,7 +622,7 @@ jobs:
   # release-only jobs skip on PR/push runs).
   ci-passed:
     name: CI Passed
-    needs: [changes, build, unit-net8, integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality]
+    needs: [changes, build, unit-net8, leak-gates-debug, integration, aot-smoke, aot-integration-publish, aot-integration-smoke, release-matrix, release-matrix-aot, publish, code-quality]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
