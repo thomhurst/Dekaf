@@ -55,6 +55,7 @@ Most consumers live inside an ASP.NET Core or Worker Service app, so Dekaf ships
 - [Hosted consumer services](./hosted-services) — write one `ProcessAsync` override, get the consume loop, graceful shutdown, and final offset commit for free
 - Failure handling built in: in-place retries, [tiered retry topics, and dead letter queues](./consumer/dead-letter-queues)
 - [Dependency injection](./dependency-injection) with `appsettings.json` binding, keyed clients, and global interceptors
+- [OpenTelemetry observability](./observability) — traces with W3C context propagation and OTel semantic-convention metrics, one line to enable
 
 ## Is Dekaf Right for You?
 
