@@ -41,12 +41,12 @@ metrics.AddMeter(DekafDiagnostics.MeterName);           // "Dekaf"
 
 ## Tracing
 
-Dekaf emits spans following the [OpenTelemetry messaging semantic conventions](https://opentelemetry.io/docs/specs/semconv/messaging/kafka/):
+Dekaf emits spans following the [OpenTelemetry messaging semantic conventions](https://opentelemetry.io/docs/specs/semconv/messaging/kafka/). Span names use the spec's `{operation name} {destination}` format:
 
 | Span | Kind | When |
 |------|------|------|
-| `{topic} publish` | `Producer` | Each `ProduceAsync` / `Send` |
-| `{topic} receive` | `Consumer` | Each consumed message |
+| `send {topic}` | `Producer` | Each `ProduceAsync` / `Send` |
+| `poll {topic}` | `Consumer` | Each consumed message |
 
 ### Trace Context Propagation
 
@@ -56,47 +56,48 @@ Producer spans inject W3C `traceparent` (and `tracestate`) headers into the outg
 
 Both spans set `messaging.system = kafka` plus:
 
-| Attribute | Publish | Receive |
-|-----------|---------|---------|
+| Attribute | Send | Poll |
+|-----------|------|------|
 | `messaging.destination.name` (topic) | ✓ | ✓ |
-| `messaging.operation.type` | `publish` | `receive` |
+| `messaging.operation.name` | `send` | `poll` |
+| `messaging.operation.type` | `send` | `receive` |
 | `messaging.client.id` | ✓ | ✓ |
 | `messaging.kafka.message.key` | ✓ (string-convertible keys) | |
-| `messaging.destination.partition.id` | | ✓ |
-| `messaging.kafka.message.offset` | | ✓ |
-| `messaging.message.body.size` | | ✓ |
+| `messaging.destination.partition.id` | ✓ (on delivery) | ✓ |
+| `messaging.kafka.offset` | ✓ (on delivery) | ✓ |
+| `messaging.message.body.size` | ✓ (on delivery) | ✓ |
+| `messaging.kafka.message.tombstone` | ✓ (null-value messages) | ✓ (tombstone records) |
 | `messaging.consumer.group.name` | | ✓ |
 
-Failures set the span status to `Error` and record an `exception` event with `exception.type`, `exception.message`, and `exception.stacktrace`.
+`messaging.message.body.size` is the value payload only — the key is not part of the message body; tombstones report `0`.
+
+Failures set the span status to `Error`, set `error.type` to the exception's fully-qualified type name, and record an `exception` event with `exception.type`, `exception.message`, and `exception.stacktrace`. Successful spans leave the status unset, per the OTel span-status guidance.
 
 ## Metrics
 
 ### Standard Messaging Metrics
 
-These follow the OTel messaging semantic conventions:
+These are the spec-defined instruments from the [OTel messaging metrics conventions](https://opentelemetry.io/docs/specs/semconv/messaging/messaging-metrics/):
 
 | Instrument | Type | Unit | Description |
 |------------|------|------|-------------|
 | `messaging.client.sent.messages` | Counter | `{message}` | Messages published |
-| `messaging.client.sent.bytes` | Counter | `By` | Bytes published |
-| `messaging.client.sent.errors` | Counter | `{error}` | Produce errors |
-| `messaging.client.sent.retries` | Counter | `{retry}` | Produce retries |
-| `messaging.client.operation.duration` | Histogram | `s` | Produce/consume operation duration |
+| `messaging.client.operation.duration` | Histogram | `s` | Produce operation duration (successes and failures) |
 | `messaging.client.consumed.messages` | Counter | `{message}` | Messages received |
-| `messaging.client.consumed.bytes` | Counter | `By` | Bytes received |
-| `messaging.consumer.lag` | ObservableGauge | `{message}` | High watermark minus consumed position, per partition |
-| `messaging.consumer.rebalance.duration` | Histogram | `s` | Consumer group rebalance duration |
-| `messaging.consumer.fetch.duration` | Histogram | `s` | Fetch request round-trip time |
-| `messaging.consumer.batch.parse.errors` | Counter | `{error}` | Record batches that failed protocol parsing |
+
+All three carry the spec-required `messaging.system = kafka` and `messaging.operation.name` (`send`/`poll`) tags plus `messaging.destination.name`. Failed produce operations record `messaging.client.operation.duration` with an additional `error.type` tag, per the spec's error model.
 
 ### Dekaf Internal Metrics
 
-Dekaf-specific instruments under the `dekaf.*` prefix expose internal controller state — useful for diagnosing backpressure, buffer exhaustion, and adaptive-connection behavior:
+Dekaf-specific instruments live under the `dekaf.*` prefix — the `messaging.*` namespace is reserved for spec-defined instruments. These cover throughput detail beyond the spec metrics plus internal controller state, useful for diagnosing backpressure, buffer exhaustion, and adaptive-connection behavior. Per-broker instruments carry a `dekaf.broker.id` tag.
 
 **Producer:**
 
 | Instrument | Description |
 |------------|-------------|
+| `dekaf.producer.sent.bytes` | Bytes published (key + value) |
+| `dekaf.producer.send.errors` | Produce errors (includes fire-and-forget delivery failures) |
+| `dekaf.producer.send.retries` | Produce retries |
 | `dekaf.producer.buffer.used_bytes` / `limit_bytes` | `BufferMemory` reservation vs configured limit |
 | `dekaf.producer.buffer.pressure_events` | Times `ProduceAsync` entered the buffer-full slow path |
 | `dekaf.producer.broker.budget_bytes` / `unacked_bytes` | Per-broker unacked-byte admission budget and standing charge |
@@ -113,6 +114,11 @@ Dekaf-specific instruments under the `dekaf.*` prefix expose internal controller
 
 | Instrument | Description |
 |------------|-------------|
+| `dekaf.consumer.consumed.bytes` | Bytes received (key + value) |
+| `dekaf.consumer.lag` | High watermark minus consumed position, per partition (ObservableGauge) |
+| `dekaf.consumer.rebalance.duration` | Consumer group rebalance duration (Histogram, `s`) |
+| `dekaf.consumer.fetch.duration` | Fetch request round-trip time per broker (Histogram, `s`) |
+| `dekaf.consumer.batch.parse.errors` | Record batches that failed protocol parsing |
 | `dekaf.consumer.fetch_buffer.used_bytes` / `free_bytes` | Fetch response memory reserved vs available |
 | `dekaf.consumer.fetch_buffer.depleted_percent` / `depleted_duration` | Time spent waiting for fetch response memory |
 
