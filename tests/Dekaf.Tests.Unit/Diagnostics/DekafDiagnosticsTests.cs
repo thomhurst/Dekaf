@@ -96,10 +96,10 @@ public sealed class DekafDiagnosticsTests
         ActivitySource.AddActivityListener(listener);
 
         // OTel semantic convention: "{operation name} {destination}" for consumer spans
-        using var activity = DekafDiagnostics.Source.StartActivity("poll orders", ActivityKind.Consumer);
+        using var activity = DekafDiagnostics.Source.StartActivity("poll orders", ActivityKind.Client);
         await Assert.That(activity).IsNotNull();
         await Assert.That(activity!.OperationName).IsEqualTo("poll orders");
-        await Assert.That(activity.Kind).IsEqualTo(ActivityKind.Consumer);
+        await Assert.That(activity.Kind).IsEqualTo(ActivityKind.Client);
     }
 
     [Test]
@@ -148,7 +148,7 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        using var activity = DekafDiagnostics.Source.StartActivity("poll my-topic", ActivityKind.Consumer);
+        using var activity = DekafDiagnostics.Source.StartActivity("poll my-topic", ActivityKind.Client);
         await Assert.That(activity).IsNotNull();
 
         // Simulate what the consumer does (using string values for tag retrieval compatibility)
@@ -212,7 +212,7 @@ public sealed class DekafDiagnosticsTests
         var links = new[] { new ActivityLink(producerContext!.Value) };
         using var consumerActivity = DekafDiagnostics.Source.StartActivity(
             "poll orders",
-            ActivityKind.Consumer,
+            ActivityKind.Client,
             parentContext: default(ActivityContext),
             tags: null,
             links: links);
@@ -244,7 +244,7 @@ public sealed class DekafDiagnosticsTests
         // Consumer span without extracted producer context (no traceparent header)
         using var consumerActivity = DekafDiagnostics.Source.StartActivity(
             "poll orders",
-            ActivityKind.Consumer,
+            ActivityKind.Client,
             parentContext: default(ActivityContext),
             tags: null,
             links: null);

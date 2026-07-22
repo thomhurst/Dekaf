@@ -94,6 +94,71 @@ public sealed class KafkaProducerMetricsTests
     }
 
     [Test]
+    [NotInParallel("MeterListener")]
+    public async Task AwaitWithMetrics_Failure_RecordsErrorTypeOnErrorCountAndDuration()
+    {
+        var topic = $"orders-{Guid.NewGuid():N}";
+        long errorCount = 0;
+        string? errorCountErrorType = null;
+        double operationDuration = -1;
+        string? durationErrorType = null;
+
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
+                instrument.Name is "dekaf.producer.send.errors" or "messaging.client.operation.duration")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+            if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                return;
+
+            if (instrument.Name == "dekaf.producer.send.errors")
+            {
+                errorCount += measurement;
+                errorCountErrorType = GetTag(tags, DekafDiagnostics.ErrorType);
+            }
+        });
+        listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
+        {
+            if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                return;
+
+            if (instrument.Name == "messaging.client.operation.duration")
+            {
+                operationDuration = measurement;
+                durationErrorType = GetTag(tags, DekafDiagnostics.ErrorType);
+            }
+        });
+        listener.Start();
+
+        await using var producer = new KafkaProducer<string, string>(
+            new ProducerOptions
+            {
+                BootstrapServers = ["localhost:9092"],
+                ClientId = "metrics-test"
+            },
+            Serializers.String,
+            Serializers.String);
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var completion = pool.Rent();
+        completion.TrySetException(new InvalidOperationException("delivery failed"));
+
+        await Assert.That(async () => await InvokeAwaitWithMetrics(producer, completion, topic))
+            .Throws<InvalidOperationException>();
+
+        // Failed operations must record duration with error.type per the messaging semconv.
+        await Assert.That(errorCount).IsEqualTo(1);
+        await Assert.That(errorCountErrorType).IsEqualTo(typeof(InvalidOperationException).FullName);
+        await Assert.That(operationDuration).IsGreaterThanOrEqualTo(0);
+        await Assert.That(durationErrorType).IsEqualTo(typeof(InvalidOperationException).FullName);
+    }
+
+    [Test]
     public async Task AwaitWithMetrics_Cancellation_CancelsCompletion()
     {
         await using var producer = new KafkaProducer<string, string>(

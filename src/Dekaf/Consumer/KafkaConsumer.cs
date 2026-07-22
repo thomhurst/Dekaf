@@ -7546,6 +7546,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         // Use span links (not parent-child) per OTel messaging semantic conventions:
         // the consumer span gets its own trace root, linked to the producer span.
+        // Kind is Client, not Consumer — the semconv span-kind table maps "receive"
+        // operations to CLIENT; CONSUMER is reserved for "process" spans.
         var producerContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
         System.Diagnostics.Activity? activity;
         var savedActivity = System.Diagnostics.Activity.Current;
@@ -7556,7 +7558,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
                     pending.ActivityName,
-                    System.Diagnostics.ActivityKind.Consumer,
+                    System.Diagnostics.ActivityKind.Client,
                     parentContext: default(System.Diagnostics.ActivityContext),
                     tags: null,
                     links: [new System.Diagnostics.ActivityLink(producerContext.Value)]);
@@ -7565,7 +7567,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
                     pending.ActivityName,
-                    System.Diagnostics.ActivityKind.Consumer);
+                    System.Diagnostics.ActivityKind.Client);
             }
         }
         finally

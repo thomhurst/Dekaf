@@ -46,7 +46,9 @@ Dekaf emits spans following the [OpenTelemetry messaging semantic conventions](h
 | Span | Kind | When |
 |------|------|------|
 | `send {topic}` | `Producer` | Each `ProduceAsync` / `Send` |
-| `poll {topic}` | `Consumer` | Each consumed message |
+| `poll {topic}` | `Client` | Each consumed message |
+
+Poll spans use kind `Client` because the spec's span-kind table maps `receive` operations to `CLIENT`; `CONSUMER` is reserved for `process` spans wrapping application handling.
 
 ### Trace Context Propagation
 

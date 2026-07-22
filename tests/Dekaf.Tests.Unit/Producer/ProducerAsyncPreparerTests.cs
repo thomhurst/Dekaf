@@ -100,6 +100,51 @@ public class ProducerAsyncPreparerTests
         }
     }
 
+    [Test]
+    public async Task ProduceAsync_NullValue_TagsTombstoneOnPublishSpan()
+    {
+        var (started, stopped, listener) = ListenForActivities();
+        using (listener)
+        {
+            // Key preparer faults so the produce short-circuits after the span starts —
+            // the tombstone tag is set in StartPublishActivity, before preparation.
+            var keySerializer = new PreparingSerializer(
+                _ => throw new InvalidOperationException("stop before append"));
+
+            await using var producer = CreateProducer(keySerializer, Serializers.String);
+            await ReadyProducerAsync(producer);
+
+            var message = new ProducerMessage<string, string> { Topic = Topic, Key = "k", Value = null! };
+            await Assert.That(async () => await producer.ProduceAsync(message))
+                .Throws<InvalidOperationException>();
+
+            await Assert.That(started.Count).IsGreaterThan(0);
+            await Assert.That(stopped.Count).IsEqualTo(started.Count);
+            await Assert.That((bool?)started.First().GetTagItem("messaging.kafka.message.tombstone"))
+                .IsTrue();
+        }
+    }
+
+    [Test]
+    public async Task ProduceAsync_NonNullValue_DoesNotTagTombstone()
+    {
+        var (started, _, listener) = ListenForActivities();
+        using (listener)
+        {
+            var keySerializer = new PreparingSerializer(
+                _ => throw new InvalidOperationException("stop before append"));
+
+            await using var producer = CreateProducer(keySerializer, Serializers.String);
+            await ReadyProducerAsync(producer);
+
+            await Assert.That(async () => await producer.ProduceAsync(NewMessage()))
+                .Throws<InvalidOperationException>();
+
+            await Assert.That(started.Count).IsGreaterThan(0);
+            await Assert.That(started.First().GetTagItem("messaging.kafka.message.tombstone")).IsNull();
+        }
+    }
+
     // --- Both preparers observed even when one faults first (regression: the value preparer must
     //     not be left unawaited/unobserved when the key preparer faults). ---
 
