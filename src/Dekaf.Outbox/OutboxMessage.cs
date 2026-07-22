@@ -66,8 +66,10 @@ public class OutboxMessage
     public int? Partition { get; init; }
 
     /// <summary>
-    /// Enqueue time. Used as the published record's timestamp so end-to-end latency is
-    /// measured from the moment the business transaction committed.
+    /// Enqueue time. Deliberately not used as the published record's timestamp: a record
+    /// stamped with an old enqueue time after a long backlog could land already past a
+    /// CreateTime topic's retention and be deleted before consumers read it. Enqueuers
+    /// that need the enqueue time downstream should carry it as a record header.
     /// </summary>
     public required DateTimeOffset CreatedAtUtc { get; init; }
 

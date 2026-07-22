@@ -68,7 +68,8 @@ public class DekafOutboxPublisherTests
         await Assert.That(message.Topic).IsEqualTo("topic");
         await Assert.That(message.Key).IsEquivalentTo(row.Key!);
         await Assert.That(message.Value).IsEquivalentTo(row.Value!);
-        await Assert.That(message.Timestamp).IsEqualTo(row.CreatedAtUtc);
+        // Publish time, not enqueue time: an old CreateTime can land past topic retention.
+        await Assert.That(message.Timestamp).IsNull();
 
         var headers = message.Headers!;
         await Assert.That(headers.Count).IsEqualTo(2);

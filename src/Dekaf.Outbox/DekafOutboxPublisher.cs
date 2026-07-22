@@ -71,14 +71,17 @@ public sealed class DekafOutboxPublisher : IOutboxPublisher
                 message.MessageId.TryFormat(messageIdUtf8, out _, "D");
                 headers.Add(messageIdHeaderName, messageIdUtf8);
 
+                // Timestamp is deliberately left unset (publish time): stamping the enqueue
+                // time would let a record published after a long backlog land already past
+                // a CreateTime topic's retention.ms - the broker acks, the row is deleted,
+                // and the segment can be cleaned before any consumer reads it (loss).
                 tasks[i] = _producer.ProduceAsync(new ProducerMessage<byte[]?, byte[]?>
                 {
                     Topic = message.Topic,
                     Key = message.Key,
                     Value = message.Value,
                     Headers = headers,
-                    Partition = message.Partition,
-                    Timestamp = message.CreatedAtUtc
+                    Partition = message.Partition
                 }, cancellationToken).AsTask();
                 startedCount++;
             }
