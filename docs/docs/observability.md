@@ -49,7 +49,7 @@ Dekaf emits spans following the [OpenTelemetry messaging semantic conventions](h
 | `process {topic}` | `Consumer` | Each message from streaming `ConsumeAsync` |
 | `poll {topic}` | `Client` | Each message from `ConsumeOne` / `ConsumeOneAsync` |
 
-The two consume flavors match the span's actual lifetime. In the streaming `ConsumeAsync` path the span stays current while your handler runs and is ended when the next record is requested — a `process` operation (`CONSUMER` kind) whose duration covers message handling; any spans your handler creates are parented under it. In the single-record `ConsumeOne` paths the span ends before the record is returned, covering only delivery and deserialization — a `receive` operation (`CLIENT` kind).
+The two consume flavors match the span's actual lifetime. In the streaming `ConsumeAsync` path the span stays open while your handler runs and is ended when the next record is requested — a `process` operation (`CONSUMER` kind) whose duration covers message handling. Note the span is not `Activity.Current` inside your loop body, so spans your handler creates are **not** automatically parented under it; to correlate handler work with the message, create your own span and use the producer's trace context from the message `traceparent` header, or rely on duration overlap within the trace. In the single-record `ConsumeOne` paths the span ends before the record is returned, covering only delivery and deserialization — a `receive` operation (`CLIENT` kind).
 
 ### Trace Context Propagation
 

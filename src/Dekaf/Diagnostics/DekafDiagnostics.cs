@@ -49,10 +49,11 @@ public static class DekafDiagnostics
 
     // messaging.operation.type well-known values / messaging.operation.name values.
     // Consume spans come in two flavors matching their activity lifetimes:
-    // the streaming ConsumeAsync span stays current while user code handles the
-    // record, so it is a "process" span (CONSUMER kind); the ConsumeOne span ends
-    // before the record is returned, so it is a "receive" span named "poll"
-    // (CLIENT kind). "poll" is also the operation name on consumed-message metrics.
+    // the streaming ConsumeAsync span stays open while user code handles the
+    // record (its duration covers handling), so it is a "process" span (CONSUMER
+    // kind); the ConsumeOne span ends before the record is returned, so it is a
+    // "receive" span named "poll" (CLIENT kind). "poll" is also the operation
+    // name on consumed-message metrics.
     internal const string OperationTypeSend = "send";
     internal const string OperationTypeReceive = "receive";
     internal const string OperationTypeProcess = "process";

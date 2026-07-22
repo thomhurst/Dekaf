@@ -7549,9 +7549,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Use span links (not parent-child) per OTel messaging semantic conventions:
         // the consumer span gets its own trace root, linked to the producer span.
         // Two flavors, matching the activity's actual lifetime at the call site:
-        // - Streaming ConsumeAsync (isProcessSpan): the activity stays current while
-        //   the caller handles the record and is disposed on the next MoveNext, so it
-        //   is a "process" span (CONSUMER kind) and handler child spans parent under it.
+        // - Streaming ConsumeAsync (isProcessSpan): the activity stays open until the
+        //   next MoveNext, so its duration covers the caller's handling of the record —
+        //   a "process" span (CONSUMER kind). Note it is NOT Activity.Current inside the
+        //   caller's loop body (Current is restored below, and AsyncLocal changes made
+        //   here would not flow out of the iterator anyway), so handler-created spans do
+        //   not parent under it — they correlate via duration overlap only.
         // - ConsumeOne (sync + async): the activity ends in a finally before the record
         //   is returned, covering only delivery/deserialization — a "receive" span
         //   named "poll" (CLIENT kind). Labeling it "process" would report
