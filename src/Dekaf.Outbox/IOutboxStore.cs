@@ -55,6 +55,12 @@ public interface IOutboxStore
     /// Reads the oldest unpublished rows for a bucket, ordered by ascending
     /// <see cref="OutboxMessage.Id"/>. Only call for a bucket whose lease this relay holds.
     /// </summary>
+    /// <remarks>
+    /// Ordering means commit order: a row is "older" once its transaction is visible. Two
+    /// uncoordinated transactions enqueuing concurrently for one key can commit out of id
+    /// order, but such writers have no defined order at the business level either -
+    /// aggregates written under any concurrency control serialize their commits and ids.
+    /// </remarks>
     ValueTask<IReadOnlyList<OutboxMessage>> GetNextBatchAsync(
         int bucket,
         int maxCount,
