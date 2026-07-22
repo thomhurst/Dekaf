@@ -47,10 +47,18 @@ public static class DekafDiagnostics
 
     internal const string MessagingSystemValue = "kafka";
 
-    // messaging.operation.type well-known values / messaging.operation.name values
+    // messaging.operation.type well-known values / messaging.operation.name values.
+    // Consume spans come in two flavors matching their activity lifetimes:
+    // the streaming ConsumeAsync span stays open while user code handles the
+    // record (its duration covers handling), so it is a "process" span (CONSUMER
+    // kind); the ConsumeOne span ends before the record is returned, so it is a
+    // "receive" span named "poll" (CLIENT kind). "poll" is also the operation
+    // name on consumed-message metrics.
     internal const string OperationTypeSend = "send";
     internal const string OperationTypeReceive = "receive";
+    internal const string OperationTypeProcess = "process";
     internal const string OperationNameSend = "send";
+    internal const string OperationNameProcess = "process";
     internal const string OperationNamePoll = "poll";
 
     // OTel semantic convention attribute names — exceptions
@@ -67,6 +75,9 @@ public static class DekafDiagnostics
     /// Callers cache the result per topic.
     /// </summary>
     internal static string SendSpanName(string topic) => string.Concat(OperationNameSend, " ", topic);
+
+    /// <inheritdoc cref="SendSpanName"/>
+    internal static string ProcessSpanName(string topic) => string.Concat(OperationNameProcess, " ", topic);
 
     /// <inheritdoc cref="SendSpanName"/>
     internal static string PollSpanName(string topic) => string.Concat(OperationNamePoll, " ", topic);

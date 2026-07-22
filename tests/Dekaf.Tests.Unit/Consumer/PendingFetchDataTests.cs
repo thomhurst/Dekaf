@@ -19,7 +19,7 @@ public class PendingFetchDataTests
     {
         // Arrange
         const string topic = "test-topic";
-        const string activityName = "poll test-topic";
+        const string activityName = "process test-topic";
 
         using var pending = PendingFetchData.Create(
             topic,
@@ -58,7 +58,7 @@ public class PendingFetchDataTests
             batches: Array.Empty<RecordBatch>());
 
         // Assert - falls back to lazy activity name creation
-        await Assert.That(pending.ActivityName).IsEqualTo("poll my-topic");
+        await Assert.That(pending.ActivityName).IsEqualTo("process my-topic");
         await Assert.That(ActivityNameField.GetValue(pending)).IsSameReferenceAs(pending.ActivityName);
     }
 
@@ -67,7 +67,7 @@ public class PendingFetchDataTests
     {
         // Arrange - pre-compute the activity name (simulating the cache)
         const string topic = "shared-topic";
-        var activityName = $"poll {topic}";
+        var activityName = $"process {topic}";
 
         using var pending1 = PendingFetchData.Create(
             topic,
