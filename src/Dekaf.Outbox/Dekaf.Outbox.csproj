@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Outbox</PackageId>
+    <Description>Transactional outbox relay for the Dekaf Kafka client - at-least-once publishing from a database outbox table</Description>
+    <PackageTags>kafka;outbox;transactional-outbox;at-least-once</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+</Project>

@@ -27,6 +27,8 @@ public class PackModule : Module<List<PackedProject>>
         "Dekaf.Extensions.HealthChecks",
         "Dekaf.Extensions.Hosting",
         "Dekaf.OpenTelemetry",
+        "Dekaf.Outbox",
+        "Dekaf.Outbox.EntityFrameworkCore",
         "Dekaf.SchemaRegistry",
         "Dekaf.SchemaRegistry.Avro",
         "Dekaf.SchemaRegistry.Protobuf",
