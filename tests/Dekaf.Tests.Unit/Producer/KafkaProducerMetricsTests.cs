@@ -40,7 +40,7 @@ public sealed class KafkaProducerMetricsTests
                 messagesSent += measurement;
                 messagesTopic = metricTopic;
             }
-            else if (instrument.Name == "messaging.client.sent.bytes")
+            else if (instrument.Name == "dekaf.producer.sent.bytes")
             {
                 bytesSent += measurement;
                 bytesTopic = metricTopic;
@@ -152,6 +152,6 @@ public sealed class KafkaProducerMetricsTests
 
     private static bool IsProducerSuccessMetric(string name) =>
         name is "messaging.client.sent.messages"
-            or "messaging.client.sent.bytes"
+            or "dekaf.producer.sent.bytes"
             or "messaging.client.operation.duration";
 }

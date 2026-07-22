@@ -15,7 +15,7 @@ namespace Dekaf.Tests.Unit.Producer;
 public class ProducerAsyncPreparerTests
 {
     private const string Topic = "prepare-topic";
-    private const string PublishActivityName = Topic + " publish";
+    private const string PublishActivityName = "send " + Topic;
 
     [Test]
     public async Task ActivityListener_IgnoresOtherDekafOperations()
@@ -24,7 +24,7 @@ public class ProducerAsyncPreparerTests
         using (listener)
         {
             using (var unrelated = DekafDiagnostics.Source.StartActivity(
-                       "other-topic publish", ActivityKind.Producer))
+                       "send other-topic", ActivityKind.Producer))
             {
                 await Assert.That(unrelated).IsNotNull();
             }

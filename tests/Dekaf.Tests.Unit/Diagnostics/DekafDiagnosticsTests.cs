@@ -16,9 +16,9 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        using var activity = DekafDiagnostics.Source.StartActivity("test publish", ActivityKind.Producer);
+        using var activity = DekafDiagnostics.Source.StartActivity("send test", ActivityKind.Producer);
         await Assert.That(activity).IsNotNull();
-        await Assert.That(activity!.OperationName).IsEqualTo("test publish");
+        await Assert.That(activity!.OperationName).IsEqualTo("send test");
         await Assert.That(activity.Kind).IsEqualTo(ActivityKind.Producer);
     }
 
@@ -32,17 +32,19 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        using var activity = DekafDiagnostics.Source.StartActivity("test-topic publish", ActivityKind.Producer);
+        using var activity = DekafDiagnostics.Source.StartActivity("send test-topic", ActivityKind.Producer);
         await Assert.That(activity).IsNotNull();
 
         activity!.SetTag(DekafDiagnostics.MessagingSystem, DekafDiagnostics.MessagingSystemValue);
         activity.SetTag(DekafDiagnostics.MessagingDestinationName, "test-topic");
-        activity.SetTag(DekafDiagnostics.MessagingOperationType, "publish");
+        activity.SetTag(DekafDiagnostics.MessagingOperationName, DekafDiagnostics.OperationNameSend);
+        activity.SetTag(DekafDiagnostics.MessagingOperationType, DekafDiagnostics.OperationTypeSend);
 
         var tags = activity.Tags.ToDictionary(t => t.Key, t => t.Value);
         await Assert.That(tags["messaging.system"]).IsEqualTo("kafka");
         await Assert.That(tags["messaging.destination.name"]).IsEqualTo("test-topic");
-        await Assert.That(tags["messaging.operation.type"]).IsEqualTo("publish");
+        await Assert.That(tags["messaging.operation.name"]).IsEqualTo("send");
+        await Assert.That(tags["messaging.operation.type"]).IsEqualTo("send");
     }
 
     [Test]
@@ -76,10 +78,10 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        // OTel semantic convention: "{topic} publish" for producer spans
-        using var activity = DekafDiagnostics.Source.StartActivity("orders publish", ActivityKind.Producer);
+        // OTel semantic convention: "{operation name} {destination}" for producer spans
+        using var activity = DekafDiagnostics.Source.StartActivity("send orders", ActivityKind.Producer);
         await Assert.That(activity).IsNotNull();
-        await Assert.That(activity!.OperationName).IsEqualTo("orders publish");
+        await Assert.That(activity!.OperationName).IsEqualTo("send orders");
         await Assert.That(activity.Kind).IsEqualTo(ActivityKind.Producer);
     }
 
@@ -93,10 +95,10 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        // OTel semantic convention: "{topic} receive" for consumer spans
-        using var activity = DekafDiagnostics.Source.StartActivity("orders receive", ActivityKind.Consumer);
+        // OTel semantic convention: "{operation name} {destination}" for consumer spans
+        using var activity = DekafDiagnostics.Source.StartActivity("poll orders", ActivityKind.Consumer);
         await Assert.That(activity).IsNotNull();
-        await Assert.That(activity!.OperationName).IsEqualTo("orders receive");
+        await Assert.That(activity!.OperationName).IsEqualTo("poll orders");
         await Assert.That(activity.Kind).IsEqualTo(ActivityKind.Consumer);
     }
 
@@ -110,27 +112,29 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        using var activity = DekafDiagnostics.Source.StartActivity("my-topic publish", ActivityKind.Producer);
+        using var activity = DekafDiagnostics.Source.StartActivity("send my-topic", ActivityKind.Producer);
         await Assert.That(activity).IsNotNull();
 
         // Simulate what the producer does (using string values for tag retrieval compatibility)
         activity!.SetTag(DekafDiagnostics.MessagingSystem, DekafDiagnostics.MessagingSystemValue);
         activity.SetTag(DekafDiagnostics.MessagingDestinationName, "my-topic");
-        activity.SetTag(DekafDiagnostics.MessagingOperationType, "publish");
+        activity.SetTag(DekafDiagnostics.MessagingOperationName, DekafDiagnostics.OperationNameSend);
+        activity.SetTag(DekafDiagnostics.MessagingOperationType, DekafDiagnostics.OperationTypeSend);
         activity.SetTag(DekafDiagnostics.MessagingClientId, "my-producer");
         activity.SetTag(DekafDiagnostics.MessagingMessageKey, "order-123");
         activity.SetTag(DekafDiagnostics.MessagingDestinationPartitionId, "2");
-        activity.SetTag(DekafDiagnostics.MessagingMessageOffset, "42");
+        activity.SetTag(DekafDiagnostics.MessagingKafkaOffset, "42");
         activity.SetTag(DekafDiagnostics.MessagingMessageBodySize, 1024);
 
         var tags = activity.Tags.ToDictionary(t => t.Key, t => t.Value);
         await Assert.That(tags["messaging.system"]).IsEqualTo("kafka");
         await Assert.That(tags["messaging.destination.name"]).IsEqualTo("my-topic");
-        await Assert.That(tags["messaging.operation.type"]).IsEqualTo("publish");
+        await Assert.That(tags["messaging.operation.name"]).IsEqualTo("send");
+        await Assert.That(tags["messaging.operation.type"]).IsEqualTo("send");
         await Assert.That(tags["messaging.client.id"]).IsEqualTo("my-producer");
         await Assert.That(tags["messaging.kafka.message.key"]).IsEqualTo("order-123");
         await Assert.That(tags["messaging.destination.partition.id"]).IsEqualTo("2");
-        await Assert.That(tags["messaging.kafka.message.offset"]).IsEqualTo("42");
+        await Assert.That(tags["messaging.kafka.offset"]).IsEqualTo("42");
         await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(1024);
     }
 
@@ -144,26 +148,28 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        using var activity = DekafDiagnostics.Source.StartActivity("my-topic receive", ActivityKind.Consumer);
+        using var activity = DekafDiagnostics.Source.StartActivity("poll my-topic", ActivityKind.Consumer);
         await Assert.That(activity).IsNotNull();
 
         // Simulate what the consumer does (using string values for tag retrieval compatibility)
         activity!.SetTag(DekafDiagnostics.MessagingSystem, DekafDiagnostics.MessagingSystemValue);
         activity.SetTag(DekafDiagnostics.MessagingDestinationName, "my-topic");
-        activity.SetTag(DekafDiagnostics.MessagingOperationType, "receive");
+        activity.SetTag(DekafDiagnostics.MessagingOperationName, DekafDiagnostics.OperationNamePoll);
+        activity.SetTag(DekafDiagnostics.MessagingOperationType, DekafDiagnostics.OperationTypeReceive);
         activity.SetTag(DekafDiagnostics.MessagingClientId, "my-consumer");
         activity.SetTag(DekafDiagnostics.MessagingDestinationPartitionId, "0");
-        activity.SetTag(DekafDiagnostics.MessagingMessageOffset, "100");
+        activity.SetTag(DekafDiagnostics.MessagingKafkaOffset, "100");
         activity.SetTag(DekafDiagnostics.MessagingMessageBodySize, 512);
         activity.SetTag(DekafDiagnostics.MessagingConsumerGroupName, "my-group");
 
         var tags = activity.Tags.ToDictionary(t => t.Key, t => t.Value);
         await Assert.That(tags["messaging.system"]).IsEqualTo("kafka");
         await Assert.That(tags["messaging.destination.name"]).IsEqualTo("my-topic");
+        await Assert.That(tags["messaging.operation.name"]).IsEqualTo("poll");
         await Assert.That(tags["messaging.operation.type"]).IsEqualTo("receive");
         await Assert.That(tags["messaging.client.id"]).IsEqualTo("my-consumer");
         await Assert.That(tags["messaging.destination.partition.id"]).IsEqualTo("0");
-        await Assert.That(tags["messaging.kafka.message.offset"]).IsEqualTo("100");
+        await Assert.That(tags["messaging.kafka.offset"]).IsEqualTo("100");
         await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(512);
         await Assert.That(tags["messaging.consumer.group.name"]).IsEqualTo("my-group");
     }
@@ -184,7 +190,7 @@ public sealed class DekafDiagnosticsTests
         ActivitySpanId producerSpanId;
         Dekaf.Serialization.Headers headers;
         {
-            using var producerActivity = DekafDiagnostics.Source.StartActivity("orders publish", ActivityKind.Producer);
+            using var producerActivity = DekafDiagnostics.Source.StartActivity("send orders", ActivityKind.Producer);
             await Assert.That(producerActivity).IsNotNull();
             producerTraceId = producerActivity!.TraceId;
             producerSpanId = producerActivity.SpanId;
@@ -205,7 +211,7 @@ public sealed class DekafDiagnosticsTests
         // Consumer creates span with link (not parent-child) per OTel conventions
         var links = new[] { new ActivityLink(producerContext!.Value) };
         using var consumerActivity = DekafDiagnostics.Source.StartActivity(
-            "orders receive",
+            "poll orders",
             ActivityKind.Consumer,
             parentContext: default(ActivityContext),
             tags: null,
@@ -237,7 +243,7 @@ public sealed class DekafDiagnosticsTests
 
         // Consumer span without extracted producer context (no traceparent header)
         using var consumerActivity = DekafDiagnostics.Source.StartActivity(
-            "orders receive",
+            "poll orders",
             ActivityKind.Consumer,
             parentContext: default(ActivityContext),
             tags: null,
@@ -254,6 +260,14 @@ public sealed class DekafDiagnosticsTests
     }
 
     [Test]
+    public async Task MessagingKafkaOffset_ConstantHasCorrectValue()
+    {
+        // Current semconv name; "messaging.kafka.message.offset" is the deprecated form.
+        string value = DekafDiagnostics.MessagingKafkaOffset;
+        await Assert.That(value).IsEqualTo("messaging.kafka.offset");
+    }
+
+    [Test]
     public async Task ProducerSpan_WithByteArrayKey_DoesNotSetKeyAttribute()
     {
         using var listener = new ActivityListener
@@ -263,7 +277,7 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        using var activity = DekafDiagnostics.Source.StartActivity("my-topic publish", ActivityKind.Producer);
+        using var activity = DekafDiagnostics.Source.StartActivity("send my-topic", ActivityKind.Producer);
         await Assert.That(activity).IsNotNull();
 
         // Simulate the producer's key-handling logic with a byte[] key.
@@ -290,7 +304,7 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        using var activity = DekafDiagnostics.Source.StartActivity("my-topic publish", ActivityKind.Producer);
+        using var activity = DekafDiagnostics.Source.StartActivity("send my-topic", ActivityKind.Producer);
         await Assert.That(activity).IsNotNull();
 
         // Simulate the producer's key-handling logic with an int key.
@@ -308,7 +322,7 @@ public sealed class DekafDiagnosticsTests
     }
 
     [Test]
-    public async Task RecordException_SetsStatusAndAddsEvent()
+    public async Task RecordException_SetsStatusErrorTypeAndAddsEvent()
     {
         using var listener = new ActivityListener
         {
@@ -317,7 +331,7 @@ public sealed class DekafDiagnosticsTests
         };
         ActivitySource.AddActivityListener(listener);
 
-        using var activity = DekafDiagnostics.Source.StartActivity("test publish", ActivityKind.Producer);
+        using var activity = DekafDiagnostics.Source.StartActivity("send test", ActivityKind.Producer);
         await Assert.That(activity).IsNotNull();
 
         var exception = new InvalidOperationException("test error");
@@ -325,6 +339,10 @@ public sealed class DekafDiagnosticsTests
 
         await Assert.That(activity!.Status).IsEqualTo(ActivityStatusCode.Error);
         await Assert.That(activity.StatusDescription).IsEqualTo("test error");
+
+        // error.type is conditionally required on failed messaging spans
+        await Assert.That(activity.GetTagItem("error.type"))
+            .IsEqualTo(typeof(InvalidOperationException).FullName);
 
         var events = activity.Events.ToList();
         await Assert.That(events).Count().IsEqualTo(1);

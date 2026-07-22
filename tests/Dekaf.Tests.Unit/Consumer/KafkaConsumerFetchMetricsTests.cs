@@ -36,15 +36,15 @@ public sealed class KafkaConsumerFetchMetricsTests
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
             if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
-                instrument.Name == "messaging.consumer.fetch.duration")
+                instrument.Name == "dekaf.consumer.fetch.duration")
             {
                 meterListener.EnableMeasurementEvents(instrument);
             }
         };
         listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
         {
-            if (instrument.Name == "messaging.consumer.fetch.duration" &&
-                GetTag(tags, DekafDiagnostics.MessagingKafkaBrokerId) is int metricBrokerId &&
+            if (instrument.Name == "dekaf.consumer.fetch.duration" &&
+                GetTag(tags, DekafDiagnostics.DekafBrokerId) is int metricBrokerId &&
                 metricBrokerId == expectedBrokerId)
             {
                 duration = measurement;

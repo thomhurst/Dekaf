@@ -8,7 +8,7 @@ namespace Dekaf.Tests.Unit.Producer;
 /// Fire-and-forget records have no completion source, so a failed batch used to vanish
 /// without any signal: no exception, no callback, and no metric. These tests pin the fix —
 /// ReadyBatch.Fail must count records without completion sources on
-/// messaging.client.sent.errors so fire-and-forget delivery failures are observable.
+/// dekaf.producer.send.errors so fire-and-forget delivery failures are observable.
 /// </summary>
 public sealed class FireAndForgetDeliveryErrorMetricTests
 {

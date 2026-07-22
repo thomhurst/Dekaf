@@ -10,7 +10,8 @@ namespace Dekaf.Diagnostics;
 /// </summary>
 internal static class DekafMetrics
 {
-    // OTel semantic convention metrics
+    // OTel semantic convention metrics (messaging.* namespace is reserved for the
+    // spec-defined instruments; everything Dekaf-specific lives under dekaf.*)
     internal static readonly Counter<long> MessagesSent =
         DekafDiagnostics.Meter.CreateCounter<long>(
             "messaging.client.sent.messages",
@@ -19,7 +20,7 @@ internal static class DekafMetrics
 
     internal static readonly Counter<long> BytesSent =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.client.sent.bytes",
+            "dekaf.producer.sent.bytes",
             unit: "By",
             description: "Total bytes published to Kafka.");
 
@@ -31,13 +32,13 @@ internal static class DekafMetrics
 
     internal static readonly Counter<long> ProduceErrors =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.client.sent.errors",
+            "dekaf.producer.send.errors",
             unit: "{error}",
             description: "Number of produce errors.");
 
     internal static readonly Counter<long> Retries =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.client.sent.retries",
+            "dekaf.producer.send.retries",
             unit: "{retry}",
             description: "Number of produce retries.");
 
@@ -80,25 +81,25 @@ internal static class DekafMetrics
 
     internal static readonly Counter<long> BytesReceived =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.client.consumed.bytes",
+            "dekaf.consumer.consumed.bytes",
             unit: "By",
             description: "Total bytes received from Kafka.");
 
     internal static readonly Histogram<double> RebalanceDuration =
         DekafDiagnostics.Meter.CreateHistogram<double>(
-            "messaging.consumer.rebalance.duration",
+            "dekaf.consumer.rebalance.duration",
             unit: "s",
             description: "Duration of consumer group rebalances.");
 
     internal static readonly Histogram<double> FetchDuration =
         DekafDiagnostics.Meter.CreateHistogram<double>(
-            "messaging.consumer.fetch.duration",
+            "dekaf.consumer.fetch.duration",
             unit: "s",
             description: "Round-trip time of fetch requests to Kafka brokers.");
 
     internal static readonly Counter<long> BatchParseErrors =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.consumer.batch.parse.errors",
+            "dekaf.consumer.batch.parse.errors",
             unit: "{error}",
             description: "Number of record batches that failed protocol parsing.");
 
@@ -111,7 +112,7 @@ internal static class DekafMetrics
 
     internal static readonly ObservableGauge<long> ConsumerLagGauge =
         DekafDiagnostics.Meter.CreateObservableGauge(
-            "messaging.consumer.lag",
+            "dekaf.consumer.lag",
             observeValues: ObserveAllConsumerLag,
             unit: "{message}",
             description: "Difference between high watermark and consumed position per partition.");

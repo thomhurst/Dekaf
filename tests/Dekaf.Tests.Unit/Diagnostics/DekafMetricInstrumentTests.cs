@@ -36,20 +36,20 @@ public sealed class DekafMetricInstrumentTests
         DekafMetrics.FetchDuration.Record(0);
 
         await Assert.That(instrumentNames).Contains("messaging.client.sent.messages");
-        await Assert.That(instrumentNames).Contains("messaging.client.sent.bytes");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.sent.bytes");
         await Assert.That(instrumentNames).Contains("messaging.client.operation.duration");
-        await Assert.That(instrumentNames).Contains("messaging.client.sent.errors");
-        await Assert.That(instrumentNames).Contains("messaging.client.sent.retries");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.send.errors");
+        await Assert.That(instrumentNames).Contains("dekaf.producer.send.retries");
         await Assert.That(instrumentNames).Contains("dekaf.producer.batch.splits");
         await Assert.That(instrumentNames).Contains("dekaf.producer.inline_continuation.exceptions");
         await Assert.That(instrumentNames).Contains("dekaf.producer.completion_source.faults");
         await Assert.That(instrumentNames).Contains("dekaf.producer.pending_response.cleanup.deferred");
         await Assert.That(instrumentNames).Contains("dekaf.producer.pending_response.cleanup.recovered");
         await Assert.That(instrumentNames).Contains("messaging.client.consumed.messages");
-        await Assert.That(instrumentNames).Contains("messaging.client.consumed.bytes");
-        await Assert.That(instrumentNames).Contains("messaging.consumer.rebalance.duration");
-        await Assert.That(instrumentNames).Contains("messaging.consumer.fetch.duration");
-        await Assert.That(instrumentNames).Contains("messaging.consumer.lag");
+        await Assert.That(instrumentNames).Contains("dekaf.consumer.consumed.bytes");
+        await Assert.That(instrumentNames).Contains("dekaf.consumer.rebalance.duration");
+        await Assert.That(instrumentNames).Contains("dekaf.consumer.fetch.duration");
+        await Assert.That(instrumentNames).Contains("dekaf.consumer.lag");
         await Assert.That(instrumentNames).Contains("dekaf.consumer.fetch_buffer.used_bytes");
         await Assert.That(instrumentNames).Contains("dekaf.consumer.fetch_buffer.free_bytes");
         await Assert.That(instrumentNames).Contains("dekaf.consumer.fetch_buffer.depleted_percent");
