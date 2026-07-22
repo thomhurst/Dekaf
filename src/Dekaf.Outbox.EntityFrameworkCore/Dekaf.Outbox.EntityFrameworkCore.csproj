@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Outbox.EntityFrameworkCore</PackageId>
+    <Description>Entity Framework Core outbox store for Dekaf.Outbox - schema mapping, bucket leases, and enqueue helpers</Description>
+    <PackageTags>kafka;outbox;transactional-outbox;entity-framework;efcore</PackageTags>
+    <!-- Entity Framework Core is not trim/AOT compatible. -->
+    <IsAotCompatible>false</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
+    <ProjectReference Include="..\Dekaf.Outbox\Dekaf.Outbox.csproj" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+  </ItemGroup>
+
+</Project>

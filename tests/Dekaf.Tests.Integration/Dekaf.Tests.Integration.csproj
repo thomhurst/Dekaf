@@ -21,6 +21,14 @@
     <ProjectReference Include="..\..\src\Dekaf.Compression.Zstd\Dekaf.Compression.Zstd.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Extensions.DependencyInjection\Dekaf.Extensions.DependencyInjection.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Extensions.Hosting\Dekaf.Extensions.Hosting.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Outbox\Dekaf.Outbox.csproj" />
+    <!-- Entity Framework Core cannot compile under NativeAOT (ILC IL3002 in EF itself);
+         the outbox EF store and its end-to-end test are covered by the JIT legs only. -->
+    <ProjectReference Include="..\..\src\Dekaf.Outbox.EntityFrameworkCore\Dekaf.Outbox.EntityFrameworkCore.csproj" Condition="'$(PublishAot)' != 'true'" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PublishAot)' == 'true'">
+    <Compile Remove="OutboxRelayIntegrationTests.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -28,7 +36,9 @@
     <PackageReference Include="Confluent.Kafka" />
     <PackageReference Include="Google.Protobuf" />
     <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Condition="'$(PublishAot)' != 'true'" />
     <PackageReference Include="TUnit" />
     <PackageReference Include="TUnit.Logging.Microsoft" />
     <PackageReference Include="Testcontainers.Kafka" />

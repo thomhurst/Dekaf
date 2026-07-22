@@ -15,6 +15,7 @@ const sidebars = {
         'producer/headers',
         'producer/partitioning',
         'producer/transactions',
+        'producer/outbox',
       ],
     },
     {
