@@ -30,6 +30,8 @@
     <Content Include="Corpus\RecordBatch\*" CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="Corpus\Responses\*" />
     <Content Include="Corpus\Responses\*" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Corpus\ResponseRegressions\*" />
+    <Content Include="Corpus\ResponseRegressions\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
