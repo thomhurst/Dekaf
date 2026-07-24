@@ -144,6 +144,21 @@ public class Lz4CompressionCodecTests
             .ThrowsExactly<InvalidOperationException>();
     }
 
+    [Test]
+    public async Task Lz4CompressionCodec_Decompress_DestinationNotImplemented_IsPreserved()
+    {
+        var codec = new Lz4CompressionCodec();
+        var compressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Compress(new ReadOnlySequence<byte>("test"u8.ToArray()), compressedBuffer);
+
+        // A NotImplementedException thrown by the caller-provided destination must not be
+        // misreported as an unsupported LZ4 frame feature.
+        await Assert.That(() => codec.Decompress(
+                new ReadOnlySequence<byte>(compressedBuffer.WrittenMemory),
+                new NotImplementedBufferWriter()))
+            .ThrowsExactly<NotImplementedException>();
+    }
+
     #endregion
 
     #region Compression Level Tests
@@ -284,6 +299,15 @@ public class Lz4CompressionCodecTests
         public Memory<byte> GetMemory(int sizeHint = 0) => throw new InvalidOperationException();
 
         public Span<byte> GetSpan(int sizeHint = 0) => throw new InvalidOperationException();
+    }
+
+    private sealed class NotImplementedBufferWriter : IBufferWriter<byte>
+    {
+        public void Advance(int count) => throw new NotImplementedException();
+
+        public Memory<byte> GetMemory(int sizeHint = 0) => throw new NotImplementedException();
+
+        public Span<byte> GetSpan(int sizeHint = 0) => throw new NotImplementedException();
     }
 
     #endregion

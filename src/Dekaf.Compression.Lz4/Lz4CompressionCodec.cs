@@ -56,6 +56,7 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
             throw new InvalidDataException("Invalid LZ4 payload.", exception);
         }
         catch (NotImplementedException exception)
+            when (!trackedDestination.DestinationThrewNotImplementedException)
         {
             // K4os throws NotImplementedException for valid-but-unsupported frame
             // features (e.g. the DictID flag); surface those as corrupt-payload
@@ -93,10 +94,13 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
 
         internal bool DestinationThrewInvalidOperationException { get; private set; }
 
+        internal bool DestinationThrewNotImplementedException { get; private set; }
+
         internal void Initialize(IBufferWriter<byte> destination)
         {
             _destination = destination;
             DestinationThrewInvalidOperationException = false;
+            DestinationThrewNotImplementedException = false;
         }
 
         internal void Release() => _destination = null;
@@ -112,6 +116,11 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
                 DestinationThrewInvalidOperationException = true;
                 throw;
             }
+            catch (NotImplementedException)
+            {
+                DestinationThrewNotImplementedException = true;
+                throw;
+            }
         }
 
         public Memory<byte> GetMemory(int sizeHint = 0)
@@ -125,6 +134,11 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
                 DestinationThrewInvalidOperationException = true;
                 throw;
             }
+            catch (NotImplementedException)
+            {
+                DestinationThrewNotImplementedException = true;
+                throw;
+            }
         }
 
         public Span<byte> GetSpan(int sizeHint = 0)
@@ -136,6 +150,11 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
             catch (InvalidOperationException)
             {
                 DestinationThrewInvalidOperationException = true;
+                throw;
+            }
+            catch (NotImplementedException)
+            {
+                DestinationThrewNotImplementedException = true;
                 throw;
             }
         }
