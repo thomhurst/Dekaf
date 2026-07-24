@@ -93,11 +93,12 @@ public class ProduceResponseTests
     [Test]
     public async Task Read_TopicCountExceedingAbsoluteCap_ThrowsMalformedProtocolData()
     {
-        // A claimed count just above the request-size-derived cap, padded so it still
+        // A claimed count above the frame-derived ceiling (which no ratchet can exceed,
+        // making this deterministic under parallel ratchet tests), padded so it still
         // satisfies the pre-v13 3-byte wire minimum: the in-memory topic struct is an
         // order of magnitude larger than its minimum encoding, so counts above the cap
         // must be rejected before the array allocation.
-        var hostileCount = ProduceResponse.MaxTopicCount + 1000;
+        var hostileCount = ProduceResponse.MaxRatchetTopicCount + 1000;
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
         writer.WriteUnsignedVarInt(hostileCount + 1);
@@ -115,9 +116,25 @@ public class ProduceResponseTests
 
         ProduceResponse.RatchetMaxEntryCaps(1);
 
-        await Assert.That(ProduceResponse.MaxTopicCount).IsEqualTo(topicCap);
-        await Assert.That(ProduceResponse.MaxPartitionCount).IsEqualTo(partitionCap);
-        await Assert.That(ProduceResponse.MaxRecordErrorCount).IsEqualTo(recordErrorCap);
+        // >= rather than == so this cannot race a parallel test that ratchets caps up.
+        await Assert.That(ProduceResponse.MaxTopicCount).IsGreaterThanOrEqualTo(topicCap);
+        await Assert.That(ProduceResponse.MaxPartitionCount).IsGreaterThanOrEqualTo(partitionCap);
+        await Assert.That(ProduceResponse.MaxRecordErrorCount).IsGreaterThanOrEqualTo(recordErrorCap);
+    }
+
+    [Test]
+    public async Task RatchetMaxEntryCaps_HugeRequestSize_ClampsToFrameDerivedCeilings()
+    {
+        // A producer configured with an enormous max request size must not raise the
+        // process-global caps past what the 16 MiB response frame can actually deliver.
+        ProduceResponse.RatchetMaxEntryCaps(int.MaxValue);
+
+        await Assert.That(ProduceResponse.MaxTopicCount)
+            .IsLessThanOrEqualTo(ProduceResponse.MaxRatchetTopicCount);
+        await Assert.That(ProduceResponse.MaxPartitionCount)
+            .IsLessThanOrEqualTo(ProduceResponse.MaxRatchetPartitionCount);
+        await Assert.That(ProduceResponse.MaxRecordErrorCount)
+            .IsLessThanOrEqualTo(ProduceResponse.MaxRatchetRecordErrorCount);
     }
 
     [Test]

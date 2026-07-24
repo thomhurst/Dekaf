@@ -46,6 +46,20 @@ public sealed class ProduceResponse : IKafkaResponse
     private const int MinRequestBytesPerPartition = 64;
     private const int MinRequestBytesPerRecord = 4;
 
+    // Frame-derived ceilings for the ratchet: producer connections read responses through
+    // a frame capped at ResponseBufferPool.DefaultMaxArrayLength (16 MiB) regardless of
+    // the configured max request size (only consumer FetchMaxBytes raises the pool limit),
+    // so a deliverable response can never encode more entries than the frame holds at each
+    // entry's minimum legitimate response encoding. Clamping the request-derived ratchet
+    // to these bounds keeps the worst-case hostile in-memory allocation at tens of MB even
+    // when a producer is configured with a very large (e.g. 128 MiB) max request size.
+    private const int MaxResponseFrameBytes = 16 * 1024 * 1024;
+    // A legitimate response topic entry carries a name/id plus at least one 33-byte
+    // partition entry and two varints.
+    internal const int MaxRatchetTopicCount = MaxResponseFrameBytes / 36;
+    internal const int MaxRatchetPartitionCount = MaxResponseFrameBytes / 33;
+    internal const int MaxRatchetRecordErrorCount = MaxResponseFrameBytes / 6;
+
     private static int s_maxTopicCount = DefaultMaxRequestSize / MinRequestBytesPerTopic;
     private static int s_maxPartitionCount = DefaultMaxRequestSize / MinRequestBytesPerPartition;
     private static int s_maxRecordErrorCount = DefaultMaxRequestSize / MinRequestBytesPerRecord;
@@ -58,15 +72,21 @@ public sealed class ProduceResponse : IKafkaResponse
 
     /// <summary>
     /// Raises the response parse caps for producers configured with a max request size
-    /// larger than the default. Monotonic — caps never shrink — mirroring
-    /// <see cref="RatchetPoolSize"/>, since responses can only echo requests this client
-    /// was configured to send.
+    /// larger than the default, clamped to the response-frame-derived ceilings. Monotonic
+    /// — caps never shrink — mirroring <see cref="RatchetPoolSize"/>, since responses can
+    /// only echo requests this client was configured to send.
     /// </summary>
     internal static void RatchetMaxEntryCaps(int maxRequestSize)
     {
-        InterlockedHelper.RatchetUp(ref s_maxTopicCount, maxRequestSize / MinRequestBytesPerTopic);
-        InterlockedHelper.RatchetUp(ref s_maxPartitionCount, maxRequestSize / MinRequestBytesPerPartition);
-        InterlockedHelper.RatchetUp(ref s_maxRecordErrorCount, maxRequestSize / MinRequestBytesPerRecord);
+        InterlockedHelper.RatchetUp(
+            ref s_maxTopicCount,
+            Math.Min(maxRequestSize / MinRequestBytesPerTopic, MaxRatchetTopicCount));
+        InterlockedHelper.RatchetUp(
+            ref s_maxPartitionCount,
+            Math.Min(maxRequestSize / MinRequestBytesPerPartition, MaxRatchetPartitionCount));
+        InterlockedHelper.RatchetUp(
+            ref s_maxRecordErrorCount,
+            Math.Min(maxRequestSize / MinRequestBytesPerRecord, MaxRatchetRecordErrorCount));
     }
 
     /// <summary>
