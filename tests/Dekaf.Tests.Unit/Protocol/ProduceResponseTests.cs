@@ -225,10 +225,9 @@ public class ProduceResponseTests
             ThrottleTimeMs = 9
         };
 
-        response.Return();
-
-        // Pooled instances go through Reset (which clears ThrottleTimeMs); a dropped
-        // instance is left untouched.
+        // TryPrepareForPool (not Return) so the assertion cannot race another test
+        // renting the instance from the shared pool.
+        await Assert.That(response.TryPrepareForPool()).IsFalse();
         await Assert.That(response.ThrottleTimeMs).IsEqualTo(9);
     }
 
@@ -243,10 +242,10 @@ public class ProduceResponseTests
         };
         response.Responses[0].PartitionResponses = new ProduceResponsePartitionData[10_000];
 
-        response.Return();
-
+        // TryPrepareForPool (not Return) so the assertions cannot race another test
+        // renting the instance from the shared pool.
+        await Assert.That(response.TryPrepareForPool()).IsTrue();
         await Assert.That(response.Responses[0].PartitionResponses).IsNull();
-        await Assert.That(response.ThrottleTimeMs).IsEqualTo(0);
     }
 
     [Test]
@@ -271,13 +270,14 @@ public class ProduceResponseTests
             RecordErrors = new BatchIndexAndErrorMessage[1]
         };
 
-        response.Return();
+        // TryPrepareForPool (not Return) so the assertions cannot race another test
+        // renting the instance from the shared pool.
+        await Assert.That(response.TryPrepareForPool()).IsTrue();
 
         // Pooled instances must not pin strings or nested arrays from prior responses.
         await Assert.That(response.Responses[0].Name).IsEmpty();
         await Assert.That(response.Responses[0].PartitionResponses[0].ErrorMessage).IsNull();
         await Assert.That(response.Responses[0].PartitionResponses[0].RecordErrors).IsNull();
-        await Assert.That(response.ThrottleTimeMs).IsEqualTo(0);
     }
 
     [Test]
@@ -306,9 +306,50 @@ public class ProduceResponseTests
         await Assert.That(response.Responses[0].HasNestedReferences).IsTrue();
         await Assert.That(response.Responses[0].PartitionResponses[0].ErrorMessage).IsEqualTo("err");
 
-        response.Return();
+        // TryPrepareForPool (not Return) so the assertion cannot race another test
+        // renting the instance from the shared pool.
+        await Assert.That(response.TryPrepareForPool()).IsTrue();
 
         await Assert.That(response.Responses[0].PartitionResponses[0].ErrorMessage).IsNull();
+    }
+
+    [Test]
+    public async Task Read_ResponseWithCurrentLeaderOnly_SetsFlagAndClearsEntriesOnReturn()
+    {
+        // CurrentLeader (LeaderIdAndEpoch) is a class, so a partition whose only heap
+        // reference is a KIP-951 leader hint must still trigger the pool-return clear.
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUnsignedVarInt(2); // one topic
+        writer.WriteUuid(Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"));
+        writer.WriteUnsignedVarInt(2); // one partition
+        writer.WriteInt32(0);          // partition index
+        writer.WriteInt16((short)ErrorCode.NotLeaderOrFollower);
+        writer.WriteInt64(-1);         // base offset
+        writer.WriteInt64(-1);         // log append time
+        writer.WriteInt64(-1);         // log start offset
+        writer.WriteUnsignedVarInt(0); // null record errors
+        writer.WriteUnsignedVarInt(0); // null error message
+        writer.WriteUnsignedVarInt(1); // one partition tagged field
+        writer.WriteUnsignedVarInt(0); // tag 0 = current leader
+        writer.WriteUnsignedVarInt(8); // tagged-field size
+        writer.WriteInt32(5);          // leader id
+        writer.WriteInt32(3);          // leader epoch
+        writer.WriteUnsignedVarInt(0); // topic tagged fields
+        writer.WriteInt32(0);          // throttle time
+        writer.WriteUnsignedVarInt(0); // response tagged fields
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ProduceResponse)ProduceResponse.Read(ref reader, 13);
+
+        await Assert.That(response.Responses[0].HasNestedReferences).IsTrue();
+        await Assert.That(response.Responses[0].PartitionResponses[0].CurrentLeader).IsNotNull();
+
+        // TryPrepareForPool (not Return) so the assertion cannot race another test
+        // renting the instance from the shared pool.
+        await Assert.That(response.TryPrepareForPool()).IsTrue();
+
+        await Assert.That(response.Responses[0].PartitionResponses[0].CurrentLeader).IsNull();
     }
 
     private static void ReadRaw(ArrayBufferWriter<byte> buffer, short version)

@@ -197,8 +197,20 @@ public sealed class ProduceResponse : IKafkaResponse
     /// </summary>
     internal void Return()
     {
+        if (TryPrepareForPool())
+            Volatile.Read(ref s_pool).Return(this);
+    }
+
+    /// <summary>
+    /// Applies pool hygiene (drop oversized instances, trim oversized nested arrays,
+    /// clear reference-bearing entries) and reports whether the instance may be pooled.
+    /// Internal so tests can assert the prepared state race-free — an instance that has
+    /// entered the shared pool can be re-rented and overwritten by a concurrent test.
+    /// </summary>
+    internal bool TryPrepareForPool()
+    {
         if (Responses.Length > MaxPooledTopicCapacity)
-            return;
+            return false;
 
         // Only entries this response touched can have grown or hold references; earlier
         // returns already vetted the rest, so the scan is O(this response's content) —
@@ -231,7 +243,7 @@ public sealed class ProduceResponse : IKafkaResponse
             }
         }
 
-        Volatile.Read(ref s_pool).Return(this);
+        return true;
     }
 
     /// <summary>
@@ -359,7 +371,11 @@ public struct ProduceResponseTopicData
                 var partition = ProduceResponsePartitionData.Read(ref reader, version);
                 // RecordErrors is the shared empty singleton (never null) on the happy
                 // path, so only a populated array counts as a pinned reference.
-                hasNestedReferences |= partition.ErrorMessage is not null || partition.RecordErrors is { Length: > 0 };
+                // CurrentLeader (LeaderIdAndEpoch) is a class — a heap reference
+                // populated on KIP-951 retriable-leader errors — so it counts too.
+                hasNestedReferences |= partition.ErrorMessage is not null
+                    || partition.RecordErrors is { Length: > 0 }
+                    || partition.CurrentLeader is not null;
                 PartitionResponses[i] = partition;
             }
 
