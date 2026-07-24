@@ -23,6 +23,17 @@ public sealed class ProduceResponse : IKafkaResponse
     private const int MaxPooledTopicCapacity = 1024;
     private const int MaxPooledPartitionCapacity = 4096;
 
+    // Absolute parse caps: a produce response echoes the topics/partitions of the produce
+    // request that elicited it, and the default 1 MiB max.request.size bounds a request to
+    // far fewer entries than these. The wire-minimum bound alone is insufficient because
+    // the in-memory element can be an order of magnitude larger than its minimum encoding
+    // (e.g. a 3-byte pre-v13 topic entry expands to a ~48-byte struct, letting a 16 MiB
+    // frame demand hundreds of MiB before parsing fails).
+    internal const int MaxTopicCount = 10_000;
+    internal const int MaxPartitionCount = 100_000;
+    internal const int MaxRecordErrorCount = 100_000;
+    internal const int MaxNodeEndpointCount = 10_000;
+
     /// <summary>
     /// Response for each topic. Reusable array — <see cref="TopicCount"/> indicates valid elements.
     /// When created via <see cref="Read"/>, the array is recycled across pool returns.
@@ -52,12 +63,13 @@ public sealed class ProduceResponse : IKafkaResponse
 
         // Each topic entry needs at least a topic id (16 bytes, v13+) or a compact name
         // length prefix (1 byte), plus partition-count and tagged-fields varints. A count
-        // that cannot fit in the remaining payload at that minimum size is malformed and
-        // must fail before the array allocation.
+        // that cannot fit in the remaining payload at that minimum size, or that exceeds
+        // the absolute cap, is malformed and must fail before the array allocation.
         if (topicCount > 0)
-            reader.ValidateReadableLength(topicCount, version >= ProduceRequest.TopicIdVersion ? 18 : 3);
+            reader.ValidateReadableLength(topicCount, version >= ProduceRequest.TopicIdVersion ? 18 : 3, MaxTopicCount);
 
         var response = Volatile.Read(ref s_pool).Rent();
+        var parsedTopics = 0;
         try
         {
             if (topicCount > 0)
@@ -65,8 +77,8 @@ public sealed class ProduceResponse : IKafkaResponse
                 if (response.Responses.Length < topicCount)
                     response.Responses = new ProduceResponseTopicData[topicCount];
 
-                for (var i = 0; i < topicCount; i++)
-                    response.Responses[i].ReadInto(ref reader, version);
+                for (; parsedTopics < topicCount; parsedTopics++)
+                    response.Responses[parsedTopics].ReadInto(ref reader, version);
             }
 
             response.TopicCount = Math.Max(topicCount, 0);
@@ -78,7 +90,10 @@ public sealed class ProduceResponse : IKafkaResponse
         catch
         {
             // Hostile or truncated frames must not defeat the response pool: the caller
-            // never sees the instance on failure, so return it before propagating.
+            // never sees the instance on failure, so return it before propagating. Mark
+            // the entries this parse touched (including the partially-read one) so
+            // Return's pool-hygiene scan covers them.
+            response.TopicCount = Math.Max(Math.Min(parsedTopics + 1, topicCount), 0);
             response.Return();
             throw;
         }
@@ -100,7 +115,8 @@ public sealed class ProduceResponse : IKafkaResponse
                 // rack prefix (1), and tagged-fields varint (1) on the wire.
                 nodeEndpoints = reader.ReadCompactArray(
                     static (ref KafkaProtocolReader r) => NodeEndpoint.Read(ref r),
-                    minElementSize: 11);
+                    minElementSize: 11,
+                    maxCount: MaxNodeEndpointCount);
             }
             else
             {
@@ -124,7 +140,10 @@ public sealed class ProduceResponse : IKafkaResponse
         if (Responses.Length > MaxPooledTopicCapacity)
             return;
 
-        for (var i = 0; i < Responses.Length; i++)
+        // Only entries this response touched can have grown; earlier returns already
+        // vetted the rest, so the scan is O(topics in this response) — which the caller
+        // has just iterated anyway — not O(retained capacity).
+        for (var i = 0; i < TopicCount; i++)
         {
             if (Responses[i].PartitionResponses is { Length: > MaxPooledPartitionCapacity })
                 Responses[i].PartitionResponses = null!;
@@ -232,9 +251,9 @@ public struct ProduceResponseTopicData
             // Each partition entry carries 30 bytes of fixed fields (index, error code,
             // base offset, log append time, log start offset) plus three varints for the
             // record-errors array, error message, and tagged fields. A count that cannot
-            // fit in the remaining payload at that minimum size is malformed and must
-            // fail before the array allocation.
-            reader.ValidateReadableLength(PartitionCount, 33);
+            // fit in the remaining payload at that minimum size, or that exceeds the
+            // absolute cap, is malformed and must fail before the array allocation.
+            reader.ValidateReadableLength(PartitionCount, 33, ProduceResponse.MaxPartitionCount);
 
             if (PartitionResponses is null || PartitionResponses.Length < PartitionCount)
                 PartitionResponses = new ProduceResponsePartitionData[PartitionCount];
@@ -309,7 +328,8 @@ public readonly struct ProduceResponsePartitionData
         var recordErrors = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v),
             version,
-            minElementSize: 6);
+            minElementSize: 6,
+            maxCount: ProduceResponse.MaxRecordErrorCount);
         var errorMessage = reader.ReadCompactString();
         var currentLeader = ReadPartitionTaggedFields(ref reader, version);
 

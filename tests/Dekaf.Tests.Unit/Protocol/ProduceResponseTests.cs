@@ -91,6 +91,21 @@ public class ProduceResponseTests
     }
 
     [Test]
+    public async Task Read_TopicCountExceedingAbsoluteCap_ThrowsMalformedProtocolData()
+    {
+        // 20,000 claimed topics satisfy the pre-v13 3-byte wire minimum against the
+        // 61,000-byte payload, but the in-memory topic struct is an order of magnitude
+        // larger than its minimum encoding, so counts above the absolute cap must be
+        // rejected before the array allocation.
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUnsignedVarInt(20_001); // claims 20,000 topics
+        writer.WriteRawBytes(new byte[61_000]);
+
+        await Assert.That(() => ReadRaw(buffer, 9)).Throws<MalformedProtocolDataException>();
+    }
+
+    [Test]
     public async Task Read_RecordErrorCountExceedingMinimumEncodedSize_ThrowsMalformedProtocolData()
     {
         // 40 claimed record errors fit a naive one-byte-per-entry bound against the
@@ -191,6 +206,7 @@ public class ProduceResponseTests
         var response = new ProduceResponse
         {
             Responses = new ProduceResponseTopicData[1],
+            TopicCount = 1,
             ThrottleTimeMs = 9
         };
         response.Responses[0].PartitionResponses = new ProduceResponsePartitionData[10_000];
