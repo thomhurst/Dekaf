@@ -1069,6 +1069,19 @@ public ref struct KafkaProtocolReader
         }
     }
 
+    /// <summary>
+    /// Validates that an element count is plausible given the minimum wire size of each element.
+    /// Long multiplication keeps hostile counts near <see cref="int.MaxValue"/> from overflowing.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal readonly void ValidateReadableLength(int count, int minElementSize)
+    {
+        if (count < 0 || Remaining < (long)count * minElementSize)
+        {
+            ThrowInvalidLength(count, Remaining);
+        }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowInsufficientData()
     {

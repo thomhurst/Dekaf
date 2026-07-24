@@ -62,6 +62,34 @@ public class ProduceResponseTests
         await Assert.That(() => ReadRaw(buffer, 13)).Throws<MalformedProtocolDataException>();
     }
 
+    [Test]
+    public async Task Read_TopicCountExceedingMinimumEncodedSize_ThrowsMalformedProtocolData()
+    {
+        // 100 claimed topics fit a naive one-byte-per-entry bound against the 200-byte
+        // payload, but each v13 topic entry needs at least 18 bytes on the wire.
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUnsignedVarInt(101); // claims 100 topics
+        writer.WriteRawBytes(new byte[200]);
+
+        await Assert.That(() => ReadRaw(buffer, 13)).Throws<MalformedProtocolDataException>();
+    }
+
+    [Test]
+    public async Task Read_PartitionCountExceedingMinimumEncodedSize_ThrowsMalformedProtocolData()
+    {
+        // 50 claimed partitions fit a naive one-byte-per-entry bound against the 100-byte
+        // payload, but each partition entry needs at least 33 bytes on the wire.
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUnsignedVarInt(2); // one topic
+        writer.WriteUuid(Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"));
+        writer.WriteUnsignedVarInt(51); // claims 50 partitions
+        writer.WriteRawBytes(new byte[100]);
+
+        await Assert.That(() => ReadRaw(buffer, 13)).Throws<MalformedProtocolDataException>();
+    }
+
     private static void ReadRaw(ArrayBufferWriter<byte> buffer, short version)
     {
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);

@@ -43,10 +43,12 @@ public sealed class ProduceResponse : IKafkaResponse
     {
         var topicCount = reader.ReadUnsignedVarInt() - 1;
 
-        // Each topic entry occupies at least one byte, so a count exceeding the
-        // remaining payload is malformed and must fail before the array allocation.
+        // Each topic entry needs at least a topic id (16 bytes, v13+) or a compact name
+        // length prefix (1 byte), plus partition-count and tagged-fields varints. A count
+        // that cannot fit in the remaining payload at that minimum size is malformed and
+        // must fail before the array allocation.
         if (topicCount > 0)
-            reader.ValidateReadableLength(topicCount);
+            reader.ValidateReadableLength(topicCount, version >= ProduceRequest.TopicIdVersion ? 18 : 3);
 
         var response = Volatile.Read(ref s_pool).Rent();
 
@@ -192,9 +194,12 @@ public struct ProduceResponseTopicData
 
         if (PartitionCount > 0)
         {
-            // Each partition entry occupies at least one byte, so a count exceeding the
-            // remaining payload is malformed and must fail before the array allocation.
-            reader.ValidateReadableLength(PartitionCount);
+            // Each partition entry carries 30 bytes of fixed fields (index, error code,
+            // base offset, log append time, log start offset) plus three varints for the
+            // record-errors array, error message, and tagged fields. A count that cannot
+            // fit in the remaining payload at that minimum size is malformed and must
+            // fail before the array allocation.
+            reader.ValidateReadableLength(PartitionCount, 33);
 
             if (PartitionResponses is null || PartitionResponses.Length < PartitionCount)
                 PartitionResponses = new ProduceResponsePartitionData[PartitionCount];
