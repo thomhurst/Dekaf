@@ -113,6 +113,25 @@ public class Lz4CompressionCodecTests
     }
 
     [Test]
+    public async Task Lz4CompressionCodec_Decompress_DictionaryFrame_ThrowsInvalidDataException()
+    {
+        var codec = new Lz4CompressionCodec();
+        // Crash input from scheduled protocol-fuzz run 30059467365: the frame FLG
+        // requests a predefined dictionary, which K4os rejects with
+        // NotImplementedException rather than a data error.
+        byte[] dictionaryFrame =
+        [
+            0x04, 0x22, 0x4D, 0x18, 0xC1, 0x60, 0x40, 0x82, 0x1C, 0x00, 0x00,
+            0x80, 0x72, 0x65, 0x63, 0x6F, 0x72, 0x64, 0x2D, 0x62, 0x61, 0x2E
+        ];
+
+        await Assert.That(() => codec.Decompress(
+                new ReadOnlySequence<byte>(dictionaryFrame),
+                new ArrayBufferWriter<byte>()))
+            .ThrowsExactly<InvalidDataException>();
+    }
+
+    [Test]
     public async Task Lz4CompressionCodec_Decompress_DestinationFailure_IsPreserved()
     {
         var codec = new Lz4CompressionCodec();

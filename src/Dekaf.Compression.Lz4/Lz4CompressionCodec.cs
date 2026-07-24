@@ -55,6 +55,13 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
         {
             throw new InvalidDataException("Invalid LZ4 payload.", exception);
         }
+        catch (NotImplementedException exception)
+        {
+            // K4os throws NotImplementedException for valid-but-unsupported frame
+            // features (e.g. the DictID flag); surface those as corrupt-payload
+            // errors so hostile data cannot escape the codec with an unexpected type.
+            throw new InvalidDataException("LZ4 frame uses an unsupported feature.", exception);
+        }
         finally
         {
             trackedDestination.Release();
