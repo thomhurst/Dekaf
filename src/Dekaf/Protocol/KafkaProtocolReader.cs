@@ -849,6 +849,26 @@ public ref struct KafkaProtocolReader
     }
 
     /// <summary>
+    /// Reads a compact array whose elements have a known minimum encoded size, bounding
+    /// hostile counts against the remaining payload before the array allocation.
+    /// </summary>
+    public T[] ReadCompactArray<T>(ReadFunc<T> readItem, int minElementSize)
+    {
+        var length = ReadUnsignedVarInt() - 1;
+        if (length <= 0)
+            return [];
+
+        ValidateReadableLength(length, minElementSize);
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Reads a compact nullable array with unsigned varint length prefix (flexible format).
     /// </summary>
     public T[]? ReadCompactNullableArray<T>(ReadFunc<T> readItem)
@@ -978,6 +998,27 @@ public ref struct KafkaProtocolReader
             return [];
 
         ValidateReadableLength(length);
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this, state);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Reads a compact array whose elements have a known minimum encoded size, bounding
+    /// hostile counts against the remaining payload before the array allocation.
+    /// State-passing overload to avoid closure allocations.
+    /// </summary>
+    public T[] ReadCompactArray<T, TState>(ReadFunc<T, TState> readItem, TState state, int minElementSize)
+    {
+        var length = ReadUnsignedVarInt() - 1;
+        if (length <= 0)
+            return [];
+
+        ValidateReadableLength(length, minElementSize);
 
         var result = new T[length];
         for (var i = 0; i < length; i++)

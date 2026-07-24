@@ -90,6 +90,85 @@ public class ProduceResponseTests
         await Assert.That(() => ReadRaw(buffer, 13)).Throws<MalformedProtocolDataException>();
     }
 
+    [Test]
+    public async Task Read_RecordErrorCountExceedingMinimumEncodedSize_ThrowsMalformedProtocolData()
+    {
+        // 40 claimed record errors fit a naive one-byte-per-entry bound against the
+        // 60-byte payload, but each record error needs at least 6 bytes on the wire.
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUnsignedVarInt(2); // one topic
+        writer.WriteUuid(Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"));
+        writer.WriteUnsignedVarInt(2); // one partition
+        writer.WriteInt32(0);          // partition index
+        writer.WriteInt16(0);          // error code
+        writer.WriteInt64(0);          // base offset
+        writer.WriteInt64(-1);         // log append time
+        writer.WriteInt64(-1);         // log start offset
+        writer.WriteUnsignedVarInt(41); // claims 40 record errors
+        writer.WriteRawBytes(new byte[60]);
+
+        await Assert.That(() => ReadRaw(buffer, 13)).Throws<MalformedProtocolDataException>();
+    }
+
+    [Test]
+    public async Task Read_NodeEndpointCountExceedingMinimumEncodedSize_ThrowsMalformedProtocolData()
+    {
+        // 30 claimed node endpoints fit a naive one-byte-per-entry bound against the
+        // 41-byte tagged-field payload, but each endpoint needs at least 11 bytes on the wire.
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUnsignedVarInt(1);  // zero topics
+        writer.WriteInt32(0);           // throttle time
+        writer.WriteUnsignedVarInt(1);  // one response tagged field
+        writer.WriteUnsignedVarInt(0);  // tag 0 = node endpoints
+        writer.WriteUnsignedVarInt(41); // tagged-field size
+        writer.WriteUnsignedVarInt(31); // claims 30 endpoints
+        writer.WriteRawBytes(new byte[40]);
+
+        await Assert.That(() => ReadRaw(buffer, 13)).Throws<MalformedProtocolDataException>();
+    }
+
+    [Test]
+    public async Task Read_AfterHostileParseFailure_PooledInstanceRemainsUsable()
+    {
+        // A hostile frame throws mid-parse after the response was rented; the instance
+        // is returned to the pool and a subsequent valid parse must not observe any
+        // stale partially-parsed state.
+        var hostile = new ArrayBufferWriter<byte>();
+        var hostileWriter = new KafkaProtocolWriter(hostile);
+        hostileWriter.WriteUnsignedVarInt(2); // one topic
+        hostileWriter.WriteUuid(Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"));
+        hostileWriter.WriteUnsignedVarInt(int.MaxValue); // claims int.MaxValue - 1 partitions
+
+        await Assert.That(() => ReadRaw(hostile, 13)).Throws<MalformedProtocolDataException>();
+
+        var valid = new ArrayBufferWriter<byte>();
+        var validWriter = new KafkaProtocolWriter(valid);
+        var topicId = Guid.Parse("ffeeddcc-bbaa-9988-7766-554433221100");
+        validWriter.WriteUnsignedVarInt(2); // one topic
+        validWriter.WriteUuid(topicId);
+        validWriter.WriteUnsignedVarInt(1); // empty partitions
+        validWriter.WriteUnsignedVarInt(0); // topic tagged fields
+        validWriter.WriteInt32(7);          // throttle time
+        validWriter.WriteUnsignedVarInt(0); // response tagged fields
+
+        var reader = new KafkaProtocolReader(valid.WrittenMemory);
+        var response = (ProduceResponse)ProduceResponse.Read(ref reader, 13);
+
+        try
+        {
+            await Assert.That(response.TopicCount).IsEqualTo(1);
+            await Assert.That(response.Responses[0].TopicId).IsEqualTo(topicId);
+            await Assert.That(response.Responses[0].PartitionCount).IsEqualTo(0);
+            await Assert.That(response.ThrottleTimeMs).IsEqualTo(7);
+        }
+        finally
+        {
+            response.Return();
+        }
+    }
+
     private static void ReadRaw(ArrayBufferWriter<byte> buffer, short version)
     {
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);

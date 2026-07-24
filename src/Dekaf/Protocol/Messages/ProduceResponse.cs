@@ -51,21 +51,30 @@ public sealed class ProduceResponse : IKafkaResponse
             reader.ValidateReadableLength(topicCount, version >= ProduceRequest.TopicIdVersion ? 18 : 3);
 
         var response = Volatile.Read(ref s_pool).Rent();
-
-        if (topicCount > 0)
+        try
         {
-            if (response.Responses.Length < topicCount)
-                response.Responses = new ProduceResponseTopicData[topicCount];
+            if (topicCount > 0)
+            {
+                if (response.Responses.Length < topicCount)
+                    response.Responses = new ProduceResponseTopicData[topicCount];
 
-            for (var i = 0; i < topicCount; i++)
-                response.Responses[i].ReadInto(ref reader, version);
+                for (var i = 0; i < topicCount; i++)
+                    response.Responses[i].ReadInto(ref reader, version);
+            }
+
+            response.TopicCount = Math.Max(topicCount, 0);
+            response.ThrottleTimeMs = reader.ReadInt32();
+            response.NodeEndpoints = ReadResponseTaggedFields(ref reader, version);
+
+            return response;
         }
-
-        response.TopicCount = Math.Max(topicCount, 0);
-        response.ThrottleTimeMs = reader.ReadInt32();
-        response.NodeEndpoints = ReadResponseTaggedFields(ref reader, version);
-
-        return response;
+        catch
+        {
+            // Hostile or truncated frames must not defeat the response pool: the caller
+            // never sees the instance on failure, so return it before propagating.
+            response.Return();
+            throw;
+        }
     }
 
     private static NodeEndpoint[] ReadResponseTaggedFields(ref KafkaProtocolReader reader, short version)
@@ -80,7 +89,11 @@ public sealed class ProduceResponse : IKafkaResponse
 
             if (tag == 0 && version >= 10)
             {
-                nodeEndpoints = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => NodeEndpoint.Read(ref r));
+                // Each endpoint needs at least node id (4), host prefix (1), port (4),
+                // rack prefix (1), and tagged-fields varint (1) on the wire.
+                nodeEndpoints = reader.ReadCompactArray(
+                    static (ref KafkaProtocolReader r) => NodeEndpoint.Read(ref r),
+                    minElementSize: 11);
             }
             else
             {
@@ -269,7 +282,12 @@ public readonly struct ProduceResponsePartitionData
         var logAppendTimeMs = reader.ReadInt64();
         var logStartOffset = reader.ReadInt64();
 
-        var recordErrors = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v), version);
+        // Each record error needs at least batch index (4), error message prefix (1),
+        // and tagged-fields varint (1) on the wire.
+        var recordErrors = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v),
+            version,
+            minElementSize: 6);
         var errorMessage = reader.ReadCompactString();
         var currentLeader = ReadPartitionTaggedFields(ref reader, version);
 
