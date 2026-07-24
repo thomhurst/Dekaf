@@ -1,3 +1,5 @@
+using Dekaf.Internal;
+
 namespace Dekaf.Protocol.Messages;
 
 /// <summary>
@@ -24,15 +26,48 @@ public sealed class ProduceResponse : IKafkaResponse
     private const int MaxPooledPartitionCapacity = 4096;
 
     // Absolute parse caps: a produce response echoes the topics/partitions of the produce
-    // request that elicited it, and the default 1 MiB max.request.size bounds a request to
-    // far fewer entries than these. The wire-minimum bound alone is insufficient because
-    // the in-memory element can be an order of magnitude larger than its minimum encoding
-    // (e.g. a 3-byte pre-v13 topic entry expands to a ~48-byte struct, letting a 16 MiB
-    // frame demand hundreds of MiB before parsing fails).
-    internal const int MaxTopicCount = 10_000;
-    internal const int MaxPartitionCount = 100_000;
-    internal const int MaxRecordErrorCount = 100_000;
+    // request that elicited it, so the client's own max request size bounds how many
+    // entries a valid response can carry. The wire-minimum bound alone is insufficient
+    // because the in-memory element can be an order of magnitude larger than its minimum
+    // encoding (e.g. a 3-byte pre-v13 topic entry expands to a ~48-byte struct, letting a
+    // 16 MiB frame demand hundreds of MiB before parsing fails). Defaults derive from the
+    // 1 MiB default max.request.size; producers configured with larger requests ratchet
+    // them up at construction via RatchetMaxEntryCaps. Node endpoints are cluster-bound,
+    // not request-bound, so that cap stays fixed.
+    private const int DefaultMaxRequestSize = 1024 * 1024;
+
+    // Conservative minimum request-side encodings, deliberately below anything the
+    // producer can actually emit so the derived caps always exceed a legitimate
+    // response's counts: a v13 request topic entry carries a 16-byte topic id plus at
+    // least one partition holding a 61-byte record batch header; a request partition
+    // entry carries a 4-byte index plus that same batch header; a record is never
+    // smaller than a few bytes.
+    private const int MinRequestBytesPerTopic = 24;
+    private const int MinRequestBytesPerPartition = 64;
+    private const int MinRequestBytesPerRecord = 4;
+
+    private static int s_maxTopicCount = DefaultMaxRequestSize / MinRequestBytesPerTopic;
+    private static int s_maxPartitionCount = DefaultMaxRequestSize / MinRequestBytesPerPartition;
+    private static int s_maxRecordErrorCount = DefaultMaxRequestSize / MinRequestBytesPerRecord;
+
     internal const int MaxNodeEndpointCount = 10_000;
+
+    internal static int MaxTopicCount => Volatile.Read(ref s_maxTopicCount);
+    internal static int MaxPartitionCount => Volatile.Read(ref s_maxPartitionCount);
+    internal static int MaxRecordErrorCount => Volatile.Read(ref s_maxRecordErrorCount);
+
+    /// <summary>
+    /// Raises the response parse caps for producers configured with a max request size
+    /// larger than the default. Monotonic — caps never shrink — mirroring
+    /// <see cref="RatchetPoolSize"/>, since responses can only echo requests this client
+    /// was configured to send.
+    /// </summary>
+    internal static void RatchetMaxEntryCaps(int maxRequestSize)
+    {
+        InterlockedHelper.RatchetUp(ref s_maxTopicCount, maxRequestSize / MinRequestBytesPerTopic);
+        InterlockedHelper.RatchetUp(ref s_maxPartitionCount, maxRequestSize / MinRequestBytesPerPartition);
+        InterlockedHelper.RatchetUp(ref s_maxRecordErrorCount, maxRequestSize / MinRequestBytesPerRecord);
+    }
 
     /// <summary>
     /// Response for each topic. Reusable array — <see cref="TopicCount"/> indicates valid elements.

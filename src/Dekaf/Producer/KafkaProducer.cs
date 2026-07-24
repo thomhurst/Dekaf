@@ -379,6 +379,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ProducerContainerPools.RatchetHeaderBucketCapacity(sharedPoolSizes.HeaderArraysPerBucket);
         DekafPools.RatchetSerializationBucketCapacity(sharedPoolSizes.SerializationArraysPerBucket);
         ProduceResponse.RatchetPoolSize(sharedPoolSizes.ProduceResponsePoolSize);
+        ProduceResponse.RatchetMaxEntryCaps(options.MaxRequestSize);
 
         var poolSize = options.ValueTaskSourcePoolSize > 0
             ? options.ValueTaskSourcePoolSize

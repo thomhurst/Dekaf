@@ -93,16 +93,31 @@ public class ProduceResponseTests
     [Test]
     public async Task Read_TopicCountExceedingAbsoluteCap_ThrowsMalformedProtocolData()
     {
-        // 20,000 claimed topics satisfy the pre-v13 3-byte wire minimum against the
-        // 61,000-byte payload, but the in-memory topic struct is an order of magnitude
-        // larger than its minimum encoding, so counts above the absolute cap must be
-        // rejected before the array allocation.
+        // A claimed count just above the request-size-derived cap, padded so it still
+        // satisfies the pre-v13 3-byte wire minimum: the in-memory topic struct is an
+        // order of magnitude larger than its minimum encoding, so counts above the cap
+        // must be rejected before the array allocation.
+        var hostileCount = ProduceResponse.MaxTopicCount + 1000;
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
-        writer.WriteUnsignedVarInt(20_001); // claims 20,000 topics
-        writer.WriteRawBytes(new byte[61_000]);
+        writer.WriteUnsignedVarInt(hostileCount + 1);
+        writer.WriteRawBytes(new byte[hostileCount * 3 + 100]);
 
         await Assert.That(() => ReadRaw(buffer, 9)).Throws<MalformedProtocolDataException>();
+    }
+
+    [Test]
+    public async Task RatchetMaxEntryCaps_BelowCurrent_DoesNotLowerCaps()
+    {
+        var topicCap = ProduceResponse.MaxTopicCount;
+        var partitionCap = ProduceResponse.MaxPartitionCount;
+        var recordErrorCap = ProduceResponse.MaxRecordErrorCount;
+
+        ProduceResponse.RatchetMaxEntryCaps(1);
+
+        await Assert.That(ProduceResponse.MaxTopicCount).IsEqualTo(topicCap);
+        await Assert.That(ProduceResponse.MaxPartitionCount).IsEqualTo(partitionCap);
+        await Assert.That(ProduceResponse.MaxRecordErrorCount).IsEqualTo(recordErrorCap);
     }
 
     [Test]
