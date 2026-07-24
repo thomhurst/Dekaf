@@ -1061,7 +1061,7 @@ public ref struct KafkaProtocolReader
     public delegate T ReadFunc<out T, in TState>(ref KafkaProtocolReader reader, TState state);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private readonly void ValidateReadableLength(int length)
+    internal readonly void ValidateReadableLength(int length)
     {
         if (length < 0 || Remaining < length)
         {

@@ -40,6 +40,36 @@ public class ProduceResponseTests
     }
 
     [Test]
+    public async Task Read_TopicCountExceedingRemainingData_ThrowsMalformedProtocolData()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUnsignedVarInt(int.MaxValue); // claims int.MaxValue - 1 topics
+        writer.WriteInt32(0);
+
+        await Assert.That(() => ReadRaw(buffer, 13)).Throws<MalformedProtocolDataException>();
+    }
+
+    [Test]
+    public async Task Read_PartitionCountExceedingRemainingData_ThrowsMalformedProtocolData()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUnsignedVarInt(2); // one topic
+        writer.WriteUuid(Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"));
+        writer.WriteUnsignedVarInt(int.MaxValue); // claims int.MaxValue - 1 partitions
+
+        await Assert.That(() => ReadRaw(buffer, 13)).Throws<MalformedProtocolDataException>();
+    }
+
+    private static void ReadRaw(ArrayBufferWriter<byte> buffer, short version)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ProduceResponse)ProduceResponse.Read(ref reader, version);
+        response.Return();
+    }
+
+    [Test]
     public async Task Read_InternsRepeatedTopicNames()
     {
         var topicName = "produce-topic-" + Guid.NewGuid().ToString("N");
