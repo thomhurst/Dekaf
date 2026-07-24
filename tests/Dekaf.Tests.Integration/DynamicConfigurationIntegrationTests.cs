@@ -62,26 +62,62 @@ public sealed class DynamicConfigurationIntegrationTests(RackAwareKafkaContainer
             LowMaxMessageBytes.ToString(),
             cancellationToken).ConfigureAwait(false);
 
-        // Latent race, mirror of the raised-limit test: if the lowered limit has not reached the
-        // partition leader yet, this oversized produce would be accepted and the Throws assertion
-        // would flake. Not yet observed in CI; the raised-limit direction uses
-        // ProduceUntilAcceptedAsync for the same reason.
-        var oversizedTask = producer.ProduceAsync(topic, null, largeMessage, cancellationToken).AsTask();
-        var validTask = producer.ProduceAsync(topic, null, smallMessage, cancellationToken).AsTask();
-        var exception = await Assert.That(async () => await oversizedTask.ConfigureAwait(false))
-            .Throws<ProduceException>();
-        var valid = await validTask.ConfigureAwait(false);
+        // DescribeConfigs reflects the lowered limit before the partition leader applies it to
+        // produce validation (mirror of the raised-limit test, which uses
+        // ProduceUntilAcceptedAsync for the same reason), so early oversized produces can still
+        // be accepted — observed in CI runs 29989622316 and 30006038369. Retry until the leader
+        // rejects the oversized record while its concurrently produced undersized partner keeps
+        // being delivered; each accepted pair is a real append and shifts later offsets.
+        var stopwatch = Stopwatch.StartNew();
+        var acceptedPairs = 0;
+        ProduceException exception;
+        RecordMetadata valid;
+        while (true)
+        {
+            var oversizedTask = producer.ProduceAsync(topic, null, largeMessage, cancellationToken).AsTask();
+            var validTask = producer.ProduceAsync(topic, null, smallMessage, cancellationToken).AsTask();
+            try
+            {
+                await oversizedTask.ConfigureAwait(false);
+                await validTask.ConfigureAwait(false);
+                acceptedPairs++;
+                if (stopwatch.Elapsed >= TimeSpan.FromSeconds(15))
+                {
+                    throw new TimeoutException(
+                        "Broker did not enforce the lowered max.message.bytes within 15 seconds.");
+                }
+
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ProduceException produceException)
+            {
+                exception = produceException;
+                valid = await validTask.ConfigureAwait(false);
+                break;
+            }
+        }
+
         var sentinel = await producer.ProduceAsync(topic, null, smallMessage, cancellationToken)
             .ConfigureAwait(false);
 
+        var expectedValidOffset = 1 + acceptedPairs * 2L;
         await Assert.That(initial.Offset).IsEqualTo(0);
-        await Assert.That(exception!.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
+        await Assert.That(exception.ErrorCode).IsEqualTo(ErrorCode.MessageTooLarge);
         await Assert.That(exception.Topic).IsEqualTo(topic);
         await Assert.That(exception.Partition).IsEqualTo(0);
-        await Assert.That(valid.Offset).IsEqualTo(1);
-        await Assert.That(sentinel.Offset).IsEqualTo(2);
-        await AssertRecordSizesAsync(topic, [LargeMessageSize, SmallMessageSize, SmallMessageSize], cancellationToken)
-            .ConfigureAwait(false);
+        await Assert.That(valid.Offset).IsEqualTo(expectedValidOffset);
+        await Assert.That(sentinel.Offset).IsEqualTo(expectedValidOffset + 1);
+
+        var expectedSizes = new List<int> { LargeMessageSize };
+        for (var pair = 0; pair < acceptedPairs; pair++)
+        {
+            expectedSizes.Add(LargeMessageSize);
+            expectedSizes.Add(SmallMessageSize);
+        }
+
+        expectedSizes.Add(SmallMessageSize);
+        expectedSizes.Add(SmallMessageSize);
+        await AssertRecordSizesAsync(topic, expectedSizes, cancellationToken).ConfigureAwait(false);
     }
 
     [Test]
