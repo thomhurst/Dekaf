@@ -260,6 +260,7 @@ public class ProduceResponseTests
         };
         response.Responses[0].Name = "topic-a";
         response.Responses[0].PartitionCount = 1;
+        response.Responses[0].HasNestedReferences = true;
         response.Responses[0].PartitionResponses = new ProduceResponsePartitionData[2];
         response.Responses[0].PartitionResponses[0] = new ProduceResponsePartitionData
         {
@@ -277,6 +278,37 @@ public class ProduceResponseTests
         await Assert.That(response.Responses[0].PartitionResponses[0].ErrorMessage).IsNull();
         await Assert.That(response.Responses[0].PartitionResponses[0].RecordErrors).IsNull();
         await Assert.That(response.ThrottleTimeMs).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Read_ResponseWithErrorMessage_SetsFlagAndClearsEntriesOnReturn()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUnsignedVarInt(2); // one topic
+        writer.WriteUuid(Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"));
+        writer.WriteUnsignedVarInt(2); // one partition
+        writer.WriteInt32(0);          // partition index
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteInt64(0);          // base offset
+        writer.WriteInt64(-1);         // log append time
+        writer.WriteInt64(-1);         // log start offset
+        writer.WriteUnsignedVarInt(0); // null record errors
+        writer.WriteCompactString("err");
+        writer.WriteUnsignedVarInt(0); // partition tagged fields
+        writer.WriteUnsignedVarInt(0); // topic tagged fields
+        writer.WriteInt32(0);          // throttle time
+        writer.WriteUnsignedVarInt(0); // response tagged fields
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (ProduceResponse)ProduceResponse.Read(ref reader, 13);
+
+        await Assert.That(response.Responses[0].HasNestedReferences).IsTrue();
+        await Assert.That(response.Responses[0].PartitionResponses[0].ErrorMessage).IsEqualTo("err");
+
+        response.Return();
+
+        await Assert.That(response.Responses[0].PartitionResponses[0].ErrorMessage).IsNull();
     }
 
     private static void ReadRaw(ArrayBufferWriter<byte> buffer, short version)

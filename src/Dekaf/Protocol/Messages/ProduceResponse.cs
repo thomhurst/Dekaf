@@ -220,9 +220,15 @@ public sealed class ProduceResponse : IKafkaResponse
             // Clear consumed entries so a pooled instance never pins error-message
             // strings or record-error arrays from prior responses — hostile frames can
             // carry multi-MB error strings that would otherwise stay live for the
-            // pool's lifetime. (PartitionCount can exceed the array length when a
-            // hostile count failed validation before allocation, hence the Min.)
-            Array.Clear(partitions, 0, Math.Min(topic.PartitionCount, partitions.Length));
+            // pool's lifetime. Skipped in the common all-success case via the flag
+            // ReadInto maintains (conservatively true while a parse is in flight).
+            // (PartitionCount can exceed the array length when a hostile count failed
+            // validation before allocation, hence the Min.)
+            if (topic.HasNestedReferences)
+            {
+                Array.Clear(partitions, 0, Math.Min(topic.PartitionCount, partitions.Length));
+                topic.HasNestedReferences = false;
+            }
         }
 
         Volatile.Read(ref s_pool).Return(this);
@@ -289,6 +295,15 @@ public struct ProduceResponseTopicData
     public int PartitionCount { get; internal set; }
 
     /// <summary>
+    /// Whether any consumed partition entry holds heap references (error message or
+    /// record errors). Maintained by <see cref="ReadInto"/> so pool cleanup can skip
+    /// the common all-success case; conservatively true while a parse is in flight so
+    /// a mid-parse failure still gets cleaned. Direct constructors that populate
+    /// reference-bearing entries must set this.
+    /// </summary>
+    internal bool HasNestedReferences { get; set; }
+
+    /// <summary>
     /// Non-pooled path: allocates a fresh struct and array. Used by tests and direct construction.
     /// </summary>
     public static ProduceResponseTopicData Read(ref KafkaProtocolReader reader, short version)
@@ -334,8 +349,25 @@ public struct ProduceResponseTopicData
             if (PartitionResponses is null || PartitionResponses.Length < PartitionCount)
                 PartitionResponses = new ProduceResponsePartitionData[PartitionCount];
 
+            // Conservative until the loop completes so a mid-parse failure still gets
+            // its partially-written entries cleared on pool return.
+            HasNestedReferences = true;
+            var hasNestedReferences = false;
+
             for (var i = 0; i < PartitionCount; i++)
-                PartitionResponses[i] = ProduceResponsePartitionData.Read(ref reader, version);
+            {
+                var partition = ProduceResponsePartitionData.Read(ref reader, version);
+                // RecordErrors is the shared empty singleton (never null) on the happy
+                // path, so only a populated array counts as a pinned reference.
+                hasNestedReferences |= partition.ErrorMessage is not null || partition.RecordErrors is { Length: > 0 };
+                PartitionResponses[i] = partition;
+            }
+
+            HasNestedReferences = hasNestedReferences;
+        }
+        else
+        {
+            HasNestedReferences = false;
         }
 
         reader.SkipTaggedFields();
