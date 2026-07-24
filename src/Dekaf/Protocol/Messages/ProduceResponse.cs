@@ -16,6 +16,13 @@ public sealed class ProduceResponse : IKafkaResponse
     private static ProduceResponsePool s_pool = new(maxPoolSize: 64);
     private static readonly Lock s_ratchetLock = new();
 
+    // Pool hygiene bounds: legitimate produce responses stay far below these (topics per
+    // request and partitions per topic in a single response), while a hostile frame can
+    // inflate the reusable arrays toward the frame cap before parsing fails. Pooling such
+    // an instance would pin that memory for the pool's lifetime.
+    private const int MaxPooledTopicCapacity = 1024;
+    private const int MaxPooledPartitionCapacity = 4096;
+
     /// <summary>
     /// Response for each topic. Reusable array — <see cref="TopicCount"/> indicates valid elements.
     /// When created via <see cref="Read"/>, the array is recycled across pool returns.
@@ -108,8 +115,23 @@ public sealed class ProduceResponse : IKafkaResponse
 
     /// <summary>
     /// Returns this response to the pool for reuse. Must be called after processing is complete.
+    /// Oversized instances are dropped instead of pooled (the pool self-heals via Create on the
+    /// next miss), and oversized nested partition arrays are trimmed, so hostile frames cannot
+    /// pin large allocations in the pool.
     /// </summary>
-    internal void Return() => Volatile.Read(ref s_pool).Return(this);
+    internal void Return()
+    {
+        if (Responses.Length > MaxPooledTopicCapacity)
+            return;
+
+        for (var i = 0; i < Responses.Length; i++)
+        {
+            if (Responses[i].PartitionResponses is { Length: > MaxPooledPartitionCapacity })
+                Responses[i].PartitionResponses = null!;
+        }
+
+        Volatile.Read(ref s_pool).Return(this);
+    }
 
     /// <summary>
     /// Increases the response pool capacity if <paramref name="poolSize"/> exceeds the current size.

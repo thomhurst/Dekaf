@@ -169,6 +169,38 @@ public class ProduceResponseTests
         }
     }
 
+    [Test]
+    public async Task Return_OversizedTopicArray_IsDroppedInsteadOfPooled()
+    {
+        var response = new ProduceResponse
+        {
+            Responses = new ProduceResponseTopicData[2000],
+            ThrottleTimeMs = 9
+        };
+
+        response.Return();
+
+        // Pooled instances go through Reset (which clears ThrottleTimeMs); a dropped
+        // instance is left untouched.
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(9);
+    }
+
+    [Test]
+    public async Task Return_OversizedPartitionArray_IsTrimmedBeforePooling()
+    {
+        var response = new ProduceResponse
+        {
+            Responses = new ProduceResponseTopicData[1],
+            ThrottleTimeMs = 9
+        };
+        response.Responses[0].PartitionResponses = new ProduceResponsePartitionData[10_000];
+
+        response.Return();
+
+        await Assert.That(response.Responses[0].PartitionResponses).IsNull();
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(0);
+    }
+
     private static void ReadRaw(ArrayBufferWriter<byte> buffer, short version)
     {
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
