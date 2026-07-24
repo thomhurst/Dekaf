@@ -124,8 +124,12 @@ Confirm the failure, minimize the input with libFuzzer when useful, then give it
 stable filename and copy it into the reviewed regression corpus:
 
 - `record-batch` inputs go under `Corpus/RecordBatch`.
-- `kafka-protocol` inputs beginning with the `0xFF` response marker go under `Corpus/Responses`;
-  other inputs go under `Corpus/ProtocolReader`.
+- `kafka-protocol` inputs beginning with the `0xFF` response marker go under `Corpus/Responses`
+  when they parse successfully (these must use the strict `TypeName.vN` naming and are asserted
+  to replay cleanly), or under `Corpus/ResponseRegressions` when they are intentionally malformed
+  crash inputs that must be rejected (name these descriptively, e.g.
+  `ProduceResponse.v13.hostile-partition-count`).
+- other `kafka-protocol` inputs go under `Corpus/ProtocolReader`.
 
 Run the replay tests shown in [Build and replay corpora](#build-and-replay-corpora). Commit the new
 input together with the parser fix and a focused assertion when the generic replay invariant does

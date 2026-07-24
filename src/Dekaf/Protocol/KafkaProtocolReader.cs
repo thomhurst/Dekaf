@@ -849,6 +849,27 @@ public ref struct KafkaProtocolReader
     }
 
     /// <summary>
+    /// Reads a compact array whose elements have a known minimum encoded size, bounding
+    /// hostile counts against the remaining payload and an absolute cap before the
+    /// array allocation.
+    /// </summary>
+    public T[] ReadCompactArray<T>(ReadFunc<T> readItem, int minElementSize, int maxCount)
+    {
+        var length = ReadUnsignedVarInt() - 1;
+        if (length <= 0)
+            return [];
+
+        ValidateReadableLength(length, minElementSize, maxCount);
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Reads a compact nullable array with unsigned varint length prefix (flexible format).
     /// </summary>
     public T[]? ReadCompactNullableArray<T>(ReadFunc<T> readItem)
@@ -988,6 +1009,27 @@ public ref struct KafkaProtocolReader
     }
 
     /// <summary>
+    /// Reads a compact array whose elements have a known minimum encoded size, bounding
+    /// hostile counts against the remaining payload and an absolute cap before the
+    /// array allocation. State-passing overload to avoid closure allocations.
+    /// </summary>
+    public T[] ReadCompactArray<T, TState>(ReadFunc<T, TState> readItem, TState state, int minElementSize, int maxCount)
+    {
+        var length = ReadUnsignedVarInt() - 1;
+        if (length <= 0)
+            return [];
+
+        ValidateReadableLength(length, minElementSize, maxCount);
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this, state);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Reads a compact nullable array with unsigned varint length prefix (flexible format).
     /// State-passing overload to avoid closure allocations.
     /// </summary>
@@ -1061,12 +1103,39 @@ public ref struct KafkaProtocolReader
     public delegate T ReadFunc<out T, in TState>(ref KafkaProtocolReader reader, TState state);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private readonly void ValidateReadableLength(int length)
+    internal readonly void ValidateReadableLength(int length)
     {
         if (length < 0 || Remaining < length)
         {
             ThrowInvalidLength(length, Remaining);
         }
+    }
+
+    /// <summary>
+    /// Validates that an element count is plausible given the minimum wire size of each element
+    /// and an absolute per-array cap. Long multiplication keeps hostile counts near
+    /// <see cref="int.MaxValue"/> from overflowing; the cap bounds the in-memory allocation,
+    /// which can be an order of magnitude larger than the wire minimum.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal readonly void ValidateReadableLength(int count, int minElementSize, int maxCount)
+    {
+        if (count < 0 || Remaining < (long)count * minElementSize)
+        {
+            ThrowInvalidLength(count, Remaining);
+        }
+
+        if (count > maxCount)
+        {
+            ThrowCountExceedsMaximum(count, maxCount);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowCountExceedsMaximum(int count, int maxCount)
+    {
+        throw new MalformedProtocolDataException(
+            $"Invalid protocol data: claimed element count {count} exceeds maximum {maxCount}");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

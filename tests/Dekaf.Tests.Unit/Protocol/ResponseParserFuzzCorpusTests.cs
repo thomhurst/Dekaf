@@ -112,9 +112,54 @@ public class ResponseParserFuzzCorpusTests
     }
 
     [Test]
+    public async Task CheckedInRegressionCorpus_RemainsExpectedParseFailure()
+    {
+        var seeds = ResponseParserCorpus.LoadEmbeddedRegressions();
+
+        await Assert.That(seeds).IsNotEmpty();
+
+        foreach (var seed in seeds)
+        {
+            await Assert.That(ResponseParserFuzzTarget.TryGetSelection(
+                seed.Data,
+                out _,
+                out var segmented)).IsTrue();
+            await Assert.That(segmented).IsFalse();
+
+            // Promoted crash inputs are intentionally malformed: they must be rejected
+            // with an expected parse exception (never an OOM, hang, or unexpected type),
+            // both contiguous and segmented.
+            AssertExpectedParseFailure(seed.Data.ToArray());
+
+            var segmentedInput = seed.Data.ToArray();
+            segmentedInput[ResponseParserFuzzTarget.FlagsOffset] |= ResponseParserFuzzTarget.SegmentedInputFlag;
+            AssertExpectedParseFailure(segmentedInput);
+        }
+    }
+
+    private static void AssertExpectedParseFailure(byte[] input)
+    {
+        try
+        {
+            ResponseParserFuzzTarget.ParseValidInput(input);
+        }
+        catch (MalformedProtocolDataException)
+        {
+            return;
+        }
+        catch (InsufficientDataException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            "Regression corpus input parsed successfully but must fail with an expected parse exception.");
+    }
+
+    [Test]
     public void CheckedInCorpus_TruncationAndCorruptionRemainExpectedParseFailures()
     {
-        foreach (var seed in ResponseParserCorpus.LoadEmbedded())
+        foreach (var seed in ResponseParserCorpus.LoadEmbedded().Concat(ResponseParserCorpus.LoadEmbeddedRegressions()))
         {
             for (var length = ResponseParserFuzzTarget.HeaderLength; length < seed.Data.Length; length++)
             {

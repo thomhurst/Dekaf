@@ -1,3 +1,5 @@
+using Dekaf.Internal;
+
 namespace Dekaf.Protocol.Messages;
 
 /// <summary>
@@ -15,6 +17,82 @@ public sealed class ProduceResponse : IKafkaResponse
 
     private static ProduceResponsePool s_pool = new(maxPoolSize: 64);
     private static readonly Lock s_ratchetLock = new();
+
+    // Pool hygiene bounds: legitimate produce responses stay far below these (topics per
+    // request and partitions per topic in a single response), while a hostile frame can
+    // inflate the reusable arrays toward the frame cap before parsing fails. Pooling such
+    // an instance would pin that memory for the pool's lifetime.
+    private const int MaxPooledTopicCapacity = 1024;
+    private const int MaxPooledPartitionCapacity = 4096;
+
+    // Absolute parse caps: a produce response echoes the topics/partitions of the produce
+    // request that elicited it, so the client's own max request size bounds how many
+    // entries a valid response can carry. The wire-minimum bound alone is insufficient
+    // because the in-memory element can be an order of magnitude larger than its minimum
+    // encoding (e.g. a 3-byte pre-v13 topic entry expands to a ~48-byte struct, letting a
+    // 16 MiB frame demand hundreds of MiB before parsing fails). Defaults derive from the
+    // 1 MiB default max.request.size; producers configured with larger requests ratchet
+    // them up at construction via RatchetMaxEntryCaps. Node endpoints are cluster-bound,
+    // not request-bound, so that cap stays fixed.
+    private const int DefaultMaxRequestSize = 1024 * 1024;
+
+    // Conservative minimum request-side encodings, deliberately below anything the
+    // producer can actually emit so the derived caps always exceed a legitimate
+    // response's counts: a v13 request topic entry carries a 16-byte topic id plus at
+    // least one partition holding a 61-byte record batch header; a request partition
+    // entry carries a 4-byte index plus that same batch header; a record is never
+    // smaller than a few bytes.
+    private const int MinRequestBytesPerTopic = 24;
+    private const int MinRequestBytesPerPartition = 64;
+    private const int MinRequestBytesPerRecord = 4;
+
+    // Absolute ceilings for the ratchet, chosen independently of any single connection's
+    // actual frame size (standalone producers read responses through the 16 MiB
+    // ResponseBufferPool.Default frame; producers sharing a KafkaClient read through a
+    // pool sized by the client's SharedResponseBufferFetchMaxBytes constant, a ~201 MiB
+    // tier). The ceiling budget is what a 16 MiB frame can encode at each entry's minimum
+    // legitimate response encoding — deliberately conservative so one producer's huge
+    // MaxRequestSize cannot inflate the process-global cap into hundreds-of-MiB hostile
+    // allocations (a pre-v13 topic entry encodes in 3 bytes but expands to a ~48-byte
+    // struct). Deliberate tradeoff: a single produce response carrying more than ~466k
+    // topics would be rejected even where a larger shared-pool frame could deliver it —
+    // far beyond any practical workload — while the per-frame wire-minimum check in
+    // ValidateReadableLength remains the proportional defense at every frame size.
+    private const int RatchetCeilingBudgetBytes = 16 * 1024 * 1024;
+    // A legitimate response topic entry carries a name/id plus at least one 33-byte
+    // partition entry and two varints.
+    internal const int MaxRatchetTopicCount = RatchetCeilingBudgetBytes / 36;
+    internal const int MaxRatchetPartitionCount = RatchetCeilingBudgetBytes / 33;
+    internal const int MaxRatchetRecordErrorCount = RatchetCeilingBudgetBytes / 6;
+
+    private static int s_maxTopicCount = DefaultMaxRequestSize / MinRequestBytesPerTopic;
+    private static int s_maxPartitionCount = DefaultMaxRequestSize / MinRequestBytesPerPartition;
+    private static int s_maxRecordErrorCount = DefaultMaxRequestSize / MinRequestBytesPerRecord;
+
+    internal const int MaxNodeEndpointCount = 10_000;
+
+    internal static int MaxTopicCount => Volatile.Read(ref s_maxTopicCount);
+    internal static int MaxPartitionCount => Volatile.Read(ref s_maxPartitionCount);
+    internal static int MaxRecordErrorCount => Volatile.Read(ref s_maxRecordErrorCount);
+
+    /// <summary>
+    /// Raises the response parse caps for producers configured with a max request size
+    /// larger than the default, clamped to conservative absolute ceilings. Monotonic
+    /// — caps never shrink — mirroring <see cref="RatchetPoolSize"/>, since responses can
+    /// only echo requests this client was configured to send.
+    /// </summary>
+    internal static void RatchetMaxEntryCaps(int maxRequestSize)
+    {
+        InterlockedHelper.RatchetUp(
+            ref s_maxTopicCount,
+            Math.Min(maxRequestSize / MinRequestBytesPerTopic, MaxRatchetTopicCount));
+        InterlockedHelper.RatchetUp(
+            ref s_maxPartitionCount,
+            Math.Min(maxRequestSize / MinRequestBytesPerPartition, MaxRatchetPartitionCount));
+        InterlockedHelper.RatchetUp(
+            ref s_maxRecordErrorCount,
+            Math.Min(maxRequestSize / MinRequestBytesPerRecord, MaxRatchetRecordErrorCount));
+    }
 
     /// <summary>
     /// Response for each topic. Reusable array — <see cref="TopicCount"/> indicates valid elements.
@@ -43,22 +121,42 @@ public sealed class ProduceResponse : IKafkaResponse
     {
         var topicCount = reader.ReadUnsignedVarInt() - 1;
 
-        var response = Volatile.Read(ref s_pool).Rent();
-
+        // Each topic entry needs at least a topic id (16 bytes, v13+) or a compact name
+        // length prefix (1 byte), plus partition-count and tagged-fields varints. A count
+        // that cannot fit in the remaining payload at that minimum size, or that exceeds
+        // the absolute cap, is malformed and must fail before the array allocation.
         if (topicCount > 0)
+            reader.ValidateReadableLength(topicCount, version >= ProduceRequest.TopicIdVersion ? 18 : 3, MaxTopicCount);
+
+        var response = Volatile.Read(ref s_pool).Rent();
+        var parsedTopics = 0;
+        try
         {
-            if (response.Responses.Length < topicCount)
-                response.Responses = new ProduceResponseTopicData[topicCount];
+            if (topicCount > 0)
+            {
+                if (response.Responses.Length < topicCount)
+                    response.Responses = new ProduceResponseTopicData[topicCount];
 
-            for (var i = 0; i < topicCount; i++)
-                response.Responses[i].ReadInto(ref reader, version);
+                for (; parsedTopics < topicCount; parsedTopics++)
+                    response.Responses[parsedTopics].ReadInto(ref reader, version);
+            }
+
+            response.TopicCount = Math.Max(topicCount, 0);
+            response.ThrottleTimeMs = reader.ReadInt32();
+            response.NodeEndpoints = ReadResponseTaggedFields(ref reader, version);
+
+            return response;
         }
-
-        response.TopicCount = Math.Max(topicCount, 0);
-        response.ThrottleTimeMs = reader.ReadInt32();
-        response.NodeEndpoints = ReadResponseTaggedFields(ref reader, version);
-
-        return response;
+        catch
+        {
+            // Hostile or truncated frames must not defeat the response pool: the caller
+            // never sees the instance on failure, so return it before propagating. Mark
+            // the entries this parse touched (including the partially-read one) so
+            // Return's pool-hygiene scan covers them.
+            response.TopicCount = Math.Max(Math.Min(parsedTopics + 1, topicCount), 0);
+            response.Return();
+            throw;
+        }
     }
 
     private static NodeEndpoint[] ReadResponseTaggedFields(ref KafkaProtocolReader reader, short version)
@@ -73,7 +171,12 @@ public sealed class ProduceResponse : IKafkaResponse
 
             if (tag == 0 && version >= 10)
             {
-                nodeEndpoints = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => NodeEndpoint.Read(ref r));
+                // Each endpoint needs at least node id (4), host prefix (1), port (4),
+                // rack prefix (1), and tagged-fields varint (1) on the wire.
+                nodeEndpoints = reader.ReadCompactArray(
+                    static (ref KafkaProtocolReader r) => NodeEndpoint.Read(ref r),
+                    minElementSize: 11,
+                    maxCount: MaxNodeEndpointCount);
             }
             else
             {
@@ -88,8 +191,60 @@ public sealed class ProduceResponse : IKafkaResponse
 
     /// <summary>
     /// Returns this response to the pool for reuse. Must be called after processing is complete.
+    /// Oversized instances are dropped instead of pooled (the pool self-heals via Create on the
+    /// next miss), and oversized nested partition arrays are trimmed, so hostile frames cannot
+    /// pin large allocations in the pool.
     /// </summary>
-    internal void Return() => Volatile.Read(ref s_pool).Return(this);
+    internal void Return()
+    {
+        if (TryPrepareForPool())
+            Volatile.Read(ref s_pool).Return(this);
+    }
+
+    /// <summary>
+    /// Applies pool hygiene (drop oversized instances, trim oversized nested arrays,
+    /// clear reference-bearing entries) and reports whether the instance may be pooled.
+    /// Internal so tests can assert the prepared state race-free — an instance that has
+    /// entered the shared pool can be re-rented and overwritten by a concurrent test.
+    /// </summary>
+    internal bool TryPrepareForPool()
+    {
+        if (Responses.Length > MaxPooledTopicCapacity)
+            return false;
+
+        // Only entries this response touched can have grown or hold references; earlier
+        // returns already vetted the rest, so the scan is O(this response's content) —
+        // which the caller has just iterated anyway — not O(retained capacity).
+        for (var i = 0; i < TopicCount; i++)
+        {
+            ref var topic = ref Responses[i];
+            topic.Name = string.Empty;
+
+            if (topic.PartitionResponses is not { } partitions)
+                continue;
+
+            if (partitions.Length > MaxPooledPartitionCapacity)
+            {
+                topic.PartitionResponses = null!;
+                continue;
+            }
+
+            // Clear consumed entries so a pooled instance never pins error-message
+            // strings or record-error arrays from prior responses — hostile frames can
+            // carry multi-MB error strings that would otherwise stay live for the
+            // pool's lifetime. Skipped in the common all-success case via the flag
+            // ReadInto maintains (conservatively true while a parse is in flight).
+            // (PartitionCount can exceed the array length when a hostile count failed
+            // validation before allocation, hence the Min.)
+            if (topic.HasNestedReferences)
+            {
+                Array.Clear(partitions, 0, Math.Min(topic.PartitionCount, partitions.Length));
+                topic.HasNestedReferences = false;
+            }
+        }
+
+        return true;
+    }
 
     /// <summary>
     /// Increases the response pool capacity if <paramref name="poolSize"/> exceeds the current size.
@@ -152,6 +307,15 @@ public struct ProduceResponseTopicData
     public int PartitionCount { get; internal set; }
 
     /// <summary>
+    /// Whether any consumed partition entry holds heap references (error message or
+    /// record errors). Maintained by <see cref="ReadInto"/> so pool cleanup can skip
+    /// the common all-success case; conservatively true while a parse is in flight so
+    /// a mid-parse failure still gets cleaned. Direct constructors that populate
+    /// reference-bearing entries must set this.
+    /// </summary>
+    internal bool HasNestedReferences { get; set; }
+
+    /// <summary>
     /// Non-pooled path: allocates a fresh struct and array. Used by tests and direct construction.
     /// </summary>
     public static ProduceResponseTopicData Read(ref KafkaProtocolReader reader, short version)
@@ -187,11 +351,39 @@ public struct ProduceResponseTopicData
 
         if (PartitionCount > 0)
         {
+            // Each partition entry carries 30 bytes of fixed fields (index, error code,
+            // base offset, log append time, log start offset) plus three varints for the
+            // record-errors array, error message, and tagged fields. A count that cannot
+            // fit in the remaining payload at that minimum size, or that exceeds the
+            // absolute cap, is malformed and must fail before the array allocation.
+            reader.ValidateReadableLength(PartitionCount, 33, ProduceResponse.MaxPartitionCount);
+
             if (PartitionResponses is null || PartitionResponses.Length < PartitionCount)
                 PartitionResponses = new ProduceResponsePartitionData[PartitionCount];
 
+            // Conservative until the loop completes so a mid-parse failure still gets
+            // its partially-written entries cleared on pool return.
+            HasNestedReferences = true;
+            var hasNestedReferences = false;
+
             for (var i = 0; i < PartitionCount; i++)
-                PartitionResponses[i] = ProduceResponsePartitionData.Read(ref reader, version);
+            {
+                var partition = ProduceResponsePartitionData.Read(ref reader, version);
+                // RecordErrors is the shared empty singleton (never null) on the happy
+                // path, so only a populated array counts as a pinned reference.
+                // CurrentLeader (LeaderIdAndEpoch) is a class — a heap reference
+                // populated on KIP-951 retriable-leader errors — so it counts too.
+                hasNestedReferences |= partition.ErrorMessage is not null
+                    || partition.RecordErrors is { Length: > 0 }
+                    || partition.CurrentLeader is not null;
+                PartitionResponses[i] = partition;
+            }
+
+            HasNestedReferences = hasNestedReferences;
+        }
+        else
+        {
+            HasNestedReferences = false;
         }
 
         reader.SkipTaggedFields();
@@ -255,7 +447,13 @@ public readonly struct ProduceResponsePartitionData
         var logAppendTimeMs = reader.ReadInt64();
         var logStartOffset = reader.ReadInt64();
 
-        var recordErrors = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v), version);
+        // Each record error needs at least batch index (4), error message prefix (1),
+        // and tagged-fields varint (1) on the wire.
+        var recordErrors = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v),
+            version,
+            minElementSize: 6,
+            maxCount: ProduceResponse.MaxRecordErrorCount);
         var errorMessage = reader.ReadCompactString();
         var currentLeader = ReadPartitionTaggedFields(ref reader, version);
 
