@@ -93,7 +93,7 @@ public class ProduceResponseTests
     [Test]
     public async Task Read_TopicCountExceedingAbsoluteCap_ThrowsMalformedProtocolData()
     {
-        // A claimed count above the frame-derived ceiling (which no ratchet can exceed,
+        // A claimed count above the absolute ratchet ceiling (which no ratchet can exceed,
         // making this deterministic under parallel ratchet tests), padded so it still
         // satisfies the pre-v13 3-byte wire minimum: the in-memory topic struct is an
         // order of magnitude larger than its minimum encoding, so counts above the cap
@@ -126,7 +126,7 @@ public class ProduceResponseTests
     public async Task RatchetMaxEntryCaps_HugeRequestSize_ClampsToFrameDerivedCeilings()
     {
         // A producer configured with an enormous max request size must not raise the
-        // process-global caps past what the 16 MiB response frame can actually deliver.
+        // process-global caps past the conservative absolute ceilings.
         ProduceResponse.RatchetMaxEntryCaps(int.MaxValue);
 
         await Assert.That(ProduceResponse.MaxTopicCount)

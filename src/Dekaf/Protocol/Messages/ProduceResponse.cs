@@ -46,19 +46,24 @@ public sealed class ProduceResponse : IKafkaResponse
     private const int MinRequestBytesPerPartition = 64;
     private const int MinRequestBytesPerRecord = 4;
 
-    // Frame-derived ceilings for the ratchet: producer connections read responses through
-    // a frame capped at ResponseBufferPool.DefaultMaxArrayLength (16 MiB) regardless of
-    // the configured max request size (only consumer FetchMaxBytes raises the pool limit),
-    // so a deliverable response can never encode more entries than the frame holds at each
-    // entry's minimum legitimate response encoding. Clamping the request-derived ratchet
-    // to these bounds keeps the worst-case hostile in-memory allocation at tens of MB even
-    // when a producer is configured with a very large (e.g. 128 MiB) max request size.
-    private const int MaxResponseFrameBytes = 16 * 1024 * 1024;
+    // Absolute ceilings for the ratchet, chosen independently of any single connection's
+    // actual frame size (standalone producers read responses through the 16 MiB
+    // ResponseBufferPool.Default frame; producers sharing a KafkaClient read through a
+    // pool sized by the client's SharedResponseBufferFetchMaxBytes constant, a ~201 MiB
+    // tier). The ceiling budget is what a 16 MiB frame can encode at each entry's minimum
+    // legitimate response encoding — deliberately conservative so one producer's huge
+    // MaxRequestSize cannot inflate the process-global cap into hundreds-of-MiB hostile
+    // allocations (a pre-v13 topic entry encodes in 3 bytes but expands to a ~48-byte
+    // struct). Deliberate tradeoff: a single produce response carrying more than ~466k
+    // topics would be rejected even where a larger shared-pool frame could deliver it —
+    // far beyond any practical workload — while the per-frame wire-minimum check in
+    // ValidateReadableLength remains the proportional defense at every frame size.
+    private const int RatchetCeilingBudgetBytes = 16 * 1024 * 1024;
     // A legitimate response topic entry carries a name/id plus at least one 33-byte
     // partition entry and two varints.
-    internal const int MaxRatchetTopicCount = MaxResponseFrameBytes / 36;
-    internal const int MaxRatchetPartitionCount = MaxResponseFrameBytes / 33;
-    internal const int MaxRatchetRecordErrorCount = MaxResponseFrameBytes / 6;
+    internal const int MaxRatchetTopicCount = RatchetCeilingBudgetBytes / 36;
+    internal const int MaxRatchetPartitionCount = RatchetCeilingBudgetBytes / 33;
+    internal const int MaxRatchetRecordErrorCount = RatchetCeilingBudgetBytes / 6;
 
     private static int s_maxTopicCount = DefaultMaxRequestSize / MinRequestBytesPerTopic;
     private static int s_maxPartitionCount = DefaultMaxRequestSize / MinRequestBytesPerPartition;
@@ -72,7 +77,7 @@ public sealed class ProduceResponse : IKafkaResponse
 
     /// <summary>
     /// Raises the response parse caps for producers configured with a max request size
-    /// larger than the default, clamped to the response-frame-derived ceilings. Monotonic
+    /// larger than the default, clamped to conservative absolute ceilings. Monotonic
     /// — caps never shrink — mirroring <see cref="RatchetPoolSize"/>, since responses can
     /// only echo requests this client was configured to send.
     /// </summary>
