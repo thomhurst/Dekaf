@@ -200,13 +200,29 @@ public sealed class ProduceResponse : IKafkaResponse
         if (Responses.Length > MaxPooledTopicCapacity)
             return;
 
-        // Only entries this response touched can have grown; earlier returns already
-        // vetted the rest, so the scan is O(topics in this response) — which the caller
-        // has just iterated anyway — not O(retained capacity).
+        // Only entries this response touched can have grown or hold references; earlier
+        // returns already vetted the rest, so the scan is O(this response's content) —
+        // which the caller has just iterated anyway — not O(retained capacity).
         for (var i = 0; i < TopicCount; i++)
         {
-            if (Responses[i].PartitionResponses is { Length: > MaxPooledPartitionCapacity })
-                Responses[i].PartitionResponses = null!;
+            ref var topic = ref Responses[i];
+            topic.Name = string.Empty;
+
+            if (topic.PartitionResponses is not { } partitions)
+                continue;
+
+            if (partitions.Length > MaxPooledPartitionCapacity)
+            {
+                topic.PartitionResponses = null!;
+                continue;
+            }
+
+            // Clear consumed entries so a pooled instance never pins error-message
+            // strings or record-error arrays from prior responses — hostile frames can
+            // carry multi-MB error strings that would otherwise stay live for the
+            // pool's lifetime. (PartitionCount can exceed the array length when a
+            // hostile count failed validation before allocation, hence the Min.)
+            Array.Clear(partitions, 0, Math.Min(topic.PartitionCount, partitions.Length));
         }
 
         Volatile.Read(ref s_pool).Return(this);

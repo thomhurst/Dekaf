@@ -249,6 +249,36 @@ public class ProduceResponseTests
         await Assert.That(response.ThrottleTimeMs).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task Return_ClearsConsumedPartitionEntries()
+    {
+        var response = new ProduceResponse
+        {
+            Responses = new ProduceResponseTopicData[1],
+            TopicCount = 1,
+            ThrottleTimeMs = 9
+        };
+        response.Responses[0].Name = "topic-a";
+        response.Responses[0].PartitionCount = 1;
+        response.Responses[0].PartitionResponses = new ProduceResponsePartitionData[2];
+        response.Responses[0].PartitionResponses[0] = new ProduceResponsePartitionData
+        {
+            Index = 1,
+            ErrorCode = ErrorCode.None,
+            BaseOffset = 0,
+            ErrorMessage = "potentially large error message",
+            RecordErrors = new BatchIndexAndErrorMessage[1]
+        };
+
+        response.Return();
+
+        // Pooled instances must not pin strings or nested arrays from prior responses.
+        await Assert.That(response.Responses[0].Name).IsEmpty();
+        await Assert.That(response.Responses[0].PartitionResponses[0].ErrorMessage).IsNull();
+        await Assert.That(response.Responses[0].PartitionResponses[0].RecordErrors).IsNull();
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(0);
+    }
+
     private static void ReadRaw(ArrayBufferWriter<byte> buffer, short version)
     {
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
