@@ -6,6 +6,10 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class ShareAcknowledgeResponse : IKafkaResponse
 {
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+    internal const int MaxNodeEndpointCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.ShareAcknowledge;
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 2;
@@ -53,10 +57,14 @@ public sealed class ShareAcknowledgeResponse : IKafkaResponse
         }
 
         var responses = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ShareAcknowledgeResponseTopic.Read(ref r));
+            static (ref KafkaProtocolReader r) => ShareAcknowledgeResponseTopic.Read(ref r),
+            minElementSize: 18,
+            maxCount: MaxTopicCount);
 
         var nodeEndpoints = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ShareAcknowledgeNodeEndpoint.Read(ref r));
+            static (ref KafkaProtocolReader r) => ShareAcknowledgeNodeEndpoint.Read(ref r),
+            minElementSize: 11,
+            maxCount: MaxNodeEndpointCount);
 
         reader.SkipTaggedFields();
 
@@ -91,7 +99,9 @@ public sealed class ShareAcknowledgeResponseTopic
     {
         var topicId = reader.ReadUuid();
         var partitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ShareAcknowledgeResponsePartition.Read(ref r));
+            static (ref KafkaProtocolReader r) => ShareAcknowledgeResponsePartition.Read(ref r),
+            minElementSize: 17,
+            maxCount: ShareAcknowledgeResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 

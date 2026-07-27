@@ -7,6 +7,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class ShareGroupHeartbeatResponse : IKafkaResponse
 {
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.ShareGroupHeartbeat;
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 1;
@@ -95,7 +98,9 @@ public sealed class ShareGroupHeartbeatAssignment
     public static ShareGroupHeartbeatAssignment Read(ref KafkaProtocolReader reader)
     {
         var topicPartitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ShareGroupHeartbeatTopicPartitions.Read(ref r));
+            static (ref KafkaProtocolReader r) => ShareGroupHeartbeatTopicPartitions.Read(ref r),
+            minElementSize: 18,
+            maxCount: ShareGroupHeartbeatResponse.MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -134,7 +139,9 @@ public sealed class ShareGroupHeartbeatTopicPartitions
     {
         var topicId = reader.ReadUuid();
         var partitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadInt32());
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: ShareGroupHeartbeatResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 

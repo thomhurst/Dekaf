@@ -6,6 +6,10 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeShareGroupOffsetsResponse : IKafkaResponse
 {
+    internal const int MaxGroupCount = 100_000;
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeShareGroupOffsets;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 1;
@@ -27,7 +31,9 @@ public sealed class DescribeShareGroupOffsetsResponse : IKafkaResponse
 
         var groups = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeShareGroupOffsetsResponseGroup.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 6,
+            maxCount: MaxGroupCount);
 
         reader.SkipTaggedFields();
 
@@ -85,7 +91,9 @@ public sealed class DescribeShareGroupOffsetsResponseGroup
 
         var topics = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeShareGroupOffsetsResponseTopic.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 19,
+            maxCount: DescribeShareGroupOffsetsResponse.MaxTopicCount);
 
         var errorCode = (ErrorCode)reader.ReadInt16();
         var errorMessage = reader.ReadCompactString();
@@ -142,7 +150,9 @@ public sealed class DescribeShareGroupOffsetsResponseTopic
 
         var partitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeShareGroupOffsetsResponsePartition.Read(ref r, v),
-            version);
+            version,
+            minElementSize: version >= 1 ? 28 : 20,
+            maxCount: DescribeShareGroupOffsetsResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 

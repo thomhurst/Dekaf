@@ -6,6 +6,15 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class StreamsGroupDescribeResponse : IKafkaResponse
 {
+    internal const int MaxGroupCount = 100_000;
+    internal const int MaxMemberCount = 100_000;
+    internal const int MaxSubtopologyCount = 1_000_000;
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxTopicConfigCount = 100_000;
+    internal const int MaxClientTagCount = 100_000;
+    internal const int MaxTaskCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.StreamsGroupDescribe;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
@@ -35,7 +44,9 @@ public sealed class StreamsGroupDescribeResponse : IKafkaResponse
         var throttleTimeMs = reader.ReadInt32();
 
         var groups = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeGroup.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeGroup.Read(ref r),
+            minElementSize: 20,
+            maxCount: MaxGroupCount);
 
         reader.SkipTaggedFields();
 
@@ -88,7 +99,9 @@ public sealed class StreamsGroupDescribeGroup
         var assignmentEpoch = reader.ReadInt32();
         var topology = StreamsGroupDescribeTopology.ReadNullable(ref reader);
         var members = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeMember.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeMember.Read(ref r),
+            minElementSize: 28,
+            maxCount: StreamsGroupDescribeResponse.MaxMemberCount);
         var authorizedOperations = reader.ReadInt32();
 
         reader.SkipTaggedFields();
@@ -147,7 +160,9 @@ public sealed class StreamsGroupDescribeTopology
 
         var epoch = reader.ReadInt32();
         var subtopologies = reader.ReadCompactNullableArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeSubtopology.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeSubtopology.Read(ref r),
+            minElementSize: 6,
+            maxCount: StreamsGroupDescribeResponse.MaxSubtopologyCount);
 
         reader.SkipTaggedFields();
 
@@ -192,13 +207,21 @@ public sealed class StreamsGroupDescribeSubtopology
     {
         var subtopologyId = reader.ReadCompactString() ?? string.Empty;
         var sourceTopics = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadCompactString() ?? string.Empty);
+            static (ref KafkaProtocolReader r) => r.ReadCompactString() ?? string.Empty,
+            minElementSize: 1,
+            maxCount: StreamsGroupDescribeResponse.MaxTopicCount);
         var repartitionSinkTopics = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadCompactString() ?? string.Empty);
+            static (ref KafkaProtocolReader r) => r.ReadCompactString() ?? string.Empty,
+            minElementSize: 1,
+            maxCount: StreamsGroupDescribeResponse.MaxTopicCount);
         var stateChangelogTopics = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTopicInfo.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTopicInfo.Read(ref r),
+            minElementSize: 9,
+            maxCount: StreamsGroupDescribeResponse.MaxTopicCount);
         var repartitionSourceTopics = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTopicInfo.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTopicInfo.Read(ref r),
+            minElementSize: 9,
+            maxCount: StreamsGroupDescribeResponse.MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -240,7 +263,9 @@ public sealed class StreamsGroupDescribeTopicInfo
         var partitions = reader.ReadInt32();
         var replicationFactor = reader.ReadInt16();
         var topicConfigs = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeKeyValue.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeKeyValue.Read(ref r),
+            minElementSize: 3,
+            maxCount: StreamsGroupDescribeResponse.MaxTopicConfigCount);
 
         reader.SkipTaggedFields();
 
@@ -343,11 +368,17 @@ public sealed class StreamsGroupDescribeMember
         var processId = reader.ReadCompactString() ?? string.Empty;
         var userEndpoint = StreamsGroupDescribeEndpoint.ReadNullable(ref reader);
         var clientTags = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeKeyValue.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeKeyValue.Read(ref r),
+            minElementSize: 3,
+            maxCount: StreamsGroupDescribeResponse.MaxClientTagCount);
         var taskOffsets = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTaskOffset.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTaskOffset.Read(ref r),
+            minElementSize: 14,
+            maxCount: StreamsGroupDescribeResponse.MaxTaskCount);
         var taskEndOffsets = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTaskOffset.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTaskOffset.Read(ref r),
+            minElementSize: 14,
+            maxCount: StreamsGroupDescribeResponse.MaxTaskCount);
         var assignment = StreamsGroupDescribeAssignment.Read(ref reader);
         var targetAssignment = StreamsGroupDescribeAssignment.Read(ref reader);
         var isClassic = reader.ReadBoolean();
@@ -483,11 +514,17 @@ public sealed class StreamsGroupDescribeAssignment
     public static StreamsGroupDescribeAssignment Read(ref KafkaProtocolReader reader)
     {
         var activeTasks = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTaskIds.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTaskIds.Read(ref r),
+            minElementSize: 3,
+            maxCount: StreamsGroupDescribeResponse.MaxTaskCount);
         var standbyTasks = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTaskIds.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTaskIds.Read(ref r),
+            minElementSize: 3,
+            maxCount: StreamsGroupDescribeResponse.MaxTaskCount);
         var warmupTasks = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTaskIds.Read(ref r));
+            static (ref KafkaProtocolReader r) => StreamsGroupDescribeTaskIds.Read(ref r),
+            minElementSize: 3,
+            maxCount: StreamsGroupDescribeResponse.MaxTaskCount);
 
         reader.SkipTaggedFields();
 
@@ -520,7 +557,10 @@ public sealed class StreamsGroupDescribeTaskIds
     public static StreamsGroupDescribeTaskIds Read(ref KafkaProtocolReader reader)
     {
         var subtopologyId = reader.ReadCompactString() ?? string.Empty;
-        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
+        var partitions = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: StreamsGroupDescribeResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
