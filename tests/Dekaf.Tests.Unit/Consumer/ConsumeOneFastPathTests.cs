@@ -6,6 +6,7 @@ using System.Text;
 using Dekaf.Consumer;
 using Dekaf.Diagnostics;
 using Dekaf.Errors;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Dekaf.Tests.Unit.Producer;
@@ -582,6 +583,82 @@ public sealed class ConsumeOneFastPathTests
             .Throws<OperationCanceledException>();
     }
 
+    [Test]
+    public async Task ConsumeOneAsync_KeyDeserializerSeeks_DefersDisposalThroughValueDeserializer()
+    {
+        var keyBytes = Encoding.UTF8.GetBytes("original-key");
+        var valueBytes = Encoding.UTF8.GetBytes("original-value");
+        var memoryOwner = new TrackingPooledMemory(() => valueBytes.AsSpan().Clear());
+        var fetch = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(0, CreateRecord(0, keyBytes, valueBytes))],
+            memoryOwner: memoryOwner);
+        KafkaConsumer<string, string>? consumer = null;
+        var keyDeserializer = new CallbackStringDeserializer(
+            () => consumer!.Seek(new TopicPartitionOffset(Topic, Partition, 7)));
+        var disposeCountDuringValueDeserialization = -1;
+        string? observedValue = null;
+        var valueDeserializer = new CallbackStringDeserializer(() =>
+        {
+            disposeCountDuringValueDeserialization = memoryOwner.DisposeCount;
+            observedValue = Encoding.UTF8.GetString(valueBytes);
+        });
+        consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            keyDeserializer,
+            valueDeserializer);
+
+        await using (consumer)
+        {
+            var consumed = TryConsumeOneFromPendingFetches(consumer, out _);
+
+            await Assert.That(consumed).IsFalse();
+            await Assert.That(observedValue).IsEqualTo("original-value");
+            await Assert.That(disposeCountDuringValueDeserialization).IsEqualTo(0);
+            await Assert.That(memoryOwner.DisposeCount).IsEqualTo(1);
+            await Assert.That(consumer.GetPosition(new TopicPartition(Topic, Partition))).IsEqualTo(7);
+        }
+    }
+
+    [Test]
+    public async Task ConsumeOneAsync_AsyncDeserializerSeeksThenThrows_PreservesRequestedOffset()
+    {
+        var valueBytes = Encoding.UTF8.GetBytes("original-value");
+        var memoryOwner = new TrackingPooledMemory(() => valueBytes.AsSpan().Clear());
+        var fetch = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(0, CreateRecord(0, Encoding.UTF8.GetBytes("key"), valueBytes))],
+            memoryOwner: memoryOwner);
+        KafkaConsumer<string, string>? consumer = null;
+        var disposeCountAfterYield = -1;
+        string? observedValue = null;
+        var valueDeserializer = new CallbackAsyncStringDeserializer(async (data, _, _) =>
+        {
+            consumer!.Seek(new TopicPartitionOffset(Topic, Partition, 7));
+            await Task.Yield();
+            disposeCountAfterYield = memoryOwner.DisposeCount;
+            observedValue = Encoding.UTF8.GetString(data.Span);
+            throw new InvalidDataException("Expected async deserializer failure.");
+        });
+        consumer = CreateInitializedConsumerWithDeserializers(
+            fetch,
+            asyncValueDeserializer: valueDeserializer);
+
+        await using (consumer)
+        {
+            await Assert.That(async () =>
+                    await ConsumeOneFromPendingFetchesAsync(consumer))
+                .Throws<RecordDeserializationException>();
+
+            await Assert.That(observedValue).IsEqualTo("original-value");
+            await Assert.That(disposeCountAfterYield).IsEqualTo(0);
+            await Assert.That(memoryOwner.DisposeCount).IsEqualTo(1);
+            await Assert.That(consumer.GetPosition(new TopicPartition(Topic, Partition))).IsEqualTo(7);
+        }
+    }
+
     private static KafkaConsumer<string, string> CreateInitializedConsumer(params PendingFetchData[] fetches)
     {
         return CreateInitializedConsumer(queuedMinMessages: 1, fetchMaxWaitMs: 200, fetches);
@@ -744,6 +821,38 @@ public sealed class ConsumeOneFastPathTests
             => ValueTask.FromException<string>(new OperationCanceledException(cancellationToken));
     }
 
+    private sealed class CallbackStringDeserializer(Action callback) : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            callback();
+            return Encoding.UTF8.GetString(data.Span);
+        }
+    }
+
+    private sealed class CallbackAsyncStringDeserializer(
+        Func<ReadOnlyMemory<byte>, SerializationContext, CancellationToken, ValueTask<string>> callback)
+        : IAsyncDeserializer<string>
+    {
+        public ValueTask<string> DeserializeAsync(
+            ReadOnlyMemory<byte> data,
+            SerializationContext context,
+            CancellationToken cancellationToken = default)
+            => callback(data, context, cancellationToken);
+    }
+
+    private sealed class TrackingPooledMemory(Action onDispose) : IPooledMemory
+    {
+        public int DisposeCount { get; private set; }
+        public ReadOnlyMemory<byte> Memory => ReadOnlyMemory<byte>.Empty;
+
+        public void Dispose()
+        {
+            DisposeCount++;
+            onDispose();
+        }
+    }
+
     private static void AssignTestPartition(KafkaConsumer<string, string> consumer)
     {
         var tp = new TopicPartition(Topic, Partition);
@@ -870,6 +979,18 @@ public sealed class ConsumeOneFastPathTests
         return consumed;
     }
 
+    private static ValueTask<ConsumeResult<string, string>?> ConsumeOneFromPendingFetchesAsync(
+        KafkaConsumer<string, string> consumer)
+    {
+        var method = typeof(KafkaConsumer<string, string>)
+            .GetMethod("ConsumeOneFromPendingFetchesAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("ConsumeOneFromPendingFetchesAsync method not found.");
+
+        return (ValueTask<ConsumeResult<string, string>?>)method.Invoke(
+            consumer,
+            [CancellationToken.None])!;
+    }
+
     private static MpscFetchBuffer GetPrefetchBuffer(KafkaConsumer<string, string> consumer)
     {
         var field = typeof(KafkaConsumer<string, string>)
@@ -937,14 +1058,25 @@ public sealed class ConsumeOneFastPathTests
     }
 
     private static Record CreateRecord(int offsetDelta, string key, string value, Header[]? headers = null)
+        => CreateRecord(
+            offsetDelta,
+            Encoding.UTF8.GetBytes(key),
+            Encoding.UTF8.GetBytes(value),
+            headers);
+
+    private static Record CreateRecord(
+        int offsetDelta,
+        ReadOnlyMemory<byte> key,
+        ReadOnlyMemory<byte> value,
+        Header[]? headers = null)
     {
         return new Record
         {
             OffsetDelta = offsetDelta,
             TimestampDelta = 0,
-            Key = Encoding.UTF8.GetBytes(key),
+            Key = key,
             IsKeyNull = false,
-            Value = Encoding.UTF8.GetBytes(value),
+            Value = value,
             IsValueNull = false,
             Headers = headers,
             HeaderCount = headers?.Length ?? 0

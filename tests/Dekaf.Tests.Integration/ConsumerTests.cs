@@ -263,6 +263,51 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task Consumer_ConsumeOneSeekDuringDeserialization_ResumesAtRequestedOffset()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("consume-one-reentrant-seek-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 5; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = partition.Partition,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+
+        var deserializer = new CallbackOnceStringDeserializer();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("consume-one-reentrant-seek-consumer")
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Assign(partition);
+        consumer.Seek(new TopicPartitionOffset(topic, partition.Partition, 0));
+        deserializer.SetCallback(
+            () => consumer.Seek(new TopicPartitionOffset(topic, partition.Partition, 3)));
+
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellation.Token);
+
+        await Assert.That(deserializer.CallbackCount).IsEqualTo(1);
+        await Assert.That(consumed).IsNotNull();
+        await Assert.That(consumed!.Value.Offset).IsEqualTo(3);
+        await Assert.That(consumed.Value.Value).IsEqualTo("value-3");
+    }
+
+    [Test]
     public async Task Consumer_SeekDuringFailedDeserialization_PreservesRequestedOffset()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();

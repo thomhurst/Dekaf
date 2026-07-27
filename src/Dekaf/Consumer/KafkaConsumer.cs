@@ -980,6 +980,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
     private int _pendingFetchDepth;
+    // ConsumeOne callbacks run on the documented single application thread. If one
+    // reentrantly clears the queue, defer this fetch's disposal until all borrowed
+    // record memory is out of user code. Plain references avoid per-message atomics.
+    private PendingFetchData? _activeConsumeOneFetch;
+    private PendingFetchData? _deferredConsumeOneFetchDisposal;
     // Auto-commit reads this snapshot from its background task instead of touching _pendingFetches.
     private string? _activeConsumedTopic;
     private int _activeConsumedPartition;
@@ -4342,6 +4347,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             EagerParsePendingOrRemove(pending);
 
             System.Diagnostics.Activity? activity = null;
+            var pendingDisposed = false;
             try
             {
                 while (true)
@@ -4373,18 +4379,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (hasTraceListeners)
                         {
-                            var headers = LazyConsumeHeaders.Create(
+                            activity = StartProtectedConsumeOneActivity(
+                                pending,
                                 pooledHeaders,
                                 pooledHeaderCount,
-                                pending,
-                                pending.HeaderGeneration);
-                            activity = StartConsumeActivity(pending, headers, offset,
-                                valueData.Length, isValueNull, isProcessSpan: false);
+                                offset,
+                                valueData.Length,
+                                isValueNull,
+                                out pendingDisposed);
+
+                            if (pendingDisposed)
+                                break;
                         }
 
                         // User deserialization begins in this constructor. Its exceptions
                         // must propagate even when their type also occurs in protocol codecs.
                         readingProtocolData = false;
+                        BeginConsumeOneFetchUse(pending);
                         result = new ConsumeResult<TKey, TValue>(
                             topic: pending.Topic,
                             partition: pending.PartitionIndex,
@@ -4401,18 +4412,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             leaderEpoch: pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
                             keyDeserializer: _keyDeserializer,
                             valueDeserializer: _valueDeserializer);
+                        pendingDisposed |= EndConsumeOneFetchUse(pending);
 
-                        if (HasPendingFetchClear(pending.TopicPartition))
+                        if (pendingDisposed || HasPendingFetchClear(pending.TopicPartition))
+                        {
+                            pendingDisposed = true;
                             break;
+                        }
 
                         if (hasInterceptors)
                         {
+                            BeginConsumeOneFetchUse(pending);
                             runningInterceptor = true;
                             result = ApplyOnConsumeInterceptors(result);
                             runningInterceptor = false;
+                            pendingDisposed |= EndConsumeOneFetchUse(pending);
 
-                            if (HasPendingFetchClear(pending.TopicPartition))
+                            if (pendingDisposed || HasPendingFetchClear(pending.TopicPartition))
+                            {
+                                pendingDisposed = true;
                                 break;
+                            }
                         }
 
                         TrackConsumedPosition(pending, offset, messageBytes);
@@ -4447,6 +4467,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 activity?.Dispose();
             }
+
+            if (pendingDisposed)
+                continue;
 
             FlushConsumedPositions(pending);
 
@@ -4499,6 +4522,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             EagerParsePendingOrRemove(pending);
 
             System.Diagnostics.Activity? activity = null;
+            var pendingDisposed = false;
             try
             {
                 while (true)
@@ -4528,18 +4552,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                         if (hasTraceListeners)
                         {
-                            var headers = LazyConsumeHeaders.Create(
+                            activity = StartProtectedConsumeOneActivity(
+                                pending,
                                 pooledHeaders,
                                 pooledHeaderCount,
-                                pending,
-                                pending.HeaderGeneration);
-                            activity = StartConsumeActivity(pending, headers, offset,
-                                valueData.Length, isValueNull, isProcessSpan: false);
+                                offset,
+                                valueData.Length,
+                                isValueNull,
+                                out pendingDisposed);
+
+                            if (pendingDisposed)
+                                break;
                         }
 
                         // User deserialization begins in this await. Its exceptions must
                         // propagate even when their type also occurs in protocol codecs.
                         readingProtocolData = false;
+                        BeginConsumeOneFetchUse(pending);
                         var result = await CreateResultWithAsyncDeserializationAsync(
                             pending,
                             offset,
@@ -4553,16 +4582,25 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             timestampType,
                             pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
                             cancellationToken).ConfigureAwait(false);
+                        pendingDisposed |= EndConsumeOneFetchUse(pending);
 
-                        if (HasPendingFetchClear(pending.TopicPartition))
+                        if (pendingDisposed || HasPendingFetchClear(pending.TopicPartition))
+                        {
+                            pendingDisposed = true;
                             break;
+                        }
 
                         if (hasInterceptors)
                         {
+                            BeginConsumeOneFetchUse(pending);
                             result = ApplyOnConsumeInterceptors(result);
+                            pendingDisposed |= EndConsumeOneFetchUse(pending);
 
-                            if (HasPendingFetchClear(pending.TopicPartition))
+                            if (pendingDisposed || HasPendingFetchClear(pending.TopicPartition))
+                            {
+                                pendingDisposed = true;
                                 break;
+                            }
                         }
 
                         TrackConsumedPosition(pending, offset, messageBytes);
@@ -4587,7 +4625,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                     }
                     catch (Exception) when (!readingProtocolData)
                     {
-                        RewindAfterDeliveryFailure(pending, offset);
+                        try
+                        {
+                            if (!HasPendingFetchClear(pending.TopicPartition))
+                                RewindAfterDeliveryFailure(pending, offset);
+                        }
+                        finally
+                        {
+                            EndConsumeOneFetchUseIfActive(pending);
+                        }
                         throw;
                     }
                 }
@@ -4596,6 +4642,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             {
                 activity?.Dispose();
             }
+
+            if (pendingDisposed)
+                continue;
 
             FlushConsumedPositions(pending);
 
@@ -4629,28 +4678,36 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         bool hasAsyncDeserializers,
         Exception exception)
     {
-        if (!runningInterceptor && !hasAsyncDeserializers && exception is not OperationCanceledException)
+        try
         {
-            ref readonly var record = ref pending.CurrentRecord;
-            exception = ConsumeResult<TKey, TValue>.CreateDeserializationException(
-                ConsumeResult<TKey, TValue>.LastDeserializationOrigin,
-                pending.Topic,
-                pending.PartitionIndex,
-                offset,
-                pending.CurrentBaseTimestamp + record.TimestampDelta,
-                pending.CurrentTimestampType,
-                record.Key,
-                record.IsKeyNull,
-                record.Value,
-                record.IsValueNull,
-                headers: null,
-                record.Headers,
-                record.HeaderCount,
-                exception);
+            if (!runningInterceptor && !hasAsyncDeserializers && exception is not OperationCanceledException)
+            {
+                ref readonly var record = ref pending.CurrentRecord;
+                exception = ConsumeResult<TKey, TValue>.CreateDeserializationException(
+                    ConsumeResult<TKey, TValue>.LastDeserializationOrigin,
+                    pending.Topic,
+                    pending.PartitionIndex,
+                    offset,
+                    pending.CurrentBaseTimestamp + record.TimestampDelta,
+                    pending.CurrentTimestampType,
+                    record.Key,
+                    record.IsKeyNull,
+                    record.Value,
+                    record.IsValueNull,
+                    headers: null,
+                    record.Headers,
+                    record.HeaderCount,
+                    exception);
+            }
+
+            if (!HasPendingFetchClear(pending.TopicPartition))
+                RewindAfterDeliveryFailure(pending, offset);
+        }
+        finally
+        {
+            EndConsumeOneFetchUseIfActive(pending);
         }
 
-        if (!HasPendingFetchClear(pending.TopicPartition))
-            RewindAfterDeliveryFailure(pending, offset);
         ExceptionDispatchInfo.Capture(exception).Throw();
     }
 
@@ -4747,6 +4804,38 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             timestampMs,
             timestampType,
             leaderEpoch);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private System.Diagnostics.Activity? StartProtectedConsumeOneActivity(
+        PendingFetchData pending,
+        Header[]? pooledHeaders,
+        int pooledHeaderCount,
+        long offset,
+        int valueLength,
+        bool isValueNull,
+        out bool pendingDisposed)
+    {
+        BeginConsumeOneFetchUse(pending);
+        try
+        {
+            var headers = LazyConsumeHeaders.Create(
+                pooledHeaders,
+                pooledHeaderCount,
+                pending,
+                pending.HeaderGeneration);
+            return StartConsumeActivity(
+                pending,
+                headers,
+                offset,
+                valueLength,
+                isValueNull,
+                isProcessSpan: false);
+        }
+        finally
+        {
+            pendingDisposed = EndConsumeOneFetchUse(pending);
+        }
     }
 
     /// <summary>
@@ -5146,8 +5235,52 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     private void DisposeQueuedFetch(PendingFetchData pending)
     {
         Interlocked.Increment(ref _pendingFetchesVersion);
+        if (ReferenceEquals(pending, _activeConsumeOneFetch))
+        {
+            Debug.Assert(
+                _deferredConsumeOneFetchDisposal is null
+                || ReferenceEquals(_deferredConsumeOneFetchDisposal, pending),
+                "A different ConsumeOne fetch already awaits deferred disposal.");
+            _deferredConsumeOneFetchDisposal = pending;
+            return;
+        }
+
         pending.Dispose();
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void BeginConsumeOneFetchUse(PendingFetchData pending)
+    {
+        Debug.Assert(_activeConsumeOneFetch is null, "Nested ConsumeOne fetch use is unsupported.");
+        _activeConsumeOneFetch = pending;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool EndConsumeOneFetchUse(PendingFetchData pending)
+    {
+        Debug.Assert(
+            ReferenceEquals(_activeConsumeOneFetch, pending),
+            "ConsumeOne fetch-use scope ended out of order.");
+        _activeConsumeOneFetch = null;
+
+        if (!ReferenceEquals(_deferredConsumeOneFetchDisposal, pending))
+            return false;
+
+        return CompleteDeferredConsumeOneFetchDisposal(pending);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool CompleteDeferredConsumeOneFetchDisposal(PendingFetchData pending)
+    {
+        _deferredConsumeOneFetchDisposal = null;
+        pending.Dispose();
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool EndConsumeOneFetchUseIfActive(PendingFetchData pending) =>
+        ReferenceEquals(_activeConsumeOneFetch, pending)
+        && EndConsumeOneFetchUse(pending);
 
     private void EnqueuePendingFetch(PendingFetchData pending)
     {
