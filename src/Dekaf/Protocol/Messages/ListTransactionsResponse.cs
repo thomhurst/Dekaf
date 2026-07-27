@@ -6,6 +6,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class ListTransactionsResponse : IKafkaResponse
 {
+    internal const int MaxUnknownStateFilterCount = 100_000;
+    internal const int MaxTransactionCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.ListTransactions;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
@@ -20,9 +23,13 @@ public sealed class ListTransactionsResponse : IKafkaResponse
         var throttleTimeMs = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
         var unknownStateFilters = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadCompactNonNullableString());
+            static (ref KafkaProtocolReader r) => r.ReadCompactNonNullableString(),
+            minElementSize: 1,
+            maxCount: MaxUnknownStateFilterCount);
         var transactionStates = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ListTransactionsResponseState.Read(ref r));
+            static (ref KafkaProtocolReader r) => ListTransactionsResponseState.Read(ref r),
+            minElementSize: 11,
+            maxCount: MaxTransactionCount);
 
         reader.SkipTaggedFields();
 

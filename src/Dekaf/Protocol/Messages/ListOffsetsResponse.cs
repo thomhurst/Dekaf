@@ -5,6 +5,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class ListOffsetsResponse : IKafkaResponse
 {
+    internal const int MaxOldStyleOffsetCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.ListOffsets;
     public static short LowestSupportedVersion => 6;
     public static short HighestSupportedVersion => 11;
@@ -23,9 +25,11 @@ public sealed class ListOffsetsResponse : IKafkaResponse
     {
         var throttleTimeMs = reader.ReadInt32();
 
-        IReadOnlyList<ListOffsetsResponseTopic> topics;
-        topics = reader.ReadCompactArray((ref KafkaProtocolReader r) =>
-    ListOffsetsResponseTopic.Read(ref r, version));
+        var topics = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => ListOffsetsResponseTopic.Read(ref r, v),
+            version,
+            minElementSize: 3,
+            maxCount: ResponseArrayLimits.MaxTopicCount);
         reader.SkipTaggedFields();
 
         return new ListOffsetsResponse
@@ -48,9 +52,11 @@ public sealed class ListOffsetsResponseTopic
     {
         var name = reader.ReadCompactString()!;
 
-        IReadOnlyList<ListOffsetsResponsePartition> partitions;
-        partitions = reader.ReadCompactArray((ref KafkaProtocolReader r) =>
-    ListOffsetsResponsePartition.Read(ref r, version));
+        var partitions = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => ListOffsetsResponsePartition.Read(ref r, v),
+            version,
+            minElementSize: version == 0 ? 11 : 27,
+            maxCount: ResponseArrayLimits.MaxPartitionCount);
         reader.SkipTaggedFields();
 
         return new ListOffsetsResponseTopic
@@ -102,7 +108,10 @@ public sealed class ListOffsetsResponsePartition
         if (version == 0)
         {
             // v0 has array of offsets
-            oldStyleOffsets = reader.ReadArray((ref KafkaProtocolReader r) => r.ReadInt64());
+            oldStyleOffsets = reader.ReadArray(
+                static (ref KafkaProtocolReader r) => r.ReadInt64(),
+                minElementSize: 8,
+                maxCount: ListOffsetsResponse.MaxOldStyleOffsetCount);
             if (oldStyleOffsets.Count > 0)
             {
                 offset = oldStyleOffsets[0];

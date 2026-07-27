@@ -10,6 +10,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class FetchResponse : IKafkaResponse
 {
+    internal const int MaxNodeEndpointCount = ProduceResponse.MaxNodeEndpointCount;
+
     // Pool to reuse FetchResponse instances across fetch cycles.
     // One instance per fetch cycle, so a small pool suffices.
     private static readonly FetchResponsePool s_pool = new();
@@ -141,7 +143,10 @@ public sealed class FetchResponse : IKafkaResponse
 
             if (tag == 0 && version >= 16)
             {
-                nodeEndpoints = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => NodeEndpoint.Read(ref r));
+                nodeEndpoints = reader.ReadCompactArray(
+                    static (ref KafkaProtocolReader r) => NodeEndpoint.Read(ref r),
+                    minElementSize: 11,
+                    maxCount: MaxNodeEndpointCount);
             }
             else
             {

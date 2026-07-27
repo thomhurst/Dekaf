@@ -6,6 +6,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class WriteTxnMarkersResponse : IKafkaResponse
 {
+    internal const int MaxMarkerCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.WriteTxnMarkers;
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 2;
@@ -16,7 +18,9 @@ public sealed class WriteTxnMarkersResponse : IKafkaResponse
     {
         var markers = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => WriteTxnMarkersResponseMarker.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 10,
+            maxCount: MaxMarkerCount);
 
         reader.SkipTaggedFields();
 
@@ -40,7 +44,9 @@ public sealed class WriteTxnMarkersResponseMarker
         var producerId = reader.ReadInt64();
         var topics = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => WriteTxnMarkersResponseTopic.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 3,
+            maxCount: ResponseArrayLimits.MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -65,7 +71,9 @@ public sealed class WriteTxnMarkersResponseTopic
         var name = reader.ReadCompactNonNullableString();
         var partitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => WriteTxnMarkersResponsePartition.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 7,
+            maxCount: ResponseArrayLimits.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
