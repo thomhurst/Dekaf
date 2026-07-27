@@ -5,6 +5,12 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class OffsetFetchResponse : IKafkaResponse
 {
+    // Group results are cluster-level; topic and partition caps allow extreme requests
+    // while preventing one frame from driving effectively unbounded object allocation.
+    internal const int MaxGroupCount = 100_000;
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.OffsetFetch;
     public static short LowestSupportedVersion => 6;
     public static short HighestSupportedVersion => OffsetFetchRequest.TopicIdVersion;
@@ -39,12 +45,20 @@ public sealed class OffsetFetchResponse : IKafkaResponse
 
         if (version < 8)
         {
-            topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v), version);
+            topics = reader.ReadCompactArray(
+                static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v),
+                version,
+                minElementSize: 3,
+                maxCount: MaxTopicCount);
             errorCode = (ErrorCode)reader.ReadInt16();
         }
         else
         {
-            groups = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseGroup.Read(ref r, v), version);
+            groups = reader.ReadCompactArray(
+                static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseGroup.Read(ref r, v),
+                version,
+                minElementSize: 5,
+                maxCount: MaxGroupCount);
         }
 
         reader.SkipTaggedFields();
@@ -74,7 +88,11 @@ public sealed class OffsetFetchResponseTopic
             ? string.Empty
             : reader.ReadCompactNonNullableString();
         var topicId = version >= OffsetFetchRequest.TopicIdVersion ? reader.ReadUuid() : Guid.Empty;
-        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponsePartition.Read(ref r, v), version);
+        var partitions = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => OffsetFetchResponsePartition.Read(ref r, v),
+            version,
+            minElementSize: 20,
+            maxCount: OffsetFetchResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
@@ -132,7 +150,11 @@ public sealed class OffsetFetchResponseGroup
     {
         var groupId = reader.ReadCompactNonNullableString();
 
-        var topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v), version);
+        var topics = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v),
+            version,
+            minElementSize: version >= OffsetFetchRequest.TopicIdVersion ? 18 : 3,
+            maxCount: OffsetFetchResponse.MaxTopicCount);
 
         var errorCode = (ErrorCode)reader.ReadInt16();
 

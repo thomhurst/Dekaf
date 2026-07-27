@@ -8,6 +8,11 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class AddPartitionsToTxnResponse : IKafkaResponse
 {
+    // A response echoes one client request. One million entries is deliberately
+    // conservative while still bounding hostile frame-valid object allocation.
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.AddPartitionsToTxn;
     public static short LowestSupportedVersion => 3;
     public static short HighestSupportedVersion => 4;
@@ -77,7 +82,11 @@ public sealed class AddPartitionsToTxnResponse : IKafkaResponse
 
     private static IKafkaResponse ReadV0ToV3(ref KafkaProtocolReader reader, short version, int throttleTimeMs)
     {
-        var results = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnTopicResult.Read(ref r, v), version);
+        var results = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnTopicResult.Read(ref r, v),
+            version,
+            minElementSize: 3,
+            maxCount: MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -101,7 +110,11 @@ public sealed class AddPartitionsToTxnTopicResult
     {
         var name = reader.ReadCompactNonNullableString();
 
-        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnPartitionResult.Read(ref r, v), version);
+        var partitions = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnPartitionResult.Read(ref r, v),
+            version,
+            minElementSize: 7,
+            maxCount: AddPartitionsToTxnResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
