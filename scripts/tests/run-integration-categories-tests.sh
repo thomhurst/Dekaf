@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 temp_root="$(mktemp -d)"
+ryuk_image="testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
 trap 'rm -rf "$temp_root"' EXIT
 
 mkdir -p "$temp_root/scripts" \
@@ -35,15 +36,19 @@ grep -q 'Category=Serialization.*--maximum-parallel-tests 1' "$CALLS_FILE"
 
 grep -Eq 'MaximumParallelTests[[:space:]]*=>[[:space:]]*4' \
   "$repo_root/tools/Dekaf.Pipeline/Modules/RunProducerIntegrationTestsModule.cs"
-grep -Fq 'bash scripts/prepull-kafka-images.sh "$KAFKA_TEST_IMAGE_TAG" 4.0.2' \
-  "$repo_root/.github/workflows/ci.yml"
+grep -Fq 'PackageVersion Include="Testcontainers" Version="4.13.0"' \
+  "$repo_root/Directory.Packages.props"
+grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/ci.yml"
+grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/integration-groups.yml"
 
 fake_docker='#!/usr/bin/env bash
-attempts="$(cat "$DOCKER_ATTEMPTS_FILE" 2>/dev/null || printf "0")"
-attempts=$((attempts + 1))
-printf "%s" "$attempts" > "$DOCKER_ATTEMPTS_FILE"
 printf "%s\n" "$*" >> "$DOCKER_CALLS_FILE"
-[ "$attempts" -gt "${DOCKER_FAIL_UNTIL:-0}" ]'
+if [ "$1" = "pull" ]; then
+  attempts="$(cat "$DOCKER_ATTEMPTS_FILE" 2>/dev/null || printf "0")"
+  attempts=$((attempts + 1))
+  printf "%s" "$attempts" > "$DOCKER_ATTEMPTS_FILE"
+  [ "$attempts" -gt "${DOCKER_FAIL_UNTIL:-0}" ]
+fi'
 fake_sleep='#!/usr/bin/env bash
 printf "%s\n" "$*" >> "$SLEEP_CALLS_FILE"'
 fake_timeout='#!/usr/bin/env bash
@@ -61,19 +66,38 @@ export DOCKER_CALLS_FILE="$temp_root/docker-calls"
 export SLEEP_CALLS_FILE="$temp_root/sleep-calls"
 export TIMEOUT_CALLS_FILE="$temp_root/timeout-calls"
 
+export DOCKER_FAIL_UNTIL=1
+bash scripts/prepull-kafka-images.sh 4.3.1
+[ "$(cat "$DOCKER_ATTEMPTS_FILE")" -eq 2 ]
+[ ! -s "$SLEEP_CALLS_FILE" ]
+[ "$(cat "$TIMEOUT_CALLS_FILE")" = $'60s\n30s' ]
+grep -qx 'pull apache/kafka:4.3.1' "$DOCKER_CALLS_FILE"
+grep -qx 'pull mirror.gcr.io/apache/kafka:4.3.1' "$DOCKER_CALLS_FILE"
+grep -qx 'tag mirror.gcr.io/apache/kafka:4.3.1 apache/kafka:4.3.1' "$DOCKER_CALLS_FILE"
+
+rm -f "$DOCKER_ATTEMPTS_FILE" "$DOCKER_CALLS_FILE" "$SLEEP_CALLS_FILE" "$TIMEOUT_CALLS_FILE"
 export DOCKER_FAIL_UNTIL=2
 bash scripts/prepull-kafka-images.sh 4.3.1
 [ "$(cat "$DOCKER_ATTEMPTS_FILE")" -eq 3 ]
-grep -qx '15' "$SLEEP_CALLS_FILE"
-grep -qx '30' "$SLEEP_CALLS_FILE"
-[ "$(grep -cx '60s' "$TIMEOUT_CALLS_FILE")" -eq 3 ]
+[ "$(cat "$SLEEP_CALLS_FILE")" = '15' ]
+[ "$(cat "$TIMEOUT_CALLS_FILE")" = $'60s\n30s\n60s' ]
 
-rm "$DOCKER_ATTEMPTS_FILE" "$DOCKER_CALLS_FILE" "$SLEEP_CALLS_FILE" "$TIMEOUT_CALLS_FILE"
+rm -f "$DOCKER_ATTEMPTS_FILE" "$DOCKER_CALLS_FILE" "$SLEEP_CALLS_FILE" "$TIMEOUT_CALLS_FILE"
+export GITHUB_ENV="$temp_root/github-env"
+export DOCKER_FAIL_UNTIL=1
+bash scripts/prepull-kafka-images.sh "$ryuk_image"
+grep -Fqx "TESTCONTAINERS_RYUK_CONTAINER_IMAGE=mirror.gcr.io/$ryuk_image" "$GITHUB_ENV"
+grep -Fqx "pull $ryuk_image" "$DOCKER_CALLS_FILE"
+grep -Fqx "pull mirror.gcr.io/$ryuk_image" "$DOCKER_CALLS_FILE"
+grep -Fqx "tag mirror.gcr.io/$ryuk_image ${ryuk_image%@*}" "$DOCKER_CALLS_FILE"
+
+rm -f "$DOCKER_ATTEMPTS_FILE" "$DOCKER_CALLS_FILE" "$TIMEOUT_CALLS_FILE"
 export DOCKER_FAIL_UNTIL=0
-bash scripts/prepull-kafka-images.sh 4.3.1 4.2.1 4.3.1
-[ "$(wc -l < "$DOCKER_CALLS_FILE")" -eq 2 ]
+bash scripts/prepull-kafka-images.sh 4.3.1 4.2.1 4.3.1 "$ryuk_image"
+[ "$(grep -c '^pull ' "$DOCKER_CALLS_FILE")" -eq 3 ]
 grep -qx 'pull apache/kafka:4.2.1' "$DOCKER_CALLS_FILE"
 grep -qx 'pull apache/kafka:4.3.1' "$DOCKER_CALLS_FILE"
-[ "$(grep -cx '60s' "$TIMEOUT_CALLS_FILE")" -eq 2 ]
+grep -Fqx "pull $ryuk_image" "$DOCKER_CALLS_FILE"
+[ "$(grep -cx '60s' "$TIMEOUT_CALLS_FILE")" -eq 3 ]
 
 echo "run-integration-categories tests passed"
