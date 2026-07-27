@@ -1,3 +1,13 @@
 {
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json"
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "packageRules": [
+    {
+      "description": "EF 8.x train pinned for the net8.0 TFM (Directory.Packages.props conditioned entry); 9+/10+ do not support net8.0",
+      "matchPackageNames": [
+        "/^Microsoft\\.EntityFrameworkCore\\./"
+      ],
+      "matchCurrentVersion": "/^8\\./",
+      "allowedVersions": "<9"
+    }
+  ]
 }
