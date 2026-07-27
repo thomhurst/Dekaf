@@ -6,6 +6,7 @@ using Docker.DotNet.Models;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
+using Newtonsoft.Json;
 using Testcontainers.Toxiproxy;
 using Toxiproxy.Net;
 using Toxiproxy.Net.Toxics;
@@ -22,6 +23,8 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
     private const ushort ExternalBrokerPort = 29092;
     private const string ToxiproxyImage = "ghcr.io/shopify/toxiproxy:2.12.0";
     private const string ClusterId = "MkU3OEVBNTcwNTJENDM2Qg";
+    private const int ToxiproxyControlPlaneMaxAttempts = 3;
+    private static readonly TimeSpan ToxiproxyControlPlaneRetryDelay = TimeSpan.FromMilliseconds(250);
 
     private readonly INetwork _network;
     private readonly ToxiproxyContainer _toxiproxyContainer;
@@ -436,7 +439,11 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
     {
         foreach (var proxy in _proxies)
         {
-            await proxy.AddAsync(toxicFactory()).WaitAsync(cancellationToken).ConfigureAwait(false);
+            var toxic = toxicFactory();
+            await ExecuteToxiproxyToxicAddAsync(
+                proxy,
+                toxic,
+                cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -445,18 +452,106 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
         foreach (var proxy in _proxies)
         {
             proxy.Enabled = enabled;
-            await proxy.UpdateAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+            await ExecuteToxiproxyControlPlaneAsync(
+                $"set proxy '{proxy.Name}' enabled={enabled}",
+                () => proxy.UpdateAsync().WaitAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
         }
     }
 
     private async Task ResetProxiesAsync()
     {
-        await _toxiproxyClient.ResetAsync().ConfigureAwait(false);
+        await ExecuteToxiproxyControlPlaneAsync(
+            "reset proxies",
+            _toxiproxyClient.ResetAsync,
+            CancellationToken.None).ConfigureAwait(false);
         foreach (var proxy in _proxies)
         {
             proxy.Enabled = true;
         }
     }
+
+    internal static async Task ExecuteToxiproxyControlPlaneAsync(
+        string operation,
+        Func<Task> action,
+        CancellationToken cancellationToken,
+        TimeSpan? retryDelay = null,
+        Func<Task<bool>>? isAppliedAfterTransientFailure = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+        ArgumentNullException.ThrowIfNull(action);
+
+        var delay = retryDelay ?? ToxiproxyControlPlaneRetryDelay;
+        var verifyApplicationBeforeRetry = false;
+        for (var attempt = 1; attempt <= ToxiproxyControlPlaneMaxAttempts; attempt++)
+        {
+            try
+            {
+                if (verifyApplicationBeforeRetry)
+                {
+                    if (await isAppliedAfterTransientFailure!().ConfigureAwait(false))
+                    {
+                        return;
+                    }
+
+                    verifyApplicationBeforeRetry = false;
+                }
+
+                await action().ConfigureAwait(false);
+                return;
+            }
+            catch (Exception exception) when (IsTransientToxiproxyControlPlaneFailure(exception))
+            {
+                verifyApplicationBeforeRetry = isAppliedAfterTransientFailure is not null;
+                if (attempt == ToxiproxyControlPlaneMaxAttempts)
+                {
+                    throw new ToxiproxyControlPlaneException(
+                        operation,
+                        ToxiproxyControlPlaneMaxAttempts,
+                        exception);
+                }
+
+                Console.Error.WriteLine(
+                    $"Toxiproxy control-plane operation '{operation}' failed on attempt {attempt}; retrying.");
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    internal static Task ExecuteToxiproxyToxicAddAsync<T>(
+        Proxy proxy,
+        T toxic,
+        CancellationToken cancellationToken,
+        TimeSpan? retryDelay = null)
+        where T : ToxicBase =>
+        ExecuteToxiproxyControlPlaneAsync(
+            $"add toxic '{toxic.Name}' to proxy '{proxy.Name}'",
+            () => proxy.AddAsync(toxic).WaitAsync(cancellationToken),
+            cancellationToken,
+            retryDelay,
+            () => IsToxicAppliedAsync(proxy, toxic.Name, cancellationToken));
+
+    private static async Task<bool> IsToxicAppliedAsync(
+        Proxy proxy,
+        string toxicName,
+        CancellationToken cancellationToken)
+    {
+        var toxics = await proxy.GetAllToxicsAsync()
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        foreach (var toxic in toxics)
+        {
+            if (string.Equals(toxic.Name, toxicName, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsTransientToxiproxyControlPlaneFailure(Exception exception) =>
+        exception is JsonReaderException or HttpRequestException;
 
     private async Task RestoreBrokerAsync(IContainer broker, string topic)
     {
