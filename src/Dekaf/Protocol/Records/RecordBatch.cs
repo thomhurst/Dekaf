@@ -190,6 +190,7 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
 {
     private const int MinimumInitialCapacity = 256;
 
+    // Single-slot cache: nested rents safely allocate another wrapper instead of sharing live state.
     [ThreadStatic]
     private static DetachableBufferWriter? t_cachedWriter;
 
