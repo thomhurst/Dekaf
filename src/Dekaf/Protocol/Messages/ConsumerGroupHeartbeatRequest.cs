@@ -132,7 +132,9 @@ public sealed class ConsumerGroupHeartbeatTopicPartitions
     {
         var topicId = reader.ReadUuid();
         var partitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadInt32());
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: ResponseArrayLimits.MaxPartitionCount);
 
         IReadOnlyList<int> newPartitions = [];
         var taggedFieldCount = reader.ReadUnsignedVarInt();
@@ -144,7 +146,9 @@ public sealed class ConsumerGroupHeartbeatTopicPartitions
             if (version >= 2 && tag == 0)
             {
                 newPartitions = reader.ReadCompactArray(
-                    static (ref KafkaProtocolReader r) => r.ReadInt32());
+                    static (ref KafkaProtocolReader r) => r.ReadInt32(),
+                    minElementSize: 4,
+                    maxCount: ResponseArrayLimits.MaxPartitionCount);
             }
             else
             {

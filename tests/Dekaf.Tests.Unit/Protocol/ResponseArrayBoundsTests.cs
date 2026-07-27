@@ -266,6 +266,254 @@ public sealed class ResponseArrayBoundsTests
             .Throws<MalformedProtocolDataException>();
     }
 
+    [Test]
+    public async Task ConsumerGroupDescribeResponse_Read_GroupCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadConsumerGroupDescribeResponse(buffer));
+    }
+
+    [Test]
+    public async Task ConsumerGroupDescribeGroup_Read_MemberCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactNullableString(null);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteInt32(0);
+        writer.WriteInt32(0);
+        writer.WriteCompactString(string.Empty);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadConsumerGroupDescribeGroup(buffer));
+    }
+
+    [Test]
+    public async Task ConsumerGroupDescribeMember_Read_SubscribedTopicCountExceedingAbsoluteCap_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteCompactNullableString(null);
+        writer.WriteCompactNullableString(null);
+        writer.WriteInt32(0);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteCompactString(string.Empty);
+        WriteCompactArrayAtAbsoluteCap(ref writer, ResponseArrayLimits.MaxTopicCount);
+
+        await AssertMaximumRejected(
+            () => ReadConsumerGroupDescribeMember(buffer),
+            ResponseArrayLimits.MaxTopicCount + 1,
+            ResponseArrayLimits.MaxTopicCount);
+    }
+
+    [Test]
+    public async Task ConsumerGroupDescribeAssignment_Read_TopicCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadConsumerGroupDescribeAssignment(buffer));
+    }
+
+    [Test]
+    public async Task ConsumerGroupDescribeTopicPartitions_Read_PartitionCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUuid(Guid.Empty);
+        writer.WriteCompactString(string.Empty);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadConsumerGroupDescribeTopicPartitions(buffer));
+    }
+
+    [Test]
+    public async Task ConsumerGroupHeartbeatAssignment_Read_TopicCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadConsumerGroupHeartbeatAssignment(buffer));
+    }
+
+    [Test]
+    public async Task ConsumerGroupHeartbeatTopicPartitions_Read_PartitionCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUuid(Guid.Empty);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadConsumerGroupHeartbeatTopicPartitions(buffer, version: 0));
+    }
+
+    [Test]
+    public async Task ConsumerGroupHeartbeatTopicPartitions_Read_NewPartitionCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUuid(Guid.Empty);
+        writer.WriteUnsignedVarInt(1);
+        writer.WriteUnsignedVarInt(1);
+        writer.WriteUnsignedVarInt(0);
+        writer.WriteUnsignedVarInt(HostilePayloadLength + 1);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadConsumerGroupHeartbeatTopicPartitions(buffer, version: 2));
+    }
+
+    [Test]
+    public async Task DeleteGroupsResponse_Read_ResultCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadDeleteGroupsResponse(buffer));
+    }
+
+    [Test]
+    public async Task DescribeGroupsResponse_Read_GroupCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadDescribeGroupsResponse(buffer));
+    }
+
+    [Test]
+    public async Task DescribeGroupsResponse_Read_SegmentedGroupCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        WriteHostileCompactArray(ref writer);
+        var sequence = SequenceTestHelpers.CreateMultiSegmentSequence(buffer.WrittenSpan.ToArray(), splitAt: 5);
+
+        await AssertMinimumSizeRejected(() => ReadDescribeGroupsResponse(sequence));
+    }
+
+    [Test]
+    public async Task DescribeGroupsResponseGroup_Read_MemberCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteCompactNullableString(null);
+        writer.WriteCompactNullableString(null);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadDescribeGroupsResponseGroup(buffer));
+    }
+
+    [Test]
+    public async Task FindCoordinatorResponse_Read_CoordinatorCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadFindCoordinatorResponse(buffer));
+    }
+
+    [Test]
+    [Arguments((short)3)]
+    [Arguments((short)4)]
+    [Arguments((short)5)]
+    public async Task LeaveGroupResponse_Read_MemberCountExceedingMinimumEncodedSize_RejectsBeforeAllocation(
+        short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        writer.WriteInt16((short)ErrorCode.None);
+        if (LeaveGroupRequest.IsFlexibleVersion(version))
+        {
+            WriteHostileCompactArray(ref writer);
+        }
+        else
+        {
+            WriteHostileLegacyArray(ref writer);
+        }
+
+        await AssertMinimumSizeRejected(() => ReadLeaveGroupResponse(buffer, version));
+    }
+
+    [Test]
+    public async Task ListGroupsResponse_Read_GroupCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        writer.WriteInt16((short)ErrorCode.None);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadListGroupsResponse(buffer));
+    }
+
+    [Test]
+    [Arguments((short)8)]
+    [Arguments((short)10)]
+    public async Task OffsetCommitResponse_Read_TopicCountExceedingMinimumEncodedSize_RejectsBeforeAllocation(
+        short version)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt32(0);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadOffsetCommitResponse(buffer, version));
+    }
+
+    [Test]
+    public async Task OffsetCommitResponseTopic_Read_PartitionCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteUuid(Guid.Empty);
+        WriteHostileCompactArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadOffsetCommitResponseTopic(buffer));
+    }
+
+    [Test]
+    public async Task OffsetDeleteResponse_Read_TopicCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteInt32(0);
+        WriteHostileLegacyArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadOffsetDeleteResponse(buffer));
+    }
+
+    [Test]
+    public async Task OffsetDeleteResponseTopic_Read_PartitionCountExceedingMinimumEncodedSize_RejectsBeforeAllocation()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteString(string.Empty);
+        WriteHostileLegacyArray(ref writer);
+
+        await AssertMinimumSizeRejected(() => ReadOffsetDeleteResponseTopic(buffer));
+    }
+
     private static void WriteHostileCompactArray(ref KafkaProtocolWriter writer)
     {
         writer.WriteUnsignedVarInt(HostileElementCount + 1);
@@ -276,6 +524,27 @@ public sealed class ResponseArrayBoundsTests
     {
         writer.WriteInt32(HostileElementCount);
         writer.WriteRawBytes(new byte[HostilePayloadLength]);
+    }
+
+    private static void WriteCompactArrayAtAbsoluteCap(ref KafkaProtocolWriter writer, int maxCount)
+    {
+        writer.WriteUnsignedVarInt(maxCount + 2);
+        writer.WriteRawBytes(new byte[maxCount + 1]);
+    }
+
+    private static async Task AssertMinimumSizeRejected(Action read)
+    {
+        var exception = Assert.Throws<MalformedProtocolDataException>(read);
+        await Assert.That(exception.Message)
+            .IsEqualTo(
+                $"Invalid protocol data: claimed length {HostileElementCount} exceeds remaining data {HostilePayloadLength}");
+    }
+
+    private static async Task AssertMaximumRejected(Action read, int count, int maxCount)
+    {
+        var exception = Assert.Throws<MalformedProtocolDataException>(read);
+        await Assert.That(exception.Message)
+            .IsEqualTo($"Invalid protocol data: claimed element count {count} exceeds maximum {maxCount}");
     }
 
     private static void WriteShareFetchResponsePreamble(ref KafkaProtocolWriter writer)
@@ -385,5 +654,115 @@ public sealed class ResponseArrayBoundsTests
     {
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
         _ = DescribeShareGroupOffsetsRequestTopic.Read(ref reader);
+    }
+
+    private static void ReadConsumerGroupDescribeResponse(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = ConsumerGroupDescribeResponse.Read(ref reader, version: 0);
+    }
+
+    private static void ReadConsumerGroupDescribeGroup(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = ConsumerGroupDescribeGroup.Read(ref reader, version: 0);
+    }
+
+    private static void ReadConsumerGroupDescribeMember(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = ConsumerGroupDescribeMember.Read(ref reader, version: 0);
+    }
+
+    private static void ReadConsumerGroupDescribeAssignment(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = ConsumerGroupDescribeAssignment.Read(ref reader);
+    }
+
+    private static void ReadConsumerGroupDescribeTopicPartitions(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = ConsumerGroupDescribeTopicPartitions.Read(ref reader);
+    }
+
+    private static void ReadConsumerGroupHeartbeatAssignment(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = ConsumerGroupHeartbeatAssignment.Read(ref reader, version: 0);
+    }
+
+    private static void ReadConsumerGroupHeartbeatTopicPartitions(
+        ArrayBufferWriter<byte> buffer,
+        short version)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = ConsumerGroupHeartbeatTopicPartitions.Read(ref reader, version);
+    }
+
+    private static void ReadDeleteGroupsResponse(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = DeleteGroupsResponse.Read(ref reader, version: 2);
+    }
+
+    private static void ReadDescribeGroupsResponse(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = DescribeGroupsResponse.Read(ref reader, version: 5);
+    }
+
+    private static void ReadDescribeGroupsResponse(ReadOnlySequence<byte> sequence)
+    {
+        var reader = new KafkaProtocolReader(sequence);
+        _ = DescribeGroupsResponse.Read(ref reader, version: 5);
+    }
+
+    private static void ReadDescribeGroupsResponseGroup(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = DescribeGroupsResponseGroup.Read(ref reader, version: 5);
+    }
+
+    private static void ReadFindCoordinatorResponse(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = FindCoordinatorResponse.Read(ref reader, version: 4);
+    }
+
+    private static void ReadLeaveGroupResponse(ArrayBufferWriter<byte> buffer, short version)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = LeaveGroupResponse.Read(ref reader, version);
+    }
+
+    private static void ReadListGroupsResponse(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = ListGroupsResponse.Read(ref reader, version: 3);
+    }
+
+    private static void ReadOffsetCommitResponse(ArrayBufferWriter<byte> buffer, short version)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = OffsetCommitResponse.Read(ref reader, version);
+    }
+
+    private static void ReadOffsetCommitResponseTopic(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = OffsetCommitResponseTopic.Read(ref reader, version: 10);
+    }
+
+    private static void ReadOffsetDeleteResponse(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = OffsetDeleteResponse.Read(ref reader, version: 0);
+    }
+
+    private static void ReadOffsetDeleteResponseTopic(ArrayBufferWriter<byte> buffer)
+    {
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        _ = OffsetDeleteResponseTopic.Read(ref reader, version: 0);
     }
 }

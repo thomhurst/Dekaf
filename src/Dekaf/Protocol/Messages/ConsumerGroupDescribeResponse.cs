@@ -25,7 +25,10 @@ public sealed class ConsumerGroupDescribeResponse : IKafkaResponse
         var throttleTimeMs = reader.ReadInt32();
 
         var groups = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => ConsumerGroupDescribeGroup.Read(ref r, version));
+            static (ref KafkaProtocolReader r, short v) => ConsumerGroupDescribeGroup.Read(ref r, v),
+            version,
+            minElementSize: 20,
+            maxCount: ResponseArrayLimits.MaxGroupCount);
 
         reader.SkipTaggedFields();
 
@@ -81,7 +84,10 @@ public sealed class ConsumerGroupDescribeGroup
         var assignorName = reader.ReadCompactString() ?? string.Empty;
 
         var members = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => ConsumerGroupDescribeMember.Read(ref r, version));
+            static (ref KafkaProtocolReader r, short v) => ConsumerGroupDescribeMember.Read(ref r, v),
+            version,
+            minElementSize: version >= 1 ? 17 : 16,
+            maxCount: ResponseArrayLimits.MaxMemberCount);
 
         var authorizedOperations = reader.ReadInt32();
         reader.SkipTaggedFields();
@@ -153,7 +159,9 @@ public sealed class ConsumerGroupDescribeMember
         var clientHost = reader.ReadCompactString() ?? string.Empty;
 
         var subscribedTopicNames = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadCompactString() ?? string.Empty);
+            static (ref KafkaProtocolReader r) => r.ReadCompactString() ?? string.Empty,
+            minElementSize: 1,
+            maxCount: ResponseArrayLimits.MaxTopicCount);
 
         var subscribedTopicRegex = reader.ReadCompactString();
         var assignment = ConsumerGroupDescribeAssignment.Read(ref reader);
@@ -198,7 +206,9 @@ public sealed class ConsumerGroupDescribeAssignment
     public static ConsumerGroupDescribeAssignment Read(ref KafkaProtocolReader reader)
     {
         var topicPartitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ConsumerGroupDescribeTopicPartitions.Read(ref r));
+            static (ref KafkaProtocolReader r) => ConsumerGroupDescribeTopicPartitions.Read(ref r),
+            minElementSize: 19,
+            maxCount: ResponseArrayLimits.MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -233,7 +243,9 @@ public sealed class ConsumerGroupDescribeTopicPartitions
         var topicId = reader.ReadUuid();
         var topicName = reader.ReadCompactString() ?? string.Empty;
         var partitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadInt32());
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: ResponseArrayLimits.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 

@@ -32,8 +32,17 @@ public sealed class ListGroupsResponse : IKafkaResponse
         var errorCode = (ErrorCode)reader.ReadInt16();
 
         IReadOnlyList<ListGroupsResponseGroup> groups;
+        var minGroupSize = version switch
+        {
+            >= 5 => 5,
+            >= 4 => 4,
+            _ => 3
+        };
         groups = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => ListGroupsResponseGroup.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => ListGroupsResponseGroup.Read(ref r, v),
+            version,
+            minElementSize: minGroupSize,
+            maxCount: ResponseArrayLimits.MaxGroupCount) ?? [];
 
         reader.SkipTaggedFields();
 

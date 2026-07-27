@@ -108,7 +108,9 @@ public sealed class ConsumerGroupHeartbeatAssignment
         // PendingTopicPartitions is not present as a positional field in any version.
         var assignedTopicPartitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => ConsumerGroupHeartbeatTopicPartitions.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 18,
+            maxCount: ResponseArrayLimits.MaxTopicCount);
 
         reader.SkipTaggedFields();
 

@@ -27,7 +27,9 @@ public sealed class DescribeGroupsResponse : IKafkaResponse
 
         var groups = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeGroupsResponseGroup.Read(ref r, v),
-            version);
+            version,
+            minElementSize: version >= 6 ? 13 : 12,
+            maxCount: ResponseArrayLimits.MaxGroupCount);
 
         reader.SkipTaggedFields();
 
@@ -99,7 +101,9 @@ public sealed class DescribeGroupsResponseGroup
 
         var members = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeGroupsResponseMember.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 7,
+            maxCount: ResponseArrayLimits.MaxMemberCount);
 
         var authorizedOperations = reader.ReadInt32();
 

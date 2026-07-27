@@ -21,10 +21,14 @@ public sealed class LeaveGroupResponse : IKafkaResponse
         var members = flexible
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => LeaveGroupResponseMember.Read(ref r, v),
-                version)
+                version,
+                minElementSize: 5,
+                maxCount: ResponseArrayLimits.MaxMemberCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => LeaveGroupResponseMember.Read(ref r, v),
-                version);
+                version,
+                minElementSize: 6,
+                maxCount: ResponseArrayLimits.MaxMemberCount);
 
         if (flexible)
         {

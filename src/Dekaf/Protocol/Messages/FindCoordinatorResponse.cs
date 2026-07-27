@@ -23,7 +23,11 @@ public sealed class FindCoordinatorResponse : IKafkaResponse
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
         var throttleTimeMs = reader.ReadInt32();
-        var coordinators = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => Coordinator.Read(ref r, v), version);
+        var coordinators = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => Coordinator.Read(ref r, v),
+            version,
+            minElementSize: 14,
+            maxCount: ResponseArrayLimits.MaxCoordinatorCount);
 
         reader.SkipTaggedFields();
 

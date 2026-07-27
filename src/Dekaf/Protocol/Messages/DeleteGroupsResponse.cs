@@ -27,7 +27,10 @@ public sealed class DeleteGroupsResponse : IKafkaResponse
 
         IReadOnlyList<DeleteGroupsResponseResult> results;
         results = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DeleteGroupsResponseResult.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => DeleteGroupsResponseResult.Read(ref r, v),
+            version,
+            minElementSize: 4,
+            maxCount: ResponseArrayLimits.MaxGroupCount) ?? [];
 
         reader.SkipTaggedFields();
 
