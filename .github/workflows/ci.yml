@@ -491,7 +491,7 @@ jobs:
             core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
 
       - name: Pre-pull Kafka image
-        run: bash scripts/prepull-kafka-images.sh "$KAFKA_TEST_IMAGE_TAG"
+        run: bash scripts/prepull-kafka-images.sh "$KAFKA_TEST_IMAGE_TAG" 4.0.2
 
       - name: Run NativeAOT integration smoke tests
         run: bash scripts/run-integration-categories.sh aot "Producer,Consumer,Messaging,Serialization"

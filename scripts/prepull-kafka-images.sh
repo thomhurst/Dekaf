@@ -8,7 +8,7 @@ fi
 
 while IFS= read -r tag; do
   for attempt in 1 2 3 4 5; do
-    if docker pull "apache/kafka:$tag"; then
+    if timeout 60s docker pull "apache/kafka:$tag"; then
       break
     fi
 
