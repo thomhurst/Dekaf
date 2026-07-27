@@ -502,30 +502,21 @@ public readonly struct ConsumeResult<TKey, TValue>
         long timestampMs,
         TimestampType timestampType,
         int? leaderEpoch)
-        : this(
-            topic,
-            partition,
-            offset,
-            keyData: default,
-            isKeyNull: true,
-            valueData: default,
-            isValueNull: true,
-            headers: null,
-            pooledHeaders,
-            pooledHeaderCount,
-            headerOwner,
-            headerOwner.HeaderGeneration,
-            timestampMs,
-            timestampType,
-            leaderEpoch,
-            keyDeserializer: null,
-            valueDeserializer: null,
-            isPartitionEof: false)
     {
-        // The chained call above leaves Key/Value at default (both deserializers are null);
-        // the awaited async deserialization already produced the real values.
+        Topic = topic;
+        Partition = partition;
+        Offset = offset;
         Key = key;
         Value = value;
+        _headers = null;
+        _pooledHeaders = pooledHeaders;
+        _pooledHeaderCount = pooledHeaderCount;
+        _headerOwner = headerOwner;
+        _headerGeneration = headerOwner.HeaderGeneration;
+        _timestampMs = timestampMs;
+        TimestampType = timestampType;
+        LeaderEpoch = leaderEpoch;
+        IsPartitionEof = false;
     }
 
     private ConsumeResult(
@@ -662,21 +653,25 @@ public readonly struct ConsumeResult<TKey, TValue>
     public static ConsumeResult<TKey, TValue> CreatePartitionEof(string topic, int partition, long offset)
 #pragma warning restore CA1000
     {
-        return new ConsumeResult<TKey, TValue>(
-            topic: topic,
-            partition: partition,
-            offset: offset,
-            keyData: default,
-            isKeyNull: true,
-            valueData: default,
-            isValueNull: true,
-            headers: null,
-            timestampMs: 0,
-            timestampType: TimestampType.NotAvailable,
-            leaderEpoch: null,
-            keyDeserializer: null,
-            valueDeserializer: null,
-            isPartitionEof: true);
+        return new ConsumeResult<TKey, TValue>(topic, partition, offset);
+    }
+
+    private ConsumeResult(string topic, int partition, long offset)
+    {
+        Topic = topic;
+        Partition = partition;
+        Offset = offset;
+        Key = default;
+        Value = default!;
+        _headers = null;
+        _pooledHeaders = null;
+        _pooledHeaderCount = 0;
+        _headerOwner = null;
+        _headerGeneration = 0;
+        _timestampMs = 0;
+        TimestampType = TimestampType.NotAvailable;
+        LeaderEpoch = null;
+        IsPartitionEof = true;
     }
 
     /// <summary>
