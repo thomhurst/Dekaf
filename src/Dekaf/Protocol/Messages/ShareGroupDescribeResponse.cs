@@ -6,6 +6,11 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class ShareGroupDescribeResponse : IKafkaResponse
 {
+    internal const int MaxGroupCount = 100_000;
+    internal const int MaxMemberCount = 100_000;
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.ShareGroupDescribe;
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 1;
@@ -26,7 +31,9 @@ public sealed class ShareGroupDescribeResponse : IKafkaResponse
         var throttleTimeMs = reader.ReadInt32();
 
         var groups = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ShareGroupDescribeGroup.Read(ref r));
+            static (ref KafkaProtocolReader r) => ShareGroupDescribeGroup.Read(ref r),
+            minElementSize: 20,
+            maxCount: MaxGroupCount);
 
         reader.SkipTaggedFields();
 
@@ -118,7 +125,9 @@ public sealed class ShareGroupDescribeGroup
         var assignorName = reader.ReadCompactString();
 
         var members = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ShareGroupDescribeMember.Read(ref r));
+            static (ref KafkaProtocolReader r) => ShareGroupDescribeMember.Read(ref r),
+            minElementSize: 12,
+            maxCount: ShareGroupDescribeResponse.MaxMemberCount);
 
         var authorizedOperations = reader.ReadInt32();
 
@@ -205,7 +214,9 @@ public sealed class ShareGroupDescribeMember
         var clientHost = reader.ReadCompactString() ?? string.Empty;
 
         var subscribedTopicNames = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadCompactString() ?? string.Empty);
+            static (ref KafkaProtocolReader r) => r.ReadCompactString() ?? string.Empty,
+            minElementSize: 1,
+            maxCount: ShareGroupDescribeResponse.MaxTopicCount);
 
         var assignment = ShareGroupDescribeAssignment.Read(ref reader);
 
@@ -247,7 +258,9 @@ public sealed class ShareGroupDescribeAssignment
     public static ShareGroupDescribeAssignment Read(ref KafkaProtocolReader reader)
     {
         var topicPartitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ShareGroupDescribeTopicPartitions.Read(ref r));
+            static (ref KafkaProtocolReader r) => ShareGroupDescribeTopicPartitions.Read(ref r),
+            minElementSize: 19,
+            maxCount: ShareGroupDescribeResponse.MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -293,7 +306,9 @@ public sealed class ShareGroupDescribeTopicPartitions
         var topicId = reader.ReadUuid();
         var topicName = reader.ReadCompactString();
         var partitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadInt32());
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: ShareGroupDescribeResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 

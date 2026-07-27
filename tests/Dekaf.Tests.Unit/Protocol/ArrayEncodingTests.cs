@@ -200,6 +200,41 @@ public class ArrayEncodingTests
         await Assert.That(result).IsEquivalentTo([1, 2, 3]);
     }
 
+    [Test]
+    [Arguments(0, true)]
+    [Arguments(1, false)]
+    public async Task CompactNullableArray_Bounded_NullAndEmptyPreserveWireSemantics(
+        byte encodedLength,
+        bool expectNull)
+    {
+        var reader = new KafkaProtocolReader([encodedLength]);
+        var result = reader.ReadCompactNullableArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: 10);
+
+        if (expectNull)
+            await Assert.That(result).IsNull();
+        else
+            await Assert.That(result).IsEmpty();
+    }
+
+    [Test]
+    public async Task CompactNullableArray_Bounded_NonNull_RoundTrip()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteCompactNullableArray<int>([1, 2, 3], static (ref KafkaProtocolWriter w, int value) => w.WriteInt32(value));
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var result = reader.ReadCompactNullableArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: 10);
+
+        await Assert.That(result).IsEquivalentTo([1, 2, 3]);
+    }
+
     #endregion
 
     #region Nested Array Tests

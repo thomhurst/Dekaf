@@ -36,4 +36,21 @@ public class ResponseArrayBoundsBenchmarks
             minElementSize: 4,
             maxCount: 1_000_000);
     }
+
+    [Benchmark]
+    public int[]? ReadCompactNullableArray_Unbounded()
+    {
+        var reader = new KafkaProtocolReader(_payload);
+        return reader.ReadCompactNullableArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
+    }
+
+    [Benchmark]
+    public int[]? ReadCompactNullableArray_MinimumSizeBound()
+    {
+        var reader = new KafkaProtocolReader(_payload);
+        return reader.ReadCompactNullableArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: 1_000_000);
+    }
 }

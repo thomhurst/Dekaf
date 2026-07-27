@@ -6,6 +6,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DeleteShareGroupOffsetsResponse : IKafkaResponse
 {
+    internal const int MaxTopicCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.DeleteShareGroupOffsets;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
@@ -38,7 +40,9 @@ public sealed class DeleteShareGroupOffsetsResponse : IKafkaResponse
         var errorMessage = reader.ReadCompactString();
 
         var responses = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => DeleteShareGroupOffsetsResponseTopic.Read(ref r));
+            static (ref KafkaProtocolReader r) => DeleteShareGroupOffsetsResponseTopic.Read(ref r),
+            minElementSize: 21,
+            maxCount: MaxTopicCount);
 
         reader.SkipTaggedFields();
 
