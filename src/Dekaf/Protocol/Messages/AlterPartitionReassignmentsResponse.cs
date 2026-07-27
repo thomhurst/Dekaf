@@ -6,6 +6,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class AlterPartitionReassignmentsResponse : IKafkaResponse
 {
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.AlterPartitionReassignments;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 1;
@@ -43,7 +46,9 @@ public sealed class AlterPartitionReassignmentsResponse : IKafkaResponse
         var errorMessage = reader.ReadCompactString();
         var responses = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => AlterPartitionReassignmentsResponseTopic.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 3,
+            maxCount: MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -78,7 +83,9 @@ public sealed class AlterPartitionReassignmentsResponseTopic
         var name = reader.ReadCompactString() ?? string.Empty;
         var partitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => AlterPartitionReassignmentsResponsePartition.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 8,
+            maxCount: AlterPartitionReassignmentsResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
