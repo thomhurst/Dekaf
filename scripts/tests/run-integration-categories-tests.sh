@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 temp_root="$(mktemp -d)"
+ryuk_image="testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
 trap 'rm -rf "$temp_root"' EXIT
 
 mkdir -p "$temp_root/scripts" \
@@ -35,8 +36,10 @@ grep -q 'Category=Serialization.*--maximum-parallel-tests 1' "$CALLS_FILE"
 
 grep -Eq 'MaximumParallelTests[[:space:]]*=>[[:space:]]*4' \
   "$repo_root/tools/Dekaf.Pipeline/Modules/RunProducerIntegrationTestsModule.cs"
-grep -Fq 'bash scripts/prepull-kafka-images.sh "$KAFKA_TEST_IMAGE_TAG" 4.0.2' \
-  "$repo_root/.github/workflows/ci.yml"
+grep -Fq 'PackageVersion Include="Testcontainers" Version="4.13.0"' \
+  "$repo_root/Directory.Packages.props"
+grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/ci.yml"
+grep -Fq "\"$ryuk_image\"" "$repo_root/.github/workflows/integration-groups.yml"
 
 fake_docker='#!/usr/bin/env bash
 attempts="$(cat "$DOCKER_ATTEMPTS_FILE" 2>/dev/null || printf "0")"
@@ -70,10 +73,15 @@ grep -qx '30' "$SLEEP_CALLS_FILE"
 
 rm "$DOCKER_ATTEMPTS_FILE" "$DOCKER_CALLS_FILE" "$SLEEP_CALLS_FILE" "$TIMEOUT_CALLS_FILE"
 export DOCKER_FAIL_UNTIL=0
-bash scripts/prepull-kafka-images.sh 4.3.1 4.2.1 4.3.1
-[ "$(wc -l < "$DOCKER_CALLS_FILE")" -eq 2 ]
+bash scripts/prepull-kafka-images.sh \
+  4.3.1 \
+  4.2.1 \
+  4.3.1 \
+  "$ryuk_image"
+[ "$(wc -l < "$DOCKER_CALLS_FILE")" -eq 3 ]
 grep -qx 'pull apache/kafka:4.2.1' "$DOCKER_CALLS_FILE"
 grep -qx 'pull apache/kafka:4.3.1' "$DOCKER_CALLS_FILE"
-[ "$(grep -cx '60s' "$TIMEOUT_CALLS_FILE")" -eq 2 ]
+grep -Fqx "pull $ryuk_image" "$DOCKER_CALLS_FILE"
+[ "$(grep -cx '60s' "$TIMEOUT_CALLS_FILE")" -eq 3 ]
 
 echo "run-integration-categories tests passed"

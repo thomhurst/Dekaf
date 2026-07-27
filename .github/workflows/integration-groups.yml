@@ -96,7 +96,8 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
             core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
 
-      - name: Pre-pull Kafka image
+      # Keep the Ryuk image aligned with DotNet.Testcontainers in Directory.Packages.props.
+      - name: Pre-pull integration images
         run: |
           case "${{ matrix.group }}" in
             tls|security) kafka_tags=(4.0.2) ;;
@@ -106,7 +107,9 @@ jobs:
             produce) kafka_tags=("${{ inputs.kafka-tag }}" 4.2.1) ;;
             *) kafka_tags=("${{ inputs.kafka-tag }}") ;;
           esac
-          bash scripts/prepull-kafka-images.sh "${kafka_tags[@]}"
+          bash scripts/prepull-kafka-images.sh \
+            "${kafka_tags[@]}" \
+            "testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
 
       - name: Run integration tests
         env:

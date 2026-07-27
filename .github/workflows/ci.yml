@@ -490,8 +490,13 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
             core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
 
-      - name: Pre-pull Kafka image
-        run: bash scripts/prepull-kafka-images.sh "$KAFKA_TEST_IMAGE_TAG" 4.0.2
+      # Keep the Ryuk image aligned with DotNet.Testcontainers in Directory.Packages.props.
+      - name: Pre-pull integration images
+        run: |
+          bash scripts/prepull-kafka-images.sh \
+            "$KAFKA_TEST_IMAGE_TAG" \
+            4.0.2 \
+            "testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0"
 
       - name: Run NativeAOT integration smoke tests
         run: bash scripts/run-integration-categories.sh aot "Producer,Consumer,Messaging,Serialization"
