@@ -6,6 +6,10 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeClientQuotasResponse : IKafkaResponse
 {
+    internal const int MaxEntryCount = 1_000_000;
+    internal const int MaxEntityCount = 1_000_000;
+    internal const int MaxValueCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeClientQuotas;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 1;
@@ -40,10 +44,14 @@ public sealed class DescribeClientQuotasResponse : IKafkaResponse
         var entries = flexible
             ? reader.ReadCompactNullableArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeClientQuotasResponseEntry.Read(ref r, v),
-                version)
+                version,
+                minElementSize: 3,
+                maxCount: MaxEntryCount)
             : reader.ReadNullableArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeClientQuotasResponseEntry.Read(ref r, v),
-                version);
+                version,
+                minElementSize: 8,
+                maxCount: MaxEntryCount);
 
         if (flexible)
         {
@@ -87,18 +95,26 @@ public sealed class DescribeClientQuotasResponseEntry
         var entity = flexible
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeClientQuotasEntityData.Read(ref r, v),
-                version)
+                version,
+                minElementSize: 3,
+                maxCount: DescribeClientQuotasResponse.MaxEntityCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeClientQuotasEntityData.Read(ref r, v),
-                version);
+                version,
+                minElementSize: 4,
+                maxCount: DescribeClientQuotasResponse.MaxEntityCount);
 
         var values = flexible
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeClientQuotasValueData.Read(ref r, v),
-                version)
+                version,
+                minElementSize: 10,
+                maxCount: DescribeClientQuotasResponse.MaxValueCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeClientQuotasValueData.Read(ref r, v),
-                version);
+                version,
+                minElementSize: 10,
+                maxCount: DescribeClientQuotasResponse.MaxValueCount);
 
         if (flexible)
         {

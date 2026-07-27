@@ -6,6 +6,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeAclsResponse : IKafkaResponse
 {
+    internal const int MaxResourceCount = 1_000_000;
+    internal const int MaxAclCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeAcls;
     public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 3;
@@ -40,7 +43,10 @@ public sealed class DescribeAclsResponse : IKafkaResponse
 
         IReadOnlyList<DescribeAclsResource> resources;
         resources = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DescribeAclsResource.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => DescribeAclsResource.Read(ref r, v),
+            version,
+            minElementSize: 5,
+            maxCount: MaxResourceCount);
 
         reader.SkipTaggedFields();
 
@@ -90,7 +96,10 @@ public sealed class DescribeAclsResource
 
         IReadOnlyList<AclDescription> acls;
         acls = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => AclDescription.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => AclDescription.Read(ref r, v),
+            version,
+            minElementSize: 5,
+            maxCount: DescribeAclsResponse.MaxAclCount);
 
         reader.SkipTaggedFields();
 

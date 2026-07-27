@@ -6,6 +6,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DeleteTopicsResponse : IKafkaResponse
 {
+    internal const int MaxResponseCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.DeleteTopics;
     public static short LowestSupportedVersion => 4;
     public static short HighestSupportedVersion => 6;
@@ -27,7 +29,10 @@ public sealed class DeleteTopicsResponse : IKafkaResponse
 
         IReadOnlyList<DeleteTopicsResponseTopic> responses;
         responses = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DeleteTopicsResponseTopic.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => DeleteTopicsResponseTopic.Read(ref r, v),
+            version,
+            minElementSize: version >= 6 ? 21 : version >= 5 ? 5 : 4,
+            maxCount: MaxResponseCount);
 
         reader.SkipTaggedFields();
 

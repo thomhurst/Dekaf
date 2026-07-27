@@ -1056,6 +1056,34 @@ public ref struct KafkaProtocolReader
     }
 
     /// <summary>
+    /// Reads a nullable legacy array whose elements have a known minimum encoded size,
+    /// bounding hostile counts before the array allocation. State-passing overload to
+    /// avoid closure allocations.
+    /// </summary>
+    public T[]? ReadNullableArray<T, TState>(
+        ReadFunc<T, TState> readItem,
+        TState state,
+        int minElementSize,
+        int maxCount)
+    {
+        var length = ReadInt32();
+        if (length < 0)
+            return null;
+
+        if (length == 0)
+            return [];
+
+        ValidateReadableLength(length, minElementSize, maxCount);
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this, state);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Reads a compact array with unsigned varint length prefix (flexible format).
     /// State-passing overload to avoid closure allocations.
     /// </summary>
@@ -1110,6 +1138,34 @@ public ref struct KafkaProtocolReader
             return [];
 
         ValidateReadableLength(length);
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this, state);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Reads a compact nullable array whose elements have a known minimum encoded size,
+    /// bounding hostile counts before the array allocation. State-passing overload to
+    /// avoid closure allocations.
+    /// </summary>
+    public T[]? ReadCompactNullableArray<T, TState>(
+        ReadFunc<T, TState> readItem,
+        TState state,
+        int minElementSize,
+        int maxCount)
+    {
+        var length = ReadUnsignedVarInt() - 1;
+        if (length < 0)
+            return null;
+
+        if (length == 0)
+            return [];
+
+        ValidateReadableLength(length, minElementSize, maxCount);
 
         var result = new T[length];
         for (var i = 0; i < length; i++)

@@ -21,6 +21,8 @@ public sealed class ListClientMetricsResourcesRequest : IKafkaRequest<ListClient
 /// </summary>
 public sealed class ListClientMetricsResourcesResponse : IKafkaResponse
 {
+    internal const int MaxResourceCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.ListClientMetricsResources;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
@@ -34,7 +36,9 @@ public sealed class ListClientMetricsResourcesResponse : IKafkaResponse
         var throttleTimeMs = reader.ReadInt32();
         var errorCode = (ErrorCode)reader.ReadInt16();
         var clientMetricsResources = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ListClientMetricsResource.Read(ref r));
+            static (ref KafkaProtocolReader r) => ListClientMetricsResource.Read(ref r),
+            minElementSize: 2,
+            maxCount: MaxResourceCount);
 
         reader.SkipTaggedFields();
 

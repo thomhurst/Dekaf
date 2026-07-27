@@ -6,6 +6,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeUserScramCredentialsResponse : IKafkaResponse
 {
+    internal const int MaxResultCount = 1_000_000;
+    internal const int MaxCredentialCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeUserScramCredentials;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
@@ -37,7 +40,10 @@ public sealed class DescribeUserScramCredentialsResponse : IKafkaResponse
         var errorMessage = reader.ReadCompactString();
 
         var results = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DescribeUserScramCredentialsResult.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => DescribeUserScramCredentialsResult.Read(ref r, v),
+            version,
+            minElementSize: 6,
+            maxCount: MaxResultCount);
 
         reader.SkipTaggedFields();
 
@@ -83,7 +89,10 @@ public sealed class DescribeUserScramCredentialsResult
         var errorMessage = reader.ReadCompactString();
 
         var credentialInfos = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => CredentialInfo.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => CredentialInfo.Read(ref r, v),
+            version,
+            minElementSize: 6,
+            maxCount: DescribeUserScramCredentialsResponse.MaxCredentialCount);
 
         reader.SkipTaggedFields();
 

@@ -5,6 +5,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeClusterResponse : IKafkaResponse
 {
+    internal const int MaxNodeCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeCluster;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
@@ -30,7 +32,9 @@ public sealed class DescribeClusterResponse : IKafkaResponse
         var controllerId = reader.ReadInt32();
         var nodes = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeClusterNode.Read(ref r, v),
-            version);
+            version,
+            minElementSize: version >= 2 ? 12 : 11,
+            maxCount: MaxNodeCount);
         var clusterAuthorizedOperations = reader.ReadInt32();
         reader.SkipTaggedFields();
 

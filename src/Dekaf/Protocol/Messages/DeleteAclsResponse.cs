@@ -6,6 +6,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DeleteAclsResponse : IKafkaResponse
 {
+    internal const int MaxFilterResultCount = 1_000_000;
+    internal const int MaxMatchingAclCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.DeleteAcls;
     public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 3;
@@ -26,7 +29,10 @@ public sealed class DeleteAclsResponse : IKafkaResponse
 
         IReadOnlyList<DeleteAclsFilterResult> filterResults;
         filterResults = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DeleteAclsFilterResult.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => DeleteAclsFilterResult.Read(ref r, v),
+            version,
+            minElementSize: 5,
+            maxCount: MaxFilterResultCount);
 
         reader.SkipTaggedFields();
 
@@ -67,7 +73,10 @@ public sealed class DeleteAclsFilterResult
 
         IReadOnlyList<DeleteAclsMatchingAcl> matchingAcls;
         matchingAcls = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DeleteAclsMatchingAcl.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => DeleteAclsMatchingAcl.Read(ref r, v),
+            version,
+            minElementSize: 12,
+            maxCount: DeleteAclsResponse.MaxMatchingAclCount);
 
         reader.SkipTaggedFields();
 

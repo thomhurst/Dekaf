@@ -6,6 +6,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class CreateTopicsResponse : IKafkaResponse
 {
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxConfigCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.CreateTopics;
     public static short LowestSupportedVersion => 5;
     public static short HighestSupportedVersion => 7;
@@ -27,7 +30,10 @@ public sealed class CreateTopicsResponse : IKafkaResponse
 
         IReadOnlyList<CreateTopicsResponseTopic> topics;
         topics = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => CreateTopicsResponseTopic.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => CreateTopicsResponseTopic.Read(ref r, v),
+            version,
+            minElementSize: version >= 7 ? 28 : 12,
+            maxCount: MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -95,7 +101,10 @@ public sealed class CreateTopicsResponseTopic
 
         IReadOnlyList<CreateTopicsResponseConfig>? configs = null;
         configs = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => CreateTopicsResponseConfig.Read(ref r, version));
+            static (ref KafkaProtocolReader r, short v) => CreateTopicsResponseConfig.Read(ref r, v),
+            version,
+            minElementSize: 6,
+            maxCount: CreateTopicsResponse.MaxConfigCount);
 
         reader.SkipTaggedFields();
 

@@ -6,6 +6,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class CreateAclsResponse : IKafkaResponse
 {
+    internal const int MaxResultCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.CreateAcls;
     public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 3;
@@ -26,7 +28,10 @@ public sealed class CreateAclsResponse : IKafkaResponse
 
         IReadOnlyList<AclCreationResult> results;
         results = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => AclCreationResult.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => AclCreationResult.Read(ref r, v),
+            version,
+            minElementSize: 4,
+            maxCount: MaxResultCount);
 
         reader.SkipTaggedFields();
 
