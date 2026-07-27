@@ -59,15 +59,27 @@ public sealed class ProducerLeakEdgeCaseTests
             var drainerGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             using var victimCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-            Task<AppenderResult> StartAppender(int appenderId, CancellationToken token) =>
+            Task<AppenderResult> StartAppender(
+                int appenderId,
+                CancellationToken token,
+                TaskCompletionSource? reservationWaitObserved = null) =>
                 Task.Run(
                     () => LeakGateHarness.RunAppenderAsync(
                         accumulator, completionPool, counters, appenderId, MessagesPerAppender,
-                        PartitionCount, ValueSize, Topic, token),
+                        PartitionCount, ValueSize, Topic, token, reservationWaitObserved),
                     cancellationToken);
 
             var survivorTasks = new[] { StartAppender(0, cancellationToken), StartAppender(1, cancellationToken) };
-            var victimTasks = new[] { StartAppender(2, victimCts.Token), StartAppender(3, victimCts.Token) };
+            var victimWaitSignals = new[]
+            {
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+            };
+            var victimTasks = new[]
+            {
+                StartAppender(2, victimCts.Token, victimWaitSignals[0]),
+                StartAppender(3, victimCts.Token, victimWaitSignals[1]),
+            };
 
             var drainerTask = Task.Run(async () =>
             {
@@ -76,10 +88,10 @@ public sealed class ProducerLeakEdgeCaseTests
                     accumulator, counters, failEveryNthBatch: 0, DrainWaitMode.WakeupSignal, cancellationToken);
             }, cancellationToken);
 
-            // Hold the drainer shut until an appender is provably blocked in the slow-path
-            // reservation wait, then cancel the victims while they are blocked.
-            await LeakGateHarness.WaitForSaturationAsync(
-                accumulator, [.. survivorTasks, .. victimTasks], cancellationToken);
+            // Hold the drainer shut until both victims are provably blocked in the slow-path
+            // reservation wait, then cancel them while they are blocked.
+            await Task.WhenAll(victimWaitSignals.Select(static signal => signal.Task))
+                .WaitAsync(cancellationToken);
             await victimCts.CancelAsync();
             drainerGate.SetResult();
 

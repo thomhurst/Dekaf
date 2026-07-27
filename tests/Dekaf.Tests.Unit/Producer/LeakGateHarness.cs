@@ -119,7 +119,8 @@ internal static class LeakGateHarness
         int partitionCount,
         int valueSize,
         string topic,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TaskCompletionSource? reservationWaitObserved = null)
     {
         var completionTasks = new List<Task<RecordMetadata>>();
         var acceptedTotal = 0;
@@ -136,29 +137,35 @@ internal static class LeakGateHarness
 
             try
             {
-                bool accepted;
+                ValueTask<bool> appendTask;
+                Task<RecordMetadata>? completionTask = null;
                 if ((i & 1) == 0)
                 {
                     var completion = completionPool.Rent();
-                    var completionTask = completion.Task.AsTask();
-                    accepted = await accumulator.AppendAsync(
+                    completionTask = completion.Task.AsTask();
+                    appendTask = accumulator.AppendAsync(
                         topic, partition, timestamp, PooledMemory.Null, value,
                         headers: null, headerCount: 0, completion, callback: null, cancellationToken);
-                    if (accepted)
-                        completionTasks.Add(completionTask);
                 }
                 else
                 {
-                    accepted = await accumulator.AppendAsync(
+                    appendTask = accumulator.AppendAsync(
                         topic, partition, timestamp, PooledMemory.Null, value,
                         headers: null, headerCount: 0, completionSource: null,
                         callback, cancellationToken);
-                    if (accepted)
-                        acceptedFireAndForget++;
                 }
 
+                if (!appendTask.IsCompleted)
+                    reservationWaitObserved?.TrySetResult();
+
+                var accepted = await appendTask;
                 if (!accepted)
                     break;
+
+                if (completionTask is not null)
+                    completionTasks.Add(completionTask);
+                else
+                    acceptedFireAndForget++;
 
                 acceptedTotal++;
                 Interlocked.Increment(ref counters.AcceptedTotal);
