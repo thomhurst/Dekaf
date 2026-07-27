@@ -324,6 +324,9 @@ public sealed class DescribeDelegationTokenRequest : IKafkaRequest<DescribeDeleg
 /// </summary>
 public sealed class DescribeDelegationTokenResponse : IKafkaResponse
 {
+    internal const int MaxTokenCount = 1_000_000;
+    internal const int MaxRenewerCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeDelegationToken;
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 3;
@@ -339,10 +342,14 @@ public sealed class DescribeDelegationTokenResponse : IKafkaResponse
         var tokens = flexible
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => DescribedDelegationTokenData.Read(ref r, v),
-                version)
+                version,
+                minElementSize: version >= 3 ? 32 : 30,
+                maxCount: MaxTokenCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => DescribedDelegationTokenData.Read(ref r, v),
-                version);
+                version,
+                minElementSize: 38,
+                maxCount: MaxTokenCount);
         var throttleTimeMs = reader.ReadInt32();
 
         if (flexible)
@@ -434,10 +441,14 @@ public sealed class DescribedDelegationTokenData
         var renewers = flexible
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, bool f) => DelegationTokenPrincipalData.Read(ref r, f),
-                true)
+                true,
+                minElementSize: 3,
+                maxCount: DescribeDelegationTokenResponse.MaxRenewerCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, bool f) => DelegationTokenPrincipalData.Read(ref r, f),
-                false);
+                false,
+                minElementSize: 4,
+                maxCount: DescribeDelegationTokenResponse.MaxRenewerCount);
 
         if (flexible)
         {

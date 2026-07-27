@@ -6,6 +6,10 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeConfigsResponse : IKafkaResponse
 {
+    internal const int MaxResultCount = 1_000_000;
+    internal const int MaxConfigCount = 1_000_000;
+    internal const int MaxSynonymCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeConfigs;
     public static short LowestSupportedVersion => 4;
     public static short HighestSupportedVersion => 4;
@@ -26,7 +30,10 @@ public sealed class DescribeConfigsResponse : IKafkaResponse
 
         IReadOnlyList<DescribeConfigsResult> results;
         results = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DescribeConfigsResult.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => DescribeConfigsResult.Read(ref r, v),
+            version,
+            minElementSize: 7,
+            maxCount: MaxResultCount);
 
         reader.SkipTaggedFields();
 
@@ -82,7 +89,10 @@ public sealed class DescribeConfigsResult
 
         IReadOnlyList<DescribeConfigsResourceResult> configs;
         configs = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DescribeConfigsResourceResult.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => DescribeConfigsResourceResult.Read(ref r, v),
+            version,
+            minElementSize: 9,
+            maxCount: DescribeConfigsResponse.MaxConfigCount);
 
         reader.SkipTaggedFields();
 
@@ -167,7 +177,10 @@ public sealed class DescribeConfigsResourceResult
 
         IReadOnlyList<DescribeConfigsSynonym>? synonyms = null;
         synonyms = reader.ReadCompactArray(
-(ref KafkaProtocolReader r) => DescribeConfigsSynonym.Read(ref r, version));
+            static (ref KafkaProtocolReader r, short v) => DescribeConfigsSynonym.Read(ref r, v),
+            version,
+            minElementSize: 4,
+            maxCount: DescribeConfigsResponse.MaxSynonymCount);
 
         sbyte configType = 0;
         string? documentation = null;

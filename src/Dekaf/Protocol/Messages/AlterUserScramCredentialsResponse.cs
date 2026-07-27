@@ -6,6 +6,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class AlterUserScramCredentialsResponse : IKafkaResponse
 {
+    internal const int MaxResultCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.AlterUserScramCredentials;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
@@ -25,7 +27,10 @@ public sealed class AlterUserScramCredentialsResponse : IKafkaResponse
         var throttleTimeMs = reader.ReadInt32();
 
         var results = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => AlterUserScramCredentialsResult.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => AlterUserScramCredentialsResult.Read(ref r, v),
+            version,
+            minElementSize: 5,
+            maxCount: MaxResultCount);
 
         reader.SkipTaggedFields();
 

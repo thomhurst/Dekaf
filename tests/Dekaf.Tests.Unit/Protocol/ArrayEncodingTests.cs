@@ -235,6 +235,92 @@ public class ArrayEncodingTests
         await Assert.That(result).IsEquivalentTo([1, 2, 3]);
     }
 
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task BoundedNullableArray_WithState_Null_PreservesNull(bool compact)
+    {
+        var data = compact
+            ? new byte[] { 0 }
+            : new byte[] { 0xff, 0xff, 0xff, 0xff };
+        var reader = new KafkaProtocolReader(data);
+
+        var result = compact
+            ? reader.ReadCompactNullableArray(
+                static (ref KafkaProtocolReader r, int state) => r.ReadInt32() + state,
+                1,
+                minElementSize: 4,
+                maxCount: 10)
+            : reader.ReadNullableArray(
+                static (ref KafkaProtocolReader r, int state) => r.ReadInt32() + state,
+                1,
+                minElementSize: 4,
+                maxCount: 10);
+
+        await Assert.That(result).IsNull();
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task BoundedNullableArray_WithState_Empty_PreservesEmpty(bool compact)
+    {
+        var data = compact
+            ? new byte[] { 1 }
+            : new byte[] { 0, 0, 0, 0 };
+        var reader = new KafkaProtocolReader(data);
+
+        var result = compact
+            ? reader.ReadCompactNullableArray(
+                static (ref KafkaProtocolReader r, int state) => r.ReadInt32() + state,
+                1,
+                minElementSize: 4,
+                maxCount: 10)
+            : reader.ReadNullableArray(
+                static (ref KafkaProtocolReader r, int state) => r.ReadInt32() + state,
+                1,
+                minElementSize: 4,
+                maxCount: 10);
+
+        await Assert.That(result).IsEmpty();
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task BoundedNullableArray_WithState_NonNull_PreservesValues(bool compact)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        if (compact)
+        {
+            writer.WriteCompactNullableArray<int>(
+                [1, 2],
+                static (ref KafkaProtocolWriter w, int value) => w.WriteInt32(value));
+        }
+        else
+        {
+            writer.WriteNullableArray<int>(
+                [1, 2],
+                static (ref KafkaProtocolWriter w, int value) => w.WriteInt32(value));
+        }
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var result = compact
+            ? reader.ReadCompactNullableArray(
+                static (ref KafkaProtocolReader r, int state) => r.ReadInt32() + state,
+                1,
+                minElementSize: 4,
+                maxCount: 10)
+            : reader.ReadNullableArray(
+                static (ref KafkaProtocolReader r, int state) => r.ReadInt32() + state,
+                1,
+                minElementSize: 4,
+                maxCount: 10);
+
+        await Assert.That(result).IsEquivalentTo([2, 3]);
+    }
+
     #endregion
 
     #region Nested Array Tests

@@ -6,6 +6,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class GetTelemetrySubscriptionsResponse : IKafkaResponse
 {
+    internal const int MaxCompressionTypeCount = 256;
+    internal const int MaxRequestedMetricCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.GetTelemetrySubscriptions;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
@@ -61,11 +64,17 @@ public sealed class GetTelemetrySubscriptionsResponse : IKafkaResponse
         var errorCode = (ErrorCode)reader.ReadInt16();
         var clientInstanceId = reader.ReadUuid();
         var subscriptionId = reader.ReadInt32();
-        var acceptedCompressionTypes = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt8());
+        var acceptedCompressionTypes = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt8(),
+            minElementSize: 1,
+            maxCount: MaxCompressionTypeCount);
         var pushIntervalMs = reader.ReadInt32();
         var telemetryMaxBytes = reader.ReadInt32();
         var deltaTemporality = reader.ReadBoolean();
-        var requestedMetrics = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadCompactNonNullableString());
+        var requestedMetrics = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadCompactNonNullableString(),
+            minElementSize: 1,
+            maxCount: MaxRequestedMetricCount);
 
         reader.SkipTaggedFields();
 

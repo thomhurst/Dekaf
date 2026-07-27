@@ -6,6 +6,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class CreatePartitionsResponse : IKafkaResponse
 {
+    internal const int MaxResultCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.CreatePartitions;
     public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 3;
@@ -27,7 +29,10 @@ public sealed class CreatePartitionsResponse : IKafkaResponse
 
         IReadOnlyList<CreatePartitionsResponseResult> results;
         results = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => CreatePartitionsResponseResult.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => CreatePartitionsResponseResult.Read(ref r, v),
+            version,
+            minElementSize: 5,
+            maxCount: MaxResultCount);
 
         reader.SkipTaggedFields();
 

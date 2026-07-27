@@ -6,6 +6,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class AlterClientQuotasResponse : IKafkaResponse
 {
+    internal const int MaxEntryCount = 1_000_000;
+    internal const int MaxEntityCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.AlterClientQuotas;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 1;
@@ -27,10 +30,14 @@ public sealed class AlterClientQuotasResponse : IKafkaResponse
         var entries = flexible
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => AlterClientQuotasResponseEntry.Read(ref r, v),
-                version)
+                version,
+                minElementSize: 5,
+                maxCount: MaxEntryCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => AlterClientQuotasResponseEntry.Read(ref r, v),
-                version);
+                version,
+                minElementSize: 8,
+                maxCount: MaxEntryCount);
 
         if (flexible)
         {
@@ -73,10 +80,14 @@ public sealed class AlterClientQuotasResponseEntry
         var entity = flexible
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => ReadEntity(ref r, v),
-                version)
+                version,
+                minElementSize: 3,
+                maxCount: AlterClientQuotasResponse.MaxEntityCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => ReadEntity(ref r, v),
-                version);
+                version,
+                minElementSize: 4,
+                maxCount: AlterClientQuotasResponse.MaxEntityCount);
 
         if (flexible)
         {

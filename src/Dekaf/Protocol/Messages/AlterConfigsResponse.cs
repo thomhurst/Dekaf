@@ -6,6 +6,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class AlterConfigsResponse : IKafkaResponse
 {
+    internal const int MaxResourceCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.AlterConfigs;
     public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 2;
@@ -26,7 +28,10 @@ public sealed class AlterConfigsResponse : IKafkaResponse
 
         IReadOnlyList<AlterConfigsResourceResponse> responses;
         responses = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => AlterConfigsResourceResponse.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => AlterConfigsResourceResponse.Read(ref r, v),
+            version,
+            minElementSize: 6,
+            maxCount: MaxResourceCount);
 
         reader.SkipTaggedFields();
 

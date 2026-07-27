@@ -5,6 +5,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class UpdateFeaturesResponse : IKafkaResponse
 {
+    internal const int MaxResultCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.UpdateFeatures;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
@@ -21,7 +23,9 @@ public sealed class UpdateFeaturesResponse : IKafkaResponse
         var errorMessage = reader.ReadCompactString();
         var results = version <= 1
             ? reader.ReadCompactArray(
-                static (ref KafkaProtocolReader r) => UpdateFeatureResult.Read(ref r)) ?? []
+                static (ref KafkaProtocolReader r) => UpdateFeatureResult.Read(ref r),
+                minElementSize: 5,
+                maxCount: MaxResultCount)
             : [];
 
         reader.SkipTaggedFields();
