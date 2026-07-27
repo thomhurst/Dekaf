@@ -432,6 +432,7 @@ public sealed class ResponseArrayBoundsTests
     }
 
     [Test]
+    [Arguments((short)3)]
     [Arguments((short)4)]
     [Arguments((short)5)]
     public async Task LeaveGroupResponse_Read_MemberCountExceedingMinimumEncodedSize_RejectsBeforeAllocation(
