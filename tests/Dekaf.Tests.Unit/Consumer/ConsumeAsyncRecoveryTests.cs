@@ -94,6 +94,41 @@ public sealed class ConsumeAsyncRecoveryTests
         await Assert.That(result.Key).IsEqualTo("next");
     }
 
+    [Test]
+    public async Task ConsumeAsync_DeserializerSeeks_RecordSnapshotRemainsValid()
+    {
+        var record = CreateRecord(0, "original-key", "original-value");
+        var fetch = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(0, new SingleRecordList(record))]);
+        KafkaConsumer<string, string>? consumer = null;
+        var keyDeserializer = new CallbackStringDeserializer(() =>
+            consumer!.Seek(new TopicPartitionOffset(Topic, Partition, 0)));
+        consumer = CreateConsumerWithPendingFetchesCore(
+            loggerFactory: null,
+            Topic,
+            Partition,
+            OffsetCommitMode.Manual,
+            keyDeserializer,
+            Serializers.String,
+            fetch);
+
+        await using (consumer)
+        {
+            ConsumeResult<string, string>? consumed = null;
+            await foreach (var result in consumer.ConsumeAsync())
+            {
+                consumed = result;
+                break;
+            }
+
+            await Assert.That(consumed).IsNotNull();
+            await Assert.That(consumed!.Value.Key).IsEqualTo("original-key");
+            await Assert.That(consumed.Value.Value).IsEqualTo("original-value");
+        }
+    }
+
     private static int GetPendingFetchCount(KafkaConsumer<string, string> consumer)
     {
         var field = typeof(KafkaConsumer<string, string>)
@@ -112,6 +147,8 @@ public sealed class ConsumeAsyncRecoveryTests
         string topic,
         int partition,
         OffsetCommitMode offsetCommitMode,
+        IDeserializer<string> keyDeserializer,
+        IDeserializer<string> valueDeserializer,
         params PendingFetchData[] fetches)
     {
         var options = new ConsumerOptions
@@ -123,8 +160,8 @@ public sealed class ConsumeAsyncRecoveryTests
 
         var consumer = new KafkaConsumer<string, string>(
             options,
-            Serializers.String,
-            Serializers.String,
+            keyDeserializer,
+            valueDeserializer,
             loggerFactory);
 
         // Use Assign to set the assignment (no coordinator needed)
@@ -165,6 +202,8 @@ public sealed class ConsumeAsyncRecoveryTests
             topic,
             partition,
             OffsetCommitMode.Manual,
+            Serializers.String,
+            Serializers.String,
             fetches);
 
     private static KafkaConsumer<string, string> CreateConsumerWithPendingFetches(
@@ -180,6 +219,8 @@ public sealed class ConsumeAsyncRecoveryTests
             Topic,
             Partition,
             offsetCommitMode,
+            Serializers.String,
+            Serializers.String,
             fetches);
 
     private static ConcurrentDictionary<TopicPartition, long> GetPositions(
@@ -196,6 +237,9 @@ public sealed class ConsumeAsyncRecoveryTests
     /// Creates a valid RecordBatch with the specified records.
     /// </summary>
     private static RecordBatch CreateBatch(long baseOffset, params Record[] records)
+        => CreateBatch(baseOffset, (IReadOnlyList<Record>)records);
+
+    private static RecordBatch CreateBatch(long baseOffset, IReadOnlyList<Record> records)
     {
         return new RecordBatch
         {
@@ -692,6 +736,31 @@ public sealed class ConsumeAsyncRecoveryTests
     #endregion
 
     #region Test Helpers
+
+    private sealed class CallbackStringDeserializer(Action callback) : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            callback();
+            return Encoding.UTF8.GetString(data.Span);
+        }
+    }
+
+    private sealed class SingleRecordList(Record record) : IReadOnlyList<Record>
+    {
+        public int Count => 1;
+
+        public Record this[int index] => index == 0
+            ? record
+            : throw new ArgumentOutOfRangeException(nameof(index));
+
+        public IEnumerator<Record> GetEnumerator()
+        {
+            yield return record;
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
 
     /// <summary>
     /// An IReadOnlyList&lt;Record&gt; that throws ArgumentOutOfRangeException when

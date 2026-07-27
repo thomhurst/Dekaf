@@ -30,6 +30,7 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
 
     private Record[][] _batchRecords = null!;
     private KafkaConsumer<string, string> _consumer = null!;
+    private CancellationTokenSource _iterationCancellation = null!;
 
     [Params(100, 1000)]
     public int MessageSize { get; set; }
@@ -78,6 +79,7 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
     public void IterationSetup()
     {
         DrainPendingFetches();
+        _iterationCancellation = new CancellationTokenSource();
 
         var batches = new RecordBatch[BatchCount];
         for (var batchIndex = 0; batchIndex < BatchCount; batchIndex++)
@@ -95,14 +97,17 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
         GetPendingFetches().Enqueue(PendingFetchData.Create(Topic, Partition, batches));
     }
 
+    [IterationCleanup]
+    public void IterationCleanup() => _iterationCancellation.Dispose();
+
     [Benchmark(OperationsPerInvoke = MessageCount)]
     public async Task<int> ConsumeBufferedStream()
     {
         var count = 0;
-        await foreach (var _ in _consumer.ConsumeAsync().ConfigureAwait(false))
+        await foreach (var _ in _consumer.ConsumeAsync(_iterationCancellation.Token).ConfigureAwait(false))
         {
             if (++count == MessageCount)
-                break;
+                _iterationCancellation.Cancel();
         }
 
         return count;
