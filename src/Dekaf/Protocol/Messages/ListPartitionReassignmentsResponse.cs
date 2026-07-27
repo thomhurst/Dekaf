@@ -6,6 +6,10 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class ListPartitionReassignmentsResponse : IKafkaResponse
 {
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+    internal const int MaxReplicaCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.ListPartitionReassignments;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
@@ -37,7 +41,9 @@ public sealed class ListPartitionReassignmentsResponse : IKafkaResponse
         var errorMessage = reader.ReadCompactString();
         var topics = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => ListPartitionReassignmentsResponseTopic.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 3,
+            maxCount: MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -71,7 +77,9 @@ public sealed class ListPartitionReassignmentsResponseTopic
         var name = reader.ReadCompactString() ?? string.Empty;
         var partitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => OngoingPartitionReassignmentData.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 8,
+            maxCount: ListPartitionReassignmentsResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
@@ -111,9 +119,18 @@ public sealed class OngoingPartitionReassignmentData
     public static OngoingPartitionReassignmentData Read(ref KafkaProtocolReader reader, short version)
     {
         var partitionIndex = reader.ReadInt32();
-        var replicas = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
-        var addingReplicas = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
-        var removingReplicas = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
+        var replicas = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: ListPartitionReassignmentsResponse.MaxReplicaCount);
+        var addingReplicas = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: ListPartitionReassignmentsResponse.MaxReplicaCount);
+        var removingReplicas = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: ListPartitionReassignmentsResponse.MaxReplicaCount);
 
         reader.SkipTaggedFields();
 

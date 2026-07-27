@@ -6,6 +6,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class ElectLeadersResponse : IKafkaResponse
 {
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.ElectLeaders;
     public static short LowestSupportedVersion => 2;
     public static short HighestSupportedVersion => 2;
@@ -32,9 +35,11 @@ public sealed class ElectLeadersResponse : IKafkaResponse
         // ErrorCode is only in v1+
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        IReadOnlyList<ElectLeadersResponseTopic> results;
-        results = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => ElectLeadersResponseTopic.Read(ref r, version)) ?? [];
+        var results = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => ElectLeadersResponseTopic.Read(ref r, v),
+            version,
+            minElementSize: 3,
+            maxCount: MaxTopicCount);
         reader.SkipTaggedFields();
 
         return new ElectLeadersResponse
@@ -65,9 +70,11 @@ public sealed class ElectLeadersResponseTopic
     {
         var topic = reader.ReadCompactString() ?? string.Empty;
 
-        IReadOnlyList<ElectLeadersResponsePartition> partitions;
-        partitions = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => ElectLeadersResponsePartition.Read(ref r, version)) ?? [];
+        var partitions = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => ElectLeadersResponsePartition.Read(ref r, v),
+            version,
+            minElementSize: 8,
+            maxCount: ElectLeadersResponse.MaxPartitionCount);
         reader.SkipTaggedFields();
 
         return new ElectLeadersResponseTopic

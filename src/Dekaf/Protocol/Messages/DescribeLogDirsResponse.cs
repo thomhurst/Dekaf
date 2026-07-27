@@ -5,6 +5,10 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeLogDirsResponse : IKafkaResponse
 {
+    internal const int MaxLogDirCount = 100_000;
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeLogDirs;
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 5;
@@ -28,14 +32,25 @@ public sealed class DescribeLogDirsResponse : IKafkaResponse
     {
         var throttleTimeMs = reader.ReadInt32();
         var errorCode = version >= 3 ? (ErrorCode)reader.ReadInt16() : ErrorCode.None;
+        var minLogDirSize = version switch
+        {
+            >= 5 => 22,
+            >= 4 => 21,
+            >= 2 => 5,
+            _ => 8
+        };
 
         var results = version >= 2
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeLogDirsResponseDir.Read(ref r, v),
-                version)
+                version,
+                minElementSize: minLogDirSize,
+                maxCount: MaxLogDirCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeLogDirsResponseDir.Read(ref r, v),
-                version);
+                version,
+                minElementSize: minLogDirSize,
+                maxCount: MaxLogDirCount);
 
         if (version >= 2)
         {
@@ -73,10 +88,14 @@ public sealed class DescribeLogDirsResponseDir
         var topics = version >= 2
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeLogDirsResponseTopic.Read(ref r, v),
-                version)
+                version,
+                minElementSize: 3,
+                maxCount: DescribeLogDirsResponse.MaxTopicCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeLogDirsResponseTopic.Read(ref r, v),
-                version);
+                version,
+                minElementSize: 6,
+                maxCount: DescribeLogDirsResponse.MaxTopicCount);
 
         long? totalBytes = null;
         long? usableBytes = null;
@@ -127,10 +146,14 @@ public sealed class DescribeLogDirsResponseTopic
         var partitions = version >= 2
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeLogDirsResponsePartition.Read(ref r, v),
-                version)
+                version,
+                minElementSize: 22,
+                maxCount: DescribeLogDirsResponse.MaxPartitionCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => DescribeLogDirsResponsePartition.Read(ref r, v),
-                version);
+                version,
+                minElementSize: 21,
+                maxCount: DescribeLogDirsResponse.MaxPartitionCount);
 
         if (version >= 2)
         {

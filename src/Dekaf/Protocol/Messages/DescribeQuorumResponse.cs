@@ -6,6 +6,12 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeQuorumResponse : IKafkaResponse
 {
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+    internal const int MaxReplicaCount = 100_000;
+    internal const int MaxNodeCount = 100_000;
+    internal const int MaxListenerCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeQuorum;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
@@ -21,9 +27,14 @@ public sealed class DescribeQuorumResponse : IKafkaResponse
         var errorMessage = version >= 2 ? reader.ReadCompactString() : null;
         var topics = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeQuorumResponseTopic.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 3,
+            maxCount: MaxTopicCount);
         var nodes = version >= 2
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r) => DescribeQuorumResponseNode.Read(ref r))
+            ? reader.ReadCompactArray(
+                static (ref KafkaProtocolReader r) => DescribeQuorumResponseNode.Read(ref r),
+                minElementSize: 6,
+                maxCount: MaxNodeCount)
             : [];
 
         reader.SkipTaggedFields();
@@ -48,7 +59,9 @@ public sealed class DescribeQuorumResponseTopic
         var topicName = reader.ReadCompactString() ?? string.Empty;
         var partitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeQuorumResponsePartition.Read(ref r, v),
-            version);
+            version,
+            minElementSize: version >= 2 ? 26 : 25,
+            maxCount: DescribeQuorumResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
@@ -79,12 +92,22 @@ public sealed class DescribeQuorumResponsePartition
         var leaderId = reader.ReadInt32();
         var leaderEpoch = reader.ReadInt32();
         var highWatermark = reader.ReadInt64();
+        var minReplicaSize = version switch
+        {
+            >= 2 => 45,
+            >= 1 => 29,
+            _ => 13
+        };
         var currentVoters = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeQuorumReplicaState.Read(ref r, v),
-            version);
+            version,
+            minElementSize: minReplicaSize,
+            maxCount: DescribeQuorumResponse.MaxReplicaCount);
         var observers = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeQuorumReplicaState.Read(ref r, v),
-            version);
+            version,
+            minElementSize: minReplicaSize,
+            maxCount: DescribeQuorumResponse.MaxReplicaCount);
 
         reader.SkipTaggedFields();
 
@@ -139,7 +162,10 @@ public sealed class DescribeQuorumResponseNode
     public static DescribeQuorumResponseNode Read(ref KafkaProtocolReader reader)
     {
         var nodeId = reader.ReadInt32();
-        var listeners = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => RaftVoterEndpointData.Read(ref r));
+        var listeners = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => RaftVoterEndpointData.Read(ref r),
+            minElementSize: 5,
+            maxCount: DescribeQuorumResponse.MaxListenerCount);
 
         reader.SkipTaggedFields();
 

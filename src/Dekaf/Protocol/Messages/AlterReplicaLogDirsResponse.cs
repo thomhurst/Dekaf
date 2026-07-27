@@ -5,6 +5,9 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class AlterReplicaLogDirsResponse : IKafkaResponse
 {
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.AlterReplicaLogDirs;
     public static short LowestSupportedVersion => 1;
     public static short HighestSupportedVersion => 2;
@@ -25,10 +28,14 @@ public sealed class AlterReplicaLogDirsResponse : IKafkaResponse
         var results = version >= 2
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => AlterReplicaLogDirsResponseTopic.Read(ref r, v),
-                version)
+                version,
+                minElementSize: 3,
+                maxCount: MaxTopicCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => AlterReplicaLogDirsResponseTopic.Read(ref r, v),
-                version);
+                version,
+                minElementSize: 6,
+                maxCount: MaxTopicCount);
 
         if (version >= 2)
         {
@@ -60,10 +67,14 @@ public sealed class AlterReplicaLogDirsResponseTopic
         var partitions = version >= 2
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => AlterReplicaLogDirsResponsePartition.Read(ref r, v),
-                version)
+                version,
+                minElementSize: 7,
+                maxCount: AlterReplicaLogDirsResponse.MaxPartitionCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => AlterReplicaLogDirsResponsePartition.Read(ref r, v),
-                version);
+                version,
+                minElementSize: 6,
+                maxCount: AlterReplicaLogDirsResponse.MaxPartitionCount);
 
         if (version >= 2)
         {

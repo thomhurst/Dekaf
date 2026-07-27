@@ -6,6 +6,10 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeTopicPartitionsResponse : IKafkaResponse
 {
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+    internal const int MaxReplicaCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeTopicPartitions;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
@@ -18,7 +22,9 @@ public sealed class DescribeTopicPartitionsResponse : IKafkaResponse
     {
         var throttleTimeMs = reader.ReadInt32();
         var topics = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => DescribeTopicPartitionsResponseTopic.Read(ref r));
+            static (ref KafkaProtocolReader r) => DescribeTopicPartitionsResponseTopic.Read(ref r),
+            minElementSize: 26,
+            maxCount: MaxTopicCount);
         var nextCursor = DescribeTopicPartitionsResponseCursor.ReadNullable(ref reader);
 
         reader.SkipTaggedFields();
@@ -48,7 +54,9 @@ public sealed class DescribeTopicPartitionsResponseTopic
         var topicId = reader.ReadUuid();
         var isInternal = reader.ReadBoolean();
         var partitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => DescribeTopicPartitionsResponsePartition.Read(ref r));
+            static (ref KafkaProtocolReader r) => DescribeTopicPartitionsResponsePartition.Read(ref r),
+            minElementSize: 20,
+            maxCount: DescribeTopicPartitionsResponse.MaxPartitionCount);
         var topicAuthorizedOperations = reader.ReadInt32();
 
         reader.SkipTaggedFields();
@@ -83,11 +91,26 @@ public sealed class DescribeTopicPartitionsResponsePartition
         var partitionIndex = reader.ReadInt32();
         var leaderId = reader.ReadInt32();
         var leaderEpoch = reader.ReadInt32();
-        var replicaNodes = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
-        var isrNodes = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
-        var eligibleLeaderReplicas = reader.ReadCompactNullableArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
-        var lastKnownElr = reader.ReadCompactNullableArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
-        var offlineReplicas = reader.ReadCompactArray(static (ref KafkaProtocolReader r) => r.ReadInt32());
+        var replicaNodes = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: DescribeTopicPartitionsResponse.MaxReplicaCount);
+        var isrNodes = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: DescribeTopicPartitionsResponse.MaxReplicaCount);
+        var eligibleLeaderReplicas = reader.ReadCompactNullableArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: DescribeTopicPartitionsResponse.MaxReplicaCount);
+        var lastKnownElr = reader.ReadCompactNullableArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: DescribeTopicPartitionsResponse.MaxReplicaCount);
+        var offlineReplicas = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: DescribeTopicPartitionsResponse.MaxReplicaCount);
 
         reader.SkipTaggedFields();
 
