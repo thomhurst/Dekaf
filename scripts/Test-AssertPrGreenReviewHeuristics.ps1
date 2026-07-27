@@ -154,6 +154,30 @@ No blocking issues found.
         Blocks = $false
     },
     @{
+        Name = 'allows re-verified category heading with clean verification details'
+        Body = @'
+## Review
+
+### Correctness (re-verified)
+- All four call sites remain fully synchronous, so the thread-local cache cannot cross an async continuation.
+- Detached buffer ownership and double-dispose guards remain correct.
+
+### Verdict
+No remaining correctness, security, or coverage issues.
+'@
+        Blocks = $false
+    },
+    @{
+        Name = 'blocks re-verified category heading with continuation defect'
+        Body = @'
+## Review
+
+### Correctness (re-verified)
+The retry path still deadlocks when disposal overlaps a timeout.
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'allows positive category section heading with colon'
         Body = @'
 ## Review
