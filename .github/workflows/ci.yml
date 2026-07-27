@@ -462,6 +462,8 @@ jobs:
     if: needs.changes.outputs.code == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      KAFKA_TEST_IMAGE_TAG: '4.3.1'
 
     steps:
       - name: Add Swap Space
@@ -487,6 +489,9 @@ jobs:
           script: |
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
             core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
+
+      - name: Pre-pull Kafka image
+        run: bash scripts/prepull-kafka-images.sh "$KAFKA_TEST_IMAGE_TAG" 4.0.2
 
       - name: Run NativeAOT integration smoke tests
         run: bash scripts/run-integration-categories.sh aot "Producer,Consumer,Messaging,Serialization"
