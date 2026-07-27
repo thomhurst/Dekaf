@@ -54,8 +54,8 @@ public class ConsumeOneBufferedFastPathBenchmarks
     public int MessageSize { get; set; }
 
     private Record[][] _batchRecords = null!;
-    private KafkaConsumer<string, string> _groupedConsumer = null!;
-    private KafkaConsumer<string, string> _noGroupConsumer = null!;
+    private KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _groupedConsumer = null!;
+    private KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _noGroupConsumer = null!;
     private TaskCompletionSource _autoCommitSurrogate = null!;
 
     [GlobalSetup]
@@ -84,7 +84,7 @@ public class ConsumeOneBufferedFastPathBenchmarks
             _batchRecords[b] = records;
         }
 
-        _groupedConsumer = new KafkaConsumer<string, string>(
+        _groupedConsumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
@@ -93,8 +93,8 @@ public class ConsumeOneBufferedFastPathBenchmarks
                 QueuedMinMessages = 1,
                 FetchMaxWaitMs = 200,
             },
-            Serializers.String,
-            Serializers.String);
+            Serializers.RawBytes,
+            Serializers.RawBytes);
         InitializeForBufferedFastPath(_groupedConsumer);
 
         // CanUseBufferedConsumeOneFastPath requires a live auto-commit loop in Auto mode.
@@ -102,7 +102,7 @@ public class ConsumeOneBufferedFastPathBenchmarks
         _autoCommitSurrogate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         SetPrivateField(_groupedConsumer, "_autoCommitTask", _autoCommitSurrogate.Task);
 
-        _noGroupConsumer = new KafkaConsumer<string, string>(
+        _noGroupConsumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
@@ -110,8 +110,8 @@ public class ConsumeOneBufferedFastPathBenchmarks
                 QueuedMinMessages = 1,
                 FetchMaxWaitMs = 200,
             },
-            Serializers.String,
-            Serializers.String);
+            Serializers.RawBytes,
+            Serializers.RawBytes);
         InitializeForBufferedFastPath(_noGroupConsumer);
     }
 
@@ -123,12 +123,12 @@ public class ConsumeOneBufferedFastPathBenchmarks
 
     [BenchmarkCategory("PollOneFastPath")]
     [Benchmark(Baseline = true)]
-    public ValueTask<ConsumeResult<string, string>?> PollOne_Grouped_AutoCommit()
+    public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>?> PollOne_Grouped_AutoCommit()
         => _groupedConsumer.ConsumeOneAsync(PollTimeout);
 
     [BenchmarkCategory("PollOneFastPath")]
     [Benchmark]
-    public ValueTask<ConsumeResult<string, string>?> PollOne_NoGroup_ManualCommit()
+    public ValueTask<ConsumeResult<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>?> PollOne_NoGroup_ManualCommit()
         => _noGroupConsumer.ConsumeOneAsync(PollTimeout);
 
     [GlobalCleanup]
@@ -141,7 +141,8 @@ public class ConsumeOneBufferedFastPathBenchmarks
         _noGroupConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
-    private void ReseedPendingFetches(KafkaConsumer<string, string> consumer)
+    private void ReseedPendingFetches(
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
     {
         DrainPendingFetches(consumer);
 
@@ -161,14 +162,16 @@ public class ConsumeOneBufferedFastPathBenchmarks
         GetPendingFetches(consumer).Enqueue(PendingFetchData.Create(Topic, Partition, batches));
     }
 
-    private static void DrainPendingFetches(KafkaConsumer<string, string> consumer)
+    private static void DrainPendingFetches(
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
     {
         var pendingFetches = GetPendingFetches(consumer);
         while (pendingFetches.Count > 0)
             pendingFetches.Dequeue().Dispose();
     }
 
-    private static void InitializeForBufferedFastPath(KafkaConsumer<string, string> consumer)
+    private static void InitializeForBufferedFastPath(
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
     {
         SetPrivateField(consumer, "_initialized", true);
 
@@ -181,20 +184,27 @@ public class ConsumeOneBufferedFastPathBenchmarks
         SetPrivateField(consumer, "_lastManualAssignmentEnsureVersion", ensureVersion);
     }
 
-    private static Queue<PendingFetchData> GetPendingFetches(KafkaConsumer<string, string> consumer)
+    private static Queue<PendingFetchData> GetPendingFetches(
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
         => (Queue<PendingFetchData>)GetPrivateField(consumer, "_pendingFetches")!;
 
     private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions(
-        KafkaConsumer<string, string> consumer)
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
         => (ConcurrentDictionary<TopicPartition, long>)GetPrivateField(consumer, "_fetchPositions")!;
 
-    private static object? GetPrivateField(KafkaConsumer<string, string> consumer, string fieldName)
+    private static object? GetPrivateField(
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer,
+        string fieldName)
         => RequireField(fieldName).GetValue(consumer);
 
-    private static void SetPrivateField(KafkaConsumer<string, string> consumer, string fieldName, object? value)
+    private static void SetPrivateField(
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer,
+        string fieldName,
+        object? value)
         => RequireField(fieldName).SetValue(consumer, value);
 
     private static FieldInfo RequireField(string fieldName)
-        => typeof(KafkaConsumer<string, string>).GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+        => typeof(KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>)
+               .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
            ?? throw new InvalidOperationException($"{fieldName} field not found.");
 }
