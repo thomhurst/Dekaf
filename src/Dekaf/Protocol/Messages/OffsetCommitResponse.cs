@@ -22,7 +22,11 @@ public sealed class OffsetCommitResponse : IKafkaResponse
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
         var throttleTimeMs = reader.ReadInt32();
-        var topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponseTopic.Read(ref r, v), version);
+        var topics = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => OffsetCommitResponseTopic.Read(ref r, v),
+            version,
+            minElementSize: version >= OffsetCommitRequest.TopicIdVersion ? 18 : 3,
+            maxCount: ResponseArrayLimits.MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -49,7 +53,11 @@ public sealed class OffsetCommitResponseTopic
             ? string.Empty
             : reader.ReadCompactNonNullableString();
         var topicId = version >= OffsetCommitRequest.TopicIdVersion ? reader.ReadUuid() : Guid.Empty;
-        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponsePartition.Read(ref r, v), version);
+        var partitions = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => OffsetCommitResponsePartition.Read(ref r, v),
+            version,
+            minElementSize: 7,
+            maxCount: ResponseArrayLimits.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 

@@ -32,7 +32,10 @@ public sealed class OffsetDeleteResponse : IKafkaResponse
         var throttleTimeMs = reader.ReadInt32();
 
         var topics = reader.ReadArray(
-            (ref KafkaProtocolReader r) => OffsetDeleteResponseTopic.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => OffsetDeleteResponseTopic.Read(ref r, v),
+            version,
+            minElementSize: 6,
+            maxCount: ResponseArrayLimits.MaxTopicCount) ?? [];
 
         return new OffsetDeleteResponse
         {
@@ -63,7 +66,10 @@ public sealed class OffsetDeleteResponseTopic
         var name = reader.ReadString() ?? string.Empty;
 
         var partitions = reader.ReadArray(
-            (ref KafkaProtocolReader r) => OffsetDeleteResponsePartition.Read(ref r, version)) ?? [];
+            static (ref KafkaProtocolReader r, short v) => OffsetDeleteResponsePartition.Read(ref r, v),
+            version,
+            minElementSize: 6,
+            maxCount: ResponseArrayLimits.MaxPartitionCount) ?? [];
 
         return new OffsetDeleteResponseTopic
         {
