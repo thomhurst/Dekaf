@@ -165,6 +165,7 @@ internal sealed class PendingFetchData : IDisposable
     /// point the application requests more data (next MoveNextAsync/ConsumeOne call),
     /// which proves the previously yielded record or batch was handled.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void MarkYieldedProcessed()
     {
         ProvenOffset = LastYieldedOffset;
@@ -2093,20 +2094,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             previousActivity?.Dispose();
                             previousActivity = null;
 
-                            var record = pending.CurrentRecord;
+                            ref readonly var record = ref pending.CurrentRecord;
 
                             // Use cached batch properties (updated once per batch transition
                             // in MoveNext) to avoid per-message property access overhead on
                             // RecordBatch (Volatile.Read + disposed check per access).
                             offset = pending.CurrentBaseOffset + record.OffsetDelta;
                             var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
-
-                            // Use batch-level cached timestamp type (computed once per batch
-                            // transition in CacheCurrentBatchState, not per message)
                             var timestampType = pending.CurrentTimestampType;
-
-                            var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
-                                               (record.IsValueNull ? 0 : record.Value.Length);
+                            // Hoist every record field before tracing or deserialization can run
+                            // user code that Seek/Assigns and recycles the pooled batch storage.
+                            var keyData = record.Key;
+                            var valueData = record.Value;
+                            var isKeyNull = record.IsKeyNull;
+                            var isValueNull = record.IsValueNull;
+                            var pooledHeaders = record.Headers;
+                            var pooledHeaderCount = record.HeaderCount;
+                            var messageBytes = (isKeyNull ? 0 : keyData.Length) +
+                                               (isValueNull ? 0 : valueData.Length);
 
                             // Start consumer tracing activity — skip all tracing work when no listener
                             // (~2ns HasListeners() check vs ~200ns Activity creation + tag boxing per message)
@@ -2115,12 +2120,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             if (hasTraceListeners)
                             {
                                 var headers = LazyConsumeHeaders.Create(
-                                    record.Headers,
-                                    record.HeaderCount,
+                                    pooledHeaders,
+                                    pooledHeaderCount,
                                     pending,
                                     pending.HeaderGeneration);
                                 activity = StartConsumeActivity(pending, headers, offset,
-                                    record.Value.Length, record.IsValueNull, isProcessSpan: true);
+                                    valueData.Length, isValueNull, isProcessSpan: true);
                                 if (activity is not null)
                                     previousActivity = activity;
                             }
@@ -2136,12 +2141,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                 ? await CreateResultWithAsyncDeserializationAsync(
                                     pending,
                                     offset,
-                                    record.Key,
-                                    record.IsKeyNull,
-                                    record.Value,
-                                    record.IsValueNull,
-                                    record.Headers,
-                                    record.HeaderCount,
+                                    keyData,
+                                    isKeyNull,
+                                    valueData,
+                                    isValueNull,
+                                    pooledHeaders,
+                                    pooledHeaderCount,
                                     timestampMs,
                                     timestampType,
                                     pending.CurrentPartitionLeaderEpoch >= 0 ? pending.CurrentPartitionLeaderEpoch : null,
@@ -2150,12 +2155,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     topic: pending.Topic,
                                     partition: pending.PartitionIndex,
                                     offset: offset,
-                                    keyData: record.Key,
-                                    isKeyNull: record.IsKeyNull,
-                                    valueData: record.Value,
-                                    isValueNull: record.IsValueNull,
-                                    pooledHeaders: record.Headers,
-                                    pooledHeaderCount: record.HeaderCount,
+                                    keyData: keyData,
+                                    isKeyNull: isKeyNull,
+                                    valueData: valueData,
+                                    isValueNull: isValueNull,
+                                    pooledHeaders: pooledHeaders,
+                                    pooledHeaderCount: pooledHeaderCount,
                                     headerOwner: pending,
                                     timestampMs: timestampMs,
                                     timestampType: timestampType,
@@ -2187,8 +2192,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             // Store raw byte references for DLQ lazy capture (zero-copy — just memory slices)
                             if (rawTrackingEnabled)
                             {
-                                _currentRawKey = record.IsKeyNull ? ReadOnlyMemory<byte>.Empty : record.Key;
-                                _currentRawValue = record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value;
+                                _currentRawKey = isKeyNull ? ReadOnlyMemory<byte>.Empty : keyData;
+                                _currentRawValue = isValueNull ? ReadOnlyMemory<byte>.Empty : valueData;
                             }
                         }
                         catch (OperationCanceledException) when (readingProtocolData)
