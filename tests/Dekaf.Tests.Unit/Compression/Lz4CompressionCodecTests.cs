@@ -159,6 +159,19 @@ public class Lz4CompressionCodecTests
             .ThrowsExactly<NotImplementedException>();
     }
 
+    [Test]
+    public async Task Lz4CompressionCodec_Decompress_DestinationArgumentException_IsPreserved()
+    {
+        var codec = new Lz4CompressionCodec();
+        var compressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Compress(new ReadOnlySequence<byte>("test"u8.ToArray()), compressedBuffer);
+
+        await Assert.That(() => codec.Decompress(
+                new ReadOnlySequence<byte>(compressedBuffer.WrittenMemory),
+                new ArgumentExceptionBufferWriter()))
+            .ThrowsExactly<ArgumentException>();
+    }
+
     #endregion
 
     #region Compression Level Tests
@@ -308,6 +321,15 @@ public class Lz4CompressionCodecTests
         public Memory<byte> GetMemory(int sizeHint = 0) => throw new NotImplementedException();
 
         public Span<byte> GetSpan(int sizeHint = 0) => throw new NotImplementedException();
+    }
+
+    private sealed class ArgumentExceptionBufferWriter : IBufferWriter<byte>
+    {
+        public void Advance(int count) => throw new ArgumentException("Destination failed.");
+
+        public Memory<byte> GetMemory(int sizeHint = 0) => throw new ArgumentException("Destination failed.");
+
+        public Span<byte> GetSpan(int sizeHint = 0) => throw new ArgumentException("Destination failed.");
     }
 
     #endregion

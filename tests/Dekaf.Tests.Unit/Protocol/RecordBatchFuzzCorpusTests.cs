@@ -16,6 +16,7 @@ public class RecordBatchFuzzCorpusTests
         "gzip-valid",
         "lz4-corrupt",
         "lz4-invalid-block-size",
+        "lz4-oversized-block",
         "lz4-valid",
         "none-corrupt",
         "none-valid",
@@ -158,6 +159,15 @@ public class RecordBatchFuzzCorpusTests
     public async Task MalformedLz4Seed_IsRejectedAsInvalidData()
     {
         var seed = RecordBatchFuzzCorpus.LoadEmbedded().Single(seed => seed.Name == "lz4-invalid-block-size");
+
+        await Assert.That(() => RecordBatchFuzzTarget.Execute(seed.Data))
+            .ThrowsExactly<InvalidDataException>();
+    }
+
+    [Test]
+    public async Task OversizedLz4BlockSeed_IsRejectedAsInvalidData()
+    {
+        var seed = RecordBatchFuzzCorpus.LoadEmbedded().Single(seed => seed.Name == "lz4-oversized-block");
 
         await Assert.That(() => RecordBatchFuzzTarget.Execute(seed.Data))
             .ThrowsExactly<InvalidDataException>();
