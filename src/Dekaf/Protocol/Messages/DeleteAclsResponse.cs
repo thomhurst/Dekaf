@@ -75,7 +75,7 @@ public sealed class DeleteAclsFilterResult
         matchingAcls = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DeleteAclsMatchingAcl.Read(ref r, v),
             version,
-            minElementSize: 12,
+            minElementSize: 11,
             maxCount: DeleteAclsResponse.MaxMatchingAclCount);
 
         reader.SkipTaggedFields();

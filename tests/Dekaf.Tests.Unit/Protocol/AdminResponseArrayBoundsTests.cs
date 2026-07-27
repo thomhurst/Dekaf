@@ -63,6 +63,63 @@ public sealed class AdminResponseArrayBoundsTests
             .ThrowsExactly<MalformedProtocolDataException>();
     }
 
+    [Test]
+    public async Task DescribeDelegationTokenResponse_Read_V2MinimumToken_AcceptsExactWireSize()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteUnsignedVarInt(2);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteInt64(0);
+        writer.WriteInt64(0);
+        writer.WriteInt64(0);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteCompactBytes([]);
+        writer.WriteUnsignedVarInt(1);
+        writer.WriteEmptyTaggedFields();
+        writer.WriteInt32(0);
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (DescribeDelegationTokenResponse)DescribeDelegationTokenResponse.Read(
+            ref reader,
+            version: 2);
+        var remaining = reader.Remaining;
+
+        await Assert.That(response.Tokens).Count().IsEqualTo(1);
+        await Assert.That(remaining).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task DeleteAclsFilterResult_Read_MinimumMatchingAcl_AcceptsExactWireSize()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactNullableString(null);
+        writer.WriteUnsignedVarInt(2);
+        writer.WriteInt16((short)ErrorCode.None);
+        writer.WriteCompactNullableString(null);
+        writer.WriteInt8(0);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteInt8(0);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteCompactString(string.Empty);
+        writer.WriteInt8(0);
+        writer.WriteInt8(0);
+        writer.WriteEmptyTaggedFields();
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var result = DeleteAclsFilterResult.Read(ref reader, version: 3);
+        var remaining = reader.Remaining;
+
+        await Assert.That(result.MatchingAcls).Count().IsEqualTo(1);
+        await Assert.That(remaining).IsEqualTo(0);
+    }
+
     private static byte[] CreatePayload(ArrayTarget target)
     {
         var buffer = new ArrayBufferWriter<byte>();

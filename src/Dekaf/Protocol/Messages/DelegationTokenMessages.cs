@@ -343,7 +343,7 @@ public sealed class DescribeDelegationTokenResponse : IKafkaResponse
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r, short v) => DescribedDelegationTokenData.Read(ref r, v),
                 version,
-                minElementSize: 32,
+                minElementSize: version >= 3 ? 32 : 30,
                 maxCount: MaxTokenCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r, short v) => DescribedDelegationTokenData.Read(ref r, v),
