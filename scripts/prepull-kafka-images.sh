@@ -6,7 +6,7 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
-max_attempts=8
+max_attempts=3
 
 while IFS= read -r image_or_tag; do
   if [[ "$image_or_tag" == */* ]]; then
@@ -17,6 +17,23 @@ while IFS= read -r image_or_tag; do
 
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     if timeout 60s docker pull "$image"; then
+      break
+    fi
+
+    mirror_image="mirror.gcr.io/$image"
+    if timeout 30s docker pull "$mirror_image"; then
+      docker tag "$mirror_image" "${image%@*}"
+
+      if [[ "$image" == testcontainers/ryuk:* ]]; then
+        if [ -z "${GITHUB_ENV:-}" ]; then
+          echo "GITHUB_ENV is required to use the digest-pinned Ryuk mirror fallback" >&2
+          exit 1
+        fi
+
+        printf 'TESTCONTAINERS_RYUK_CONTAINER_IMAGE=%s\n' "$mirror_image" >> "$GITHUB_ENV"
+      fi
+
+      echo "Pulled $image from the Docker Hub cache at mirror.gcr.io"
       break
     fi
 
