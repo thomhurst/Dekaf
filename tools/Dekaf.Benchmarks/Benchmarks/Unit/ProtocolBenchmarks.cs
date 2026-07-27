@@ -24,6 +24,7 @@ public class ProtocolBenchmarks
     private byte[] _int32Data = null!;
     private byte[] _varIntData = null!;
     private byte[] _recordBatchBytes = null!;
+    private byte[] _compressedRecordBatchBytes = null!;
     private RecordBatch _writeBatch = null!;
     private string _testString = null!;
     private string _longString = null!;
@@ -71,6 +72,10 @@ public class ProtocolBenchmarks
         };
         batch.Write(tempBuffer);
         _recordBatchBytes = tempBuffer.WrittenSpan.ToArray();
+
+        tempBuffer.Clear();
+        batch.Write(tempBuffer, CompressionType.Gzip);
+        _compressedRecordBatchBytes = tempBuffer.WrittenSpan.ToArray();
 
         _writeBatch = CreateTenRecordBatch();
     }
@@ -234,6 +239,16 @@ public class ProtocolBenchmarks
     public long ReadRecordBatch()
     {
         var reader = new KafkaProtocolReader(_recordBatchBytes);
+        var batch = RecordBatch.Read(ref reader);
+        var baseOffset = batch.BaseOffset;
+        batch.DisposeAndReturnUnownedConsumerBatch();
+        return baseOffset;
+    }
+
+    [Benchmark(Description = "Read Gzip RecordBatch (10 records)")]
+    public long ReadCompressedRecordBatch()
+    {
+        var reader = new KafkaProtocolReader(_compressedRecordBatchBytes);
         var batch = RecordBatch.Read(ref reader);
         var baseOffset = batch.BaseOffset;
         batch.DisposeAndReturnUnownedConsumerBatch();
