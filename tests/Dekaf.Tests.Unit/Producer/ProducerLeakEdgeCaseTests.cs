@@ -70,6 +70,14 @@ public sealed class ProducerLeakEdgeCaseTests
                     cancellationToken);
 
             var survivorTasks = new[] { StartAppender(0, cancellationToken), StartAppender(1, cancellationToken) };
+
+            // Establish real BufferMemory saturation before starting the victims. Otherwise
+            // their one-shot signals can observe transient FIFO contention that clears before
+            // cancellation, leaving the test without an actively blocked victim.
+            await LeakGateHarness.WaitForSaturationAsync(
+                accumulator, survivorTasks, cancellationToken);
+            await Assert.That(accumulator.BufferPressureEvents).IsGreaterThan(0L);
+
             var victimWaitSignals = new[]
             {
                 new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
@@ -104,7 +112,6 @@ public sealed class ProducerLeakEdgeCaseTests
 
             // The victims must actually have been interrupted mid-run for the test to
             // exercise cancellation inside the reservation wait.
-            await Assert.That(accumulator.BufferPressureEvents).IsGreaterThan(0L);
             foreach (var victim in victimResults)
             {
                 await Assert.That(victim.WasCancelled).IsTrue();
