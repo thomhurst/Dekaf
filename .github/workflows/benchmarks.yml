@@ -28,9 +28,26 @@ concurrency:
 
 jobs:
   unit-benchmarks:
-    name: Unit Benchmarks
+    name: Unit Benchmarks (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # Exhaustive class-name ranges keep future unit benchmarks sharded
+      # automatically. Boundaries are balanced from observed class runtimes.
+      matrix:
+        include:
+          - shard: a-d
+            filters: >-
+              *Unit.A* *Unit.B* *Unit.C* *Unit.D*
+          - shard: e-p
+            filters: >-
+              *Unit.E* *Unit.F* *Unit.G* *Unit.H* *Unit.I* *Unit.J*
+              *Unit.K* *Unit.L* *Unit.M* *Unit.N* *Unit.O* *Unit.P*
+          - shard: q-z
+            filters: >-
+              *Unit.Q* *Unit.R* *Unit.S* *Unit.T* *Unit.U* *Unit.V*
+              *Unit.W* *Unit.X* *Unit.Y* *Unit.Z*
 
     steps:
       - name: Checkout
@@ -48,15 +65,18 @@ jobs:
         run: dotnet build --configuration Release
 
       - name: Run Unit Benchmarks
+        env:
+          BENCHMARK_FILTERS: ${{ matrix.filters }}
         run: |
           cd tools/Dekaf.Benchmarks
-          dotnet run -c Release --no-build -- --filter "*Unit*" --exporters json --artifacts ./BenchmarkResults/Unit
-        continue-on-error: true
+          read -r -a benchmark_filters <<< "$BENCHMARK_FILTERS"
+          dotnet run -c Release --no-build -- --filter "${benchmark_filters[@]}" --exporters json --artifacts ./BenchmarkResults/Unit
 
       - name: Upload Results
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: benchmark-results-unit
+          name: benchmark-results-unit-${{ matrix.shard }}
           path: tools/Dekaf.Benchmarks/BenchmarkResults/**/results/**
           retention-days: 30
 
@@ -102,13 +122,13 @@ jobs:
         run: |
           cd tools/Dekaf.Benchmarks
           dotnet run -c Release --no-build -- --filter "*Client*" --exporters json --artifacts ./BenchmarkResults/Client
-        continue-on-error: true
 
       - name: Stop Kafka
         if: always()
         run: docker rm -f kafka || true
 
       - name: Upload Results
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: benchmark-results-client
@@ -116,9 +136,25 @@ jobs:
           retention-days: 30
 
   client-benchmarks-native-memory:
-    name: Client Benchmarks with Native Memory (Windows)
+    name: Client Benchmarks with Native Memory (Windows, ${{ matrix.shard }})
     runs-on: windows-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # NativeMemoryProfiler makes the producer classes substantially slower,
+      # so isolate the P-Z range while keeping both shards below the 90m cap.
+      matrix:
+        include:
+          - shard: a-o
+            filters: >-
+              *Client.A* *Client.B* *Client.C* *Client.D* *Client.E*
+              *Client.F* *Client.G* *Client.H* *Client.I* *Client.J*
+              *Client.K* *Client.L* *Client.M* *Client.N* *Client.O*
+          - shard: p-z
+            filters: >-
+              *Client.P* *Client.Q* *Client.R* *Client.S* *Client.T*
+              *Client.U* *Client.V* *Client.W* *Client.X* *Client.Y*
+              *Client.Z*
 
     steps:
       - name: Checkout
@@ -147,6 +183,7 @@ jobs:
         shell: pwsh
         env:
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+          BENCHMARK_FILTERS: ${{ matrix.filters }}
         run: |
           $ErrorActionPreference = 'Stop'
           $env:JAVA_HOME = $env:JAVA_HOME_17_X64
@@ -195,22 +232,29 @@ jobs:
           Write-Host 'Kafka is ready on localhost:9092'
 
           # Broker is up in this same step; run the benchmarks against it, then stop it.
-          # A benchmark-level failure should not fail the pipeline (results are uploaded
-          # as artifacts regardless), but a Kafka *setup* failure above already threw.
+          # Preserve a benchmark failure after cleanup so the terminal gate reports it.
+          $benchmarkExitCode = 0
           try {
             Push-Location tools/Dekaf.Benchmarks
-            dotnet run -c Release --no-build -- --filter "*Client*" --profiler NativeMemory --exporters json --artifacts ./BenchmarkResults/ClientNative
-            Write-Host "Benchmark run exited with $LASTEXITCODE"
+            $benchmarkFilters = $env:BENCHMARK_FILTERS.Split(
+              ' ',
+              [System.StringSplitOptions]::RemoveEmptyEntries)
+            dotnet run -c Release --no-build -- --filter $benchmarkFilters --profiler NativeMemory --exporters json --artifacts ./BenchmarkResults/ClientNative
+            $benchmarkExitCode = $LASTEXITCODE
+            Write-Host "Benchmark run exited with $benchmarkExitCode"
           } finally {
             Pop-Location
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           }
-          exit 0
+          if ($benchmarkExitCode -ne 0) {
+            throw "Benchmark run failed (exit $benchmarkExitCode)"
+          }
 
       - name: Upload Results
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: benchmark-results-client-native
+          name: benchmark-results-client-native-${{ matrix.shard }}
           path: tools/Dekaf.Benchmarks/BenchmarkResults/**/results/**
           retention-days: 30
 
@@ -513,3 +557,50 @@ jobs:
           GH_TOKEN: ${{ secrets.BENCHMARK_MERGE_TOKEN }}
           PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
         run: gh pr merge "$PR_NUMBER" --squash --delete-branch --admin
+
+  benchmark-gate:
+    name: Benchmark Gate
+    runs-on: ubuntu-latest
+    needs:
+      - unit-benchmarks
+      - client-benchmarks
+      - client-benchmarks-native-memory
+      - benchmark-summary
+      - benchmark-history
+      - publish-to-docs
+    if: always()
+
+    steps:
+      - name: Require completed benchmark pipeline
+        env:
+          UNIT_RESULT: ${{ needs.unit-benchmarks.result }}
+          CLIENT_RESULT: ${{ needs.client-benchmarks.result }}
+          NATIVE_RESULT: ${{ needs.client-benchmarks-native-memory.result }}
+          SUMMARY_RESULT: ${{ needs.benchmark-summary.result }}
+          HISTORY_RESULT: ${{ needs.benchmark-history.result }}
+          DOCS_RESULT: ${{ needs.publish-to-docs.result }}
+        run: |
+          failed=0
+
+          check_result() {
+            local job_name="$1"
+            local result="$2"
+            if [[ "$result" != "success" ]]; then
+              echo "::error::$job_name concluded '$result'"
+              failed=1
+            fi
+          }
+
+          check_result "Unit Benchmarks" "$UNIT_RESULT"
+          check_result "Client Benchmarks" "$CLIENT_RESULT"
+          check_result "Client Native Memory Benchmarks" "$NATIVE_RESULT"
+          check_result "Benchmark Summary" "$SUMMARY_RESULT"
+
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            check_result "Benchmark History" "$HISTORY_RESULT"
+            check_result "Benchmark Documentation" "$DOCS_RESULT"
+          fi
+
+          if [[ "$failed" -ne 0 ]]; then
+            exit 1
+          fi
