@@ -542,10 +542,10 @@ jobs:
         run: dotnet format --verify-no-changes --verbosity diagnostic
         continue-on-error: true  # Format check is informational
 
-      - name: Run Stress Report Unit Tests
+      - name: Run Python Script Unit Tests
         env:
           PYTHONPATH: .github/scripts
-        run: python3 -m unittest discover -s .github/scripts -p 'test_stress_*.py'
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
       - name: Test Integration Category Runner
         run: bash scripts/tests/run-integration-categories-tests.sh
