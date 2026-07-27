@@ -4649,7 +4649,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 exception);
         }
 
-        RewindAfterDeliveryFailure(pending, offset);
+        if (!HasPendingFetchClear(pending.TopicPartition))
+            RewindAfterDeliveryFailure(pending, offset);
         ExceptionDispatchInfo.Capture(exception).Throw();
     }
 

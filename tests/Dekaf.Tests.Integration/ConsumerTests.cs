@@ -263,6 +263,66 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
     }
 
     [Test]
+    public async Task Consumer_SeekDuringFailedDeserialization_PreservesRequestedOffset()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("seek-during-failed-deserialization-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 5; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = partition.Partition,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+
+        var deserializer = new CallbackOnceStringDeserializer();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("seek-during-failed-deserialization-consumer")
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Assign(partition);
+        consumer.Seek(new TopicPartitionOffset(topic, partition.Partition, 0));
+        deserializer.SetCallback(() =>
+        {
+            consumer.Seek(new TopicPartitionOffset(topic, partition.Partition, 3));
+            throw new InvalidOperationException("Expected deserializer failure.");
+        });
+
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await Assert.That(async () =>
+        {
+            await foreach (var _ in consumer.ConsumeAsync(cancellation.Token))
+            {
+            }
+        }).Throws<RecordDeserializationException>();
+
+        ConsumeResult<string, string>? consumed = null;
+        await foreach (var result in consumer.ConsumeAsync(cancellation.Token))
+        {
+            consumed = result;
+            break;
+        }
+
+        await Assert.That(deserializer.CallbackCount).IsEqualTo(1);
+        await Assert.That(consumed).IsNotNull();
+        await Assert.That(consumed!.Value.Offset).IsEqualTo(3);
+        await Assert.That(consumed.Value.Value).IsEqualTo("value-3");
+    }
+
+    [Test]
     public async Task Consumer_SeekToBeginning_ConsumesFromStart()
     {
         // Arrange

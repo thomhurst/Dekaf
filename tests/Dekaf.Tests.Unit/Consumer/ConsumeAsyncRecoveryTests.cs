@@ -171,6 +171,40 @@ public sealed class ConsumeAsyncRecoveryTests
         }
     }
 
+    [Test]
+    public async Task ConsumeAsync_DeserializerSeeksThenThrows_PreservesRequestedOffset()
+    {
+        var fetch = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(0, CreateRecord(0, "original-key", "original-value"))]);
+        KafkaConsumer<string, string>? consumer = null;
+        var keyDeserializer = new CallbackStringDeserializer(() =>
+        {
+            consumer!.Seek(new TopicPartitionOffset(Topic, Partition, 7));
+            throw new InvalidOperationException("Expected deserializer failure.");
+        });
+        consumer = CreateConsumerWithPendingFetchesCore(
+            loggerFactory: null,
+            Topic,
+            Partition,
+            OffsetCommitMode.Manual,
+            keyDeserializer,
+            Serializers.String,
+            fetch);
+
+        await using (consumer)
+        {
+            await Assert.That(async () =>
+            {
+                await foreach (var _ in consumer.ConsumeAsync())
+                {
+                }
+            }).Throws<RecordDeserializationException>();
+            await Assert.That(consumer.GetPosition(new TopicPartition(Topic, Partition))).IsEqualTo(7);
+        }
+    }
+
     private static void ClearFallbackCurrentRecord(PendingFetchData fetch)
     {
         var field = typeof(PendingFetchData).GetField(
