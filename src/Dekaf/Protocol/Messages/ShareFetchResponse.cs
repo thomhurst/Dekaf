@@ -7,6 +7,13 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class ShareFetchResponse : IKafkaResponse
 {
+    // Share-fetch entries echo one request/session. These deliberately generous caps
+    // bound hostile object amplification without constraining practical workloads.
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+    internal const int MaxAcquiredRecordRangeCount = 1_000_000;
+    internal const int MaxNodeEndpointCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.ShareFetch;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 2;
@@ -57,12 +64,12 @@ public sealed class ShareFetchResponse : IKafkaResponse
             static (ref KafkaProtocolReader r, short v) => ShareFetchResponseTopic.Read(ref r, v),
             version,
             minElementSize: 18,
-            maxCount: int.MaxValue);
+            maxCount: MaxTopicCount);
 
         var nodeEndpoints = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => ShareFetchNodeEndpoint.Read(ref r),
             minElementSize: 11,
-            maxCount: int.MaxValue);
+            maxCount: MaxNodeEndpointCount);
 
         reader.SkipTaggedFields();
 
@@ -100,7 +107,7 @@ public sealed class ShareFetchResponseTopic
             static (ref KafkaProtocolReader r, short v) => ShareFetchResponsePartition.Read(ref r, v),
             version,
             minElementSize: 22,
-            maxCount: int.MaxValue);
+            maxCount: ShareFetchResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
@@ -187,7 +194,7 @@ public sealed class ShareFetchResponsePartition
         var acquiredRecords = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => ShareFetchAcquiredRecords.Read(ref r),
             minElementSize: 19,
-            maxCount: int.MaxValue);
+            maxCount: ShareFetchResponse.MaxAcquiredRecordRangeCount);
 
         reader.SkipTaggedFields();
 

@@ -62,6 +62,19 @@ public sealed class ResponseArrayBoundsTests
     }
 
     [Test]
+    public async Task MetadataResponse_Read_BrokerCountExceedingAbsoluteCap_ThrowsMalformedProtocolData()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+        var hostileCount = MetadataResponse.MaxBrokerCount + 1;
+        writer.WriteInt32(0); // throttle time
+        writer.WriteUnsignedVarInt(hostileCount + 1);
+        writer.WriteRawBytes(new byte[hostileCount * 11]);
+
+        await AssertMalformedMetadata(buffer);
+    }
+
+    [Test]
     public async Task MetadataResponse_Read_TopicCountExceedingMinimumEncodedSize_ThrowsMalformedProtocolData()
     {
         var buffer = new ArrayBufferWriter<byte>();

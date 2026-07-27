@@ -6,6 +6,13 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class MetadataResponse : IKafkaResponse
 {
+    // Absolute parse caps bound frame-valid object amplification while remaining far
+    // above practical Kafka cluster, topic, partition, and replication-factor limits.
+    internal const int MaxBrokerCount = 100_000;
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+    internal const int MaxReplicaCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.Metadata;
     public static short LowestSupportedVersion => 9;
     public static short HighestSupportedVersion => 13;
@@ -31,7 +38,7 @@ public sealed class MetadataResponse : IKafkaResponse
             static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v),
             version,
             minElementSize: 11,
-            maxCount: int.MaxValue);
+            maxCount: MaxBrokerCount);
 
         var clusterId = reader.ReadCompactString();
 
@@ -41,7 +48,7 @@ public sealed class MetadataResponse : IKafkaResponse
             static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v),
             version,
             minElementSize: version >= 10 ? 26 : 10,
-            maxCount: int.MaxValue);
+            maxCount: MaxTopicCount);
 
         var clusterAuthorizedOperations = int.MinValue;
         if (version <= 10)
@@ -128,7 +135,7 @@ public sealed class TopicMetadata
             static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v),
             version,
             minElementSize: 18,
-            maxCount: int.MaxValue);
+            maxCount: MetadataResponse.MaxPartitionCount);
 
         var topicAuthorizedOperations = reader.ReadInt32();
 
@@ -169,15 +176,15 @@ public sealed class PartitionMetadata
         var replicaNodes = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => r.ReadInt32(),
             minElementSize: 4,
-            maxCount: int.MaxValue);
+            maxCount: MetadataResponse.MaxReplicaCount);
         var isrNodes = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => r.ReadInt32(),
             minElementSize: 4,
-            maxCount: int.MaxValue);
+            maxCount: MetadataResponse.MaxReplicaCount);
         var offlineReplicas = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => r.ReadInt32(),
             minElementSize: 4,
-            maxCount: int.MaxValue);
+            maxCount: MetadataResponse.MaxReplicaCount);
 
         reader.SkipTaggedFields();
 

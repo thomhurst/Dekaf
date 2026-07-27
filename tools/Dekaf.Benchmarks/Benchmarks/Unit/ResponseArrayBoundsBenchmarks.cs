@@ -34,6 +34,6 @@ public class ResponseArrayBoundsBenchmarks
         return reader.ReadCompactArray(
             static (ref KafkaProtocolReader r) => r.ReadInt32(),
             minElementSize: 4,
-            maxCount: int.MaxValue);
+            maxCount: 1_000_000);
     }
 }

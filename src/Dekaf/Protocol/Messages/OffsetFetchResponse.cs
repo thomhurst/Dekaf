@@ -5,6 +5,12 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class OffsetFetchResponse : IKafkaResponse
 {
+    // Group results are cluster-level; topic and partition caps allow extreme requests
+    // while preventing one frame from driving effectively unbounded object allocation.
+    internal const int MaxGroupCount = 100_000;
+    internal const int MaxTopicCount = 1_000_000;
+    internal const int MaxPartitionCount = 1_000_000;
+
     public static ApiKey ApiKey => ApiKey.OffsetFetch;
     public static short LowestSupportedVersion => 6;
     public static short HighestSupportedVersion => OffsetFetchRequest.TopicIdVersion;
@@ -43,7 +49,7 @@ public sealed class OffsetFetchResponse : IKafkaResponse
                 static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v),
                 version,
                 minElementSize: 3,
-                maxCount: int.MaxValue);
+                maxCount: MaxTopicCount);
             errorCode = (ErrorCode)reader.ReadInt16();
         }
         else
@@ -52,7 +58,7 @@ public sealed class OffsetFetchResponse : IKafkaResponse
                 static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseGroup.Read(ref r, v),
                 version,
                 minElementSize: 5,
-                maxCount: int.MaxValue);
+                maxCount: MaxGroupCount);
         }
 
         reader.SkipTaggedFields();
@@ -86,7 +92,7 @@ public sealed class OffsetFetchResponseTopic
             static (ref KafkaProtocolReader r, short v) => OffsetFetchResponsePartition.Read(ref r, v),
             version,
             minElementSize: 20,
-            maxCount: int.MaxValue);
+            maxCount: OffsetFetchResponse.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
@@ -148,7 +154,7 @@ public sealed class OffsetFetchResponseGroup
             static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v),
             version,
             minElementSize: version >= OffsetFetchRequest.TopicIdVersion ? 18 : 3,
-            maxCount: int.MaxValue);
+            maxCount: OffsetFetchResponse.MaxTopicCount);
 
         var errorCode = (ErrorCode)reader.ReadInt16();
 

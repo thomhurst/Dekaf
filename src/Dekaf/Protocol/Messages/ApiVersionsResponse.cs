@@ -6,6 +6,11 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class ApiVersionsResponse : IKafkaResponse
 {
+    // Kafka API keys occupy an Int16 domain. Feature counts are cluster-level and
+    // capped far above any practical broker response to bound frame-valid amplification.
+    internal const int MaxApiKeyCount = 65_536;
+    internal const int MaxFeatureCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.ApiVersions;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 5;
@@ -46,11 +51,11 @@ public sealed class ApiVersionsResponse : IKafkaResponse
             ? reader.ReadCompactArray(
                 static (ref KafkaProtocolReader r) => ReadApiVersion(ref r, flexible: true),
                 minElementSize: 7,
-                maxCount: int.MaxValue)
+                maxCount: MaxApiKeyCount)
             : reader.ReadArray(
                 static (ref KafkaProtocolReader r) => ReadApiVersion(ref r, flexible: false),
                 minElementSize: 6,
-                maxCount: int.MaxValue);
+                maxCount: MaxApiKeyCount);
 
         var throttleTimeMs = wireVersion >= 1 ? reader.ReadInt32() : 0;
 
@@ -72,7 +77,7 @@ public sealed class ApiVersionsResponse : IKafkaResponse
                         supportedFeatures = reader.ReadCompactArray(
                             static (ref KafkaProtocolReader r) => ReadSupportedFeature(ref r),
                             minElementSize: 6,
-                            maxCount: int.MaxValue);
+                            maxCount: MaxFeatureCount);
                         break;
                     case 1:
                         finalizedFeaturesEpoch = reader.ReadInt64();
@@ -81,7 +86,7 @@ public sealed class ApiVersionsResponse : IKafkaResponse
                         finalizedFeatures = reader.ReadCompactArray(
                             static (ref KafkaProtocolReader r) => ReadFinalizedFeature(ref r),
                             minElementSize: 6,
-                            maxCount: int.MaxValue);
+                            maxCount: MaxFeatureCount);
                         break;
                     case 3:
                         zkMigrationReady = reader.ReadUInt8() != 0;
