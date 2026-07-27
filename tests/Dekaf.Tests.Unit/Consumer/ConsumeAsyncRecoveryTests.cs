@@ -131,6 +131,46 @@ public sealed class ConsumeAsyncRecoveryTests
         }
     }
 
+    [Test]
+    public async Task ConsumeAsync_DeserializerSeeks_DefersFetchDisposal()
+    {
+        var memoryOwner = new TrackingPooledMemory();
+        var fetch = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(0, CreateRecord(0, "original-key", "original-value"))],
+            memoryOwner: memoryOwner);
+        using var cancellation = new CancellationTokenSource();
+        KafkaConsumer<string, string>? consumer = null;
+        var keyDeserializer = new CallbackStringDeserializer(
+            () => consumer!.Seek(new TopicPartitionOffset(Topic, Partition, 0)));
+        var disposeCountDuringValueDeserialization = -1;
+        var valueDeserializer = new CallbackStringDeserializer(() =>
+        {
+            disposeCountDuringValueDeserialization = memoryOwner.DisposeCount;
+            cancellation.Cancel();
+        });
+        consumer = CreateConsumerWithPendingFetchesCore(
+            loggerFactory: null,
+            Topic,
+            Partition,
+            OffsetCommitMode.Manual,
+            keyDeserializer,
+            valueDeserializer,
+            fetch);
+
+        await using (consumer)
+        {
+            var yielded = 0;
+            await foreach (var _ in consumer.ConsumeAsync(cancellation.Token))
+                yielded++;
+
+            await Assert.That(yielded).IsEqualTo(0);
+            await Assert.That(disposeCountDuringValueDeserialization).IsEqualTo(0);
+            await Assert.That(memoryOwner.DisposeCount).IsEqualTo(1);
+        }
+    }
+
     private static void ClearFallbackCurrentRecord(PendingFetchData fetch)
     {
         var field = typeof(PendingFetchData).GetField(
@@ -755,6 +795,14 @@ public sealed class ConsumeAsyncRecoveryTests
             callback();
             return Encoding.UTF8.GetString(data.Span);
         }
+    }
+
+    private sealed class TrackingPooledMemory : IPooledMemory
+    {
+        public int DisposeCount { get; private set; }
+        public ReadOnlyMemory<byte> Memory => ReadOnlyMemory<byte>.Empty;
+
+        public void Dispose() => DisposeCount++;
     }
 
     private sealed class SingleRecordList(Record record) : IReadOnlyList<Record>

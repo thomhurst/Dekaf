@@ -105,6 +105,7 @@ internal sealed class PendingFetchData : IDisposable
     private int _batchIndex = -1;
     private int _recordIndex = -1;
     private int _disposed;
+    private int _referenceCount = 1;
     private int _headerGeneration;
     private bool _eagerParsed;
     private bool _hasBufferedCurrent;
@@ -283,10 +284,25 @@ internal sealed class PendingFetchData : IDisposable
     {
         if (Volatile.Read(ref s_pool).TryPop(out var instance))
         {
+            Volatile.Write(ref instance._referenceCount, 1);
             Volatile.Write(ref instance._disposed, 0);
             return instance;
         }
         return new PendingFetchData();
+    }
+
+    internal RetentionLease RetainForIteration()
+    {
+        Debug.Assert(
+            Volatile.Read(ref _disposed) == 0,
+            "RetainForIteration called after Dispose.");
+        Interlocked.Increment(ref _referenceCount);
+        return new RetentionLease(this);
+    }
+
+    internal readonly struct RetentionLease(PendingFetchData owner) : IDisposable
+    {
+        public void Dispose() => owner.ReleaseReference();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -630,6 +646,16 @@ internal sealed class PendingFetchData : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        ReleaseReference();
+    }
+
+    private void ReleaseReference()
+    {
+        var remaining = Interlocked.Decrement(ref _referenceCount);
+        Debug.Assert(remaining >= 0, "PendingFetchData reference count underflow.");
+        if (remaining != 0)
             return;
 
         // Dispose all batches to mark them as disposed.
@@ -1902,10 +1928,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // yield zero items on the second and third passes.
         var partitionList = partitions as IReadOnlyList<TopicPartition> ?? partitions.ToList();
 
-        RemoveAssignedPartitions(partitionList, clearAll: false);
+        RemoveAssignedPartitions(partitionList, clearAll: false, stagePendingClear: true);
     }
 
-    private void RemoveAssignedPartitions(IReadOnlyCollection<TopicPartition> partitions, bool clearAll)
+    private void RemoveAssignedPartitions(
+        IReadOnlyCollection<TopicPartition> partitions,
+        bool clearAll,
+        bool stagePendingClear = false)
     {
         if (partitions.Count == 0)
             return;
@@ -1936,7 +1965,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         }
 
         // Clear any pending fetch data for the removed partitions
-        ClearFetchBufferForPartitions(partitions, invalidateAllFetches: clearAll);
+        ClearFetchBufferForPartitions(
+            partitions,
+            invalidateAllFetches: clearAll,
+            stagePendingClear: stagePendingClear);
 
         if (hadPaused)
             PublishPausedSnapshot();
@@ -2055,6 +2087,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 while (_pendingFetches.Count > 0)
                 {
                     var pending = _pendingFetches.Peek();
+                    // Retain once per fetch, not per record. A deserializer can synchronously
+                    // Seek/Assign and dispose the queued owner while its record bytes are in use.
+                    using var pendingRetention = pending.RetainForIteration();
                     // A fresh ConsumeAsync stream is another pull and therefore proves any
                     // record retained when a previous stream was disposed at its yield point.
                     pending.MarkYieldedProcessed();
@@ -2102,6 +2137,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                             offset = pending.CurrentBaseOffset + record.OffsetDelta;
                             var timestampMs = pending.CurrentBaseTimestamp + record.TimestampDelta;
                             var timestampType = pending.CurrentTimestampType;
+                            var topicPartition = pending.TopicPartition;
                             // Hoist every record field before tracing or deserialization can run
                             // user code that Seek/Assigns and recycles the pooled batch storage.
                             var keyData = record.Key;
@@ -2168,7 +2204,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                                     keyDeserializer: _keyDeserializer,
                                     valueDeserializer: _valueDeserializer);
 
-                            if (HasPendingFetchClear(pending.TopicPartition))
+                            if (HasPendingFetchClear(topicPartition))
                                 break;
 
                             // Apply OnConsume interceptors before yielding to user
@@ -2181,7 +2217,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
                                 // An interceptor can run long enough for background prefetch to
                                 // publish a divergence reset. Do not mark that stale record consumed.
-                                if (HasPendingFetchClear(pending.TopicPartition))
+                                if (HasPendingFetchClear(topicPartition))
                                     break;
                             }
 
@@ -5030,7 +5066,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         // Keep invalidation, buffer drain, and position replacement atomic with prefetch publication.
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            ClearFetchBufferForPartitions([tp]);
+            ClearFetchBufferForPartitions([tp], stagePendingClear: true);
 
             if (offset.LeaderEpoch >= 0)
                 SetLastConsumedLeaderEpoch(tp, offset.LeaderEpoch);
@@ -5046,7 +5082,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            ClearFetchBufferForPartitions(partitions);
+            ClearFetchBufferForPartitions(partitions, stagePendingClear: true);
 
             foreach (var partition in partitions)
             {
@@ -5062,7 +5098,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     {
         lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
         {
-            ClearFetchBufferForPartitions(partitions);
+            ClearFetchBufferForPartitions(partitions, stagePendingClear: true);
 
             foreach (var partition in partitions)
             {
@@ -5125,6 +5161,27 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         return pending;
     }
 
+    private void StagePendingFetchClear(TopicPartition partition)
+    {
+        // Publish before synchronous buffer disposal so an in-flight consume callback
+        // observes the clear without adding another fence to the per-record hot path.
+        lock (_coordinatorRevokedPartitionsPendingFetchClearLock)
+        {
+            _coordinatorRevokedPartitionsPendingFetchClear[partition] = 0;
+
+            _batchIterationEpoch.BeginPublication();
+            try
+            {
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearMarkerPresent, 1);
+                Volatile.Write(ref _coordinatorRevokedPartitionsPendingFetchClearPending, 1);
+            }
+            finally
+            {
+                _batchIterationEpoch.EndPublication();
+            }
+        }
+    }
+
     private void ClearFetchBuffer()
     {
         ClearActiveConsumedPosition();
@@ -5140,6 +5197,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
         while (_pendingFetches.TryDequeue(out var pending))
         {
             Interlocked.Decrement(ref _pendingFetchDepth);
+            StagePendingFetchClear(pending.TopicPartition);
             DisposeQueuedFetch(pending);
         }
         // Also drain prefetched items that haven't been moved to _pendingFetches yet.
@@ -5155,7 +5213,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
 
     private void ClearFetchBufferForPartitions(
         IEnumerable<TopicPartition> partitionsToRemove,
-        bool invalidateAllFetches = false)
+        bool invalidateAllFetches = false,
+        bool stagePendingClear = false)
     {
         // Create a set for efficient lookup
         var removeSet = partitionsToRemove is HashSet<TopicPartition> set
@@ -5200,6 +5259,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
             else
             {
                 // Dispose removed items to release pooled memory
+                if (stagePendingClear)
+                    StagePendingFetchClear(pending.TopicPartition);
                 DisposeQueuedFetch(pending);
             }
         }
