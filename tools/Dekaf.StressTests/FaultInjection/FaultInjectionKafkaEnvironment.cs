@@ -440,9 +440,9 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
         foreach (var proxy in _proxies)
         {
             var toxic = toxicFactory();
-            await ExecuteToxiproxyControlPlaneAsync(
-                $"add toxic '{toxic.Name}' to proxy '{proxy.Name}'",
-                () => proxy.AddAsync(toxic).WaitAsync(cancellationToken),
+            await ExecuteToxiproxyToxicAddAsync(
+                proxy,
+                toxic,
                 cancellationToken).ConfigureAwait(false);
         }
     }
@@ -475,21 +475,34 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
         string operation,
         Func<Task> action,
         CancellationToken cancellationToken,
-        TimeSpan? retryDelay = null)
+        TimeSpan? retryDelay = null,
+        Func<Task<bool>>? isAppliedAfterTransientFailure = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(operation);
         ArgumentNullException.ThrowIfNull(action);
 
         var delay = retryDelay ?? ToxiproxyControlPlaneRetryDelay;
+        var verifyApplicationBeforeRetry = false;
         for (var attempt = 1; attempt <= ToxiproxyControlPlaneMaxAttempts; attempt++)
         {
             try
             {
+                if (verifyApplicationBeforeRetry)
+                {
+                    if (await isAppliedAfterTransientFailure!().ConfigureAwait(false))
+                    {
+                        return;
+                    }
+
+                    verifyApplicationBeforeRetry = false;
+                }
+
                 await action().ConfigureAwait(false);
                 return;
             }
             catch (Exception exception) when (IsTransientToxiproxyControlPlaneFailure(exception))
             {
+                verifyApplicationBeforeRetry = isAppliedAfterTransientFailure is not null;
                 if (attempt == ToxiproxyControlPlaneMaxAttempts)
                 {
                     throw new ToxiproxyControlPlaneException(
@@ -503,6 +516,38 @@ internal sealed class FaultInjectionKafkaEnvironment : IAsyncDisposable
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    internal static Task ExecuteToxiproxyToxicAddAsync<T>(
+        Proxy proxy,
+        T toxic,
+        CancellationToken cancellationToken,
+        TimeSpan? retryDelay = null)
+        where T : ToxicBase =>
+        ExecuteToxiproxyControlPlaneAsync(
+            $"add toxic '{toxic.Name}' to proxy '{proxy.Name}'",
+            () => proxy.AddAsync(toxic).WaitAsync(cancellationToken),
+            cancellationToken,
+            retryDelay,
+            () => IsToxicAppliedAsync(proxy, toxic.Name, cancellationToken));
+
+    private static async Task<bool> IsToxicAppliedAsync(
+        Proxy proxy,
+        string toxicName,
+        CancellationToken cancellationToken)
+    {
+        var toxics = await proxy.GetAllToxicsAsync()
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        foreach (var toxic in toxics)
+        {
+            if (string.Equals(toxic.Name, toxicName, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsTransientToxiproxyControlPlaneFailure(Exception exception) =>
