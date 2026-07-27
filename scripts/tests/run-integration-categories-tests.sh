@@ -64,12 +64,11 @@ export DOCKER_CALLS_FILE="$temp_root/docker-calls"
 export SLEEP_CALLS_FILE="$temp_root/sleep-calls"
 export TIMEOUT_CALLS_FILE="$temp_root/timeout-calls"
 
-export DOCKER_FAIL_UNTIL=2
+export DOCKER_FAIL_UNTIL=7
 bash scripts/prepull-kafka-images.sh 4.3.1
-[ "$(cat "$DOCKER_ATTEMPTS_FILE")" -eq 3 ]
-grep -qx '15' "$SLEEP_CALLS_FILE"
-grep -qx '30' "$SLEEP_CALLS_FILE"
-[ "$(grep -cx '60s' "$TIMEOUT_CALLS_FILE")" -eq 3 ]
+[ "$(cat "$DOCKER_ATTEMPTS_FILE")" -eq 8 ]
+[ "$(cat "$SLEEP_CALLS_FILE")" = $'15\n30\n45\n60\n60\n60\n60' ]
+[ "$(grep -cx '60s' "$TIMEOUT_CALLS_FILE")" -eq 8 ]
 
 rm "$DOCKER_ATTEMPTS_FILE" "$DOCKER_CALLS_FILE" "$SLEEP_CALLS_FILE" "$TIMEOUT_CALLS_FILE"
 export DOCKER_FAIL_UNTIL=0
