@@ -50,6 +50,11 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
             using var reader = LZ4Frame.Decode(source);
             reader.CopyTo(trackedDestination);
         }
+        catch (ArgumentException exception)
+            when (!trackedDestination.DestinationThrewArgumentException)
+        {
+            throw new InvalidDataException("Invalid LZ4 payload.", exception);
+        }
         catch (InvalidOperationException exception)
             when (!trackedDestination.DestinationThrewInvalidOperationException)
         {
@@ -92,6 +97,8 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
 
         internal bool IsInUse => _destination is not null;
 
+        internal bool DestinationThrewArgumentException { get; private set; }
+
         internal bool DestinationThrewInvalidOperationException { get; private set; }
 
         internal bool DestinationThrewNotImplementedException { get; private set; }
@@ -99,6 +106,7 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
         internal void Initialize(IBufferWriter<byte> destination)
         {
             _destination = destination;
+            DestinationThrewArgumentException = false;
             DestinationThrewInvalidOperationException = false;
             DestinationThrewNotImplementedException = false;
         }
@@ -110,6 +118,11 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
             try
             {
                 _destination!.Advance(count);
+            }
+            catch (ArgumentException)
+            {
+                DestinationThrewArgumentException = true;
+                throw;
             }
             catch (InvalidOperationException)
             {
@@ -129,6 +142,11 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
             {
                 return _destination!.GetMemory(sizeHint);
             }
+            catch (ArgumentException)
+            {
+                DestinationThrewArgumentException = true;
+                throw;
+            }
             catch (InvalidOperationException)
             {
                 DestinationThrewInvalidOperationException = true;
@@ -146,6 +164,11 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
             try
             {
                 return _destination!.GetSpan(sizeHint);
+            }
+            catch (ArgumentException)
+            {
+                DestinationThrewArgumentException = true;
+                throw;
             }
             catch (InvalidOperationException)
             {
