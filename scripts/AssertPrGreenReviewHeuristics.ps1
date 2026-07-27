@@ -199,6 +199,7 @@ function Get-ActionableReviewBodyReason {
         'verified(?:\s+against\b[\s\S]*)?'
         're[- ]verified'
         'confirmed\b(?:[\s\S]*)?'
+        '(?:all|each)\b[\s\S]*\bremain(?:s)?\s+(?:fully\s+)?(?:synchronous|correct|safe|unchanged|guarded)\b(?:[\s\S]*)?'
         'no\s+concerns\b(?:[\s\S]*)?'
         '`?configureawait\(false\)`?(?:[\s\S]*\b)?(?:used|applied)\s+consistently(?:[\s\S]*)?'
         '(?:the\s+)?core\s+fix\s+is\s+(?:sound|correct)(?:[\s\S]*)?'
@@ -234,7 +235,6 @@ function Get-ActionableReviewBodyReason {
         } else {
             $heading.Groups['parentheticalVerdict'].Value
         }
-        $headingVerdictIsCleanReverification = $headingVerdict -match '(?is)^\s*re[- ]verified\s*$'
         $headingVerdictResolvesPriorFindings = $headingVerdict -match "(?is)^(?!.*$positiveVerdictBlocker)(?!.*$positiveVerdictContinuationBlocker)\s*(?:both\s+)?previously[- ]flagged\b$resolvedPriorFindingContinuationGuard(?![\s\S]*\b(?:not|never|still|un(?:fixed|resolved|addressed|verified|handled))\b)(?=[\s\S]*\b(?:fixed|resolved|addressed|verified)\b)(?:[\s\S]*)?$"
         if ($headingVerdict -and $headingVerdict -notmatch $positiveCategoryHeadingVerdict) {
             return "actionable category heading: $($heading.Value.Trim())"
@@ -263,7 +263,6 @@ function Get-ActionableReviewBodyReason {
 
         if ($firstVerdict -notmatch $positiveCategorySection -and
             -not ($headingVerdictResolvesPriorFindings -and $sectionBody -notmatch $positiveVerdictContinuationBlocker) -and
-            -not ($headingVerdictIsCleanReverification -and $sectionBody -notmatch $positiveVerdictContinuationBlocker) -and
             -not ($sectionStartsWithTraceAndAllClear -and $sectionBody -notmatch $positiveVerdictContinuationBlocker) -and
             -not ($allowsGlobalNoIssueVerdict -and $globalNoIssueVerdict -and $sectionBody -notmatch $positiveVerdictContinuationBlocker)) {
             return "actionable category heading: $($heading.Value.Trim())"

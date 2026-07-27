@@ -178,6 +178,26 @@ The retry path still deadlocks when disposal overlaps a timeout.
         Blocks = $true
     },
     @{
+        Name = 'blocks re-verified category heading with unrecognized attention request'
+        Body = @'
+## Review
+
+### Correctness (re-verified)
+This retry path needs attention before merging.
+'@
+        Blocks = $true
+    },
+    @{
+        Name = 'blocks re-verified category heading with unrecognized required fix'
+        Body = @'
+## Review
+
+### Correctness (re-verified)
+The timeout path loses delivery acknowledgements and must be fixed.
+'@
+        Blocks = $true
+    },
+    @{
         Name = 'allows positive category section heading with colon'
         Body = @'
 ## Review
