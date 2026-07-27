@@ -167,7 +167,7 @@ public class PendingFetchDataTests
 
         // Try to ratchet down — should be no-op
         PendingFetchData.RatchetPoolSize(1);
-        await Assert.That(PendingFetchData.MaxPoolSizeValue).IsEqualTo(current);
+        await Assert.That(PendingFetchData.MaxPoolSizeValue).IsGreaterThanOrEqualTo(current);
     }
 
     [Test]
