@@ -6,6 +6,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeTransactionsResponse : IKafkaResponse
 {
+    internal const int MaxTransactionCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeTransactions;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 1;
@@ -18,7 +20,9 @@ public sealed class DescribeTransactionsResponse : IKafkaResponse
         var throttleTimeMs = reader.ReadInt32();
         var transactionStates = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => DescribeTransactionsResponseState.Read(ref r, v),
-            version);
+            version,
+            minElementSize: version >= 1 ? 36 : 28,
+            maxCount: MaxTransactionCount);
 
         reader.SkipTaggedFields();
 
@@ -56,7 +60,9 @@ public sealed class DescribeTransactionsResponseState
         var producerId = reader.ReadInt64();
         var producerEpoch = reader.ReadInt16();
         var topics = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => DescribeTransactionsResponseTopic.Read(ref r));
+            static (ref KafkaProtocolReader r) => DescribeTransactionsResponseTopic.Read(ref r),
+            minElementSize: 3,
+            maxCount: ResponseArrayLimits.MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -87,7 +93,9 @@ public sealed class DescribeTransactionsResponseTopic
     {
         var topic = reader.ReadCompactNonNullableString();
         var partitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadInt32());
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: ResponseArrayLimits.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 

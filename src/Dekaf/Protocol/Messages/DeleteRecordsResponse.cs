@@ -25,9 +25,11 @@ public sealed class DeleteRecordsResponse : IKafkaResponse
     {
         var throttleTimeMs = reader.ReadInt32();
 
-        IReadOnlyList<DeleteRecordsResponseTopic> topics;
-        topics = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DeleteRecordsResponseTopic.Read(ref r, version)) ?? [];
+        var topics = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => DeleteRecordsResponseTopic.Read(ref r, v),
+            version,
+            minElementSize: 3,
+            maxCount: ResponseArrayLimits.MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -58,9 +60,11 @@ public sealed class DeleteRecordsResponseTopic
     {
         var name = reader.ReadCompactString() ?? string.Empty;
 
-        IReadOnlyList<DeleteRecordsResponsePartition> partitions;
-        partitions = reader.ReadCompactArray(
-            (ref KafkaProtocolReader r) => DeleteRecordsResponsePartition.Read(ref r, version)) ?? [];
+        var partitions = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => DeleteRecordsResponsePartition.Read(ref r, v),
+            version,
+            minElementSize: 15,
+            maxCount: ResponseArrayLimits.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 

@@ -6,6 +6,8 @@ namespace Dekaf.Protocol.Messages;
 /// </summary>
 public sealed class DescribeProducersResponse : IKafkaResponse
 {
+    internal const int MaxActiveProducerCount = 100_000;
+
     public static ApiKey ApiKey => ApiKey.DescribeProducers;
     public static short LowestSupportedVersion => 0;
     public static short HighestSupportedVersion => 0;
@@ -17,7 +19,9 @@ public sealed class DescribeProducersResponse : IKafkaResponse
     {
         var throttleTimeMs = reader.ReadInt32();
         var topics = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => DescribeProducersResponseTopic.Read(ref r));
+            static (ref KafkaProtocolReader r) => DescribeProducersResponseTopic.Read(ref r),
+            minElementSize: 3,
+            maxCount: ResponseArrayLimits.MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -41,7 +45,9 @@ public sealed class DescribeProducersResponseTopic
     {
         var name = reader.ReadCompactNonNullableString();
         var partitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => DescribeProducersResponsePartition.Read(ref r));
+            static (ref KafkaProtocolReader r) => DescribeProducersResponsePartition.Read(ref r),
+            minElementSize: 9,
+            maxCount: ResponseArrayLimits.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
@@ -69,7 +75,9 @@ public sealed class DescribeProducersResponsePartition
         var errorCode = (ErrorCode)reader.ReadInt16();
         var errorMessage = reader.ReadCompactString();
         var activeProducers = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => DescribeProducersResponseProducer.Read(ref r));
+            static (ref KafkaProtocolReader r) => DescribeProducersResponseProducer.Read(ref r),
+            minElementSize: 37,
+            maxCount: DescribeProducersResponse.MaxActiveProducerCount);
 
         reader.SkipTaggedFields();
 

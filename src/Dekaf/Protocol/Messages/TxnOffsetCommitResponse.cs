@@ -23,7 +23,11 @@ public sealed class TxnOffsetCommitResponse : IKafkaResponse
     {
         var throttleTimeMs = reader.ReadInt32();
 
-        var topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TxnOffsetCommitResponseTopic.Read(ref r, v), version);
+        var topics = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => TxnOffsetCommitResponseTopic.Read(ref r, v),
+            version,
+            minElementSize: version >= TxnOffsetCommitRequest.TopicIdVersion ? 18 : 3,
+            maxCount: ResponseArrayLimits.MaxTopicCount);
 
         reader.SkipTaggedFields();
 
@@ -53,7 +57,11 @@ public sealed class TxnOffsetCommitResponseTopic
             ? reader.ReadUuid()
             : Guid.Empty;
 
-        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TxnOffsetCommitResponsePartition.Read(ref r, v), version);
+        var partitions = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => TxnOffsetCommitResponsePartition.Read(ref r, v),
+            version,
+            minElementSize: 7,
+            maxCount: ResponseArrayLimits.MaxPartitionCount);
 
         reader.SkipTaggedFields();
 
