@@ -561,6 +561,10 @@ public readonly struct ConsumeResult<TKey, TValue>
         LeaderEpoch = leaderEpoch;
         IsPartitionEof = isPartitionEof;
 
+        // Resolve the thread-static address once; each direct field access otherwise
+        // emits another TLS lookup before setting or copying the context.
+        ref var serializationContext = ref t_serializationContext;
+
         // Eagerly deserialize to avoid storing deserializer references (saves 16 bytes per struct)
         if (isPartitionEof || keyDeserializer is null)
         {
@@ -573,12 +577,12 @@ public readonly struct ConsumeResult<TKey, TValue>
         }
         else
         {
-            t_serializationContext.Topic = topic;
-            t_serializationContext.Component = SerializationComponent.Key;
-            t_serializationContext.Headers = null;
-            t_serializationContext.IsNull = false;
+            serializationContext.Topic = topic;
+            serializationContext.Component = SerializationComponent.Key;
+            serializationContext.Headers = null;
+            serializationContext.IsNull = false;
 
-            Key = keyDeserializer.Deserialize(keyData, t_serializationContext);
+            Key = keyDeserializer.Deserialize(keyData, serializationContext);
         }
 
         if (isPartitionEof || valueDeserializer is null)
@@ -587,14 +591,14 @@ public readonly struct ConsumeResult<TKey, TValue>
         }
         else
         {
-            t_serializationContext.Topic = topic;
-            t_serializationContext.Component = SerializationComponent.Value;
-            t_serializationContext.Headers = null;
-            t_serializationContext.IsNull = isValueNull;
+            serializationContext.Topic = topic;
+            serializationContext.Component = SerializationComponent.Value;
+            serializationContext.Headers = null;
+            serializationContext.IsNull = isValueNull;
 
             Value = isValueNull
-                ? valueDeserializer.Deserialize(ReadOnlyMemory<byte>.Empty, t_serializationContext)
-                : valueDeserializer.Deserialize(valueData, t_serializationContext);
+                ? valueDeserializer.Deserialize(ReadOnlyMemory<byte>.Empty, serializationContext)
+                : valueDeserializer.Deserialize(valueData, serializationContext);
         }
     }
 
