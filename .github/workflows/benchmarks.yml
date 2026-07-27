@@ -413,7 +413,7 @@ jobs:
   publish-to-docs:
     name: Publish Benchmarks to Documentation
     runs-on: ubuntu-latest
-    needs: [unit-benchmarks, client-benchmarks]
+    needs: [unit-benchmarks, client-benchmarks, benchmark-history]
     if: github.ref == 'refs/heads/main'
 
     permissions:
@@ -431,109 +431,17 @@ jobs:
           path: benchmark-results
           merge-multiple: true
 
-      - name: Generate Benchmarks Documentation
+      - name: Download Benchmark History
         run: |
-          python3 << 'EOF'
-          import os
-          import glob
-          from datetime import datetime
+          git fetch origin gh-pages --depth=1
+          git show FETCH_HEAD:dev/bench/data.js > "$RUNNER_TEMP/benchmark-data.js"
 
-          output = []
-          output.append("---")
-          output.append("sidebar_position: 13")
-          output.append("---")
-          output.append("")
-          output.append("# Benchmark Results")
-          output.append("")
-          output.append("Live benchmark comparisons between Dekaf and Confluent.Kafka, automatically updated on every commit to main.")
-          output.append("")
-          output.append(f"**Last Updated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
-          output.append("")
-          output.append(":::info")
-          output.append("These benchmarks run on GitHub Actions (ubuntu-latest) using BenchmarkDotNet. ")
-          output.append("Ratio semantics differ per table — see 'How to Read These Results' below.")
-          output.append(":::")
-          output.append("")
-
-          def append_tables(paths):
-              # Extract the markdown tables (all '|' lines onward) from each report file.
-              for md in paths:
-                  with open(md) as f:
-                      in_table = False
-                      for line in f.read().split('\n'):
-                          if line.startswith('|'):
-                              in_table = True
-                          if in_table:
-                              output.append(line)
-                  output.append("")
-
-          # Producer benchmarks
-          producer_md = sorted(glob.glob("benchmark-results/Client/results/*ProducerBenchmarks*-github.md"))
-          if producer_md:
-              output.append("## Producer Benchmarks")
-              output.append("")
-              output.append("Comparing Dekaf vs Confluent.Kafka for message production across different scenarios.")
-              output.append("")
-              append_tables(producer_md)
-
-          # Consumer benchmarks (ConsumerBenchmarks + ConsumerPollBenchmarks)
-          consumer_md = sorted(glob.glob("benchmark-results/Client/results/*Consumer*Benchmarks*-github.md"))
-          if consumer_md:
-              output.append("## Consumer Benchmarks")
-              output.append("")
-              output.append("Comparing Dekaf vs Confluent.Kafka for message consumption.")
-              output.append("")
-              append_tables(consumer_md)
-
-          # Protocol benchmarks (zero-allocation)
-          protocol_md = sorted(glob.glob("benchmark-results/Unit/results/*ProtocolBenchmarks*-github.md"))
-          if protocol_md:
-              output.append("## Protocol Benchmarks")
-              output.append("")
-              output.append("Zero-allocation wire protocol serialization/deserialization.")
-              output.append("")
-              output.append(":::tip")
-              output.append("**Allocated = `-` means zero heap allocations** - the goal of Dekaf's design!")
-              output.append(":::")
-              output.append("")
-              append_tables(protocol_md)
-
-          # Serializer benchmarks
-          serializer_md = sorted(glob.glob("benchmark-results/Unit/results/*SerializerBenchmarks*-github.md"))
-          if serializer_md:
-              output.append("## Serializer Benchmarks")
-              output.append("")
-              append_tables(serializer_md)
-
-          # Compression benchmarks
-          compression_md = sorted(glob.glob("benchmark-results/Unit/results/*CompressionBenchmarks*-github.md"))
-          if compression_md:
-              output.append("## Compression Benchmarks")
-              output.append("")
-              append_tables(compression_md)
-
-          output.append("---")
-          output.append("")
-          output.append("## How to Read These Results")
-          output.append("")
-          output.append("- **Mean**: Average execution time")
-          output.append("- **Error**: Half of 99.9% confidence interval")
-          output.append("- **StdDev**: Standard deviation of all measurements")
-          output.append("- **Ratio**: Performance relative to that table's baseline row")
-          output.append("  - Producer/Consumer tables: baseline is Confluent.Kafka, so `< 1.0` = Dekaf is faster, `> 1.0` = Confluent is faster")
-          output.append("  - Unit tables (Protocol/Serializer/Compression): baseline is an internal reference implementation, not Confluent")
-          output.append("- **Allocated**: Heap memory allocated per operation")
-          output.append("  - `-` = Zero allocations (ideal!)")
-          output.append("")
-          output.append("*Benchmarks are automatically run on every push to main.*")
-
-          # Write to docs
-          os.makedirs('docs/docs', exist_ok=True)
-          with open('docs/docs/benchmarks.md', 'w') as f:
-              f.write('\n'.join(output))
-
-          print(f"Generated benchmarks.md with {len(output)} lines")
-          EOF
+      - name: Generate Benchmarks Documentation
+        run: >-
+          python3 .github/scripts/benchmark_docs.py
+          --results-dir benchmark-results
+          --history "$RUNNER_TEMP/benchmark-data.js"
+          --output docs/docs/benchmarks.md
 
       - name: Create Pull Request for Benchmark Results
         id: cpr
