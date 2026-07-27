@@ -95,17 +95,19 @@ public sealed class ConsumeAsyncRecoveryTests
     }
 
     [Test]
-    public async Task ConsumeAsync_DeserializerSeeks_RecordSnapshotRemainsValid()
+    public async Task ConsumeAsync_DeserializerInvalidatesRecordStorage_RecordSnapshotRemainsValid()
     {
         var record = CreateRecord(0, "original-key", "original-value");
+        var records = new SingleRecordList(record);
         var fetch = PendingFetchData.Create(
             Topic,
             Partition,
-            [CreateBatch(0, new SingleRecordList(record))]);
-        KafkaConsumer<string, string>? consumer = null;
-        var keyDeserializer = new CallbackStringDeserializer(() =>
-            consumer!.Seek(new TopicPartitionOffset(Topic, Partition, 0)));
-        consumer = CreateConsumerWithPendingFetchesCore(
+            [CreateBatch(0, records)]);
+        // Invalidate the fallback record storage without returning the fetch to its shared pool
+        // while ConsumeAsync still owns it.
+        var keyDeserializer = new CallbackStringDeserializer(
+            () => ClearFallbackCurrentRecord(fetch));
+        var consumer = CreateConsumerWithPendingFetchesCore(
             loggerFactory: null,
             Topic,
             Partition,
@@ -127,6 +129,15 @@ public sealed class ConsumeAsyncRecoveryTests
             await Assert.That(consumed!.Value.Key).IsEqualTo("original-key");
             await Assert.That(consumed.Value.Value).IsEqualTo("original-value");
         }
+    }
+
+    private static void ClearFallbackCurrentRecord(PendingFetchData fetch)
+    {
+        var field = typeof(PendingFetchData).GetField(
+            "_fallbackCurrentRecord",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_fallbackCurrentRecord field not found.");
+        field.SetValue(fetch, default(Record));
     }
 
     private static int GetPendingFetchCount(KafkaConsumer<string, string> consumer)

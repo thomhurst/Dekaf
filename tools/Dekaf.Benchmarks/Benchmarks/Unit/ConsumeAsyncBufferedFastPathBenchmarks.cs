@@ -22,14 +22,16 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 15, iterationCount: 10)]
 public class ConsumeAsyncBufferedFastPathBenchmarks
 {
-    private const int RecordsPerBatch = 1_000;
+    // Keep the total off the 32-record poll-refresh boundary so cancellation happens
+    // only after the final pending fetch is exhausted, flushed, dequeued, and disposed.
+    private const int RecordsPerBatch = 1_001;
     private const int BatchCount = 100;
     private const int MessageCount = RecordsPerBatch * BatchCount;
     private const string Topic = "consume-async-fast-path";
     private const int Partition = 0;
 
     private Record[][] _batchRecords = null!;
-    private KafkaConsumer<string, string> _consumer = null!;
+    private KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> _consumer = null!;
     private CancellationTokenSource _iterationCancellation = null!;
 
     [Params(100, 1000)]
@@ -62,7 +64,7 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
             _batchRecords[batchIndex] = records;
         }
 
-        _consumer = new KafkaConsumer<string, string>(
+        _consumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
             new ConsumerOptions
             {
                 BootstrapServers = ["localhost:9092"],
@@ -70,8 +72,8 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
                 QueuedMinMessages = 1,
                 FetchMaxWaitMs = 200,
             },
-            Serializers.String,
-            Serializers.String);
+            Serializers.RawBytes,
+            Serializers.RawBytes);
         InitializeForBufferedFastPath(_consumer);
     }
 
@@ -104,10 +106,18 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
     public async Task<int> ConsumeBufferedStream()
     {
         var count = 0;
-        await foreach (var _ in _consumer.ConsumeAsync(_iterationCancellation.Token).ConfigureAwait(false))
+        try
         {
-            if (++count == MessageCount)
-                _iterationCancellation.Cancel();
+            await foreach (var _ in _consumer.ConsumeAsync(_iterationCancellation.Token).ConfigureAwait(false))
+            {
+                if (++count == MessageCount)
+                    _iterationCancellation.Cancel();
+            }
+        }
+        catch (OperationCanceledException) when (_iterationCancellation.IsCancellationRequested)
+        {
+            // ConsumeAsync polls indefinitely once buffered data is drained. The token ends
+            // the invocation only after the pending-fetch cleanup measured above completes.
         }
 
         return count;
@@ -127,7 +137,8 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
             pendingFetches.Dequeue().Dispose();
     }
 
-    private static void InitializeForBufferedFastPath(KafkaConsumer<string, string> consumer)
+    private static void InitializeForBufferedFastPath(
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
     {
         SetPrivateField(consumer, "_initialized", true);
 
@@ -143,20 +154,22 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
         (Queue<PendingFetchData>)GetPrivateField(_consumer, "_pendingFetches")!;
 
     private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions(
-        KafkaConsumer<string, string> consumer) =>
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer) =>
         (ConcurrentDictionary<TopicPartition, long>)GetPrivateField(consumer, "_fetchPositions")!;
 
-    private static object? GetPrivateField(KafkaConsumer<string, string> consumer, string fieldName) =>
+    private static object? GetPrivateField(
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer,
+        string fieldName) =>
         RequireField(fieldName).GetValue(consumer);
 
     private static void SetPrivateField(
-        KafkaConsumer<string, string> consumer,
+        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer,
         string fieldName,
         object? value) =>
         RequireField(fieldName).SetValue(consumer, value);
 
     private static FieldInfo RequireField(string fieldName) =>
-        typeof(KafkaConsumer<string, string>).GetField(
+        typeof(KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>).GetField(
             fieldName,
             BindingFlags.NonPublic | BindingFlags.Instance)
         ?? throw new InvalidOperationException($"{fieldName} field not found.");
