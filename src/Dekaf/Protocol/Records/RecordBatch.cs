@@ -190,14 +190,35 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
 {
     private const int MinimumInitialCapacity = 256;
 
-    private readonly ArrayPool<byte> _pool;
-    private byte[] _buffer;
-    private int _written;
+    [ThreadStatic]
+    private static DetachableBufferWriter? t_cachedWriter;
 
-    public DetachableBufferWriter(ArrayPool<byte> pool, int initialCapacity)
+    private ArrayPool<byte>? _arrayPool;
+    private byte[] _buffer = [];
+    private int _written;
+    private bool _returnedToCache;
+
+    private DetachableBufferWriter()
     {
-        _pool = pool;
-        _buffer = pool.Rent(Math.Max(MinimumInitialCapacity, initialCapacity));
+    }
+
+    public static DetachableBufferWriter Rent(ArrayPool<byte> arrayPool, int initialCapacity)
+    {
+        var writer = t_cachedWriter;
+        if (writer is null)
+        {
+            writer = new DetachableBufferWriter();
+        }
+        else
+        {
+            t_cachedWriter = null;
+        }
+
+        writer._arrayPool = arrayPool;
+        writer._buffer = arrayPool.Rent(Math.Max(MinimumInitialCapacity, initialCapacity));
+        writer._written = 0;
+        writer._returnedToCache = false;
+        return writer;
     }
 
     public ReadOnlySpan<byte> WrittenSpan => _buffer.AsSpan(0, _written);
@@ -235,11 +256,19 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
 
     public void Dispose()
     {
+        if (_returnedToCache)
+            return;
+
         var buf = _buffer;
+        var arrayPool = _arrayPool!;
         _buffer = [];
         _written = 0;
+        _arrayPool = null;
+        _returnedToCache = true;
         if (buf.Length > 0)
-            _pool.Return(buf, clearArray: false);
+            arrayPool.Return(buf, clearArray: false);
+
+        t_cachedWriter ??= this;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -264,9 +293,10 @@ internal sealed class DetachableBufferWriter : IBufferWriter<byte>, IDisposable
         if (newSize <= _buffer.Length)
             throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
 
-        var newBuffer = _pool.Rent(newSize);
+        var arrayPool = _arrayPool!;
+        var newBuffer = arrayPool.Rent(newSize);
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
-        _pool.Return(_buffer, clearArray: false);
+        arrayPool.Return(_buffer, clearArray: false);
         _buffer = newBuffer;
     }
 }
@@ -759,7 +789,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             }
 
             var uncompressedRecords = Records;
-            using var encodedBuffer = new DetachableBufferWriter(
+            using var encodedBuffer = DetachableBufferWriter.Rent(
                 ProducerDataPool.BytePool, GetEncodedRecordsLength(uncompressedRecords));
             var writer = new KafkaProtocolWriter(encodedBuffer);
             WriteRecords(uncompressedRecords, ref writer);
@@ -775,7 +805,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         var codec = registry.GetCodec(compression);
         if (_hasPreEncodedRecords)
         {
-            using var compressedBuffer = new DetachableBufferWriter(
+            using var compressedBuffer = DetachableBufferWriter.Rent(
                 ProducerDataPool.BytePool,
                 GetPreEncodedRecordsLength());
             codec.Compress(GetPreEncodedRecordsSequence(), compressedBuffer);
@@ -795,7 +825,9 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             var records = Records;
 
             WriteRecords(records, ref recordsWriter);
-            using var serializedCompressedBuffer = new DetachableBufferWriter(ProducerDataPool.BytePool, recordsBuffer.WrittenCount);
+            using var serializedCompressedBuffer = DetachableBufferWriter.Rent(
+                ProducerDataPool.BytePool,
+                recordsBuffer.WrittenCount);
             codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), serializedCompressedBuffer);
             PreCompressedRecordsCrc = Crc32C.Compute(serializedCompressedBuffer.WrittenSpan);
             PreCompressedRecords = serializedCompressedBuffer.DetachBuffer(out var serializedCompressedLength);
@@ -1505,7 +1537,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             var registry = codecs ?? CompressionCodecRegistry.Default;
             var codec = registry.GetCodec(compression);
             var estimatedSize = recordsLength * 4; // Estimate 4x expansion
-            using var decompressWriter = new DetachableBufferWriter(ArrayPool<byte>.Shared, estimatedSize);
+            using var decompressWriter = DetachableBufferWriter.Rent(ArrayPool<byte>.Shared, estimatedSize);
             codec.Decompress(new ReadOnlySequence<byte>(rawRecordData), decompressWriter);
 
             // Transfer ownership of the pooled array — Dispose is a no-op after DetachBuffer.
