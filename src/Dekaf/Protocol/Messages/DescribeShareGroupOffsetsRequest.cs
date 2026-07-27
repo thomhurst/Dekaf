@@ -61,6 +61,7 @@ public sealed class DescribeShareGroupOffsetsRequestGroup
         IReadOnlyList<DescribeShareGroupOffsetsRequestTopic>? topics = null;
         if (topicsLength >= 0)
         {
+            reader.ValidateReadableLength(topicsLength, minElementSize: 3, maxCount: int.MaxValue);
             var topicsList = new DescribeShareGroupOffsetsRequestTopic[topicsLength];
             for (int i = 0; i < topicsLength; i++)
             {
@@ -110,7 +111,9 @@ public sealed class DescribeShareGroupOffsetsRequestTopic
         var topicName = reader.ReadCompactNonNullableString();
 
         var partitions = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => r.ReadInt32());
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: int.MaxValue);
 
         reader.SkipTaggedFields();
 

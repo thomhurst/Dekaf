@@ -77,7 +77,11 @@ public sealed class AddPartitionsToTxnResponse : IKafkaResponse
 
     private static IKafkaResponse ReadV0ToV3(ref KafkaProtocolReader reader, short version, int throttleTimeMs)
     {
-        var results = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnTopicResult.Read(ref r, v), version);
+        var results = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnTopicResult.Read(ref r, v),
+            version,
+            minElementSize: 3,
+            maxCount: int.MaxValue);
 
         reader.SkipTaggedFields();
 
@@ -101,7 +105,11 @@ public sealed class AddPartitionsToTxnTopicResult
     {
         var name = reader.ReadCompactNonNullableString();
 
-        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnPartitionResult.Read(ref r, v), version);
+        var partitions = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnPartitionResult.Read(ref r, v),
+            version,
+            minElementSize: 7,
+            maxCount: int.MaxValue);
 
         reader.SkipTaggedFields();
 

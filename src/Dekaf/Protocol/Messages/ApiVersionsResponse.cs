@@ -43,8 +43,14 @@ public sealed class ApiVersionsResponse : IKafkaResponse
         var flexible = wireVersion >= 3;
 
         var apiKeys = flexible
-            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r) => ReadApiVersion(ref r, flexible: true))
-            : reader.ReadArray(static (ref KafkaProtocolReader r) => ReadApiVersion(ref r, flexible: false));
+            ? reader.ReadCompactArray(
+                static (ref KafkaProtocolReader r) => ReadApiVersion(ref r, flexible: true),
+                minElementSize: 7,
+                maxCount: int.MaxValue)
+            : reader.ReadArray(
+                static (ref KafkaProtocolReader r) => ReadApiVersion(ref r, flexible: false),
+                minElementSize: 6,
+                maxCount: int.MaxValue);
 
         var throttleTimeMs = wireVersion >= 1 ? reader.ReadInt32() : 0;
 
@@ -64,14 +70,18 @@ public sealed class ApiVersionsResponse : IKafkaResponse
                 {
                     case 0:
                         supportedFeatures = reader.ReadCompactArray(
-                            static (ref KafkaProtocolReader r) => ReadSupportedFeature(ref r));
+                            static (ref KafkaProtocolReader r) => ReadSupportedFeature(ref r),
+                            minElementSize: 6,
+                            maxCount: int.MaxValue);
                         break;
                     case 1:
                         finalizedFeaturesEpoch = reader.ReadInt64();
                         break;
                     case 2:
                         finalizedFeatures = reader.ReadCompactArray(
-                            static (ref KafkaProtocolReader r) => ReadFinalizedFeature(ref r));
+                            static (ref KafkaProtocolReader r) => ReadFinalizedFeature(ref r),
+                            minElementSize: 6,
+                            maxCount: int.MaxValue);
                         break;
                     case 3:
                         zkMigrationReady = reader.ReadUInt8() != 0;

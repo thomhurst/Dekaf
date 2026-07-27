@@ -27,13 +27,21 @@ public sealed class MetadataResponse : IKafkaResponse
     {
         var throttleTimeMs = reader.ReadInt32();
 
-        var brokers = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v), version);
+        var brokers = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v),
+            version,
+            minElementSize: 11,
+            maxCount: int.MaxValue);
 
         var clusterId = reader.ReadCompactString();
 
         var controllerId = reader.ReadInt32();
 
-        var topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v), version);
+        var topics = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v),
+            version,
+            minElementSize: version >= 10 ? 26 : 10,
+            maxCount: int.MaxValue);
 
         var clusterAuthorizedOperations = int.MinValue;
         if (version <= 10)
@@ -116,7 +124,11 @@ public sealed class TopicMetadata
 
         var isInternal = reader.ReadBoolean();
 
-        var partitions = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v), version);
+        var partitions = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v),
+            version,
+            minElementSize: 18,
+            maxCount: int.MaxValue);
 
         var topicAuthorizedOperations = reader.ReadInt32();
 
@@ -154,9 +166,18 @@ public sealed class PartitionMetadata
         var leaderId = reader.ReadInt32();
         var leaderEpoch = reader.ReadInt32();
 
-        var replicaNodes = reader.ReadCompactArray((ref KafkaProtocolReader r) => r.ReadInt32());
-        var isrNodes = reader.ReadCompactArray((ref KafkaProtocolReader r) => r.ReadInt32());
-        var offlineReplicas = reader.ReadCompactArray((ref KafkaProtocolReader r) => r.ReadInt32());
+        var replicaNodes = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: int.MaxValue);
+        var isrNodes = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: int.MaxValue);
+        var offlineReplicas = reader.ReadCompactArray(
+            static (ref KafkaProtocolReader r) => r.ReadInt32(),
+            minElementSize: 4,
+            maxCount: int.MaxValue);
 
         reader.SkipTaggedFields();
 

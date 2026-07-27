@@ -55,10 +55,14 @@ public sealed class ShareFetchResponse : IKafkaResponse
 
         var responses = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => ShareFetchResponseTopic.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 18,
+            maxCount: int.MaxValue);
 
         var nodeEndpoints = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ShareFetchNodeEndpoint.Read(ref r));
+            static (ref KafkaProtocolReader r) => ShareFetchNodeEndpoint.Read(ref r),
+            minElementSize: 11,
+            maxCount: int.MaxValue);
 
         reader.SkipTaggedFields();
 
@@ -94,7 +98,9 @@ public sealed class ShareFetchResponseTopic
         var topicId = reader.ReadUuid();
         var partitions = reader.ReadCompactArray(
             static (ref KafkaProtocolReader r, short v) => ShareFetchResponsePartition.Read(ref r, v),
-            version);
+            version,
+            minElementSize: 22,
+            maxCount: int.MaxValue);
 
         reader.SkipTaggedFields();
 
@@ -179,7 +185,9 @@ public sealed class ShareFetchResponsePartition
         }
 
         var acquiredRecords = reader.ReadCompactArray(
-            static (ref KafkaProtocolReader r) => ShareFetchAcquiredRecords.Read(ref r));
+            static (ref KafkaProtocolReader r) => ShareFetchAcquiredRecords.Read(ref r),
+            minElementSize: 19,
+            maxCount: int.MaxValue);
 
         reader.SkipTaggedFields();
 
