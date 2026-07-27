@@ -99,25 +99,14 @@ jobs:
       - name: Pre-pull Kafka image
         run: |
           case "${{ matrix.group }}" in
-            tls|security) kafka_tags="4.0.2" ;;
-            faults) kafka_tags="${{ inputs.kafka-tag }} 4.0.2 4.2.1" ;;
-            messaging) kafka_tags="${{ inputs.kafka-tag }} 4.0.2" ;;
-            consume) kafka_tags="${{ inputs.kafka-tag }} 4.2.1" ;;
-            produce) kafka_tags="${{ inputs.kafka-tag }} 4.2.1" ;;
-            *) kafka_tags="${{ inputs.kafka-tag }}" ;;
+            tls|security) kafka_tags=(4.0.2) ;;
+            faults) kafka_tags=("${{ inputs.kafka-tag }}" 4.0.2 4.2.1) ;;
+            messaging) kafka_tags=("${{ inputs.kafka-tag }}" 4.0.2) ;;
+            consume) kafka_tags=("${{ inputs.kafka-tag }}" 4.2.1) ;;
+            produce) kafka_tags=("${{ inputs.kafka-tag }}" 4.2.1) ;;
+            *) kafka_tags=("${{ inputs.kafka-tag }}") ;;
           esac
-
-          for tag in $(printf '%s\n' $kafka_tags | sort -u); do
-            for attempt in 1 2 3 4 5; do
-              docker pull "apache/kafka:$tag" && break
-              if [ "$attempt" -eq 5 ]; then
-                exit 1
-              fi
-              delay=$((attempt * 15))
-              echo "Kafka image pull failed for $tag (attempt $attempt); retrying in ${delay}s"
-              sleep "$delay"
-            done
-          done
+          bash scripts/prepull-kafka-images.sh "${kafka_tags[@]}"
 
       - name: Run integration tests
         env:
