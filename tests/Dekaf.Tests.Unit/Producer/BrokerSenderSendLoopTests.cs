@@ -1562,8 +1562,10 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     [Timeout(120_000)]
     public async Task SendLoop_PipelinedProduce_UsesConnectionOwnedTimeoutsForConcurrentSends(CancellationToken cancellationToken)
     {
-        var tcs1 = new TaskCompletionSource<ProduceResponse>();
-        var tcs2 = new TaskCompletionSource<ProduceResponse>();
+        var tcs1 = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var tcs2 = new TaskCompletionSource<ProduceResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
         responseQueue.Enqueue(tcs1);
         responseQueue.Enqueue(tcs2);
@@ -2245,7 +2247,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
         responseQueue.Enqueue(tcs);
 
-        var requestSent = new TaskCompletionSource();
+        var requestSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var (pool, _) = CreateMockConnection(responseQueue, onSend: () => requestSent.TrySetResult());
         cancellationToken = GuardUnscriptedSends(cancellationToken);
         var options = CreateOptions();
@@ -2307,7 +2309,7 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
         var ackOffsets = new List<long>();
-        var allAcknowledged = new TaskCompletionSource();
+        var allAcknowledged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
         {
