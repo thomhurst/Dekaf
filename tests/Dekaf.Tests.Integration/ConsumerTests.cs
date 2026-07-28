@@ -11,6 +11,28 @@ namespace Dekaf.Tests.Integration;
 [Category("Consumer")]
 public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    private sealed class CallbackOnceStringDeserializer : IDeserializer<string>
+    {
+        private Action? _callback;
+
+        public int CallbackCount { get; private set; }
+
+        public void SetCallback(Action callback) => _callback = callback;
+
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            var value = Serializers.String.Deserialize(data, context);
+            var callback = Interlocked.Exchange(ref _callback, null);
+            if (callback is not null)
+            {
+                CallbackCount++;
+                callback();
+            }
+
+            return value;
+        }
+    }
+
     [Test]
     public async Task Consumer_SubscribeAndConsume_ReceivesMessages()
     {
@@ -185,6 +207,164 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var r = result!.Value;
         await Assert.That(r.Offset).IsEqualTo(3);
         await Assert.That(r.Value).IsEqualTo("value-3");
+    }
+
+    [Test]
+    public async Task Consumer_SeekDuringDeserialization_DropsStaleRecordAndResumesAtOffset()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("seek-during-deserialization-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 5; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = partition.Partition,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+
+        var deserializer = new CallbackOnceStringDeserializer();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("seek-during-deserialization-consumer")
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Assign(partition);
+        consumer.Seek(new TopicPartitionOffset(topic, partition.Partition, 0));
+        deserializer.SetCallback(
+            () => consumer.Seek(new TopicPartitionOffset(topic, partition.Partition, 3)));
+
+        var consumed = new List<ConsumeResult<string, string>>(2);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var result in consumer.ConsumeAsync(cancellation.Token))
+        {
+            consumed.Add(result);
+            if (consumed.Count == 2)
+                break;
+        }
+
+        await Assert.That(deserializer.CallbackCount).IsEqualTo(1);
+        await Assert.That(consumed).Count().IsEqualTo(2);
+        await Assert.That(consumed[0].Offset).IsEqualTo(3);
+        await Assert.That(consumed[0].Value).IsEqualTo("value-3");
+        await Assert.That(consumed[1].Offset).IsEqualTo(4);
+        await Assert.That(consumed[1].Value).IsEqualTo("value-4");
+    }
+
+    [Test]
+    public async Task Consumer_ConsumeOneSeekDuringDeserialization_ResumesAtRequestedOffset()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("consume-one-reentrant-seek-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 5; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = partition.Partition,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+
+        var deserializer = new CallbackOnceStringDeserializer();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("consume-one-reentrant-seek-consumer")
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Assign(partition);
+        consumer.Seek(new TopicPartitionOffset(topic, partition.Partition, 0));
+        deserializer.SetCallback(
+            () => consumer.Seek(new TopicPartitionOffset(topic, partition.Partition, 3)));
+
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cancellation.Token);
+
+        await Assert.That(deserializer.CallbackCount).IsEqualTo(1);
+        await Assert.That(consumed).IsNotNull();
+        await Assert.That(consumed!.Value.Offset).IsEqualTo(3);
+        await Assert.That(consumed.Value.Value).IsEqualTo("value-3");
+    }
+
+    [Test]
+    public async Task Consumer_SeekDuringFailedDeserialization_PreservesRequestedOffset()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var partition = new TopicPartition(topic, 0);
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("seek-during-failed-deserialization-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        for (var i = 0; i < 5; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Partition = partition.Partition,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            }, CancellationToken.None);
+        }
+
+        var deserializer = new CallbackOnceStringDeserializer();
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("seek-during-failed-deserialization-consumer")
+            .WithValueDeserializer(deserializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        consumer.Assign(partition);
+        consumer.Seek(new TopicPartitionOffset(topic, partition.Partition, 0));
+        deserializer.SetCallback(() =>
+        {
+            consumer.Seek(new TopicPartitionOffset(topic, partition.Partition, 3));
+            throw new InvalidOperationException("Expected deserializer failure.");
+        });
+
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await Assert.That(async () =>
+        {
+            await foreach (var _ in consumer.ConsumeAsync(cancellation.Token))
+            {
+            }
+        }).Throws<RecordDeserializationException>();
+
+        ConsumeResult<string, string>? consumed = null;
+        await foreach (var result in consumer.ConsumeAsync(cancellation.Token))
+        {
+            consumed = result;
+            break;
+        }
+
+        await Assert.That(deserializer.CallbackCount).IsEqualTo(1);
+        await Assert.That(consumed).IsNotNull();
+        await Assert.That(consumed!.Value.Offset).IsEqualTo(3);
+        await Assert.That(consumed.Value.Value).IsEqualTo("value-3");
     }
 
     [Test]

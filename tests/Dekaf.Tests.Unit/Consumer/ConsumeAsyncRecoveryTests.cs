@@ -94,6 +94,126 @@ public sealed class ConsumeAsyncRecoveryTests
         await Assert.That(result.Key).IsEqualTo("next");
     }
 
+    [Test]
+    public async Task ConsumeAsync_DeserializerInvalidatesRecordStorage_RecordSnapshotRemainsValid()
+    {
+        var record = CreateRecord(0, "original-key", "original-value");
+        var records = new SingleRecordList(record);
+        var fetch = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(0, records)]);
+        // Invalidate the fallback record storage without returning the fetch to its shared pool
+        // while ConsumeAsync still owns it.
+        var keyDeserializer = new CallbackStringDeserializer(
+            () => ClearFallbackCurrentRecord(fetch));
+        var consumer = CreateConsumerWithPendingFetchesCore(
+            loggerFactory: null,
+            Topic,
+            Partition,
+            OffsetCommitMode.Manual,
+            keyDeserializer,
+            Serializers.String,
+            fetch);
+
+        await using (consumer)
+        {
+            ConsumeResult<string, string>? consumed = null;
+            await foreach (var result in consumer.ConsumeAsync())
+            {
+                consumed = result;
+                break;
+            }
+
+            await Assert.That(consumed).IsNotNull();
+            await Assert.That(consumed!.Value.Key).IsEqualTo("original-key");
+            await Assert.That(consumed.Value.Value).IsEqualTo("original-value");
+        }
+    }
+
+    [Test]
+    public async Task ConsumeAsync_DeserializerSeeks_DefersFetchDisposal()
+    {
+        var memoryOwner = new TrackingPooledMemory();
+        var fetch = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(0, CreateRecord(0, "original-key", "original-value"))],
+            memoryOwner: memoryOwner);
+        using var cancellation = new CancellationTokenSource();
+        KafkaConsumer<string, string>? consumer = null;
+        var keyDeserializer = new CallbackStringDeserializer(
+            () => consumer!.Seek(new TopicPartitionOffset(Topic, Partition, 0)));
+        var disposeCountDuringValueDeserialization = -1;
+        var valueDeserializer = new CallbackStringDeserializer(() =>
+        {
+            disposeCountDuringValueDeserialization = memoryOwner.DisposeCount;
+            cancellation.Cancel();
+        });
+        consumer = CreateConsumerWithPendingFetchesCore(
+            loggerFactory: null,
+            Topic,
+            Partition,
+            OffsetCommitMode.Manual,
+            keyDeserializer,
+            valueDeserializer,
+            fetch);
+
+        await using (consumer)
+        {
+            var yielded = 0;
+            await foreach (var _ in consumer.ConsumeAsync(cancellation.Token))
+                yielded++;
+
+            await Assert.That(yielded).IsEqualTo(0);
+            await Assert.That(disposeCountDuringValueDeserialization).IsEqualTo(0);
+            await Assert.That(memoryOwner.DisposeCount).IsEqualTo(1);
+        }
+    }
+
+    [Test]
+    public async Task ConsumeAsync_DeserializerSeeksThenThrows_PreservesRequestedOffset()
+    {
+        var fetch = PendingFetchData.Create(
+            Topic,
+            Partition,
+            [CreateBatch(0, CreateRecord(0, "original-key", "original-value"))]);
+        KafkaConsumer<string, string>? consumer = null;
+        var keyDeserializer = new CallbackStringDeserializer(() =>
+        {
+            consumer!.Seek(new TopicPartitionOffset(Topic, Partition, 7));
+            throw new InvalidOperationException("Expected deserializer failure.");
+        });
+        consumer = CreateConsumerWithPendingFetchesCore(
+            loggerFactory: null,
+            Topic,
+            Partition,
+            OffsetCommitMode.Manual,
+            keyDeserializer,
+            Serializers.String,
+            fetch);
+
+        await using (consumer)
+        {
+            await Assert.That(async () =>
+            {
+                await foreach (var _ in consumer.ConsumeAsync())
+                {
+                }
+            }).Throws<RecordDeserializationException>();
+            await Assert.That(consumer.GetPosition(new TopicPartition(Topic, Partition))).IsEqualTo(7);
+        }
+    }
+
+    private static void ClearFallbackCurrentRecord(PendingFetchData fetch)
+    {
+        var field = typeof(PendingFetchData).GetField(
+            "_fallbackCurrentRecord",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("_fallbackCurrentRecord field not found.");
+        field.SetValue(fetch, default(Record));
+    }
+
     private static int GetPendingFetchCount(KafkaConsumer<string, string> consumer)
     {
         var field = typeof(KafkaConsumer<string, string>)
@@ -112,6 +232,8 @@ public sealed class ConsumeAsyncRecoveryTests
         string topic,
         int partition,
         OffsetCommitMode offsetCommitMode,
+        IDeserializer<string> keyDeserializer,
+        IDeserializer<string> valueDeserializer,
         params PendingFetchData[] fetches)
     {
         var options = new ConsumerOptions
@@ -123,8 +245,8 @@ public sealed class ConsumeAsyncRecoveryTests
 
         var consumer = new KafkaConsumer<string, string>(
             options,
-            Serializers.String,
-            Serializers.String,
+            keyDeserializer,
+            valueDeserializer,
             loggerFactory);
 
         // Use Assign to set the assignment (no coordinator needed)
@@ -165,6 +287,8 @@ public sealed class ConsumeAsyncRecoveryTests
             topic,
             partition,
             OffsetCommitMode.Manual,
+            Serializers.String,
+            Serializers.String,
             fetches);
 
     private static KafkaConsumer<string, string> CreateConsumerWithPendingFetches(
@@ -180,6 +304,8 @@ public sealed class ConsumeAsyncRecoveryTests
             Topic,
             Partition,
             offsetCommitMode,
+            Serializers.String,
+            Serializers.String,
             fetches);
 
     private static ConcurrentDictionary<TopicPartition, long> GetPositions(
@@ -196,6 +322,9 @@ public sealed class ConsumeAsyncRecoveryTests
     /// Creates a valid RecordBatch with the specified records.
     /// </summary>
     private static RecordBatch CreateBatch(long baseOffset, params Record[] records)
+        => CreateBatch(baseOffset, (IReadOnlyList<Record>)records);
+
+    private static RecordBatch CreateBatch(long baseOffset, IReadOnlyList<Record> records)
     {
         return new RecordBatch
         {
@@ -692,6 +821,39 @@ public sealed class ConsumeAsyncRecoveryTests
     #endregion
 
     #region Test Helpers
+
+    private sealed class CallbackStringDeserializer(Action callback) : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            callback();
+            return Encoding.UTF8.GetString(data.Span);
+        }
+    }
+
+    private sealed class TrackingPooledMemory : IPooledMemory
+    {
+        public int DisposeCount { get; private set; }
+        public ReadOnlyMemory<byte> Memory => ReadOnlyMemory<byte>.Empty;
+
+        public void Dispose() => DisposeCount++;
+    }
+
+    private sealed class SingleRecordList(Record record) : IReadOnlyList<Record>
+    {
+        public int Count => 1;
+
+        public Record this[int index] => index == 0
+            ? record
+            : throw new ArgumentOutOfRangeException(nameof(index));
+
+        public IEnumerator<Record> GetEnumerator()
+        {
+            yield return record;
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
 
     /// <summary>
     /// An IReadOnlyList&lt;Record&gt; that throws ArgumentOutOfRangeException when
