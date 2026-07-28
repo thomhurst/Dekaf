@@ -3053,36 +3053,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         CancellationToken cancellationToken,
         int partitionCount = 0)
     {
-        PooledMemory key;
-        PooledMemory value;
-        try
-        {
-            key = keyOwned.IsNull
-                ? (keyIsNull ? PooledMemory.Null : CopySpanToPooledMemory(keyData))
-                : keyOwned;
-        }
-        catch
-        {
-            valueOwned.Return();
-            ReturnPooledHeaders(headers);
-            throw;
-        }
+        var key = keyOwned;
+        var value = valueOwned;
 
         try
         {
-            value = valueOwned.IsNull
-                ? (valueIsNull ? PooledMemory.Null : CopySpanToPooledMemory(valueData))
-                : valueOwned;
-        }
-        catch
-        {
-            key.Return();
-            ReturnPooledHeaders(headers);
-            throw;
-        }
+            if (key.IsNull && !keyIsNull)
+                key = CopySpanToPooledMemory(keyData);
+            if (value.IsNull && !valueIsNull)
+                value = CopySpanToPooledMemory(valueData);
 
-        try
-        {
             EnqueueAppend(topic, partition, timestamp, key, value, headers, headerCount,
                 completion, cancellationToken, partitionCount);
         }
