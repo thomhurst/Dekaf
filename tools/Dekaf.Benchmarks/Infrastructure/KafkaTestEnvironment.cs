@@ -64,18 +64,7 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
 
         await _container.StartAsync().ConfigureAwait(false);
 
-        var rawBootstrap = _container.GetBootstrapAddress();
-        if (Uri.TryCreate(rawBootstrap, UriKind.Absolute, out var bootstrapUri) && bootstrapUri.Port >= 0)
-        {
-            var host = bootstrapUri.HostNameType == UriHostNameType.IPv6
-                ? $"[{bootstrapUri.DnsSafeHost}]"
-                : bootstrapUri.Host;
-            BootstrapServers = $"{host}:{bootstrapUri.Port}";
-        }
-        else
-        {
-            BootstrapServers = rawBootstrap;
-        }
+        BootstrapServers = BootstrapServerList.Parse(_container.GetBootstrapAddress()).Normalized;
         Console.WriteLine($"Kafka started at {BootstrapServers}");
 
         await WaitForKafkaAsync().ConfigureAwait(false);
