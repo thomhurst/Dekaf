@@ -30,6 +30,16 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task WithBootstrapServers_InvalidEndpoint_ThrowsArgumentException()
+    {
+        var act = () => Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("not-an-endpoint");
+
+        await Assert.That(act).Throws<ArgumentException>()
+            .And.HasMessageContaining("Expected [PROTOCOL://]host:port");
+    }
+
+    [Test]
     public async Task Build_WithUnsupportedKeyType_ThrowsInvalidOperationException()
     {
         var builder = Kafka.CreateProducer<DateTime, string>()

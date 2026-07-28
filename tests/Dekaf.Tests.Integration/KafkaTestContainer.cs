@@ -99,9 +99,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
             ResetContainerAsync,
             ContainerStartupRetry.IsKnownTransient).ConfigureAwait(false);
 
-        var rawAddress = _container!.GetBootstrapAddress();
-        // GetBootstrapAddress() may return "plaintext://host:port/" - extract just host:port
-        BootstrapServers = ExtractHostPort(rawAddress);
+        BootstrapServers = _container!.GetBootstrapAddress();
 
         Console.WriteLine($"[KafkaTestContainer] Kafka started at {BootstrapServers}");
 
@@ -109,33 +107,19 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         await OnAfterInitializeAsync().ConfigureAwait(false);
     }
 
-    protected static string ExtractHostPort(string address)
-    {
-        // Handle format like "plaintext://127.0.0.1:9092/" or just "127.0.0.1:9092"
-        if (Uri.TryCreate(address, UriKind.Absolute, out var uri))
-        {
-            return $"{uri.Host}:{uri.Port}";
-        }
-        // Already in host:port format
-        return address.TrimEnd('/');
-    }
-
     private async Task WaitForKafkaAsync()
     {
         Console.WriteLine("[KafkaTestContainer] Waiting for Kafka to be ready...");
         const int maxAttempts = 30;
 
-        // Parse host and port from host:port format
-        var colonIndex = BootstrapServers.LastIndexOf(':');
-        var host = BootstrapServers[..colonIndex];
-        var port = int.Parse(BootstrapServers[(colonIndex + 1)..]);
+        var endpoint = BootstrapServerList.Parse(BootstrapServers);
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             try
             {
                 using var client = new TcpClient();
-                await client.ConnectAsync(host, port).ConfigureAwait(false);
+                await client.ConnectAsync(endpoint.Host, endpoint.Port).ConfigureAwait(false);
                 Console.WriteLine("[KafkaTestContainer] Kafka is accepting connections");
                 return;
             }

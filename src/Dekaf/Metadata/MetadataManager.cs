@@ -129,24 +129,14 @@ public sealed partial class MetadataManager : IAsyncDisposable
             observerPool.SetConnectionCapabilityObserver(ObserveConnectionCapabilities);
 
         // Pre-parse bootstrap servers to avoid allocation in hot path
+        ArgumentNullException.ThrowIfNull(bootstrapServers);
         _bootstrapEndpoints = new List<(string Host, int Port)>();
         _originalBootstrapHostnames = new List<string>();
         foreach (var server in bootstrapServers)
         {
-            var colonIndex = server.IndexOf(':');
-            if (colonIndex > 0 && colonIndex < server.Length - 1)
-            {
-                var host = server.Substring(0, colonIndex);
-#if NETSTANDARD2_0
-                if (int.TryParse(server.Substring(colonIndex + 1), out var port))
-#else
-                if (int.TryParse(server.AsSpan(colonIndex + 1), out var port))
-#endif
-                {
-                    _bootstrapEndpoints.Add((host, port));
-                    _originalBootstrapHostnames.Add(server);
-                }
-            }
+            var endpoint = BootstrapServerList.Parse(server);
+            _bootstrapEndpoints.Add((endpoint.Host, endpoint.Port));
+            _originalBootstrapHostnames.Add(endpoint.Normalized);
         }
     }
 
