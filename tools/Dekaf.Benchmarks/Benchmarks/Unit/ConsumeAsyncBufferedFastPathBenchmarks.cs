@@ -22,11 +22,22 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 15, iterationCount: 10)]
 public class ConsumeAsyncBufferedFastPathBenchmarks
 {
-    // Keep the total off the 32-record poll-refresh boundary so cancellation happens
-    // only after the final pending fetch is exhausted, flushed, dequeued, and disposed.
+    // Keep the total off the poll-refresh boundary (asserted against
+    // KafkaConsumer.PollRefreshRecordInterval in Setup) so cancellation happens only after
+    // the final pending fetch is exhausted, flushed, dequeued, and disposed.
+    // ~64-90 ns/record × ~2M records keeps measured iterations comfortably above
+    // BenchmarkDotNet's 100 ms recommendation (issue #2445) even if the per-record cost
+    // drops further; the prior 100,100-record shape produced 6-9 ms iterations whose
+    // tier-transition bimodality blurred 5-15% causal deltas. BatchCount must stay at or
+    // below the RecordBatch pool capacity (2048) or every iteration setup allocates the
+    // excess batches.
     private const int RecordsPerBatch = 1_001;
-    private const int BatchCount = 100;
+    private const int BatchCount = 2_000;
     private const int MessageCount = RecordsPerBatch * BatchCount;
+    // Distinct Record[] seed arrays are cycled across batches: batch disposal only nulls the
+    // batch's own record-list reference, never the array contents, so sharing is safe and
+    // keeps GlobalSetup memory flat while BatchCount grows.
+    private const int SeedArrayCount = 100;
     private const string Topic = "consume-async-fast-path";
     private const int Partition = 0;
 
@@ -40,9 +51,15 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
     [GlobalSetup]
     public void Setup()
     {
+        if (MessageCount % KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>.PollRefreshRecordInterval == 0)
+        {
+            throw new InvalidOperationException(
+                "MessageCount must stay off the poll-refresh boundary so cancellation lands after final fetch cleanup.");
+        }
+
         var value = Encoding.UTF8.GetBytes(new string('x', MessageSize));
-        _batchRecords = new Record[BatchCount][];
-        for (var batchIndex = 0; batchIndex < BatchCount; batchIndex++)
+        _batchRecords = new Record[SeedArrayCount][];
+        for (var batchIndex = 0; batchIndex < SeedArrayCount; batchIndex++)
         {
             var records = new Record[RecordsPerBatch];
             for (var recordIndex = 0; recordIndex < RecordsPerBatch; recordIndex++)
@@ -92,7 +109,7 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
             batch.MaxTimestamp = 1_700_000_000_000L + RecordsPerBatch - 1;
             batch.LastOffsetDelta = RecordsPerBatch - 1;
             batch.Attributes = RecordBatchAttributes.None;
-            batch.Records = _batchRecords[batchIndex];
+            batch.Records = _batchRecords[batchIndex % SeedArrayCount];
             batches[batchIndex] = batch;
         }
 

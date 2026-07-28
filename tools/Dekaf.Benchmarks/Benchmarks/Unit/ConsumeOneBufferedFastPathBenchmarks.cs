@@ -29,9 +29,19 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 [Config(typeof(FastPathJobConfig))]
 public class ConsumeOneBufferedFastPathBenchmarks
 {
-    private const int PollsPerIteration = 10_000;
+    // ~130 ns/poll × 1.5M polls keeps measured iterations comfortably above BenchmarkDotNet's
+    // 100 ms recommendation (issue #2445) even if the per-poll cost drops further; shorter
+    // iterations made 5-15% causal deltas unreadable. The old 10k-poll shape also warmed up
+    // on only 30k calls, so it measured partly-tiered code and reported ~2.5x the
+    // steady-state per-poll cost. PollsPerIteration is derived as a product so the seeded
+    // record count can never silently truncate away from the invocation count.
     private const int RecordsPerBatch = 1_000;
-    private const int BatchCount = PollsPerIteration / RecordsPerBatch;
+    private const int BatchCount = 1_500;
+    private const int PollsPerIteration = BatchCount * RecordsPerBatch;
+    // Distinct Record[] seed arrays are cycled across batches: batch disposal only nulls the
+    // batch's own record-list reference, never the array contents, so sharing is safe and
+    // keeps GlobalSetup memory flat while BatchCount grows.
+    private const int SeedArrayCount = 10;
     private const string Topic = "consume-one-fast-path";
     private const int Partition = 0;
     private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(10);
@@ -63,8 +73,8 @@ public class ConsumeOneBufferedFastPathBenchmarks
     {
         var value = Encoding.UTF8.GetBytes(new string('x', MessageSize));
 
-        _batchRecords = new Record[BatchCount][];
-        for (var b = 0; b < BatchCount; b++)
+        _batchRecords = new Record[SeedArrayCount][];
+        for (var b = 0; b < SeedArrayCount; b++)
         {
             var records = new Record[RecordsPerBatch];
             for (var i = 0; i < RecordsPerBatch; i++)
@@ -155,7 +165,7 @@ public class ConsumeOneBufferedFastPathBenchmarks
             batch.MaxTimestamp = 1_700_000_000_000L + RecordsPerBatch - 1;
             batch.LastOffsetDelta = RecordsPerBatch - 1;
             batch.Attributes = RecordBatchAttributes.None;
-            batch.Records = _batchRecords[b];
+            batch.Records = _batchRecords[b % SeedArrayCount];
             batches[b] = batch;
         }
 
