@@ -20,8 +20,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 /// three cold single-shot samples per case — the call graph never reaches the tiered
 /// compilation promotion threshold, so the managed poll path runs unoptimized Tier-0
 /// code while Confluent's native librdkafka path is unaffected, and one scheduler
-/// preemption distorts the whole statistic. Thousands of warm polls per iteration give
-/// both clients Tier-1 code and real statistics.
+/// preemption distorts the whole statistic. Hundreds of thousands of warm polls per
+/// iteration give both clients Tier-1 code and keep measured iterations above
+/// BenchmarkDotNet's 100 ms recommendation.
 /// </remarks>
 [MemoryDiagnoser]
 [Config(typeof(PollJobConfig))]
@@ -29,7 +30,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 [CategoriesColumn]
 public class ConsumerPollBenchmarks
 {
-    private const int PollsPerIteration = 10_000;
+    private const int PollsPerIteration = 400_000;
     private const int PrimeMessages = 1;
     private const string TopicPrefix = "benchmark-poll-";
     private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(10);
@@ -67,7 +68,9 @@ public class ConsumerPollBenchmarks
         var confluentConfig = new Confluent.Kafka.ProducerConfig
         {
             BootstrapServers = _kafka.BootstrapServers,
-            ClientId = "benchmark-seeder"
+            ClientId = "benchmark-seeder",
+            QueueBufferingMaxMessages = PollsPerIteration + PrimeMessages,
+            QueueBufferingMaxKbytes = 512 * 1024
         };
         _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(confluentConfig).Build();
 

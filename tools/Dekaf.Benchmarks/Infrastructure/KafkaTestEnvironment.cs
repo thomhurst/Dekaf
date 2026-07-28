@@ -1,3 +1,5 @@
+using System.Text;
+using DotNet.Testcontainers.Configurations;
 using Testcontainers.Kafka;
 
 namespace Dekaf.Benchmarks.Infrastructure;
@@ -8,6 +10,18 @@ namespace Dekaf.Benchmarks.Infrastructure;
 /// </summary>
 public sealed class KafkaTestEnvironment : IAsyncDisposable
 {
+    private const string KafkaImage = "apache/kafka:4.3.1";
+
+    // Testcontainers.Kafka emits a trailing comma in KAFKA_ADVERTISED_LISTENERS
+    // when no extra listener is configured. Kafka 4.2+ rejects that empty value.
+    private static readonly byte[] RunWrapperScript = Encoding.UTF8.GetBytes(
+        "#!/bin/bash\n" +
+        ". /etc/kafka/docker/bash-config\n" +
+        "export KAFKA_ADVERTISED_LISTENERS=$(echo \"$KAFKA_ADVERTISED_LISTENERS\" | sed 's/,$//')\n" +
+        ". /etc/kafka/docker/configureDefaults\n" +
+        ". /etc/kafka/docker/configure\n" +
+        ". /etc/kafka/docker/launch\n");
+
     private KafkaContainer? _container;
     private bool _disposed;
     private bool _externalKafka;
@@ -36,13 +50,32 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
 
         Console.WriteLine("Starting Kafka container via Testcontainers...");
 
-        _container = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
+        _container = new KafkaBuilder(KafkaImage)
             .WithPortBinding(9092, true)
+            .WithResourceMapping(
+                RunWrapperScript,
+                "/etc/kafka/docker/run",
+                0,
+                0,
+                UnixFileModes.UserRead | UnixFileModes.UserWrite | UnixFileModes.UserExecute |
+                UnixFileModes.GroupRead | UnixFileModes.GroupExecute |
+                UnixFileModes.OtherRead | UnixFileModes.OtherExecute)
             .Build();
 
         await _container.StartAsync().ConfigureAwait(false);
 
-        BootstrapServers = _container.GetBootstrapAddress();
+        var rawBootstrap = _container.GetBootstrapAddress();
+        if (Uri.TryCreate(rawBootstrap, UriKind.Absolute, out var bootstrapUri) && bootstrapUri.Port >= 0)
+        {
+            var host = bootstrapUri.HostNameType == UriHostNameType.IPv6
+                ? $"[{bootstrapUri.DnsSafeHost}]"
+                : bootstrapUri.Host;
+            BootstrapServers = $"{host}:{bootstrapUri.Port}";
+        }
+        else
+        {
+            BootstrapServers = rawBootstrap;
+        }
         Console.WriteLine($"Kafka started at {BootstrapServers}");
 
         await WaitForKafkaAsync().ConfigureAwait(false);
@@ -83,48 +116,27 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
 
     public async Task CreateTopicAsync(string topic, int partitions = 1)
     {
-        if (_externalKafka)
-        {
-            using var adminClient = new Confluent.Kafka.AdminClientBuilder(
-                new Confluent.Kafka.AdminClientConfig { BootstrapServers = BootstrapServers })
-                .Build();
+        using var adminClient = new Confluent.Kafka.AdminClientBuilder(
+            new Confluent.Kafka.AdminClientConfig { BootstrapServers = BootstrapServers })
+            .Build();
 
-            try
-            {
-                await adminClient.CreateTopicsAsync([
-                    new Confluent.Kafka.Admin.TopicSpecification
-                    {
-                        Name = topic,
-                        NumPartitions = partitions,
-                        ReplicationFactor = 1
-                    }
-                ]).ConfigureAwait(false);
-            }
-            catch (Confluent.Kafka.Admin.CreateTopicsException ex)
-            {
-                if (!ex.Message.Contains("already exists"))
+        try
+        {
+            await adminClient.CreateTopicsAsync([
+                new Confluent.Kafka.Admin.TopicSpecification
                 {
-                    Console.WriteLine($"Warning: Failed to create topic {topic}: {ex.Message}");
+                    Name = topic,
+                    NumPartitions = partitions,
+                    ReplicationFactor = 1
                 }
-            }
-            return;
+            ]).ConfigureAwait(false);
         }
-
-        if (_container is null)
-            throw new InvalidOperationException("Container not started");
-
-        var result = await _container.ExecAsync([
-            "kafka-topics",
-            "--bootstrap-server", "localhost:9092",
-            "--create",
-            "--topic", topic,
-            "--partitions", partitions.ToString(),
-            "--replication-factor", "1"
-        ]).ConfigureAwait(false);
-
-        if (result.ExitCode != 0)
+        catch (Confluent.Kafka.Admin.CreateTopicsException ex)
         {
-            Console.WriteLine($"Warning: Failed to create topic {topic}: {result.Stderr}");
+            if (!ex.Message.Contains("already exists"))
+            {
+                Console.WriteLine($"Warning: Failed to create topic {topic}: {ex.Message}");
+            }
         }
     }
 
