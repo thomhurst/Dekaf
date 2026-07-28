@@ -101,7 +101,7 @@ public class ConsumeOneStringSerdeBenchmarks
                 QueuedMinMessages = 1,
                 FetchMaxWaitMs = 200,
             },
-            Serializers.String,
+            CreatePollSingleKeyDeserializer(),
             Serializers.String);
         InitializeForBufferedFastPath(_stringGroupedConsumer);
 
@@ -118,7 +118,7 @@ public class ConsumeOneStringSerdeBenchmarks
                 QueuedMinMessages = 1,
                 FetchMaxWaitMs = 200,
             },
-            Serializers.String,
+            CreatePollSingleKeyDeserializer(),
             Serializers.String);
         InitializeForBufferedFastPath(_stringNoGroupConsumer);
 
@@ -188,8 +188,13 @@ public class ConsumeOneStringSerdeBenchmarks
             batches[b] = batch;
         }
 
+        // Create attaches this PendingFetchData's owner/generation to every batch.
+        // Draining and disposing it therefore returns all rented batches to the pool.
         GetPendingFetches(consumer).Enqueue(PendingFetchData.Create(Topic, Partition, batches));
     }
+
+    private static CachingStringDeserializer CreatePollSingleKeyDeserializer() =>
+        new(Serializers.String, maxCachedBytes: 128, maxCachedEntries: 16_384);
 
     private static void DrainPendingFetches<TKey, TValue>(KafkaConsumer<TKey, TValue> consumer)
     {
