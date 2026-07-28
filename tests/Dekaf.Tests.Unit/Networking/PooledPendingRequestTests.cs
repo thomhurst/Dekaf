@@ -934,32 +934,34 @@ public class PooledPendingRequestTests
         var reused = pool.Rent();
         reused.Initialize(responseHeaderVersion: 0, CancellationToken.None);
 
-        // Verify TryComplete returns BEFORE the continuation runs.
-        // With RunContinuationsAsynchronously = true, SetResult queues the
-        // continuation and returns immediately. With false, the continuation
-        // would run inline inside TryComplete, and the flag below would be
-        // true before TryComplete returns.
-        var continuationRanInline = false;
+        // Verify the continuation does not run inline on the completing thread.
+        // A queued continuation may legitimately run on another thread before
+        // TryComplete returns, or later on this same thread after it returns.
+        var completingThreadId = Environment.CurrentManagedThreadId;
+        var insideTryComplete = 1;
+        var continuationRanInline = 0;
         var continuationRan = new TaskCompletionSource();
 
         var vt = reused.AsValueTask();
         vt.GetAwaiter().UnsafeOnCompleted(() =>
         {
-            continuationRanInline = true;
+            if (Environment.CurrentManagedThreadId == completingThreadId
+                && Volatile.Read(ref insideTryComplete) != 0)
+            {
+                Volatile.Write(ref continuationRanInline, 1);
+            }
+
             continuationRan.SetResult();
         });
 
         var testData2 = new byte[] { 0, 0, 0, 2, 20 };
         var buffer2 = new PooledResponseBuffer(testData2, testData2.Length, isPooled: false);
         reused.TryComplete(buffer2);
-
-        // If RunContinuationsAsynchronously is true, the continuation hasn't
-        // run yet at this point — it was queued to the thread pool.
-        var ranBeforeTryCompleteReturned = continuationRanInline;
+        Volatile.Write(ref insideTryComplete, 0);
 
         await continuationRan.Task.ConfigureAwait(false);
 
-        await Assert.That(ranBeforeTryCompleteReturned).IsFalse();
+        await Assert.That(Volatile.Read(ref continuationRanInline)).IsEqualTo(0);
 
         pool.Return(reused);
     }
