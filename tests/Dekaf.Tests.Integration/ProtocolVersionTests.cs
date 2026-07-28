@@ -16,8 +16,8 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 {
     private static (string Host, int Port) ParseBootstrapEndpoint(string bootstrapServers)
     {
-        var separator = bootstrapServers.LastIndexOf(':');
-        return (bootstrapServers[..separator], int.Parse(bootstrapServers[(separator + 1)..]));
+        var endpoint = BootstrapServerList.Parse(bootstrapServers);
+        return (endpoint.Host, endpoint.Port);
     }
 
     private static async Task<ApiVersionsResponse> SendApiVersionsAsync(IKafkaConnection connection)
@@ -44,10 +44,10 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             "api-versions-test",
             new ConnectionOptions { RequestTimeout = TimeSpan.FromSeconds(30) },
             loggerFactory: null);
-        var parts = KafkaContainer.BootstrapServers.Split(':');
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
         var connection = await pool.GetConnectionAsync(
-            parts[0],
-            int.Parse(parts[1]),
+            host,
+            port,
             CancellationToken.None);
 
         var response = await SendApiVersionsAsync(connection);
@@ -69,9 +69,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = KafkaContainer.BootstrapServers.Split(':');
-        var host = parts[0];
-        var port = int.Parse(parts[1]);
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
 
         try
         {
@@ -191,9 +189,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = KafkaContainer.BootstrapServers.Split(':');
-        var host = parts[0];
-        var port = int.Parse(parts[1]);
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
 
         try
         {
@@ -222,9 +218,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = KafkaContainer.BootstrapServers.Split(':');
-        var host = parts[0];
-        var port = int.Parse(parts[1]);
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
 
         try
         {
@@ -252,9 +246,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = KafkaContainer.BootstrapServers.Split(':');
-        var host = parts[0];
-        var port = int.Parse(parts[1]);
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
 
         try
         {
@@ -290,9 +282,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = KafkaContainer.BootstrapServers.Split(':');
-        var host = parts[0];
-        var port = int.Parse(parts[1]);
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
 
         try
         {
@@ -482,9 +472,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = KafkaContainer.BootstrapServers.Split(':');
-        var host = parts[0];
-        var port = int.Parse(parts[1]);
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
 
         try
         {
@@ -521,9 +509,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = KafkaContainer.BootstrapServers.Split(':');
-        var host = parts[0];
-        var port = int.Parse(parts[1]);
+        var (host, port) = ParseBootstrapEndpoint(KafkaContainer.BootstrapServers);
 
         try
         {
