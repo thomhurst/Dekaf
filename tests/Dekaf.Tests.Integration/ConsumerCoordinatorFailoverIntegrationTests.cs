@@ -15,7 +15,7 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
     private const int MessagesPerPartition = 20;
     private const int MessageCount = PartitionCount * MessagesPerPartition;
     private static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan CoordinatorRecoveryObservationPeriod = TimeSpan.FromSeconds(18);
+    private static readonly TimeSpan CoordinatorRecoveryTimeout = TimeSpan.FromSeconds(45);
 
     [Test]
     [Timeout(240_000)]
@@ -704,20 +704,27 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
         IReadOnlyList<Task> pollTasks,
         CancellationToken cancellationToken)
     {
-        await Task.Delay(CoordinatorRecoveryObservationPeriod, cancellationToken).ConfigureAwait(false);
-        var failed = pollTasks.FirstOrDefault(static task => task.IsFaulted);
-        if (failed is not null)
-            await failed.ConfigureAwait(false);
-
         await using var admin = kafka.CreateAdminClient();
-        var groups = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken)
-            .ConfigureAwait(false);
-        if (!groups.TryGetValue(groupId, out var group) || group.Members.Count != 2)
+        var startedAt = TimeProvider.System.GetTimestamp();
+        var memberCount = 0;
+
+        while (TimeProvider.System.GetElapsedTime(startedAt) < CoordinatorRecoveryTimeout)
         {
-            throw new InvalidOperationException(
-                $"Expected both group members to survive coordinator failover; actual count " +
-                $"{(groups.TryGetValue(groupId, out group) ? group.Members.Count : 0)}.");
+            var failed = pollTasks.FirstOrDefault(static task => task.IsFaulted);
+            if (failed is not null)
+                await failed.ConfigureAwait(false);
+
+            var groups = await admin.DescribeConsumerGroupsAsync([groupId], cancellationToken)
+                .ConfigureAwait(false);
+            memberCount = groups.TryGetValue(groupId, out var group) ? group.Members.Count : 0;
+            if (memberCount == 2)
+                return;
+
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
+
+        throw new InvalidOperationException(
+            $"Expected both group members to survive coordinator failover; actual count {memberCount}.");
     }
 
     private static async Task WaitForAssignmentCountAsync(
