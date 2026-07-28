@@ -195,7 +195,7 @@ await consumer.ForEachAsync(async msg =>
 }, cancellationToken);
 ```
 
-Note: filtered messages are skipped permanently once offsets are committed past them — see [the docs](https://thomhurst.github.io/Dekaf/docs/consumer/linq-extensions#filtering-skips-messages-permanently) before filtering messages you might need later.
+Note: filtered messages are skipped permanently once offsets are committed past them — see [the docs](https://thomhurst.github.io/Dekaf/docs/consumer/linq-extensions#filtering-skips-messages-permanently) before filtering messages you might need later!
 
 ## Offset Management
 
