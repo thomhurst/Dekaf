@@ -42,7 +42,17 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
 
         await _container.StartAsync().ConfigureAwait(false);
 
-        BootstrapServers = _container.GetBootstrapAddress();
+        // GetBootstrapAddress returns "plaintext://host:port/". Confluent accepts the
+        // scheme-prefixed form, but Dekaf's bootstrap list expects plain "host:port" —
+        // without normalization the Dekaf benchmarks fail their initial metadata fetch
+        // while the Confluent baseline connects, silently skewing local comparisons.
+        // Same tolerant idiom as KafkaTestContainer.ExtractHostPort: fall back to the raw
+        // value when Testcontainers ever returns a plain host:port. Stopgap for #2448;
+        // delete once the product parser accepts scheme-prefixed bootstrap entries.
+        var rawBootstrap = _container.GetBootstrapAddress();
+        BootstrapServers = Uri.TryCreate(rawBootstrap, UriKind.Absolute, out var bootstrapUri) && bootstrapUri.Port >= 0
+            ? $"{bootstrapUri.Host}:{bootstrapUri.Port}"
+            : rawBootstrap;
         Console.WriteLine($"Kafka started at {BootstrapServers}");
 
         await WaitForKafkaAsync().ConfigureAwait(false);

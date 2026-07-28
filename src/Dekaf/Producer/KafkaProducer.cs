@@ -36,18 +36,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             .ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Sentinel return value from <see cref="TryProduceSyncCore"/> indicating that the
-    /// buffer is full and the caller should fall back to the async path (ReserveMemoryAsync).
-    /// Replaces the previous exception-based control flow to avoid ~5-10μs throw/catch
-    /// overhead per message under sustained backpressure.
-    /// </summary>
-    private enum SyncProduceResult : byte
-    {
-        Success,
-        BufferFull,
-    }
-
     private readonly ProducerOptions _options;
     private readonly ISerializer<TKey> _keySerializer;
     private readonly ISerializer<TValue> _valueSerializer;
@@ -673,10 +661,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
-        if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, out var completion))
+        if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, cancellationToken, out var completion))
         {
-            // POST-QUEUE: Message appended to batch, committed to being sent
-            // Message WILL be delivered, but caller can stop waiting via cancellation token.
+            // POST-QUEUE: Message appended to a batch (committed to being sent, cancellation
+            // only stops the wait) or handed to the slow-path append worker under
+            // backpressure (pre-append timeout/cancellation still surfaces via the completion).
             if (activity is not null)
             {
                 return AwaitWithActivity(completion!, activity, message.Topic, cancellationToken);
@@ -866,10 +855,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             partition,
             timestamp,
             runContinuationsAsynchronously,
+            cancellationToken,
             out var completion))
         {
-            // POST-QUEUE: Message appended to batch, committed to being sent
-            // Message WILL be delivered, but caller can stop waiting via cancellation token.
+            // POST-QUEUE: Message appended to a batch (committed to being sent, cancellation
+            // only stops the wait) or handed to the slow-path append worker under
+            // backpressure (pre-append timeout/cancellation still surfaces via the completion).
             if (metricsEnabled)
             {
                 return AwaitWithMetrics(completion!, topic, cancellationToken);
@@ -881,7 +872,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return completion!.Task;
         }
 
-        // Cold path: allocate the full message only when async metadata/backpressure handling needs it.
+        // Cold path: metadata miss only — allocate the full message for the async metadata fetch.
         return ProduceAsyncSlow(new ProducerMessage<TKey, TValue>
         {
             Topic = topic,
@@ -1058,6 +1049,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private bool TryProduceSyncForAsync(
         ProducerMessage<TKey, TValue> message,
         bool runContinuationsAsynchronously,
+        CancellationToken cancellationToken,
         out PooledValueTaskSource<RecordMetadata>? completion)
         => TryProduceSyncForAsync(
             message.Topic,
@@ -1067,6 +1059,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             message.Partition,
             message.Timestamp,
             runContinuationsAsynchronously,
+            cancellationToken,
             out completion);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1078,6 +1071,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         int? partition,
         DateTimeOffset? timestamp,
         bool runContinuationsAsynchronously,
+        CancellationToken cancellationToken,
         out PooledValueTaskSource<RecordMetadata>? completion)
     {
         completion = null;
@@ -1112,10 +1106,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // All checks passed - we can proceed synchronously
         completion = RentCompletion(runContinuationsAsynchronously);
-        var result = SyncProduceResult.Success;
         try
         {
-            result = TryProduceSyncCore(topic, key, value, headers, partition, timestamp, topicInfo, completion);
+            TryProduceSyncCore(topic, key, value, headers, partition, timestamp, topicInfo, completion, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -1126,15 +1119,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Note: TryProduceSyncCore may have already called TrySetException, so use Try variant.
             // Don't re-throw here - let the caller await the ValueTask and get the exception.
             completion.TrySetException(ex);
-        }
-
-        if (result == SyncProduceResult.BufferFull)
-        {
-            // Buffer is full — fall back to async path which uses ReserveMemoryAsync
-            // (yields instead of blocking a thread, preventing thread pool starvation).
-            // TryProduceSyncCore already cleaned up and returned the completion source.
-            completion = null;
-            return false;
         }
 
         return true;
@@ -1156,7 +1140,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
 
         // Retry fast path - metadata should already be initialized via InitializeAsync()
-        if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, out var fastCompletion))
+        if (TryProduceSyncForAsync(message, runContinuationsAsynchronously, cancellationToken, out var fastCompletion))
         {
             return await AwaitProduceCompletionAsync(fastCompletion!, activity, metricsEnabled, message.Topic, cancellationToken).ConfigureAwait(false);
         }
@@ -1356,13 +1340,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// <summary>
     /// Core synchronous produce logic for the ProduceAsync fast path (called from TryProduceSyncForAsync).
     /// Handles serialization, partitioning, and accumulator append with proper resource cleanup.
-    /// Returns <see cref="SyncProduceResult.BufferFull"/> when the buffer is full instead of
-    /// throwing an exception, avoiding ~5-10μs throw/catch overhead per message under backpressure.
+    /// Under BufferMemory or admission-window backpressure it hands the already-serialized
+    /// record to the slow-path append worker with the same completion source instead of
+    /// signalling the caller to restart on the allocating async path (issue #2444).
     /// </summary>
-    private SyncProduceResult TryProduceSyncCore(
+    private void TryProduceSyncCore(
         ProducerMessage<TKey, TValue> message,
         TopicInfo topicInfo,
-        PooledValueTaskSource<RecordMetadata> completion)
+        PooledValueTaskSource<RecordMetadata> completion,
+        CancellationToken cancellationToken)
         => TryProduceSyncCore(
             message.Topic,
             message.Key,
@@ -1371,7 +1357,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             message.Partition,
             message.Timestamp,
             topicInfo,
-            completion);
+            completion,
+            cancellationToken);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int GetUniformStickyPartitionCount(
@@ -1390,7 +1377,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         return keyIsNull && _partitioner is IBatchCompletionAwarePartitioner ? partitionCount : 0;
     }
 
-    private SyncProduceResult TryProduceSyncCore(
+    private void TryProduceSyncCore(
         string topic,
         TKey? key,
         TValue value,
@@ -1398,7 +1385,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         int? partition,
         DateTimeOffset? timestamp,
         TopicInfo topicInfo,
-        PooledValueTaskSource<RecordMetadata> completion)
+        PooledValueTaskSource<RecordMetadata> completion,
+        CancellationToken cancellationToken)
     {
         Header[]? pooledHeaderArray = null;
         var customPartitionerKey = PooledMemory.Null;
@@ -1489,18 +1477,40 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 completion,
                 batchCompletionPartitionCount))
             {
-                // Clean up headers — the async slow path will re-serialize.
-                RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray);
-                completion.SetRunContinuationsAsynchronously(true);
-                _valueTaskSourcePool.Return(completion);
-                customPartitionerKey.Return();
-                customPartitionerValue.Return();
-                return SyncProduceResult.BufferFull;
+                // BufferMemory or admission-window backpressure. Hand the already-serialized
+                // record to the slow-path append worker with the same rented completion instead
+                // of restarting on the async path: that restart allocated a ProducerMessage plus
+                // async state machines per message and re-serialized the record (issue #2444).
+                // The accumulator owns every handed-off resource from this call on, including
+                // when it throws synchronously; null the locals so the catch below cannot
+                // double-return them.
+                var keyOwned = customPartitionerKey;
+                var valueOwned = customPartitionerValue;
+                customPartitionerKey = PooledMemory.Null;
+                customPartitionerValue = PooledMemory.Null;
+                var headersOwned = pooledHeaderArray;
+                pooledHeaderArray = null;
+
+                _accumulator.EnqueueAppendFromSpans(
+                    topic,
+                    resolvedPartition,
+                    timestampMs,
+                    keySpan,
+                    keyIsNull,
+                    keyOwned,
+                    valueSpan,
+                    valueIsNull,
+                    valueOwned,
+                    headersOwned,
+                    headerCount,
+                    completion,
+                    cancellationToken,
+                    batchCompletionPartitionCount);
+                return;
             }
 
             customPartitionerKey.Return();
             customPartitionerValue.Return();
-            return SyncProduceResult.Success;
         }
         catch (Exception ex)
         {
@@ -1731,6 +1741,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var valueIsNull = message.Value is null;
         var key = PooledMemory.Null;
         var value = PooledMemory.Null;
+        Header[]? pooledHeaderArray = null;
         try
         {
             if (!keyIsNull)
@@ -1762,7 +1773,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var timestampMs = timestamp.ToUnixTimeMilliseconds();
 
             // Convert headers with minimal allocations
-            Header[]? pooledHeaderArray = null;
             var headerCount = 0;
             if (message.Headers is not null && message.Headers.Count > 0)
             {
@@ -1789,6 +1799,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // must return them here.
             key.Return();
             value.Return();
+            RecordAccumulator.ReturnPooledHeaders(pooledHeaderArray);
             throw;
         }
     }
