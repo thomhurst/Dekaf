@@ -2467,6 +2467,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <remarks>
     /// This only wraps the built-in string value deserializer. Custom value deserializers are not wrapped.
     /// Use this for workloads that intentionally replay a small set of string payloads, such as stress or telemetry topics.
+    /// The cache is evidence-first: payloads are plain-decoded until sampled reuse proves a bounded
+    /// working set, so enabling this on high-cardinality traffic costs no more than plain decoding.
     /// </remarks>
     /// <param name="maxCachedBytes">Maximum UTF-8 payload size eligible for caching.</param>
     /// <param name="maxCachedEntries">Maximum number of distinct payloads retained by the cache.</param>
@@ -3135,10 +3137,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
             : _valueDeserializer ?? GetDefaultDeserializer<TValue>("value", "WithValueDeserializer");
 
         // Wrap the built-in string key deserializer with caching to avoid per-message string
-        // allocation for repeated keys. Kafka workloads typically reuse a bounded set of key
-        // values, so caching eliminates ~42 bytes per message for 8-byte keys at 1M+ msg/s.
-        // Only wrap the built-in StringSerde — user-supplied string deserializers may
-        // intentionally return different strings for the same bytes.
+        // allocation for repeated keys (~42 bytes per message for 8-byte keys at 1M+ msg/s).
+        // The wrapper is evidence-first: it plain-decodes until sampled reuse proves a
+        // bounded key set, so cold starts and high-cardinality (e.g. UUID) key streams stay
+        // at plain-decode cost. Only wrap the built-in StringSerde — user-supplied string
+        // deserializers may intentionally return different strings for the same bytes.
         if (keyDeserializer is StringSerde stringSerde)
         {
             keyDeserializer = (IDeserializer<TKey>)(object)new CachingStringDeserializer(

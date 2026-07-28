@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Text;
 using BenchmarkDotNet.Attributes;
+using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
@@ -19,9 +20,9 @@ public class ConsumerHotPathBenchmarks
     private const int MessageCount = 1_000;
 
     private readonly SingleRecordBatchList _batchList = new();
-    private readonly IDeserializer<string> _cachedRepeatedStringValueDeserializer =
-        new CachingStringDeserializer(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: 128);
-    private CachingStringDeserializer _saturatedCachedStringValueDeserializer = null!;
+    private readonly CachingStringDeserializer _cachedRepeatedStringValueDeserializer =
+        new(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: 128);
+    private CachingStringDeserializer _uniqueValuesCachedStringDeserializer = null!;
     private Record[] _records = null!;
     private Record[] _repeated1KbValueRecords = null!;
     private string _topic = null!;
@@ -52,17 +53,15 @@ public class ConsumerHotPathBenchmarks
             };
         }
 
-        _saturatedCachedStringValueDeserializer =
+        // Unique per-record values keep this wrapper in observe (plain-decode) mode,
+        // measuring the cache's steady-state overhead on high-cardinality traffic.
+        _uniqueValuesCachedStringDeserializer =
             new CachingStringDeserializer(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: 128);
-        var context = new SerializationContext { Topic = _topic, Component = SerializationComponent.Value };
-        for (var i = 0; i < 128; i++)
-        {
-            _saturatedCachedStringValueDeserializer.Deserialize(
-                Encoding.UTF8.GetBytes($"prefill-{i}"),
-                context);
-        }
 
         var repeatedValue = Encoding.UTF8.GetBytes(new string('x', 1000));
+        var context = new SerializationContext { Topic = _topic, Component = SerializationComponent.Value };
+        CachingDeserializerWarmup.PromoteOrThrow(
+            _cachedRepeatedStringValueDeserializer, context, [repeatedValue]);
         _repeated1KbValueRecords = new Record[MessageCount];
         for (var i = 0; i < MessageCount; i++)
         {
@@ -138,14 +137,14 @@ public class ConsumerHotPathBenchmarks
         return chars;
     }
 
-    [Benchmark(OperationsPerInvoke = MessageCount, Description = "Typed batch string cached deserialize (saturated)")]
-    public int ConsumeBatch_String_CachedDeserializeSaturated()
+    [Benchmark(OperationsPerInvoke = MessageCount, Description = "Typed batch string cached deserialize (unique values, observe mode)")]
+    public int ConsumeBatch_String_CachedDeserializeUniqueValues()
     {
         using var pending = CreatePendingFetchData();
         var batch = new ConsumeBatch<string, string>(
             pending,
             Serializers.String,
-            _saturatedCachedStringValueDeserializer);
+            _uniqueValuesCachedStringDeserializer);
         var chars = 0;
 
         foreach (var result in batch)
