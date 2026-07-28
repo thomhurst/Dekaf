@@ -50,9 +50,17 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
         // value when Testcontainers ever returns a plain host:port. Stopgap for #2448;
         // delete once the product parser accepts scheme-prefixed bootstrap entries.
         var rawBootstrap = _container.GetBootstrapAddress();
-        BootstrapServers = Uri.TryCreate(rawBootstrap, UriKind.Absolute, out var bootstrapUri) && bootstrapUri.Port >= 0
-            ? $"{bootstrapUri.Host}:{bootstrapUri.Port}"
-            : rawBootstrap;
+        if (Uri.TryCreate(rawBootstrap, UriKind.Absolute, out var bootstrapUri) && bootstrapUri.Port >= 0)
+        {
+            var host = bootstrapUri.HostNameType == UriHostNameType.IPv6
+                ? $"[{bootstrapUri.DnsSafeHost}]"
+                : bootstrapUri.Host;
+            BootstrapServers = $"{host}:{bootstrapUri.Port}";
+        }
+        else
+        {
+            BootstrapServers = rawBootstrap;
+        }
         Console.WriteLine($"Kafka started at {BootstrapServers}");
 
         await WaitForKafkaAsync().ConfigureAwait(false);
