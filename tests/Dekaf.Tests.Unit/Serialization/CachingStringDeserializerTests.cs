@@ -22,42 +22,49 @@ public class CachingStringDeserializerTests
     private static CachingStringDeserializer CreateKeyCache() =>
         new(Serializers.String, maxCachedBytes: 128, maxCachedEntries: KeyCacheMaxEntries);
 
-    private static void EnterHighCardinalityBypass(
-        CachingStringDeserializer deserializer,
-        SerializationContext context)
-    {
-        var lookupCount = CachingStringDeserializer.AdmissionProbeLimit
-            + CachingStringDeserializer.ProbeLookupCount
-            + CachingStringDeserializer.CalculateReuseProbeLookupCount(KeyCacheMaxEntries);
-
-        for (var uniqueKey = 0; uniqueKey < lookupCount; uniqueKey++)
-            deserializer.Deserialize(ToUtf8($"unique-{uniqueKey}"), context);
-    }
-
     private static CachingStringDeserializer CreateValueCache() =>
         new(Serializers.String, maxCachedBytes: 4 * 1024, maxCachedEntries: ValueCacheMaxEntries);
 
-    private static CachingStringDeserializer CreateSmallKeyCache() =>
-        new(Serializers.String, maxCachedBytes: 128, maxCachedEntries: ValueCacheMaxEntries);
-
-    private static IDeserializer<string> GetValueDeserializer(IKafkaConsumer<string, string> consumer)
+    /// <summary>
+    /// Cycles a bounded key set through the deserializer until sampled reuse promotes
+    /// the cache. One pass of hits contributes about keys/stride samples, so the
+    /// promotion threshold is reached in a bounded number of passes.
+    /// </summary>
+    private static void PromoteWithBoundedKeys(
+        CachingStringDeserializer deserializer,
+        SerializationContext context,
+        ReadOnlyMemory<byte>[] keys)
     {
-        var field = typeof(KafkaConsumer<string, string>).GetField(
-            "_valueDeserializer",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("_valueDeserializer field not found.");
+        var maxPasses = 8 * CachingStringDeserializer.ObserveSampleStride
+            * CachingStringDeserializer.PromoteSampledHits / keys.Length + 16;
+        for (var pass = 0; pass < maxPasses && !deserializer.IsCacheEnabled; pass++)
+        {
+            for (var i = 0; i < keys.Length; i++)
+                deserializer.Deserialize(keys[i], context);
+        }
 
-        return (IDeserializer<string>)field.GetValue(consumer)!;
+        if (!deserializer.IsCacheEnabled)
+            throw new InvalidOperationException("Bounded key reuse did not promote the cache.");
     }
 
-    private static string GetInnerModeName(CachingStringDeserializer deserializer)
+    private static ReadOnlyMemory<byte>[] CreateKeys(string prefix, int count)
     {
-        var field = typeof(CachingStringDeserializer).GetField(
-            "_inner",
-            BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? throw new InvalidOperationException("_inner field not found.");
+        var keys = new ReadOnlyMemory<byte>[count];
+        for (var i = 0; i < count; i++)
+            keys[i] = ToUtf8($"{prefix}-{i}");
+        return keys;
+    }
 
-        return field.GetValue(deserializer)!.GetType().Name;
+    private static IDeserializer<string> GetDeserializerField(
+        IKafkaConsumer<string, string> consumer,
+        string fieldName)
+    {
+        var field = typeof(KafkaConsumer<string, string>).GetField(
+            fieldName,
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"{fieldName} field not found.");
+
+        return (IDeserializer<string>)field.GetValue(consumer)!;
     }
 
     [Test]
@@ -83,7 +90,7 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
-    public async Task CacheHit_ReturnsSameReference()
+    public async Task NewDeserializer_StartsDisabled_PlainDecodes()
     {
         var sut = CreateKeyCache();
         var context = KeyContext();
@@ -92,8 +99,150 @@ public class CachingStringDeserializerTests
         var first = sut.Deserialize(data, context);
         var second = sut.Deserialize(data, context);
 
+        await Assert.That(sut.IsCacheEnabled).IsFalse();
         await Assert.That(first).IsEqualTo("my-key");
-        await Assert.That(ReferenceEquals(first, second)).IsTrue();
+        // Observe mode decodes plainly; no cached instance is returned yet.
+        await Assert.That(ReferenceEquals(first, second)).IsFalse();
+    }
+
+    [Test]
+    public async Task BoundedReuse_PromotesCache_ThenReturnsCachedReferences()
+    {
+        const int keyCount = 1_000;
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+        var keys = CreateKeys("bounded", keyCount);
+
+        PromoteWithBoundedKeys(sut, context, keys);
+
+        // One pass fills the freshly promoted cache; the next pass must hit it.
+        var references = new string[keyCount];
+        for (var i = 0; i < keyCount; i++)
+            references[i] = sut.Deserialize(keys[i], context);
+
+        var allReferencesCached = true;
+        for (var i = 0; i < keyCount; i++)
+            allReferencesCached &= ReferenceEquals(references[i], sut.Deserialize(keys[i], context));
+
+        await Assert.That(allReferencesCached).IsTrue();
+    }
+
+    [Test]
+    public async Task MidCardinalityBoundedReuse_WithinCapacity_Promotes()
+    {
+        // 8,000 recurring keys: more than the observe window, well within the
+        // 16,384-entry capacity. The reuse-detection table is sized to capacity, so
+        // this working set must produce promotion evidence.
+        const int keyCount = 8_000;
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+        var keys = CreateKeys("mid", keyCount);
+
+        PromoteWithBoundedKeys(sut, context, keys);
+
+        await Assert.That(sut.IsCacheEnabled).IsTrue();
+    }
+
+    [Test]
+    public async Task UniqueKeys_NeverPromote()
+    {
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+
+        for (var i = 0; i < 50_000; i++)
+            sut.Deserialize(ToUtf8($"unique-{i}"), context);
+
+        await Assert.That(sut.IsCacheEnabled).IsFalse();
+    }
+
+    [Test]
+    public async Task ReuseDisappearing_DemotesCache()
+    {
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+        PromoteWithBoundedKeys(sut, context, CreateKeys("demote-warm", 64));
+
+        // Admissions count as productive, so unique traffic must exhaust the cache
+        // capacity before a window can score unproductive; then one more window
+        // demotes, with slack.
+        var uniqueLookups = KeyCacheMaxEntries + 3 * CachingStringDeserializer.DemoteWindowLookups;
+        for (var i = 0; i < uniqueLookups; i++)
+            sut.Deserialize(ToUtf8($"demote-unique-{i}"), context);
+
+        await Assert.That(sut.IsCacheEnabled).IsFalse();
+    }
+
+    [Test]
+    public async Task DemotedCache_RepromotesWhenReuseReturns()
+    {
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+        var keys = CreateKeys("cycle", 64);
+        PromoteWithBoundedKeys(sut, context, keys);
+
+        var uniqueLookups = KeyCacheMaxEntries + 3 * CachingStringDeserializer.DemoteWindowLookups;
+        for (var i = 0; i < uniqueLookups; i++)
+            sut.Deserialize(ToUtf8($"cycle-unique-{i}"), context);
+        await Assert.That(sut.IsCacheEnabled).IsFalse();
+
+        PromoteWithBoundedKeys(sut, context, keys);
+
+        await Assert.That(sut.IsCacheEnabled).IsTrue();
+    }
+
+    [Test]
+    public async Task CapacityStarvedReuse_DoesNotPromote()
+    {
+        // 500 recurring keys against a 16-entry cache: the reuse-detection radius is
+        // scaled to capacity, so this must stay in plain-decode mode instead of
+        // flapping through promote/demote cycles.
+        var sut = new CachingStringDeserializer(
+            Serializers.String,
+            maxCachedBytes: 128,
+            maxCachedEntries: 16);
+        var context = KeyContext();
+        var keys = CreateKeys("starved", 500);
+
+        for (var pass = 0; pass < 100; pass++)
+        {
+            for (var i = 0; i < keys.Length; i++)
+                sut.Deserialize(keys[i], context);
+        }
+
+        await Assert.That(sut.IsCacheEnabled).IsFalse();
+    }
+
+    [Test]
+    public async Task MaxCachedEntries_StopsNewEntries()
+    {
+        const int maxEntries = 16;
+        var sut = new CachingStringDeserializer(
+            Serializers.String,
+            maxCachedBytes: 128,
+            maxCachedEntries: maxEntries);
+        var context = KeyContext();
+        var keys = CreateKeys("cap", 8);
+
+        PromoteWithBoundedKeys(sut, context, keys);
+
+        // Promotion can land mid-pass, so admit the warm set explicitly, then fill
+        // the remaining capacity with a second batch of distinct keys.
+        for (var i = 0; i < keys.Length; i++)
+            sut.Deserialize(keys[i], context);
+        for (var i = 0; i < 8; i++)
+        {
+            var data = ToUtf8($"cap-fill-{i}");
+            sut.Deserialize(data, context);
+        }
+
+        // The next unique key should still return the correct value but not be cached.
+        var overflow = ToUtf8("overflow-key");
+        var first = sut.Deserialize(overflow, context);
+        var second = sut.Deserialize(overflow, context);
+
+        await Assert.That(first).IsEqualTo("overflow-key");
+        await Assert.That(second).IsEqualTo("overflow-key");
+        await Assert.That(ReferenceEquals(first, second)).IsFalse();
     }
 
     [Test]
@@ -108,339 +257,56 @@ public class CachingStringDeserializerTests
         var second = sut.Deserialize(data, context);
 
         await Assert.That(first).IsEqualTo(longKey);
-        // Both return correct values, but they should be different string instances
-        // because the cache was bypassed (inner deserializer allocates each time).
+        // Oversized payloads are never observed or cached; plain decode each time.
         await Assert.That(ReferenceEquals(first, second)).IsFalse();
     }
 
     [Test]
-    public async Task MaxCachedEntries_StopsNewEntries()
-    {
-        const int maxEntries = 16;
-        var sut = new CachingStringDeserializer(
-            Serializers.String,
-            maxCachedBytes: 128,
-            maxCachedEntries: maxEntries);
-        var context = KeyContext();
-
-        for (var i = 0; i < maxEntries; i++)
-        {
-            var data = ToUtf8($"key-{i}");
-            sut.Deserialize(data, context);
-            sut.Deserialize(data, context);
-        }
-
-        // The next unique key should still return the correct value but not be cached.
-        var overflow = ToUtf8("overflow-key");
-        var first = sut.Deserialize(overflow, context);
-        var second = sut.Deserialize(overflow, context);
-
-        await Assert.That(first).IsEqualTo("overflow-key");
-        await Assert.That(second).IsEqualTo("overflow-key");
-        // Not cached — different string instances from the inner deserializer.
-        await Assert.That(ReferenceEquals(first, second)).IsFalse();
-    }
-
-    [Test]
-    public async Task HighCardinalityKeys_BypassCacheAfterLowHitRateProbe()
+    public async Task OversizedKeys_DoNotContributePromotionEvidence()
     {
         var sut = CreateKeyCache();
         var context = KeyContext();
-
-        EnterHighCardinalityBypass(sut, context);
-
-        var data = ToUtf8("bypassed");
-        var first = sut.Deserialize(data, context);
-        var second = sut.Deserialize(data, context);
-
-        await Assert.That(first).IsEqualTo("bypassed");
-        await Assert.That(ReferenceEquals(first, second)).IsFalse();
-    }
-
-    [Test]
-    public async Task SaturatedCache_MissesStillTriggerHighCardinalityBypass()
-    {
-        var sut = CreateValueCache();
-        var context = ValueContext();
-
-        for (var i = 0; i < ValueCacheMaxEntries; i++)
-            sut.Deserialize(ToUtf8($"cached-{i}"), context);
-
-        var missesUntilBypass = CachingStringDeserializer.AdmissionProbeLimit
-            - ValueCacheMaxEntries
-            + CachingStringDeserializer.ProbeLookupCount
-            + CachingStringDeserializer.CalculateReuseProbeLookupCount(ValueCacheMaxEntries);
-        for (var i = 0; i < missesUntilBypass; i++)
-            sut.Deserialize(ToUtf8($"saturated-miss-{i}"), context);
-
-        var data = ToUtf8("bypassed-after-saturation");
-        var first = sut.Deserialize(data, context);
-        var second = sut.Deserialize(data, context);
-
-        await Assert.That(GetInnerModeName(sut)).IsEqualTo("BypassSerde");
-        await Assert.That(ReferenceEquals(first, second)).IsFalse();
-    }
-
-    [Test]
-    public async Task BoundedReusableKeys_RemainCachedAfterHitRateProbe()
-    {
-        const int keyCount = 1_000;
-        var sut = CreateKeyCache();
-        var context = KeyContext();
-        var data = new ReadOnlyMemory<byte>[keyCount];
-        var references = new string[keyCount];
-
-        for (var i = 0; i < keyCount; i++)
-        {
-            data[i] = ToUtf8($"bounded-{i}");
-            references[i] = sut.Deserialize(data[i], context);
-        }
-
-        // Complete the 1,024-lookup probe with enough reuse to exceed its 10% hit gate.
-        var repeatedLookups = CachingStringDeserializer.ProbeLookupCount
-            - (keyCount - CachingStringDeserializer.AdmissionProbeLimit);
-        for (var i = 0; i < repeatedLookups; i++)
-            sut.Deserialize(data[i], context);
-
-        var allReferencesCached = true;
-        for (var i = 0; i < keyCount; i++)
-            allReferencesCached &= ReferenceEquals(references[i], sut.Deserialize(data[i], context));
-
-        await Assert.That(allReferencesCached).IsTrue();
-    }
-
-    [Test]
-    public async Task BoundedReusableKeys_LargerThanPrimaryProbe_AreAdmittedDuringReuseProbe()
-    {
-        const int keyCount = 5_000;
-        var sut = CreateKeyCache();
-        var context = KeyContext();
-        var data = new ReadOnlyMemory<byte>[keyCount];
-        var references = new string[keyCount];
-
-        for (var i = 0; i < keyCount; i++)
-        {
-            data[i] = ToUtf8($"bounded-reuse-{i}");
-            references[i] = sut.Deserialize(data[i], context);
-        }
-
-        var reuseLookupLimit = CachingStringDeserializer.CalculateReuseProbeLookupCount(KeyCacheMaxEntries);
-        for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
-            sut.Deserialize(data[i % keyCount], context);
-
-        var allReferencesCached = true;
-        for (var i = 0; i < keyCount; i++)
-            allReferencesCached &= ReferenceEquals(references[i], sut.Deserialize(data[i], context));
-
-        await Assert.That(allReferencesCached).IsTrue();
-    }
-
-    [Test]
-    public async Task HighYieldCyclicKeys_ReachCachedReuseBeforeBypass()
-    {
-        const int keyCount = 20_000;
-        var sut = CreateKeyCache();
-        var context = KeyContext();
-        var firstKey = ToUtf8("high-yield-0");
-        var firstReference = sut.Deserialize(firstKey, context);
-
-        for (var i = 1; i < keyCount; i++)
-            sut.Deserialize(ToUtf8($"high-yield-{i}"), context);
-
-        var reuseLookupLimit = CachingStringDeserializer.CalculateReuseProbeLookupCount(KeyCacheMaxEntries);
-        for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
-            sut.Deserialize(ToUtf8($"high-yield-{i % keyCount}"), context);
-
-        var reusedReference = sut.Deserialize(firstKey, context);
-
-        await Assert.That(ReferenceEquals(firstReference, reusedReference)).IsTrue();
-    }
-
-    [Test]
-    public async Task ReuseProbe_PreservesFilledCacheAcrossSubsequentSaturatedProbe()
-    {
-        const int keyCount = 100_000;
-        var sut = CreateKeyCache();
-        var context = KeyContext();
-        var firstKey = ToUtf8("fill-window-0");
-        var firstReference = sut.Deserialize(firstKey, context);
-
-        for (var i = 1; i < keyCount; i++)
-            sut.Deserialize(ToUtf8($"fill-window-{i}"), context);
-
-        var reuseLookupLimit = CachingStringDeserializer.CalculateReuseProbeLookupCount(KeyCacheMaxEntries);
-        for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
-            sut.Deserialize(ToUtf8($"fill-window-{i % keyCount}"), context);
-
-        // Continue the stable cycle through another probe. This time the cache is already
-        // saturated, so preservation must be attainable from hits without admission evidence.
-        for (var i = KeyCacheMaxEntries; i < keyCount + KeyCacheMaxEntries; i++)
-            sut.Deserialize(ToUtf8($"fill-window-{i % keyCount}"), context);
-
-        for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
-            sut.Deserialize(ToUtf8($"fill-window-{i % keyCount}"), context);
-
-        await Assert.That(GetInnerModeName(sut)).IsNotEqualTo("BypassSerde");
-        await Assert.That(ReferenceEquals(firstReference, sut.Deserialize(firstKey, context))).IsTrue();
-    }
-
-    [Test]
-    public async Task ReuseProbe_OneCoincidentalHit_DoesNotRestoreCache()
-    {
-        var sut = CreateSmallKeyCache();
-        var context = KeyContext();
-        var retained = ToUtf8("retained");
-        sut.Deserialize(retained, context);
-
-        for (var i = 1; i < CachingStringDeserializer.AdmissionProbeLimit; i++)
-            sut.Deserialize(ToUtf8($"admission-{i}"), context);
-        for (var i = 0; i < CachingStringDeserializer.ProbeLookupCount; i++)
-            sut.Deserialize(ToUtf8($"primary-{i}"), context);
-
-        sut.Deserialize(retained, context);
-        var reuseLookups = CachingStringDeserializer.CalculateReuseProbeLookupCount(ValueCacheMaxEntries);
-        for (var i = 1; i < reuseLookups; i++)
-            sut.Deserialize(ToUtf8($"reuse-{i}"), context);
-
-        await Assert.That(GetInnerModeName(sut)).IsEqualTo("BypassSerde");
-    }
-
-    [Test]
-    public async Task ReuseProbe_SmallCacheBelowTenPercentYield_EntersBypass()
-    {
-        const int keyCount = 2_000;
-        var sut = CreateSmallKeyCache();
-        var context = KeyContext();
-
-        for (var i = 0; i < keyCount; i++)
-            sut.Deserialize(ToUtf8($"low-yield-{i}"), context);
-
-        var reuseLookupLimit = CachingStringDeserializer.CalculateReuseProbeLookupCount(ValueCacheMaxEntries);
-        for (var i = 0; i < reuseLookupLimit && GetInnerModeName(sut) == "ProbeSerde"; i++)
-            sut.Deserialize(ToUtf8($"low-yield-{i % keyCount}"), context);
-
-        await Assert.That(GetInnerModeName(sut)).IsEqualTo("BypassSerde");
-    }
-
-    [Test]
-    public async Task ReuseProbe_CacheFillAndSparseHits_DoNotRestoreCache()
-    {
-        const int sparseHitInterval = 64;
-        var sut = CreateKeyCache();
-        var context = KeyContext();
-        var retained = ToUtf8("sparse-retained");
-        sut.Deserialize(retained, context);
-
-        for (var i = 1; i < CachingStringDeserializer.AdmissionProbeLimit; i++)
-            sut.Deserialize(ToUtf8($"sparse-admission-{i}"), context);
-        for (var i = 0; i < CachingStringDeserializer.ProbeLookupCount; i++)
-            sut.Deserialize(ToUtf8($"sparse-primary-{i}"), context);
-
-        var reuseLookups = CachingStringDeserializer.CalculateReuseProbeLookupCount(KeyCacheMaxEntries);
-        for (var i = 0; i < reuseLookups; i++)
-        {
-            var data = i % sparseHitInterval == 0
-                ? retained
-                : ToUtf8($"sparse-reuse-{i}");
-            sut.Deserialize(data, context);
-        }
-
-        await Assert.That(GetInnerModeName(sut)).IsEqualTo("BypassSerde");
-    }
-
-    [Test]
-    public async Task LowCardinalityKeys_RemainCachedPastAdmissionProbeLimit()
-    {
-        var sut = CreateKeyCache();
-        var context = KeyContext();
-        var data = ToUtf8("repeated");
-        var first = sut.Deserialize(data, context);
-        var allReferencesCached = true;
-
-        for (var i = 0; i < CachingStringDeserializer.AdmissionProbeLimit * 2; i++)
-            allReferencesCached &= ReferenceEquals(first, sut.Deserialize(data, context));
-
-        await Assert.That(allReferencesCached).IsTrue();
-    }
-
-    [Test]
-    public async Task Bypass_ReprobesAndRecoversWhenKeysBecomeRepetitive()
-    {
-        var sut = CreateKeyCache();
-        var context = KeyContext();
-
-        EnterHighCardinalityBypass(sut, context);
-
-        var repeated = ToUtf8("new-repeated-key");
-        for (var i = 0; i < CachingStringDeserializer.BypassInterval; i++)
-            sut.Deserialize(repeated, context);
-
-        var firstProbe = sut.Deserialize(repeated, context);
-        var secondProbe = sut.Deserialize(repeated, context);
-
-        await Assert.That(ReferenceEquals(firstProbe, secondProbe)).IsTrue();
-    }
-
-    [Test]
-    public async Task Probe_OversizedPayloadsAdvanceToBypass()
-    {
-        var sut = CreateSmallKeyCache();
-        var context = KeyContext();
-
-        for (var i = 0; i < CachingStringDeserializer.AdmissionProbeLimit; i++)
-            sut.Deserialize(ToUtf8($"probe-start-{i}"), context);
-
         var oversized = ToUtf8(new string('x', 129));
-        var lookupsUntilBypass = CachingStringDeserializer.ProbeLookupCount
-            + CachingStringDeserializer.CalculateReuseProbeLookupCount(ValueCacheMaxEntries);
-        for (var i = 0; i < lookupsUntilBypass; i++)
+
+        for (var i = 0; i < 20_000; i++)
             sut.Deserialize(oversized, context);
 
-        await Assert.That(GetInnerModeName(sut)).IsEqualTo("BypassSerde");
+        await Assert.That(sut.IsCacheEnabled).IsFalse();
     }
 
     [Test]
-    public async Task Bypass_EmptyPayloadsAdvanceToRecoveryProbe()
-    {
-        var sut = CreateSmallKeyCache();
-        var context = KeyContext();
-        var lookupsUntilBypass = CachingStringDeserializer.AdmissionProbeLimit
-            + CachingStringDeserializer.ProbeLookupCount
-            + CachingStringDeserializer.CalculateReuseProbeLookupCount(ValueCacheMaxEntries);
-        for (var i = 0; i < lookupsUntilBypass; i++)
-            sut.Deserialize(ToUtf8($"bypass-start-{i}"), context);
-
-        for (var i = 0; i < CachingStringDeserializer.BypassInterval; i++)
-            sut.Deserialize(ReadOnlyMemory<byte>.Empty, context);
-
-        var eligible = ToUtf8("eligible-after-empty-bypass");
-        var first = sut.Deserialize(eligible, context);
-        var second = sut.Deserialize(eligible, context);
-
-        await Assert.That(ReferenceEquals(first, second)).IsTrue();
-    }
-
-    [Test]
-    public async Task TwoDistinctKeys_BothCachedCorrectly()
+    public async Task EmptyData_BypassesCache()
     {
         var sut = CreateKeyCache();
         var context = KeyContext();
 
-        var dataA = ToUtf8("key-alpha");
-        var dataB = ToUtf8("key-bravo");
+        var result = sut.Deserialize(ReadOnlyMemory<byte>.Empty, context);
 
-        var resultA1 = sut.Deserialize(dataA, context);
-        var resultB1 = sut.Deserialize(dataB, context);
-        var resultA2 = sut.Deserialize(dataA, context);
-        var resultB2 = sut.Deserialize(dataB, context);
+        await Assert.That(result).IsEqualTo(string.Empty);
+    }
 
-        await Assert.That(resultA1).IsEqualTo("key-alpha");
-        await Assert.That(resultA2).IsEqualTo("key-alpha");
-        await Assert.That(resultB1).IsEqualTo("key-bravo");
-        await Assert.That(resultB2).IsEqualTo("key-bravo");
+    [Test]
+    public async Task ObserveMode_AllocatesOnlyTheDecodedString()
+    {
+        var sut = CreateKeyCache();
+        var context = KeyContext();
+        // Distinct warmup and measurement key ranges: replaying the warmup keys would
+        // be genuine reuse and could legitimately promote the cache mid-measurement.
+        var warmupKeys = CreateKeys("alloc-warm", 8_192);
+        var keys = CreateKeys("alloc", 8_192);
 
-        await Assert.That(ReferenceEquals(resultA1, resultA2)).IsTrue();
-        await Assert.That(ReferenceEquals(resultB1, resultB2)).IsTrue();
+        // Warm the code paths so JIT/tiering allocations do not pollute the measurement.
+        for (var i = 0; i < warmupKeys.Length; i++)
+            sut.Deserialize(warmupKeys[i], context);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < keys.Length; i++)
+            sut.Deserialize(keys[i], context);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        // Each lookup allocates one short string (~40 B); sampling and the recent-hash
+        // table must add nothing per lookup.
+        await Assert.That(allocated).IsLessThan(keys.Length * 80L);
     }
 
     [Test]
@@ -464,7 +330,7 @@ public class CachingStringDeserializerTests
                 return ValueTask.CompletedTask;
             });
 
-        // Verify all keys are correctly cached after concurrent access.
+        // Verify all keys still decode correctly after concurrent access.
         foreach (var key in keys)
         {
             var result = sut.Deserialize(ToUtf8(key), context);
@@ -473,24 +339,14 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
-    public async Task EmptyData_BypassesCache()
-    {
-        var sut = CreateKeyCache();
-        var context = KeyContext();
-        var data = ReadOnlyMemory<byte>.Empty;
-
-        var result = sut.Deserialize(data, context);
-
-        await Assert.That(result).IsEqualTo(string.Empty);
-    }
-
-    [Test]
-    public async Task ValueCache_Repeated1000BytePayload_ReturnsSameReference()
+    public async Task ValueCache_RepeatedPayload_CachesAfterPromotion()
     {
         var sut = CreateValueCache();
         var context = ValueContext();
         var payload = new string('x', 1000);
         var data = ToUtf8(payload);
+
+        PromoteWithBoundedKeys(sut, context, [data]);
 
         var first = sut.Deserialize(data, context);
         var second = sut.Deserialize(data, context);
@@ -515,6 +371,21 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
+    public async Task ConsumerBuilder_DefaultStringKeyDeserializer_StartsInObserveMode()
+    {
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithGroupId("cache-test")
+            .Build();
+
+        var deserializer = GetDeserializerField(consumer, "_keyDeserializer");
+
+        var caching = deserializer as CachingStringDeserializer;
+        await Assert.That(caching).IsNotNull();
+        await Assert.That(caching!.IsCacheEnabled).IsFalse();
+    }
+
+    [Test]
     public async Task ConsumerBuilder_DefaultStringValueDeserializer_DoesNotCacheValues()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
@@ -522,7 +393,7 @@ public class CachingStringDeserializerTests
             .WithGroupId("cache-test")
             .Build();
 
-        var deserializer = GetValueDeserializer(consumer);
+        var deserializer = GetDeserializerField(consumer, "_valueDeserializer");
         var context = ValueContext();
         var payload = new string('x', 1000);
         var data = ToUtf8(payload);
@@ -535,7 +406,7 @@ public class CachingStringDeserializerTests
     }
 
     [Test]
-    public async Task ConsumerBuilder_WithCachedStringValues_UsesBoundedCache()
+    public async Task ConsumerBuilder_WithCachedStringValues_CachesAfterPromotion()
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
@@ -543,10 +414,12 @@ public class CachingStringDeserializerTests
             .WithCachedStringValues()
             .Build();
 
-        var deserializer = GetValueDeserializer(consumer);
+        var deserializer = (CachingStringDeserializer)GetDeserializerField(consumer, "_valueDeserializer");
         var context = ValueContext();
         var payload = new string('x', 1000);
         var data = ToUtf8(payload);
+
+        PromoteWithBoundedKeys(deserializer, context, [data]);
 
         var first = deserializer.Deserialize(data, context);
         var second = deserializer.Deserialize(data, context);
