@@ -3030,6 +3030,54 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Queues an already-serialized record for the slow-path append worker with the caller's
+    /// completion source (the ProduceAsync backpressure handoff, issue #2444). Copies the
+    /// spans to pooled memory, or adopts <paramref name="keyOwned"/>/<paramref name="valueOwned"/>
+    /// when the caller already holds pooled copies (custom-partitioner path). Owns cleanup of
+    /// every passed resource from this call on, including when it throws synchronously, so
+    /// callers never risk a double return.
+    /// </summary>
+    internal void EnqueueAppendFromSpans(
+        string topic,
+        int partition,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        PooledMemory keyOwned,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        PooledMemory valueOwned,
+        Header[]? headers,
+        int headerCount,
+        PooledValueTaskSource<RecordMetadata> completion,
+        CancellationToken cancellationToken,
+        int partitionCount = 0)
+    {
+        var key = keyOwned;
+        var value = valueOwned;
+
+        try
+        {
+            if (key.IsNull && !keyIsNull)
+                key = CopySpanToPooledMemory(keyData);
+            if (value.IsNull && !valueIsNull)
+                value = CopySpanToPooledMemory(valueData);
+
+            EnqueueAppend(topic, partition, timestamp, key, value, headers, headerCount,
+                completion, cancellationToken, partitionCount);
+        }
+        catch
+        {
+            // EnqueueAppend owns cleanup once it accepts the work item; a synchronous
+            // throw (disposal race in worker startup) leaves ownership here.
+            key.Return();
+            value.Return();
+            ReturnPooledHeaders(headers);
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Rents a new PartitionBatch from the pool and configures it with current transaction state.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

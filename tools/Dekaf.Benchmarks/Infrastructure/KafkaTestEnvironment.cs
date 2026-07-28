@@ -42,7 +42,7 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
 
         await _container.StartAsync().ConfigureAwait(false);
 
-        BootstrapServers = _container.GetBootstrapAddress();
+        BootstrapServers = BootstrapServerList.Parse(_container.GetBootstrapAddress()).Normalized;
         Console.WriteLine($"Kafka started at {BootstrapServers}");
 
         await WaitForKafkaAsync().ConfigureAwait(false);

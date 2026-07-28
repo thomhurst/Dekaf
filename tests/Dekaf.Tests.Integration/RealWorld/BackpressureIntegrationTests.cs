@@ -14,6 +14,59 @@ namespace Dekaf.Tests.Integration.RealWorld;
 public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test, NotInParallel]
+    public async Task AwaitedProduce_BufferMemoryBackpressure_CompletesThroughBrokerAck()
+    {
+        const int bufferMemory = 65_536;
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+
+        await using var producer = (KafkaProducer<string, string>)await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-producer-awaited-backpressure-handoff")
+            .WithBufferMemory(bufferMemory)
+            .WithMaxBlock(TimeSpan.FromSeconds(30))
+            .WithLinger(TimeSpan.Zero)
+            .WithIdempotence(false)
+            .WithAcks(Acks.Leader)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        // Warm metadata so the next ProduceAsync enters the synchronous fast path.
+        await producer.ProduceAsync(topic, "warmup-key", "warmup-value");
+
+        var accumulator = producer.RecordAccumulator;
+        await Assert.That(accumulator.TryReserveMemoryForTest(bufferMemory)).IsTrue();
+        var reservationHeld = true;
+
+        try
+        {
+            var pendingBefore = accumulator.PendingAppendDrainEntryCountForTest;
+            var produce = producer.ProduceAsync(topic, "backpressured-key", "backpressured-value");
+
+            var enteredDrain = SpinWait.SpinUntil(
+                () => accumulator.PendingAppendDrainEntryCountForTest > pendingBefore,
+                TimeSpan.FromSeconds(5));
+            await Assert.That(enteredDrain).IsTrue();
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(1);
+            await Assert.That(produce.IsCompleted).IsFalse();
+
+            accumulator.ReleaseMemory(bufferMemory);
+            reservationHeld = false;
+
+            var metadata = await produce.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+            await Assert.That(metadata.Topic).IsEqualTo(topic);
+            await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(1);
+            await Assert.That(accumulator.PendingAppendDrainEntryCountForTest)
+                .IsGreaterThan(pendingBefore);
+            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+        }
+        finally
+        {
+            if (reservationHeld)
+                accumulator.ReleaseMemory(bufferMemory);
+        }
+    }
+
+    [Test, NotInParallel]
     public async Task BufferFull_ProduceBlocks_UntilBatchSent()
     {
         // Arrange - very small buffer to trigger backpressure quickly

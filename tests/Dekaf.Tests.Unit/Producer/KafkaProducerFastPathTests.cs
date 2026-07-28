@@ -46,23 +46,19 @@ public class KafkaProducerFastPathTests
 
         partitioner.OnFirstPartition = () =>
         {
-            var innerResult = InvokeTryProduceSyncCore(
+            // Throws on failure; a successful return means the inner record was appended.
+            InvokeTryProduceSyncCore(
                 producer,
                 new ProducerMessage<string, string> { Topic = Topic, Key = "inner", Value = "inner-value" },
                 topicInfo,
                 innerCompletion);
-
-            if (innerResult.ToString() != "Success")
-                throw new InvalidOperationException($"Unexpected inner result: {innerResult}");
         };
 
-        var outerResult = InvokeTryProduceSyncCore(
+        InvokeTryProduceSyncCore(
             producer,
             new ProducerMessage<string, string> { Topic = Topic, Key = "outer", Value = "outer-value" },
             topicInfo,
             outerCompletion);
-
-        await Assert.That(outerResult.ToString()).IsEqualTo("Success");
 
         var readyBatch = CompleteCurrentBatch(producer.RecordAccumulator, new TopicPartition(Topic, 0));
         await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(2);
@@ -367,66 +363,53 @@ public class KafkaProducerFastPathTests
     }
 
     [Test]
-    public async Task TransactionFastPath_BufferFull_RestoresAsyncModeBeforePoolReturn()
+    public async Task FastPath_BufferFull_QueuesSlowPathAppendWithSameCompletion()
     {
         await using var producer = await CreateBufferBoundaryProducerAsync(maxBlockMs: 30_000);
         var accumulator = producer.RecordAccumulator;
-        var pool = GetInstanceField<ValueTaskSourcePool<RecordMetadata>>(producer, "_valueTaskSourcePool");
+
         await Assert.That(accumulator.TryReserveMemoryForTest(BufferMemoryLimit)).IsTrue();
+        var syntheticReservationRemaining = BufferMemoryLimit;
 
         try
         {
-            var pooledBefore = pool.ApproximateCount;
             var usedFastPath = InvokeTryProduceSyncForAsync(
                 producer,
                 new ProducerMessage<string, string> { Topic = Topic, Key = "key", Value = "value" },
                 runContinuationsAsynchronously: false,
                 out var completion);
 
-            await Assert.That(usedFastPath).IsFalse();
-            await Assert.That(completion).IsNull();
-            await Assert.That(pool.ApproximateCount).IsEqualTo(pooledBefore + 1);
+            // Backpressure no longer bounces the caller onto the allocating async restart
+            // path (issue #2444): the already-serialized record is handed to the slow-path
+            // append worker and the caller keeps awaiting the same rented completion.
+            await Assert.That(usedFastPath).IsTrue();
+            await Assert.That(completion).IsNotNull();
+            var completionTask = completion!.Task;
 
-            var reused = pool.Rent();
-            var awaiter = reused.Task.GetAwaiter();
-            var continuationThreadId = 0;
-            var continuation = new TaskCompletionSource<RecordMetadata>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-            awaiter.UnsafeOnCompleted(() =>
-            {
-                continuationThreadId = Environment.CurrentManagedThreadId;
-                try
-                {
-                    continuation.SetResult(awaiter.GetResult());
-                }
-                catch (Exception ex)
-                {
-                    continuation.SetException(ex);
-                }
-            });
-            var completionThreadId = 0;
-            var completionThread = new Thread(() =>
-            {
-                completionThreadId = Environment.CurrentManagedThreadId;
-                reused.SetResult(new RecordMetadata
-                {
-                    Topic = Topic,
-                    Partition = 0,
-                    Offset = 0,
-                    Timestamp = DateTimeOffset.UtcNow
-                });
-            }) { IsBackground = true };
+            await TestWait.UntilAsync(
+                () => accumulator.PendingAppendCountForTest == 1,
+                TimeSpan.FromSeconds(5));
+            await Assert.That(completionTask.IsCompleted).IsFalse();
 
-            completionThread.Start();
-            completionThread.Join();
-            var metadata = await continuation.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            accumulator.ReleaseMemory(BufferMemoryLimit);
+            syntheticReservationRemaining = 0;
 
+            await TestWait.UntilAsync(
+                () => accumulator.PendingAppendCountForTest == 0,
+                TimeSpan.FromSeconds(5));
+
+            var readyBatch = CompleteCurrentBatch(accumulator, new TopicPartition(Topic, 0));
+            await Assert.That(readyBatch.RecordBatch.Records.Count).IsEqualTo(1);
+            readyBatch.CompleteSend(baseOffset: 3, DateTimeOffset.UtcNow);
+
+            var metadata = await completionTask.AsTask().WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(metadata.Topic).IsEqualTo(Topic);
-            await Assert.That(continuationThreadId).IsNotEqualTo(completionThreadId);
+            await Assert.That(metadata.Offset).IsEqualTo(3);
         }
         finally
         {
-            accumulator.ReleaseMemory(BufferMemoryLimit);
+            if (syntheticReservationRemaining > 0)
+                accumulator.ReleaseMemory(syntheticReservationRemaining);
         }
     }
 
@@ -578,7 +561,7 @@ public class KafkaProducerFastPathTests
         throw new InvalidOperationException($"Could not find a key for partition {targetPartition}.");
     }
 
-    private static object InvokeTryProduceSyncCore(
+    private static void InvokeTryProduceSyncCore(
         KafkaProducer<string, string> producer,
         ProducerMessage<string, string> message,
         TopicInfo topicInfo,
@@ -588,12 +571,12 @@ public class KafkaProducerFastPathTests
             "TryProduceSyncCore",
             BindingFlags.NonPublic | BindingFlags.Instance,
             binder: null,
-            [typeof(ProducerMessage<string, string>), typeof(TopicInfo), typeof(PooledValueTaskSource<RecordMetadata>)],
+            [typeof(ProducerMessage<string, string>), typeof(TopicInfo), typeof(PooledValueTaskSource<RecordMetadata>), typeof(CancellationToken)],
             modifiers: null);
 
         try
         {
-            return method!.Invoke(producer, [message, topicInfo, completion])!;
+            method!.Invoke(producer, [message, topicInfo, completion, CancellationToken.None]);
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)
         {
@@ -615,15 +598,16 @@ public class KafkaProducerFastPathTests
             [
                 typeof(ProducerMessage<string, string>),
                 typeof(bool),
+                typeof(CancellationToken),
                 typeof(PooledValueTaskSource<RecordMetadata>).MakeByRefType()
             ],
             modifiers: null);
-        object?[] arguments = [message, runContinuationsAsynchronously, null];
+        object?[] arguments = [message, runContinuationsAsynchronously, CancellationToken.None, null];
 
         try
         {
             var result = (bool)method!.Invoke(producer, arguments)!;
-            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[2];
+            completion = (PooledValueTaskSource<RecordMetadata>?)arguments[3];
             return result;
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)
