@@ -368,11 +368,6 @@ public class KafkaProducerFastPathTests
         await using var producer = await CreateBufferBoundaryProducerAsync(maxBlockMs: 30_000);
         var accumulator = producer.RecordAccumulator;
 
-        // StopProducerBackgroundLoopsAsync cancels _senderCts, which is also the append
-        // workers' token; hand the lazily-started workers a live token so the slow-path
-        // handoff under test can actually run. Disposal still stops them via channel completion.
-        accumulator.StartAppendWorkers(CancellationToken.None);
-
         await Assert.That(accumulator.TryReserveMemoryForTest(BufferMemoryLimit)).IsTrue();
         var syntheticReservationRemaining = BufferMemoryLimit;
 
