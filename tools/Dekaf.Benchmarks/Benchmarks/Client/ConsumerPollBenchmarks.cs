@@ -34,6 +34,7 @@ public class ConsumerPollBenchmarks
     private const int PrimeMessages = 1;
     private const string TopicPrefix = "benchmark-poll-";
     private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan SeedFlushTimeout = TimeSpan.FromMinutes(2);
 
     private sealed class PollJobConfig : ManualConfig
     {
@@ -93,7 +94,12 @@ public class ConsumerPollBenchmarks
                 Value = value
             });
         }
-        _confluentProducer.Flush(TimeSpan.FromSeconds(30));
+        var undeliveredMessages = _confluentProducer.Flush(SeedFlushTimeout);
+        if (undeliveredMessages != 0)
+        {
+            throw new InvalidOperationException(
+                $"Benchmark seed flush timed out with {undeliveredMessages} undelivered messages.");
+        }
     }
 
     [IterationSetup(Targets = [nameof(Confluent_PollSingle)])]
