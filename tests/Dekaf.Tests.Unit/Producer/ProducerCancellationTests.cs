@@ -60,15 +60,13 @@ public class ProducerCancellationTests
     }
 
     [Test]
-    public async Task Cancellation_StopsActiveLingerWaitPromptly()
+    public async Task StopSenderLoopsForTestingAsync_StopsActiveLingerWaitPromptly()
     {
-        var producer = Kafka.CreateProducer<string, string>()
+        var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithLinger(TimeSpan.FromMinutes(1))
             .Build();
-        var accumulator = GetField<RecordAccumulator>(producer, "_accumulator");
-        var senderCts = GetField<CancellationTokenSource>(producer, "_senderCts");
-        var lingerTask = GetField<Task>(producer, "_lingerTask");
+        var accumulator = producer.RecordAccumulator;
         var activeLingerWaitEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         SetField(
             producer,
@@ -92,14 +90,12 @@ public class ProducerCancellationTests
             await Assert.That(accumulator.HasPendingLingerBatches).IsTrue();
 
             await activeLingerWaitEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
-            senderCts.Cancel();
-
-            await lingerTask.WaitAsync(TimeSpan.FromSeconds(5));
-            await Assert.That(lingerTask.IsCompletedSuccessfully).IsTrue();
+            await producer.StopSenderLoopsForTestingAsync()
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(5));
         }
         finally
         {
-            senderCts.Cancel();
             await accumulator.DisposeAsync();
             await producer.DisposeAsync();
         }
@@ -335,11 +331,6 @@ public class ProducerCancellationTests
             await accumulator.DisposeAsync();
         }
     }
-
-    private static T GetField<T>(object instance, string name)
-        => (T)instance.GetType()
-            .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
-            .GetValue(instance)!;
 
     private static void SetField<T>(object instance, string name, T value)
         => instance.GetType()

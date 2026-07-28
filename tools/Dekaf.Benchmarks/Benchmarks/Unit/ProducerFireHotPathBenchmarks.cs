@@ -145,15 +145,8 @@ public class ProducerFireHotPathBenchmarks
         });
     }
 
-    private static async Task StopBackgroundLoopsAsync(KafkaProducer<string, string> producer)
-    {
-        var cancellation = GetInstanceField<CancellationTokenSource>(producer, "_senderCts");
-        var senderTask = GetInstanceField<Task>(producer, "_senderTask");
-        var lingerTask = GetInstanceField<Task>(producer, "_lingerTask");
-
-        await cancellation.CancelAsync().ConfigureAwait(false);
-        await Task.WhenAll(senderTask, lingerTask).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-    }
+    private static ValueTask StopBackgroundLoopsAsync(KafkaProducer<string, string> producer)
+        => producer.StopSenderLoopsForTestingAsync();
 
     private static T GetInstanceField<T>(object target, string name)
     {

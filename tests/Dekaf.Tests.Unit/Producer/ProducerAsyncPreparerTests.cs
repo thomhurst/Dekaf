@@ -247,12 +247,7 @@ public class ProducerAsyncPreparerTests
     // initialized, so ProduceAsync reaches the preparer gate instead of the not-initialized guard.
     private static async Task ReadyProducerAsync(KafkaProducer<string, string> producer)
     {
-        var cts = GetField<CancellationTokenSource>(producer, "_senderCts");
-        var senderTask = GetField<Task>(producer, "_senderTask");
-        var lingerTask = GetField<Task>(producer, "_lingerTask");
-
-        await cts.CancelAsync();
-        await Task.WhenAll(senderTask, lingerTask).WaitAsync(TimeSpan.FromSeconds(5));
+        await producer.StopSenderLoopsForTestingAsync();
 
         SetField(producer, "_initialized", true);
     }

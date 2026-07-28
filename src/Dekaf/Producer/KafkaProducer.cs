@@ -28,6 +28,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 {
     internal ValueTask CloseConnectionsForTestingAsync() => _connectionPool.CloseAllAsync();
 
+    internal async ValueTask StopSenderLoopsForTestingAsync()
+    {
+        await _senderCts.CancelAsync().ConfigureAwait(false);
+        await Task.WhenAll(_senderTask, _lingerTask)
+            .WaitAsync(TimeSpan.FromSeconds(5))
+            .ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Sentinel return value from <see cref="TryProduceSyncCore"/> indicating that the
     /// buffer is full and the caller should fall back to the async path (ReserveMemoryAsync).
@@ -72,6 +80,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private readonly bool _ownsInfrastructure;
 
     private readonly CancellationTokenSource _senderCts;
+    private readonly CancellationTokenSource _appendWorkerCts;
     private readonly Task _senderTask;
     private readonly Task _lingerTask;
     private readonly ConcurrentDictionary<Task, byte> _partitionEnrollmentTasks = new();
@@ -490,7 +499,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             CancellationToken.None,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default).Unwrap();
-        _accumulator.StartAppendWorkers(_senderCts.Token);
+        // Sender-loop cancellation is also a test seam. Keep append admission alive until
+        // accumulator disposal completes its channels and owns draining any unread work.
+        _appendWorkerCts = CancellationTokenSource.CreateLinkedTokenSource(_accumulator.DisposalToken);
+        _accumulator.StartAppendWorkers(_appendWorkerCts.Token);
 
         _stateSource = new ProducerStateSource(options.ClientId, _accumulator, _brokerSenders);
         DekafMetrics.RegisterProducerState(_stateSource);
@@ -4891,8 +4903,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Has internal 5s+5s timeouts for workers and in-flight batches, but at this point
         // BrokerSenders are already disposed so it should complete quickly.
         // Reserve half the remaining budget for subsequent disposals (pool, network).
+        _appendWorkerCts.Cancel();
         await DisposeWithBudgetAsync(
             _accumulator.DisposeAsync(), Math.Max(500, RemainingMs() / 2), "accumulator");
+        _appendWorkerCts.Dispose();
 
         // Stop the inflight tracker's pruning timer to prevent callbacks after disposal.
         _inflightTracker.Dispose();

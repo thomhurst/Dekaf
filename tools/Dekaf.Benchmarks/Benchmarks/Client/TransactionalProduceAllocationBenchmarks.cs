@@ -43,11 +43,7 @@ public class TransactionalProduceAllocationBenchmarks
             .WithBufferMemory(ulong.MaxValue)
             .Build();
         var producer = (KafkaProducer<string, string>)_producer;
-        var senderCts = GetField<CancellationTokenSource>(producer, "_senderCts");
-        await senderCts.CancelAsync();
-        await Task.WhenAll(
-            GetField<Task>(producer, "_senderTask"),
-            GetField<Task>(producer, "_lingerTask"));
+        await producer.StopSenderLoopsForTestingAsync();
 
         SeedMetadata(GetField<MetadataManager>(producer, "_metadataManager"));
         SetField(producer, "_initialized", true);
