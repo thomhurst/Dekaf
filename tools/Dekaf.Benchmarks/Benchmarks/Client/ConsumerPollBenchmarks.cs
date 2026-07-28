@@ -30,7 +30,7 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 [CategoriesColumn]
 public class ConsumerPollBenchmarks
 {
-    private const int PollsPerIteration = 400_000;
+    private const int ConfiguredPollsPerIteration = 400_000;
     private const int PrimeMessages = 1;
     private const string TopicPrefix = "benchmark-poll-";
     private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(10);
@@ -45,7 +45,7 @@ public class ConsumerPollBenchmarks
                 .WithLaunchCount(1)
                 .WithWarmupCount(5)
                 .WithIterationCount(10)
-                .WithInvocationCount(PollsPerIteration)
+                .WithInvocationCount(ConfiguredPollsPerIteration)
                 .WithUnrollFactor(1));
         }
     }
@@ -57,6 +57,11 @@ public class ConsumerPollBenchmarks
 
     private Confluent.Kafka.IConsumer<string, string>? _confluentPollConsumer;
     private DekafConsumer.IKafkaConsumer<string, string>? _dekafPollConsumer;
+
+    // Keep the measurement shape in the benchmark identity so rolling history never
+    // mixes this 400k-poll epoch with obsolete runs that used a shorter invocation count.
+    [Params(ConfiguredPollsPerIteration)]
+    public int PollsPerIteration { get; set; }
 
     [Params(100, 1000)]
     public int MessageSize { get; set; }
