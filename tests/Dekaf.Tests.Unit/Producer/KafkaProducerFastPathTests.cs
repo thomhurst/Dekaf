@@ -658,15 +658,8 @@ public class KafkaProducerFastPathTests
         throw new InvalidOperationException("Partition deque did not contain a current or sealed batch.");
     }
 
-    private static async Task StopProducerBackgroundLoopsAsync(KafkaProducer<string, string> producer)
-    {
-        var cts = GetInstanceField<CancellationTokenSource>(producer, "_senderCts");
-        var senderTask = GetInstanceField<Task>(producer, "_senderTask");
-        var lingerTask = GetInstanceField<Task>(producer, "_lingerTask");
-
-        await cts.CancelAsync();
-        await Task.WhenAll(senderTask, lingerTask).WaitAsync(TimeSpan.FromSeconds(5));
-    }
+    private static ValueTask StopProducerBackgroundLoopsAsync(KafkaProducer<string, string> producer)
+        => producer.StopSenderLoopsForTestingAsync();
 
     private static T GetInstanceField<T>(object target, string name)
     {

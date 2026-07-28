@@ -1378,6 +1378,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // capacity is ratcheted up to match the workload's actual cold-path depth.
     private long _lastPoolRatchetPressure;
     private readonly CancellationTokenSource _disposalCts = new();
+    internal CancellationToken DisposalToken => _disposalCts.Token;
     // Broadcast signal for buffer space waiters. When buffer space is freed, the current
     // TCS is completed (waking ALL waiters simultaneously), then swapped for a fresh one.
     // This eliminates the serial convoy problem of SemaphoreSlim(0,1) where N waiters
@@ -6857,8 +6858,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             while (channel.Reader.TryRead(out var workItem))
             {
-                CleanupWorkItemResources(in workItem);
-                PooledCompletionSource.TrySetException(workItem.Completion, disposedException);
+                try
+                {
+                    CleanupWorkItemResources(in workItem);
+                    PooledCompletionSource.TrySetException(workItem.Completion, disposedException);
+                }
+                finally
+                {
+                    DecrementSlowPathAppendCount(workItem.Topic, workItem.Partition);
+                }
             }
         }
 

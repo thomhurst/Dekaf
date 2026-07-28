@@ -47,6 +47,113 @@ public class AppendWorkerAffinityTests
         return readyCount > 0;
     }
 
+    private static int GetSlowPathAppendCount(object deques, TopicPartition tp)
+    {
+        var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
+        var parameters = new object[] { tp, null! };
+        var found = (bool)tryGetValueMethod!.Invoke(deques, parameters)!;
+        if (!found)
+            return 0;
+
+        return (int)parameters[1]!.GetType().GetField("SlowPathAppendCount")!.GetValue(parameters[1])!;
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task StopSenderLoopsForTestingAsync_DoesNotStopAppendWorkers(
+        CancellationToken cancellationToken)
+    {
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithClientId("append-worker-lifetime-test")
+            .WithBufferMemory(ulong.MaxValue)
+            .WithBatchSize(1_048_576)
+            .WithLinger(TimeSpan.Zero)
+            .WithCloseTimeout(TimeSpan.FromMilliseconds(100))
+            .Build();
+
+        await producer.StopSenderLoopsForTestingAsync();
+
+        var accumulator = producer.RecordAccumulator;
+        var completion = pool.Rent();
+        accumulator.EnqueueAppend(
+            "test-topic",
+            partition: 0,
+            timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            key: PooledMemory.Null,
+            value: PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            completion: completion,
+            cancellationToken: CancellationToken.None);
+
+        var deques = GetPartitionDeques(accumulator);
+        await TestWait.UntilAsync(
+            () => HasBatchForPartition(deques, new TopicPartition("test-topic", 0)),
+            cancellationToken,
+            TimeSpan.FromMilliseconds(25));
+
+        await producer.DisposeAsync();
+    }
+
+    [Test]
+    [Timeout(120_000)]
+    public async Task DisposeAsync_FaultsBackpressuredAppendQueueAndClearsOwnership(
+        CancellationToken cancellationToken)
+    {
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var producer = (KafkaProducer<string, string>)Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithClientId("append-worker-disposal-test")
+            .WithBufferMemory(1)
+            .WithBatchSize(4_096)
+            .WithCloseTimeout(TimeSpan.FromMilliseconds(100))
+            .Build();
+
+        var accumulator = producer.RecordAccumulator;
+        var firstCompletion = pool.Rent();
+        var firstTask = firstCompletion.Task.AsTask();
+        accumulator.EnqueueAppend(
+            "test-topic",
+            partition: 0,
+            timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            key: PooledMemory.Null,
+            value: LeakGateHarness.RentPooled(128, seed: 1),
+            headers: null,
+            headerCount: 0,
+            completion: firstCompletion,
+            cancellationToken: CancellationToken.None);
+
+        await TestWait.UntilAsync(
+            () => accumulator.BufferPressureEvents > 0,
+            cancellationToken,
+            TimeSpan.FromMilliseconds(1));
+
+        var secondCompletion = pool.Rent();
+        var secondTask = secondCompletion.Task.AsTask();
+        accumulator.EnqueueAppend(
+            "test-topic",
+            partition: 0,
+            timestamp: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            key: PooledMemory.Null,
+            value: LeakGateHarness.RentPooled(128, seed: 2),
+            headers: null,
+            headerCount: 0,
+            completion: secondCompletion,
+            cancellationToken: CancellationToken.None);
+
+        await producer.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+
+        await Assert.That(async () => await firstTask).Throws<ObjectDisposedException>();
+        await Assert.That(async () => await secondTask).Throws<ObjectDisposedException>();
+        await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(0);
+        await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+        await Assert.That(GetSlowPathAppendCount(
+            GetPartitionDeques(accumulator),
+            new TopicPartition("test-topic", 0))).IsEqualTo(0);
+    }
+
     [Test]
     [Timeout(120_000)]
     public async Task EnqueueAppend_SamePartition_ProcessedSequentially(CancellationToken cancellationToken)
