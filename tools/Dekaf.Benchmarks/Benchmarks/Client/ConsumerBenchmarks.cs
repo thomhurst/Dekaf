@@ -71,20 +71,17 @@ public class ConsumerBenchmarks
 
         var value = new string('x', MessageSize);
         var totalMessages = MessageCount + PrimeMessages;
+        var deliveryTracker = new ConfluentSeedDeliveryTracker();
         for (var i = 0; i < totalMessages; i++)
         {
             _confluentProducer.Produce(_topic, new Confluent.Kafka.Message<string, string>
             {
                 Key = $"key-{i}",
                 Value = value
-            });
+            }, deliveryTracker.Handler);
         }
         var undeliveredMessages = _confluentProducer.Flush(SeedFlushTimeout);
-        if (undeliveredMessages != 0)
-        {
-            throw new InvalidOperationException(
-                $"Benchmark seed flush timed out with {undeliveredMessages} undelivered messages.");
-        }
+        deliveryTracker.EnsureComplete(totalMessages, undeliveredMessages);
     }
 
     [IterationSetup(Targets = [nameof(Confluent_ConsumeAll)])]
