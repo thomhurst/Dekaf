@@ -838,6 +838,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
     /// cancellation and timeout handling (~10 checks per second).
     /// </summary>
     private const int AllPartitionsPausedDelayMs = 100;
+
+    /// <summary>
+    /// How many streamed records the buffered drain yields between cancellation/refresh
+    /// checks. Internal so benchmarks can keep their seeded record totals off this
+    /// boundary instead of hard-coding a copy that drifts.
+    /// </summary>
+    internal const int PollRefreshRecordInterval = 32;
+
     private const int MaxConsecutivePrefetchErrors = 50;
     private const int MaxConsecutiveEmptyParsedFetches = 3;
     private const int MaxRepeatedDeterministicPrefetchFailures = 3;
@@ -2086,8 +2094,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                 var hasInterceptors = _interceptors is not null;
                 var rawTrackingEnabled = _rawRecordTrackingEnabled;
                 var hasAsyncDeserializers = _hasAsyncDeserializers;
-                const int pollRefreshRecordInterval = 32;
-                var recordsUntilPollRefresh = pollRefreshRecordInterval;
+                var recordsUntilPollRefresh = PollRefreshRecordInterval;
 
                 while (_pendingFetches.Count > 0)
                 {
@@ -2277,7 +2284,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> :
                         if (--recordsUntilPollRefresh == 0)
                         {
                             await RecordPollAsync(cancellationToken).ConfigureAwait(false);
-                            recordsUntilPollRefresh = pollRefreshRecordInterval;
+                            recordsUntilPollRefresh = PollRefreshRecordInterval;
                         }
                     }
 
