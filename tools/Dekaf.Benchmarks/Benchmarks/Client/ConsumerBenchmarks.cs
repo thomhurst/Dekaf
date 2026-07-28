@@ -34,6 +34,7 @@ public class ConsumerBenchmarks
     private const string TopicPrefix = "benchmark-consumer-";
     private const int PrimeMessages = 1;
     private static readonly TimeSpan ConsumeTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan SeedFlushTimeout = TimeSpan.FromMinutes(2);
 
     private string _topic = null!;
 
@@ -78,7 +79,12 @@ public class ConsumerBenchmarks
                 Value = value
             });
         }
-        _confluentProducer.Flush(TimeSpan.FromSeconds(30));
+        var undeliveredMessages = _confluentProducer.Flush(SeedFlushTimeout);
+        if (undeliveredMessages != 0)
+        {
+            throw new InvalidOperationException(
+                $"Benchmark seed flush timed out with {undeliveredMessages} undelivered messages.");
+        }
     }
 
     [IterationSetup(Targets = [nameof(Confluent_ConsumeAll)])]
