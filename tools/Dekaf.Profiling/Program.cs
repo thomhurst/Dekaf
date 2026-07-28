@@ -611,14 +611,7 @@ public static class Program
 
         await container.StartAsync().ConfigureAwait(false);
 
-        // GetBootstrapAddress returns format like "plaintext://127.0.0.1:9092/"
-        // Dekaf expects just "127.0.0.1:9092"
-        var rawAddress = container.GetBootstrapAddress();
-        var bootstrapServers = rawAddress;
-        if (Uri.TryCreate(rawAddress, UriKind.Absolute, out var uri))
-        {
-            bootstrapServers = $"{uri.Host}:{uri.Port}";
-        }
+        var bootstrapServers = container.GetBootstrapAddress();
         Console.WriteLine($"Kafka started at {bootstrapServers}");
 
         // Wait for Kafka to be ready by attempting to connect with a producer

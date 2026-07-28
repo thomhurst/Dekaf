@@ -82,7 +82,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             .Build();
 
         await _kafkaContainer.StartAsync().ConfigureAwait(false);
-        _bootstrapServers = ExtractHostPort(_kafkaContainer.GetBootstrapAddress());
+        _bootstrapServers = _kafkaContainer.GetBootstrapAddress();
         Console.WriteLine($"[KafkaWithSchemaRegistry] Kafka started at {_bootstrapServers}");
 
         // Verify Kafka is accepting connections before starting Schema Registry.
@@ -111,30 +111,19 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         await WaitForServicesAsync().ConfigureAwait(false);
     }
 
-    private static string ExtractHostPort(string address)
-    {
-        if (Uri.TryCreate(address, UriKind.Absolute, out var uri))
-        {
-            return $"{uri.Host}:{uri.Port}";
-        }
-        return address.TrimEnd('/');
-    }
-
     private async Task WaitForKafkaAsync()
     {
         Console.WriteLine("[KafkaWithSchemaRegistry] Waiting for Kafka to be ready...");
         const int maxAttempts = 30;
 
-        var colonIndex = _bootstrapServers.LastIndexOf(':');
-        var host = _bootstrapServers[..colonIndex];
-        var port = int.Parse(_bootstrapServers[(colonIndex + 1)..]);
+        var endpoint = BootstrapServerList.Parse(_bootstrapServers);
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             try
             {
                 using var client = new TcpClient();
-                await client.ConnectAsync(host, port).ConfigureAwait(false);
+                await client.ConnectAsync(endpoint.Host, endpoint.Port).ConfigureAwait(false);
                 if (client.Connected)
                 {
                     Console.WriteLine("[KafkaWithSchemaRegistry] Kafka is accepting connections");

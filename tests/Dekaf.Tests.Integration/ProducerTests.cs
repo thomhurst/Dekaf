@@ -12,6 +12,25 @@ namespace Dekaf.Tests.Integration;
 public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
+    public async Task Producer_SchemePrefixedBootstrapServer_ProducesSuccessfully()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var endpoint = BootstrapServerList.Parse(KafkaContainer.BootstrapServers);
+        var bootstrapServer = $"PLAINTEXT://{endpoint.Normalized}/";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(bootstrapServer)
+            .WithClientId("test-producer-scheme-prefixed-bootstrap")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        var metadata = await producer.ProduceAsync(topic, "key", "value");
+
+        await Assert.That(metadata.Topic).IsEqualTo(topic);
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+    }
+
+    [Test]
     public async Task Producer_MultiTopicProduce_UsesNegotiatedTopicEncoding()
     {
         var firstTopic = await KafkaContainer.CreateTestTopicAsync();

@@ -234,12 +234,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
 
         await container.StartAsync().ConfigureAwait(false);
 
-        var rawAddress = container.GetBootstrapAddress();
-        var bootstrapServers = rawAddress;
-        if (Uri.TryCreate(rawAddress, UriKind.Absolute, out var uri))
-        {
-            bootstrapServers = $"{uri.Host}:{uri.Port}";
-        }
+        var bootstrapServers = container.GetBootstrapAddress();
 
         Console.WriteLine($"Kafka started at {bootstrapServers}");
         await WaitForKafkaAsync(bootstrapServers).ConfigureAwait(false);

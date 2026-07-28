@@ -122,8 +122,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
 
         await _container.StartAsync();
 
-        var rawAddress = _container.GetBootstrapAddress();
-        BootstrapServers = ExtractHostPort(rawAddress);
+        BootstrapServers = _container.GetBootstrapAddress();
 
         Console.WriteLine($"[TlsKafkaContainer] TLS Kafka started at {BootstrapServers}");
 
@@ -160,15 +159,6 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         }
     }
 
-    private static string ExtractHostPort(string address)
-    {
-        if (Uri.TryCreate(address, UriKind.Absolute, out var uri))
-        {
-            return $"{uri.Host}:{uri.Port}";
-        }
-        return address.TrimEnd('/');
-    }
-
     private static int GetFreeTcpPort()
     {
         var listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
@@ -199,16 +189,14 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
     {
         Console.WriteLine("[TlsKafkaContainer] Waiting for Kafka SSL listener to be ready...");
 
-        var colonIndex = BootstrapServers.LastIndexOf(':');
-        var host = BootstrapServers[..colonIndex];
-        var port = int.Parse(BootstrapServers[(colonIndex + 1)..]);
+        var endpoint = BootstrapServerList.Parse(BootstrapServers);
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
             {
                 using var client = new TcpClient();
-                await client.ConnectAsync(host, port);
+                await client.ConnectAsync(endpoint.Host, endpoint.Port);
                 if (client.Connected)
                 {
                     // Perform an actual TLS handshake to verify the SSL listener is fully ready.
@@ -224,7 +212,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
 
                     await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
                     {
-                        TargetHost = host
+                        TargetHost = endpoint.Host
                     });
 
                     Console.WriteLine("[TlsKafkaContainer] Kafka SSL listener is accepting TLS connections");
