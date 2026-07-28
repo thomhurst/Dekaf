@@ -31,7 +31,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     internal async ValueTask StopSenderLoopsForTestingAsync()
     {
         await _senderCts.CancelAsync().ConfigureAwait(false);
-        await Task.WhenAll(_senderTask, _lingerTask).ConfigureAwait(false);
+        await Task.WhenAll(_senderTask, _lingerTask)
+            .WaitAsync(TimeSpan.FromSeconds(5))
+            .ConfigureAwait(false);
     }
 
     /// <summary>
