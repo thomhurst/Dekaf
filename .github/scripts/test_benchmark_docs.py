@@ -74,6 +74,35 @@ class BenchmarkDocsTests(unittest.TestCase):
 
         self.assertEqual([], rolling_comparisons(entries))
 
+    def test_current_measurement_shape_excludes_older_shape(self):
+        prefix = "Dekaf.Benchmarks.Benchmarks.Client.ConsumerPollBenchmarks"
+        old_parameters = "(MessageSize: 100)"
+        current_parameters = "(PollsPerIteration: 400000, MessageSize: 100)"
+        entries = [
+            {
+                "benches": [
+                    benchmark(f"{prefix}.Dekaf_PollSingle{old_parameters}", 200),
+                    benchmark(f"{prefix}.Confluent_PollSingle{old_parameters}", 100),
+                ]
+            },
+            {
+                "benches": [
+                    benchmark(f"{prefix}.Dekaf_PollSingle{current_parameters}", 50),
+                    benchmark(f"{prefix}.Confluent_PollSingle{current_parameters}", 100),
+                ]
+            },
+        ]
+
+        comparisons = rolling_comparisons(entries)
+
+        self.assertEqual(1, len(comparisons))
+        self.assertEqual(1, comparisons[0]["runs"])
+        self.assertEqual(0.5, comparisons[0]["median"])
+        self.assertEqual(
+            "PollsPerIteration: 400000, MessageSize: 100",
+            comparisons[0]["parameters"],
+        )
+
     def test_latest_ratio_sd_is_visibly_flagged(self):
         table = [
             "| Method | Ratio | RatioSD |",

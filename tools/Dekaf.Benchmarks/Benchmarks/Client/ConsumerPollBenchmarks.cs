@@ -20,8 +20,9 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 /// three cold single-shot samples per case — the call graph never reaches the tiered
 /// compilation promotion threshold, so the managed poll path runs unoptimized Tier-0
 /// code while Confluent's native librdkafka path is unaffected, and one scheduler
-/// preemption distorts the whole statistic. Thousands of warm polls per iteration give
-/// both clients Tier-1 code and real statistics.
+/// preemption distorts the whole statistic. Hundreds of thousands of warm polls per
+/// iteration give both clients Tier-1 code and keep measured iterations above
+/// BenchmarkDotNet's 100 ms recommendation.
 /// </remarks>
 [MemoryDiagnoser]
 [Config(typeof(PollJobConfig))]
@@ -29,10 +30,11 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 [CategoriesColumn]
 public class ConsumerPollBenchmarks
 {
-    private const int PollsPerIteration = 10_000;
+    private const int ConfiguredPollsPerIteration = 400_000;
     private const int PrimeMessages = 1;
     private const string TopicPrefix = "benchmark-poll-";
     private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan SeedFlushTimeout = TimeSpan.FromMinutes(2);
 
     private sealed class PollJobConfig : ManualConfig
     {
@@ -43,7 +45,7 @@ public class ConsumerPollBenchmarks
                 .WithLaunchCount(1)
                 .WithWarmupCount(5)
                 .WithIterationCount(10)
-                .WithInvocationCount(PollsPerIteration)
+                .WithInvocationCount(ConfiguredPollsPerIteration)
                 .WithUnrollFactor(1));
         }
     }
@@ -56,6 +58,11 @@ public class ConsumerPollBenchmarks
     private Confluent.Kafka.IConsumer<string, string>? _confluentPollConsumer;
     private DekafConsumer.IKafkaConsumer<string, string>? _dekafPollConsumer;
 
+    // Keep the measurement shape in the benchmark identity so rolling history never
+    // mixes this 400k-poll epoch with obsolete runs that used a shorter invocation count.
+    [Params(ConfiguredPollsPerIteration)]
+    public int PollsPerIteration { get; set; }
+
     [Params(100, 1000)]
     public int MessageSize { get; set; }
 
@@ -67,7 +74,9 @@ public class ConsumerPollBenchmarks
         var confluentConfig = new Confluent.Kafka.ProducerConfig
         {
             BootstrapServers = _kafka.BootstrapServers,
-            ClientId = "benchmark-seeder"
+            ClientId = "benchmark-seeder",
+            QueueBufferingMaxMessages = PollsPerIteration + PrimeMessages,
+            QueueBufferingMaxKbytes = 512 * 1024
         };
         _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(confluentConfig).Build();
 
@@ -82,15 +91,17 @@ public class ConsumerPollBenchmarks
 
         var value = new string('x', MessageSize);
         var totalMessages = PollsPerIteration + PrimeMessages;
+        var deliveryTracker = new ConfluentSeedDeliveryTracker();
         for (var i = 0; i < totalMessages; i++)
         {
             _confluentProducer.Produce(_topic, new Confluent.Kafka.Message<string, string>
             {
                 Key = $"key-{i}",
                 Value = value
-            });
+            }, deliveryTracker.Handler);
         }
-        _confluentProducer.Flush(TimeSpan.FromSeconds(30));
+        var undeliveredMessages = _confluentProducer.Flush(SeedFlushTimeout);
+        deliveryTracker.EnsureComplete(totalMessages, undeliveredMessages);
     }
 
     [IterationSetup(Targets = [nameof(Confluent_PollSingle)])]

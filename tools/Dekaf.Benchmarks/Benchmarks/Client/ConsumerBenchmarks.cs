@@ -34,6 +34,7 @@ public class ConsumerBenchmarks
     private const string TopicPrefix = "benchmark-consumer-";
     private const int PrimeMessages = 1;
     private static readonly TimeSpan ConsumeTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan SeedFlushTimeout = TimeSpan.FromMinutes(2);
 
     private string _topic = null!;
 
@@ -70,15 +71,17 @@ public class ConsumerBenchmarks
 
         var value = new string('x', MessageSize);
         var totalMessages = MessageCount + PrimeMessages;
+        var deliveryTracker = new ConfluentSeedDeliveryTracker();
         for (var i = 0; i < totalMessages; i++)
         {
             _confluentProducer.Produce(_topic, new Confluent.Kafka.Message<string, string>
             {
                 Key = $"key-{i}",
                 Value = value
-            });
+            }, deliveryTracker.Handler);
         }
-        _confluentProducer.Flush(TimeSpan.FromSeconds(30));
+        var undeliveredMessages = _confluentProducer.Flush(SeedFlushTimeout);
+        deliveryTracker.EnsureComplete(totalMessages, undeliveredMessages);
     }
 
     [IterationSetup(Targets = [nameof(Confluent_ConsumeAll)])]
