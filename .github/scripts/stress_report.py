@@ -320,6 +320,12 @@ def _latency_identity(result):
     )
 
 
+# The client orders a balanced pair must cover. Shared by the docs
+# "Order-Balanced Aggregate" table and the trend gate's aggregate series so the
+# two cannot silently disagree about what counts as a balanced pair.
+PAIRED_ORDER_LABELS = frozenset({'dekaf-first', 'confluent-first'})
+
+
 def paired_order_identity(result):
     """Use client order as an identity dimension only for repeated paired samples."""
     sample_count = result.get('pairedSampleCount')
@@ -347,11 +353,15 @@ def _latency_roundtrip_messages(result):
 
 def _latency_scenario_label(result):
     brokers = result.get('brokerCount', 1)
-    return (
+    label = (
         f"{result.get('scenario', 'unknown')} / {result.get('client', 'unknown')} / "
         f"{brokers} broker{'s' if brokers != 1 else ''} / "
         f"{result.get('messageSizeBytes', '?')}B / {result.get('durationMinutes', '?')}m"
     )
+    order = paired_order_identity(result)
+    if order is not None:
+        label += f" / {order}"
+    return label
 
 
 def comparison_rate(result):
@@ -399,9 +409,8 @@ def format_order_balanced_aggregate(results):
     if not dekaf or not confluent:
         return []
 
-    required_orders = {'dekaf-first', 'confluent-first'}
     if any(
-        not required_orders.issubset({
+        not PAIRED_ORDER_LABELS.issubset({
             str(result.get('pairedClientOrder', '')).casefold()
             for result in group['results']
         })

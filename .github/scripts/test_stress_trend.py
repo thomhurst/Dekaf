@@ -114,6 +114,14 @@ def stall_history_runs():
     ]
 
 
+def client_metric(evaluations, metric, client):
+    """First evaluation for a metric whose scenario label names the client."""
+    return next(
+        item for item in evaluations
+        if item["metric"] == metric and item["scenario"].split(" / ")[1] == client
+    )
+
+
 class StressTrendTests(unittest.TestCase):
     def test_steady_roundtrip_identity_uses_window_not_dynamic_message_count(self):
         dekaf = result(
@@ -412,28 +420,125 @@ class StressTrendTests(unittest.TestCase):
         self.assertEqual("stable", ratio["status"])
         self.assertFalse(should_fail)
 
-    def test_order_balanced_samples_use_their_matching_same_run_control(self):
-        samples = [
+    def order_balanced_samples(
+        self,
+        dekaf_first=2000.0,
+        dekaf_second=3000.0,
+        confluent_first=1000.0,
+        confluent_second=2000.0,
+    ):
+        return [
             result(
-                messages_per_second=2000.0,
+                messages_per_second=dekaf_first,
                 pairedClientOrder="dekaf-first",
                 pairedSampleCount=2,
             ),
             result(
                 client="Confluent",
-                messages_per_second=1000.0,
+                messages_per_second=confluent_first,
                 pairedClientOrder="dekaf-first",
                 pairedSampleCount=2,
             ),
             result(
                 client="Confluent",
-                messages_per_second=2000.0,
+                messages_per_second=confluent_second,
                 pairedClientOrder="confluent-first",
                 pairedSampleCount=2,
             ),
             result(
-                messages_per_second=3000.0,
+                messages_per_second=dekaf_second,
                 pairedClientOrder="confluent-first",
+                pairedSampleCount=2,
+            ),
+        ]
+
+    def test_order_balanced_pair_trends_as_single_geomean_aggregate(self):
+        evaluations, updated, _ = evaluate_and_update(
+            {"version": 1, "runs": []},
+            self.order_balanced_samples(),
+            "2026-07-01T02:00:00Z",
+        )
+
+        throughput = [
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        ]
+        self.assertEqual(2, len(throughput))
+        self.assertAlmostEqual(
+            (2000.0 * 3000.0) ** 0.5,
+            client_metric(evaluations, "messagesPerSecond", "Dekaf")["current"],
+        )
+        self.assertAlmostEqual(
+            (1000.0 * 2000.0) ** 0.5,
+            client_metric(evaluations, "messagesPerSecond", "Confluent")["current"],
+        )
+
+        ratios = [
+            item["current"]
+            for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+        ]
+        self.assertEqual(1, len(ratios))
+        self.assertAlmostEqual(3.0 ** 0.5, ratios[0])
+
+        recorded = updated["runs"][-1]["results"]
+        aggregates = [
+            item for item in recorded if item.get("orderBalancedAggregate")
+        ]
+        self.assertEqual(2, len(aggregates))
+        for aggregate in aggregates:
+            self.assertIsNone(aggregate["pairedClientOrder"])
+            self.assertEqual(2, aggregate["pairedSampleCount"])
+        diagnostics = [
+            item for item in recorded if item.get("pairedClientOrder") is not None
+        ]
+        self.assertEqual(4, len(diagnostics))
+        for diagnostic in diagnostics:
+            self.assertIn("messagesPerSecond", diagnostic)
+            self.assertNotIn("messagesPerSecondTrend", diagnostic)
+
+    def test_order_balanced_aggregate_attaches_to_plain_label_history(self):
+        evaluations, _, _ = evaluate_and_update(
+            {"version": 1, "runs": [history_run(i, 2449.0) for i in range(1, 5)]},
+            self.order_balanced_samples(),
+            "2026-07-01T02:00:00Z",
+        )
+
+        dekaf_throughput = client_metric(evaluations, "messagesPerSecond", "Dekaf")
+        self.assertEqual(4, dekaf_throughput["baselineCount"])
+        self.assertEqual("stable", dekaf_throughput["status"])
+
+    def test_order_balanced_aggregate_regression_flags_and_fails_when_repeated(self):
+        runs = [paired_history_run(i, 2449.0, 1414.0) for i in range(1, 5)]
+        regressed = self.order_balanced_samples(
+            dekaf_first=1200.0,
+            dekaf_second=1250.0,
+        )
+
+        first_evaluations, first_updated, first_should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            regressed,
+            "2026-07-01T02:00:00Z",
+        )
+        first_dekaf = client_metric(first_evaluations, "messagesPerSecond", "Dekaf")
+        self.assertEqual("regression", first_dekaf["status"])
+        self.assertFalse(first_dekaf["repeatedRegression"])
+        self.assertFalse(first_should_fail)
+
+        second_evaluations, _, second_should_fail = evaluate_and_update(
+            first_updated,
+            regressed,
+            "2026-07-08T02:00:00Z",
+        )
+        second_dekaf = client_metric(second_evaluations, "messagesPerSecond", "Dekaf")
+        self.assertTrue(second_dekaf["repeatedRegression"])
+        self.assertTrue(second_dekaf["failureEligible"])
+        self.assertTrue(second_should_fail)
+
+    def test_duplicate_order_sample_disables_balanced_aggregate(self):
+        samples = self.order_balanced_samples() + [
+            result(
+                messages_per_second=9000.0,
+                pairedClientOrder="dekaf-first",
                 pairedSampleCount=2,
             ),
         ]
@@ -444,31 +549,323 @@ class StressTrendTests(unittest.TestCase):
             "2026-07-01T02:00:00Z",
         )
 
-        ratios = sorted(
-            item["current"]
-            for item in evaluations
+        dekaf_throughput = [
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecond"
+            and item["scenario"].split(" / ")[1] == "Dekaf"
+        ]
+        # The duplicated dekaf-first sample would weight that order more
+        # heavily in a geomean, so the Dekaf family gets no aggregate and each
+        # ordered sample trends on its own series instead.
+        self.assertEqual(3, len(dekaf_throughput))
+        for item in dekaf_throughput:
+            self.assertIn("first", item["scenario"])
+        recorded = updated["runs"][-1]["results"]
+        self.assertFalse(any(
+            item.get("orderBalancedAggregate") and item["client"] == "Dekaf"
+            for item in recorded
+        ))
+
+    def ordered_history_run(self, index, dekaf_first, dekaf_second):
+        base = {
+            "scenario": "producer",
+            "client": "Dekaf",
+            "brokerCount": 1,
+            "durationMinutes": 15,
+            "messageSizeBytes": 1000,
+            "pairedSampleCount": 2,
+            "cpuMicrosPerMessage": 2.0,
+        }
+        return {
+            "runStartedAtUtc": f"2026-06-{index:02d}T02:00:00Z",
+            "results": [
+                {
+                    **base,
+                    "pairedClientOrder": "dekaf-first",
+                    "messagesPerSecond": dekaf_first,
+                    "messagesPerSecondTrend": "stable",
+                },
+                {
+                    **base,
+                    "pairedClientOrder": "confluent-first",
+                    "messagesPerSecond": dekaf_second,
+                    "messagesPerSecondTrend": "stable",
+                },
+            ],
+        }
+
+    def test_stale_prerename_regression_is_not_repeated_across_ordered_runs(self):
+        # Last pre-rename observation was a regression, but two healthy ordered
+        # runs happened since: the fresh aggregate regression must not pair
+        # with the stale verdict as "consecutive", and the interim geomeans
+        # must extend the aggregate baseline.
+        runs = [paired_history_run(i, 2449.0, 1414.0) for i in range(1, 5)]
+        runs.append(paired_history_run(
+            5, 1200.0, 1414.0, messagesPerSecondTrend="regression",
+        ))
+        runs.append(self.ordered_history_run(6, 2000.0, 3000.0))
+        runs.append(self.ordered_history_run(7, 2000.0, 3000.0))
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            self.order_balanced_samples(dekaf_first=1200.0, dekaf_second=1250.0),
+            "2026-07-01T02:00:00Z",
+        )
+
+        dekaf = client_metric(evaluations, "messagesPerSecond", "Dekaf")
+        self.assertEqual("regression", dekaf["status"])
+        self.assertFalse(dekaf["repeatedRegression"])
+        self.assertFalse(dekaf["failureEligible"])
+        self.assertEqual(6, dekaf["baselineCount"])
+        self.assertFalse(should_fail)
+
+    def ordered_paired_history_run(self, index, dekaf_rate, confluent_rate):
+        def sample(client, order, rate):
+            return {
+                "scenario": "producer",
+                "client": client,
+                "brokerCount": 1,
+                "durationMinutes": 15,
+                "messageSizeBytes": 1000,
+                "pairedClientOrder": order,
+                "pairedSampleCount": 2,
+                "messagesPerSecond": rate,
+                "messagesPerSecondTrend": "stable",
+                "messagesPerSecondControlRatioTrend": "stable",
+            }
+
+        return {
+            "runStartedAtUtc": f"2026-06-{index:02d}T02:00:00Z",
+            "results": [
+                sample("Dekaf", "dekaf-first", dekaf_rate),
+                sample("Confluent", "dekaf-first", confluent_rate),
+                sample("Dekaf", "confluent-first", dekaf_rate),
+                sample("Confluent", "confluent-first", confluent_rate),
+            ],
+        }
+
+    def test_ratio_baseline_bridges_interim_ordered_runs(self):
+        # The Dekaf/Confluent ratio settled at ~1.414 during four interim
+        # ordered runs (Dekaf 2000 vs Confluent 1414), down from the stale
+        # pre-rename 1.732. A later Dekaf absolute regression whose current
+        # ratio matches the interim level must not be corroborated against
+        # the stale pre-rename ratio band into a gate failure.
+        runs = [paired_history_run(i, 2449.0, 1414.0) for i in range(1, 4)]
+        for index in range(4, 8):
+            runs.append(self.ordered_paired_history_run(index, 2000.0, 1414.0))
+
+        regressed = self.order_balanced_samples(
+            dekaf_first=1600.0,
+            dekaf_second=1600.0,
+            confluent_first=1131.4,
+            confluent_second=1131.4,
+        )
+
+        _, first_updated, first_should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            regressed,
+            "2026-07-01T02:00:00Z",
+        )
+        self.assertFalse(first_should_fail)
+
+        second_evaluations, _, second_should_fail = evaluate_and_update(
+            first_updated,
+            regressed,
+            "2026-07-08T02:00:00Z",
+        )
+
+        dekaf = client_metric(second_evaluations, "messagesPerSecond", "Dekaf")
+        ratio = next(
+            item for item in second_evaluations
             if item["metric"] == "messagesPerSecondControlRatio"
         )
-        self.assertEqual([1.5, 2.0], ratios)
-        self.assertEqual(
-            [
-                "dekaf-first",
-                "dekaf-first",
-                "confluent-first",
-                "confluent-first",
+        self.assertEqual("regression", dekaf["status"])
+        self.assertTrue(dekaf["repeatedRegression"])
+        self.assertEqual("stable", ratio["status"])
+        self.assertFalse(dekaf["failureEligible"])
+        self.assertFalse(second_should_fail)
+
+    def test_3conn_ratio_baseline_bridges_interim_ordered_runs(self):
+        # The order-less "Dekaf (3conn)" control kept running single-sample
+        # through the rename window, but its Confluent control was ordered in
+        # interim runs, so its ratio history skipped them. The reconstruction
+        # must combine the order-less candidate with the ordered control
+        # geomean so the restored current pairing is judged against the
+        # interim ratio level (1.414), not only the stale pre-rename 2.0.
+        def plain_3conn(rate):
+            return {
+                "scenario": "producer",
+                "client": "Dekaf (3conn)",
+                "brokerCount": 1,
+                "durationMinutes": 15,
+                "messageSizeBytes": 1000,
+                "messagesPerSecond": rate,
+                "messagesPerSecondTrend": "stable",
+            }
+
+        runs = []
+        for index in range(1, 4):
+            runs.append({
+                "runStartedAtUtc": f"2026-06-{index:02d}T02:00:00Z",
+                "results": [
+                    plain_3conn(1000.0),
+                    {**plain_3conn(500.0), "client": "Confluent"},
+                ],
+            })
+        for index in range(4, 8):
+            interim = self.ordered_paired_history_run(index, 2000.0, 707.0)
+            interim["results"] = [
+                item for item in interim["results"] if item["client"] == "Confluent"
+            ] + [plain_3conn(1000.0)]
+            runs.append(interim)
+
+        evaluations, _, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            self.order_balanced_samples(
+                confluent_first=707.0,
+                confluent_second=707.0,
+            ) + [
+                {
+                    "scenario": "producer",
+                    "client": "Dekaf (3conn)",
+                    "brokerCount": 1,
+                    "durationMinutes": 15,
+                    "messageSizeBytes": 1000,
+                    "effectiveMessagesPerSecond": 1000.0,
+                    "cpuMicrosPerMessage": 2.0,
+                    "throughput": {},
+                },
             ],
-            [
-                item["pairedClientOrder"]
-                for item in updated["runs"][-1]["results"]
-            ],
+            "2026-07-01T02:00:00Z",
         )
-        self.assertEqual(
-            [2, 2, 2, 2],
-            [
-                item["pairedSampleCount"]
-                for item in updated["runs"][-1]["results"]
-            ],
+
+        ratio = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+            and "3conn" in item["scenario"]
         )
+        self.assertEqual(7, ratio["baselineCount"])
+        self.assertAlmostEqual(1000.0 / 707.0, ratio["current"])
+        self.assertEqual("stable", ratio["status"])
+
+    def test_unrenamed_control_series_is_untouched_by_order_aggregation(self):
+        runs = [history_run(i) for i in range(1, 5)]
+        for run in runs:
+            run["results"].append({
+                **run["results"][0],
+                "client": "Dekaf (3conn)",
+            })
+
+        evaluations, updated, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            self.order_balanced_samples() + [
+                result(client="Dekaf (3conn)", messages_per_second=1000.0),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        control_throughput = client_metric(
+            evaluations, "messagesPerSecond", "Dekaf (3conn)"
+        )
+        self.assertEqual(4, control_throughput["baselineCount"])
+        self.assertEqual("stable", control_throughput["status"])
+        control_observation = next(
+            item for item in updated["runs"][-1]["results"]
+            if item["client"] == "Dekaf (3conn)"
+        )
+        self.assertNotIn("orderBalancedAggregate", control_observation)
+
+    def test_partial_order_pair_keeps_trending_on_its_own_series(self):
+        evaluations, _, _ = evaluate_and_update(
+            {"version": 1, "runs": []},
+            [result(
+                messages_per_second=1000.0,
+                pairedClientOrder="dekaf-first",
+                pairedSampleCount=2,
+            )],
+            "2026-07-01T02:00:00Z",
+        )
+
+        throughput = [
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        ]
+        self.assertEqual(1, len(throughput))
+        self.assertIn("dekaf-first", throughput[0]["scenario"])
+
+    def test_metric_that_fails_to_aggregate_keeps_per_order_trending(self):
+        samples = self.order_balanced_samples()
+        samples[0]["cpuMicrosPerMessage"] = None  # Dekaf dekaf-first sample
+
+        evaluations, _, _ = evaluate_and_update(
+            {"version": 1, "runs": []},
+            samples,
+            "2026-07-01T02:00:00Z",
+        )
+
+        cpu = [
+            item for item in evaluations if item["metric"] == "cpuMicrosPerMessage"
+        ]
+        dekaf_cpu = [
+            item for item in cpu if item["scenario"].split(" / ")[1] == "Dekaf"
+        ]
+        # Dekaf CPU could not aggregate (one sample has no CPU data), so the
+        # remaining ordered sample keeps trending on its own per-order series.
+        self.assertEqual(1, len(dekaf_cpu))
+        self.assertIn("confluent-first", dekaf_cpu[0]["scenario"])
+        # Confluent CPU and both throughput series still trend via aggregates.
+        confluent_cpu = client_metric(evaluations, "cpuMicrosPerMessage", "Confluent")
+        self.assertNotIn("first", confluent_cpu["scenario"])
+        dekaf_throughput = client_metric(evaluations, "messagesPerSecond", "Dekaf")
+        self.assertNotIn("first", dekaf_throughput["scenario"])
+
+    def test_ordered_sample_intra_run_breach_corroborated_by_family_aggregate(self):
+        runs = [paired_history_run(i, 2449.0, 1414.0) for i in range(1, 5)]
+
+        def samples(dekaf_first_rate, dekaf_second_rate):
+            paired = dict(pairedClientOrder="dekaf-first", pairedSampleCount=2)
+            return [
+                intra_run_result(
+                    steady_ratio=0.7,
+                    slope=0.1,
+                    messages_per_second=dekaf_first_rate,
+                    **paired,
+                ),
+                result(
+                    client="Confluent", messages_per_second=1414.0, **paired
+                ),
+                result(
+                    client="Confluent",
+                    messages_per_second=1414.0,
+                    pairedClientOrder="confluent-first",
+                    pairedSampleCount=2,
+                ),
+                result(
+                    messages_per_second=dekaf_second_rate,
+                    pairedClientOrder="confluent-first",
+                    pairedSampleCount=2,
+                ),
+            ]
+
+        def steady_breach(evaluations):
+            return next(
+                item for item in evaluations
+                if item["metric"] == "steadyStatePeakRatio"
+                and "dekaf-first" in item["scenario"]
+            )
+
+        healthy, _, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            samples(2449.0, 2449.0),
+            "2026-07-01T02:00:00Z",
+        )
+        self.assertFalse(steady_breach(healthy)["corroborated"])
+
+        regressed, _, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            samples(1200.0, 1250.0),
+            "2026-07-01T02:00:00Z",
+        )
+        self.assertTrue(steady_breach(regressed)["corroborated"])
 
     def test_single_sample_order_does_not_split_existing_trend_history(self):
         evaluations, _, _ = evaluate_and_update(
