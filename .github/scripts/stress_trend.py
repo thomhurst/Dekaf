@@ -7,9 +7,11 @@ from pathlib import Path
 from statistics import median
 
 from stress_report import (
+    comparison_rate,
     cpu_micros_per_message,
     effective_rate,
     intra_run_throughput,
+    median_interval_rate,
     paired_order_identity,
     paired_latency_thresholds,
 )
@@ -38,7 +40,11 @@ _IDENTITY_FIELDS = (
 _METRICS = {
     "messagesPerSecond": {
         "label": "Messages/sec",
-        "extract": effective_rate,
+        # Trend on the same rate the docs tables rank on: the median sampled interval
+        # throughput when the run recorded interval samples, else the whole-run mean.
+        # A short shared stall depresses the mean of an otherwise steady run and
+        # produced a false repeated-regression fail (issue #2467).
+        "extract": comparison_rate,
         "lower_is_regression": True,
     },
     "cpuMicrosPerMessage": {
@@ -51,6 +57,20 @@ _METRICS = {
 
 def _finite_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value)
+
+
+def _history_metric_value(observation, metric):
+    """Baseline value recorded by a stored history observation.
+
+    Throughput prefers the additively stored median interval rate so trailing bands
+    track the trended rate; entries written before that field existed fall back to
+    the whole-run mean they recorded.
+    """
+    if metric == "messagesPerSecond":
+        median_rate = median_interval_rate(observation)
+        if median_rate is not None:
+            return median_rate
+    return observation.get(metric)
 
 
 def _roundtrip_messages(result):
@@ -158,8 +178,8 @@ def _matching_control_ratios(runs, result, metric):
         if candidate is None or control is None:
             continue
 
-        candidate_value = candidate.get(metric)
-        control_value = control.get(metric)
+        candidate_value = _history_metric_value(candidate, metric)
+        control_value = _history_metric_value(control, metric)
         if (
             not _finite_number(candidate_value)
             or not _finite_number(control_value)
@@ -190,7 +210,7 @@ def _limit_observations_per_identity(runs):
             for metric in _METRICS:
                 baseline_key = (key, metric)
                 if (
-                    _finite_number(observation.get(metric))
+                    _finite_number(_history_metric_value(observation, metric))
                     and observation.get(f"{metric}Trend") != "regression"
                     and not observation.get("environmentShiftSuspected", False)
                     and retained_baseline_counts.get(baseline_key, 0) < HISTORY_LIMIT
@@ -326,7 +346,7 @@ def evaluate_and_update(history, current_results, run_started_at):
             # Keep warned observations for consecutive-trend detection, but do not let
             # them widen the clean baseline used to judge the next run.
             history_values = [
-                item.get(metric)
+                _history_metric_value(item, metric)
                 for item in prior
                 if item.get(trend_field) != "regression"
                 and not item.get("environmentShiftSuspected", False)
@@ -367,7 +387,14 @@ def evaluate_and_update(history, current_results, run_started_at):
                     "repeatedRegression": repeated,
                 })
 
-            observation[metric] = value
+            if metric == "messagesPerSecond" and median_interval_rate(result) is not None:
+                # `value` is the median interval rate (comparison_rate prefers it);
+                # store it additively while the whole-run mean stays under the
+                # existing key so pre-existing entries and their readers stay valid.
+                observation["medianIntervalMessagesPerSecond"] = value
+                observation[metric] = effective_rate(result)
+            else:
+                observation[metric] = value
             observation[f"{metric}Trend"] = evaluation["status"]
 
             ratio_evaluation = None
@@ -511,6 +538,11 @@ def format_markdown(evaluations):
             "Paired Dekaf baseline regressions fail only when the same-run ratio also "
             "regresses; unpaired scenarios retain the consecutive-regression gate. "
             "Confluent regressions remain environment warnings."
+        ),
+        (
+            "Messages/sec trends on the median sampled interval rate when the run "
+            "recorded interval samples (the rate the docs tables rank on); results "
+            "and history entries without samples fall back to the whole-run mean."
         ),
     ]
 

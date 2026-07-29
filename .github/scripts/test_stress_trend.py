@@ -71,9 +71,16 @@ def paired_history_run(
     return run
 
 
-def intra_run_result(client="Dekaf", steady_ratio=0.6, slope=-8.0, **overrides):
+def intra_run_result(
+    client="Dekaf",
+    steady_ratio=0.6,
+    slope=-8.0,
+    messages_per_second=1000.0,
+    **overrides,
+):
     value = result(
         client=client,
+        messages_per_second=messages_per_second,
         steadyStatePeakRatio=steady_ratio,
         intraRunDriftPercent=-35.9,
         throughputSlopePercentPerMinute=slope,
@@ -84,11 +91,27 @@ def intra_run_result(client="Dekaf", steady_ratio=0.6, slope=-8.0, **overrides):
         intraRunThroughputThresholdBreached=steady_ratio < 0.85 or slope < -1.0,
         throughput={
             "elapsedSeconds": 360,
-            "messagesPerSecondSamples": [1400, 1400, 1400],
+            # Samples derive from the fixture's rate so the trended median interval
+            # cannot drift out of sync with the whole-run mean.
+            "messagesPerSecondSamples": [messages_per_second] * 3,
         },
     )
     value.update(overrides)
     return value
+
+
+def stall_history_runs():
+    """Mean-only history reproducing the txn band from #2467: median 333, band 306-360."""
+    return [
+        history_run(1, messages_per_second=319.5),
+        history_run(2, messages_per_second=333.0),
+        history_run(3, messages_per_second=346.5),
+        history_run(
+            4,
+            messages_per_second=250.0,
+            messagesPerSecondTrend="regression",
+        ),
+    ]
 
 
 class StressTrendTests(unittest.TestCase):
@@ -243,7 +266,7 @@ class StressTrendTests(unittest.TestCase):
             [intra_run_result(
                 steady_ratio=0.7,
                 slope=0.1,
-                effectiveMessagesPerSecond=650.0,
+                messages_per_second=650.0,
             )],
             "2026-07-01T02:00:00Z",
         )
@@ -613,6 +636,124 @@ class StressTrendTests(unittest.TestCase):
         self.assertTrue(should_fail)
         repeated = {item["metric"] for item in evaluations if item["repeatedRegression"]}
         self.assertEqual({"messagesPerSecond", "cpuMicrosPerMessage"}, repeated)
+
+    def test_stall_distorted_mean_passes_when_median_interval_is_in_band(self):
+        # Reproduces run 30441232202 producer-transactional (#2467): whole-run mean
+        # 246 sits below the trailing band (~306-360) after a short shared stall,
+        # while the sampled median interval 332 is dead on the historical median.
+        runs = stall_history_runs()
+
+        evaluations, updated, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(
+                messages_per_second=246.0,
+                medianIntervalMessagesPerSecond=332.0,
+            )],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(332.0, throughput["current"])
+        self.assertEqual(333.0, throughput["median"])
+        self.assertEqual("stable", throughput["status"])
+        self.assertFalse(should_fail)
+        observation = updated["runs"][-1]["results"][0]
+        self.assertEqual(246.0, observation["messagesPerSecond"])
+        self.assertEqual(332.0, observation["medianIntervalMessagesPerSecond"])
+        self.assertEqual("stable", observation["messagesPerSecondTrend"])
+
+    def test_mean_only_result_still_fails_after_repeated_regression(self):
+        # Result files without interval samples keep the pre-#2467 mean behavior:
+        # the same numbers as the stall case above fail when no median is recorded.
+        runs = stall_history_runs()
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(messages_per_second=246.0)],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(246.0, throughput["current"])
+        self.assertEqual("regression", throughput["status"])
+        self.assertTrue(throughput["repeatedRegression"])
+        self.assertTrue(should_fail)
+
+    def test_median_interval_below_band_still_fails(self):
+        # A genuine steady-state regression (median interval also below the band)
+        # must keep failing.
+        runs = stall_history_runs()
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(
+                messages_per_second=246.0,
+                medianIntervalMessagesPerSecond=250.0,
+            )],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(250.0, throughput["current"])
+        self.assertEqual("regression", throughput["status"])
+        self.assertTrue(throughput["repeatedRegression"])
+        self.assertTrue(should_fail)
+
+    def test_history_median_interval_field_supplies_future_baselines(self):
+        runs = [
+            history_run(
+                index,
+                messages_per_second=250.0,
+                medianIntervalMessagesPerSecond=1000.0,
+            )
+            for index in range(1, 4)
+        ]
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(messages_per_second=1000.0)],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(1000.0, throughput["median"])
+        self.assertEqual("stable", throughput["status"])
+        self.assertFalse(should_fail)
+
+    def test_control_ratio_uses_median_interval_rate_when_present(self):
+        runs = [paired_history_run(i) for i in range(1, 4)]
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(
+                    messages_per_second=700.0,
+                    medianIntervalMessagesPerSecond=1000.0,
+                ),
+                result(
+                    client="Confluent",
+                    messages_per_second=350.0,
+                    medianIntervalMessagesPerSecond=500.0,
+                ),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        ratio = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+        )
+        self.assertEqual(2.0, ratio["current"])
+        self.assertEqual("stable", ratio["status"])
+        self.assertFalse(should_fail)
 
     def test_warned_run_does_not_widen_next_baseline(self):
         runs = [
