@@ -5203,10 +5203,12 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         }
     }
 
-    private void ThrowIfCannotProduce()
+    private void ThrowIfCannotProduce() => ThrowIfTransactionUnusable("Cannot produce");
+
+    private void ThrowIfTransactionUnusable(string operation)
     {
         ThrowIfProducerDisposed();
-        _producer.ThrowIfFatalTransactionError("Cannot produce");
+        _producer.ThrowIfFatalTransactionError(operation);
 
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
@@ -5331,13 +5333,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         string consumerGroupId,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfProducerDisposed();
-        _producer.ThrowIfFatalTransactionError("Cannot send offsets to transaction");
-
-        if (_committed || _aborted)
-            throw new InvalidOperationException("Transaction is already completed");
-
-        _producer.ThrowIfInPreparedTransaction();
+        ThrowIfTransactionUnusable("Cannot send offsets to transaction");
 
         await _producer.SendOffsetsToTransactionInternalAsync(offsets, consumerGroupId, cancellationToken)
             .ConfigureAwait(false);
@@ -5348,13 +5344,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         ConsumerGroupMetadata consumerGroupMetadata,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfProducerDisposed();
-        _producer.ThrowIfFatalTransactionError("Cannot send offsets to transaction");
-
-        if (_committed || _aborted)
-            throw new InvalidOperationException("Transaction is already completed");
-
-        _producer.ThrowIfInPreparedTransaction();
+        ThrowIfTransactionUnusable("Cannot send offsets to transaction");
         ArgumentNullException.ThrowIfNull(consumerGroupMetadata);
 
         await _producer.SendOffsetsToTransactionInternalAsync(
