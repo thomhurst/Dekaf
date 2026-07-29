@@ -66,6 +66,10 @@ public class TransactionalProduceAllocationBenchmarks
     public void TransactionProduceAsync() =>
         _ = _transaction.ProduceAsync(_message);
 
+    [Benchmark]
+    public void TransactionProduceAsyncComponentwise() =>
+        _ = _transaction.ProduceAsync("benchmark-transaction-allocation", "key", "value");
+
     private static void SeedMetadata(MetadataManager metadataManager) =>
         metadataManager.Metadata.Update(new MetadataResponse
         {
