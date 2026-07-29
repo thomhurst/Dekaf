@@ -17,18 +17,6 @@
           "cpuMicrosPerMessageTrend": "insufficient-history"
         },
         {
-          "scenario": "consumer-raw",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "roundTripMessages": null,
-          "messagesPerSecond": 1052394.0888603793,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 1.0966667846132114,
-          "cpuMicrosPerMessageTrend": "insufficient-history"
-        },
-        {
           "scenario": "producer-idempotent",
           "client": "Dekaf (3conn)",
           "brokerCount": 1,
@@ -186,18 +174,6 @@
         },
         {
           "scenario": "consumer",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "roundTripMessages": null,
-          "messagesPerSecond": 1056908.8307332085,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 1.252615428878002,
-          "cpuMicrosPerMessageTrend": "insufficient-history"
-        },
-        {
-          "scenario": "consumer",
           "client": "Confluent",
           "brokerCount": 1,
           "durationMinutes": 15,
@@ -206,18 +182,6 @@
           "messagesPerSecond": 1028815.0891247264,
           "messagesPerSecondTrend": "insufficient-history",
           "cpuMicrosPerMessage": 0.9100959125269978,
-          "cpuMicrosPerMessageTrend": "insufficient-history"
-        },
-        {
-          "scenario": "consumer-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "roundTripMessages": null,
-          "messagesPerSecond": 1046668.5939324376,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 1.225898872611465,
           "cpuMicrosPerMessageTrend": "insufficient-history"
         },
         {
@@ -279,18 +243,6 @@
           "messagesPerSecondTrend": "insufficient-history",
           "cpuMicrosPerMessage": 1.8646982721988377,
           "cpuMicrosPerMessageTrend": "insufficient-history"
-        },
-        {
-          "scenario": "consumer-raw-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "roundTripMessages": null,
-          "messagesPerSecond": 1058032.3874732833,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 1.081354895677523,
-          "cpuMicrosPerMessageTrend": "insufficient-history"
         }
       ]
     },
@@ -308,19 +260,6 @@
           "messagesPerSecond": 329.96142875549947,
           "messagesPerSecondTrend": "insufficient-history",
           "cpuMicrosPerMessage": 399.97421212121213,
-          "cpuMicrosPerMessageTrend": "insufficient-history"
-        },
-        {
-          "scenario": "consumer-raw",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3286684.586766595,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.38487009398242056,
           "cpuMicrosPerMessageTrend": "insufficient-history"
         },
         {
@@ -506,32 +445,6 @@
           "cpuMicrosPerMessageTrend": "insufficient-history"
         },
         {
-          "scenario": "consumer",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3002994.698922896,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.5131446422569511,
-          "cpuMicrosPerMessageTrend": "insufficient-history"
-        },
-        {
-          "scenario": "consumer-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3194072.4134427765,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.48267461691659747,
-          "cpuMicrosPerMessageTrend": "insufficient-history"
-        },
-        {
           "scenario": "producer",
           "client": "Confluent",
           "brokerCount": 1,
@@ -595,19 +508,6 @@
           "messagesPerSecondTrend": "insufficient-history",
           "cpuMicrosPerMessage": 1.6760783963243784,
           "cpuMicrosPerMessageTrend": "insufficient-history"
-        },
-        {
-          "scenario": "consumer-raw-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3254766.2230745535,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.34053765423773374,
-          "cpuMicrosPerMessageTrend": "insufficient-history"
         }
       ]
     },
@@ -628,21 +528,6 @@
           "cpuMicrosPerMessageTrend": "insufficient-history",
           "steadyStatePeakRatio": 0.8825819243412347,
           "slopePercentPerMinute": 1.5214425829487255
-        },
-        {
-          "scenario": "consumer-raw",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3302237.9948116317,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.3874756685733513,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8559609796665446,
-          "slopePercentPerMinute": 0.7600192528585393
         },
         {
           "scenario": "producer-idempotent",
@@ -837,21 +722,6 @@
         },
         {
           "scenario": "consumer",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 2706588.4212120962,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.5373196730393639,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.7988480603433168,
-          "slopePercentPerMinute": 0.33391877510103557
-        },
-        {
-          "scenario": "consumer",
           "client": "Confluent",
           "brokerCount": 1,
           "durationMinutes": 15,
@@ -864,21 +734,6 @@
           "cpuMicrosPerMessageTrend": "insufficient-history",
           "steadyStatePeakRatio": 0.6518429189894827,
           "slopePercentPerMinute": 0.300240877948206
-        },
-        {
-          "scenario": "consumer-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3193741.696904234,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.4824052945088752,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8598529835447196,
-          "slopePercentPerMinute": 0.25898783185179264
         },
         {
           "scenario": "producer",
@@ -954,42 +809,12 @@
           "cpuMicrosPerMessageTrend": "insufficient-history",
           "steadyStatePeakRatio": 0.7450095981762757,
           "slopePercentPerMinute": -0.09864376333837968
-        },
-        {
-          "scenario": "consumer-raw-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3538733.480133531,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.32496232628472105,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8473253005650445,
-          "slopePercentPerMinute": 1.0595799583473975
         }
       ]
     },
     {
       "runStartedAtUtc": "2026-07-11T22:17:45.2023384Z",
       "results": [
-        {
-          "scenario": "consumer-raw",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3020418.4864912634,
-          "messagesPerSecondTrend": "regression",
-          "cpuMicrosPerMessage": 0.4459409242980539,
-          "cpuMicrosPerMessageTrend": "regression",
-          "steadyStatePeakRatio": 0.7935591129759998,
-          "slopePercentPerMinute": -0.15161005401627717
-        },
         {
           "scenario": "producer-idempotent",
           "client": "Confluent",
@@ -1167,36 +992,6 @@
           "slopePercentPerMinute": 0.18027037426959397
         },
         {
-          "scenario": "consumer",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 2880160.9191750814,
-          "messagesPerSecondTrend": "stable",
-          "cpuMicrosPerMessage": 0.5325163095521688,
-          "cpuMicrosPerMessageTrend": "stable",
-          "steadyStatePeakRatio": 0.8880468427961878,
-          "slopePercentPerMinute": 0.15127363377685046
-        },
-        {
-          "scenario": "consumer-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3113351.773024029,
-          "messagesPerSecondTrend": "regression",
-          "cpuMicrosPerMessage": 0.5071507423269094,
-          "cpuMicrosPerMessageTrend": "regression",
-          "steadyStatePeakRatio": 0.9197645351891871,
-          "slopePercentPerMinute": 0.03907525651682914
-        },
-        {
           "scenario": "producer",
           "client": "Confluent",
           "brokerCount": 1,
@@ -1270,21 +1065,6 @@
           "cpuMicrosPerMessageTrend": "improvement",
           "steadyStatePeakRatio": 0.8378942387381116,
           "slopePercentPerMinute": -0.634037166908136
-        },
-        {
-          "scenario": "consumer-raw-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3363180.0655402048,
-          "messagesPerSecondTrend": "stable",
-          "cpuMicrosPerMessage": 0.35438966264100574,
-          "cpuMicrosPerMessageTrend": "stable",
-          "steadyStatePeakRatio": 0.8435011359475277,
-          "slopePercentPerMinute": -0.18411634976301922
         }
       ]
     },
@@ -1325,24 +1105,6 @@
           "steadyStatePeakRatio": 0.896470889466012,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.07867027888286987,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer-raw",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 4011910.735811322,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.384799312838542,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8509481758966084,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": 0.12315698558251935,
           "slopePercentPerMinuteTrend": "stable"
         },
         {
@@ -1590,42 +1352,6 @@
           "slopePercentPerMinuteTrend": "stable"
         },
         {
-          "scenario": "consumer",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 2830359.08280214,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.5049794194382522,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8582760998087728,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": -0.0662785407929836,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3069730.7245799433,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.4675772979892685,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8476895104715426,
-          "steadyStatePeakRatioTrend": "regression",
-          "slopePercentPerMinute": -0.2726656686617889,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
           "scenario": "producer",
           "client": "Confluent",
           "brokerCount": 1,
@@ -1714,24 +1440,6 @@
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.15868771795479752,
           "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer-raw-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 4174715.9585723127,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.3346035839249546,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8785596401566552,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": 0.2382053335709567,
-          "slopePercentPerMinuteTrend": "stable"
         }
       ]
     },
@@ -1772,24 +1480,6 @@
           "steadyStatePeakRatio": 0.982932507537237,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.028956093827571246,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer-raw",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3846016.937371969,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.40700734037529374,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8217427646783027,
-          "steadyStatePeakRatioTrend": "regression",
-          "slopePercentPerMinute": -0.6729978213386639,
           "slopePercentPerMinuteTrend": "stable"
         },
         {
@@ -2020,24 +1710,6 @@
         },
         {
           "scenario": "consumer",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 2791961.969167333,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.5121068665582468,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8645100000934605,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": -0.06225665658176728,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer",
           "client": "Confluent",
           "brokerCount": 1,
           "durationMinutes": 15,
@@ -2052,24 +1724,6 @@
           "steadyStatePeakRatio": 0.732667565294332,
           "steadyStatePeakRatioTrend": "regression",
           "slopePercentPerMinute": 0.7216411751197535,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3002235.6425491264,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.48645152923760177,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8723365806108746,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": 0.21072751936092524,
           "slopePercentPerMinuteTrend": "stable"
         },
         {
@@ -2161,24 +1815,6 @@
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.11189054402300017,
           "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer-raw-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 4114554.9692497985,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.3684763522102058,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.8669259459408366,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": 0.518659273406053,
-          "slopePercentPerMinuteTrend": "stable"
         }
       ]
     },
@@ -2219,24 +1855,6 @@
           "steadyStatePeakRatio": 0.989674545187154,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.06893042528506685,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer-raw",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3857246.7834033165,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.40464444939775185,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.9759735362326709,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": 0.05465051699912952,
           "slopePercentPerMinuteTrend": "stable"
         },
         {
@@ -2484,42 +2102,6 @@
           "slopePercentPerMinuteTrend": "stable"
         },
         {
-          "scenario": "consumer",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 2437656.238647985,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.5817015770141881,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.9312577025423701,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": 0.4984989621462074,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 2791821.7696339292,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.5413902709366616,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.9703810400170017,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": 0.06967526882075854,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
           "scenario": "producer",
           "client": "Dekaf (3conn)",
           "brokerCount": 1,
@@ -2608,24 +2190,6 @@
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.62198983008781,
           "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer-raw-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3896081.4154033223,
-          "messagesPerSecondTrend": "insufficient-history",
-          "cpuMicrosPerMessage": 0.3839030318359997,
-          "cpuMicrosPerMessageTrend": "insufficient-history",
-          "steadyStatePeakRatio": 0.9699906441658647,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": 0.9011341705470952,
-          "slopePercentPerMinuteTrend": "stable"
         }
       ]
     },
@@ -2666,24 +2230,6 @@
           "steadyStatePeakRatio": 0.9727461423185926,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.06843679092835449,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
-          "scenario": "consumer-raw",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 4282668.264411228,
-          "messagesPerSecondTrend": "improvement",
-          "cpuMicrosPerMessage": 0.3598064070022045,
-          "cpuMicrosPerMessageTrend": "improvement",
-          "steadyStatePeakRatio": 0.9083264426785264,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": -0.2310801491353965,
           "slopePercentPerMinuteTrend": "stable"
         },
         {
@@ -2931,42 +2477,6 @@
           "slopePercentPerMinuteTrend": "regression"
         },
         {
-          "scenario": "consumer",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 2392082.3675351203,
-          "messagesPerSecondTrend": "regression",
-          "cpuMicrosPerMessage": 0.6156219550369413,
-          "cpuMicrosPerMessageTrend": "regression",
-          "steadyStatePeakRatio": 0.7713328221657181,
-          "steadyStatePeakRatioTrend": "regression",
-          "slopePercentPerMinute": -1.9996209175492445,
-          "slopePercentPerMinuteTrend": "regression"
-        },
-        {
-          "scenario": "consumer-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 2913778.4266855703,
-          "messagesPerSecondTrend": "stable",
-          "cpuMicrosPerMessage": 0.5111356775817956,
-          "cpuMicrosPerMessageTrend": "stable",
-          "steadyStatePeakRatio": 0.8971351066154806,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": -0.333005764419378,
-          "slopePercentPerMinuteTrend": "stable"
-        },
-        {
           "scenario": "producer",
           "client": "Dekaf (3conn)",
           "brokerCount": 1,
@@ -3055,24 +2565,6 @@
           "steadyStatePeakRatioTrend": "regression",
           "slopePercentPerMinute": -1.4883941108073748,
           "slopePercentPerMinuteTrend": "regression"
-        },
-        {
-          "scenario": "consumer-raw-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3957581.979642869,
-          "messagesPerSecondTrend": "regression",
-          "cpuMicrosPerMessage": 0.3682142333452782,
-          "cpuMicrosPerMessageTrend": "stable",
-          "steadyStatePeakRatio": 0.9869150310694996,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": 0.524053385301187,
-          "slopePercentPerMinuteTrend": "stable"
         }
       ]
     },
@@ -3118,25 +2610,6 @@
           "steadyStatePeakRatio": 0.9958439541931026,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.18844689361125583,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
-        },
-        {
-          "scenario": "consumer-raw",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 3835604.9035958885,
-          "messagesPerSecondTrend": "stable",
-          "cpuMicrosPerMessage": 0.4131207187137891,
-          "cpuMicrosPerMessageTrend": "stable",
-          "steadyStatePeakRatio": 0.9696329613599857,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": -0.042817597982530084,
           "slopePercentPerMinuteTrend": "stable",
           "environmentShiftSuspected": true
         },
@@ -3413,29 +2886,6 @@
         },
         {
           "scenario": "consumer",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 2522496.5178675144,
-          "messagesPerSecondTrend": "regression",
-          "messagesPerSecondControlRatio": 2.865305209489546,
-          "messagesPerSecondControlRatioTrend": "improvement",
-          "cpuMicrosPerMessage": 0.5779962168832351,
-          "cpuMicrosPerMessageTrend": "regression",
-          "cpuMicrosPerMessageControlRatio": 0.4653435334130766,
-          "cpuMicrosPerMessageControlRatioTrend": "improvement",
-          "steadyStatePeakRatio": 0.7997112488779887,
-          "steadyStatePeakRatioTrend": "regression",
-          "slopePercentPerMinute": -1.6125977074839752,
-          "slopePercentPerMinuteTrend": "regression",
-          "environmentShiftSuspected": true
-        },
-        {
-          "scenario": "consumer",
           "client": "Confluent",
           "brokerCount": 1,
           "durationMinutes": 15,
@@ -3450,25 +2900,6 @@
           "steadyStatePeakRatio": 0.9782475472858128,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 1.9701943065963272,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
-        },
-        {
-          "scenario": "consumer-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 2620496.182367927,
-          "messagesPerSecondTrend": "regression",
-          "cpuMicrosPerMessage": 0.5645217412644727,
-          "cpuMicrosPerMessageTrend": "regression",
-          "steadyStatePeakRatio": 0.8411808575977864,
-          "steadyStatePeakRatioTrend": "regression",
-          "slopePercentPerMinute": -0.017112596694840745,
           "slopePercentPerMinuteTrend": "stable",
           "environmentShiftSuspected": true
         },
@@ -3578,25 +3009,6 @@
           "slopePercentPerMinute": 1.3149101435735338,
           "slopePercentPerMinuteTrend": "stable",
           "environmentShiftSuspected": true
-        },
-        {
-          "scenario": "consumer-raw-batch",
-          "client": "Dekaf",
-          "brokerCount": 1,
-          "durationMinutes": 15,
-          "messageSizeBytes": 1000,
-          "consumerSeedBatchSizeBytes": 16384,
-          "consumerConnectionsPerBroker": 3,
-          "roundTripMessages": null,
-          "messagesPerSecond": 4058887.323138689,
-          "messagesPerSecondTrend": "stable",
-          "cpuMicrosPerMessage": 0.36438872741865413,
-          "cpuMicrosPerMessageTrend": "stable",
-          "steadyStatePeakRatio": 0.9220036675295586,
-          "steadyStatePeakRatioTrend": "stable",
-          "slopePercentPerMinute": -0.12120183459915825,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
         }
       ],
       "environmentShiftSuspected": true
@@ -3623,8 +3035,7 @@
           "steadyStatePeakRatio": 0.9572295470807893,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.06316277721612483,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
@@ -3713,18 +3124,17 @@
           "pairedClientOrder": "dekaf-first",
           "pairedSampleCount": 1,
           "messagesPerSecond": 1956115.7416325705,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "messagesPerSecondControlRatio": 1.421374189839977,
           "messagesPerSecondControlRatioTrend": "regression",
           "cpuMicrosPerMessage": 0.6827092797850226,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "cpuMicrosPerMessageControlRatio": 0.6527407872173576,
           "cpuMicrosPerMessageControlRatioTrend": "regression",
           "steadyStatePeakRatio": 0.9781018309626986,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.005224680027045486,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "consumer",
@@ -4071,14 +3481,13 @@
           "pairedClientOrder": null,
           "pairedSampleCount": null,
           "messagesPerSecond": 1997801.0956682106,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.6651432246941046,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.9753278491757591,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.04974313691306324,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
@@ -4211,14 +3620,13 @@
           "pairedClientOrder": null,
           "pairedSampleCount": null,
           "messagesPerSecond": 3560188.6512926742,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.4418716790846152,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.9817057589545705,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.8750709163228559,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer-acks-all",
@@ -4367,8 +3775,7 @@
           "steadyStatePeakRatio": 0.9810084518339789,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.3317808756380693,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
@@ -4479,18 +3886,17 @@
           "pairedClientOrder": "confluent-first",
           "pairedSampleCount": 1,
           "messagesPerSecond": 1814114.6361016035,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "messagesPerSecondControlRatio": 1.4219249442004465,
           "messagesPerSecondControlRatioTrend": "regression",
           "cpuMicrosPerMessage": 0.7164575602014484,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "cpuMicrosPerMessageControlRatio": 0.6739749402292077,
           "cpuMicrosPerMessageControlRatioTrend": "regression",
           "steadyStatePeakRatio": 0.9483111903020389,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.01023884080824404,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer-roundtrip-steady",
@@ -4815,14 +4221,13 @@
           "pairedClientOrder": null,
           "pairedSampleCount": null,
           "messagesPerSecond": 1967472.7198074185,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.6870266226871639,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.9762321105294358,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.2473212074831958,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
@@ -4961,8 +4366,7 @@
           "steadyStatePeakRatio": 0.9826534896532758,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.5387349284006013,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer-acks-all",
@@ -5111,8 +4515,7 @@
           "steadyStatePeakRatio": 0.9262103131948222,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.5419895376114168,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
@@ -5201,18 +4604,17 @@
           "pairedClientOrder": "dekaf-first",
           "pairedSampleCount": 1,
           "messagesPerSecond": 1817051.0981969633,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "messagesPerSecondControlRatio": 1.3283767730674831,
           "messagesPerSecondControlRatioTrend": "regression",
           "cpuMicrosPerMessage": 0.7199727879451,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "cpuMicrosPerMessageControlRatio": 0.6687814721364702,
           "cpuMicrosPerMessageControlRatioTrend": "regression",
           "steadyStatePeakRatio": 0.956207663284162,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.2726389893669303,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "consumer",
@@ -5559,14 +4961,13 @@
           "pairedClientOrder": null,
           "pairedSampleCount": null,
           "messagesPerSecond": 1640763.3293981813,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.8305863618170748,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.9688962651020302,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.1538211139568718,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
@@ -5699,14 +5100,13 @@
           "pairedClientOrder": null,
           "pairedSampleCount": null,
           "messagesPerSecond": 3272610.7986104223,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.4965909997624673,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.9888019256614614,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.15858711419093205,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer-acks-all",
@@ -5855,8 +5255,7 @@
           "steadyStatePeakRatio": 0.9611067185265693,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.19262816767468913,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer-acks-all",
@@ -5941,18 +5340,17 @@
           "pairedClientOrder": "confluent-first",
           "pairedSampleCount": 1,
           "messagesPerSecond": 1711124.4668178244,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "messagesPerSecondControlRatio": 1.2721816819941425,
           "messagesPerSecondControlRatioTrend": "regression",
           "cpuMicrosPerMessage": 0.7607119558441559,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "cpuMicrosPerMessageControlRatio": 0.7476417827120729,
           "cpuMicrosPerMessageControlRatioTrend": "regression",
           "steadyStatePeakRatio": 0.932318875333811,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.5174724384153286,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer-acks-all",
@@ -6137,14 +5535,13 @@
           "pairedClientOrder": null,
           "pairedSampleCount": null,
           "messagesPerSecond": 3635600.031870523,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.4281354691320293,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.9773180841990545,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.1169464242483485,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
@@ -6325,14 +5722,13 @@
           "pairedClientOrder": null,
           "pairedSampleCount": null,
           "messagesPerSecond": 1847507.146598574,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.7428400632887369,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.9787282321900291,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 1.1135957467162843,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
@@ -6593,14 +5989,13 @@
           "pairedClientOrder": null,
           "pairedSampleCount": null,
           "messagesPerSecond": 3582268.662753166,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.4345119562655087,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.9485537763274805,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 1.5452228390707348,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer-acks-all",
@@ -6663,18 +6058,17 @@
           "pairedClientOrder": "dekaf-first",
           "pairedSampleCount": 1,
           "messagesPerSecond": 1545003.9882053274,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "messagesPerSecondControlRatio": 1.383239559648499,
           "messagesPerSecondControlRatioTrend": "regression",
           "cpuMicrosPerMessage": 0.8842534833085248,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "cpuMicrosPerMessageControlRatio": 0.6605656117211164,
           "cpuMicrosPerMessageControlRatioTrend": "regression",
           "steadyStatePeakRatio": 0.9709211283474203,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.6571249270811029,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "consumer",
@@ -6881,14 +6275,13 @@
           "pairedClientOrder": null,
           "pairedSampleCount": null,
           "messagesPerSecond": 3309486.522772414,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.4732945388646302,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.965625023151192,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 1.6909535437184808,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
@@ -7069,14 +6462,13 @@
           "pairedClientOrder": null,
           "pairedSampleCount": null,
           "messagesPerSecond": 1629307.369939271,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.8462298324202716,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.80916394596987,
           "steadyStatePeakRatioTrend": "regression",
           "slopePercentPerMinute": -1.0305061227897085,
-          "slopePercentPerMinuteTrend": "regression",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "regression"
         },
         {
           "scenario": "producer",
@@ -7464,14 +6856,13 @@
           "pairedSampleCount": null,
           "medianIntervalMessagesPerSecond": 3701970.502880815,
           "messagesPerSecond": 3640013.1587973875,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.42291254589422483,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.944659422671261,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.44203560794401214,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer-acks-all",
@@ -7537,18 +6928,17 @@
           "pairedSampleCount": 1,
           "medianIntervalMessagesPerSecond": 1539239.9616952275,
           "messagesPerSecond": 1554155.4859537932,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "messagesPerSecondControlRatio": 1.333955314093611,
           "messagesPerSecondControlRatioTrend": "regression",
           "cpuMicrosPerMessage": 0.8700095934395917,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "cpuMicrosPerMessageControlRatio": 0.7081317123491199,
           "cpuMicrosPerMessageControlRatioTrend": "regression",
           "steadyStatePeakRatio": 0.8178646769816829,
           "steadyStatePeakRatioTrend": "regression",
           "slopePercentPerMinute": -0.6890217978959626,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "consumer",
@@ -7744,14 +7134,13 @@
           "pairedSampleCount": null,
           "medianIntervalMessagesPerSecond": 3455202.1146666855,
           "messagesPerSecond": 3440035.120465223,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.4579543304263566,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.9501725844751515,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": -0.273903522584282,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
@@ -7924,14 +7313,13 @@
           "pairedSampleCount": null,
           "medianIntervalMessagesPerSecond": 1731960.861424062,
           "messagesPerSecond": 1743053.9954619827,
-          "messagesPerSecondTrend": "regression",
+          "messagesPerSecondTrend": "stable",
           "cpuMicrosPerMessage": 0.788653585892788,
-          "cpuMicrosPerMessageTrend": "regression",
+          "cpuMicrosPerMessageTrend": "stable",
           "steadyStatePeakRatio": 0.9032641610244371,
           "steadyStatePeakRatioTrend": "stable",
           "slopePercentPerMinute": 0.42110146215556654,
-          "slopePercentPerMinuteTrend": "stable",
-          "environmentShiftSuspected": true
+          "slopePercentPerMinuteTrend": "stable"
         },
         {
           "scenario": "producer",
