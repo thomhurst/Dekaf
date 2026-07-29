@@ -769,11 +769,13 @@ class StressTrendTests(unittest.TestCase):
                 result(
                     messages_per_second=400.0,
                     medianIntervalMessagesPerSecond=1000.0,
+                    deliveredMessages=360_000,
                 ),
                 result(
                     client="Confluent",
                     messages_per_second=480.0,
                     medianIntervalMessagesPerSecond=500.0,
+                    deliveredMessages=432_000,
                 ),
             ],
             "2026-07-29T02:00:00Z",
@@ -795,6 +797,39 @@ class StressTrendTests(unittest.TestCase):
         )
         self.assertEqual(400.0, observation["messagesPerSecond"])
         self.assertEqual(1000.0, observation["medianIntervalMessagesPerSecond"])
+
+    def test_result_without_delivered_messages_keeps_median_trending(self):
+        # Consumer lanes (and old producer result files) carry no
+        # broker-confirmed deliveredMessages: their effective rate is just the
+        # client-side whole-run average, so a mean/median divergence there is
+        # a boundary-stall artifact, never a flush backlog — no substitution.
+        runs = [paired_history_run(i) for i in range(1, 4)]
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(
+                    messages_per_second=400.0,
+                    medianIntervalMessagesPerSecond=1000.0,
+                ),
+                result(
+                    client="Confluent",
+                    messages_per_second=480.0,
+                    medianIntervalMessagesPerSecond=500.0,
+                ),
+            ],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecond"
+            and "Dekaf" in item["scenario"]
+        )
+        self.assertEqual(1000.0, throughput["current"])
+        self.assertFalse(throughput["backlogDrainSubstituted"])
+        self.assertEqual("stable", throughput["status"])
+        self.assertFalse(should_fail)
 
     def test_shared_stall_with_control_keeps_median_trending(self):
         # Both clients drained to the same ~74% delivered/median ratio (the

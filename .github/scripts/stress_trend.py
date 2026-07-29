@@ -91,7 +91,14 @@ def _delivered_rate_if_backlogged(result, control):
     delivered mean instead so the backlog stays visible to the gate. Without a
     control (or without medians on either side) the median stands, matching
     the fail-open transition the issue chose.
+
+    Only producer results with broker-confirmed deliveries qualify: consumer
+    lanes have no deliveredMessages, so their effective rate is just the
+    client-side whole-run average and a mean/median divergence there is a
+    boundary-stall artifact, not a flush backlog.
     """
+    if result.get("deliveredMessages") is None:
+        return None
     median_rate = median_interval_rate(result)
     if median_rate is None or median_rate <= 0 or control is None:
         return None
