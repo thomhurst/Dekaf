@@ -159,14 +159,32 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
         // netstandard2.0: the Polyfill package's UnsafeRegister shim wraps the (state, token)
         // callback in a per-call closure (~176 B per awaited produce, issue #2471). Use the BCL
         // single-state overload with a static delegate and carry the token in a field instead.
+        // Suppress ExecutionContext flow around Register to match UnsafeRegister semantics on
+        // the NET branch: no per-message AsyncLocal capture, and cancellation continuations do
+        // not run under the caller's ambient context.
         _registeredCancellationToken = cancellationToken;
-        _cancellationRegistration = cancellationToken.Register(
-            static state =>
-            {
-                var source = (PooledValueTaskSource<T>)state!;
-                source.TrySetCanceled(source._registeredCancellationToken);
-            },
-            this);
+        var restoreFlow = false;
+        if (!ExecutionContext.IsFlowSuppressed())
+        {
+            ExecutionContext.SuppressFlow();
+            restoreFlow = true;
+        }
+
+        try
+        {
+            _cancellationRegistration = cancellationToken.Register(
+                static state =>
+                {
+                    var source = (PooledValueTaskSource<T>)state!;
+                    source.TrySetCanceled(source._registeredCancellationToken);
+                },
+                this);
+        }
+        finally
+        {
+            if (restoreFlow)
+                ExecutionContext.RestoreFlow();
+        }
 #endif
     }
 
