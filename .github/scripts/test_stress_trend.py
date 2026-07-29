@@ -71,9 +71,16 @@ def paired_history_run(
     return run
 
 
-def intra_run_result(client="Dekaf", steady_ratio=0.6, slope=-8.0, **overrides):
+def intra_run_result(
+    client="Dekaf",
+    steady_ratio=0.6,
+    slope=-8.0,
+    messages_per_second=1000.0,
+    **overrides,
+):
     value = result(
         client=client,
+        messages_per_second=messages_per_second,
         steadyStatePeakRatio=steady_ratio,
         intraRunDriftPercent=-35.9,
         throughputSlopePercentPerMinute=slope,
@@ -84,11 +91,27 @@ def intra_run_result(client="Dekaf", steady_ratio=0.6, slope=-8.0, **overrides):
         intraRunThroughputThresholdBreached=steady_ratio < 0.85 or slope < -1.0,
         throughput={
             "elapsedSeconds": 360,
-            "messagesPerSecondSamples": [1400, 1400, 1400],
+            # Samples derive from the fixture's rate so the trended median interval
+            # cannot drift out of sync with the whole-run mean.
+            "messagesPerSecondSamples": [messages_per_second] * 3,
         },
     )
     value.update(overrides)
     return value
+
+
+def stall_history_runs():
+    """Mean-only history reproducing the txn band from #2467: median 333, band 306-360."""
+    return [
+        history_run(1, messages_per_second=319.5),
+        history_run(2, messages_per_second=333.0),
+        history_run(3, messages_per_second=346.5),
+        history_run(
+            4,
+            messages_per_second=250.0,
+            messagesPerSecondTrend="regression",
+        ),
+    ]
 
 
 def client_metric(evaluations, metric, client):
@@ -251,7 +274,7 @@ class StressTrendTests(unittest.TestCase):
             [intra_run_result(
                 steady_ratio=0.7,
                 slope=0.1,
-                effectiveMessagesPerSecond=650.0,
+                messages_per_second=650.0,
             )],
             "2026-07-01T02:00:00Z",
         )
@@ -804,7 +827,7 @@ class StressTrendTests(unittest.TestCase):
                 intra_run_result(
                     steady_ratio=0.7,
                     slope=0.1,
-                    effectiveMessagesPerSecond=dekaf_first_rate,
+                    messages_per_second=dekaf_first_rate,
                     **paired,
                 ),
                 result(
@@ -1010,6 +1033,317 @@ class StressTrendTests(unittest.TestCase):
         self.assertTrue(should_fail)
         repeated = {item["metric"] for item in evaluations if item["repeatedRegression"]}
         self.assertEqual({"messagesPerSecond", "cpuMicrosPerMessage"}, repeated)
+
+    def test_stall_distorted_mean_passes_when_median_interval_is_in_band(self):
+        # Reproduces run 30441232202 producer-transactional (#2467): whole-run mean
+        # 246 sits below the trailing band (~306-360) after a short shared stall,
+        # while the sampled median interval 332 is dead on the historical median.
+        runs = stall_history_runs()
+
+        evaluations, updated, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(
+                messages_per_second=246.0,
+                medianIntervalMessagesPerSecond=332.0,
+            )],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(332.0, throughput["current"])
+        self.assertEqual(333.0, throughput["median"])
+        self.assertEqual("stable", throughput["status"])
+        self.assertFalse(should_fail)
+        observation = updated["runs"][-1]["results"][0]
+        self.assertEqual(246.0, observation["messagesPerSecond"])
+        self.assertEqual(332.0, observation["medianIntervalMessagesPerSecond"])
+        self.assertEqual("stable", observation["messagesPerSecondTrend"])
+
+    def test_mean_only_result_still_fails_after_repeated_regression(self):
+        # Result files without interval samples keep the pre-#2467 mean behavior:
+        # the same numbers as the stall case above fail when no median is recorded.
+        runs = stall_history_runs()
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(messages_per_second=246.0)],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(246.0, throughput["current"])
+        self.assertEqual("regression", throughput["status"])
+        self.assertTrue(throughput["repeatedRegression"])
+        self.assertTrue(should_fail)
+
+    def test_median_interval_below_band_still_fails(self):
+        # A genuine steady-state regression (median interval also below the band)
+        # must keep failing.
+        runs = stall_history_runs()
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(
+                messages_per_second=246.0,
+                medianIntervalMessagesPerSecond=250.0,
+            )],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(250.0, throughput["current"])
+        self.assertEqual("regression", throughput["status"])
+        self.assertTrue(throughput["repeatedRegression"])
+        self.assertTrue(should_fail)
+
+    def test_history_median_interval_field_supplies_future_baselines(self):
+        runs = [
+            history_run(
+                index,
+                messages_per_second=250.0,
+                medianIntervalMessagesPerSecond=1000.0,
+            )
+            for index in range(1, 4)
+        ]
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [result(messages_per_second=1000.0)],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations if item["metric"] == "messagesPerSecond"
+        )
+        self.assertEqual(1000.0, throughput["median"])
+        self.assertEqual("stable", throughput["status"])
+        self.assertFalse(should_fail)
+
+    def test_control_ratio_uses_median_interval_rate_when_present(self):
+        runs = [paired_history_run(i) for i in range(1, 4)]
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(
+                    messages_per_second=700.0,
+                    medianIntervalMessagesPerSecond=1000.0,
+                ),
+                result(
+                    client="Confluent",
+                    messages_per_second=350.0,
+                    medianIntervalMessagesPerSecond=500.0,
+                ),
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        ratio = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+        )
+        self.assertEqual(2.0, ratio["current"])
+        self.assertEqual("stable", ratio["status"])
+        self.assertFalse(should_fail)
+
+    def test_client_specific_backlog_drain_trends_on_delivered_mean(self):
+        # A candidate that appends fast but delivers slowly shows a stable
+        # duration-window median while the broker-confirmed mean (which keeps
+        # counting through the flush drain) collapses. The control's drain
+        # ratio stays healthy, so the divergence swaps the trended value to
+        # the delivered mean and the regression stays visible.
+        runs = [paired_history_run(i) for i in range(1, 4)]
+
+        evaluations, updated, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(
+                    messages_per_second=400.0,
+                    medianIntervalMessagesPerSecond=1000.0,
+                    deliveredMessages=360_000,
+                ),
+                result(
+                    client="Confluent",
+                    messages_per_second=480.0,
+                    medianIntervalMessagesPerSecond=500.0,
+                    deliveredMessages=432_000,
+                ),
+            ],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecond"
+            and "Dekaf" in item["scenario"]
+        )
+        self.assertEqual(400.0, throughput["current"])
+        self.assertTrue(throughput["backlogDrainSubstituted"])
+        self.assertEqual("regression", throughput["status"])
+        # First adverse excursion still warns rather than fails.
+        self.assertFalse(should_fail)
+        observation = next(
+            item for item in updated["runs"][-1]["results"]
+            if item["client"] == "Dekaf"
+        )
+        # The trended (delivered) value is what future baselines and ratio
+        # history must see; the inflated interval median is deliberately not
+        # persisted for substituted runs.
+        self.assertEqual(400.0, observation["messagesPerSecond"])
+        self.assertNotIn("medianIntervalMessagesPerSecond", observation)
+        self.assertTrue(observation["backlogDrainSubstituted"])
+
+    def test_persistent_backlog_does_not_ratchet_baseline(self):
+        # A steady-state backlog (accepted 2000, delivered 1000, every run)
+        # must stay "stable" forever: the substituted delivered rate is what
+        # gets persisted, so the baseline cannot drift toward the inflated
+        # interval median and later classify the unchanged delivered rate as
+        # a regression.
+        history = {"version": 1, "runs": [paired_history_run(i) for i in range(1, 4)]}
+        current = [
+            result(
+                messages_per_second=1000.0,
+                medianIntervalMessagesPerSecond=2000.0,
+                deliveredMessages=900_000,
+            ),
+            result(
+                client="Confluent",
+                messages_per_second=500.0,
+                medianIntervalMessagesPerSecond=500.0,
+                deliveredMessages=450_000,
+            ),
+        ]
+
+        for round_index in range(5):
+            evaluations, history, should_fail = evaluate_and_update(
+                history,
+                current,
+                f"2026-07-{10 + round_index:02d}T02:00:00Z",
+            )
+            throughput = next(
+                item for item in evaluations
+                if item["metric"] == "messagesPerSecond"
+                and "Dekaf" in item["scenario"]
+            )
+            self.assertTrue(throughput["backlogDrainSubstituted"])
+            self.assertEqual(1000.0, throughput["current"])
+            self.assertEqual("stable", throughput["status"], f"round {round_index}")
+            self.assertFalse(should_fail, f"round {round_index}")
+
+    def test_order_balanced_backlog_detected_inside_aggregate(self):
+        # In order-balanced lanes the aggregate is the only trended result, so
+        # backlog detection must run per ordered sample before aggregation: a
+        # client-specific backlog in one order (median 2449, delivered 1000,
+        # healthy same-order control) must pull the aggregate down to
+        # geomean(1000, 2449) and flag the substitution, not vanish into a
+        # geomean of interval medians.
+        runs = [paired_history_run(i, 2449.0, 1414.0) for i in range(1, 4)]
+
+        def ordered(order, client, mean, median, delivered):
+            return result(
+                client=client,
+                messages_per_second=mean,
+                medianIntervalMessagesPerSecond=median,
+                deliveredMessages=delivered,
+                pairedClientOrder=order,
+                pairedSampleCount=2,
+            )
+
+        samples = [
+            ordered("dekaf-first", "Dekaf", 1000.0, 2449.0, 900_000),
+            ordered("dekaf-first", "Confluent", 1400.0, 1414.0, 1_260_000),
+            ordered("confluent-first", "Dekaf", 2449.0, 2449.0, 2_204_100),
+            ordered("confluent-first", "Confluent", 1400.0, 1414.0, 1_260_000),
+        ]
+
+        evaluations, updated, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            samples,
+            "2026-07-29T02:00:00Z",
+        )
+
+        dekaf = client_metric(evaluations, "messagesPerSecond", "Dekaf")
+        self.assertTrue(dekaf["backlogDrainSubstituted"])
+        self.assertAlmostEqual((1000.0 * 2449.0) ** 0.5, dekaf["current"])
+        self.assertEqual("regression", dekaf["status"])
+        observation = next(
+            item for item in updated["runs"][-1]["results"]
+            if item["client"] == "Dekaf" and item.get("orderBalancedAggregate")
+        )
+        self.assertAlmostEqual((1000.0 * 2449.0) ** 0.5, observation["messagesPerSecond"])
+        self.assertTrue(observation["backlogDrainSubstituted"])
+        self.assertNotIn("medianIntervalMessagesPerSecond", observation)
+
+    def test_result_without_delivered_messages_keeps_median_trending(self):
+        # Consumer lanes (and old producer result files) carry no
+        # broker-confirmed deliveredMessages: their effective rate is just the
+        # client-side whole-run average, so a mean/median divergence there is
+        # a boundary-stall artifact, never a flush backlog — no substitution.
+        runs = [paired_history_run(i) for i in range(1, 4)]
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(
+                    messages_per_second=400.0,
+                    medianIntervalMessagesPerSecond=1000.0,
+                ),
+                result(
+                    client="Confluent",
+                    messages_per_second=480.0,
+                    medianIntervalMessagesPerSecond=500.0,
+                ),
+            ],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecond"
+            and "Dekaf" in item["scenario"]
+        )
+        self.assertEqual(1000.0, throughput["current"])
+        self.assertFalse(throughput["backlogDrainSubstituted"])
+        self.assertEqual("stable", throughput["status"])
+        self.assertFalse(should_fail)
+
+    def test_shared_stall_with_control_keeps_median_trending(self):
+        # Both clients drained to the same ~74% delivered/median ratio (the
+        # #2467 signature of a shared environment stall): no substitution,
+        # the steady median stays the trended value.
+        runs = [paired_history_run(i) for i in range(1, 4)]
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(
+                    messages_per_second=740.0,
+                    medianIntervalMessagesPerSecond=1000.0,
+                ),
+                result(
+                    client="Confluent",
+                    messages_per_second=370.0,
+                    medianIntervalMessagesPerSecond=500.0,
+                ),
+            ],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecond"
+            and "Dekaf" in item["scenario"]
+        )
+        self.assertEqual(1000.0, throughput["current"])
+        self.assertFalse(throughput["backlogDrainSubstituted"])
+        self.assertEqual("stable", throughput["status"])
+        self.assertFalse(should_fail)
 
     def test_warned_run_does_not_widen_next_baseline(self):
         runs = [

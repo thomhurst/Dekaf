@@ -8,10 +8,12 @@ from statistics import median
 
 from stress_report import (
     PAIRED_ORDER_LABELS,
+    comparison_rate,
     cpu_micros_per_message,
     effective_rate,
     geometric_mean,
     intra_run_throughput,
+    median_interval_rate,
     paired_order_identity,
     paired_latency_thresholds,
 )
@@ -22,6 +24,9 @@ HISTORY_LIMIT = 10
 MIN_BASELINE_RUNS = 3
 MAD_MULTIPLIER = 2.0
 RELATIVE_NOISE_FLOOR = 0.01
+# A candidate whose delivered/median drain ratio falls more than this far below
+# the same-run control's is treated as a delivery backlog, not a shared stall.
+DRAIN_RATIO_DIVERGENCE = 0.85
 
 _IDENTITY_FIELDS = (
     "scenario",
@@ -40,7 +45,11 @@ _IDENTITY_FIELDS = (
 _METRICS = {
     "messagesPerSecond": {
         "label": "Messages/sec",
-        "extract": effective_rate,
+        # Trend on the same rate the docs tables rank on: the median sampled interval
+        # throughput when the run recorded interval samples, else the whole-run mean.
+        # A short shared stall depresses the mean of an otherwise steady run and
+        # produced a false repeated-regression fail (issue #2467).
+        "extract": comparison_rate,
         "lower_is_regression": True,
     },
     "cpuMicrosPerMessage": {
@@ -53,6 +62,66 @@ _METRICS = {
 
 def _finite_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value)
+
+
+def _history_metric_value(observation, metric):
+    """Baseline value recorded by a stored history observation.
+
+    Throughput prefers the additively stored median interval rate so trailing bands
+    track the trended rate; entries written before that field existed fall back to
+    the whole-run mean they recorded.
+    """
+    if metric == "messagesPerSecond":
+        median_rate = median_interval_rate(observation)
+        if median_rate is not None:
+            return median_rate
+    return observation.get(metric)
+
+
+def _delivered_rate_if_backlogged(result, control):
+    """Whole-run delivered mean when the candidate's flush drain lags its control.
+
+    comparison_rate alone would hide delivery-backlog regressions: producer
+    interval samples stop at the configured duration while
+    EffectiveMessagesPerSecond keeps counting broker-confirmed deliveries
+    through the flush drain, so a candidate that appends fast but delivers
+    slowly shows a stable median with a collapsed delivered mean. A shared
+    environment stall depresses the delivered/median ratio for BOTH clients
+    proportionally (the #2467 false fail showed ~74% on each side), but a
+    backlog depresses only the candidate's. When the candidate's ratio falls
+    more than DRAIN_RATIO_DIVERGENCE below the same-run control's, trend the
+    delivered mean instead so the backlog stays visible to the gate. Without a
+    control (or without medians on either side) the median stands, matching
+    the fail-open transition the issue chose.
+
+    Only producer results with broker-confirmed deliveries qualify: consumer
+    lanes have no deliveredMessages, so their effective rate is just the
+    client-side whole-run average and a mean/median divergence there is a
+    boundary-stall artifact, not a flush backlog.
+    """
+    if result.get("deliveredMessages") is None:
+        return None
+    median_rate = median_interval_rate(result)
+    if median_rate is None or median_rate <= 0 or control is None:
+        return None
+    control_median = median_interval_rate(control)
+    control_mean = effective_rate(control)
+    if (
+        control_median is None
+        or control_median <= 0
+        or not _finite_number(control_mean)
+        or control_mean <= 0
+    ):
+        return None
+    delivered = effective_rate(result)
+    if not _finite_number(delivered) or delivered <= 0:
+        return None
+
+    candidate_drain = delivered / median_rate
+    control_drain = control_mean / control_median
+    if candidate_drain < control_drain * DRAIN_RATIO_DIVERGENCE:
+        return delivered
+    return None
 
 
 def _roundtrip_messages(result):
@@ -205,6 +274,11 @@ def _order_balanced_aggregates(current_results):
 
     aggregates = []
     aggregated_metrics = {}
+    controls = {
+        _pair_identity(result): result
+        for result in current_results
+        if _is_confluent(result)
+    }
     for key, samples in groups.items():
         if _complete_order_pair(samples) is None:
             # Anything other than exactly one sample per order — a partial pair,
@@ -214,24 +288,41 @@ def _order_balanced_aggregates(current_results):
             # their own series rather than silently losing regression coverage.
             continue
 
-        metrics = {
-            metric: geometric_mean(
-                [definition["extract"](sample) for sample in samples]
-            )
-            for metric, definition in _METRICS.items()
-        }
+        # Backlog detection must run per ordered sample BEFORE aggregation: in
+        # order-balanced lanes the aggregate is the only trended result, and a
+        # geomean of interval medians would hide a client-specific delivery
+        # backlog in either order. Each ordered sample checks its own same-order
+        # control and contributes its delivered mean when backlogged.
+        metrics = {}
+        backlog_substituted = False
+        for metric, definition in _METRICS.items():
+            values = []
+            for sample in samples:
+                value = definition["extract"](sample)
+                if metric == "messagesPerSecond" and not _is_confluent(sample):
+                    delivered = _delivered_rate_if_backlogged(
+                        sample, controls.get(_pair_identity(sample))
+                    )
+                    if delivered is not None:
+                        value = delivered
+                        backlog_substituted = True
+                values.append(value)
+            metrics[metric] = geometric_mean(values)
         trended = frozenset(
             metric for metric, value in metrics.items() if value is not None
         )
         if not trended:
             continue
 
-        aggregates.append({
+        aggregate = {
             **_identity_record(samples[0]),
             "pairedClientOrder": None,
             "pairedSampleCount": len(samples),
             _AGGREGATE_METRICS_FIELD: metrics,
-        })
+        }
+        if backlog_substituted and "messagesPerSecond" in trended:
+            aggregate["aggregateBacklogSubstituted"] = True
+        aggregates.append(aggregate)
         aggregated_metrics[key] = trended
 
     return aggregates, aggregated_metrics
@@ -321,14 +412,16 @@ def _matching_control_ratios(runs, result, metric):
                     ratios.append(ratio)
             continue
 
-        candidate_value = candidate.get(metric)
+        candidate_value = _history_metric_value(candidate, metric)
         if (
             not _finite_number(candidate_value)
             or candidate.get(trend_field) == "regression"
         ):
             continue
 
-        control_value = control.get(metric) if control is not None else None
+        control_value = (
+            _history_metric_value(control, metric) if control is not None else None
+        )
         if not _finite_number(control_value) or control_value == 0:
             # Interim ordered runs carry the Confluent control only as an
             # ordered pair, which never matches an order-less pair key. Rebuild
@@ -421,7 +514,7 @@ def _limit_observations_per_identity(runs):
             for metric in _METRICS:
                 baseline_key = (key, metric)
                 if (
-                    _finite_number(observation.get(metric))
+                    _finite_number(_history_metric_value(observation, metric))
                     and observation.get(f"{metric}Trend") != "regression"
                     and not observation.get("environmentShiftSuspected", False)
                     and retained_baseline_counts.get(baseline_key, 0) < HISTORY_LIMIT
@@ -566,6 +659,25 @@ def evaluate_and_update(history, current_results, run_started_at):
 
         for metric, definition in _METRICS.items():
             value = _metric_value(result, metric, definition)
+            backlog_substituted = False
+            if metric == "messagesPerSecond" and not is_confluent:
+                if is_aggregate:
+                    # Substitution already ran per ordered sample inside
+                    # _order_balanced_aggregates (each order against its own
+                    # same-order control); surface its flag on the trended row.
+                    backlog_substituted = bool(
+                        result.get("aggregateBacklogSubstituted")
+                    )
+                elif metric not in diagnostic_metrics:
+                    # Directly trended raw results check their same-run control;
+                    # ordered diagnostics stay raw — their family's aggregate
+                    # already accounted for any backlog per sample.
+                    delivered = _delivered_rate_if_backlogged(
+                        result, controls.get(_pair_identity(result))
+                    )
+                    if delivered is not None:
+                        value = delivered
+                        backlog_substituted = True
             if not _finite_number(value):
                 continue
 
@@ -578,7 +690,7 @@ def evaluate_and_update(history, current_results, run_started_at):
             # Keep warned observations for consecutive-trend detection, but do not let
             # them widen the clean baseline used to judge the next run.
             history_values = [
-                item.get(metric)
+                _history_metric_value(item, metric)
                 for item in prior
                 if item.get(trend_field) != "regression"
                 and not item.get("environmentShiftSuspected", False)
@@ -601,6 +713,7 @@ def evaluate_and_update(history, current_results, run_started_at):
                 "repeatedRegression": False,
                 "failureEligible": False,
                 "corroborated": None,
+                "backlogDrainSubstituted": backlog_substituted,
             }
 
             if len(history_values) >= MIN_BASELINE_RUNS:
@@ -619,7 +732,23 @@ def evaluate_and_update(history, current_results, run_started_at):
                     "repeatedRegression": repeated,
                 })
 
-            observation[metric] = value
+            if metric == "messagesPerSecond" and backlog_substituted:
+                # The delivered mean was the trended value this run, so it must
+                # also be the stored baseline value. Persisting the (inflated)
+                # interval median would make _history_metric_value feed future
+                # bands and ratio history a rate the gate never accepted,
+                # ratcheting the baseline upward until the still-unchanged
+                # delivered rate reads as a false repeated regression.
+                observation[metric] = value
+                observation["backlogDrainSubstituted"] = True
+            elif metric == "messagesPerSecond" and median_interval_rate(result) is not None:
+                # Store the median additively while the whole-run mean stays under
+                # the existing key so pre-existing entries and their readers stay
+                # valid.
+                observation["medianIntervalMessagesPerSecond"] = median_interval_rate(result)
+                observation[metric] = effective_rate(result)
+            else:
+                observation[metric] = value
             observation[f"{metric}Trend"] = evaluation["status"]
 
             ratio_evaluation = None
@@ -772,6 +901,15 @@ def format_markdown(evaluations):
             "Paired Dekaf baseline regressions fail only when the same-run ratio also "
             "regresses; unpaired scenarios retain the consecutive-regression gate. "
             "Confluent regressions remain environment warnings."
+        ),
+        (
+            "Messages/sec trends on the median sampled interval rate when the run "
+            "recorded interval samples (the rate the docs tables rank on); results "
+            "and history entries without samples fall back to the whole-run mean. "
+            "If a candidate's delivered/median drain ratio falls more than "
+            f"{1 - DRAIN_RATIO_DIVERGENCE:.0%} below its same-run control's, the "
+            "delivered whole-run mean is trended instead so delivery backlogs "
+            "hidden by the duration-window median stay visible."
         ),
         (
             "Order-balanced sample pairs (run once per client order) trend as a single "
