@@ -1236,6 +1236,50 @@ class StressTrendTests(unittest.TestCase):
             self.assertEqual("stable", throughput["status"], f"round {round_index}")
             self.assertFalse(should_fail, f"round {round_index}")
 
+    def test_order_balanced_backlog_detected_inside_aggregate(self):
+        # In order-balanced lanes the aggregate is the only trended result, so
+        # backlog detection must run per ordered sample before aggregation: a
+        # client-specific backlog in one order (median 2449, delivered 1000,
+        # healthy same-order control) must pull the aggregate down to
+        # geomean(1000, 2449) and flag the substitution, not vanish into a
+        # geomean of interval medians.
+        runs = [paired_history_run(i, 2449.0, 1414.0) for i in range(1, 4)]
+
+        def ordered(order, client, mean, median, delivered):
+            return result(
+                client=client,
+                messages_per_second=mean,
+                medianIntervalMessagesPerSecond=median,
+                deliveredMessages=delivered,
+                pairedClientOrder=order,
+                pairedSampleCount=2,
+            )
+
+        samples = [
+            ordered("dekaf-first", "Dekaf", 1000.0, 2449.0, 900_000),
+            ordered("dekaf-first", "Confluent", 1400.0, 1414.0, 1_260_000),
+            ordered("confluent-first", "Dekaf", 2449.0, 2449.0, 2_204_100),
+            ordered("confluent-first", "Confluent", 1400.0, 1414.0, 1_260_000),
+        ]
+
+        evaluations, updated, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            samples,
+            "2026-07-29T02:00:00Z",
+        )
+
+        dekaf = client_metric(evaluations, "messagesPerSecond", "Dekaf")
+        self.assertTrue(dekaf["backlogDrainSubstituted"])
+        self.assertAlmostEqual((1000.0 * 2449.0) ** 0.5, dekaf["current"])
+        self.assertEqual("regression", dekaf["status"])
+        observation = next(
+            item for item in updated["runs"][-1]["results"]
+            if item["client"] == "Dekaf" and item.get("orderBalancedAggregate")
+        )
+        self.assertAlmostEqual((1000.0 * 2449.0) ** 0.5, observation["messagesPerSecond"])
+        self.assertTrue(observation["backlogDrainSubstituted"])
+        self.assertNotIn("medianIntervalMessagesPerSecond", observation)
+
     def test_result_without_delivered_messages_keeps_median_trending(self):
         # Consumer lanes (and old producer result files) carry no
         # broker-confirmed deliveredMessages: their effective rate is just the

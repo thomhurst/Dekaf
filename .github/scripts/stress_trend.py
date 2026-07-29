@@ -274,6 +274,11 @@ def _order_balanced_aggregates(current_results):
 
     aggregates = []
     aggregated_metrics = {}
+    controls = {
+        _pair_identity(result): result
+        for result in current_results
+        if _is_confluent(result)
+    }
     for key, samples in groups.items():
         if _complete_order_pair(samples) is None:
             # Anything other than exactly one sample per order — a partial pair,
@@ -283,24 +288,41 @@ def _order_balanced_aggregates(current_results):
             # their own series rather than silently losing regression coverage.
             continue
 
-        metrics = {
-            metric: geometric_mean(
-                [definition["extract"](sample) for sample in samples]
-            )
-            for metric, definition in _METRICS.items()
-        }
+        # Backlog detection must run per ordered sample BEFORE aggregation: in
+        # order-balanced lanes the aggregate is the only trended result, and a
+        # geomean of interval medians would hide a client-specific delivery
+        # backlog in either order. Each ordered sample checks its own same-order
+        # control and contributes its delivered mean when backlogged.
+        metrics = {}
+        backlog_substituted = False
+        for metric, definition in _METRICS.items():
+            values = []
+            for sample in samples:
+                value = definition["extract"](sample)
+                if metric == "messagesPerSecond" and not _is_confluent(sample):
+                    delivered = _delivered_rate_if_backlogged(
+                        sample, controls.get(_pair_identity(sample))
+                    )
+                    if delivered is not None:
+                        value = delivered
+                        backlog_substituted = True
+                values.append(value)
+            metrics[metric] = geometric_mean(values)
         trended = frozenset(
             metric for metric, value in metrics.items() if value is not None
         )
         if not trended:
             continue
 
-        aggregates.append({
+        aggregate = {
             **_identity_record(samples[0]),
             "pairedClientOrder": None,
             "pairedSampleCount": len(samples),
             _AGGREGATE_METRICS_FIELD: metrics,
-        })
+        }
+        if backlog_substituted and "messagesPerSecond" in trended:
+            aggregate["aggregateBacklogSubstituted"] = True
+        aggregates.append(aggregate)
         aggregated_metrics[key] = trended
 
     return aggregates, aggregated_metrics
@@ -638,22 +660,24 @@ def evaluate_and_update(history, current_results, run_started_at):
         for metric, definition in _METRICS.items():
             value = _metric_value(result, metric, definition)
             backlog_substituted = False
-            # Backlog substitution applies only to directly trended raw results:
-            # synthetic aggregates have no raw delivery fields, and ordered
-            # diagnostics must store the same comparison_rate their family's
-            # aggregate geomeans.
-            if (
-                metric == "messagesPerSecond"
-                and not is_confluent
-                and not is_aggregate
-                and metric not in diagnostic_metrics
-            ):
-                delivered = _delivered_rate_if_backlogged(
-                    result, controls.get(_pair_identity(result))
-                )
-                if delivered is not None:
-                    value = delivered
-                    backlog_substituted = True
+            if metric == "messagesPerSecond" and not is_confluent:
+                if is_aggregate:
+                    # Substitution already ran per ordered sample inside
+                    # _order_balanced_aggregates (each order against its own
+                    # same-order control); surface its flag on the trended row.
+                    backlog_substituted = bool(
+                        result.get("aggregateBacklogSubstituted")
+                    )
+                elif metric not in diagnostic_metrics:
+                    # Directly trended raw results check their same-run control;
+                    # ordered diagnostics stay raw — their family's aggregate
+                    # already accounted for any backlog per sample.
+                    delivered = _delivered_rate_if_backlogged(
+                        result, controls.get(_pair_identity(result))
+                    )
+                    if delivered is not None:
+                        value = delivered
+                        backlog_substituted = True
             if not _finite_number(value):
                 continue
 
