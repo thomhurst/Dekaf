@@ -755,6 +755,79 @@ class StressTrendTests(unittest.TestCase):
         self.assertEqual("stable", ratio["status"])
         self.assertFalse(should_fail)
 
+    def test_client_specific_backlog_drain_trends_on_delivered_mean(self):
+        # A candidate that appends fast but delivers slowly shows a stable
+        # duration-window median while the broker-confirmed mean (which keeps
+        # counting through the flush drain) collapses. The control's drain
+        # ratio stays healthy, so the divergence swaps the trended value to
+        # the delivered mean and the regression stays visible.
+        runs = [paired_history_run(i) for i in range(1, 4)]
+
+        evaluations, updated, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(
+                    messages_per_second=400.0,
+                    medianIntervalMessagesPerSecond=1000.0,
+                ),
+                result(
+                    client="Confluent",
+                    messages_per_second=480.0,
+                    medianIntervalMessagesPerSecond=500.0,
+                ),
+            ],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecond"
+            and "Dekaf" in item["scenario"]
+        )
+        self.assertEqual(400.0, throughput["current"])
+        self.assertTrue(throughput["backlogDrainSubstituted"])
+        self.assertEqual("regression", throughput["status"])
+        # First adverse excursion still warns rather than fails.
+        self.assertFalse(should_fail)
+        observation = next(
+            item for item in updated["runs"][-1]["results"]
+            if item["client"] == "Dekaf"
+        )
+        self.assertEqual(400.0, observation["messagesPerSecond"])
+        self.assertEqual(1000.0, observation["medianIntervalMessagesPerSecond"])
+
+    def test_shared_stall_with_control_keeps_median_trending(self):
+        # Both clients drained to the same ~74% delivered/median ratio (the
+        # #2467 signature of a shared environment stall): no substitution,
+        # the steady median stays the trended value.
+        runs = [paired_history_run(i) for i in range(1, 4)]
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            [
+                result(
+                    messages_per_second=740.0,
+                    medianIntervalMessagesPerSecond=1000.0,
+                ),
+                result(
+                    client="Confluent",
+                    messages_per_second=370.0,
+                    medianIntervalMessagesPerSecond=500.0,
+                ),
+            ],
+            "2026-07-29T02:00:00Z",
+        )
+
+        throughput = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecond"
+            and "Dekaf" in item["scenario"]
+        )
+        self.assertEqual(1000.0, throughput["current"])
+        self.assertFalse(throughput["backlogDrainSubstituted"])
+        self.assertEqual("stable", throughput["status"])
+        self.assertFalse(should_fail)
+
     def test_warned_run_does_not_widen_next_baseline(self):
         runs = [
             history_run(1, messages_per_second=950.0),

@@ -22,6 +22,9 @@ HISTORY_LIMIT = 10
 MIN_BASELINE_RUNS = 3
 MAD_MULTIPLIER = 2.0
 RELATIVE_NOISE_FLOOR = 0.01
+# A candidate whose delivered/median drain ratio falls more than this far below
+# the same-run control's is treated as a delivery backlog, not a shared stall.
+DRAIN_RATIO_DIVERGENCE = 0.85
 
 _IDENTITY_FIELDS = (
     "scenario",
@@ -71,6 +74,45 @@ def _history_metric_value(observation, metric):
         if median_rate is not None:
             return median_rate
     return observation.get(metric)
+
+
+def _delivered_rate_if_backlogged(result, control):
+    """Whole-run delivered mean when the candidate's flush drain lags its control.
+
+    comparison_rate alone would hide delivery-backlog regressions: producer
+    interval samples stop at the configured duration while
+    EffectiveMessagesPerSecond keeps counting broker-confirmed deliveries
+    through the flush drain, so a candidate that appends fast but delivers
+    slowly shows a stable median with a collapsed delivered mean. A shared
+    environment stall depresses the delivered/median ratio for BOTH clients
+    proportionally (the #2467 false fail showed ~74% on each side), but a
+    backlog depresses only the candidate's. When the candidate's ratio falls
+    more than DRAIN_RATIO_DIVERGENCE below the same-run control's, trend the
+    delivered mean instead so the backlog stays visible to the gate. Without a
+    control (or without medians on either side) the median stands, matching
+    the fail-open transition the issue chose.
+    """
+    median_rate = median_interval_rate(result)
+    if median_rate is None or median_rate <= 0 or control is None:
+        return None
+    control_median = median_interval_rate(control)
+    control_mean = effective_rate(control)
+    if (
+        control_median is None
+        or control_median <= 0
+        or not _finite_number(control_mean)
+        or control_mean <= 0
+    ):
+        return None
+    delivered = effective_rate(result)
+    if not _finite_number(delivered) or delivered <= 0:
+        return None
+
+    candidate_drain = delivered / median_rate
+    control_drain = control_mean / control_median
+    if candidate_drain < control_drain * DRAIN_RATIO_DIVERGENCE:
+        return delivered
+    return None
 
 
 def _roundtrip_messages(result):
@@ -338,6 +380,14 @@ def evaluate_and_update(history, current_results, run_started_at):
 
         for metric, definition in _METRICS.items():
             value = definition["extract"](result)
+            backlog_substituted = False
+            if metric == "messagesPerSecond" and not is_confluent:
+                delivered = _delivered_rate_if_backlogged(
+                    result, controls.get(_pair_identity(result))
+                )
+                if delivered is not None:
+                    value = delivered
+                    backlog_substituted = True
             if not _finite_number(value):
                 continue
 
@@ -369,6 +419,7 @@ def evaluate_and_update(history, current_results, run_started_at):
                 "repeatedRegression": False,
                 "failureEligible": False,
                 "corroborated": None,
+                "backlogDrainSubstituted": backlog_substituted,
             }
 
             if len(history_values) >= MIN_BASELINE_RUNS:
@@ -388,10 +439,11 @@ def evaluate_and_update(history, current_results, run_started_at):
                 })
 
             if metric == "messagesPerSecond" and median_interval_rate(result) is not None:
-                # `value` is the median interval rate (comparison_rate prefers it);
-                # store it additively while the whole-run mean stays under the
-                # existing key so pre-existing entries and their readers stay valid.
-                observation["medianIntervalMessagesPerSecond"] = value
+                # Store the median additively while the whole-run mean stays under
+                # the existing key so pre-existing entries and their readers stay
+                # valid. Read from the result, not `value`: a backlog-drain
+                # substitution swaps `value` to the delivered mean.
+                observation["medianIntervalMessagesPerSecond"] = median_interval_rate(result)
                 observation[metric] = effective_rate(result)
             else:
                 observation[metric] = value
@@ -542,7 +594,11 @@ def format_markdown(evaluations):
         (
             "Messages/sec trends on the median sampled interval rate when the run "
             "recorded interval samples (the rate the docs tables rank on); results "
-            "and history entries without samples fall back to the whole-run mean."
+            "and history entries without samples fall back to the whole-run mean. "
+            "If a candidate's delivered/median drain ratio falls more than "
+            f"{1 - DRAIN_RATIO_DIVERGENCE:.0%} below its same-run control's, the "
+            "delivered whole-run mean is trended instead so delivery backlogs "
+            "hidden by the duration-window median stay visible."
         ),
     ]
 
