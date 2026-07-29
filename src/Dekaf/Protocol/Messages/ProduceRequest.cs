@@ -13,7 +13,9 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
 {
     public static ApiKey ApiKey => ApiKey.Produce;
     public static short LowestSupportedVersion => 9;
-    public static short HighestSupportedVersion => 13;
+    // EXPERIMENT (#2469, not for merge): cap negotiation at v12 to bisect the
+    // Produce v13 topic-ID path out of the 3conn throughput decline.
+    public static short HighestSupportedVersion => 12;
     internal const short TopicIdVersion = 13;
     internal const short ImplicitTransactionPartitionEnrollmentVersion = 12;
 
