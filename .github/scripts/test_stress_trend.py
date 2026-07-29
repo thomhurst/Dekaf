@@ -795,8 +795,49 @@ class StressTrendTests(unittest.TestCase):
             item for item in updated["runs"][-1]["results"]
             if item["client"] == "Dekaf"
         )
+        # The trended (delivered) value is what future baselines and ratio
+        # history must see; the inflated interval median is deliberately not
+        # persisted for substituted runs.
         self.assertEqual(400.0, observation["messagesPerSecond"])
-        self.assertEqual(1000.0, observation["medianIntervalMessagesPerSecond"])
+        self.assertNotIn("medianIntervalMessagesPerSecond", observation)
+        self.assertTrue(observation["backlogDrainSubstituted"])
+
+    def test_persistent_backlog_does_not_ratchet_baseline(self):
+        # A steady-state backlog (accepted 2000, delivered 1000, every run)
+        # must stay "stable" forever: the substituted delivered rate is what
+        # gets persisted, so the baseline cannot drift toward the inflated
+        # interval median and later classify the unchanged delivered rate as
+        # a regression.
+        history = {"version": 1, "runs": [paired_history_run(i) for i in range(1, 4)]}
+        current = [
+            result(
+                messages_per_second=1000.0,
+                medianIntervalMessagesPerSecond=2000.0,
+                deliveredMessages=900_000,
+            ),
+            result(
+                client="Confluent",
+                messages_per_second=500.0,
+                medianIntervalMessagesPerSecond=500.0,
+                deliveredMessages=450_000,
+            ),
+        ]
+
+        for round_index in range(5):
+            evaluations, history, should_fail = evaluate_and_update(
+                history,
+                current,
+                f"2026-07-{10 + round_index:02d}T02:00:00Z",
+            )
+            throughput = next(
+                item for item in evaluations
+                if item["metric"] == "messagesPerSecond"
+                and "Dekaf" in item["scenario"]
+            )
+            self.assertTrue(throughput["backlogDrainSubstituted"])
+            self.assertEqual(1000.0, throughput["current"])
+            self.assertEqual("stable", throughput["status"], f"round {round_index}")
+            self.assertFalse(should_fail, f"round {round_index}")
 
     def test_result_without_delivered_messages_keeps_median_trending(self):
         # Consumer lanes (and old producer result files) carry no

@@ -445,11 +445,19 @@ def evaluate_and_update(history, current_results, run_started_at):
                     "repeatedRegression": repeated,
                 })
 
-            if metric == "messagesPerSecond" and median_interval_rate(result) is not None:
+            if metric == "messagesPerSecond" and backlog_substituted:
+                # The delivered mean was the trended value this run, so it must
+                # also be the stored baseline value. Persisting the (inflated)
+                # interval median would make _history_metric_value feed future
+                # bands and ratio history a rate the gate never accepted,
+                # ratcheting the baseline upward until the still-unchanged
+                # delivered rate reads as a false repeated regression.
+                observation[metric] = value
+                observation["backlogDrainSubstituted"] = True
+            elif metric == "messagesPerSecond" and median_interval_rate(result) is not None:
                 # Store the median additively while the whole-run mean stays under
                 # the existing key so pre-existing entries and their readers stay
-                # valid. Read from the result, not `value`: a backlog-drain
-                # substitution swaps `value` to the delivered mean.
+                # valid.
                 observation["medianIntervalMessagesPerSecond"] = median_interval_rate(result)
                 observation[metric] = effective_rate(result)
             else:
