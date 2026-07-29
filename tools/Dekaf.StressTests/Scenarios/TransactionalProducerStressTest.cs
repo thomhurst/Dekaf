@@ -89,12 +89,9 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
                         ? TransactionalSequenceOracle.CommittedKey(runId, ordinal)
                         : TransactionalSequenceOracle.AbortedKey(runId, ordinal);
 
-                    await transaction.ProduceAsync(new ProducerMessage<string, string>
-                    {
-                        Topic = options.Topic,
-                        Key = key,
-                        Value = messageValue
-                    }, cancellationToken).ConfigureAwait(false);
+                    // Componentwise overload: no per-message ProducerMessage allocation (#2471).
+                    await transaction.ProduceAsync(options.Topic, key, messageValue, cancellationToken)
+                        .ConfigureAwait(false);
 
                     transactionAccepted++;
                     throughput.RecordMessage(options.MessageSizeBytes);
@@ -199,12 +196,8 @@ internal sealed class TransactionalProducerStressTest : IStressTestScenario
     {
         Console.WriteLine("  Warming up Dekaf transactional producer...");
         await using var transaction = producer.BeginTransaction();
-        await transaction.ProduceAsync(new ProducerMessage<string, string>
-        {
-            Topic = topic,
-            Key = "transactional-warmup",
-            Value = "warmup"
-        }, cancellationToken).ConfigureAwait(false);
+        await transaction.ProduceAsync(topic, "transactional-warmup", "warmup", cancellationToken)
+            .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 

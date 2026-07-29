@@ -102,6 +102,8 @@ public sealed class TransactionTests
 
         await Assert.That(() => transaction.ProduceAsync(message).AsTask())
             .Throws<FatalTransactionException>();
+        await Assert.That(() => transaction.ProduceAsync("test-topic", "key", "value").AsTask())
+            .Throws<FatalTransactionException>();
         await Assert.That(() => transaction.SendOffsetsToTransactionAsync(
                 [new TopicPartitionOffset("test-topic", 0, 1)], "test-group").AsTask())
             .Throws<FatalTransactionException>();
@@ -430,6 +432,10 @@ public sealed class TransactionTests
                 Topic = "orders",
                 Value = "value"
             });
+        }).Throws<InvalidOperationException>();
+        await Assert.That(async () =>
+        {
+            await transaction.ProduceAsync("orders", key: null, "value");
         }).Throws<InvalidOperationException>();
     }
 

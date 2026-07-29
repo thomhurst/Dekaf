@@ -550,12 +550,34 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         CancellationToken cancellationToken = default)
         => ProduceAsync(message, ProduceContinuationMode.Async, cancellationToken);
 
+    /// <summary>Continuation policy shared by every transactional produce overload.</summary>
+    private ProduceContinuationMode TransactionContinuationMode
+        => _options.InlineTransactionCompletions ? ProduceContinuationMode.Inline : ProduceContinuationMode.Async;
+
     internal ValueTask<RecordMetadata> ProduceTransactionAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
+        => ProduceAsync(message, TransactionContinuationMode, cancellationToken);
+
+    /// <summary>
+    /// Componentwise transactional produce: routes through the message-free fast path so the
+    /// serial-awaited EOS shape (1 message per request) does not pay a per-message
+    /// <see cref="ProducerMessage{TKey, TValue}"/> allocation (issue #2471). Falls back to the
+    /// message-based path only when interceptors, retry policy, or tracing require the object.
+    /// </summary>
+    internal ValueTask<RecordMetadata> ProduceTransactionAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        CancellationToken cancellationToken)
         => ProduceAsync(
-            message,
-            _options.InlineTransactionCompletions ? ProduceContinuationMode.Inline : ProduceContinuationMode.Async,
+            topic,
+            key,
+            value,
+            headers: null,
+            partition: null,
+            timestamp: null,
+            TransactionContinuationMode,
             cancellationToken);
 
     private ValueTask<RecordMetadata> ProduceAsync(
@@ -766,7 +788,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ProduceContinuationMode continuationMode,
         CancellationToken cancellationToken)
     {
-        if (_retryPolicy is not null || _interceptors is not null || Diagnostics.DekafDiagnostics.Source.HasListeners())
+        if (_retryPolicy is not null
+            || _interceptors is not null
+            || (Diagnostics.DekafDiagnostics.Source.HasListeners()
+                && !_options.SkipProduceActivityListenerCheckForTesting))
         {
             return ProduceAsync(new ProducerMessage<TKey, TValue>
             {
@@ -5137,13 +5162,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
     {
         try
         {
-            ThrowIfProducerDisposed();
-            _producer.ThrowIfFatalTransactionError("Cannot produce");
-
-            if (_committed || _aborted)
-                throw new InvalidOperationException("Transaction is already completed");
-
-            _producer.ThrowIfInPreparedTransaction();
+            ThrowIfCannotProduce();
 
             // Partition registration with AddPartitionsToTxn is handled automatically
             // by BrokerSender before the ProduceRequest is sent to the broker.
@@ -5151,20 +5170,70 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         }
         catch (OperationCanceledException exception)
         {
-            var canceledToken = exception.CancellationToken.IsCancellationRequested
-                ? exception.CancellationToken
-                : cancellationToken.IsCancellationRequested
-                    ? cancellationToken
-                    : new CancellationToken(canceled: true);
-            return new ValueTask<RecordMetadata>(Task.FromCanceled<RecordMetadata>(canceledToken));
+            return CanceledProduce(exception, cancellationToken);
         }
         catch (Exception exception)
         {
-            // Preserve async-method exception timing: validation failures fault the returned
-            // ValueTask instead of escaping synchronously from ProduceAsync.
-            return new ValueTask<RecordMetadata>(Task.FromException<RecordMetadata>(exception));
+            return FaultedProduce(exception);
         }
     }
+
+    public ValueTask<RecordMetadata> ProduceAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            ThrowIfCannotProduce();
+
+            // Componentwise fast path: no ProducerMessage allocation per message (issue #2471).
+            // Partition registration with AddPartitionsToTxn is handled automatically
+            // by BrokerSender before the ProduceRequest is sent to the broker.
+            return _producer.ProduceTransactionAsync(topic, key, value, cancellationToken);
+        }
+        catch (OperationCanceledException exception)
+        {
+            return CanceledProduce(exception, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            return FaultedProduce(exception);
+        }
+    }
+
+    private void ThrowIfCannotProduce() => ThrowIfTransactionUnusable("Cannot produce");
+
+    private void ThrowIfTransactionUnusable(string operation)
+    {
+        ThrowIfProducerDisposed();
+        _producer.ThrowIfFatalTransactionError(operation);
+
+        if (_committed || _aborted)
+            throw new InvalidOperationException("Transaction is already completed");
+
+        _producer.ThrowIfInPreparedTransaction();
+    }
+
+    private static ValueTask<RecordMetadata> CanceledProduce(
+        OperationCanceledException exception,
+        CancellationToken cancellationToken)
+    {
+        var canceledToken = exception.CancellationToken.IsCancellationRequested
+            ? exception.CancellationToken
+            : cancellationToken.IsCancellationRequested
+                ? cancellationToken
+                : new CancellationToken(canceled: true);
+        return new ValueTask<RecordMetadata>(Task.FromCanceled<RecordMetadata>(canceledToken));
+    }
+
+    /// <summary>
+    /// Preserves async-method exception timing: validation failures fault the returned
+    /// ValueTask instead of escaping synchronously from ProduceAsync.
+    /// </summary>
+    private static ValueTask<RecordMetadata> FaultedProduce(Exception exception)
+        => new(Task.FromException<RecordMetadata>(exception));
 
     public ValueTask CommitAsync(CancellationToken cancellationToken = default) =>
         CommitCoreAsync(afterRequestWrittenAsync: null, cancellationToken);
@@ -5264,13 +5333,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         string consumerGroupId,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfProducerDisposed();
-        _producer.ThrowIfFatalTransactionError("Cannot send offsets to transaction");
-
-        if (_committed || _aborted)
-            throw new InvalidOperationException("Transaction is already completed");
-
-        _producer.ThrowIfInPreparedTransaction();
+        ThrowIfTransactionUnusable("Cannot send offsets to transaction");
 
         await _producer.SendOffsetsToTransactionInternalAsync(offsets, consumerGroupId, cancellationToken)
             .ConfigureAwait(false);
@@ -5281,13 +5344,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         ConsumerGroupMetadata consumerGroupMetadata,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfProducerDisposed();
-        _producer.ThrowIfFatalTransactionError("Cannot send offsets to transaction");
-
-        if (_committed || _aborted)
-            throw new InvalidOperationException("Transaction is already completed");
-
-        _producer.ThrowIfInPreparedTransaction();
+        ThrowIfTransactionUnusable("Cannot send offsets to transaction");
         ArgumentNullException.ThrowIfNull(consumerGroupMetadata);
 
         await _producer.SendOffsetsToTransactionInternalAsync(

@@ -128,6 +128,55 @@ public class TransactionTests(KafkaTestContainer kafka) : TransactionalKafkaInte
     }
 
     [Test]
+    public async Task Transaction_ComponentwiseProduce_CommitAndAbortSemantics()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        var txnId = $"txn-componentwise-{Guid.NewGuid():N}";
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithTransactionalId(txnId)
+            .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
+            .BuildAsync();
+
+        await producer.InitTransactionsAsync();
+
+        // Aborted componentwise produce must not be visible to read_committed consumers
+        await using (var txn = producer.BeginTransaction())
+        {
+            await txn.ProduceAsync(topic, "aborted-key", "aborted-value", CancellationToken.None);
+            await txn.AbortAsync();
+        }
+
+        // Committed componentwise produce must round-trip key and value
+        await using (var txn2 = producer.BeginTransaction())
+        {
+            var metadata = await txn2.ProduceAsync(
+                topic, "committed-key", "committed-value", CancellationToken.None);
+            await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+
+            await txn2.CommitAsync();
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
+            .WithIsolationLevel(IsolationLevel.ReadCommitted)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var consumed = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+
+        await Assert.That(consumed).IsNotNull();
+        await Assert.That(consumed!.Value.Key).IsEqualTo("committed-key");
+        await Assert.That(consumed!.Value.Value).IsEqualTo("committed-value");
+    }
+
+    [Test]
     public async Task Transaction_MultipleMessages_AllCommitted()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();

@@ -662,6 +662,16 @@ public sealed class ProducerOptions
     internal bool EnableDeliveryDiagnostics { get; init; }
 
     /// <summary>
+    /// Test seam for broker-free allocation gates: skips the ActivitySource listener check on
+    /// the componentwise produce path so a gate can pin the no-listener fast path (the shape
+    /// the stress lanes measure) even when the test host installs a process-wide
+    /// sample-everything ActivityListener (e.g. TUnit's OTel span tracker). Never set outside
+    /// allocation-gate tests; setting it suppresses produce span creation for the componentwise
+    /// overloads.
+    /// </summary>
+    internal bool SkipProduceActivityListenerCheckForTesting { get; init; }
+
+    /// <summary>
     /// Enable adaptive connection scaling based on buffer pressure.
     /// When enabled, the producer will automatically increase connections per broker
     /// when sustained buffer backpressure is detected, improving drain throughput.

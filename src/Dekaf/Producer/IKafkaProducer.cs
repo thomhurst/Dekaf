@@ -540,6 +540,37 @@ public interface ITransaction<TKey, TValue> : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Produces a message to the specified topic within the transaction.
+    /// </summary>
+    /// <remarks>
+    /// <para>See <see cref="ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/> for
+    /// the continuation-inlining behavior shared by all transactional produces.</para>
+    /// <para>Implementations may optimize this overload to avoid allocating a
+    /// <see cref="ProducerMessage{TKey, TValue}"/> object on the hot path; Dekaf's own
+    /// transaction does. On modern TFMs a default implementation forwards to the
+    /// <see cref="ProducerMessage{TKey, TValue}"/> overload so existing external
+    /// implementations keep compiling and loading; netstandard2.0 cannot express default
+    /// interface members, so implementations targeting it must add this member.</para>
+    /// </remarks>
+    ValueTask<RecordMetadata> ProduceAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        CancellationToken cancellationToken = default)
+#if NET
+        => ProduceAsync(
+            new ProducerMessage<TKey, TValue>
+            {
+                Topic = topic,
+                Key = key,
+                Value = value,
+            },
+            cancellationToken);
+#else
+        ;
+#endif
+
+    /// <summary>
     /// Commits the transaction.
     /// </summary>
     ValueTask CommitAsync(CancellationToken cancellationToken = default);

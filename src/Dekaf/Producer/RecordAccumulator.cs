@@ -2766,16 +2766,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         foreach (var kvp in _partitionDeques)
         {
-            var pd = kvp.Value;
-            {
-                using var guard = new SpinLockGuard(ref pd.Lock);
-                var b = pd.PollFirst();
-                if (b is not null)
-                {
-                    batch = b;
-                    return true;
-                }
-            }
+            if (TryDrainBatch(kvp.Key, out batch))
+                return true;
+        }
+
+        batch = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Drains one ReadyBatch from the given partition's deque. Like <see cref="TryDrainBatch(out ReadyBatch?)"/>
+    /// this is a test-only sender-loop stand-in, but partition-targeted so strict allocation-gate
+    /// tests can drain without the all-deques enumerator allocation on the measuring thread.
+    /// </summary>
+    internal bool TryDrainBatch(
+        TopicPartition topicPartition,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ReadyBatch? batch)
+    {
+        if (_partitionDeques.TryGetValue(topicPartition, out var pd))
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+            batch = pd.PollFirst();
+            return batch is not null;
         }
 
         batch = null;
@@ -5523,10 +5535,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             SignalBufferSpaceAvailable();
         }
 
+        // factoryArgument overload with static lambdas: the capturing (_, current) => ... form
+        // allocated a closure + delegate per batch, which de-amortizes to per-message at the
+        // transactional 1-message-per-batch shape (issue #2471; enter-side twin fixed by #1914).
         _partitionQueueBytes.AddOrUpdate(
             batch.TopicPartition,
-            0,
-            (_, current) => Math.Max(0, current - batch.DataSize));
+            static (_, _) => 0,
+            static (_, current, batch) => Math.Max(0, current - batch.DataSize),
+            batch);
 
         if (_options.EnableDeliveryDiagnostics)
             batch.AppendDiag('X');

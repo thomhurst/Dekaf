@@ -22,6 +22,10 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     private ValueTaskSourcePool<T>? _pool;
     private Action<T, Exception?>? _deliveryHandler;
     private CancellationTokenRegistration _cancellationRegistration;
+#if !NET
+    // netstandard2.0 only: token observed by the closure-free cancellation callback.
+    private CancellationToken _registeredCancellationToken;
+#endif
     private int _hasCompleted; // 0 = not completed, 1 = completed
 
     /// <summary>
@@ -147,9 +151,48 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
             return;
 
         _cancellationRegistration.Dispose();
+#if NET
         _cancellationRegistration = cancellationToken.UnsafeRegister(
             static (state, token) => ((PooledValueTaskSource<T>)state!).TrySetCanceled(token),
             this);
+#else
+        // netstandard2.0: the Polyfill package's UnsafeRegister shim wraps the (state, token)
+        // callback in a per-call closure (~176 B per awaited produce, issue #2471). Use the BCL
+        // single-state overload with a static delegate and carry the token in a field instead.
+        // Deliberately NO ExecutionContext.SuppressFlow() here (unlike the shim and the NET
+        // UnsafeRegister branch): under a non-default ambient context SuppressFlow shallow-clones
+        // the ExecutionContext on every registration — a per-message heap allocation the
+        // zero-alloc produce gate rejects. Register instead captures the caller's context by
+        // reference (allocation-free); that capture only takes effect on the exceptional
+        // cancellation-fire path, and the awaiting caller's own state machine already retains
+        // the same context for the message's lifetime.
+        //
+        // Pool-reuse safety of the mutable token field: GetResult's finally disposes this
+        // registration before the field is cleared and the source is re-rented, and on
+        // .NET Framework CancellationTokenRegistration.Dispose is documented to deregister a
+        // not-yet-started callback (it never runs) and to block until an executing callback
+        // completes (unless called from that callback's own thread, which GetResult never is).
+        // So no callback from a previous rental can fire after reuse on a compliant runtime.
+        // The IsCancellationRequested guard below is defense-in-depth for runtimes that deviate
+        // from those documented semantics: a stale fire re-reads the CURRENT field, which by
+        // then holds default (cleared) or the next operation's token — uncancelled means no-op,
+        // and a cancelled current token makes cancelling the current operation the correct
+        // outcome anyway (its own registration would do the same; TrySetCanceled CAS makes the
+        // race benign). On the legitimate fire path the guard is always true, so behavior is
+        // unchanged there.
+        _registeredCancellationToken = cancellationToken;
+        _cancellationRegistration = cancellationToken.Register(
+            static state =>
+            {
+                var source = (PooledValueTaskSource<T>)state!;
+                var token = source._registeredCancellationToken;
+                if (token.IsCancellationRequested)
+                {
+                    source.TrySetCanceled(token);
+                }
+            },
+            this);
+#endif
     }
 
     /// <summary>
@@ -181,6 +224,9 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
         {
             _cancellationRegistration.Dispose();
             _cancellationRegistration = default;
+#if !NET
+            _registeredCancellationToken = default;
+#endif
 
             // Clear handler before returning to pool
             _deliveryHandler = null;
