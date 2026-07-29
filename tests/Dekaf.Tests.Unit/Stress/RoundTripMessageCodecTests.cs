@@ -99,6 +99,110 @@ public class RoundTripMessageCodecTests
     }
 
     [Test]
+    public async Task Factory_Create_ReusesPartitionBufferWithFreshSequence()
+    {
+        var factory = new RoundTripMessageFactory("reuse-run", partitionCount: 2, payloadSize: 128);
+
+        var first = factory.Create(partition: 0);
+        var firstCopy = first.Retain();
+        var otherPartition = factory.Create(partition: 1);
+        var second = factory.Create(partition: 0);
+
+        // Same partition reuses the same buffer; other partitions never alias it.
+        await Assert.That(ReferenceEquals(first.Value, second.Value)).IsTrue();
+        await Assert.That(ReferenceEquals(first.Value, otherPartition.Value)).IsFalse();
+
+        await Assert.That(RoundTripMessageCodec.TryDecode(second.Key, second.Value, out var secondMetadata)).IsTrue();
+        await Assert.That(secondMetadata.Sequence).IsEqualTo(1);
+        await Assert.That(RoundTripMessageCodec.TryDecode(firstCopy.Key, firstCopy.Value, out var firstMetadata)).IsTrue();
+        await Assert.That(firstMetadata.Sequence).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Factory_Create_SteadyState_IsAllocationFreePerMessage()
+    {
+        // The produce loop runs factory.Create per message inside the lane's measured
+        // GC window; a fresh 128-byte payload here was 152 B/msg of the 306 B/msg
+        // reported in #2472. Guard the zero-allocation contract directly.
+        // GC.GetAllocatedBytesForCurrentThread is exact, so one warmup pass retires
+        // JIT/static-init allocations and any per-message allocation is decisive.
+        var factory = new RoundTripMessageFactory("alloc-run", partitionCount: 2, payloadSize: 128);
+        for (var i = 0; i < 16; i++)
+        {
+            _ = factory.Create(i % 2);
+        }
+
+        const int iterations = 5_000;
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < iterations; i++)
+        {
+            _ = factory.Create(i % 2);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(allocated).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Validator_Record_SteadyState_IsAllocationFreePerMessage()
+    {
+        // Record runs per consumed message inside the measured GC window at ~1M msg/s;
+        // it must never allocate (no boxing, strings, or growing collections).
+        const int partitionCount = 2;
+        const int messagesPerPartition = 500;
+        var factory = new RoundTripMessageFactory("validator-alloc", partitionCount, payloadSize: 128);
+        var messages = new RoundTripMessage[partitionCount * messagesPerPartition];
+        for (var i = 0; i < messages.Length; i++)
+        {
+            messages[i] = factory.Create(i % partitionCount).Retain();
+        }
+
+        var validator = new RoundTripValidator(factory.ExpectedPerPartition);
+        var offsets = new long[partitionCount];
+        // Warm every Record path (decode, key partition hash, bitmap) before measuring.
+        validator.Record(messages[0].Key, messages[0].Value, messages[0].ExpectedPartition, offsets[messages[0].ExpectedPartition]++);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 1; i < messages.Length; i++)
+        {
+            var message = messages[i];
+            validator.Record(message.Key, message.Value, message.ExpectedPartition, offsets[message.ExpectedPartition]++);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        var snapshot = validator.CreateSnapshot(timedOut: false);
+        await Assert.That(allocated).IsEqualTo(0);
+        await Assert.That(snapshot.ConsumedMessages).IsEqualTo(messages.Length);
+        await Assert.That(snapshot.IsSuccess).IsTrue();
+    }
+
+    [Test]
+    public async Task Validator_DetectsDuplicateBeyondFirstBitmapWord()
+    {
+        // The seen-set is a ulong bitmap; make sure duplicate detection works past the
+        // first 64 sequences of a partition (cross-word indexing).
+        const int total = 100;
+        var factory = new RoundTripMessageFactory("bitmap-run", partitionCount: 1, payloadSize: 128);
+        var messages = new RoundTripMessage[total];
+        for (var i = 0; i < total; i++)
+        {
+            messages[i] = factory.Create(partition: 0).Retain();
+        }
+
+        var validator = new RoundTripValidator(factory.ExpectedPerPartition);
+        for (var i = 0; i < total; i++)
+        {
+            validator.Record(messages[i].Key, messages[i].Value, actualPartition: 0, actualOffset: i);
+        }
+        validator.Record(messages[70].Key, messages[70].Value, actualPartition: 0, actualOffset: total);
+
+        var snapshot = validator.CreateSnapshot(timedOut: false);
+        await Assert.That(snapshot.DuplicateMessages).IsEqualTo(1);
+        await Assert.That(snapshot.MissingMessages).IsEqualTo(0);
+        await Assert.That(snapshot.ConsumedMessages).IsEqualTo(total + 1);
+    }
+
+    [Test]
     public async Task TryDecode_WhenPayloadOrKeyChanges_RejectsMessage()
     {
         var factory = new RoundTripMessageFactory("test-run", partitionCount: 3, payloadSize: 128);
@@ -117,10 +221,10 @@ public class RoundTripMessageCodecTests
     public async Task Validator_ReportsGapsDuplicatesReorderingAndMispartitioning()
     {
         var factory = new RoundTripMessageFactory("validator-run", partitionCount: 2, payloadSize: 128);
-        var sequenceZero = factory.Create(partition: 0);
-        var sequenceOne = factory.Create(partition: 0);
+        var sequenceZero = factory.Create(partition: 0).Retain();
+        var sequenceOne = factory.Create(partition: 0).Retain();
         _ = factory.Create(partition: 0);
-        var sequenceThree = factory.Create(partition: 0);
+        var sequenceThree = factory.Create(partition: 0).Retain();
         var validator = new RoundTripValidator(factory.ExpectedPerPartition);
 
         validator.Record(sequenceOne.Key, sequenceOne.Value, actualPartition: 0, actualOffset: 0);
@@ -144,7 +248,7 @@ public class RoundTripMessageCodecTests
     {
         var factory = new RoundTripMessageFactory("complete-run", partitionCount: 3, payloadSize: 128);
         var messages = Enumerable.Range(0, 3)
-            .SelectMany(_ => Enumerable.Range(0, 3).Select(factory.Create))
+            .SelectMany(_ => Enumerable.Range(0, 3).Select(partition => factory.Create(partition).Retain()))
             .ToArray();
         var validator = new RoundTripValidator(factory.ExpectedPerPartition);
         var offsets = new long[3];
@@ -171,12 +275,8 @@ public class RoundTripMessageCodecTests
     {
         var factory = new RoundTripMessageFactory("ordinal-run", partitionCount: 2, payloadSize: 128);
         var message = factory.Create(partition: 0);
-        var payload = RoundTripMessageCodec.Encode(
-            message.Key,
-            partition: 0,
-            sequence: 0,
-            ordinal: 9,
-            payloadSize: 128);
+        var payload = new byte[128];
+        RoundTripMessageCodec.EncodeInto(payload, message.Key, partition: 0, sequence: 0, ordinal: 9);
         var validator = new RoundTripValidator(factory.ExpectedPerPartition);
 
         validator.Record(message.Key, payload, actualPartition: 0, actualOffset: 0);

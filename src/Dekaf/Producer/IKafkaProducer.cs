@@ -80,6 +80,10 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     ///
     /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing the producer.</para>
     ///
+    /// <para>Key and value are serialized into producer-owned buffers before the returned
+    /// <see cref="ValueTask"/> completes, so callers may reuse or mutate input buffers
+    /// (e.g. a pooled <c>byte[]</c> value) once the returned task has been awaited.</para>
+    ///
     /// <para>Errors during delivery will be logged but not thrown. For reliable delivery with error handling,
     /// use the callback overload or <see cref="ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/>.</para>
     /// </remarks>
@@ -98,6 +102,10 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// with zero allocation.</para>
     ///
     /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing the producer.</para>
+    ///
+    /// <para>Key and value are serialized into producer-owned buffers before the returned
+    /// <see cref="ValueTask"/> completes, so callers may reuse or mutate input buffers
+    /// (e.g. a pooled <c>byte[]</c> value) once the returned task has been awaited.</para>
     ///
     /// <para>Errors during delivery will be logged but not thrown. For reliable delivery with error handling,
     /// use the callback overload or <see cref="ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/>.</para>

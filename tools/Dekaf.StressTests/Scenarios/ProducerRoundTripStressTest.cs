@@ -116,6 +116,8 @@ internal sealed class ProducerRoundTripStressTest : IStressTestScenario
                     break;
                 }
 
+                // Safe to reuse the factory's per-partition buffer: FireAsync copies
+                // key/value before its ValueTask completes (#2472).
                 var message = factory.Create(ordinal % options.Partitions);
                 estimatedLogBytes += RoundTripScenarioHelpers.EstimateLogBytes(message);
                 try
@@ -351,6 +353,10 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
         // skew the acks-all scenario avoids (see ConfluentStressTestHelpers). Lost messages
         // still fail the run via the consume-side completion tracker + CRC validation.
         Console.WriteLine(RoundTripScenarioHelpers.GetProduceDescription(options, "Confluent.Kafka"));
+        // One reused envelope: librdkafka copies key/value during Produce, so neither
+        // the envelope nor the factory's reused payload buffer needs a fresh allocation
+        // per message (#2472).
+        var envelope = new ConfluentKafka.Message<string, byte[]>();
         var estimatedLogBytes = 0L;
         int ordinal;
         for (ordinal = 0;
@@ -372,16 +378,14 @@ internal sealed class ConfluentProducerRoundTripStressTest : IStressTestScenario
 
             var message = factory.Create(ordinal % options.Partitions);
             estimatedLogBytes += RoundTripScenarioHelpers.EstimateLogBytes(message);
+            envelope.Key = message.Key;
+            envelope.Value = message.Value;
             try
             {
                 ConfluentStressTestHelpers.ProduceWithBackpressure(
                     producer,
                     options.Topic,
-                    new ConfluentKafka.Message<string, byte[]>
-                    {
-                        Key = message.Key,
-                        Value = message.Value
-                    },
+                    envelope,
                     deliveryHandler: null,
                     produceTimeout.Token);
                 throughput.RecordMessage(message.Value.Length);
