@@ -7,8 +7,10 @@ from pathlib import Path
 from statistics import median
 
 from stress_report import (
+    PAIRED_ORDER_LABELS,
     cpu_micros_per_message,
     effective_rate,
+    geometric_mean,
     intra_run_throughput,
     paired_order_identity,
     paired_latency_thresholds,
@@ -85,7 +87,16 @@ def _consumer_connections_per_broker(result):
     return 1 if client.startswith("confluent") else 2
 
 
-def _identity(result):
+# WARNING: Every component below — most notably the client label — is a history
+# series key. Renaming a client label, or adding a new identity dimension (as the
+# order-balanced pairedClientOrder did in #2055), creates a fresh series with zero
+# history: the lane silently reports "Collecting baseline 0/3" and loses its
+# trailing regression band until MIN_BASELINE_RUNS clean runs re-accumulate
+# (issue #2468). If a label or identity dimension must change, either fold the new
+# form back onto the old series (see _order_balanced_aggregates) or migrate
+# .github/stress-history.json in the same PR.
+def _order_family_key(result):
+    """Series key ignoring client order: one family per (scenario, client, brokers, shape)."""
     return (
         str(result.get("scenario", "unknown")).casefold(),
         str(result.get("client", "unknown")).casefold(),
@@ -96,8 +107,11 @@ def _identity(result):
         _consumer_connections_per_broker(result),
         _roundtrip_messages(result),
         result.get("roundTripSteadySeconds"),
-        paired_order_identity(result),
     )
+
+
+def _identity(result):
+    return _order_family_key(result) + (paired_order_identity(result),)
 
 
 def _is_confluent(result):
@@ -120,6 +134,90 @@ def _pair_identity(result):
         result.get("roundTripSteadySeconds"),
         paired_order_identity(result),
     )
+
+
+# Synthetic order-balanced aggregates carry their trend metrics precomputed under
+# this key because the _METRICS extractors read raw result fields that the
+# synthetic rows do not have.
+_AGGREGATE_METRICS_FIELD = "orderBalancedAggregateMetrics"
+
+
+def _identity_record(result):
+    """Identity fields normalized exactly as history observations store them."""
+    record = {field: result.get(field) for field in _IDENTITY_FIELDS}
+    record["brokerCount"] = result.get("brokerCount", 1)
+    record["consumerSeedBatchSizeBytes"] = _consumer_seed_batch_size(result)
+    record["consumerConnectionsPerBroker"] = _consumer_connections_per_broker(result)
+    record["roundTripMessages"] = _roundtrip_messages(result)
+    return record
+
+
+def _metric_value(result, metric, definition):
+    """Trend value for a result: precomputed for synthetic aggregates, extracted otherwise."""
+    aggregate_metrics = result.get(_AGGREGATE_METRICS_FIELD)
+    if aggregate_metrics is not None:
+        return aggregate_metrics.get(metric)
+    return definition["extract"](result)
+
+
+def _order_balanced_aggregates(current_results):
+    """Collapse each order-balanced sample pair into one synthetic trend result.
+
+    Order-balanced acceptance (#2055) runs the flagship pairings once per client
+    order, which puts pairedClientOrder into every sample's history identity and
+    resets those lanes' trailing bands to zero (issue #2468). The trend series is
+    therefore the geometric mean of the ordered pair, mirroring the aggregation the
+    docs "Order-Balanced Aggregate" table introduced but applied to the trend
+    metrics (deliberately effective_rate / CPU per message rather than the docs'
+    comparison_rate — metric selection is owned by #2467). The synthetic row keeps
+    a None order component so it attaches to the pre-rename plain Dekaf/Confluent
+    history series and inherits the existing bands. Ordered samples become
+    non-trended diagnostics for the aggregated metrics; unpaired and single-sample
+    results (e.g. the "Dekaf (3conn)" control) are untouched.
+
+    Returns (aggregates, aggregated_metrics) where aggregated_metrics maps each
+    family's _order_family_key to the set of metric names its aggregate trends —
+    a metric that failed to aggregate (missing/zero sample value) keeps trending
+    on the per-order series instead of silently losing coverage.
+    """
+    groups = {}
+    for result in current_results:
+        if paired_order_identity(result) is not None:
+            groups.setdefault(_order_family_key(result), []).append(result)
+
+    aggregates = []
+    aggregated_metrics = {}
+    for key, samples in groups.items():
+        orders = {
+            str(sample.get("pairedClientOrder", "")).casefold() for sample in samples
+        }
+        if not PAIRED_ORDER_LABELS.issubset(orders):
+            # Partial pair (one order only): no balanced aggregate exists, so the
+            # ordered samples keep trending on their own series rather than
+            # silently losing regression coverage.
+            continue
+
+        metrics = {
+            metric: geometric_mean(
+                [definition["extract"](sample) for sample in samples]
+            )
+            for metric, definition in _METRICS.items()
+        }
+        trended = frozenset(
+            metric for metric, value in metrics.items() if value is not None
+        )
+        if not trended:
+            continue
+
+        aggregates.append({
+            **_identity_record(samples[0]),
+            "pairedClientOrder": None,
+            "pairedSampleCount": len(samples),
+            _AGGREGATE_METRICS_FIELD: metrics,
+        })
+        aggregated_metrics[key] = trended
+
+    return aggregates, aggregated_metrics
 
 
 def _matching_observations(runs, result):
@@ -225,6 +323,9 @@ def _scenario_label(result):
     roundtrip_messages = _roundtrip_messages(result)
     if roundtrip_messages is not None:
         label += f" / {roundtrip_messages} messages"
+    order = paired_order_identity(result)
+    if order is not None:
+        label += f" / {order}"
     return label
 
 
@@ -300,25 +401,43 @@ def evaluate_and_update(history, current_results, run_started_at):
     observations = []
     should_fail = False
     environment_shift_suspected = False
+    # Order-balanced pairs trend as one synthetic geomean aggregate per client
+    # family (attached to the pre-rename plain series); the aggregates are
+    # evaluated first so ordered diagnostics can borrow their family's verdict.
+    aggregates, aggregated_metrics = _order_balanced_aggregates(current_results)
+    trend_results = aggregates + list(current_results)
     controls = {
         _pair_identity(result): result
-        for result in current_results
+        for result in trend_results
         if _is_confluent(result)
     }
+    family_throughput_regression = {}
 
-    for result in current_results:
+    for result in trend_results:
         is_confluent = _is_confluent(result)
+        is_aggregate = _AGGREGATE_METRICS_FIELD in result
+        family_key = _order_family_key(result)
+        # Ordered samples stay as diagnostics for the metrics their family's
+        # aggregate trends: raw values are recorded, but they carry no band,
+        # cannot gate, and never grow parallel per-order history series.
+        diagnostic_metrics = (
+            aggregated_metrics.get(family_key, frozenset())
+            if not is_aggregate and paired_order_identity(result) is not None
+            else frozenset()
+        )
         prior = _matching_observations(baseline_runs, result)
-        observation = {field: result.get(field) for field in _IDENTITY_FIELDS}
-        observation["consumerSeedBatchSizeBytes"] = _consumer_seed_batch_size(result)
-        observation["consumerConnectionsPerBroker"] = _consumer_connections_per_broker(result)
-        observation["brokerCount"] = result.get("brokerCount", 1)
-        observation["roundTripMessages"] = _roundtrip_messages(result)
+        observation = _identity_record(result)
+        if is_aggregate:
+            observation["orderBalancedAggregate"] = True
         throughput_regression = False
 
         for metric, definition in _METRICS.items():
-            value = definition["extract"](result)
+            value = _metric_value(result, metric, definition)
             if not _finite_number(value):
+                continue
+
+            if metric in diagnostic_metrics:
+                observation[metric] = value
                 continue
 
             trend_field = f"{metric}Trend"
@@ -372,7 +491,9 @@ def evaluate_and_update(history, current_results, run_started_at):
 
             ratio_evaluation = None
             control = controls.get(_pair_identity(result)) if not is_confluent else None
-            control_value = definition["extract"](control) if control is not None else None
+            control_value = (
+                _metric_value(control, metric, definition) if control is not None else None
+            )
             if _finite_number(control_value) and control_value != 0:
                 ratio_evaluation = _control_ratio_evaluation(
                     baseline_runs,
@@ -405,6 +526,13 @@ def evaluate_and_update(history, current_results, run_started_at):
             should_fail = should_fail or evaluation["failureEligible"]
             if metric == "messagesPerSecond":
                 throughput_regression = evaluation["status"] == "regression"
+
+        if is_aggregate:
+            family_throughput_regression[family_key] = throughput_regression
+        elif "messagesPerSecond" in diagnostic_metrics:
+            # Ordered samples have no per-order band, so intra-run breaches borrow
+            # the family aggregate's throughput verdict for corroboration.
+            throughput_regression = family_throughput_regression.get(family_key, False)
 
         intra_run = intra_run_throughput(result)
         if intra_run is not None:
@@ -511,6 +639,11 @@ def format_markdown(evaluations):
             "Paired Dekaf baseline regressions fail only when the same-run ratio also "
             "regresses; unpaired scenarios retain the consecutive-regression gate. "
             "Confluent regressions remain environment warnings."
+        ),
+        (
+            "Order-balanced sample pairs (run once per client order) trend as a single "
+            "geometric-mean series per client that continues the pre-rename history "
+            "band; the individual ordered samples appear only as intra-run diagnostics."
         ),
     ]
 
