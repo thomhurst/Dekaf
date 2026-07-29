@@ -25,19 +25,24 @@ namespace Dekaf.Tests.Unit.Performance;
 public class TransactionalProduceAllocationTests
 {
     private const string Topic = "txn-allocation-gate";
-    private const int WarmupIterations = 128;
+    private const int WarmupIterations = 4_096;
     private const int MeasuredIterations = 1_024;
 
     /// <summary>
     /// A produce cycle's steady state must allocate exactly zero bytes. The only tolerated
     /// nonzero cycles are the rare, bursty <see cref="System.Collections.Concurrent.ConcurrentQueue{T}"/>
     /// segment allocations from the accumulator's linger/ready partition queues — production
-    /// enqueues those per sealed batch too, so the growth is a real (amortized ~40 B/batch)
-    /// per-batch cost, but it surfaces as one segment per few hundred batches, not per cycle.
-    /// Any per-message or deterministic per-batch allocation makes every cycle nonzero and
-    /// fails the burst-count gate immediately.
+    /// enqueues those per sealed batch too, so the growth is a real amortized per-batch cost.
+    /// Segment sizes double per allocation, so after the long warmup the measured window can
+    /// see at most a segment boundary or two (one per queue), never a recurring cadence: a
+    /// deterministic every-N-cycles allocation exceeds the burst cap, and any small per-cycle
+    /// allocation (closures, boxing, message objects) fails both the burst cap and the
+    /// per-burst minimum below — a real queue segment at post-warmup sizes is tens of KiB,
+    /// so bursts smaller than <see cref="MinQueueSegmentAllocationBytes"/> cannot be segment
+    /// growth and fail the gate outright.
     /// </summary>
-    private const int MaxQueueSegmentGrowthBursts = 24;
+    private const int MaxQueueSegmentGrowthBursts = 3;
+    private const long MinQueueSegmentAllocationBytes = 1_024;
     private const long MaxTotalAllocatedBytes = 256 * 1024;
 
     [Test]
@@ -71,6 +76,13 @@ public class TransactionalProduceAllocationTests
         await Assert.That(measurement.Checksum).IsEqualTo(WarmupIterations + MeasuredIterations);
         await Assert.That(measurement.NonZeroCycles).IsLessThanOrEqualTo(MaxQueueSegmentGrowthBursts);
         await Assert.That(measurement.AllocatedBytes).IsLessThanOrEqualTo(MaxTotalAllocatedBytes);
+        if (measurement.NonZeroCycles > 0)
+        {
+            // Every tolerated burst must look like queue-segment growth, not a small
+            // recurring hot-path allocation slipping under the burst cap.
+            await Assert.That(measurement.MinNonZeroCycleBytes)
+                .IsGreaterThanOrEqualTo(MinQueueSegmentAllocationBytes);
+        }
     }
 
     /// <summary>
@@ -195,6 +207,7 @@ public class TransactionalProduceAllocationTests
 
         long allocatedBytes = 0;
         var nonZeroCycles = 0;
+        var minNonZeroCycleBytes = long.MaxValue;
         for (var i = 0; i < measuredIterations; i++)
         {
             var before = GC.GetAllocatedBytesForCurrentThread();
@@ -202,11 +215,15 @@ public class TransactionalProduceAllocationTests
             var cycleBytes = GC.GetAllocatedBytesForCurrentThread() - before;
             allocatedBytes += cycleBytes;
             if (cycleBytes != 0)
+            {
                 nonZeroCycles++;
+                minNonZeroCycleBytes = Math.Min(minNonZeroCycleBytes, cycleBytes);
+            }
         }
 
-        return new AllocationMeasurement(allocatedBytes, nonZeroCycles, checksum);
+        return new AllocationMeasurement(allocatedBytes, nonZeroCycles, minNonZeroCycleBytes, checksum);
     }
 
-    private readonly record struct AllocationMeasurement(long AllocatedBytes, int NonZeroCycles, int Checksum);
+    private readonly record struct AllocationMeasurement(
+        long AllocatedBytes, int NonZeroCycles, long MinNonZeroCycleBytes, int Checksum);
 }
