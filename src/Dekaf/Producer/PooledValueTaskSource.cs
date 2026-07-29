@@ -166,12 +166,30 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
         // reference (allocation-free); that capture only takes effect on the exceptional
         // cancellation-fire path, and the awaiting caller's own state machine already retains
         // the same context for the message's lifetime.
+        //
+        // Pool-reuse safety of the mutable token field: GetResult's finally disposes this
+        // registration before the field is cleared and the source is re-rented, and on
+        // .NET Framework CancellationTokenRegistration.Dispose is documented to deregister a
+        // not-yet-started callback (it never runs) and to block until an executing callback
+        // completes (unless called from that callback's own thread, which GetResult never is).
+        // So no callback from a previous rental can fire after reuse on a compliant runtime.
+        // The IsCancellationRequested guard below is defense-in-depth for runtimes that deviate
+        // from those documented semantics: a stale fire re-reads the CURRENT field, which by
+        // then holds default (cleared) or the next operation's token — uncancelled means no-op,
+        // and a cancelled current token makes cancelling the current operation the correct
+        // outcome anyway (its own registration would do the same; TrySetCanceled CAS makes the
+        // race benign). On the legitimate fire path the guard is always true, so behavior is
+        // unchanged there.
         _registeredCancellationToken = cancellationToken;
         _cancellationRegistration = cancellationToken.Register(
             static state =>
             {
                 var source = (PooledValueTaskSource<T>)state!;
-                source.TrySetCanceled(source._registeredCancellationToken);
+                var token = source._registeredCancellationToken;
+                if (token.IsCancellationRequested)
+                {
+                    source.TrySetCanceled(token);
+                }
             },
             this);
 #endif
