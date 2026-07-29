@@ -532,6 +532,21 @@ public interface ITransaction<TKey, TValue> : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Produces a message to the specified topic within the transaction.
+    /// </summary>
+    /// <remarks>
+    /// <para>See <see cref="ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/> for
+    /// the continuation-inlining behavior shared by all transactional produces.</para>
+    /// <para>Implementations may optimize this overload to avoid allocating a
+    /// <see cref="ProducerMessage{TKey, TValue}"/> object on the hot path.</para>
+    /// </remarks>
+    ValueTask<RecordMetadata> ProduceAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Commits the transaction.
     /// </summary>
     ValueTask CommitAsync(CancellationToken cancellationToken = default);

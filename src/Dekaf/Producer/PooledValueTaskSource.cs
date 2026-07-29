@@ -22,6 +22,10 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     private ValueTaskSourcePool<T>? _pool;
     private Action<T, Exception?>? _deliveryHandler;
     private CancellationTokenRegistration _cancellationRegistration;
+#if !NET
+    // netstandard2.0 only: token observed by the closure-free cancellation callback.
+    private CancellationToken _registeredCancellationToken;
+#endif
     private int _hasCompleted; // 0 = not completed, 1 = completed
 
     /// <summary>
@@ -147,9 +151,23 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
             return;
 
         _cancellationRegistration.Dispose();
+#if NET
         _cancellationRegistration = cancellationToken.UnsafeRegister(
             static (state, token) => ((PooledValueTaskSource<T>)state!).TrySetCanceled(token),
             this);
+#else
+        // netstandard2.0: the Polyfill package's UnsafeRegister shim wraps the (state, token)
+        // callback in a per-call closure (~176 B per awaited produce, issue #2471). Use the BCL
+        // single-state overload with a static delegate and carry the token in a field instead.
+        _registeredCancellationToken = cancellationToken;
+        _cancellationRegistration = cancellationToken.Register(
+            static state =>
+            {
+                var source = (PooledValueTaskSource<T>)state!;
+                source.TrySetCanceled(source._registeredCancellationToken);
+            },
+            this);
+#endif
     }
 
     /// <summary>
@@ -181,6 +199,9 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
         {
             _cancellationRegistration.Dispose();
             _cancellationRegistration = default;
+#if !NET
+            _registeredCancellationToken = default;
+#endif
 
             // Clear handler before returning to pool
             _deliveryHandler = null;

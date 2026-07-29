@@ -219,6 +219,12 @@ internal static class ConcurrentCollectionCompatibilityExtensions
         where TKey : notnull
         => ((ICollection<KeyValuePair<TKey, TValue>>)dictionary).Remove(item);
 
+    /// <summary>
+    /// Allocation-free implementation of the factoryArgument overload (netstandard2.0 lacks it).
+    /// Callers use this overload with static lambdas precisely to avoid per-call closures on hot
+    /// paths, so the polyfill must not reintroduce them by wrapping the BCL two-delegate overload;
+    /// it mirrors the BCL retry-loop semantics instead (factories may run more than once on races).
+    /// </summary>
     public static TValue AddOrUpdate<TKey, TValue, TArg>(
         this ConcurrentDictionary<TKey, TValue> dictionary,
         TKey key,
@@ -226,10 +232,23 @@ internal static class ConcurrentCollectionCompatibilityExtensions
         Func<TKey, TValue, TArg, TValue> updateValueFactory,
         TArg factoryArgument)
         where TKey : notnull
-        => dictionary.AddOrUpdate(
-            key,
-            k => addValueFactory(k, factoryArgument),
-            (k, existing) => updateValueFactory(k, existing, factoryArgument));
+    {
+        while (true)
+        {
+            if (dictionary.TryGetValue(key, out var existing))
+            {
+                var updated = updateValueFactory(key, existing, factoryArgument);
+                if (dictionary.TryUpdate(key, updated, existing))
+                    return updated;
+            }
+            else
+            {
+                var added = addValueFactory(key, factoryArgument);
+                if (dictionary.TryAdd(key, added))
+                    return added;
+            }
+        }
+    }
 }
 }
 
