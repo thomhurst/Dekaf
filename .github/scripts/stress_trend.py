@@ -314,7 +314,7 @@ def _matching_control_ratios(runs, result, metric):
             None,
         )
         control = next((item for item in matching_results if _is_confluent(item)), None)
-        if candidate is None or control is None:
+        if candidate is None:
             if is_aggregate:
                 ratio = _reconstructed_control_ratio(run, family_key, pair_key, metric)
                 if ratio is not None:
@@ -322,13 +322,21 @@ def _matching_control_ratios(runs, result, metric):
             continue
 
         candidate_value = candidate.get(metric)
-        control_value = control.get(metric)
         if (
             not _finite_number(candidate_value)
-            or not _finite_number(control_value)
-            or control_value == 0
             or candidate.get(trend_field) == "regression"
         ):
+            continue
+
+        control_value = control.get(metric) if control is not None else None
+        if not _finite_number(control_value) or control_value == 0:
+            # Interim ordered runs carry the Confluent control only as an
+            # ordered pair, which never matches an order-less pair key. Rebuild
+            # its geomean so order-less candidates (e.g. the "Dekaf (3conn)"
+            # control) keep a continuous ratio baseline across the rename
+            # window too.
+            control_value = _reconstructed_ordered_control_value(run, pair_key, metric)
+        if control_value is None:
             continue
 
         ratios.append(candidate_value / control_value)
@@ -348,24 +356,14 @@ def _reconstructed_control_ratio(run, family_key, pair_key, metric):
     Runs whose per-order ratio series flagged a regression are skipped,
     matching the trend filter applied to directly recorded ratios.
     """
-    shape_key = pair_key[:-1]
-    ordered = [
+    candidate_samples = [
         item
         for item in run.get("results", [])
         if paired_order_identity(item) is not None
         and not item.get("environmentShiftSuspected", False)
-        and _pair_identity(item)[:-1] == shape_key
+        and _order_family_key(item) == family_key
     ]
-    candidate_samples = [
-        item for item in ordered if _order_family_key(item) == family_key
-    ]
-    control_samples = [item for item in ordered if _is_confluent(item)]
-    if len({_order_family_key(item) for item in control_samples}) != 1:
-        return None
-    if (
-        _complete_order_pair(candidate_samples) is None
-        or _complete_order_pair(control_samples) is None
-    ):
+    if _complete_order_pair(candidate_samples) is None:
         return None
     if any(
         sample.get(f"{metric}ControlRatioTrend") == "regression"
@@ -376,12 +374,34 @@ def _reconstructed_control_ratio(run, family_key, pair_key, metric):
     candidate_value = geometric_mean(
         [sample.get(metric) for sample in candidate_samples]
     )
-    control_value = geometric_mean(
-        [sample.get(metric) for sample in control_samples]
-    )
-    if candidate_value is None or not control_value:
+    control_value = _reconstructed_ordered_control_value(run, pair_key, metric)
+    if candidate_value is None or control_value is None:
         return None
     return candidate_value / control_value
+
+
+def _reconstructed_ordered_control_value(run, pair_key, metric):
+    """Geomean control value rebuilt from a run's complete ordered Confluent pair.
+
+    Requires a single unambiguous ordered control family matching the pair's
+    shape; anything else (partial pair, duplicates, competing control
+    variants) yields None so no ratio is fabricated.
+    """
+    shape_key = pair_key[:-1]
+    control_samples = [
+        item
+        for item in run.get("results", [])
+        if paired_order_identity(item) is not None
+        and not item.get("environmentShiftSuspected", False)
+        and _is_confluent(item)
+        and _pair_identity(item)[:-1] == shape_key
+    ]
+    if len({_order_family_key(item) for item in control_samples}) != 1:
+        return None
+    if _complete_order_pair(control_samples) is None:
+        return None
+    value = geometric_mean([item.get(metric) for item in control_samples])
+    return value if value else None
 
 
 def _limit_observations_per_identity(runs):

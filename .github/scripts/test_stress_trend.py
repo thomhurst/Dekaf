@@ -662,6 +662,69 @@ class StressTrendTests(unittest.TestCase):
         self.assertFalse(dekaf["failureEligible"])
         self.assertFalse(second_should_fail)
 
+    def test_3conn_ratio_baseline_bridges_interim_ordered_runs(self):
+        # The order-less "Dekaf (3conn)" control kept running single-sample
+        # through the rename window, but its Confluent control was ordered in
+        # interim runs, so its ratio history skipped them. The reconstruction
+        # must combine the order-less candidate with the ordered control
+        # geomean so the restored current pairing is judged against the
+        # interim ratio level (1.414), not only the stale pre-rename 2.0.
+        def plain_3conn(rate):
+            return {
+                "scenario": "producer",
+                "client": "Dekaf (3conn)",
+                "brokerCount": 1,
+                "durationMinutes": 15,
+                "messageSizeBytes": 1000,
+                "messagesPerSecond": rate,
+                "messagesPerSecondTrend": "stable",
+            }
+
+        runs = []
+        for index in range(1, 4):
+            runs.append({
+                "runStartedAtUtc": f"2026-06-{index:02d}T02:00:00Z",
+                "results": [
+                    plain_3conn(1000.0),
+                    {**plain_3conn(500.0), "client": "Confluent"},
+                ],
+            })
+        for index in range(4, 8):
+            interim = self.ordered_paired_history_run(index, 2000.0, 707.0)
+            interim["results"] = [
+                item for item in interim["results"] if item["client"] == "Confluent"
+            ] + [plain_3conn(1000.0)]
+            runs.append(interim)
+
+        evaluations, _, _ = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            self.order_balanced_samples(
+                confluent_first=707.0,
+                confluent_second=707.0,
+            ) + [
+                {
+                    "scenario": "producer",
+                    "client": "Dekaf (3conn)",
+                    "brokerCount": 1,
+                    "durationMinutes": 15,
+                    "messageSizeBytes": 1000,
+                    "effectiveMessagesPerSecond": 1000.0,
+                    "cpuMicrosPerMessage": 2.0,
+                    "throughput": {},
+                },
+            ],
+            "2026-07-01T02:00:00Z",
+        )
+
+        ratio = next(
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+            and "3conn" in item["scenario"]
+        )
+        self.assertEqual(7, ratio["baselineCount"])
+        self.assertAlmostEqual(1000.0 / 707.0, ratio["current"])
+        self.assertEqual("stable", ratio["status"])
+
     def test_unrenamed_control_series_is_untouched_by_order_aggregation(self):
         runs = [history_run(i) for i in range(1, 5)]
         for run in runs:
