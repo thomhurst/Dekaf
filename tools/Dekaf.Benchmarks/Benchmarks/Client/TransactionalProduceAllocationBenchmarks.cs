@@ -36,6 +36,7 @@ public class TransactionalProduceAllocationBenchmarks
     private RecordAccumulator _accumulator = null!;
     private TopicPartition _topicPartition;
     private long _offset;
+    private CancellationTokenSource _cancellation = null!;
 
     [GlobalSetup]
     public async Task Setup()
@@ -55,13 +56,16 @@ public class TransactionalProduceAllocationBenchmarks
         _transaction = _producer.BeginTransaction();
         _accumulator = producer.RecordAccumulator;
         _topicPartition = new TopicPartition("benchmark-transaction-allocation", 0);
+        // No explicit Partition: every benchmark routes through the partitioner
+        // (single-partition topic) so the componentwise overload's partition
+        // selection cost is not asymmetrically absent from the message paths.
         _message = new ProducerMessage<string, string>
         {
             Topic = "benchmark-transaction-allocation",
-            Partition = 0,
             Key = "key",
             Value = "value"
         };
+        _cancellation = new CancellationTokenSource();
     }
 
     [Benchmark(Baseline = true)]
@@ -75,6 +79,16 @@ public class TransactionalProduceAllocationBenchmarks
     [Benchmark]
     public void TransactionProduceAsyncComponentwise() =>
         CompleteCycle(_transaction.ProduceAsync("benchmark-transaction-allocation", "key", "value"));
+
+    /// <summary>
+    /// Same cycle with a live cancellable token so RegisterCancellation runs per
+    /// produce (UnsafeRegister on modern TFMs); GetResult disposes the registration
+    /// each cycle, so the steady state must stay allocation-free.
+    /// </summary>
+    [Benchmark]
+    public void TransactionProduceAsyncComponentwiseCancellable() =>
+        CompleteCycle(_transaction.ProduceAsync(
+            "benchmark-transaction-allocation", "key", "value", _cancellation.Token));
 
     /// <summary>
     /// Completes the serial-awaited one-message-per-batch lifecycle the EOS stress lane
