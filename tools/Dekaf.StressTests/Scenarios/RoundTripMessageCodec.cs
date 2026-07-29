@@ -9,7 +9,15 @@ internal readonly record struct RoundTripMessage(
     string Key,
     byte[] Value,
     int ExpectedPartition,
-    long Sequence);
+    long Sequence)
+{
+    /// <summary>
+    /// Copies <see cref="Value"/> out of the factory's reused per-partition buffer.
+    /// Required before retaining a message past the next
+    /// <see cref="RoundTripMessageFactory.Create"/> call for the same partition.
+    /// </summary>
+    public RoundTripMessage Retain() => this with { Value = Value.ToArray() };
+}
 
 internal readonly record struct RoundTripMessageMetadata(
     int Partition,
@@ -19,10 +27,15 @@ internal readonly record struct RoundTripMessageMetadata(
 internal sealed class RoundTripMessageFactory
 {
     private readonly int _partitionCount;
-    private readonly int _payloadSize;
     private readonly string[] _partitionKeys;
+    private readonly uint[] _partitionKeyChecksums;
     private readonly long[] _nextSequences;
     private readonly long[] _expectedPerPartition;
+    // Reusable per-partition payload buffers and precomputed key checksums keep Create
+    // allocation-free and cheap per message, so the lane's GC/CPU tables measure the
+    // client rather than the harness (#2472: a fresh byte[128] here was 152 B/msg of
+    // the reported 306 B/msg).
+    private readonly byte[][] _payloadBuffers;
 
     public RoundTripMessageFactory(string runId, int partitionCount, int payloadSize)
     {
@@ -31,16 +44,31 @@ internal sealed class RoundTripMessageFactory
         ArgumentOutOfRangeException.ThrowIfLessThan(payloadSize, RoundTripMessageCodec.MinimumPayloadSize);
 
         _partitionCount = partitionCount;
-        _payloadSize = payloadSize;
         _partitionKeys = Enumerable.Range(0, partitionCount)
             .Select(partition => RoundTripMessageCodec.FindKeyForPartition(runId, partition, partitionCount))
             .ToArray();
+        _partitionKeyChecksums = new uint[partitionCount];
+        _payloadBuffers = new byte[partitionCount][];
+        for (var partition = 0; partition < partitionCount; partition++)
+        {
+            _partitionKeyChecksums[partition] = RoundTripMessageCodec.ComputeUtf8Checksum(_partitionKeys[partition]);
+            _payloadBuffers[partition] = new byte[payloadSize];
+        }
         _nextSequences = new long[partitionCount];
         _expectedPerPartition = new long[partitionCount];
     }
 
     public IReadOnlyList<long> ExpectedPerPartition => _expectedPerPartition;
 
+    /// <summary>
+    /// Encodes the next sequenced message for <paramref name="partition"/> into that
+    /// partition's reused payload buffer. The returned <see cref="RoundTripMessage.Value"/>
+    /// is only valid until the next <see cref="Create"/> call for the same partition;
+    /// callers that retain it longer must use <see cref="RoundTripMessage.Retain"/>.
+    /// The produce loops rely on <c>FireAsync</c>/<c>Produce</c> copying key and value
+    /// before their awaited call completes, so awaiting each send before the next
+    /// Create makes the reuse safe.
+    /// </summary>
     public RoundTripMessage Create(int partition)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(partition);
@@ -51,11 +79,9 @@ internal sealed class RoundTripMessageFactory
         var ordinal = checked((sequence * _partitionCount) + partition);
         _expectedPerPartition[partition]++;
 
-        return new RoundTripMessage(
-            key,
-            RoundTripMessageCodec.Encode(key, partition, sequence, ordinal, _payloadSize),
-            partition,
-            sequence);
+        var payload = _payloadBuffers[partition];
+        RoundTripMessageCodec.EncodeInto(payload, _partitionKeyChecksums[partition], partition, sequence, ordinal);
+        return new RoundTripMessage(key, payload, partition, sequence);
     }
 }
 
@@ -155,39 +181,54 @@ internal static class RoundTripMessageCodec
         return (int)((hash & 0x7fff_ffff) % (uint)partitionCount);
     }
 
-    public static byte[] Encode(
+    /// <summary>
+    /// Encodes a sequenced message into <paramref name="payload"/> without allocating.
+    /// Every byte of the destination is overwritten.
+    /// </summary>
+    public static void EncodeInto(
+        Span<byte> payload,
         string key,
         int partition,
         long sequence,
-        long ordinal,
-        int payloadSize)
+        long ordinal) =>
+        EncodeInto(payload, ComputeUtf8Checksum(key), partition, sequence, ordinal);
+
+    /// <summary>
+    /// Core encode with a precomputed key checksum, so per-partition callers skip the
+    /// per-message UTF-8 transcode + CRC of a fixed key.
+    /// </summary>
+    public static void EncodeInto(
+        Span<byte> payload,
+        uint keyChecksum,
+        int partition,
+        long sequence,
+        long ordinal)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(partition);
         ArgumentOutOfRangeException.ThrowIfNegative(sequence);
         ArgumentOutOfRangeException.ThrowIfNegative(ordinal);
-        ArgumentOutOfRangeException.ThrowIfLessThan(payloadSize, MinimumPayloadSize);
+        ArgumentOutOfRangeException.ThrowIfLessThan(payload.Length, MinimumPayloadSize, nameof(payload));
 
-        var payload = new byte[payloadSize];
-        var span = payload.AsSpan();
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, Magic);
+        payload[sizeof(uint)] = Version;
+        BinaryPrimitives.WriteInt32LittleEndian(payload[PartitionOffset..], partition);
+        BinaryPrimitives.WriteInt64LittleEndian(payload[SequenceOffset..], sequence);
+        BinaryPrimitives.WriteInt64LittleEndian(payload[OrdinalOffset..], ordinal);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload[KeyChecksumOffset..], keyChecksum);
 
-        BinaryPrimitives.WriteUInt32LittleEndian(span, Magic);
-        span[sizeof(uint)] = Version;
-        BinaryPrimitives.WriteInt32LittleEndian(span[PartitionOffset..], partition);
-        BinaryPrimitives.WriteInt64LittleEndian(span[SequenceOffset..], sequence);
-        BinaryPrimitives.WriteInt64LittleEndian(span[OrdinalOffset..], ordinal);
-        BinaryPrimitives.WriteUInt32LittleEndian(span[KeyChecksumOffset..], ComputeUtf8Checksum(key));
-
-        var checksumOffset = payloadSize - ChecksumSize;
+        var checksumOffset = payload.Length - ChecksumSize;
+        // Filler byte at index i is (ordinal*31 + partition*13 + i*17) mod 256; the
+        // running accumulator is the strength-reduced form of that same expression.
+        var filler = unchecked((byte)((ordinal * 31) + (partition * 13) + (HeaderSize * 17)));
         for (var index = HeaderSize; index < checksumOffset; index++)
         {
-            span[index] = unchecked((byte)((ordinal * 31) + (partition * 13) + (index * 17)));
+            payload[index] = filler;
+            filler = unchecked((byte)(filler + 17));
         }
 
         BinaryPrimitives.WriteUInt32LittleEndian(
-            span[checksumOffset..],
-            Crc32.HashToUInt32(span[..checksumOffset]));
-
-        return payload;
+            payload[checksumOffset..],
+            Crc32.HashToUInt32(payload[..checksumOffset]));
     }
 
     public static bool TryDecode(
@@ -227,7 +268,7 @@ internal static class RoundTripMessageCodec
         return true;
     }
 
-    private static uint ComputeUtf8Checksum(string value)
+    internal static uint ComputeUtf8Checksum(string value)
     {
         var byteCount = Encoding.UTF8.GetByteCount(value);
         byte[]? rented = null;
@@ -253,7 +294,10 @@ internal static class RoundTripMessageCodec
 internal sealed class RoundTripValidator
 {
     private readonly long[] _expectedPerPartition;
-    private readonly bool[][] _seen;
+    // Bit per expected sequence: an eager bool[] costs 1 B per expected message inside
+    // the lane's measured GC window (~1 B/msg of the #2472 attribution); the bitmap
+    // amortizes to ~0.125 B/msg with the same O(1) duplicate check.
+    private readonly ulong[][] _seen;
     private readonly long[] _lastSequence;
     private readonly long[] _lastOffset;
     private long _consumedMessages;
@@ -269,7 +313,7 @@ internal sealed class RoundTripValidator
         ArgumentOutOfRangeException.ThrowIfLessThan(expectedPerPartition.Count, 1);
 
         _expectedPerPartition = [.. expectedPerPartition];
-        _seen = new bool[_expectedPerPartition.Length][];
+        _seen = new ulong[_expectedPerPartition.Length][];
         _lastSequence = new long[_expectedPerPartition.Length];
         _lastOffset = new long[_expectedPerPartition.Length];
         Array.Fill(_lastSequence, -1);
@@ -277,7 +321,8 @@ internal sealed class RoundTripValidator
 
         for (var partition = 0; partition < _expectedPerPartition.Length; partition++)
         {
-            _seen[partition] = new bool[checked((int)_expectedPerPartition[partition])];
+            var expected = checked((int)_expectedPerPartition[partition]);
+            _seen[partition] = new ulong[(expected + 63) >> 6];
         }
     }
 
@@ -313,13 +358,15 @@ internal sealed class RoundTripValidator
         }
 
         var sequence = checked((int)message.Sequence);
-        if (_seen[message.Partition][sequence])
+        ref var seenWord = ref _seen[message.Partition][sequence >> 6];
+        var seenBit = 1UL << (sequence & 63);
+        if ((seenWord & seenBit) != 0)
         {
             _duplicateMessages++;
         }
         else
         {
-            _seen[message.Partition][sequence] = true;
+            seenWord |= seenBit;
             _uniqueMessages++;
         }
 
