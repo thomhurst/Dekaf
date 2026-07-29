@@ -160,6 +160,24 @@ def _metric_value(result, metric, definition):
     return definition["extract"](result)
 
 
+def _complete_order_pair(samples):
+    """The samples if they hold exactly one result per client order, else None.
+
+    Duplicate samples for one order (e.g. merged result files) would weight
+    that order more heavily in the geometric mean, so only an exactly balanced
+    pair qualifies for aggregation.
+    """
+    order_counts = {}
+    for sample in samples:
+        order = str(sample.get("pairedClientOrder", "")).casefold()
+        order_counts[order] = order_counts.get(order, 0) + 1
+    if set(order_counts) != set(PAIRED_ORDER_LABELS):
+        return None
+    if any(count != 1 for count in order_counts.values()):
+        return None
+    return samples
+
+
 def _order_balanced_aggregates(current_results):
     """Collapse each order-balanced sample pair into one synthetic trend result.
 
@@ -188,13 +206,12 @@ def _order_balanced_aggregates(current_results):
     aggregates = []
     aggregated_metrics = {}
     for key, samples in groups.items():
-        orders = {
-            str(sample.get("pairedClientOrder", "")).casefold() for sample in samples
-        }
-        if not PAIRED_ORDER_LABELS.issubset(orders):
-            # Partial pair (one order only): no balanced aggregate exists, so the
-            # ordered samples keep trending on their own series rather than
-            # silently losing regression coverage.
+        if _complete_order_pair(samples) is None:
+            # Anything other than exactly one sample per order — a partial pair,
+            # a duplicated/merged result, or an unknown label — has no
+            # well-defined balanced aggregate (the geomean would weight one
+            # order more heavily), so the ordered samples keep trending on
+            # their own series rather than silently losing regression coverage.
             continue
 
         metrics = {
@@ -222,15 +239,57 @@ def _order_balanced_aggregates(current_results):
 
 def _matching_observations(runs, result):
     key = _identity(result)
+    is_aggregate = _AGGREGATE_METRICS_FIELD in result
+    family_key = _order_family_key(result) if is_aggregate else None
     matches = []
     for run in runs:
         observation = next(
             (item for item in run.get("results", []) if _identity(item) == key),
             None,
         )
+        if observation is None and is_aggregate:
+            observation = _reconstructed_aggregate_observation(run, family_key)
         if observation is not None:
             matches.append(observation)
     return matches
+
+
+def _reconstructed_aggregate_observation(run, family_key):
+    """Geomean observation rebuilt from a historical run's ordered pair.
+
+    Runs recorded between the #2055 order rename and the synthetic aggregate
+    series carry the lane's data only as per-order observations. Rebuilding
+    their geometric mean keeps the aggregate's baseline continuous across that
+    window instead of skipping straight back to the last pre-rename entry.
+    The synthetic observation deliberately carries no trend fields: it extends
+    the baseline, but a stale pre-rename regression verdict must not pair with
+    a fresh aggregate one across intervening ordered runs to fake a
+    consecutive (repeatedRegression) failure. Metrics whose per-order series
+    flagged a regression in that run are omitted so they cannot widen the
+    clean baseline the trend filter otherwise excludes them from.
+    """
+    samples = [
+        item
+        for item in run.get("results", [])
+        if paired_order_identity(item) is not None
+        and _order_family_key(item) == family_key
+    ]
+    if not samples or _complete_order_pair(samples) is None:
+        return None
+
+    observation = {}
+    for metric in _METRICS:
+        if any(sample.get(f"{metric}Trend") == "regression" for sample in samples):
+            continue
+        value = geometric_mean([sample.get(metric) for sample in samples])
+        if value is not None:
+            observation[metric] = value
+    if not observation:
+        return None
+
+    if any(sample.get("environmentShiftSuspected", False) for sample in samples):
+        observation["environmentShiftSuspected"] = True
+    return observation
 
 
 def _matching_control_ratios(runs, result, metric):

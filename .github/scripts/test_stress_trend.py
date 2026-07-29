@@ -511,6 +511,91 @@ class StressTrendTests(unittest.TestCase):
         self.assertTrue(second_dekaf["failureEligible"])
         self.assertTrue(second_should_fail)
 
+    def test_duplicate_order_sample_disables_balanced_aggregate(self):
+        samples = self.order_balanced_samples() + [
+            result(
+                messages_per_second=9000.0,
+                pairedClientOrder="dekaf-first",
+                pairedSampleCount=2,
+            ),
+        ]
+
+        evaluations, updated, _ = evaluate_and_update(
+            {"version": 1, "runs": []},
+            samples,
+            "2026-07-01T02:00:00Z",
+        )
+
+        dekaf_throughput = [
+            item for item in evaluations
+            if item["metric"] == "messagesPerSecond"
+            and item["scenario"].split(" / ")[1] == "Dekaf"
+        ]
+        # The duplicated dekaf-first sample would weight that order more
+        # heavily in a geomean, so the Dekaf family gets no aggregate and each
+        # ordered sample trends on its own series instead.
+        self.assertEqual(3, len(dekaf_throughput))
+        for item in dekaf_throughput:
+            self.assertIn("first", item["scenario"])
+        recorded = updated["runs"][-1]["results"]
+        self.assertFalse(any(
+            item.get("orderBalancedAggregate") and item["client"] == "Dekaf"
+            for item in recorded
+        ))
+
+    def ordered_history_run(self, index, dekaf_first, dekaf_second):
+        base = {
+            "scenario": "producer",
+            "client": "Dekaf",
+            "brokerCount": 1,
+            "durationMinutes": 15,
+            "messageSizeBytes": 1000,
+            "pairedSampleCount": 2,
+            "cpuMicrosPerMessage": 2.0,
+        }
+        return {
+            "runStartedAtUtc": f"2026-06-{index:02d}T02:00:00Z",
+            "results": [
+                {
+                    **base,
+                    "pairedClientOrder": "dekaf-first",
+                    "messagesPerSecond": dekaf_first,
+                    "messagesPerSecondTrend": "stable",
+                },
+                {
+                    **base,
+                    "pairedClientOrder": "confluent-first",
+                    "messagesPerSecond": dekaf_second,
+                    "messagesPerSecondTrend": "stable",
+                },
+            ],
+        }
+
+    def test_stale_prerename_regression_is_not_repeated_across_ordered_runs(self):
+        # Last pre-rename observation was a regression, but two healthy ordered
+        # runs happened since: the fresh aggregate regression must not pair
+        # with the stale verdict as "consecutive", and the interim geomeans
+        # must extend the aggregate baseline.
+        runs = [paired_history_run(i, 2449.0, 1414.0) for i in range(1, 5)]
+        runs.append(paired_history_run(
+            5, 1200.0, 1414.0, messagesPerSecondTrend="regression",
+        ))
+        runs.append(self.ordered_history_run(6, 2000.0, 3000.0))
+        runs.append(self.ordered_history_run(7, 2000.0, 3000.0))
+
+        evaluations, _, should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            self.order_balanced_samples(dekaf_first=1200.0, dekaf_second=1250.0),
+            "2026-07-01T02:00:00Z",
+        )
+
+        dekaf = client_metric(evaluations, "messagesPerSecond", "Dekaf")
+        self.assertEqual("regression", dekaf["status"])
+        self.assertFalse(dekaf["repeatedRegression"])
+        self.assertFalse(dekaf["failureEligible"])
+        self.assertEqual(6, dekaf["baselineCount"])
+        self.assertFalse(should_fail)
+
     def test_unrenamed_control_series_is_untouched_by_order_aggregation(self):
         runs = [history_run(i) for i in range(1, 5)]
         for run in runs:
