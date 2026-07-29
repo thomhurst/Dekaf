@@ -596,6 +596,72 @@ class StressTrendTests(unittest.TestCase):
         self.assertEqual(6, dekaf["baselineCount"])
         self.assertFalse(should_fail)
 
+    def ordered_paired_history_run(self, index, dekaf_rate, confluent_rate):
+        def sample(client, order, rate):
+            return {
+                "scenario": "producer",
+                "client": client,
+                "brokerCount": 1,
+                "durationMinutes": 15,
+                "messageSizeBytes": 1000,
+                "pairedClientOrder": order,
+                "pairedSampleCount": 2,
+                "messagesPerSecond": rate,
+                "messagesPerSecondTrend": "stable",
+                "messagesPerSecondControlRatioTrend": "stable",
+            }
+
+        return {
+            "runStartedAtUtc": f"2026-06-{index:02d}T02:00:00Z",
+            "results": [
+                sample("Dekaf", "dekaf-first", dekaf_rate),
+                sample("Confluent", "dekaf-first", confluent_rate),
+                sample("Dekaf", "confluent-first", dekaf_rate),
+                sample("Confluent", "confluent-first", confluent_rate),
+            ],
+        }
+
+    def test_ratio_baseline_bridges_interim_ordered_runs(self):
+        # The Dekaf/Confluent ratio settled at ~1.414 during four interim
+        # ordered runs (Dekaf 2000 vs Confluent 1414), down from the stale
+        # pre-rename 1.732. A later Dekaf absolute regression whose current
+        # ratio matches the interim level must not be corroborated against
+        # the stale pre-rename ratio band into a gate failure.
+        runs = [paired_history_run(i, 2449.0, 1414.0) for i in range(1, 4)]
+        for index in range(4, 8):
+            runs.append(self.ordered_paired_history_run(index, 2000.0, 1414.0))
+
+        regressed = self.order_balanced_samples(
+            dekaf_first=1600.0,
+            dekaf_second=1600.0,
+            confluent_first=1131.4,
+            confluent_second=1131.4,
+        )
+
+        _, first_updated, first_should_fail = evaluate_and_update(
+            {"version": 1, "runs": runs},
+            regressed,
+            "2026-07-01T02:00:00Z",
+        )
+        self.assertFalse(first_should_fail)
+
+        second_evaluations, _, second_should_fail = evaluate_and_update(
+            first_updated,
+            regressed,
+            "2026-07-08T02:00:00Z",
+        )
+
+        dekaf = client_metric(second_evaluations, "messagesPerSecond", "Dekaf")
+        ratio = next(
+            item for item in second_evaluations
+            if item["metric"] == "messagesPerSecondControlRatio"
+        )
+        self.assertEqual("regression", dekaf["status"])
+        self.assertTrue(dekaf["repeatedRegression"])
+        self.assertEqual("stable", ratio["status"])
+        self.assertFalse(dekaf["failureEligible"])
+        self.assertFalse(second_should_fail)
+
     def test_unrenamed_control_series_is_untouched_by_order_aggregation(self):
         runs = [history_run(i) for i in range(1, 5)]
         for run in runs:

@@ -295,6 +295,8 @@ def _reconstructed_aggregate_observation(run, family_key):
 def _matching_control_ratios(runs, result, metric):
     pair_key = _pair_identity(result)
     candidate_key = _identity(result)
+    is_aggregate = _AGGREGATE_METRICS_FIELD in result
+    family_key = _order_family_key(result) if is_aggregate else None
     trend_field = f"{metric}ControlRatioTrend"
     ratios = []
 
@@ -313,6 +315,10 @@ def _matching_control_ratios(runs, result, metric):
         )
         control = next((item for item in matching_results if _is_confluent(item)), None)
         if candidate is None or control is None:
+            if is_aggregate:
+                ratio = _reconstructed_control_ratio(run, family_key, pair_key, metric)
+                if ratio is not None:
+                    ratios.append(ratio)
             continue
 
         candidate_value = candidate.get(metric)
@@ -328,6 +334,54 @@ def _matching_control_ratios(runs, result, metric):
         ratios.append(candidate_value / control_value)
 
     return ratios[-HISTORY_LIMIT:]
+
+
+def _reconstructed_control_ratio(run, family_key, pair_key, metric):
+    """Candidate/control ratio rebuilt from a historical run's ordered pairs.
+
+    Mirrors _reconstructed_aggregate_observation for the ratio series: interim
+    ordered runs record the pairing only under per-order pair identities, which
+    the synthetic aggregate's order-less pair key never matches. Rebuilding the
+    ordered geomean ratio keeps the ratio baseline continuous across the rename
+    window, so an aggregate regression is corroborated against the immediately
+    preceding comparable ratios instead of only the stale pre-rename level.
+    Runs whose per-order ratio series flagged a regression are skipped,
+    matching the trend filter applied to directly recorded ratios.
+    """
+    shape_key = pair_key[:-1]
+    ordered = [
+        item
+        for item in run.get("results", [])
+        if paired_order_identity(item) is not None
+        and not item.get("environmentShiftSuspected", False)
+        and _pair_identity(item)[:-1] == shape_key
+    ]
+    candidate_samples = [
+        item for item in ordered if _order_family_key(item) == family_key
+    ]
+    control_samples = [item for item in ordered if _is_confluent(item)]
+    if len({_order_family_key(item) for item in control_samples}) != 1:
+        return None
+    if (
+        _complete_order_pair(candidate_samples) is None
+        or _complete_order_pair(control_samples) is None
+    ):
+        return None
+    if any(
+        sample.get(f"{metric}ControlRatioTrend") == "regression"
+        for sample in candidate_samples
+    ):
+        return None
+
+    candidate_value = geometric_mean(
+        [sample.get(metric) for sample in candidate_samples]
+    )
+    control_value = geometric_mean(
+        [sample.get(metric) for sample in control_samples]
+    )
+    if candidate_value is None or not control_value:
+        return None
+    return candidate_value / control_value
 
 
 def _limit_observations_per_identity(runs):
