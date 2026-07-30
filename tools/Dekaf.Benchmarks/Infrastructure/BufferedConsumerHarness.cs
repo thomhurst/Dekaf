@@ -17,7 +17,9 @@ namespace Dekaf.Benchmarks.Infrastructure;
 /// <c>_assignmentEnsureVersion</c>, <c>_lastManualAssignmentEnsureVersion</c>); a rename
 /// there fails these helpers at runtime, which is why the contract lives in exactly one
 /// place. Callers must keep their seeded batch count at or below the
-/// <see cref="RecordBatch"/> pool capacity (2048) or every reseed allocates the excess.
+/// <see cref="RecordBatch"/> pool capacity or every reseed allocates the excess; the
+/// pool defaults to 2048 and constructing a consumer ratchets it upward, so staying
+/// under the pre-ratchet 2048 is always safe.
 /// </remarks>
 internal static class BufferedConsumerHarness
 {

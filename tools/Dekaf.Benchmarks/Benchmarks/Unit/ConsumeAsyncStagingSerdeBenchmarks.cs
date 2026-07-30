@@ -43,7 +43,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// </list>
 /// Seeding and warmup mirror <see cref="ConsumeAsyncBufferedFastPathBenchmarks"/>: the
 /// extended warmup lets tiered PGO finish recompiling the async iterator, and the batch
-/// count stays under the RecordBatch pool capacity (2048).
+/// count stays under the RecordBatch pool's pre-ratchet capacity (2048; consumer
+/// construction ratchets it higher).
 /// </remarks>
 [MemoryDiagnoser]
 [ThroughputJob(warmupCount: 15)]

@@ -162,9 +162,9 @@ public class ConsumeOneStringSerdeBenchmarks
     public void Cleanup()
     {
         _autoCommitSurrogate.TrySetResult();
-        DrainPendingFetches(_stringGroupedConsumer);
-        DrainPendingFetches(_stringNoGroupConsumer);
-        DrainPendingFetches(_rawBytesConsumer);
+        BufferedConsumerHarness.DrainPendingFetches(_stringGroupedConsumer);
+        BufferedConsumerHarness.DrainPendingFetches(_stringNoGroupConsumer);
+        BufferedConsumerHarness.DrainPendingFetches(_rawBytesConsumer);
         _stringGroupedConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _stringNoGroupConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _rawBytesConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -180,7 +180,4 @@ public class ConsumeOneStringSerdeBenchmarks
         new(Serializers.String,
             CachingStringDeserializer.DefaultKeyCacheMaxBytes,
             CachingStringDeserializer.DefaultKeyCacheMaxEntries);
-
-    private static void DrainPendingFetches<TKey, TValue>(KafkaConsumer<TKey, TValue> consumer)
-        => BufferedConsumerHarness.DrainPendingFetches(consumer);
 }
