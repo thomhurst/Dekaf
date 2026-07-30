@@ -1,10 +1,9 @@
-using System.Collections.Concurrent;
-using System.Reflection;
 using System.Text;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Engines;
 using BenchmarkDotNet.Jobs;
+using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
@@ -103,12 +102,12 @@ public class ConsumeOneStringSerdeBenchmarks
             },
             CreatePollSingleKeyDeserializer(),
             Serializers.String);
-        InitializeForBufferedFastPath(_stringGroupedConsumer);
+        BufferedConsumerHarness.InitializeForBufferedFastPath(_stringGroupedConsumer, Topic, Partition);
 
         // CanUseBufferedConsumeOneFastPath requires a live auto-commit loop in Auto mode.
         // A surrogate incomplete task satisfies IsAutoCommitRunning without network I/O.
         _autoCommitSurrogate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        SetPrivateField(_stringGroupedConsumer, "_autoCommitTask", _autoCommitSurrogate.Task);
+        BufferedConsumerHarness.SetPrivateField(_stringGroupedConsumer, "_autoCommitTask", _autoCommitSurrogate.Task);
 
         _stringNoGroupConsumer = new KafkaConsumer<string, string>(
             new ConsumerOptions
@@ -120,7 +119,7 @@ public class ConsumeOneStringSerdeBenchmarks
             },
             CreatePollSingleKeyDeserializer(),
             Serializers.String);
-        InitializeForBufferedFastPath(_stringNoGroupConsumer);
+        BufferedConsumerHarness.InitializeForBufferedFastPath(_stringNoGroupConsumer, Topic, Partition);
 
         _rawBytesConsumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
             new ConsumerOptions
@@ -132,7 +131,7 @@ public class ConsumeOneStringSerdeBenchmarks
             },
             Serializers.RawBytes,
             Serializers.RawBytes);
-        InitializeForBufferedFastPath(_rawBytesConsumer);
+        BufferedConsumerHarness.InitializeForBufferedFastPath(_rawBytesConsumer, Topic, Partition);
     }
 
     [IterationSetup(Targets = [nameof(String_Grouped_AutoCommit)])]
@@ -172,68 +171,16 @@ public class ConsumeOneStringSerdeBenchmarks
     }
 
     private void ReseedPendingFetches<TKey, TValue>(KafkaConsumer<TKey, TValue> consumer)
-    {
-        DrainPendingFetches(consumer);
+        => BufferedConsumerHarness.ReseedPendingFetches(
+            consumer, Topic, Partition, _batchRecords, BatchCount, RecordsPerBatch);
 
-        var batches = new RecordBatch[BatchCount];
-        for (var b = 0; b < BatchCount; b++)
-        {
-            var batch = RecordBatch.RentFromPool();
-            batch.BaseOffset = (long)b * RecordsPerBatch;
-            batch.BaseTimestamp = 1_700_000_000_000L;
-            batch.MaxTimestamp = 1_700_000_000_000L + RecordsPerBatch - 1;
-            batch.LastOffsetDelta = RecordsPerBatch - 1;
-            batch.Attributes = RecordBatchAttributes.None;
-            batch.Records = _batchRecords[b % SeedArrayCount];
-            batches[b] = batch;
-        }
-
-        // Create attaches this PendingFetchData's owner/generation to every batch.
-        // Draining and disposing it therefore returns all rented batches to the pool.
-        GetPendingFetches(consumer).Enqueue(PendingFetchData.Create(Topic, Partition, batches));
-    }
-
+    // Mirrors the ConsumerBuilder default key wrap; the constants are shared so a builder
+    // retune cannot leave this benchmark silently measuring a stale configuration.
     private static CachingStringDeserializer CreatePollSingleKeyDeserializer() =>
-        new(Serializers.String, maxCachedBytes: 128, maxCachedEntries: 16_384);
+        new(Serializers.String,
+            CachingStringDeserializer.DefaultKeyCacheMaxBytes,
+            CachingStringDeserializer.DefaultKeyCacheMaxEntries);
 
     private static void DrainPendingFetches<TKey, TValue>(KafkaConsumer<TKey, TValue> consumer)
-    {
-        var pendingFetches = GetPendingFetches(consumer);
-        while (pendingFetches.Count > 0)
-            pendingFetches.Dequeue().Dispose();
-    }
-
-    private static void InitializeForBufferedFastPath<TKey, TValue>(KafkaConsumer<TKey, TValue> consumer)
-    {
-        SetPrivateField(consumer, "_initialized", true);
-
-        var tp = new TopicPartition(Topic, Partition);
-        consumer.Assign(tp);
-        GetFetchPositions(consumer)[tp] = 0;
-
-        // Mark the manual assignment as acknowledged so the fast path's currency check passes.
-        var ensureVersion = GetPrivateField(consumer, "_assignmentEnsureVersion");
-        SetPrivateField(consumer, "_lastManualAssignmentEnsureVersion", ensureVersion);
-    }
-
-    private static Queue<PendingFetchData> GetPendingFetches<TKey, TValue>(KafkaConsumer<TKey, TValue> consumer)
-        => (Queue<PendingFetchData>)GetPrivateField(consumer, "_pendingFetches")!;
-
-    private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions<TKey, TValue>(
-        KafkaConsumer<TKey, TValue> consumer)
-        => (ConcurrentDictionary<TopicPartition, long>)GetPrivateField(consumer, "_fetchPositions")!;
-
-    private static object? GetPrivateField<TKey, TValue>(KafkaConsumer<TKey, TValue> consumer, string fieldName)
-        => RequireField<TKey, TValue>(fieldName).GetValue(consumer);
-
-    private static void SetPrivateField<TKey, TValue>(
-        KafkaConsumer<TKey, TValue> consumer,
-        string fieldName,
-        object? value)
-        => RequireField<TKey, TValue>(fieldName).SetValue(consumer, value);
-
-    private static FieldInfo RequireField<TKey, TValue>(string fieldName)
-        => typeof(KafkaConsumer<TKey, TValue>)
-               .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
-           ?? throw new InvalidOperationException($"{fieldName} field not found.");
+        => BufferedConsumerHarness.DrainPendingFetches(consumer);
 }

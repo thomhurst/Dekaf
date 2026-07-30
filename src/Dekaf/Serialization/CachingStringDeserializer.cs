@@ -30,6 +30,13 @@ namespace Dekaf.Serialization;
 /// </remarks>
 internal sealed class CachingStringDeserializer : ISerde<string>
 {
+    /// <summary>Shape of the default key-cache wrap <c>ConsumerBuilder</c> applies to the
+    /// built-in string key deserializer. Kept here (single source of truth) so benchmarks
+    /// measuring "the builder default" reference the same values instead of drifting
+    /// copies.</summary>
+    internal const int DefaultKeyCacheMaxBytes = 128;
+    internal const int DefaultKeyCacheMaxEntries = 16_384;
+
     /// <summary>Observe mode samples one of every this-many cache-eligible lookups.</summary>
     internal const int ObserveSampleStride = 8;
     /// <summary>Maximum slots in the observe-mode recent-hash table. The table is sized to

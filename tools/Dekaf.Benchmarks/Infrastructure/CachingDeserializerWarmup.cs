@@ -18,9 +18,13 @@ internal static class CachingDeserializerWarmup
         SerializationContext context,
         ReadOnlyMemory<byte>[] payloads)
     {
-        // One fill pass, then an all-hit stream needs stride * threshold samples;
-        // 8x slack absorbs window resets and sampling phase effects.
-        var maxLookups = payloads.Length
+        // Cycling a payload set of length L against 1-in-stride sampling phase-locks:
+        // the sampled position advances by (L mod stride) per pass, so a given position
+        // is re-sampled — the first opportunity for a tag hit — only after up to
+        // L * stride lookups (e.g. L = 10,010, stride = 8: every 4th pass). Cover that
+        // full coverage cycle, then an ~all-hit stream needs stride * threshold samples;
+        // 8x slack absorbs window resets and tag evictions.
+        var maxLookups = payloads.Length * CachingStringDeserializer.ObserveSampleStride
             + 8 * CachingStringDeserializer.ObserveSampleStride * CachingStringDeserializer.PromoteSampledHits;
 
         for (var i = 0; i < maxLookups && !deserializer.IsCacheEnabled; i++)
