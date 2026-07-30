@@ -16,9 +16,17 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// <remarks>
 /// Row deltas, not absolute values, are the measurement:
 /// <list type="bullet">
-/// <item><c>Raw_AutoCommitAtLeastOnce</c> − <c>Raw_ManualCommit</c> = per-message
-/// proven-offset staging (active-position seqlock publish).</item>
-/// <item><c>Raw_AutoCommitAtMostOnce</c> − <c>Raw_ManualCommit</c> = the opt-in
+/// <item><c>Raw_AutoCommitAtLeastOnce</c> − <c>Raw_ManualCommit</c> = the at-least-once
+/// default's per-message staging cost: the active-position seqlock publish (gated on
+/// <c>OffsetCommitMode.Auto</c>) plus the fetch-boundary proven-offset store (the
+/// baseline runs with <c>EnableAutoOffsetStore = false</c>, so the auto row pays it
+/// alone). The store executes once per pending fetch — once per seeded 1.5M-record fetch
+/// here, once per ~1000-record fetch in production — so its amortized share is sub-0.1
+/// ns/msg in either shape; the per-message component is the publish. The proven-offset
+/// marks themselves (<c>MarkYieldedProcessed</c>, two plain field writes) run
+/// unconditionally on every consume path and are therefore part of every row's floor,
+/// not of this delta.</item>
+/// <item><c>Raw_AutoCommitAtMostOnce</c> − <c>Raw_AutoCommitAtLeastOnce</c> = the opt-in
 /// OnDelivery eager per-message offset store, for comparison with the default.</item>
 /// <item><c>ConstantStringValue_AutoCommit</c> − <c>Raw_AutoCommitAtLeastOnce</c> = the
 /// <c>string</c>-vs-value-type generic instantiation shape (shared-generic dispatch,
@@ -114,8 +122,11 @@ public class ConsumeAsyncStagingSerdeBenchmarks
             _batchRecords[batchIndex] = records;
         }
 
+        // The floor row disables offset storage entirely so the auto rows' deltas carry
+        // the whole at-least-once staging cost (publish + fetch-boundary store).
         _rawManualConsumer = CreateConsumer(
-            OffsetCommitMode.Manual, OffsetStoreTiming.AfterProcessing, Serializers.Ignore, Serializers.RawBytes);
+            OffsetCommitMode.Manual, OffsetStoreTiming.AfterProcessing, Serializers.Ignore, Serializers.RawBytes,
+            enableAutoOffsetStore: false);
         _rawAtLeastOnceConsumer = CreateConsumer(
             OffsetCommitMode.Auto, OffsetStoreTiming.AfterProcessing, Serializers.Ignore, Serializers.RawBytes);
         _rawAtMostOnceConsumer = CreateConsumer(
@@ -148,7 +159,8 @@ public class ConsumeAsyncStagingSerdeBenchmarks
         OffsetCommitMode commitMode,
         OffsetStoreTiming storeTiming,
         IDeserializer<TKey> keyDeserializer,
-        IDeserializer<TValue> valueDeserializer)
+        IDeserializer<TValue> valueDeserializer,
+        bool enableAutoOffsetStore = true)
     {
         var consumer = new KafkaConsumer<TKey, TValue>(
             new ConsumerOptions
@@ -156,6 +168,7 @@ public class ConsumeAsyncStagingSerdeBenchmarks
                 BootstrapServers = ["localhost:9092"],
                 OffsetCommitMode = commitMode,
                 OffsetStoreTiming = storeTiming,
+                EnableAutoOffsetStore = enableAutoOffsetStore,
                 QueuedMinMessages = 1,
                 FetchMaxWaitMs = 200,
             },

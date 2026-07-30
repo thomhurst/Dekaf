@@ -81,15 +81,15 @@ internal static class BufferedConsumerHarness
             pendingFetches.Dequeue().Dispose();
     }
 
-    public static Queue<PendingFetchData> GetPendingFetches<TKey, TValue>(
+    private static Queue<PendingFetchData> GetPendingFetches<TKey, TValue>(
         KafkaConsumer<TKey, TValue> consumer)
         => (Queue<PendingFetchData>)GetPrivateField(consumer, "_pendingFetches")!;
 
-    public static ConcurrentDictionary<TopicPartition, long> GetFetchPositions<TKey, TValue>(
+    private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions<TKey, TValue>(
         KafkaConsumer<TKey, TValue> consumer)
         => (ConcurrentDictionary<TopicPartition, long>)GetPrivateField(consumer, "_fetchPositions")!;
 
-    public static object? GetPrivateField<TKey, TValue>(
+    private static object? GetPrivateField<TKey, TValue>(
         KafkaConsumer<TKey, TValue> consumer,
         string fieldName)
         => RequireField<TKey, TValue>(fieldName).GetValue(consumer);
