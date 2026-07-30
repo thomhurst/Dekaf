@@ -234,10 +234,12 @@ public class ConsumeAsyncStagingSerdeBenchmarks
     [Benchmark(OperationsPerInvoke = MessageCount)]
     public int Utf8Decode_Control()
     {
-        var bytes = _valueBytes;
+        // ReadOnlyMemory + .Span mirrors StringSerde.Deserialize exactly — the span
+        // overload, not GetString(byte[]), so the subtraction isolates the same call.
+        ReadOnlyMemory<byte> bytes = _valueBytes;
         var lengthSum = 0;
         for (var i = 0; i < MessageCount; i++)
-            lengthSum += Encoding.UTF8.GetString(bytes).Length;
+            lengthSum += Encoding.UTF8.GetString(bytes.Span).Length;
         return lengthSum;
     }
 
