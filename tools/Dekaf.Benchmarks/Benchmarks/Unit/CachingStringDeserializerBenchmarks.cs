@@ -22,9 +22,13 @@ public class CachingStringDeserializerBenchmarks
         Component = SerializationComponent.Key
     };
     private readonly CachingStringDeserializer _repeatedDeserializer =
-        new(Serializers.String, maxCachedBytes: 128, maxCachedEntries: 16_384);
+        new(Serializers.String,
+            CachingStringDeserializer.DefaultKeyCacheMaxBytes,
+            CachingStringDeserializer.DefaultKeyCacheMaxEntries);
     private readonly CachingStringDeserializer _boundedDeserializer =
-        new(Serializers.String, maxCachedBytes: 128, maxCachedEntries: 16_384);
+        new(Serializers.String,
+            CachingStringDeserializer.DefaultKeyCacheMaxBytes,
+            CachingStringDeserializer.DefaultKeyCacheMaxEntries);
     private ReadOnlyMemory<byte>[] _uniqueKeys = null!;
     private ReadOnlyMemory<byte>[] _boundedKeys = null!;
     private ReadOnlyMemory<byte> _repeatedKey;
@@ -56,8 +60,10 @@ public class CachingStringDeserializerBenchmarks
         var characters = 0;
         for (var pass = 0; pass < UniquePassCount; pass++)
         {
-            var deserializer =
-                new CachingStringDeserializer(Serializers.String, maxCachedBytes: 128, maxCachedEntries: 16_384);
+            var deserializer = new CachingStringDeserializer(
+                Serializers.String,
+                CachingStringDeserializer.DefaultKeyCacheMaxBytes,
+                CachingStringDeserializer.DefaultKeyCacheMaxEntries);
             for (var i = 0; i < _uniqueKeys.Length; i++)
                 characters += deserializer.Deserialize(_uniqueKeys[i], _context).Length;
         }

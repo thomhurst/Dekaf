@@ -1,8 +1,7 @@
-using System.Collections.Concurrent;
-using System.Reflection;
 using System.Text;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
+using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
@@ -91,29 +90,15 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
             },
             Serializers.RawBytes,
             Serializers.RawBytes);
-        InitializeForBufferedFastPath(_consumer);
+        BufferedConsumerHarness.InitializeForBufferedFastPath(_consumer, Topic, Partition);
     }
 
     [IterationSetup]
     public void IterationSetup()
     {
-        DrainPendingFetches();
         _iterationCancellation = new CancellationTokenSource();
-
-        var batches = new RecordBatch[BatchCount];
-        for (var batchIndex = 0; batchIndex < BatchCount; batchIndex++)
-        {
-            var batch = RecordBatch.RentFromPool();
-            batch.BaseOffset = (long)batchIndex * RecordsPerBatch;
-            batch.BaseTimestamp = 1_700_000_000_000L;
-            batch.MaxTimestamp = 1_700_000_000_000L + RecordsPerBatch - 1;
-            batch.LastOffsetDelta = RecordsPerBatch - 1;
-            batch.Attributes = RecordBatchAttributes.None;
-            batch.Records = _batchRecords[batchIndex % SeedArrayCount];
-            batches[batchIndex] = batch;
-        }
-
-        GetPendingFetches().Enqueue(PendingFetchData.Create(Topic, Partition, batches));
+        BufferedConsumerHarness.ReseedPendingFetches(
+            _consumer, Topic, Partition, _batchRecords, BatchCount, RecordsPerBatch);
     }
 
     [IterationCleanup]
@@ -143,51 +128,7 @@ public class ConsumeAsyncBufferedFastPathBenchmarks
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        DrainPendingFetches();
+        BufferedConsumerHarness.DrainPendingFetches(_consumer);
         await _consumer.DisposeAsync().ConfigureAwait(false);
     }
-
-    private void DrainPendingFetches()
-    {
-        var pendingFetches = GetPendingFetches();
-        while (pendingFetches.Count > 0)
-            pendingFetches.Dequeue().Dispose();
-    }
-
-    private static void InitializeForBufferedFastPath(
-        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
-    {
-        SetPrivateField(consumer, "_initialized", true);
-
-        var topicPartition = new TopicPartition(Topic, Partition);
-        consumer.Assign(topicPartition);
-        GetFetchPositions(consumer)[topicPartition] = 0;
-
-        var ensureVersion = GetPrivateField(consumer, "_assignmentEnsureVersion");
-        SetPrivateField(consumer, "_lastManualAssignmentEnsureVersion", ensureVersion);
-    }
-
-    private Queue<PendingFetchData> GetPendingFetches() =>
-        (Queue<PendingFetchData>)GetPrivateField(_consumer, "_pendingFetches")!;
-
-    private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions(
-        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer) =>
-        (ConcurrentDictionary<TopicPartition, long>)GetPrivateField(consumer, "_fetchPositions")!;
-
-    private static object? GetPrivateField(
-        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer,
-        string fieldName) =>
-        RequireField(fieldName).GetValue(consumer);
-
-    private static void SetPrivateField(
-        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer,
-        string fieldName,
-        object? value) =>
-        RequireField(fieldName).SetValue(consumer, value);
-
-    private static FieldInfo RequireField(string fieldName) =>
-        typeof(KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>).GetField(
-            fieldName,
-            BindingFlags.NonPublic | BindingFlags.Instance)
-        ?? throw new InvalidOperationException($"{fieldName} field not found.");
 }

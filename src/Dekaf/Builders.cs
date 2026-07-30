@@ -3146,8 +3146,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
         {
             keyDeserializer = (IDeserializer<TKey>)(object)new CachingStringDeserializer(
                 stringSerde,
-                maxCachedBytes: 128,
-                maxCachedEntries: 16_384);
+                CachingStringDeserializer.DefaultKeyCacheMaxBytes,
+                CachingStringDeserializer.DefaultKeyCacheMaxEntries);
         }
 
         if (_cacheStringValues && valueDeserializer is StringSerde valueStringSerde)

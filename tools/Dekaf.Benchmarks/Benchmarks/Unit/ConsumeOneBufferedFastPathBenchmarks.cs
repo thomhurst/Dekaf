@@ -1,10 +1,9 @@
-using System.Collections.Concurrent;
-using System.Reflection;
 using System.Text;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Engines;
 using BenchmarkDotNet.Jobs;
+using Dekaf.Benchmarks.Infrastructure;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
@@ -105,12 +104,12 @@ public class ConsumeOneBufferedFastPathBenchmarks
             },
             Serializers.RawBytes,
             Serializers.RawBytes);
-        InitializeForBufferedFastPath(_groupedConsumer);
+        BufferedConsumerHarness.InitializeForBufferedFastPath(_groupedConsumer, Topic, Partition);
 
         // CanUseBufferedConsumeOneFastPath requires a live auto-commit loop in Auto mode.
         // A surrogate incomplete task satisfies IsAutoCommitRunning without network I/O.
         _autoCommitSurrogate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        SetPrivateField(_groupedConsumer, "_autoCommitTask", _autoCommitSurrogate.Task);
+        BufferedConsumerHarness.SetPrivateField(_groupedConsumer, "_autoCommitTask", _autoCommitSurrogate.Task);
 
         _noGroupConsumer = new KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>(
             new ConsumerOptions
@@ -122,7 +121,7 @@ public class ConsumeOneBufferedFastPathBenchmarks
             },
             Serializers.RawBytes,
             Serializers.RawBytes);
-        InitializeForBufferedFastPath(_noGroupConsumer);
+        BufferedConsumerHarness.InitializeForBufferedFastPath(_noGroupConsumer, Topic, Partition);
     }
 
     [IterationSetup(Targets = [nameof(PollOne_Grouped_AutoCommit)])]
@@ -145,76 +144,14 @@ public class ConsumeOneBufferedFastPathBenchmarks
     public void Cleanup()
     {
         _autoCommitSurrogate.TrySetResult();
-        DrainPendingFetches(_groupedConsumer);
-        DrainPendingFetches(_noGroupConsumer);
+        BufferedConsumerHarness.DrainPendingFetches(_groupedConsumer);
+        BufferedConsumerHarness.DrainPendingFetches(_noGroupConsumer);
         _groupedConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _noGroupConsumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     private void ReseedPendingFetches(
         KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
-    {
-        DrainPendingFetches(consumer);
-
-        var batches = new RecordBatch[BatchCount];
-        for (var b = 0; b < BatchCount; b++)
-        {
-            var batch = RecordBatch.RentFromPool();
-            batch.BaseOffset = (long)b * RecordsPerBatch;
-            batch.BaseTimestamp = 1_700_000_000_000L;
-            batch.MaxTimestamp = 1_700_000_000_000L + RecordsPerBatch - 1;
-            batch.LastOffsetDelta = RecordsPerBatch - 1;
-            batch.Attributes = RecordBatchAttributes.None;
-            batch.Records = _batchRecords[b % SeedArrayCount];
-            batches[b] = batch;
-        }
-
-        GetPendingFetches(consumer).Enqueue(PendingFetchData.Create(Topic, Partition, batches));
-    }
-
-    private static void DrainPendingFetches(
-        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
-    {
-        var pendingFetches = GetPendingFetches(consumer);
-        while (pendingFetches.Count > 0)
-            pendingFetches.Dequeue().Dispose();
-    }
-
-    private static void InitializeForBufferedFastPath(
-        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
-    {
-        SetPrivateField(consumer, "_initialized", true);
-
-        var tp = new TopicPartition(Topic, Partition);
-        consumer.Assign(tp);
-        GetFetchPositions(consumer)[tp] = 0;
-
-        // Mark the manual assignment as acknowledged so the fast path's currency check passes.
-        var ensureVersion = GetPrivateField(consumer, "_assignmentEnsureVersion");
-        SetPrivateField(consumer, "_lastManualAssignmentEnsureVersion", ensureVersion);
-    }
-
-    private static Queue<PendingFetchData> GetPendingFetches(
-        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
-        => (Queue<PendingFetchData>)GetPrivateField(consumer, "_pendingFetches")!;
-
-    private static ConcurrentDictionary<TopicPartition, long> GetFetchPositions(
-        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer)
-        => (ConcurrentDictionary<TopicPartition, long>)GetPrivateField(consumer, "_fetchPositions")!;
-
-    private static object? GetPrivateField(
-        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer,
-        string fieldName)
-        => RequireField(fieldName).GetValue(consumer);
-
-    private static void SetPrivateField(
-        KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>> consumer,
-        string fieldName,
-        object? value)
-        => RequireField(fieldName).SetValue(consumer, value);
-
-    private static FieldInfo RequireField(string fieldName)
-        => typeof(KafkaConsumer<ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>)
-               .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
-           ?? throw new InvalidOperationException($"{fieldName} field not found.");
+        => BufferedConsumerHarness.ReseedPendingFetches(
+            consumer, Topic, Partition, _batchRecords, BatchCount, RecordsPerBatch);
 }
