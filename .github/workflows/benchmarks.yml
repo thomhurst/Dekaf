@@ -97,9 +97,15 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
 
+      # Broker and benchmark process are pinned to disjoint cores (0-1 vs 2-3 on the
+      # 4-vCPU runner) so scheduler interference between them stops randomizing the
+      # timed regions — the same discipline the stress runners use. Ratios stay
+      # comparable (both clients measured under the same pinning), but absolute
+      # times will step-change against pre-pinning history.
       - name: Start Kafka
         run: |
           docker run -d --name kafka \
+            --cpuset-cpus 0,1 \
             -p 9092:9092 \
             apache/kafka:latest
 
@@ -121,7 +127,7 @@ jobs:
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
           cd tools/Dekaf.Benchmarks
-          dotnet run -c Release --no-build -- --filter "*Client*" --exporters json --artifacts ./BenchmarkResults/Client
+          taskset -c 2,3 dotnet run -c Release --no-build -- --filter "*Client*" --exporters json --artifacts ./BenchmarkResults/Client
 
       - name: Stop Kafka
         if: always()
@@ -387,6 +393,13 @@ jobs:
                           for bench in data.get('Benchmarks', []):
                               stats = bench.get('Statistics')
                               if stats is not None and stats.get('Mean') is not None:
+                                  # Publish the median as the tracked value: the
+                                  # github-action-benchmark extractor reads Statistics.Mean,
+                                  # but client benchmarks are heavy-tailed on shared runners
+                                  # (single-invocation iterations produce Error > Mean rows),
+                                  # so the median is a far more stable cross-run signal.
+                                  if stats.get('Median') is not None:
+                                      stats['Mean'] = stats['Median']
                                   combined['Benchmarks'].append(bench)
                               else:
                                   print(f"  Skipping (null Statistics): {bench.get('DisplayInfo', bench.get('Method', 'unknown'))}")
@@ -441,6 +454,7 @@ jobs:
           python3 .github/scripts/benchmark_docs.py
           --results-dir benchmark-results
           --history "$RUNNER_TEMP/benchmark-data.js"
+          --window 10
           --output docs/docs/benchmarks.md
 
       - name: Create Pull Request for Benchmark Results
