@@ -2,6 +2,7 @@ import unittest
 
 from stress_report import (
     format_admission_block_histogram,
+    format_at_a_glance,
     format_budget_probe_timeline,
     format_consumer_fetch_timeline,
     format_roundtrip_validation_table,
@@ -9,6 +10,8 @@ from stress_report import (
     format_producer_request_diagnostics,
     format_producer_budget_timeline,
     format_throughput_table,
+    generate_docs_page,
+    generate_docs_tables,
     generate_scenario_tables,
     intra_run_throughput,
     paired_latency_thresholds,
@@ -497,12 +500,9 @@ class StressReportTests(unittest.TestCase):
         self.assertIn("Dekaf (confluent-first)", report)
         self.assertIn("both `dekaf-first` and `confluent-first`", report)
 
-        docs_report = "\n".join(generate_scenario_tables(
-            samples,
-            include_callout=True,
-        ))
-        self.assertIn("### Order-Balanced Aggregate", docs_report)
-        self.assertIn("Dekaf is 1.42x faster", docs_report)
+        docs_report = "\n".join(generate_docs_tables(samples))
+        self.assertIn("**Order-Balanced Aggregate**", docs_report)
+        self.assertIn("| 1.4× faster |", docs_report)
 
     def test_throughput_table_suppresses_aggregate_when_any_sample_is_zero(self):
         samples = []
@@ -630,6 +630,160 @@ class StressReportTests(unittest.TestCase):
         self.assertIn("Round-Trip Validation", "\n".join(lines))
         self.assertIn("| Dekaf | 100 | 99 | 1 |", "\n".join(lines))
         self.assertIn("| FAIL |", "\n".join(lines))
+
+    @staticmethod
+    def paired_scenario_results():
+        dekaf = stress_result("Dekaf", effective_rate=1400, median_rate=1400)
+        dekaf["scenario"] = "producer"
+        dekaf["cpuMicrosPerMessage"] = 1.5
+        confluent = stress_result("Confluent", effective_rate=1000, median_rate=1000)
+        confluent["scenario"] = "producer"
+        confluent["cpuMicrosPerMessage"] = 3.0
+        return [dekaf, confluent]
+
+    def test_at_a_glance_reports_plain_language_verdicts(self):
+        report = "\n".join(format_at_a_glance(self.paired_scenario_results()))
+
+        self.assertIn("## At a glance", report)
+        self.assertIn(
+            "| Produce — fire-and-forget | 1,400 msg/s | 1,000 msg/s | 1.4× faster | 2.0× less |",
+            report,
+        )
+
+    def test_at_a_glance_reads_parity_as_on_par(self):
+        results = self.paired_scenario_results()
+        results[0]["medianIntervalMessagesPerSecond"] = 1020
+        results[0]["cpuMicrosPerMessage"] = 2.9
+
+        report = "\n".join(format_at_a_glance(results))
+
+        self.assertIn("| on par | on par |", report)
+
+    def test_at_a_glance_excludes_multi_connection_control_rows(self):
+        results = self.paired_scenario_results()
+        control = stress_result("Dekaf (3conn)", effective_rate=9000, median_rate=9000)
+        control["scenario"] = "producer"
+        results.append(control)
+
+        report = "\n".join(format_at_a_glance(results))
+
+        self.assertIn("| 1,400 msg/s | 1,000 msg/s |", report)
+        self.assertNotIn("9,000", report)
+
+    def test_at_a_glance_shows_dashes_without_confluent_pair(self):
+        dekaf = stress_result("Dekaf", effective_rate=1400, median_rate=1400)
+        dekaf["scenario"] = "producer"
+
+        report = "\n".join(format_at_a_glance([dekaf]))
+
+        self.assertIn("| Produce — fire-and-forget | 1,400 msg/s | — | — | — |", report)
+
+    def test_docs_tables_collapse_full_results_and_omit_diagnostics(self):
+        results = self.paired_scenario_results()
+        results[0]["producerDeliveryDiagnostics"] = {
+            "brokerBudgetSamples": [{
+                "capturedAtUtc": "2026-08-04T16:31:27+00:00",
+                "brokerId": 1,
+                "budgetBytes": 1048576,
+                "unackedBytes": 524288,
+                "maxRateBytesPerSec": 1000000,
+                "capacityProbeSuccessCount": 1,
+                "capacityProbeFailureCount": 0,
+                "admissionBlockCount": 10,
+            }],
+            "budgetProbeEvents": [{
+                "occurredAtUtc": "2026-08-04T16:31:57+00:00",
+                "brokerId": 1,
+                "probeType": "capacity",
+                "outcome": "succeeded",
+                "durationMilliseconds": 15000,
+                "budgetBytes": 1048576,
+                "unackedBytes": 524288,
+            }],
+            "brokerProduceRequests": [{
+                "brokerId": 1,
+                "requestCount": 2500,
+                "requestsPerSecond": 500,
+                "averageRequestBytes": 262144,
+            }],
+        }
+        results[0]["latency"] = {
+            "outlierSamples": [{
+                "messageIndex": 5,
+                "startedAtUtc": "2026-08-04T16:31:27+00:00",
+                "completedAtUtc": "2026-08-04T16:31:29+00:00",
+                "latencyUs": 2000000,
+            }],
+        }
+
+        report = "\n".join(generate_docs_tables(results))
+
+        self.assertIn("## At a glance", report)
+        self.assertIn("## Full results", report)
+        self.assertIn("<details>", report)
+        self.assertIn(
+            "<summary>Producer (Fire-and-Forget) (15 minutes, 1000B messages)</summary>",
+            report,
+        )
+        for diagnostic_heading in (
+            "Budget Timeline",
+            "Budget Probe Events",
+            "Admission Block",
+            "Latency Outliers",
+            "Request Diagnostics",
+            "Connection Scale Timeline",
+        ):
+            self.assertNotIn(diagnostic_heading, report)
+
+    def test_docs_tables_keep_correctness_verdicts_visible(self):
+        results = self.paired_scenario_results()
+        results[0]["roundTripValidation"] = {
+            "expectedMessages": 100,
+            "consumedMessages": 100,
+            "missingMessages": 0,
+            "duplicateMessages": 0,
+            "corruptMessages": 0,
+            "outOfOrderMessages": 0,
+            "mispartitionedMessages": 0,
+            "unexpectedMessages": 0,
+            "timedOut": False,
+            "isSuccess": True,
+        }
+
+        report = generate_docs_tables(results)
+
+        validation_index = report.index("### Round-Trip Validation")
+        details_close_index = report.index("</details>")
+        self.assertGreater(validation_index, details_close_index)
+
+    def test_docs_tables_collapse_gc_statistics(self):
+        results = self.paired_scenario_results()
+        results[0]["gcStats"] = {
+            "gen0Collections": 5,
+            "gen1Collections": 2,
+            "gen2Collections": 0,
+            "allocatedBytes": 1024,
+        }
+
+        report = "\n".join(generate_docs_tables(results))
+
+        self.assertIn("<summary>Memory & GC statistics — latest run</summary>", report)
+        self.assertNotIn("## Memory", report)
+
+    def test_docs_page_assembles_header_body_and_methodology(self):
+        page = generate_docs_page(self.paired_scenario_results(), "2026-08-04 17:32 UTC")
+
+        self.assertTrue(page.startswith("---\nsidebar_position: 14\n---"))
+        self.assertIn("**Last Updated:** 2026-08-04 17:32 UTC", page)
+        self.assertIn("## At a glance", page)
+        self.assertIn("<summary>Methodology — how these numbers are produced</summary>", page)
+        self.assertNotIn("## No Results Available", page)
+
+    def test_docs_page_without_results_shows_placeholder(self):
+        page = generate_docs_page([], "2026-08-04 17:32 UTC")
+
+        self.assertIn("## No Results Available", page)
+        self.assertIn("<summary>Methodology — how these numbers are produced</summary>", page)
 
 
 if __name__ == "__main__":

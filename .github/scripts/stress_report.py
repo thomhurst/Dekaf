@@ -1,8 +1,16 @@
-"""Shared utilities for stress test result reporting."""
+"""Shared utilities for stress test result reporting.
 
+Also runnable as a script to render the user-facing docs page:
+    python3 stress_report.py --results-dir <dir> --output docs/docs/stress-tests.md
+"""
+
+import argparse
+import glob
+import json
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from math import exp, isfinite, log
+from pathlib import Path
 from statistics import median
 
 SCENARIO_TITLES = {
@@ -21,6 +29,27 @@ SCENARIO_TITLES = {
 
 LATENCY_RATIO_THRESHOLD = 2.0
 MAX_TIMELINE_ROWS = 100
+
+# Plain-language scenario labels for the user-facing docs page. Internal keys
+# stay in SCENARIO_TITLES for the workflow summary and history tooling.
+DOCS_SCENARIO_LABELS = {
+    'producer': 'Produce — fire-and-forget',
+    'producer-idempotent': 'Produce — fire-and-forget, idempotent',
+    'producer-acks-all': 'Produce — acks=all',
+    'producer-async': 'Produce — awaited',
+    'producer-async-idempotent': 'Produce — awaited, idempotent',
+    'producer-transactional': 'Produce — transactional (exactly-once)',
+    'producer-roundtrip-steady': 'Produce + consume round-trip',
+    'consumer': 'Consume — messages',
+    'consumer-batch': 'Consume — batches',
+    'consumer-raw': 'Consume — raw bytes',
+    'consumer-raw-batch': 'Consume — raw byte batches',
+}
+
+# Ratios inside this band read as "on par": same-VM pairing removes most noise,
+# but run-to-run variation still makes small deltas meaningless to users.
+_PARITY_LOW = 0.95
+_PARITY_HIGH = 1.05
 
 
 def results_with_run_metadata(data):
@@ -131,6 +160,15 @@ def format_cpu_columns(result):
         f"{cpu_us_per_request:.2f}" if cpu_us_per_request is not None else '-',
         f"{cores_used:.2f}" if cores_used is not None else '-',
     )
+
+
+def median_cpu_micros(results):
+    """Median CPU μs/message across a client's samples, or None when unavailable."""
+    samples = [
+        value for result in results
+        if (value := cpu_micros_per_message(result)) is not None
+    ]
+    return median(samples) if samples else None
 
 
 def effective_rate(result):
@@ -435,11 +473,8 @@ def format_order_balanced_aggregate(results):
     ):
         samples = group['results']
         rates = [comparison_rate(result) for result in samples]
-        cpu_samples = [
-            value for result in samples
-            if (value := cpu_micros_per_message(result)) is not None
-        ]
-        cpu = f"{median(cpu_samples):.2f}" if cpu_samples else '-'
+        median_cpu = median_cpu_micros(samples)
+        cpu = f"{median_cpu:.2f}" if median_cpu is not None else '-'
         ratio = aggregate_rate / confluent_aggregate
         lines.append(
             f"| {group['client']} | {len(samples)} | {aggregate_rate:,.0f} | "
@@ -491,12 +526,8 @@ def throughput_sort_key(result):
     return -comparison_rate(result), cpu_us_per_msg if cpu_us_per_msg is not None else float('inf')
 
 
-def format_throughput_table(results, title, include_ratio=False):
-    """Generate a markdown throughput table for a single scenario group."""
-    if not results:
-        return []
-
-    lines = []
+def workload_label(results):
+    """Human-readable workload shape (duration, message size, seed batches)."""
     duration = results[0].get('durationMinutes', 'N/A')
     message_size = results[0].get('messageSizeBytes', 'N/A')
     seed_batch_size = results[0].get('consumerSeedBatchSizeBytes')
@@ -504,8 +535,21 @@ def format_throughput_table(results, title, include_ratio=False):
     workload = f"{duration} minutes, {message_size}B messages"
     if seed_batch_size is not None:
         workload += f", {seed_batch_size:,}B seed batches"
-    lines.append(f"## {title} ({workload})")
-    lines.append("")
+    return workload
+
+
+def format_throughput_table(results, title, include_ratio=False):
+    """Generate a markdown throughput table for a single scenario group.
+
+    A falsy title omits the heading so callers can supply their own framing
+    (mirrors format_gc_table)."""
+    if not results:
+        return []
+
+    lines = []
+    if title:
+        lines.append(f"## {title} ({workload_label(results)})")
+        lines.append("")
 
     lines.extend(format_order_balanced_aggregate(results))
 
@@ -1018,73 +1062,15 @@ def _parse_timestamp(value):
         return None
 
 
-def format_comparison_callout(results, title):
-    """Generate Docusaurus admonition comparing Dekaf vs Confluent throughput."""
-    groups = client_sample_groups(results)
-    dekaf = groups.get('dekaf')
-    confluent = groups.get('confluent')
-
-    if not (dekaf and confluent):
-        return []
-
-    dekaf_rate = aggregate_client_rate(dekaf['results'])
-    confluent_rate = aggregate_client_rate(confluent['results'])
-    if dekaf_rate is None or confluent_rate is None or confluent_rate <= 0:
-        return []
-
-    lines = []
-    throughput_ratio = dekaf_rate / confluent_rate
-    dekaf_cpu_samples = [
-        value for result in dekaf['results']
-        if (value := cpu_micros_per_message(result)) is not None
-    ]
-    confluent_cpu_samples = [
-        value for result in confluent['results']
-        if (value := cpu_micros_per_message(result)) is not None
-    ]
-    dekaf_cpu = median(dekaf_cpu_samples) if dekaf_cpu_samples else None
-    confluent_cpu = median(confluent_cpu_samples) if confluent_cpu_samples else None
-    label = title.lower()
-
-    if dekaf_cpu is not None and confluent_cpu is not None and dekaf_cpu > 0 and confluent_cpu > 0:
-        cpu_ratio = confluent_cpu / dekaf_cpu
-        if cpu_ratio > 1.05:
-            lines.append(":::tip")
-            lines.append(f"**Dekaf uses {cpu_ratio:.2f}x less CPU per message** than Confluent.Kafka for {label}; comparison throughput is {throughput_ratio:.2f}x.")
-            lines.append(":::")
-        elif cpu_ratio < 0.95:
-            lines.append(":::note")
-            lines.append(f"Confluent.Kafka uses {1/cpu_ratio:.2f}x less CPU per message for {label}; comparison throughput is {throughput_ratio:.2f}x.")
-            lines.append(":::")
-        else:
-            lines.append(":::note")
-            lines.append(f"Dekaf and Confluent.Kafka have similar CPU efficiency for {label}; comparison throughput is {throughput_ratio:.2f}x.")
-            lines.append(":::")
-    elif throughput_ratio > 1.05:
-        lines.append(":::tip")
-        lines.append(f"**Dekaf is {throughput_ratio:.2f}x faster** than Confluent.Kafka for {label} comparison throughput!")
-        lines.append(":::")
-    elif throughput_ratio < 0.95:
-        lines.append(":::note")
-        lines.append(f"Confluent.Kafka is {1/throughput_ratio:.2f}x faster for {label} comparison throughput.")
-        lines.append(":::")
-    else:
-        lines.append(":::note")
-        lines.append(f"Dekaf and Confluent.Kafka have similar {label} comparison throughput.")
-        lines.append(":::")
-
-    lines.append("")
-    return lines
-
-
 def format_gc_table(results, title="GC Statistics"):
     """Generate a markdown GC statistics table."""
     if not results:
         return []
 
     lines = []
-    lines.append(f"## {title}")
-    lines.append("")
+    if title:
+        lines.append(f"## {title}")
+        lines.append("")
     lines.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated | Alloc/msg |")
     lines.append("|--------|----------|------|------|------|-----------------|-----------|")
 
@@ -1193,7 +1179,169 @@ def format_roundtrip_validation_table(results):
     return lines
 
 
-def generate_scenario_tables(results, include_ratio=False, include_callout=False):
+def _times(value):
+    return f"{value:.0f}×" if value >= 9.95 else f"{value:.1f}×"
+
+
+def _describe_ratio(ratio, above, below):
+    if ratio > _PARITY_HIGH:
+        return f"{_times(ratio)} {above}"
+    if ratio < _PARITY_LOW:
+        return f"{_times(1 / ratio)} {below}"
+    return "on par"
+
+
+def describe_throughput_ratio(ratio):
+    """Dekaf/Confluent throughput ratio as plain-language verdict text."""
+    return _describe_ratio(ratio, 'faster', 'slower')
+
+
+def describe_cpu_ratio(ratio):
+    """Confluent/Dekaf CPU-per-message ratio as plain-language verdict text."""
+    return _describe_ratio(ratio, 'less', 'more')
+
+
+def docs_scenario_label(scenario_key):
+    """Plain-language display label for a (scenario_name, broker_count) key."""
+    scenario, broker_count = scenario_key
+    label = DOCS_SCENARIO_LABELS.get(scenario, scenario)
+    if broker_count > 1:
+        label += f" ({broker_count} brokers)"
+    return label
+
+
+def _demote_heading(line):
+    """Turn a markdown heading into bold text. Headings inside <details> would
+    emit table-of-contents anchors that scroll into collapsed content."""
+    if not line.startswith('#'):
+        return line
+    text = line.lstrip('#')
+    if text.startswith(' '):
+        return f"**{text[1:]}**"
+    return line
+
+
+def _details_section(summary, body_lines):
+    return [
+        "<details>",
+        f"<summary>{summary}</summary>",
+        "",
+        *[_demote_heading(line) for line in body_lines],
+        "</details>",
+        "",
+    ]
+
+
+def _at_a_glance_row(scenario_key, scenario_results):
+    # Multi-connection control-group variants (e.g. "Dekaf (3conn)") group under
+    # their own client name and are deliberately excluded from the headline
+    # comparison; they remain in the full per-scenario tables.
+    groups = client_sample_groups(scenario_results)
+    dekaf = groups.get('dekaf')
+    if not dekaf:
+        return None
+    dekaf_rate = aggregate_client_rate(dekaf['results'])
+    if dekaf_rate is None:
+        return None
+
+    label = docs_scenario_label(scenario_key)
+    dekaf_cell = f"{dekaf_rate:,.0f} msg/s"
+
+    confluent = groups.get('confluent')
+    confluent_rate = aggregate_client_rate(confluent['results']) if confluent else None
+    if confluent_rate is None:
+        return f"| {label} | {dekaf_cell} | — | — | — |"
+
+    throughput = describe_throughput_ratio(dekaf_rate / confluent_rate)
+
+    cpu = '—'
+    dekaf_cpu = median_cpu_micros(dekaf['results'])
+    confluent_cpu = median_cpu_micros(confluent['results'])
+    if dekaf_cpu and confluent_cpu:
+        cpu = describe_cpu_ratio(confluent_cpu / dekaf_cpu)
+
+    return (
+        f"| {label} | {dekaf_cell} | {confluent_rate:,.0f} msg/s | "
+        f"{throughput} | {cpu} |"
+    )
+
+
+def format_at_a_glance(results):
+    """Headline scenario-by-scenario Dekaf vs Confluent comparison table."""
+    producer_scenarios, consumer_scenarios = group_by_scenario(results)
+    rows = []
+    for scenarios in (producer_scenarios, consumer_scenarios):
+        for scenario_key in sorted(scenarios):
+            row = _at_a_glance_row(scenario_key, scenarios[scenario_key])
+            if row is not None:
+                rows.append(row)
+    if not rows:
+        return []
+
+    return [
+        "## At a glance",
+        "",
+        "Each row is a like-for-like comparison: both clients run the same sustained "
+        "workload sequentially on the same VM, and repeated samples are aggregated "
+        "with a geometric mean across both run orders.",
+        "",
+        "| Scenario | Dekaf | Confluent | Throughput | CPU per message |",
+        "|---|--:|--:|---|---|",
+        *rows,
+        "",
+        '*"On par" means within ±5% — differences that small are run-to-run noise. '
+        '"CPU per message" compares the client CPU cost of delivering one message; '
+        '"less" means Dekaf needs less CPU. Rows showing "—" have no Confluent '
+        'counterpart in this run (for example, batch and raw consume APIs that '
+        'librdkafka does not expose). The full per-run data is below.*',
+        "",
+    ]
+
+
+def generate_docs_tables(results):
+    """User-facing docs layout: at-a-glance verdicts with full tables collapsed.
+
+    Engineering diagnostics (budget timelines, probe events, admission stalls,
+    latency outliers) are deliberately omitted here — they live in the workflow
+    run summary, which generate_scenario_tables continues to produce.
+    """
+    output = format_at_a_glance(results)
+
+    producer_scenarios, consumer_scenarios = group_by_scenario(results)
+    sections = []
+    for scenarios, fallback_prefix in [(producer_scenarios, 'Producer '), (consumer_scenarios, 'Consumer ')]:
+        for scenario_key in sorted(scenarios):
+            title = scenario_title(scenario_key, fallback_prefix)
+            scenario_results = scenarios[scenario_key]
+            body = format_throughput_table(scenario_results, title=None)
+            if body:
+                sections.extend(_details_section(
+                    f"{title} ({workload_label(scenario_results)})", body
+                ))
+            # Correctness verdicts stay visible: users should not have to expand
+            # anything to see that validation passed.
+            sections.extend(format_transaction_verification(scenario_results))
+            sections.extend(format_roundtrip_validation_table(scenario_results))
+
+    if sections:
+        output.append("## Full results")
+        output.append("")
+        output.append(
+            "Each section holds the measured per-run data behind the summary: "
+            "repeated same-VM samples in both client orders, CPU per message and "
+            "per request, and throughput drift across the run."
+        )
+        output.append("")
+        output.extend(sections)
+
+    gc_body = format_gc_table(results, title=None)
+    if gc_body:
+        output.extend(_details_section("Memory & GC statistics — latest run", gc_body))
+
+    return output
+
+
+def generate_scenario_tables(results, include_ratio=False):
     """Generate per-scenario throughput tables for all results."""
     producer_scenarios, consumer_scenarios = group_by_scenario(results)
     output = []
@@ -1212,7 +1360,105 @@ def generate_scenario_tables(results, include_ratio=False, include_callout=False
             output.extend(format_latency_outlier_timeline(scenario_results, title))
             output.extend(format_transaction_verification(scenario_results))
             output.extend(format_roundtrip_validation_table(scenario_results))
-            if include_callout:
-                output.extend(format_comparison_callout(scenario_results, title))
 
     return output
+
+
+_METHODOLOGY_BULLETS = [
+    "- **Real Kafka**: Tests run against actual Apache Kafka instances",
+    "- **CPU Isolation**: Brokers are pinned to dedicated cores and the client under test to its own cores, so the client — not the broker — is the measured bottleneck",
+    "- **RAM-backed Broker Logs**: Kafka log dirs are mounted on tmpfs so disk I/O never caps broker ingestion",
+    "- **Delivered Throughput**: producer tables report broker-confirmed throughput, measured as the end-offset delta across all partitions — not the client-side append rate, which can run far ahead of what the broker ever accepts",
+    "- **Median Interval Throughput**: table order and comparison ratios use median sampled client-side msg/s when available, which is less sensitive to short late-run stalls than the whole-run mean",
+    "- **Same-VM Pairing**: comparable Dekaf and Confluent scenarios run sequentially inside one job/VM; 1-broker producer acceptance lanes run twice in opposite client orders and publish a geometric-mean aggregate, while other lanes alternate order by workflow run number",
+    "- **Backpressure Parity**: both producers are bounded to the same 512 MB local buffer (Dekaf BufferMemory, librdkafka queue.buffering.max) and block on a full buffer, so neither client can absorb an unbounded backlog into RAM",
+    "- **Consumer Loop Replay**: Consumer tests re-read a pre-seeded topic (seek to beginning when drained) instead of racing a live feeder, so the consumer itself is measured; table headings report the 16KB seed batch size because it amplifies per-batch costs relative to well-batched workloads",
+    "- **Delivery Latency Sampling**: 1 in 1000 produced messages is awaited end-to-end to record true broker round-trip latency",
+    "- **Round-Trip Correctness**: Bounded sequenced payloads are consumed back and checked for corruption, wrong partitions, gaps, duplicates, and reordering",
+    "- **Round-Trip CPU Scope**: CPU time covers both bulk production and consumer validation; it is not a producer-only metric",
+    "- **Round-Trip Alloc Scope**: the GC/alloc window likewise spans production plus consume-side validation; values are deliberately consumed as byte[] on both clients for parity, so each consumed payload is materialized as a fresh array (~152 B at 128 B messages) — the expected allocation floor for this lane, not a leak",
+    "- **CPU Efficiency**: CPU time per message differentiates client efficiency even at equal throughput",
+    "- **Noise-Aware Trends**: each scenario is compared with its last 10 matching runs using a median ± 2×MAD band; one adverse excursion warns and two consecutive regressions fail the workflow",
+    "- **Parallel Execution**: Each scenario runs in its own isolated environment",
+    "- **Both Clients**: Direct comparison between Dekaf and Confluent.Kafka",
+    "- **Memory Monitoring**: Tracks GC behavior and memory usage over time",
+    "- **Error Rates**: Ensures stability under load",
+]
+
+
+def generate_docs_page(results, updated_at):
+    """Render the complete docs/docs/stress-tests.md page."""
+    output = [
+        "---",
+        "sidebar_position: 14",
+        "---",
+        "",
+        "# Stress Test Results",
+        "",
+        "Long-running stress tests comparing sustained performance between Dekaf and Confluent.Kafka under real-world load.",
+        "",
+        f"**Last Updated:** {updated_at}",
+        "",
+        ":::info",
+        "The paired Dekaf vs Confluent comparison runs weekly (Sunday 2 AM UTC) and updates this page. ",
+        "Manual dispatches stay Dekaf-only unless full_run explicitly requests the same paired publish path. ",
+        "Tests measure sustained performance over 15+ minutes with real Kafka instances.",
+        ":::",
+        "",
+    ]
+
+    if results:
+        output.extend(generate_docs_tables(results))
+    else:
+        output.extend([
+            "## No Results Available",
+            "",
+            "Stress test results will appear here after the first successful run.",
+            "",
+        ])
+
+    output.extend([
+        "---",
+        "",
+        "## About These Tests",
+        "",
+        "Stress tests measure sustained performance over extended periods against real Kafka brokers, with both clients paired on the same VM for a fair comparison.",
+        "",
+        *_details_section(
+            "Methodology — how these numbers are produced",
+            [*_METHODOLOGY_BULLETS, ""],
+        ),
+    ])
+    return "\n".join(output)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=generate_docs_page.__doc__)
+    parser.add_argument("--results-dir", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--updated-at",
+        default=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+    )
+    args = parser.parse_args()
+
+    # Only result envelopes; watchdog diagnostics are separate JSON artifacts.
+    json_files = sorted(glob.glob(
+        f"{args.results_dir}/**/stress-test-results*.json", recursive=True
+    ))
+    results = []
+    if json_files:
+        latest_file = json_files[-1]
+        print(f"Using: {latest_file}")
+        with open(latest_file) as f:
+            results = results_with_run_metadata(json.load(f))
+
+    document = generate_docs_page(results, args.updated_at)
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(document, encoding="utf-8")
+    print(f"Generated {output_path} with {len(document.splitlines())} lines")
+
+
+if __name__ == "__main__":
+    main()
