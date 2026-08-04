@@ -389,7 +389,7 @@ def generate_document(
         *_details_section(
             f"Cross-run comparison — last {window} runs, per parameter set",
             [
-                "Each ratio pairs Dekaf and Confluent means from the same runner, then reports the median across recent comparable runs. Lower is better; `< 1.0` means Dekaf is faster.",
+                "Each ratio pairs Dekaf and Confluent per-run values from the same runner, then reports the median across recent comparable runs. Lower is better; `< 1.0` means Dekaf is faster.",
                 "",
                 f"Rows with run spread above {variance_threshold:.0%} are marked low-confidence. Run spread is `(maximum ratio - minimum ratio) / median ratio`.",
                 "",
