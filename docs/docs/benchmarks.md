@@ -4,16 +4,28 @@ sidebar_position: 13
 
 # Benchmark Results
 
-Live benchmark comparisons between Dekaf and Confluent.Kafka, automatically updated on every commit to main.
+How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet on GitHub Actions and refreshed on every commit to main.
 
 **Last Updated:** 2026-08-02 04:49 UTC
 
-:::info
-These benchmarks run on GitHub Actions (ubuntu-latest) using BenchmarkDotNet. 
-Ratio semantics differ per table — see 'How to Read These Results' below.
-:::
+## At a glance
 
-## Rolling comparison (last 5 runs)
+Each scenario is the median Dekaf-vs-Confluent result over the last 5 CI runs (both clients measured on the same runner), aggregated across message and batch sizes. Memory compares heap allocations per operation from the latest run.
+
+| Scenario | Speed vs Confluent | Memory vs Confluent | Confidence |
+|---|---|---|---|
+| Produce — one message at a time (awaited) | 2.1× faster | 2.4× less | Stable |
+| Produce — batches | on par to 2.3× faster | 22× less | Mixed |
+| Produce — fire-and-forget | on par | 100× less | Mixed |
+| Consume — drain a topic | on par to 1.4× faster | 1.6× less | Mixed |
+| Consume — poll a single message | 2.7×–12× faster | 1.6× less | Mixed |
+
+"On par" means within ±20% — differences that small are runner noise. A range means the result depends on message or batch size; the per-parameter tables below have the detail.
+
+## Full results
+
+<details>
+<summary>Cross-run comparison — last 5 runs, per parameter set</summary>
 
 Each ratio pairs Dekaf and Confluent means from the same runner, then reports the median across recent comparable runs. Lower is better; `< 1.0` means Dekaf is faster.
 
@@ -40,13 +52,10 @@ Rows with run spread above 30% are marked low-confidence. Run spread is `(maximu
 | ProducerBenchmarks.ProduceSingle | MessageSize: 1000, BatchSize: 100 | 5 | 0.47 | 0.46–0.47 | 4% | Stable |
 | ProducerBenchmarks.ProduceSingle | MessageSize: 1000, BatchSize: 1000 | 5 | 0.47 | 0.46–0.47 | 4% | Stable |
 
-## Latest run
+</details>
 
-Latest-run tables retain BenchmarkDotNet's within-run `RatioSD`. Rows above the confidence threshold are marked low-confidence.
-
-### Producer Benchmarks
-
-Comparing Dekaf vs Confluent.Kafka for message production across different scenarios.
+<details>
+<summary>Latest run — producer benchmarks</summary>
 
 | Method                  | Categories    | MessageSize | BatchSize | Mean        | Error     | StdDev    | Ratio | RatioSD | Gen0     | Gen1    | Allocated | Alloc Ratio | Confidence |
 |------------------------ |-------------- |------------ |---------- |------------:|----------:|----------:|------:|--------:|---------:|--------:|----------:|------------:|---|
@@ -86,9 +95,10 @@ Comparing Dekaf vs Confluent.Kafka for message production across different scena
 | **Confluent_ProduceSingle** | **SingleProduce** | **1000**        | **1000**      |  **5,479.2 μs** |  **34.73 μs** |  **22.97 μs** |  **1.00** |    **0.01** |        **-** |       **-** |    **2098 B** |        **1.00** | Stable |
 | Dekaf_ProduceSingle     | SingleProduce | 1000        | 1000      |  2,507.3 μs |  11.94 μs |   7.90 μs |  0.46 |    0.00 |        - |       - |     624 B |        0.30 | Stable |
 
-### Consumer Benchmarks
+</details>
 
-Comparing Dekaf vs Confluent.Kafka for message consumption.
+<details>
+<summary>Latest run — consumer benchmarks</summary>
 
 | Method               | MessageCount | MessageSize | Mean       | Error       | StdDev    | Median     | Ratio | RatioSD | Allocated | Alloc Ratio | Confidence |
 |--------------------- |------------- |------------ |-----------:|------------:|----------:|-----------:|------:|--------:|----------:|------------:|---|
@@ -112,13 +122,12 @@ Comparing Dekaf vs Confluent.Kafka for message consumption.
 | **Confluent_PollSingle** | **400000**            | **1000**        | **2,817.3 ns** | **1,568.47 ns** | **1,037.45 ns** | **3,594.1 ns** |  **1.17** |    **0.67** | **0.1450** |    **2454 B** |        **1.00** | ⚠ Low |
 | Dekaf_PollSingle     | 400000            | 1000        | 1,159.8 ns |    89.57 ns |    59.24 ns | 1,152.3 ns |  0.48 |    0.21 | 0.1225 |    2075 B |        0.85 | Stable |
 
-## Protocol Benchmarks
+</details>
 
-Zero-allocation wire protocol serialization/deserialization.
+<details>
+<summary>Protocol serialization — Dekaf internals</summary>
 
-:::tip
-**Allocated = `-` means zero heap allocations** - the goal of Dekaf's design!
-:::
+Wire protocol serialization/deserialization. **Allocated = `-` means zero heap allocations** — the goal of Dekaf's design.
 
 | Method                     | Mean      | Error    | StdDev   | Gen0   | Allocated |
 |--------------------------- |----------:|---------:|---------:|-------:|----------:|
@@ -164,7 +173,10 @@ Zero-allocation wire protocol serialization/deserialization.
 | &#39;Read Gzip RecordBatch (10 records)&#39;            | 1,737.5 ns |  3.93 ns |  2.60 ns | 0.0172 |     312 B |
 | &#39;Read + Iterate RecordBatch (10 records)&#39;       | 1,299.9 ns |  2.88 ns |  1.71 ns |      - |         - |
 
-## Serializer Benchmarks
+</details>
+
+<details>
+<summary>Serializers — Dekaf internals</summary>
 
 | Method                               | Categories | Mean         | Error      | StdDev    | Ratio | RatioSD | Gen0   | Allocated | Alloc Ratio |
 |------------------------------------- |----------- |-------------:|-----------:|----------:|------:|--------:|-------:|----------:|------------:|
@@ -179,7 +191,10 @@ Zero-allocation wire protocol serialization/deserialization.
 | &#39;ArrayBufferWriter + Copy&#39;           | Writer     |    108.12 ns |   2.658 ns |  1.582 ns |  1.00 |    0.02 | 0.0535 |     896 B |        1.00 |
 | &#39;ReusableBufferWriter Direct&#39;        | Writer     |     54.49 ns |   0.172 ns |  0.114 ns |  0.50 |    0.01 |      - |         - |        0.00 |
 
-## Compression Benchmarks
+</details>
+
+<details>
+<summary>Compression — Dekaf internals</summary>
 
 | Method                  | Mean         | Error     | StdDev    | Gen0   | Allocated |
 |------------------------ |-------------:|----------:|----------:|-------:|----------:|
@@ -188,19 +203,22 @@ Zero-allocation wire protocol serialization/deserialization.
 | &#39;Snappy Decompress 1KB&#39; |     222.1 ns |   0.34 ns |   0.20 ns | 0.0048 |      80 B |
 | &#39;Snappy Decompress 1MB&#39; | 126,543.3 ns | 183.00 ns |  95.71 ns |      - |      80 B |
 
----
+</details>
 
-## How to Read These Results
+<details>
+<summary>How to read these tables</summary>
 
 - **Mean**: Average execution time
 - **Error**: Half of 99.9% confidence interval
 - **StdDev**: Standard deviation of all measurements
 - **Ratio**: Performance relative to that table's baseline row
   - Producer/Consumer tables: baseline is Confluent.Kafka, so `< 1.0` = Dekaf is faster, `> 1.0` = Confluent is faster
-  - Unit tables (Protocol/Serializer/Compression): baseline is an internal reference implementation, not Confluent
+  - Dekaf-internals tables (Protocol/Serializer/Compression): baseline is an internal reference implementation, not Confluent
 - **RatioSD**: BenchmarkDotNet's uncertainty for the latest run's ratio
 - **Confidence**: `⚠ Low` when latest `RatioSD > 0.30` or rolling run spread exceeds 30%
 - **Allocated**: Heap memory allocated per operation
   - `-` = Zero allocations (ideal!)
+
+</details>
 
 *Benchmarks are automatically run on every push to main.*

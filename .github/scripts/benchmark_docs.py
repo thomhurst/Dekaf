@@ -17,6 +17,19 @@ _BENCHMARK_NAME = re.compile(
     r"(?P<client>Dekaf|Confluent)_(?P<operation>[^()]+)"
     r"(?P<parameters>\(.*\))?$"
 )
+_DEKAF_METHOD = re.compile(r"Dekaf_(?P<operation>\w+)")
+
+# Ratios inside this band are indistinguishable from CI noise.
+_PARITY_LOW = 0.83
+_PARITY_HIGH = 1.20
+
+_SCENARIO_LABELS = {
+    ("ProducerBenchmarks", "ProduceSingle"): ("Produce — one message at a time (awaited)", 0),
+    ("ProducerBenchmarks", "ProduceBatch"): ("Produce — batches", 1),
+    ("ProducerBenchmarks", "FireAndForget"): ("Produce — fire-and-forget", 2),
+    ("ConsumerBenchmarks", "ConsumeAll"): ("Consume — drain a topic", 3),
+    ("ConsumerPollBenchmarks", "PollSingle"): ("Consume — poll a single message", 4),
+}
 
 
 def load_history(path):
@@ -95,6 +108,144 @@ def rolling_comparisons(entries, window=DEFAULT_WINDOW):
     )
 
 
+def _scenario_label(group, operation):
+    return _SCENARIO_LABELS.get((group, operation), (f"{group}.{operation}", 99))
+
+
+def _times(value):
+    return f"{value:.0f}×" if value >= 9.95 else f"{value:.1f}×"
+
+
+def describe_speed(ratio):
+    if ratio < _PARITY_LOW:
+        return f"{_times(1 / ratio)} faster"
+    if ratio <= _PARITY_HIGH:
+        return "on par"
+    return f"{_times(ratio)} slower"
+
+
+def describe_speed_range(best, worst):
+    best_text = describe_speed(best)
+    worst_text = describe_speed(worst)
+    if best_text == worst_text:
+        return best_text
+    if best_text.endswith("faster") and worst_text.endswith("faster"):
+        return f"{_times(1 / worst)}–{_times(1 / best)} faster"
+    if best_text.endswith("slower") and worst_text.endswith("slower"):
+        return f"{_times(best)}–{_times(worst)} slower"
+    return f"{worst_text} to {best_text}"
+
+
+def describe_memory(alloc_ratio):
+    if alloc_ratio is None:
+        return "—"
+    if alloc_ratio <= 0:
+        return "zero allocations"
+    if alloc_ratio < _PARITY_LOW:
+        return f"{_times(1 / alloc_ratio)} less"
+    if alloc_ratio <= _PARITY_HIGH:
+        return "on par"
+    return f"{_times(alloc_ratio)} more"
+
+
+def summarize_scenarios(comparisons, variance_threshold=DEFAULT_VARIANCE_THRESHOLD):
+    scenarios = {}
+    for comparison in comparisons:
+        key = (comparison["group"], comparison["operation"])
+        scenarios.setdefault(key, []).append(comparison)
+
+    summaries = []
+    for (group, operation), rows in scenarios.items():
+        medians = [row["median"] for row in rows]
+        stable = sum(
+            1
+            for row in rows
+            if row["runs"] >= 2 and row["relative_spread"] <= variance_threshold
+        )
+        summaries.append(
+            {
+                "group": group,
+                "operation": operation,
+                "best": min(medians),
+                "worst": max(medians),
+                "median": median(medians),
+                "stable_rows": stable,
+                "total_rows": len(rows),
+            }
+        )
+
+    def sort_key(item):
+        label, order = _scenario_label(item["group"], item["operation"])
+        return (order, label)
+
+    return sorted(summaries, key=sort_key)
+
+
+def latest_alloc_ratios(paths):
+    """Median Dekaf-vs-Confluent allocation ratio per operation from latest-run tables."""
+    ratios = {}
+    for markdown_path in paths:
+        method_index = None
+        alloc_index = None
+        for line in Path(markdown_path).read_text(encoding="utf-8").splitlines():
+            if not line.startswith("|"):
+                continue
+            cells = [_cell_text(cell) for cell in line.strip().strip("|").split("|")]
+            if "Method" in cells:
+                method_index = cells.index("Method")
+                alloc_index = (
+                    cells.index("Alloc Ratio") if "Alloc Ratio" in cells else None
+                )
+                continue
+            if method_index is None or alloc_index is None or len(cells) <= alloc_index:
+                continue
+            match = _DEKAF_METHOD.search(cells[method_index])
+            if match is None:
+                continue
+            try:
+                value = float(cells[alloc_index])
+            except ValueError:
+                continue
+            ratios.setdefault(match.group("operation"), []).append(value)
+
+    return {operation: median(values) for operation, values in ratios.items()}
+
+
+def _confidence_label(stable_rows, total_rows):
+    if total_rows == 0:
+        return "⚠ Insufficient history"
+    if stable_rows == total_rows:
+        return "Stable"
+    if stable_rows == 0:
+        return "⚠ Noisy"
+    return "Mixed"
+
+
+def format_summary_table(summaries, alloc_ratios):
+    lines = [
+        "| Scenario | Speed vs Confluent | Memory vs Confluent | Confidence |",
+        "|---|---|---|---|",
+    ]
+
+    for summary in summaries:
+        label, _ = _scenario_label(summary["group"], summary["operation"])
+        lines.append(
+            "| {label} | {speed} | {memory} | {confidence} |".format(
+                label=label,
+                speed=describe_speed_range(summary["best"], summary["worst"]),
+                memory=describe_memory(alloc_ratios.get(summary["operation"])),
+                confidence=_confidence_label(
+                    summary["stable_rows"], summary["total_rows"]
+                ),
+            )
+        )
+
+    if not summaries:
+        lines.append("| No comparable history yet | — | — | ⚠ Insufficient history |")
+
+    return lines
+
+
 def format_rolling_table(comparisons, variance_threshold):
     lines = [
         "| Benchmark | Parameters | Runs | Median Ratio | Ratio Range | Run Spread | Confidence |",
@@ -171,7 +322,8 @@ def annotate_ratio_confidence(lines, variance_threshold):
     return output
 
 
-def append_tables(output, paths, variance_threshold=None):
+def collect_tables(paths, variance_threshold=None):
+    output = []
     for markdown_path in paths:
         lines = Path(markdown_path).read_text(encoding="utf-8").splitlines()
         if variance_threshold is not None:
@@ -179,6 +331,18 @@ def append_tables(output, paths, variance_threshold=None):
         else:
             output.extend(line for line in lines if line.startswith("|"))
         output.append("")
+    return output
+
+
+def _details_section(summary, body_lines):
+    return [
+        "<details>",
+        f"<summary>{summary}</summary>",
+        "",
+        *body_lines,
+        "</details>",
+        "",
+    ]
 
 
 def generate_document(
@@ -192,6 +356,15 @@ def generate_document(
     comparisons = rolling_comparisons(history, window)
     result_pattern = str(Path(results_dir))
 
+    producer_md = sorted(
+        glob.glob(f"{result_pattern}/Client/results/*ProducerBenchmarks*-github.md")
+    )
+    consumer_md = sorted(
+        glob.glob(f"{result_pattern}/Client/results/*Consumer*Benchmarks*-github.md")
+    )
+    alloc_ratios = latest_alloc_ratios(producer_md + consumer_md)
+    summaries = summarize_scenarios(comparisons, variance_threshold)
+
     output = [
         "---",
         "sidebar_position: 13",
@@ -199,109 +372,104 @@ def generate_document(
         "",
         "# Benchmark Results",
         "",
-        "Live benchmark comparisons between Dekaf and Confluent.Kafka, automatically updated on every commit to main.",
+        "How Dekaf compares to Confluent.Kafka, measured with BenchmarkDotNet on GitHub Actions and refreshed on every commit to main.",
         "",
         f"**Last Updated:** {updated_at}",
         "",
-        ":::info",
-        "These benchmarks run on GitHub Actions (ubuntu-latest) using BenchmarkDotNet. ",
-        "Ratio semantics differ per table — see 'How to Read These Results' below.",
-        ":::",
+        "## At a glance",
         "",
-        f"## Rolling comparison (last {window} runs)",
+        f"Each scenario is the median Dekaf-vs-Confluent result over the last {window} CI runs (both clients measured on the same runner), aggregated across message and batch sizes. Memory compares heap allocations per operation from the latest run.",
         "",
-        "Each ratio pairs Dekaf and Confluent means from the same runner, then reports the median across recent comparable runs. Lower is better; `< 1.0` means Dekaf is faster.",
+        *format_summary_table(summaries, alloc_ratios),
         "",
-        f"Rows with run spread above {variance_threshold:.0%} are marked low-confidence. Run spread is `(maximum ratio - minimum ratio) / median ratio`.",
+        '"On par" means within ±20% — differences that small are runner noise. A range means the result depends on message or batch size; the per-parameter tables below have the detail.',
         "",
-        *format_rolling_table(comparisons, variance_threshold),
+        "## Full results",
         "",
-        "## Latest run",
-        "",
-        "Latest-run tables retain BenchmarkDotNet's within-run `RatioSD`. Rows above the confidence threshold are marked low-confidence.",
-        "",
+        *_details_section(
+            f"Cross-run comparison — last {window} runs, per parameter set",
+            [
+                "Each ratio pairs Dekaf and Confluent means from the same runner, then reports the median across recent comparable runs. Lower is better; `< 1.0` means Dekaf is faster.",
+                "",
+                f"Rows with run spread above {variance_threshold:.0%} are marked low-confidence. Run spread is `(maximum ratio - minimum ratio) / median ratio`.",
+                "",
+                *format_rolling_table(comparisons, variance_threshold),
+                "",
+            ],
+        ),
     ]
 
-    producer_md = sorted(
-        glob.glob(f"{result_pattern}/Client/results/*ProducerBenchmarks*-github.md")
-    )
     if producer_md:
         output.extend(
-            [
-                "### Producer Benchmarks",
-                "",
-                "Comparing Dekaf vs Confluent.Kafka for message production across different scenarios.",
-                "",
-            ]
+            _details_section(
+                "Latest run — producer benchmarks",
+                collect_tables(producer_md, variance_threshold),
+            )
         )
-        append_tables(output, producer_md, variance_threshold)
 
-    consumer_md = sorted(
-        glob.glob(f"{result_pattern}/Client/results/*Consumer*Benchmarks*-github.md")
-    )
     if consumer_md:
         output.extend(
-            [
-                "### Consumer Benchmarks",
-                "",
-                "Comparing Dekaf vs Confluent.Kafka for message consumption.",
-                "",
-            ]
+            _details_section(
+                "Latest run — consumer benchmarks",
+                collect_tables(consumer_md, variance_threshold),
+            )
         )
-        append_tables(output, consumer_md, variance_threshold)
 
     protocol_md = sorted(
         glob.glob(f"{result_pattern}/Unit/results/*ProtocolBenchmarks*-github.md")
     )
     if protocol_md:
         output.extend(
-            [
-                "## Protocol Benchmarks",
-                "",
-                "Zero-allocation wire protocol serialization/deserialization.",
-                "",
-                ":::tip",
-                "**Allocated = `-` means zero heap allocations** - the goal of Dekaf's design!",
-                ":::",
-                "",
-            ]
+            _details_section(
+                "Protocol serialization — Dekaf internals",
+                [
+                    "Wire protocol serialization/deserialization. **Allocated = `-` means zero heap allocations** — the goal of Dekaf's design.",
+                    "",
+                    *collect_tables(protocol_md),
+                ],
+            )
         )
-        append_tables(output, protocol_md)
 
     serializer_md = sorted(
         glob.glob(f"{result_pattern}/Unit/results/*SerializerBenchmarks*-github.md")
     )
     if serializer_md:
-        output.extend(["## Serializer Benchmarks", ""])
-        append_tables(output, serializer_md)
+        output.extend(
+            _details_section(
+                "Serializers — Dekaf internals", collect_tables(serializer_md)
+            )
+        )
 
     compression_md = sorted(
         glob.glob(f"{result_pattern}/Unit/results/*CompressionBenchmarks*-github.md")
     )
     if compression_md:
-        output.extend(["## Compression Benchmarks", ""])
-        append_tables(output, compression_md)
+        output.extend(
+            _details_section(
+                "Compression — Dekaf internals", collect_tables(compression_md)
+            )
+        )
 
     output.extend(
-        [
-            "---",
-            "",
-            "## How to Read These Results",
-            "",
-            "- **Mean**: Average execution time",
-            "- **Error**: Half of 99.9% confidence interval",
-            "- **StdDev**: Standard deviation of all measurements",
-            "- **Ratio**: Performance relative to that table's baseline row",
-            "  - Producer/Consumer tables: baseline is Confluent.Kafka, so `< 1.0` = Dekaf is faster, `> 1.0` = Confluent is faster",
-            "  - Unit tables (Protocol/Serializer/Compression): baseline is an internal reference implementation, not Confluent",
-            "- **RatioSD**: BenchmarkDotNet's uncertainty for the latest run's ratio",
-            f"- **Confidence**: `⚠ Low` when latest `RatioSD > {variance_threshold:.2f}` or rolling run spread exceeds {variance_threshold:.0%}",
-            "- **Allocated**: Heap memory allocated per operation",
-            "  - `-` = Zero allocations (ideal!)",
-            "",
-            "*Benchmarks are automatically run on every push to main.*",
-        ]
+        _details_section(
+            "How to read these tables",
+            [
+                "- **Mean**: Average execution time",
+                "- **Error**: Half of 99.9% confidence interval",
+                "- **StdDev**: Standard deviation of all measurements",
+                "- **Ratio**: Performance relative to that table's baseline row",
+                "  - Producer/Consumer tables: baseline is Confluent.Kafka, so `< 1.0` = Dekaf is faster, `> 1.0` = Confluent is faster",
+                "  - Dekaf-internals tables (Protocol/Serializer/Compression): baseline is an internal reference implementation, not Confluent",
+                "- **RatioSD**: BenchmarkDotNet's uncertainty for the latest run's ratio",
+                f"- **Confidence**: `⚠ Low` when latest `RatioSD > {variance_threshold:.2f}` or rolling run spread exceeds {variance_threshold:.0%}",
+                "- **Allocated**: Heap memory allocated per operation",
+                "  - `-` = Zero allocations (ideal!)",
+                "",
+            ],
+        )
     )
+
+    output.append("*Benchmarks are automatically run on every push to main.*")
 
     return "\n".join(output)
 
