@@ -151,6 +151,11 @@ public sealed partial class KafkaConnection :
     private Timer? _receiveTimeoutTimer;
     private long _receiveTimeoutDeadlineTimestamp;
     private int _receiveTimeoutExpired;
+    // 1 while a receive-timeout callback is scheduled or executing. Invariant: a pending
+    // request implies armed — established by StampReceiveTimeoutDeadline's CAS and the
+    // dormant handoff in OnReceiveTimeout. Not reset on teardown; _disposed guards every
+    // arm/fire path, and any future connection-reuse work must re-initialize this under
+    // _receiveTimeoutGate after sends are fenced.
     private int _receiveTimeoutArmed;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
     private readonly object _disposeGate = new();
@@ -2559,18 +2564,23 @@ public sealed partial class KafkaConnection :
     /// <summary>
     /// Extends the receive-timeout deadline for a newly pending request. The deadline is a
     /// plain stamp — the timer is only armed when it was dormant, so steady traffic costs
-    /// two volatile writes per request instead of a lock plus <see cref="Timer.Change(TimeSpan, TimeSpan)"/>
-    /// on every send and response (worst-case TimerQueue churn at in-flight depth ≤ 1).
-    /// When the timer fires early it re-arms for the stamped remainder (see
-    /// <see cref="OnReceiveTimeout"/>), so the deadline stays authoritative.
+    /// two volatile writes and one uncontended CAS per request instead of a lock plus
+    /// <see cref="Timer.Change(TimeSpan, TimeSpan)"/> on every send and response
+    /// (worst-case TimerQueue churn at in-flight depth ≤ 1). When the timer fires early
+    /// it re-arms for the stamped remainder (see <see cref="OnReceiveTimeout"/>), so the
+    /// deadline stays authoritative.
     /// </summary>
     private void StampReceiveTimeoutDeadline()
     {
         Volatile.Write(ref _receiveTimeoutExpired, 0);
         Volatile.Write(ref _receiveTimeoutDeadlineTimestamp, GetReceiveTimeoutDeadlineTimestamp());
 
-        // Full fence: pairs with the dormant handoff in OnReceiveTimeout so either this
-        // CAS arms the timer or the callback observes the deadline stamped above.
+        // Full-fence RMW even when it fails: pairs with the dormant handoff in
+        // OnReceiveTimeout so either this CAS arms the timer or the callback observes the
+        // deadline stamped above. Do not weaken to a test-and-test-and-set: without the
+        // RMW the deadline store (release) and the armed load (acquire) may reorder, and
+        // a callback reclaiming the armed slot could evaluate a stale past deadline with
+        // a request pending and spuriously expire the connection.
         if (Interlocked.CompareExchange(ref _receiveTimeoutArmed, 1, 0) == 0)
             ArmReceiveTimeoutTimer(_options.RequestTimeout);
     }
@@ -2673,20 +2683,14 @@ public sealed partial class KafkaConnection :
 
     private void RearmReceiveTimeoutForRemainder(long remainingTimestamp)
     {
-        var remaining = TimeSpan.FromSeconds(remainingTimestamp / (double)Stopwatch.Frequency);
-        lock (_receiveTimeoutGate)
-        {
-            if (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) == 0)
-                return;
+        // Teardown belt: DisarmReceiveTimeout is the only writer of 0 and runs only
+        // after _disposed is set, so a zero deadline means mid-teardown, never idle.
+        // The gate never ordered this lock-free field; the _disposed check inside
+        // ArmReceiveTimeoutTimer is the real protection.
+        if (Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) == 0)
+            return;
 
-            try
-            {
-                GetOrCreateReceiveTimeoutTimer().Change(remaining, Timeout.InfiniteTimeSpan);
-            }
-            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
-            {
-            }
-        }
+        ArmReceiveTimeoutTimer(TimeSpan.FromSeconds(remainingTimestamp / (double)Stopwatch.Frequency));
     }
 
     private bool ConsumeReceiveTimeoutExpired()
