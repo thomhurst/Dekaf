@@ -51,6 +51,11 @@ DOCS_SCENARIO_LABELS = {
 _PARITY_LOW = 0.95
 _PARITY_HIGH = 1.05
 
+# At-a-glance verdicts use the median same-run ratio over this many trailing
+# weekly runs, so one environment-shifted run cannot flip a verdict.
+DOCS_TREND_WINDOW = 10
+DOCS_TREND_SPREAD_THRESHOLD = 0.30
+
 
 def results_with_run_metadata(data):
     """Flatten a result envelope while retaining run-level pairing metadata."""
@@ -1232,7 +1237,94 @@ def _details_section(summary, body_lines):
     ]
 
 
-def _at_a_glance_row(scenario_key, scenario_results):
+def load_stress_history(path):
+    """Load trend-history runs; missing or malformed history disables trends."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    runs = data.get('runs') if isinstance(data, dict) else None
+    return runs if isinstance(runs, list) else []
+
+
+def _scenario_run_ratio(run, scenario, broker_count, field):
+    """Median Dekaf same-run control ratio for one scenario in one history run."""
+    ratios = [
+        value for result in run.get('results') or []
+        if result.get('scenario') == scenario
+        and result.get('brokerCount', 1) == broker_count
+        and str(result.get('client', '')).casefold() == 'dekaf'
+        and _positive_finite_number(value := result.get(field))
+    ]
+    return median(ratios) if ratios else None
+
+
+def _same_regime_suffix(pairs):
+    """Trim to the contiguous recent runs whose ratio is within 2x of the latest.
+
+    Measurement-basis changes (lane reworks, re-baselines) leave a step in the
+    ratio series; averaging across the step would report the old regime. The
+    factor-2 gate is far wider than run noise but narrower than any basis step.
+    """
+    anchor = pairs[-1][0]
+    suffix = []
+    for pair in reversed(pairs):
+        if not (anchor / 2 <= pair[0] <= anchor * 2):
+            break
+        suffix.append(pair)
+    suffix.reverse()
+    return suffix
+
+
+def scenario_trend(history, scenario_key, window=DOCS_TREND_WINDOW):
+    """Trailing-median same-run ratios for a scenario, or None without history."""
+    scenario, broker_count = scenario_key
+    pairs = []
+    for run in history[-window:]:
+        throughput = _scenario_run_ratio(
+            run, scenario, broker_count, 'messagesPerSecondControlRatio')
+        if throughput is None:
+            continue
+        cpu = _scenario_run_ratio(
+            run, scenario, broker_count, 'cpuMicrosPerMessageControlRatio')
+        pairs.append((throughput, cpu))
+
+    if len(pairs) < 2:
+        return None
+
+    pairs = _same_regime_suffix(pairs)
+    if len(pairs) < 2:
+        return None
+
+    throughput_ratios = [pair[0] for pair in pairs]
+    cpu_ratios = [pair[1] for pair in pairs if pair[1] is not None]
+
+    throughput_median = median(throughput_ratios)
+    return {
+        'throughputRatioMedian': throughput_median,
+        # History stores Dekaf CPU / Confluent CPU; lower is better for Dekaf.
+        'cpuRatioMedian': median(cpu_ratios) if cpu_ratios else None,
+        'runCount': len(throughput_ratios),
+        'spread': (
+            (max(throughput_ratios) - min(throughput_ratios)) / throughput_median
+            if throughput_median > 0 else None
+        ),
+    }
+
+
+def _trend_confidence(trend):
+    if trend is None:
+        return '⚠ Single run'
+    label = (
+        '⚠ Noisy'
+        if trend['spread'] is None or trend['spread'] > DOCS_TREND_SPREAD_THRESHOLD
+        else 'Stable'
+    )
+    return f"{label} ({trend['runCount']} runs)"
+
+
+def _at_a_glance_row(scenario_key, scenario_results, trend=None):
     # Multi-connection control-group variants (e.g. "Dekaf (3conn)") group under
     # their own client name and are deliberately excluded from the headline
     # comparison; they remain in the full per-scenario tables.
@@ -1250,62 +1342,89 @@ def _at_a_glance_row(scenario_key, scenario_results):
     confluent = groups.get('confluent')
     confluent_rate = aggregate_client_rate(confluent['results']) if confluent else None
     if confluent_rate is None:
-        return f"| {label} | {dekaf_cell} | — | — | — |"
+        return f"| {label} | {dekaf_cell} | — | — | — | — |"
 
-    throughput = describe_throughput_ratio(dekaf_rate / confluent_rate)
-
-    cpu = '—'
-    dekaf_cpu = median_cpu_micros(dekaf['results'])
-    confluent_cpu = median_cpu_micros(confluent['results'])
-    if dekaf_cpu and confluent_cpu:
-        cpu = describe_cpu_ratio(confluent_cpu / dekaf_cpu)
+    if trend is not None:
+        throughput = describe_throughput_ratio(trend['throughputRatioMedian'])
+        cpu = (
+            describe_cpu_ratio(1 / trend['cpuRatioMedian'])
+            if trend['cpuRatioMedian'] else '—'
+        )
+    else:
+        throughput = describe_throughput_ratio(dekaf_rate / confluent_rate)
+        cpu = '—'
+        dekaf_cpu = median_cpu_micros(dekaf['results'])
+        confluent_cpu = median_cpu_micros(confluent['results'])
+        if dekaf_cpu and confluent_cpu:
+            cpu = describe_cpu_ratio(confluent_cpu / dekaf_cpu)
 
     return (
         f"| {label} | {dekaf_cell} | {confluent_rate:,.0f} msg/s | "
-        f"{throughput} | {cpu} |"
+        f"{throughput} | {cpu} | {_trend_confidence(trend)} |"
     )
 
 
-def format_at_a_glance(results):
+def format_at_a_glance(results, history=None):
     """Headline scenario-by-scenario Dekaf vs Confluent comparison table."""
+    history = history or []
     producer_scenarios, consumer_scenarios = group_by_scenario(results)
     rows = []
     for scenarios in (producer_scenarios, consumer_scenarios):
         for scenario_key in sorted(scenarios):
-            row = _at_a_glance_row(scenario_key, scenarios[scenario_key])
+            trend = scenario_trend(history, scenario_key)
+            row = _at_a_glance_row(scenario_key, scenarios[scenario_key], trend)
             if row is not None:
                 rows.append(row)
     if not rows:
         return []
 
-    return [
+    lines = [
         "## At a glance",
         "",
         "Each row is a like-for-like comparison: both clients run the same sustained "
         "workload sequentially on the same VM, and repeated samples are aggregated "
         "with a geometric mean across both run orders.",
         "",
-        "| Scenario | Dekaf | Confluent | Throughput | CPU per message |",
-        "|---|--:|--:|---|---|",
-        *rows,
-        "",
-        '*"On par" means within ±5% — differences that small are run-to-run noise. '
-        '"CPU per message" compares the client CPU cost of delivering one message; '
-        '"less" means Dekaf needs less CPU. Rows showing "—" have no Confluent '
-        'counterpart in this run (for example, batch and raw consume APIs that '
-        'librdkafka does not expose). The full per-run data is below.*',
-        "",
     ]
 
+    if history and history[-1].get('environmentShiftSuspected'):
+        lines.extend([
+            ":::caution",
+            "The trend gate flagged the latest run as environment-shifted (an unusually "
+            "slow or noisy runner affecting both clients). The msg/s columns come from "
+            "that run and may underestimate both clients; verdicts use the trailing "
+            "median across runs and are robust to it.",
+            ":::",
+            "",
+        ])
 
-def generate_docs_tables(results):
+    lines.extend([
+        "| Scenario | Dekaf | Confluent | Throughput | CPU per message | Confidence |",
+        "|---|--:|--:|---|---|---|",
+        *rows,
+        "",
+        f'*Dekaf and Confluent msg/s show the latest run; the Throughput and "CPU per '
+        f'message" verdicts use the median same-run ratio over the last '
+        f'{DOCS_TREND_WINDOW} weekly runs, so one unusual run cannot flip them. '
+        f'"On par" means within ±5% — differences that small are run-to-run noise. '
+        f'"Less" CPU means Dekaf needs less CPU to deliver one message. Confidence is '
+        f'"Stable" when the ratio spread across runs is within '
+        f'{DOCS_TREND_SPREAD_THRESHOLD:.0%}. Rows showing "—" have no Confluent '
+        f'counterpart (for example, batch and raw consume APIs that librdkafka does '
+        f'not expose). The full per-run data is below.*',
+        "",
+    ])
+    return lines
+
+
+def generate_docs_tables(results, history=None):
     """User-facing docs layout: at-a-glance verdicts with full tables collapsed.
 
     Engineering diagnostics (budget timelines, probe events, admission stalls,
     latency outliers) are deliberately omitted here — they live in the workflow
     run summary, which generate_scenario_tables continues to produce.
     """
-    output = format_at_a_glance(results)
+    output = format_at_a_glance(results, history)
 
     producer_scenarios, consumer_scenarios = group_by_scenario(results)
     sections = []
@@ -1386,7 +1505,7 @@ _METHODOLOGY_BULLETS = [
 ]
 
 
-def generate_docs_page(results, updated_at):
+def generate_docs_page(results, updated_at, history=None):
     """Render the complete docs/docs/stress-tests.md page."""
     output = [
         "---",
@@ -1408,7 +1527,7 @@ def generate_docs_page(results, updated_at):
     ]
 
     if results:
-        output.extend(generate_docs_tables(results))
+        output.extend(generate_docs_tables(results, history))
     else:
         output.extend([
             "## No Results Available",
@@ -1440,6 +1559,11 @@ def main():
         "--updated-at",
         default=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     )
+    parser.add_argument(
+        "--history",
+        default=None,
+        help="stress-history.json for trend-aware at-a-glance verdicts",
+    )
     args = parser.parse_args()
 
     # Only result envelopes; watchdog diagnostics are separate JSON artifacts.
@@ -1453,7 +1577,8 @@ def main():
         with open(latest_file) as f:
             results = results_with_run_metadata(json.load(f))
 
-    document = generate_docs_page(results, args.updated_at)
+    history = load_stress_history(args.history) if args.history else []
+    document = generate_docs_page(results, args.updated_at, history)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(document, encoding="utf-8")

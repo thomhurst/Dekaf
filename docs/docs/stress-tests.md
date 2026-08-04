@@ -18,22 +18,26 @@ Tests measure sustained performance over 15+ minutes with real Kafka instances.
 
 Each row is a like-for-like comparison: both clients run the same sustained workload sequentially on the same VM, and repeated samples are aggregated with a geometric mean across both run orders.
 
-| Scenario | Dekaf | Confluent | Throughput | CPU per message |
-|---|--:|--:|---|---|
-| Produce — fire-and-forget | 887,387 msg/s | 949,450 msg/s | 1.1× slower | 1.3× less |
-| Produce — fire-and-forget (3 brokers) | 1,008,520 msg/s | 738,121 msg/s | 1.4× faster | 1.6× less |
-| Produce — acks=all | 1,288,197 msg/s | 1,004,250 msg/s | 1.3× faster | 1.5× less |
-| Produce — acks=all (3 brokers) | 893,359 msg/s | 683,207 msg/s | 1.3× faster | 1.6× less |
-| Produce — fire-and-forget, idempotent | 1,391,493 msg/s | 1,089,585 msg/s | 1.3× faster | 1.6× less |
-| Produce — fire-and-forget, idempotent (3 brokers) | 852,018 msg/s | 611,482 msg/s | 1.4× faster | 1.7× less |
-| Produce + consume round-trip | 2,194,741 msg/s | 1,526,241 msg/s | 1.4× faster | 1.8× less |
-| Produce — transactional (exactly-once) (3 brokers) | 349 msg/s | 166 msg/s | 2.1× faster | 1.5× more |
-| Consume — messages | 1,551,981 msg/s | 1,159,116 msg/s | 1.3× faster | 1.4× less |
-| Consume — batches | 1,563,173 msg/s | — | — | — |
-| Consume — raw bytes | 3,451,174 msg/s | — | — | — |
-| Consume — raw byte batches | 3,966,343 msg/s | — | — | — |
+:::caution
+The trend gate flagged the latest run as environment-shifted (an unusually slow or noisy runner affecting both clients). The msg/s columns come from that run and may underestimate both clients; verdicts use the trailing median across runs and are robust to it.
+:::
 
-*"On par" means within ±5% — differences that small are run-to-run noise. "CPU per message" compares the client CPU cost of delivering one message; "less" means Dekaf needs less CPU. Rows showing "—" have no Confluent counterpart in this run (for example, batch and raw consume APIs that librdkafka does not expose). The full per-run data is below.*
+| Scenario | Dekaf | Confluent | Throughput | CPU per message | Confidence |
+|---|--:|--:|---|---|---|
+| Produce — fire-and-forget | 887,387 msg/s | 949,450 msg/s | 1.1× faster | 1.5× less | ⚠ Noisy (9 runs) |
+| Produce — fire-and-forget (3 brokers) | 1,008,520 msg/s | 738,121 msg/s | 1.3× faster | 1.6× less | ⚠ Noisy (9 runs) |
+| Produce — acks=all | 1,288,197 msg/s | 1,004,250 msg/s | 1.3× faster | 1.5× less | ⚠ Noisy (9 runs) |
+| Produce — acks=all (3 brokers) | 893,359 msg/s | 683,207 msg/s | 1.3× faster | 1.5× less | Stable (9 runs) |
+| Produce — fire-and-forget, idempotent | 1,391,493 msg/s | 1,089,585 msg/s | 1.1× faster | 1.4× less | ⚠ Noisy (9 runs) |
+| Produce — fire-and-forget, idempotent (3 brokers) | 852,018 msg/s | 611,482 msg/s | 1.3× faster | 1.6× less | ⚠ Noisy (9 runs) |
+| Produce + consume round-trip | 2,194,741 msg/s | 1,526,241 msg/s | 1.2× faster | 1.7× less | Stable (3 runs) |
+| Produce — transactional (exactly-once) (3 brokers) | 349 msg/s | 166 msg/s | 2.1× faster | 1.5× more | ⚠ Noisy (9 runs) |
+| Consume — messages | 1,551,981 msg/s | 1,159,116 msg/s | 1.3× faster | 1.5× less | Stable (8 runs) |
+| Consume — batches | 1,563,173 msg/s | — | — | — | — |
+| Consume — raw bytes | 3,451,174 msg/s | — | — | — | — |
+| Consume — raw byte batches | 3,966,343 msg/s | — | — | — | — |
+
+*Dekaf and Confluent msg/s show the latest run; the Throughput and "CPU per message" verdicts use the median same-run ratio over the last 10 weekly runs, so one unusual run cannot flip them. "On par" means within ±5% — differences that small are run-to-run noise. "Less" CPU means Dekaf needs less CPU to deliver one message. Confidence is "Stable" when the ratio spread across runs is within 30%. Rows showing "—" have no Confluent counterpart (for example, batch and raw consume APIs that librdkafka does not expose). The full per-run data is below.*
 
 ## Full results
 

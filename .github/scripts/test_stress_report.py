@@ -13,6 +13,7 @@ from stress_report import (
     generate_docs_page,
     generate_docs_tables,
     generate_scenario_tables,
+    scenario_trend,
     intra_run_throughput,
     paired_latency_thresholds,
     results_with_run_metadata,
@@ -646,7 +647,7 @@ class StressReportTests(unittest.TestCase):
 
         self.assertIn("## At a glance", report)
         self.assertIn(
-            "| Produce — fire-and-forget | 1,400 msg/s | 1,000 msg/s | 1.4× faster | 2.0× less |",
+            "| Produce — fire-and-forget | 1,400 msg/s | 1,000 msg/s | 1.4× faster | 2.0× less | ⚠ Single run |",
             report,
         )
 
@@ -676,7 +677,7 @@ class StressReportTests(unittest.TestCase):
 
         report = "\n".join(format_at_a_glance([dekaf]))
 
-        self.assertIn("| Produce — fire-and-forget | 1,400 msg/s | — | — | — |", report)
+        self.assertIn("| Produce — fire-and-forget | 1,400 msg/s | — | — | — | — |", report)
 
     def test_docs_tables_collapse_full_results_and_omit_diagnostics(self):
         results = self.paired_scenario_results()
@@ -784,6 +785,71 @@ class StressReportTests(unittest.TestCase):
 
         self.assertIn("## No Results Available", page)
         self.assertIn("<summary>Methodology — how these numbers are produced</summary>", page)
+
+    @staticmethod
+    def history_run(throughput_ratio, cpu_ratio=None, env_shift=False):
+        return {
+            "runStartedAtUtc": "2026-08-04T16:16:20Z",
+            "environmentShiftSuspected": env_shift,
+            "results": [{
+                "scenario": "producer",
+                "brokerCount": 1,
+                "client": "Dekaf",
+                "messagesPerSecondControlRatio": throughput_ratio,
+                "cpuMicrosPerMessageControlRatio": cpu_ratio,
+            }],
+        }
+
+    def test_at_a_glance_verdicts_use_trailing_median_not_latest_run(self):
+        # Latest run reads 0.93x (environment-shifted), but the trailing median
+        # says Dekaf is faster — the verdict must come from the median.
+        history = [
+            self.history_run(1.20, cpu_ratio=0.70),
+            self.history_run(1.15, cpu_ratio=0.72),
+            self.history_run(0.93, cpu_ratio=0.77, env_shift=True),
+        ]
+        results = self.paired_scenario_results()
+        results[0]["medianIntervalMessagesPerSecond"] = 930
+        results[1]["medianIntervalMessagesPerSecond"] = 1000
+
+        report = "\n".join(format_at_a_glance(results, history))
+
+        self.assertIn("| 1.1× faster | 1.4× less | Stable (3 runs) |", report)
+        self.assertIn(":::caution", report)
+        self.assertIn("environment-shifted", report)
+
+    def test_at_a_glance_flags_noisy_trend_and_skips_caution_when_clean(self):
+        history = [
+            self.history_run(0.80),
+            self.history_run(1.60),
+            self.history_run(1.10),
+        ]
+
+        report = "\n".join(format_at_a_glance(self.paired_scenario_results(), history))
+
+        self.assertIn("⚠ Noisy (3 runs)", report)
+        self.assertNotIn(":::caution", report)
+
+    def test_scenario_trend_ignores_ratios_from_before_a_measurement_step(self):
+        # Round-trip lane rework changed the ratio basis mid-history (7-10x ->
+        # ~1.1-1.4x); the verdict must come from the current regime only.
+        history = [
+            self.history_run(7.31),
+            self.history_run(9.96),
+            self.history_run(1.12),
+            self.history_run(1.15),
+            self.history_run(1.44),
+        ]
+
+        trend = scenario_trend(history, ("producer", 1))
+
+        self.assertEqual(3, trend["runCount"])
+        self.assertAlmostEqual(1.15, trend["throughputRatioMedian"])
+
+    def test_scenario_trend_requires_two_matching_runs(self):
+        self.assertIsNone(scenario_trend([self.history_run(1.2)], ("producer", 1)))
+        self.assertIsNone(scenario_trend(
+            [self.history_run(1.2), self.history_run(1.1)], ("producer", 3)))
 
 
 if __name__ == "__main__":

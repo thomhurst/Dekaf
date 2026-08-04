@@ -822,7 +822,7 @@ jobs:
 
       - name: Generate Stress Test Documentation
         run: |
-          python3 .github/scripts/stress_report.py --results-dir results --output docs/docs/stress-tests.md
+          python3 .github/scripts/stress_report.py --results-dir results --output docs/docs/stress-tests.md --history .github/stress-history.json
 
       - name: Create Pull Request
         id: create-pr
