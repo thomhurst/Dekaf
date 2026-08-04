@@ -10,7 +10,7 @@ on:
         required: false
         default: '60'
       messages_per_second:
-        description: 'Target mixed-load message rate'
+        description: 'Target mixed-load message rate (use run_unbounded for max-rate)'
         required: false
         default: '1000'
       warmup_minutes:
@@ -21,6 +21,11 @@ on:
         description: 'Minimum post-warmup samples (one sample per minute)'
         required: false
         default: '30'
+      run_unbounded:
+        description: 'Also run the unbounded max-rate soak jobs'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: soak-tests
@@ -98,6 +103,86 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: soak-results-${{ matrix.brokers }}brokers-segment-${{ matrix.segment }}
+          path: tools/Dekaf.StressTests/results/
+          if-no-files-found: warn
+          retention-days: 90
+
+  soak-test-unbounded:
+    name: Unbounded Soak (${{ matrix.brokers }} broker${{ matrix.brokers == 1 && '' || 's' }})
+    # The paced segments isolate time-proportional effects at a deterministic rate;
+    # this lane produces as fast as admission control allows so per-message leak
+    # classes, sustained BufferMemory backpressure, and late-run throughput decay
+    # get long-duration coverage too. One segment per topology: 4h48m is already
+    # the longest continuous window the six-hour public runner permits.
+    if: github.event_name == 'schedule' || inputs.run_unbounded
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        brokers: [1, 3]
+    env:
+      # Unbounded ingest pushes each broker at the full client byte rate. Byte-bounded
+      # retention caps steady-state data (64 MB x 6 partitions per broker) but the
+      # 500ms sweep interval allows rate-proportional overshoot, so the tmpfs needs
+      # headroom beyond the paced lane's 2g; the paced 768m heap starves the broker
+      # request path at max throughput. Three 1g-heap brokers plus tmpfs still fit
+      # the 16 GB public runner alongside the client process.
+      STRESS_BROKER_TMPFS: 3g
+      STRESS_BROKER_HEAP: -Xmx1g -Xms1g
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build Soak Runner
+        run: dotnet build tools/Dekaf.StressTests --configuration Release
+
+      - name: Run Unbounded Soak
+        env:
+          SOAK_DURATION_MINUTES: ${{ github.event_name == 'schedule' && '288' || inputs.duration_minutes }}
+          SOAK_WARMUP_MINUTES: ${{ github.event_name == 'schedule' && '30' || inputs.warmup_minutes }}
+          SOAK_MINIMUM_SAMPLES: ${{ inputs.minimum_samples || '30' }}
+        run: |
+          mkdir -p tools/Dekaf.StressTests/results
+          echo "Duration: ${SOAK_DURATION_MINUTES} minutes"
+          echo "Target rate: unbounded"
+          echo "Brokers: ${{ matrix.brokers }}"
+
+          # Trend gates run twice as wide as the paced lane's: max-rate runs carry
+          # allocator and noisy-neighbor variance a fixed 1000 msg/s lane never sees.
+          # Tighten once scheduled history establishes the real bands.
+          dotnet run \
+            --project tools/Dekaf.StressTests \
+            --configuration Release \
+            --no-build -- \
+            --duration "${SOAK_DURATION_MINUTES}" \
+            --message-size 1000 \
+            --scenario soak \
+            --client dekaf \
+            --brokers ${{ matrix.brokers }} \
+            --connections-per-broker 1 \
+            --soak-messages-per-second 0 \
+            --resource-sample-seconds 60 \
+            --soak-warmup-minutes "${SOAK_WARMUP_MINUTES}" \
+            --soak-minimum-samples "${SOAK_MINIMUM_SAMPLES}" \
+            --max-working-set-slope-mib-per-hour 16 \
+            --max-gc-heap-slope-mib-per-hour 8 \
+            --max-loh-slope-mib-per-hour 8 \
+            --max-throughput-decay-percent-per-hour 10 \
+            --producer-delivery-diagnostics \
+            --output tools/Dekaf.StressTests/results/unbounded
+
+      - name: Upload Soak Results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soak-results-unbounded-${{ matrix.brokers }}brokers
           path: tools/Dekaf.StressTests/results/
           if-no-files-found: warn
           retention-days: 90

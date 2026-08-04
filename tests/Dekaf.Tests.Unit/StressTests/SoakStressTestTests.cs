@@ -13,8 +13,7 @@ public sealed class SoakStressTestTests
     [Test]
     public async Task TrackMeasurementProgress_StallCapturesSoakProducerDiagnostics()
     {
-        var outputDirectory = Path.Combine(Path.GetTempPath(), $"dekaf-soak-watchdog-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(outputDirectory);
+        var outputDirectory = CreateOutputDirectory();
 
         try
         {
@@ -56,8 +55,7 @@ public sealed class SoakStressTestTests
     [Test]
     public async Task TrackConsumerMeasurementProgress_StallCapturesConsumerDiagnostics()
     {
-        var outputDirectory = Path.Combine(Path.GetTempPath(), $"dekaf-soak-consumer-watchdog-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(outputDirectory);
+        var outputDirectory = CreateOutputDirectory();
 
         try
         {
@@ -158,5 +156,125 @@ public sealed class SoakStressTestTests
 
         await Assert.That(result).IsEqualTo(expected);
     }
+
+    [Test]
+    [Arguments(0, true)]
+    [Arguments(1, false)]
+    [Arguments(5_000, false)]
+    public async Task SoakUnbounded_IsTrueOnlyForZeroTargetRate(int messagesPerSecond, bool expected)
+    {
+        var outputDirectory = CreateOutputDirectory();
+
+        try
+        {
+            using var watchdog = new ProgressWatchdog(outputDirectory);
+            var options = CreateOptions(watchdog, messagesPerSecond);
+
+            await Assert.That(options.SoakUnbounded).IsEqualTo(expected);
+        }
+        finally
+        {
+            Directory.Delete(outputDirectory, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task RunUnboundedProducerAsync_ProducesUntilCancelled()
+    {
+        var outputDirectory = CreateOutputDirectory();
+
+        try
+        {
+            using var watchdog = new ProgressWatchdog(outputDirectory);
+            var options = CreateOptions(watchdog, messagesPerSecond: 0);
+            var throughput = new ThroughputTracker();
+            throughput.Start();
+
+            using var cts = new CancellationTokenSource();
+            var calls = 0;
+            var producer = Substitute.For<IKafkaProducer<string, string>>();
+            producer.FireAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
+                .Returns(_ =>
+                {
+                    if (Interlocked.Increment(ref calls) >= 5)
+                    {
+                        cts.Cancel();
+                    }
+
+                    return ValueTask.CompletedTask;
+                });
+
+            await SoakStressTest.RunUnboundedProducerAsync(producer, options, "value", throughput, cts.Token);
+
+            var snapshot = throughput.GetSnapshot();
+            await Assert.That(throughput.MessageCount).IsEqualTo(5);
+            await Assert.That(snapshot.TotalErrors).IsEqualTo(0);
+        }
+        finally
+        {
+            Directory.Delete(outputDirectory, recursive: true);
+        }
+    }
+
+    [Test]
+    public async Task RunUnboundedProducerAsync_RecordsProduceFailuresAndContinues()
+    {
+        var outputDirectory = CreateOutputDirectory();
+
+        try
+        {
+            using var watchdog = new ProgressWatchdog(outputDirectory);
+            var options = CreateOptions(watchdog, messagesPerSecond: 0);
+            var throughput = new ThroughputTracker();
+            throughput.Start();
+
+            using var cts = new CancellationTokenSource();
+            var calls = 0;
+            var producer = Substitute.For<IKafkaProducer<string, string>>();
+            producer.FireAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
+                .Returns(_ =>
+                {
+                    var call = Interlocked.Increment(ref calls);
+                    if (call == 1)
+                    {
+                        throw new InvalidOperationException("transient produce failure");
+                    }
+
+                    if (call >= 3)
+                    {
+                        cts.Cancel();
+                    }
+
+                    return ValueTask.CompletedTask;
+                });
+
+            await SoakStressTest.RunUnboundedProducerAsync(producer, options, "value", throughput, cts.Token);
+
+            var snapshot = throughput.GetSnapshot();
+            await Assert.That(throughput.MessageCount).IsEqualTo(2);
+            await Assert.That(snapshot.TotalErrors).IsEqualTo(1);
+        }
+        finally
+        {
+            Directory.Delete(outputDirectory, recursive: true);
+        }
+    }
+
+    private static string CreateOutputDirectory()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"dekaf-soak-tests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static StressTestOptions CreateOptions(ProgressWatchdog watchdog, int messagesPerSecond) => new()
+    {
+        BootstrapServers = "localhost:9092",
+        Topic = "soak-topic",
+        DurationMinutes = 1,
+        MessageSizeBytes = 100,
+        ProgressWatchdog = watchdog,
+        SoakMessagesPerSecond = messagesPerSecond
+    };
 }
 #endif
