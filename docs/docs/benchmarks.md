@@ -27,7 +27,7 @@ Each scenario is the median Dekaf-vs-Confluent result over the last 5 CI runs (b
 <details>
 <summary>Cross-run comparison — last 5 runs, per parameter set</summary>
 
-Each ratio pairs Dekaf and Confluent means from the same runner, then reports the median across recent comparable runs. Lower is better; `< 1.0` means Dekaf is faster.
+Each ratio pairs Dekaf and Confluent per-run values from the same runner, then reports the median across recent comparable runs. Lower is better; `< 1.0` means Dekaf is faster.
 
 Rows with run spread above 30% are marked low-confidence. Run spread is `(maximum ratio - minimum ratio) / median ratio`.
 
