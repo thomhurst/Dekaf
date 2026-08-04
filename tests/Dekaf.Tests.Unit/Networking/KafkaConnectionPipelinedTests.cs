@@ -234,7 +234,7 @@ public sealed class KafkaConnectionPipelinedTests
     }
 
     [Test]
-    public async Task ReceiveTimeoutRefresh_StaleZeroRefresh_DoesNotDisarmLivePendingRequest()
+    public async Task ReceiveTimeout_StaleCallbackAfterRemoveAddCycle_DoesNotExpireLivePendingRequest()
     {
         var connection = new KafkaConnection(
             "localhost",
@@ -254,9 +254,13 @@ public sealed class KafkaConnectionPipelinedTests
         AddPendingRequest(connection, correlationId: 2, second);
         await Assert.That(GetPrivateField<int>(connection, "_pendingRequestCount")).IsEqualTo(1);
 
-        InvokeStaleZeroOrFreshReceiveTimeoutRefresh(connection);
+        // A timer callback racing the remove/add cycle must re-evaluate the stamped
+        // deadline (an hour out), stay armed, and leave the live request untouched.
+        InvokeReceiveTimeout(connection);
 
         await Assert.That(GetPrivateField<long>(connection, "_receiveTimeoutDeadlineTimestamp")).IsNotEqualTo(0);
+        await Assert.That(GetPrivateField<int>(connection, "_receiveTimeoutExpired")).IsEqualTo(0);
+        await Assert.That(GetPrivateField<int>(connection, "_receiveTimeoutArmed")).IsEqualTo(1);
         await Assert.That(TryRemovePendingRequest(connection, correlationId: 2)).IsTrue();
         await connection.DisposeAsync();
     }
@@ -452,29 +456,6 @@ public sealed class KafkaConnectionPipelinedTests
         var method = typeof(KafkaConnection).GetMethod(
             "OnReceiveTimeout",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
-        method.Invoke(connection, []);
-    }
-
-    private static void InvokeStaleZeroOrFreshReceiveTimeoutRefresh(KafkaConnection connection)
-    {
-        var staleOverload = typeof(KafkaConnection).GetMethod(
-            "RefreshReceiveTimeout",
-            BindingFlags.NonPublic | BindingFlags.Instance,
-            binder: null,
-            types: [typeof(int)],
-            modifiers: null);
-        if (staleOverload is not null)
-        {
-            staleOverload.Invoke(connection, [0]);
-            return;
-        }
-
-        var method = typeof(KafkaConnection).GetMethod(
-            "RefreshReceiveTimeout",
-            BindingFlags.NonPublic | BindingFlags.Instance,
-            binder: null,
-            types: [],
-            modifiers: null)!;
         method.Invoke(connection, []);
     }
 

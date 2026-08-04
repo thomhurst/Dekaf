@@ -874,15 +874,37 @@ public sealed class KafkaConnectionTests
             });
             await Assert.That(thrown!.CancellationToken).IsEqualTo(callerCancellation.Token);
 
-            // Completion of the cancelled send synchronously removes its pending request and
-            // disarms the receive timeout. Invoke a late timer callback directly instead of
-            // racing caller cancellation against a one-second wall-clock timeout.
+            // Completion of the cancelled send synchronously removes its pending request.
+            // The response path no longer touches the timer, so the stamped deadline
+            // survives; a late timer callback must observe zero pending requests, go
+            // dormant without expiring, and leave the connection alive.
             await Assert.That(GetPrivateField<int>(connection, "_pendingRequestCount")).IsEqualTo(0);
-            await Assert.That(GetPrivateField<long>(connection, "_receiveTimeoutDeadlineTimestamp")).IsEqualTo(0);
             InvokeReceiveTimeout(connection);
 
             await Assert.That(GetPrivateField<int>(connection, "_receiveTimeoutExpired")).IsEqualTo(0);
+            await Assert.That(GetPrivateField<int>(connection, "_receiveTimeoutArmed")).IsEqualTo(0);
             await Assert.That(connection.IsConnected).IsTrue();
+
+            // A send after the timer went dormant must re-arm it, and a firing with the
+            // deadline still in the future must keep it armed without expiring.
+            using var secondCancellation = new CancellationTokenSource();
+            var secondSend = connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
+                new ApiVersionsRequest { ClientSoftwareName = "test", ClientSoftwareVersion = "1.0" },
+                apiVersion: 3,
+                secondCancellation.Token).AsTask();
+            await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+
+            await Assert.That(GetPrivateField<int>(connection, "_receiveTimeoutArmed")).IsEqualTo(1);
+            InvokeReceiveTimeout(connection);
+            await Assert.That(GetPrivateField<int>(connection, "_receiveTimeoutExpired")).IsEqualTo(0);
+            await Assert.That(GetPrivateField<int>(connection, "_receiveTimeoutArmed")).IsEqualTo(1);
+            await Assert.That(connection.IsConnected).IsTrue();
+
+            await secondCancellation.CancelAsync();
+            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            {
+                await secondSend.ConfigureAwait(false);
+            });
             await connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
         }
         finally
