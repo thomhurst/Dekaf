@@ -124,7 +124,9 @@ public static class Program
         Console.WriteLine($"Brokers: {options.Brokers}");
         if (options.Scenario.Equals("soak", StringComparison.OrdinalIgnoreCase))
         {
-            Console.WriteLine($"Soak target rate: {options.SoakMessagesPerSecond:N0} msg/s");
+            Console.WriteLine(options.SoakUnbounded
+                ? "Soak target rate: unbounded"
+                : $"Soak target rate: {options.SoakMessagesPerSecond:N0} msg/s");
             Console.WriteLine($"Resource sample interval: {options.ResourceSampleIntervalSeconds:N0} seconds");
         }
         Console.WriteLine($"Producer delivery diagnostics: {(options.EnableProducerDeliveryDiagnostics ? "enabled" : "disabled")}");
@@ -991,7 +993,7 @@ public static class Program
                     options.MessagesAfterFault = ParsePositiveInt(args[++i], "--messages-after-fault");
                     break;
                 case "--soak-messages-per-second":
-                    options.SoakMessagesPerSecond = ParsePositiveInt(args[++i], arg);
+                    options.SoakMessagesPerSecond = ParseNonNegativeInt(args[++i], arg);
                     break;
                 case "--resource-sample-seconds":
                     options.ResourceSampleIntervalSeconds = ParsePositiveDouble(args[++i], arg);
@@ -1040,6 +1042,17 @@ public static class Program
         return parsed;
     }
 
+    private static int ParseNonNegativeInt(string value, string optionName)
+    {
+        var parsed = int.Parse(value, CultureInfo.InvariantCulture);
+        if (parsed < 0)
+        {
+            throw new ArgumentException($"{optionName} must be at least 0");
+        }
+
+        return parsed;
+    }
+
     private static double ParsePositiveDouble(string value, string option)
     {
         var parsed = double.Parse(value, CultureInfo.InvariantCulture);
@@ -1079,7 +1092,7 @@ public static class Program
               --seed-messages <count> Messages pre-seeded into the consumer topic (default: 2000000)
               --producer-delivery-diagnostics  Capture Dekaf producer delivery diagnostics on message loss and watchdog stalls
               --consumer-fetch-diagnostics  Capture Dekaf consumer fetch diagnostics (debug runs only; adds Dekaf-only overhead)
-              --soak-messages-per-second <n>   Mixed soak target rate (default: 5000)
+              --soak-messages-per-second <n>   Mixed soak target rate; 0 = unbounded (default: 5000)
               --resource-sample-seconds <n>    Soak resource sample interval (default: 60)
               --soak-warmup-minutes <n>        Samples excluded before trend analysis (default: 60)
               --soak-minimum-samples <n>       Minimum post-warmup trend samples (default: 30)
@@ -1143,6 +1156,7 @@ public static class Program
         public int MessagesAfterFault { get; set; } = 2_000;
         public HashSet<string> AllowedFailureWindows { get; } = new(StringComparer.OrdinalIgnoreCase);
         public int SoakMessagesPerSecond { get; set; } = 5_000;
+        public bool SoakUnbounded => SoakMessagesPerSecond == 0;
         public double ResourceSampleIntervalSeconds { get; set; } = 60;
         public double SoakWarmupMinutes { get; set; } = 60;
         public int SoakMinimumSamples { get; set; } = 30;

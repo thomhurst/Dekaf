@@ -105,7 +105,7 @@ internal sealed class SoakStressTest : IStressTestScenario
             var startedAt = DateTime.UtcNow;
             Console.WriteLine(
                 $"  Running mixed Dekaf soak for {options.DurationMinutes:N0} minutes at " +
-                $"{options.SoakMessagesPerSecond:N0} msg/s...");
+                (options.SoakUnbounded ? "unbounded rate..." : $"{options.SoakMessagesPerSecond:N0} msg/s..."));
             Console.WriteLine(
                 $"  Resource samples every {options.ResourceSampleIntervalSeconds:N0}s; " +
                 $"trend warmup {options.ResourceTrendThresholds.WarmupMinutes:N0}m");
@@ -127,12 +127,10 @@ internal sealed class SoakStressTest : IStressTestScenario
                        consumerThroughput,
                        () => StressTestHelpers.CaptureConsumerDiagnostics(consumer)))
             {
-                await RunPacedProducerAsync(
-                    producer,
-                    options,
-                    messageValue,
-                    throughput,
-                    measurementCts.Token).ConfigureAwait(false);
+                await (options.SoakUnbounded
+                    ? RunUnboundedProducerAsync(producer, options, messageValue, throughput, measurementCts.Token)
+                    : RunPacedProducerAsync(producer, options, messageValue, throughput, measurementCts.Token))
+                    .ConfigureAwait(false);
             }
 
             try
@@ -152,7 +150,7 @@ internal sealed class SoakStressTest : IStressTestScenario
 
             var acceptedMessages = throughput.MessageCount;
             var acceptedRate = throughput.GetAverageMessagesPerSecond();
-            if (!MeetsMinimumPacingRate(acceptedRate, options.SoakMessagesPerSecond))
+            if (!options.SoakUnbounded && !MeetsMinimumPacingRate(acceptedRate, options.SoakMessagesPerSecond))
             {
                 var minimumRate = options.SoakMessagesPerSecond * MinimumPacingRateRatio;
                 throughput.RecordError(
@@ -187,14 +185,32 @@ internal sealed class SoakStressTest : IStressTestScenario
                     "Broker delivery verification");
             }
 
-            await WaitForConsumerCatchUpAsync(
-                () => Interlocked.Read(ref consumedMessages),
-                deliveredMessages,
-                consumerTask,
-                cancellationToken).ConfigureAwait(false);
+            if (!options.SoakUnbounded)
+            {
+                await WaitForConsumerCatchUpAsync(
+                    () => Interlocked.Read(ref consumedMessages),
+                    deliveredMessages,
+                    consumerTask,
+                    cancellationToken).ConfigureAwait(false);
+            }
 
             var finalConsumedMessages = Interlocked.Read(ref consumedMessages);
-            if (finalConsumedMessages != deliveredMessages)
+            if (options.SoakUnbounded)
+            {
+                // The unbounded producer outruns both the consumer and broker byte-bounded
+                // retention, so the consumer legitimately skips ahead through OffsetOutOfRange
+                // resets and can never account for every delivered offset. Completeness is
+                // replaced by the consumed-throughput decay gate in the resource trend plus
+                // this zero-progress check.
+                if (finalConsumedMessages == 0)
+                {
+                    throughput.RecordError(
+                        "ConsumerStalled",
+                        $"Unbounded soak consumed no messages while the broker accepted {deliveredMessages:N0}.",
+                        "Consumer progress verification");
+                }
+            }
+            else if (finalConsumedMessages != deliveredMessages)
             {
                 throughput.RecordError(
                     "ConsumerCountMismatch",
@@ -301,6 +317,43 @@ internal sealed class SoakStressTest : IStressTestScenario
         {
             warmupSeen.TrySetException(ex);
             throughput.RecordError(ex, "Mixed soak consume loop");
+        }
+    }
+
+    internal static async Task RunUnboundedProducerAsync(
+        IKafkaProducer<string, string> producer,
+        StressTestOptions options,
+        string value,
+        ThroughputTracker throughput,
+        CancellationToken cancellationToken)
+    {
+        var messageIndex = 0L;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await producer.FireAsync(
+                    options.Topic,
+                    StressTestHelpers.GetKey(messageIndex),
+                    value).ConfigureAwait(false);
+                throughput.RecordMessage(options.MessageSizeBytes);
+                messageIndex++;
+
+                // Yield periodically so the sampler, trend monitor, and consumer are
+                // never starved by an uninterrupted synchronous FireAsync fast path.
+                if (messageIndex % 100_000 == 0)
+                {
+                    await Task.Yield();
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                throughput.RecordError(ex, "Unbounded soak produce loop", messageIndex);
+            }
         }
     }
 

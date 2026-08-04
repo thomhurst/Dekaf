@@ -51,7 +51,14 @@ internal sealed class StressTestOptions
     /// </summary>
     public bool EnableConsumerFetchDiagnostics { get; init; }
     public required ProgressWatchdog ProgressWatchdog { get; init; }
+    /// <summary>
+    /// Target mixed-soak produce rate. 0 disables pacing entirely: the producer runs
+    /// as fast as admission control allows so long soaks exercise the sustained
+    /// backpressure and max-throughput regime instead of a fixed rate.
+    /// </summary>
     public int SoakMessagesPerSecond { get; init; } = 5_000;
+
+    public bool SoakUnbounded => SoakMessagesPerSecond == 0;
     public double ResourceSampleIntervalSeconds { get; init; } = 60;
     public ResourceTrendThresholds ResourceTrendThresholds { get; init; } = new()
     {
