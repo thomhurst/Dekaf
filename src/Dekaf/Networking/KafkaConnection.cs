@@ -151,6 +151,7 @@ public sealed partial class KafkaConnection :
     private Timer? _receiveTimeoutTimer;
     private long _receiveTimeoutDeadlineTimestamp;
     private int _receiveTimeoutExpired;
+    private int _receiveTimeoutArmed;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
     private readonly object _disposeGate = new();
     private Task? _disposeTask;
@@ -2458,7 +2459,7 @@ public sealed partial class KafkaConnection :
         }
 
         Interlocked.Increment(ref _pendingRequestCount);
-        RefreshReceiveTimeout();
+        StampReceiveTimeoutDeadline();
     }
 
     private bool TryGetPendingRequest(int correlationId, out PendingRequestEntry entry)
@@ -2487,8 +2488,8 @@ public sealed partial class KafkaConnection :
             if (remaining == 0 && Volatile.Read(ref _disposed) != 0)
                 Volatile.Read(ref _pendingRequestsDrained)?.TrySetResult();
 
-            RefreshReceiveTimeout();
-
+            // No timer work on the response path: the armed timer evaluates the
+            // stamped deadline when it fires and goes dormant if nothing is pending.
             ReleasePendingRequestSlot();
         }
 
@@ -2555,30 +2556,39 @@ public sealed partial class KafkaConnection :
         public void Dispose() => connection.EndTrackedOperation();
     }
 
-    private void RefreshReceiveTimeout()
+    /// <summary>
+    /// Extends the receive-timeout deadline for a newly pending request. The deadline is a
+    /// plain stamp — the timer is only armed when it was dormant, so steady traffic costs
+    /// two volatile writes per request instead of a lock plus <see cref="Timer.Change(TimeSpan, TimeSpan)"/>
+    /// on every send and response (worst-case TimerQueue churn at in-flight depth ≤ 1).
+    /// When the timer fires early it re-arms for the stamped remainder (see
+    /// <see cref="OnReceiveTimeout"/>), so the deadline stays authoritative.
+    /// </summary>
+    private void StampReceiveTimeoutDeadline()
+    {
+        Volatile.Write(ref _receiveTimeoutExpired, 0);
+        Volatile.Write(ref _receiveTimeoutDeadlineTimestamp, GetReceiveTimeoutDeadlineTimestamp());
+
+        // Full fence: pairs with the dormant handoff in OnReceiveTimeout so either this
+        // CAS arms the timer or the callback observes the deadline stamped above.
+        if (Interlocked.CompareExchange(ref _receiveTimeoutArmed, 1, 0) == 0)
+            ArmReceiveTimeoutTimer(_options.RequestTimeout);
+    }
+
+    private void ArmReceiveTimeoutTimer(TimeSpan dueTime)
     {
         lock (_receiveTimeoutGate)
         {
-            if (GetPendingRequestCount() == 0)
-                DisarmReceiveTimeout();
-            else
-                ArmReceiveTimeout();
-        }
-    }
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
 
-    private void ArmReceiveTimeout()
-    {
-        if (Volatile.Read(ref _disposed) != 0)
-            return;
-
-        Volatile.Write(ref _receiveTimeoutExpired, 0);
-        Volatile.Write(ref _receiveTimeoutDeadlineTimestamp, GetReceiveTimeoutDeadlineTimestamp());
-        try
-        {
-            GetOrCreateReceiveTimeoutTimer().Change(_options.RequestTimeout, Timeout.InfiniteTimeSpan);
-        }
-        catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
-        {
+            try
+            {
+                GetOrCreateReceiveTimeoutTimer().Change(dueTime, Timeout.InfiniteTimeSpan);
+            }
+            catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
+            {
+            }
         }
     }
 
@@ -2617,31 +2627,48 @@ public sealed partial class KafkaConnection :
 
     private void OnReceiveTimeout()
     {
-        if (Volatile.Read(ref _disposed) != 0 || !HasPendingRequests())
-            return;
-
-        var deadlineTimestamp = Volatile.Read(ref _receiveTimeoutDeadlineTimestamp);
-        if (deadlineTimestamp == 0)
-            return;
-
-        var remainingTimestamp = deadlineTimestamp - Stopwatch.GetTimestamp();
-        if (remainingTimestamp > 0)
+        while (true)
         {
-            // Byte progress moved the deadline forward since the timer was armed
-            // (OnReceiveLoopBytesRead only stamps the deadline) — sleep out the remainder.
-            RearmReceiveTimeoutForRemainder(remainingTimestamp);
-            return;
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
+            var deadlineTimestamp = Volatile.Read(ref _receiveTimeoutDeadlineTimestamp);
+            if (HasPendingRequests() && deadlineTimestamp != 0)
+            {
+                var remainingTimestamp = deadlineTimestamp - Stopwatch.GetTimestamp();
+                if (remainingTimestamp > 0)
+                {
+                    // New sends and byte progress only stamp the deadline forward
+                    // (StampReceiveTimeoutDeadline / OnReceiveLoopBytesRead) — sleep out
+                    // the remainder; the timer stays armed.
+                    RearmReceiveTimeoutForRemainder(remainingTimestamp);
+                    return;
+                }
+
+                Volatile.Write(ref _receiveTimeoutExpired, 1);
+
+                // Reads are not cancellable — aborting the source is how the timer interrupts an
+                // in-flight read (see ResponseFrameReader.Abort). The receive loop observes the
+                // faulted read together with the expired flag and tears the connection down.
+                // The pending-request check above keeps a drained connection alive; the remaining
+                // race window (last request completing between that check and the abort) at worst
+                // tears down a connection the pool would replace anyway.
+                _frameReader?.Abort();
+                return;
+            }
+
+            // Nothing pending: go dormant instead of rescheduling. The full-fence
+            // exchange pairs with StampReceiveTimeoutDeadline's CAS — either a
+            // concurrent send's CAS re-arms the timer after this release, or the
+            // re-check below observes its stamped deadline and this callback
+            // reclaims the armed slot and loops to evaluate it.
+            Interlocked.Exchange(ref _receiveTimeoutArmed, 0);
+            if (!HasPendingRequests() || Volatile.Read(ref _receiveTimeoutDeadlineTimestamp) == 0)
+                return;
+
+            if (Interlocked.CompareExchange(ref _receiveTimeoutArmed, 1, 0) != 0)
+                return;
         }
-
-        Volatile.Write(ref _receiveTimeoutExpired, 1);
-
-        // Reads are not cancellable — aborting the source is how the timer interrupts an
-        // in-flight read (see ResponseFrameReader.Abort). The receive loop observes the
-        // faulted read together with the expired flag and tears the connection down.
-        // The pending-request check above keeps a drained connection alive; the remaining
-        // race window (last request completing between that check and the abort) at worst
-        // tears down a connection the pool would replace anyway.
-        _frameReader?.Abort();
     }
 
     private void RearmReceiveTimeoutForRemainder(long remainingTimestamp)
