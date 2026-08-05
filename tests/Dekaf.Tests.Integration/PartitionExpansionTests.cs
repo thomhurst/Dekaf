@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
@@ -19,27 +20,6 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithClientId("test-admin-client")
             .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
-    }
-
-    /// <summary>
-    /// Waits for a condition to become true with exponential backoff.
-    /// Kafka operations have eventual consistency - changes may not be immediately visible.
-    /// </summary>
-    private static async Task<T> WaitForConditionAsync<T>(
-        Func<Task<T>> check,
-        Func<T, bool> condition,
-        int maxRetries = 5,
-        int initialDelayMs = 500)
-    {
-        T result = default!;
-        for (var i = 0; i < maxRetries; i++)
-        {
-            await Task.Delay(initialDelayMs * (i + 1)).ConfigureAwait(false);
-            result = await check().ConfigureAwait(false);
-            if (condition(result))
-                return result;
-        }
-        return result;
     }
 
     /// <summary>
@@ -480,12 +460,15 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             Partition = 2
         }, CancellationToken.None).ConfigureAwait(false);
 
-        // Wait briefly for any potential auto-detection
-        await WaitForConditionAsync(
-            () => Task.FromResult(consumer.Assignment.Count),
-            count => count > 2,
-            maxRetries: 3,
-            initialDelayMs: 500).ConfigureAwait(false);
+        // Observation window: give auto-detection a chance to (wrongly) occur. This is a
+        // negative check — the assignment must NOT grow, even transiently — so poll the
+        // invariant throughout the window rather than sampling it once at the end.
+        var observationStart = Stopwatch.GetTimestamp();
+        while (Stopwatch.GetElapsedTime(observationStart) < TimeSpan.FromSeconds(3))
+        {
+            await Assert.That(consumer.Assignment).Count().IsEqualTo(2);
+            await Task.Delay(100).ConfigureAwait(false);
+        }
 
         // Assert - manual assignment should NOT auto-detect new partitions
         // The consumer should still only be assigned partitions 0 and 1

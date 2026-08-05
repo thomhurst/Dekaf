@@ -268,7 +268,8 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         await WaitForConditionAsync(
             () => listener2.AssignedCallCount >= 1,
             timeout: TimeSpan.FromSeconds(15),
-            pollInterval: TimeSpan.FromMilliseconds(500));
+            pollIntervalMs: 500,
+            description: "consumer 2 never received a partition assignment after consumer 1 left");
 
         // Verify the committed offsets are preserved by checking with a new consumer
         await using var verifier = await Kafka.CreateConsumer<string, string>()
@@ -489,27 +490,6 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         // Total messages consumed across both consumers should account for all produced messages
         var totalConsumed = consumer1Messages.Count + consumer2Messages.Count;
         await Assert.That(totalConsumed).IsGreaterThanOrEqualTo(1);
-    }
-
-    /// <summary>
-    /// Polls a condition until it returns true, or until the timeout expires.
-    /// Preferred over hard-coded Task.Delay to reduce flakiness.
-    /// </summary>
-    private static async Task WaitForConditionAsync(
-        Func<bool> condition,
-        TimeSpan timeout,
-        TimeSpan pollInterval)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(pollInterval);
-        }
     }
 
     /// <summary>
