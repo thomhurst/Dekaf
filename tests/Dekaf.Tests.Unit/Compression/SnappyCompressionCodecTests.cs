@@ -4,6 +4,7 @@ using System.Text;
 using Dekaf.Compression;
 using Dekaf.Compression.Snappy;
 using Dekaf.Protocol.Records;
+using Dekaf.Tests.Unit.Protocol;
 
 namespace Dekaf.Tests.Unit.Compression;
 
@@ -269,6 +270,74 @@ public class SnappyCompressionCodecTests
 
         await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(original);
     }
+
+    [Test]
+    public async Task Compress_ReusedCodec_ProducesIdenticalOutputToFreshInstance()
+    {
+        // Pins that the codec's thread-cached scratch state (multi-segment compression
+        // buffer, decompression destination tracker) never leaks between operations.
+        // Guards the reuse contract that #2352 (pooled Snappier instances) must preserve.
+        var payload = new byte[8192];
+        new Random(42).NextBytes(payload);
+        var reused = new SnappyCompressionCodec(blockSize: 1024);
+
+        var reusedOutput = new ArrayBufferWriter<byte>(payload.Length + 128);
+        for (var cycle = 0; cycle < 3; cycle++)
+        {
+            reusedOutput = new ArrayBufferWriter<byte>(payload.Length + 128);
+            reused.Compress(CreateMultiSegmentSequence(payload), reusedOutput);
+            var warmDecompressed = new ArrayBufferWriter<byte>(payload.Length);
+            reused.Decompress(new ReadOnlySequence<byte>(reusedOutput.WrittenMemory), warmDecompressed);
+
+            await Assert.That(warmDecompressed.WrittenSpan.SequenceEqual(payload)).IsTrue();
+        }
+
+        var freshOutput = new ArrayBufferWriter<byte>(payload.Length + 128);
+        new SnappyCompressionCodec(blockSize: 1024).Compress(CreateMultiSegmentSequence(payload), freshOutput);
+
+        await Assert.That(reusedOutput.WrittenSpan.SequenceEqual(freshOutput.WrittenSpan)).IsTrue();
+    }
+
+    [Test]
+    public async Task CompressDecompress_ParallelWorkers_DoNotCorruptEachOther()
+    {
+        // Pins thread-safety of the codec's [ThreadStatic] scratch state: concurrent
+        // batches compressed and decompressed through one shared codec instance must
+        // round-trip independently. Catches cross-thread corruption if the thread-local
+        // caches are ever replaced with a shared pool without proper ownership handoff.
+        var codec = new SnappyCompressionCodec(blockSize: 4096);
+        var failures = 0;
+
+        Parallel.For(0, 8, worker =>
+        {
+            var random = new Random(worker);
+            for (var iteration = 0; iteration < 50; iteration++)
+            {
+                var payload = new byte[random.Next(1, 16384)];
+                random.NextBytes(payload);
+                var source = iteration % 2 == 0
+                    ? new ReadOnlySequence<byte>(payload)
+                    : CreateMultiSegmentSequence(payload);
+
+                var compressed = new ArrayBufferWriter<byte>(payload.Length + 128);
+                codec.Compress(source, compressed);
+                var decompressed = new ArrayBufferWriter<byte>(payload.Length);
+                codec.Decompress(new ReadOnlySequence<byte>(compressed.WrittenMemory), decompressed);
+
+                if (!decompressed.WrittenSpan.SequenceEqual(payload))
+                {
+                    Interlocked.Increment(ref failures);
+                }
+            }
+        });
+
+        await Assert.That(failures).IsEqualTo(0);
+    }
+
+    private static ReadOnlySequence<byte> CreateMultiSegmentSequence(byte[] payload)
+        => payload.Length < 2
+            ? new ReadOnlySequence<byte>(payload)
+            : SequenceTestHelpers.CreateMultiSegmentSequence(payload, payload.Length / 2);
 
     private static int CountXerialBlocks(ReadOnlySpan<byte> compressed)
     {

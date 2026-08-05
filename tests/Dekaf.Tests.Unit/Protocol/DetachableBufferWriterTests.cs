@@ -34,6 +34,30 @@ public sealed class DetachableBufferWriterTests
     }
 
     [Test]
+    public async Task Rent_WhileOutstanding_ReturnsIndependentWriter()
+    {
+        // Pins the documented single-slot cache invariant: a nested Rent while another
+        // writer is outstanding must return a distinct wrapper instead of sharing
+        // live state (RecordBatch.cs cache comment).
+        var pool = ArrayPool<byte>.Create();
+        var outer = DetachableBufferWriter.Rent(pool, initialCapacity: 16);
+        var inner = DetachableBufferWriter.Rent(pool, initialCapacity: 16);
+        try
+        {
+            await Assert.That(inner).IsNotSameReferenceAs(outer);
+
+            inner.GetSpan(1)[0] = 2;
+            inner.Advance(1);
+            await Assert.That(outer.WrittenSpan.Length).IsEqualTo(0);
+        }
+        finally
+        {
+            inner.Dispose();
+            outer.Dispose();
+        }
+    }
+
+    [Test]
     public async Task Rent_AfterDisposeWithoutDetach_ReusesClearedWrapper()
     {
         var pool = ArrayPool<byte>.Create();

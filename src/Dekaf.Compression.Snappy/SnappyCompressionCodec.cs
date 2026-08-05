@@ -16,6 +16,12 @@ namespace Dekaf.Compression.Snappy;
 /// </summary>
 public sealed class SnappyCompressionCodec : ICompressionCodec
 {
+    // Allocation note (#2214): Snappier's static block helpers allocate a small internal
+    // driver object per call (~48 B compress / ~80 B decompress as of 1.3.1); its reusable
+    // compressor types are internal upstream, and reflection or vendoring is ruled out
+    // (Native AOT + trimming), so instance reuse is blocked on #2352. These are per-block
+    // (i.e. per-batch) costs, not per-message.
+
     // Xerial-snappy magic header
     private static ReadOnlySpan<byte> XerialMagic => [0x82, 0x53, 0x4e, 0x41, 0x50, 0x50, 0x59, 0x00];
 
