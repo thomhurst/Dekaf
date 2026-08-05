@@ -1,4 +1,6 @@
+using System.Diagnostics.Metrics;
 using System.Reflection;
+using Dekaf.Diagnostics;
 using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -160,6 +162,37 @@ internal static class AccumulatorTestHelpers
             ]
         });
         return manager;
+    }
+
+    /// <summary>
+    /// Starts a <see cref="MeterListener"/> subscribed to the named Dekaf instruments only.
+    /// Callers own disposal. Tests using this must be <c>[NotInParallel("MeterListener")]</c>:
+    /// listeners are process-wide, so a concurrent test's measurements would leak in.
+    /// </summary>
+    public static MeterListener StartMeterListener(
+        string[] instrumentNames,
+        MeasurementCallback<long>? onLong = null,
+        MeasurementCallback<double>? onDouble = null)
+    {
+        var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, meterListener) =>
+            {
+                if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
+                    Array.IndexOf(instrumentNames, instrument.Name) >= 0)
+                {
+                    meterListener.EnableMeasurementEvents(instrument);
+                }
+            }
+        };
+
+        if (onLong is not null)
+            listener.SetMeasurementEventCallback(onLong);
+        if (onDouble is not null)
+            listener.SetMeasurementEventCallback(onDouble);
+
+        listener.Start();
+        return listener;
     }
 
     /// <summary>

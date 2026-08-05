@@ -10,57 +10,42 @@ public sealed class KafkaProducerMetricsTests
 {
     [Test]
     [NotInParallel("MeterListener")]
-    public async Task AwaitWithMetrics_MeterOnlyListener_RecordsSuccessMetrics()
+    public async Task AwaitWithMetrics_MeterOnlyListener_RecordsDurationOnly()
     {
+        // Sent counters are per-batch (see ReadyBatchDeliveryMetricsTests); the awaited
+        // path must emit only the operation duration, never the counters.
         var topic = $"orders-{Guid.NewGuid():N}";
         long messagesSent = 0;
         long bytesSent = 0;
         double operationDuration = -1;
-        string? messagesTopic = null;
-        string? bytesTopic = null;
         string? durationTopic = null;
 
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (instrument, meterListener) =>
-        {
-            if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
-                IsProducerSuccessMetric(instrument.Name))
+        using var listener = AccumulatorTestHelpers.StartMeterListener(
+            ProducerSuccessMetrics,
+            onLong: (instrument, measurement, tags, _) =>
             {
-                meterListener.EnableMeasurementEvents(instrument);
-            }
-        };
-        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
-        {
-            var metricTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
-            if (metricTopic != topic)
-                return;
+                if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                    return;
 
-            if (instrument.Name == "messaging.client.sent.messages")
+                if (instrument.Name == "messaging.client.sent.messages")
+                    messagesSent += measurement;
+                else if (instrument.Name == "dekaf.producer.sent.bytes")
+                    bytesSent += measurement;
+            },
+            onDouble: (instrument, measurement, tags, _) =>
             {
-                messagesSent += measurement;
-                messagesTopic = metricTopic;
-            }
-            else if (instrument.Name == "dekaf.producer.sent.bytes")
-            {
-                bytesSent += measurement;
-                bytesTopic = metricTopic;
-            }
-        });
-        listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
-        {
-            var metricTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
-            if (metricTopic != topic)
-                return;
+                var metricTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
+                if (metricTopic != topic)
+                    return;
 
-            if (instrument.Name == "messaging.client.operation.duration")
-            {
-                operationDuration = measurement;
-                durationTopic = metricTopic;
-            }
-        });
-        listener.Start();
+                if (instrument.Name == "messaging.client.operation.duration")
+                {
+                    operationDuration = measurement;
+                    durationTopic = metricTopic;
+                }
+            });
 
-        await Assert.That(ProducerMetricsEnabled()).IsTrue();
+        await Assert.That(OperationScopedMetricsEnabled()).IsTrue();
 
         await using var producer = new KafkaProducer<string, string>(
             new ProducerOptions
@@ -77,19 +62,15 @@ public sealed class KafkaProducerMetricsTests
             Topic = topic,
             Partition = 1,
             Offset = 42,
-            Timestamp = DateTimeOffset.UtcNow,
-            KeySize = 3,
-            ValueSize = 5
+            Timestamp = DateTimeOffset.UtcNow
         });
 
         var metadata = await InvokeAwaitWithMetrics(producer, completion, topic);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
-        await Assert.That(messagesSent).IsEqualTo(1);
-        await Assert.That(bytesSent).IsEqualTo(8);
+        await Assert.That(messagesSent).IsEqualTo(0);
+        await Assert.That(bytesSent).IsEqualTo(0);
         await Assert.That(operationDuration).IsGreaterThanOrEqualTo(0);
-        await Assert.That(messagesTopic).IsEqualTo(topic);
-        await Assert.That(bytesTopic).IsEqualTo(topic);
         await Assert.That(durationTopic).IsEqualTo(topic);
     }
 
@@ -103,38 +84,30 @@ public sealed class KafkaProducerMetricsTests
         double operationDuration = -1;
         string? durationErrorType = null;
 
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (instrument, meterListener) =>
-        {
-            if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
-                instrument.Name is "dekaf.producer.send.errors" or "messaging.client.operation.duration")
+        using var listener = AccumulatorTestHelpers.StartMeterListener(
+            ["dekaf.producer.send.errors", "messaging.client.operation.duration"],
+            onLong: (instrument, measurement, tags, _) =>
             {
-                meterListener.EnableMeasurementEvents(instrument);
-            }
-        };
-        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
-        {
-            if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
-                return;
+                if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                    return;
 
-            if (instrument.Name == "dekaf.producer.send.errors")
+                if (instrument.Name == "dekaf.producer.send.errors")
+                {
+                    errorCount += measurement;
+                    errorCountErrorType = GetTag(tags, DekafDiagnostics.ErrorType);
+                }
+            },
+            onDouble: (instrument, measurement, tags, _) =>
             {
-                errorCount += measurement;
-                errorCountErrorType = GetTag(tags, DekafDiagnostics.ErrorType);
-            }
-        });
-        listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
-        {
-            if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
-                return;
+                if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                    return;
 
-            if (instrument.Name == "messaging.client.operation.duration")
-            {
-                operationDuration = measurement;
-                durationErrorType = GetTag(tags, DekafDiagnostics.ErrorType);
-            }
-        });
-        listener.Start();
+                if (instrument.Name == "messaging.client.operation.duration")
+                {
+                    operationDuration = measurement;
+                    durationErrorType = GetTag(tags, DekafDiagnostics.ErrorType);
+                }
+            });
 
         await using var producer = new KafkaProducer<string, string>(
             new ProducerOptions
@@ -179,10 +152,10 @@ public sealed class KafkaProducerMetricsTests
         await Assert.That(async () => await pending).Throws<OperationCanceledException>();
     }
 
-    private static bool ProducerMetricsEnabled()
+    private static bool OperationScopedMetricsEnabled()
     {
         var method = typeof(KafkaProducer<string, string>).GetMethod(
-            "ProducerMetricsEnabled",
+            "OperationScopedMetricsEnabled",
             BindingFlags.NonPublic | BindingFlags.Static);
 
         return (bool)method!.Invoke(null, null)!;
@@ -205,18 +178,12 @@ public sealed class KafkaProducerMetricsTests
     }
 
     private static string? GetTag(ReadOnlySpan<KeyValuePair<string, object?>> tags, string key)
-    {
-        foreach (var tag in tags)
-        {
-            if (tag.Key == key)
-                return tag.Value?.ToString();
-        }
+        => AccumulatorTestHelpers.GetTag(tags, key);
 
-        return null;
-    }
-
-    private static bool IsProducerSuccessMetric(string name) =>
-        name is "messaging.client.sent.messages"
-            or "dekaf.producer.sent.bytes"
-            or "messaging.client.operation.duration";
+    private static readonly string[] ProducerSuccessMetrics =
+    [
+        "messaging.client.sent.messages",
+        "dekaf.producer.sent.bytes",
+        "messaging.client.operation.duration"
+    ];
 }

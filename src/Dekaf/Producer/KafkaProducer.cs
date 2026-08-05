@@ -676,7 +676,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // inline request is only safe for the bare and cancellation awaits, whose continuations are
         // bounded. Hoisted so the mode and the wrapper choice below can never disagree if a metrics
         // listener starts mid-call.
-        var metricsEnabled = ProducerMetricsEnabled();
+        var metricsEnabled = OperationScopedMetricsEnabled();
         if (continuationMode == ProduceContinuationMode.InlineWhenDirect && (activity is not null || metricsEnabled))
             continuationMode = ProduceContinuationMode.Async;
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
@@ -867,7 +867,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         // See the message-based ProduceAfterPrepare: the metrics wrapper's continuation must not
         // run inline on the broker ack thread, and the hoisted check keeps mode and wrapper in sync.
-        var metricsEnabled = ProducerMetricsEnabled();
+        var metricsEnabled = OperationScopedMetricsEnabled();
         if (continuationMode == ProduceContinuationMode.InlineWhenDirect && metricsEnabled)
             continuationMode = ProduceContinuationMode.Async;
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
@@ -981,7 +981,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         try
         {
             var metadata = await completion.Task.ConfigureAwait(false);
-            EmitProduceSuccessMetrics(topic, metadata, startTimestamp);
+            EmitProduceSuccessMetrics(topic, startTimestamp);
             return metadata;
         }
         catch (Exception ex)
@@ -1010,11 +1010,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             // Success: record metrics and set activity tags. Span status stays unset —
             // OTel says instrumentation should not set Ok on successful spans.
+            // No body-size tag: RecordMetadata carries no per-record sizes.
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, metadata.Partition);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingKafkaOffset, metadata.Offset);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, metadata.ValueSize);
 
-            EmitProduceSuccessMetrics(topic, metadata, startTimestamp);
+            EmitProduceSuccessMetrics(topic, startTimestamp);
 
             return metadata;
         }
@@ -1032,17 +1032,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool ProducerMetricsEnabled()
-        => Diagnostics.DekafMetrics.MessagesSent.Enabled
-           || Diagnostics.DekafMetrics.BytesSent.Enabled
-           || Diagnostics.DekafMetrics.OperationDuration.Enabled
+    private static bool OperationScopedMetricsEnabled()
+        => Diagnostics.DekafMetrics.OperationDuration.Enabled
            || Diagnostics.DekafMetrics.ProduceErrors.Enabled;
 
-    private void EmitProduceSuccessMetrics(string topic, RecordMetadata metadata, long startTimestamp)
+    private void EmitProduceSuccessMetrics(string topic, long startTimestamp)
     {
+        // Sent counters are per-batch (DekafMetrics.RecordBatchDelivered); only the
+        // operation-scoped duration belongs here.
         var tagList = GetMetricTags(topic);
-        Diagnostics.DekafMetrics.MessagesSent.Add(1, tagList);
-        Diagnostics.DekafMetrics.BytesSent.Add(metadata.KeySize + metadata.ValueSize, tagList);
         Diagnostics.DekafMetrics.OperationDuration.Record(
             Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds, tagList);
     }
@@ -1159,7 +1157,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // See ProduceAfterPrepare: instrumented awaits interpose a state machine that must not
         // run inline on the broker ack thread. Callers may have gated already, but the slow path
         // re-checks because a metrics listener can start between their check and this one.
-        var metricsEnabled = ProducerMetricsEnabled();
+        var metricsEnabled = OperationScopedMetricsEnabled();
         if (continuationMode == ProduceContinuationMode.InlineWhenDirect && (activity is not null || metricsEnabled))
             continuationMode = ProduceContinuationMode.Async;
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
@@ -4432,7 +4430,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         // See ProduceAfterPrepare: instrumented awaits interpose a state machine that must not
         // run inline on the broker ack thread.
-        var metricsEnabled = ProducerMetricsEnabled();
+        var metricsEnabled = OperationScopedMetricsEnabled();
         if (continuationMode == ProduceContinuationMode.InlineWhenDirect && (activity is not null || metricsEnabled))
             continuationMode = ProduceContinuationMode.Async;
         var runContinuationsAsynchronously = continuationMode == ProduceContinuationMode.Async;
