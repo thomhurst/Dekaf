@@ -334,7 +334,18 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             if (!TryAcquireRecord(partition, out var record, out var deliveryCount))
                 continue;
 
-            return RegisterPending(partition, record, ToShareResult(record, deliveryCount));
+            ShareConsumeResult<TKey, TValue> result;
+            try
+            {
+                result = ToShareResult(record, deliveryCount);
+            }
+            catch
+            {
+                ReleaseAcquiredRecord(partition, record);
+                throw;
+            }
+
+            return RegisterPending(partition, record, result);
         }
 
         return null;
@@ -353,7 +364,17 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             if (!TryAcquireRecord(partition, out var record, out var deliveryCount))
                 continue;
 
-            var result = await ToShareResultAsync(record, deliveryCount, cancellationToken).ConfigureAwait(false);
+            ShareConsumeResult<TKey, TValue> result;
+            try
+            {
+                result = await ToShareResultAsync(record, deliveryCount, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                ReleaseAcquiredRecord(partition, record);
+                throw;
+            }
+
             return RegisterPending(partition, record, result);
         }
 
@@ -385,6 +406,18 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
             out record,
             out deliveryCount);
     }
+
+    /// <summary>
+    /// Releases a record acquired for delivery that never became a pending result — a deserializer
+    /// threw or was cancelled. Without this the lease has no owner in <c>_pending</c>, so no
+    /// acknowledge, commit, unsubscribe or close path can ever release it and the record stays
+    /// unavailable to the group's other members.
+    /// </summary>
+    private void ReleaseAcquiredRecord(TopicPartition partition, InMemoryRecord record) =>
+        _cluster.ReleaseShareRecords(
+            _options.GroupId,
+            _memberId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, record.Offset)]);
 
     private ShareConsumeResult<TKey, TValue> RegisterPending(
         TopicPartition partition,

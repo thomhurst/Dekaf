@@ -326,6 +326,63 @@ public sealed class InMemoryAsyncSerdeTests
     }
 
     [Test]
+    public async Task ShareConsumer_AsyncDeserializerFailure_ReleasesRecordForOtherMembers()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var failing = new AsyncPrefixSerde(string.Empty) { FailDeserializeOnCall = 1 };
+        var failingMember = new InMemoryShareConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            failing,
+            new InMemoryShareConsumerOptions { GroupId = "share-failure", MemberId = "member-1" });
+        var otherMember = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "share-failure", MemberId = "member-2" });
+
+        await producer.ProduceAsync("shared", "k", "v");
+        failingMember.Subscribe("shared");
+        otherMember.Subscribe("shared");
+
+        await Assert.That(async () => await failingMember.PollAsync().FirstAsync())
+            .Throws<InvalidOperationException>();
+
+        // The failed record never became a pending result, so nothing else can release its
+        // lease — the poll path must release it or it is stranded for the rest of the run.
+        var record = await otherMember.PollAsync().FirstAsync();
+
+        await Assert.That(record.Value).IsEqualTo("v");
+        await Assert.That(record.DeliveryCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ShareConsumer_SyncDeserializerFailure_ReleasesRecordForOtherMembers()
+    {
+        var cluster = new InMemoryKafkaCluster();
+        var producer = new InMemoryProducer<string, string>(cluster);
+        var failingMember = new InMemoryShareConsumer<string, string>(
+            cluster,
+            Serializers.String,
+            new ThrowingDeserializer(),
+            new InMemoryShareConsumerOptions { GroupId = "share-sync-failure", MemberId = "member-1" });
+        var otherMember = new InMemoryShareConsumer<string, string>(
+            cluster,
+            new InMemoryShareConsumerOptions { GroupId = "share-sync-failure", MemberId = "member-2" });
+
+        await producer.ProduceAsync("shared", "k", "v");
+        failingMember.Subscribe("shared");
+        otherMember.Subscribe("shared");
+
+        await Assert.That(async () => await failingMember.PollAsync().FirstAsync())
+            .Throws<InvalidOperationException>();
+
+        var record = await otherMember.PollAsync().FirstAsync();
+
+        await Assert.That(record.Value).IsEqualTo("v");
+        await Assert.That(record.DeliveryCount).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task AsyncSerdeConstructors_RejectNullSerdes()
     {
         var cluster = new InMemoryKafkaCluster();
@@ -346,6 +403,12 @@ public sealed class InMemoryAsyncSerdeTests
                 new AsyncPrefixSerde("v:"),
                 new InMemoryShareConsumerOptions { GroupId = "g" }))
             .Throws<ArgumentNullException>();
+    }
+
+    private sealed class ThrowingDeserializer : IDeserializer<string>
+    {
+        public string Deserialize(ReadOnlyMemory<byte> data, SerializationContext context) =>
+            throw new InvalidOperationException("Deserialization failed.");
     }
 
     /// <summary>
