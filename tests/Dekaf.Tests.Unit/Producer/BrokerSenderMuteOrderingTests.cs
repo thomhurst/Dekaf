@@ -1827,8 +1827,13 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
         {
             var batchA = CreateTestBatch(vtPool, "test-topic", 0);
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
-            sender.Enqueue(batchA);
-            sender.Enqueue(batchB);
+            // Predeclare the complete first wave before publishing its separate channel
+            // events. The loop only spins for a sibling partition while the coalesced
+            // partitions are fewer than the partitions it knows about, so with an empty
+            // set it can dispatch A alone: B then takes send 2 and the p0 retry needs an
+            // unscripted send 3, which failed the script instead of the invariant.
+            SeedKnownPartitions(sender, batchA.TopicPartition, batchB.TopicPartition);
+            sender.EnqueueBulk([batchA, batchB]);
 
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
@@ -2070,11 +2075,7 @@ public sealed class BrokerSenderMuteOrderingTests : ScriptedProduceResponseFixtu
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
             // Predeclare the complete first wave before publishing its separate channel
             // events. Otherwise the live sender can dispatch A before B is available.
-            var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
-                "_knownPartitions",
-                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
-            knownPartitions.Add(batchA.TopicPartition);
-            knownPartitions.Add(batchB.TopicPartition);
+            SeedKnownPartitions(sender, batchA.TopicPartition, batchB.TopicPartition);
             sender.EnqueueBulk([batchA, batchB]);
             iterationGate.ReleaseFirst();
 

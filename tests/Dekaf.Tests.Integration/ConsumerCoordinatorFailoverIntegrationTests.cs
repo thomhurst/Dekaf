@@ -17,6 +17,15 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
     private static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan CoordinatorRecoveryTimeout = TimeSpan.FromSeconds(45);
 
+    /// <summary>
+    /// Bound for a group to settle on a complete, non-overlapping assignment, and for consumers
+    /// to drain the expected records. Every wait here polls a condition that a failed rebalance
+    /// or a wedged consumer never satisfies; unbounded, such a wait burned the whole 240s test
+    /// timeout and reported nothing but "timed out". Each bounded wait fails with the state it
+    /// was stuck on instead, and three of them still fit inside the test timeout.
+    /// </summary>
+    private static readonly TimeSpan ConvergenceTimeout = TimeSpan.FromSeconds(60);
+
     [Test]
     [Timeout(240_000)]
     public async Task CoordinatorFailover_CommitsResumeWithoutLossOrDuplicates(
@@ -295,9 +304,16 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             PollClassicAsync(second, scenarioCancellation.Token)
         };
 
+        // librdkafka owns the truth about what each classic consumer holds. Deriving it from
+        // the rebalance callbacks instead can wedge the wait forever on a set that a missed
+        // or reordered callback left stale, with nothing but a test timeout to show for it.
+        var firstAssignment = () => ClassicAssignment(first);
+        var secondAssignment = () => ClassicAssignment(second);
+
         try
         {
-            await WaitForStableAssignmentAsync(firstListener, secondListener, pollTasks, cancellationToken)
+            await WaitForStableAssignmentAsync(
+                    firstAssignment, secondAssignment, pollTasks, cancellationToken)
                 .ConfigureAwait(false);
             var revocationsBefore = firstListener.RevocationCount + secondListener.RevocationCount;
             stoppedBrokerId = await kafka.GetGroupCoordinatorIdAsync(groupId, cancellationToken)
@@ -312,7 +328,8 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
                 .ConfigureAwait(false);
             await AssertMembersSurviveCoordinatorMoveAsync(groupId, pollTasks, cancellationToken)
                 .ConfigureAwait(false);
-            await WaitForStableAssignmentAsync(firstListener, secondListener, pollTasks, cancellationToken)
+            await WaitForStableAssignmentAsync(
+                    firstAssignment, secondAssignment, pollTasks, cancellationToken)
                 .ConfigureAwait(false);
 
             var revocationsAfter = firstListener.RevocationCount + secondListener.RevocationCount;
@@ -351,7 +368,9 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
 
         try
         {
-            await WaitForAssignmentCountAsync(firstListener, PartitionCount, [firstPoll], cancellationToken)
+            // As above: read the assignments from librdkafka, not from the callbacks.
+            await WaitForAssignmentCountAsync(
+                    () => ClassicAssignment(first), PartitionCount, [firstPoll], cancellationToken)
                 .ConfigureAwait(false);
             stoppedBrokerId = await kafka.GetGroupCoordinatorIdAsync(groupId, cancellationToken)
                 .ConfigureAwait(false);
@@ -367,13 +386,13 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
                     cancellationToken)
                 .ConfigureAwait(false);
             await WaitForStableAssignmentAsync(
-                    firstListener,
-                    secondListener,
+                    () => ClassicAssignment(first),
+                    () => ClassicAssignment(second!),
                     [firstPoll, secondPoll],
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            var overlap = firstListener.Assignment.Intersect(secondListener.Assignment).ToArray();
+            var overlap = ClassicAssignment(first).Intersect(ClassicAssignment(second)).ToArray();
             await Assert.That(overlap).IsEmpty();
 
             await kafka.StartBrokerAsync(stoppedBrokerId.Value, cancellationToken).ConfigureAwait(false);
@@ -666,38 +685,93 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
 
-    private static async Task WaitForProgressOrFailureAsync(
+    /// <summary>
+    /// Polls <paramref name="condition"/> until it holds, one of the background tasks faults,
+    /// or <see cref="ConvergenceTimeout"/> elapses. On timeout the failure carries
+    /// <paramref name="describeState"/>, so a stuck group names the state it was stuck in.
+    /// </summary>
+    private static async Task WaitForConvergenceAsync(
+        Func<bool> condition,
+        Func<string> describeState,
+        IReadOnlyList<Task> backgroundTasks,
+        CancellationToken cancellationToken)
+    {
+        var startedAt = TimeProvider.System.GetTimestamp();
+        while (!condition())
+        {
+            var failed = backgroundTasks.FirstOrDefault(static task => task.IsFaulted);
+            if (failed is not null)
+                await failed.ConfigureAwait(false);
+
+            if (TimeProvider.System.GetElapsedTime(startedAt) >= ConvergenceTimeout)
+            {
+                throw new TimeoutException(
+                    $"Did not converge within {ConvergenceTimeout.TotalSeconds:F0}s: {describeState()}");
+            }
+
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static Task WaitForProgressOrFailureAsync(
         ConcurrentDictionary<(int Partition, long Offset), int> records,
         int expectedCount,
         IReadOnlyList<Task> consumeTasks,
-        CancellationToken cancellationToken)
-    {
-        while (records.Count < expectedCount)
-        {
-            var failed = consumeTasks.FirstOrDefault(static task => task.IsFaulted);
-            if (failed is not null)
-                await failed.ConfigureAwait(false);
+        CancellationToken cancellationToken) =>
+        WaitForConvergenceAsync(
+            () => records.Count >= expectedCount,
+            () => $"consumed {records.Count} of {expectedCount} expected records",
+            consumeTasks,
+            cancellationToken);
 
-            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private static async Task WaitForStableAssignmentAsync(
+    /// <summary>
+    /// Waits until the two members between them own every partition exactly once. The
+    /// assignment snapshots are taken from the consumers themselves where the client exposes
+    /// them, so a missed rebalance callback cannot leave the wait chasing a stale set.
+    /// </summary>
+    private static Task WaitForStableAssignmentAsync(
         AssignmentListener first,
         AssignmentListener second,
         IReadOnlyList<Task> pollTasks,
-        CancellationToken cancellationToken)
-    {
-        while (first.Assignment.Count + second.Assignment.Count != PartitionCount
-               || first.Assignment.Overlaps(second.Assignment))
-        {
-            var failed = pollTasks.FirstOrDefault(static task => task.IsFaulted);
-            if (failed is not null)
-                await failed.ConfigureAwait(false);
+        CancellationToken cancellationToken) =>
+        WaitForStableAssignmentAsync(
+            () => first.Assignment, () => second.Assignment, pollTasks, cancellationToken);
 
-            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-        }
-    }
+    private static Task WaitForAssignmentCountAsync(
+        AssignmentListener listener,
+        int expectedCount,
+        IReadOnlyList<Task> pollTasks,
+        CancellationToken cancellationToken) =>
+        WaitForAssignmentCountAsync(
+            () => listener.Assignment, expectedCount, pollTasks, cancellationToken);
+
+    private static Task WaitForStableAssignmentAsync(
+        Func<HashSet<TopicPartition>> first,
+        Func<HashSet<TopicPartition>> second,
+        IReadOnlyList<Task> pollTasks,
+        CancellationToken cancellationToken) =>
+        WaitForConvergenceAsync(
+            () =>
+            {
+                var firstAssignment = first();
+                var secondAssignment = second();
+                return firstAssignment.Count + secondAssignment.Count == PartitionCount
+                       && !firstAssignment.Overlaps(secondAssignment);
+            },
+            () => $"assignment never settled on {PartitionCount} distinct partitions " +
+                  $"(first: [{Describe(first())}], second: [{Describe(second())}])",
+            pollTasks,
+            cancellationToken);
+
+    private static string Describe(IEnumerable<TopicPartition> assignment) =>
+        string.Join(", ", assignment.Select(static tp => tp.Partition).Order());
+
+    private static HashSet<TopicPartition> ClassicAssignment(
+        ConfluentKafka.IConsumer<string, string> consumer) =>
+        consumer.Assignment
+            .Select(static topicPartition =>
+                new TopicPartition(topicPartition.Topic, topicPartition.Partition.Value))
+            .ToHashSet();
 
     private async Task AssertMembersSurviveCoordinatorMoveAsync(
         string groupId,
@@ -727,21 +801,16 @@ public sealed class ConsumerCoordinatorFailoverIntegrationTests(RackAwareKafkaCo
             $"Expected both group members to survive coordinator failover; actual count {memberCount}.");
     }
 
-    private static async Task WaitForAssignmentCountAsync(
-        AssignmentListener listener,
+    private static Task WaitForAssignmentCountAsync(
+        Func<HashSet<TopicPartition>> assignment,
         int expectedCount,
         IReadOnlyList<Task> pollTasks,
-        CancellationToken cancellationToken)
-    {
-        while (listener.Assignment.Count != expectedCount)
-        {
-            var failed = pollTasks.FirstOrDefault(static task => task.IsFaulted);
-            if (failed is not null)
-                await failed.ConfigureAwait(false);
-
-            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-        }
-    }
+        CancellationToken cancellationToken) =>
+        WaitForConvergenceAsync(
+            () => assignment().Count == expectedCount,
+            () => $"expected {expectedCount} assigned partitions, actual [{Describe(assignment())}]",
+            pollTasks,
+            cancellationToken);
 
     private static async Task ObserveCancellationAsync(IEnumerable<Task> tasks)
     {
