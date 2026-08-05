@@ -446,6 +446,7 @@ public class RecordAccumulatorTests
     {
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
@@ -491,6 +492,7 @@ public class RecordAccumulatorTests
     {
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var poisonedPartition = new TopicPartition("test-topic", 0);
         var healthyPartition = new TopicPartition("test-topic", 1);
@@ -717,6 +719,7 @@ public class RecordAccumulatorTests
     {
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
@@ -759,6 +762,7 @@ public class RecordAccumulatorTests
     {
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var poisonedPartition = new TopicPartition("test-topic", 0);
         var healthyPartition = new TopicPartition("test-topic", 1);
@@ -1806,6 +1810,7 @@ public class RecordAccumulatorTests
 
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
@@ -1870,6 +1875,7 @@ public class RecordAccumulatorTests
     {
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
@@ -1922,6 +1928,7 @@ public class RecordAccumulatorTests
     {
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
         ReadyBatch? drainedBatch = null;
@@ -2237,6 +2244,7 @@ public class RecordAccumulatorTests
 
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
@@ -2310,6 +2318,7 @@ public class RecordAccumulatorTests
 
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
@@ -3088,6 +3097,7 @@ public class RecordAccumulatorTests
 
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
@@ -3148,6 +3158,7 @@ public class RecordAccumulatorTests
 
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 

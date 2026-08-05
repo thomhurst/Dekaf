@@ -1863,6 +1863,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         var completion = ProduceAllCompletion.Rent(messageList.Count);
+        // Bulk scope: these registrations are awaited as an aggregate, so the accumulator's
+        // app-limited immediate-seal gate must stay off while their appends land (#2510).
+        // Held through the aggregate await, not just the loop: metadata-miss and
+        // backpressure appends run after registration returns.
+        using var bulkScope = _accumulator.EnterBulkProduceScope();
         for (var i = 0; i < messageList.Count; i++)
         {
             try
@@ -1902,6 +1907,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         var completion = ProduceAllCompletion.Rent(messageList.Count);
+        // Bulk scope held through the aggregate await: see the message-list overload (#2510).
+        using var bulkScope = _accumulator.EnterBulkProduceScope();
         for (var i = 0; i < messageList.Count; i++)
         {
             var (key, value) = messageList[i];
