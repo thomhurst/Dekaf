@@ -44,6 +44,36 @@ consumer.Subscribe("orders");
 var record = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(1));
 ```
 
+## Asynchronous serializers
+
+Serdes that perform per-message I/O (`IAsyncSerializer<T>`, `IAsyncDeserializer<T>`, `IAsyncSerde<T>`)
+can be passed to the in-memory clients, so code built around them is unit-testable without a broker.
+Each component is independent — mix a synchronous serializer for the key with an asynchronous one for
+the value if that is how the real client is configured:
+
+```csharp
+using Dekaf.Serialization;
+using Dekaf.Testing;
+
+var cluster = new InMemoryKafkaCluster();
+IAsyncSerde<Order> orderSerde = new EncryptingOrderSerde(keyVault);
+
+var producer = new InMemoryProducer<string, Order>(cluster, Serializers.String, orderSerde);
+var consumer = new InMemoryConsumer<string, Order>(
+    cluster,
+    Serializers.String,
+    orderSerde,
+    new InMemoryConsumerOptions
+    {
+        GroupId = "orders-service",
+        AutoOffsetReset = AutoOffsetReset.Earliest
+    });
+```
+
+The in-memory clients await asynchronous serdes exactly where the real clients do: on
+`ProduceAsync`/`FireAsync` and on `ConsumeAsync`/`ConsumeOneAsync` (and `PollAsync` for the share
+consumer). `InMemoryShareConsumer<TKey, TValue>` accepts the same combinations.
+
 ## Dependency Injection
 
 Use `AddDekafInMemory()` to replace producer, consumer, share consumer, and admin client registrations with in-memory doubles backed by one shared cluster:

@@ -21,6 +21,12 @@ public sealed class InMemoryConsumer<TKey, TValue> :
     private readonly InMemoryKafkaCluster _cluster;
     private readonly IDeserializer<TKey> _keyDeserializer;
     private readonly IDeserializer<TValue> _valueDeserializer;
+    // Non-null when the caller configured an IAsyncDeserializer for that component. The matching
+    // synchronous slot then holds a throwing placeholder, mirroring KafkaConsumer: reaching it
+    // means a consume path missed the asynchronous divert and must fail loudly.
+    private readonly IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
+    private readonly IAsyncDeserializer<TValue>? _asyncValueDeserializer;
+    private readonly bool _hasAsyncDeserializers;
     private readonly InMemoryConsumerOptions _options;
     private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
     private readonly HashSet<TopicPartition> _assignment = [];
@@ -70,10 +76,121 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
         InMemoryConsumerOptions options)
+        : this(
+            cluster,
+            InMemorySerdeResolver.Required(keyDeserializer, nameof(keyDeserializer)),
+            InMemorySerdeResolver.Required(valueDeserializer, nameof(valueDeserializer)),
+            asyncKeyDeserializer: null,
+            asyncValueDeserializer: null,
+            options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a consumer that awaits <see cref="IAsyncDeserializer{T}"/> for both components.
+    /// </summary>
+    public InMemoryConsumer(
+        InMemoryKafkaCluster cluster,
+        IAsyncDeserializer<TKey> keyDeserializer,
+        IAsyncDeserializer<TValue> valueDeserializer)
+        : this(cluster, keyDeserializer, valueDeserializer, new InMemoryConsumerOptions())
+    {
+    }
+
+    /// <summary>
+    /// Creates a consumer that awaits <see cref="IAsyncDeserializer{T}"/> for both components.
+    /// </summary>
+    public InMemoryConsumer(
+        InMemoryKafkaCluster cluster,
+        IAsyncDeserializer<TKey> keyDeserializer,
+        IAsyncDeserializer<TValue> valueDeserializer,
+        InMemoryConsumerOptions options)
+        : this(
+            cluster,
+            keyDeserializer: null,
+            valueDeserializer: null,
+            InMemorySerdeResolver.Required(keyDeserializer, nameof(keyDeserializer)),
+            InMemorySerdeResolver.Required(valueDeserializer, nameof(valueDeserializer)),
+            options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a consumer with a synchronous key deserializer and an asynchronous value deserializer.
+    /// </summary>
+    public InMemoryConsumer(
+        InMemoryKafkaCluster cluster,
+        IDeserializer<TKey> keyDeserializer,
+        IAsyncDeserializer<TValue> valueDeserializer)
+        : this(cluster, keyDeserializer, valueDeserializer, new InMemoryConsumerOptions())
+    {
+    }
+
+    /// <summary>
+    /// Creates a consumer with a synchronous key deserializer and an asynchronous value deserializer.
+    /// </summary>
+    public InMemoryConsumer(
+        InMemoryKafkaCluster cluster,
+        IDeserializer<TKey> keyDeserializer,
+        IAsyncDeserializer<TValue> valueDeserializer,
+        InMemoryConsumerOptions options)
+        : this(
+            cluster,
+            InMemorySerdeResolver.Required(keyDeserializer, nameof(keyDeserializer)),
+            valueDeserializer: null,
+            asyncKeyDeserializer: null,
+            InMemorySerdeResolver.Required(valueDeserializer, nameof(valueDeserializer)),
+            options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a consumer with an asynchronous key deserializer and a synchronous value deserializer.
+    /// </summary>
+    public InMemoryConsumer(
+        InMemoryKafkaCluster cluster,
+        IAsyncDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer)
+        : this(cluster, keyDeserializer, valueDeserializer, new InMemoryConsumerOptions())
+    {
+    }
+
+    /// <summary>
+    /// Creates a consumer with an asynchronous key deserializer and a synchronous value deserializer.
+    /// </summary>
+    public InMemoryConsumer(
+        InMemoryKafkaCluster cluster,
+        IAsyncDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer,
+        InMemoryConsumerOptions options)
+        : this(
+            cluster,
+            keyDeserializer: null,
+            InMemorySerdeResolver.Required(valueDeserializer, nameof(valueDeserializer)),
+            InMemorySerdeResolver.Required(keyDeserializer, nameof(keyDeserializer)),
+            asyncValueDeserializer: null,
+            options)
+    {
+    }
+
+    private InMemoryConsumer(
+        InMemoryKafkaCluster cluster,
+        IDeserializer<TKey>? keyDeserializer,
+        IDeserializer<TValue>? valueDeserializer,
+        IAsyncDeserializer<TKey>? asyncKeyDeserializer,
+        IAsyncDeserializer<TValue>? asyncValueDeserializer,
+        InMemoryConsumerOptions options)
     {
         _cluster = cluster ?? throw new ArgumentNullException(nameof(cluster));
-        _keyDeserializer = keyDeserializer ?? throw new ArgumentNullException(nameof(keyDeserializer));
-        _valueDeserializer = valueDeserializer ?? throw new ArgumentNullException(nameof(valueDeserializer));
+        _asyncKeyDeserializer = asyncKeyDeserializer;
+        _asyncValueDeserializer = asyncValueDeserializer;
+        _keyDeserializer = asyncKeyDeserializer is null
+            ? keyDeserializer!
+            : AsyncOnlyDeserializerPlaceholder<TKey>.Instance;
+        _valueDeserializer = asyncValueDeserializer is null
+            ? valueDeserializer!
+            : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
+        _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
         _options = options ?? throw new ArgumentNullException(nameof(options));
         // Match KafkaConsumer, which treats an empty GroupId as "no consumer group"
         // (no coordinator, no commits). Normalizing here keeps every group-dependent
@@ -278,8 +395,15 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (TryConsumeOne(out var result))
+            if (_hasAsyncDeserializers)
+            {
+                if (await TryConsumeOneAsync(cancellationToken).ConfigureAwait(false) is { } asyncResult)
+                    return asyncResult;
+            }
+            else if (TryConsumeOne(out var result))
+            {
                 return result;
+            }
 
             if (deadline is null)
             {
@@ -630,39 +754,7 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         var previousRecordProven = false;
         while (true)
         {
-            InMemoryRecord? selected = null;
-            TopicPartition selectedPartition = default;
-            long selectedPosition = -1;
-
-            lock (_gate)
-            {
-                if (!previousRecordProven)
-                {
-                    // A new consume call proves the previously delivered record was processed
-                    // (poll contract) — stage it before selecting the next one.
-                    ProveInDoubtRecordUnderLock();
-                    previousRecordProven = true;
-                }
-
-                foreach (var partition in GetCurrentAssignmentUnderLock().OrderBy(item => item.Topic, StringComparer.Ordinal).ThenBy(item => item.Partition))
-                {
-                    if (_paused.Contains(partition))
-                        continue;
-
-                    if (!_positions.TryGetValue(partition, out var position))
-                        continue;
-
-                    if (!_cluster.TryRead(partition, position, out var record))
-                        continue;
-
-                    selected = record;
-                    selectedPartition = partition;
-                    selectedPosition = position;
-                    break;
-                }
-            }
-
-            if (selected is null)
+            if (!TrySelectRecord(ref previousRecordProven, out var partition, out var record, out var position))
             {
                 result = default;
                 return false;
@@ -670,34 +762,104 @@ public sealed class InMemoryConsumer<TKey, TValue> :
 
             // Run user deserializers before advancing any delivery or commit state. A failure
             // leaves the selected offset untouched so the next consume retries the record.
-            var selectedResult = ToConsumeResult(selectedPartition, selected);
+            var selectedResult = ToConsumeResult(partition, record);
 
-            lock (_gate)
-            {
-                // Assignment/seek or another consumer call may have changed the position while
-                // user code deserialized. Retry selection instead of publishing a stale result.
-                if (!_positions.TryGetValue(selectedPartition, out var currentPosition)
-                    || currentPosition != selectedPosition)
-                {
-                    continue;
-                }
-
-                _positions[selectedPartition] = selected.Offset + 1;
-                if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
-                {
-                    if (_options.EnableAutoOffsetStore)
-                        _storedOffsets[selectedPartition] = selected.Offset + 1;
-                    if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
-                        CommitStoredOffsets();
-                }
-                else
-                {
-                    _inDoubtPartition = selectedPartition;
-                    _inDoubtNextOffset = selected.Offset + 1;
-                }
-            }
+            if (!TryAdvancePosition(partition, record, position))
+                continue;
 
             result = selectedResult;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Consume path used when at least one component has an <see cref="IAsyncDeserializer{T}"/>.
+    /// Deliberate mirror of <see cref="TryConsumeOne"/>: both drive the same selection and
+    /// delivery bookkeeping helpers so their offset semantics cannot drift apart.
+    /// </summary>
+    private async ValueTask<ConsumeResult<TKey, TValue>?> TryConsumeOneAsync(CancellationToken cancellationToken)
+    {
+        var previousRecordProven = false;
+        while (true)
+        {
+            if (!TrySelectRecord(ref previousRecordProven, out var partition, out var record, out var position))
+                return null;
+
+            var selectedResult = await ToConsumeResultAsync(partition, record, cancellationToken).ConfigureAwait(false);
+
+            if (!TryAdvancePosition(partition, record, position))
+                continue;
+
+            return selectedResult;
+        }
+    }
+
+    private bool TrySelectRecord(
+        ref bool previousRecordProven,
+        out TopicPartition selectedPartition,
+        out InMemoryRecord selectedRecord,
+        out long selectedPosition)
+    {
+        lock (_gate)
+        {
+            if (!previousRecordProven)
+            {
+                // A new consume call proves the previously delivered record was processed
+                // (poll contract) — stage it before selecting the next one.
+                ProveInDoubtRecordUnderLock();
+                previousRecordProven = true;
+            }
+
+            foreach (var partition in GetCurrentAssignmentUnderLock().OrderBy(item => item.Topic, StringComparer.Ordinal).ThenBy(item => item.Partition))
+            {
+                if (_paused.Contains(partition))
+                    continue;
+
+                if (!_positions.TryGetValue(partition, out var position))
+                    continue;
+
+                if (!_cluster.TryRead(partition, position, out var record))
+                    continue;
+
+                selectedPartition = partition;
+                selectedRecord = record;
+                selectedPosition = position;
+                return true;
+            }
+        }
+
+        selectedPartition = default;
+        selectedRecord = null!;
+        selectedPosition = -1;
+        return false;
+    }
+
+    /// <summary>
+    /// Publishes a delivered record's offset state. Returns false when the position moved while
+    /// user deserializers ran, in which case the caller must reselect instead of publishing a
+    /// stale result.
+    /// </summary>
+    private bool TryAdvancePosition(TopicPartition partition, InMemoryRecord record, long expectedPosition)
+    {
+        lock (_gate)
+        {
+            if (!_positions.TryGetValue(partition, out var currentPosition) || currentPosition != expectedPosition)
+                return false;
+
+            _positions[partition] = record.Offset + 1;
+            if (_options.OffsetStoreTiming == OffsetStoreTiming.OnDelivery)
+            {
+                if (_options.EnableAutoOffsetStore)
+                    _storedOffsets[partition] = record.Offset + 1;
+                if (_options.OffsetCommitMode == OffsetCommitMode.Auto)
+                    CommitStoredOffsets();
+            }
+            else
+            {
+                _inDoubtPartition = partition;
+                _inDoubtNextOffset = record.Offset + 1;
+            }
+
             return true;
         }
     }
@@ -747,23 +909,100 @@ public sealed class InMemoryConsumer<TKey, TValue> :
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            throw ConsumeResult<TKey, TValue>.CreateDeserializationException(
+            throw CreateDeserializationException(
                 ConsumeResult<TKey, TValue>.LastDeserializationOrigin,
-                topicPartition.Topic,
-                topicPartition.Partition,
-                record.Offset,
-                record.TimestampMs,
-                TimestampType.CreateTime,
-                record.Key,
-                record.IsKeyNull,
-                record.Value,
-                record.IsValueNull,
-                record.Headers,
-                pooledHeaders: null,
-                pooledHeaderCount: 0,
+                topicPartition,
+                record,
                 ex);
         }
     }
+
+    /// <summary>
+    /// Deserializes a record via the configured <see cref="IAsyncDeserializer{T}"/> implementations
+    /// (falling back to the synchronous deserializer for a component without one) and builds the
+    /// result from the awaited values. Null-ness semantics mirror the eager
+    /// <see cref="ConsumeResult{TKey,TValue}"/> constructor used by the synchronous path: null keys
+    /// skip the deserializer, null values invoke it with empty data and <c>IsNull = true</c>.
+    /// </summary>
+    private async ValueTask<ConsumeResult<TKey, TValue>> ToConsumeResultAsync(
+        TopicPartition topicPartition,
+        InMemoryRecord record,
+        CancellationToken cancellationToken)
+    {
+        TKey? key = default;
+        if (!record.IsKeyNull)
+        {
+            var keyContext = new SerializationContext
+            {
+                Topic = topicPartition.Topic,
+                Component = SerializationComponent.Key,
+                IsNull = false
+            };
+
+            try
+            {
+                key = _asyncKeyDeserializer is not null
+                    ? await _asyncKeyDeserializer.DeserializeAsync(record.Key, keyContext, cancellationToken).ConfigureAwait(false)
+                    : _keyDeserializer.Deserialize(record.Key, keyContext);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw CreateDeserializationException(DeserializationExceptionOrigin.Key, topicPartition, record, ex);
+            }
+        }
+
+        var valueContext = new SerializationContext
+        {
+            Topic = topicPartition.Topic,
+            Component = SerializationComponent.Value,
+            IsNull = record.IsValueNull
+        };
+        var valueData = record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value;
+
+        TValue value;
+        try
+        {
+            value = _asyncValueDeserializer is not null
+                ? await _asyncValueDeserializer.DeserializeAsync(valueData, valueContext, cancellationToken).ConfigureAwait(false)
+                : _valueDeserializer.Deserialize(valueData, valueContext);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw CreateDeserializationException(DeserializationExceptionOrigin.Value, topicPartition, record, ex);
+        }
+
+        return new ConsumeResult<TKey, TValue>(
+            topicPartition.Topic,
+            topicPartition.Partition,
+            record.Offset,
+            key,
+            value,
+            record.Headers,
+            record.TimestampMs,
+            TimestampType.CreateTime,
+            leaderEpoch: null);
+    }
+
+    private static RecordDeserializationException CreateDeserializationException(
+        DeserializationExceptionOrigin origin,
+        TopicPartition topicPartition,
+        InMemoryRecord record,
+        Exception innerException) =>
+        ConsumeResult<TKey, TValue>.CreateDeserializationException(
+            origin,
+            topicPartition.Topic,
+            topicPartition.Partition,
+            record.Offset,
+            record.TimestampMs,
+            TimestampType.CreateTime,
+            record.Key,
+            record.IsKeyNull,
+            record.Value,
+            record.IsValueNull,
+            record.Headers,
+            pooledHeaders: null,
+            pooledHeaderCount: 0,
+            innerException);
 
     private void ReplaceAssignment(IEnumerable<TopicPartition> partitions)
     {

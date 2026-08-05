@@ -13,6 +13,12 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
     private readonly InMemoryKafkaCluster _cluster;
     private readonly IDeserializer<TKey> _keyDeserializer;
     private readonly IDeserializer<TValue> _valueDeserializer;
+    // Non-null when the caller configured an IAsyncDeserializer for that component. The matching
+    // synchronous slot then holds a throwing placeholder so a missed asynchronous divert fails
+    // loudly instead of silently decoding nothing.
+    private readonly IAsyncDeserializer<TKey>? _asyncKeyDeserializer;
+    private readonly IAsyncDeserializer<TValue>? _asyncValueDeserializer;
+    private readonly bool _hasAsyncDeserializers;
     private readonly InMemoryShareConsumerOptions _options;
     private readonly HashSet<string> _subscription = new(StringComparer.Ordinal);
     private readonly HashSet<TopicPartition> _assignment = [];
@@ -53,13 +59,124 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
         InMemoryShareConsumerOptions options)
+        : this(
+            cluster,
+            InMemorySerdeResolver.Required(keyDeserializer, nameof(keyDeserializer)),
+            InMemorySerdeResolver.Required(valueDeserializer, nameof(valueDeserializer)),
+            asyncKeyDeserializer: null,
+            asyncValueDeserializer: null,
+            options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a share consumer that awaits <see cref="IAsyncDeserializer{T}"/> for both components.
+    /// </summary>
+    public InMemoryShareConsumer(
+        InMemoryKafkaCluster cluster,
+        IAsyncDeserializer<TKey> keyDeserializer,
+        IAsyncDeserializer<TValue> valueDeserializer)
+        : this(cluster, keyDeserializer, valueDeserializer, new InMemoryShareConsumerOptions())
+    {
+    }
+
+    /// <summary>
+    /// Creates a share consumer that awaits <see cref="IAsyncDeserializer{T}"/> for both components.
+    /// </summary>
+    public InMemoryShareConsumer(
+        InMemoryKafkaCluster cluster,
+        IAsyncDeserializer<TKey> keyDeserializer,
+        IAsyncDeserializer<TValue> valueDeserializer,
+        InMemoryShareConsumerOptions options)
+        : this(
+            cluster,
+            keyDeserializer: null,
+            valueDeserializer: null,
+            InMemorySerdeResolver.Required(keyDeserializer, nameof(keyDeserializer)),
+            InMemorySerdeResolver.Required(valueDeserializer, nameof(valueDeserializer)),
+            options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a share consumer with a synchronous key deserializer and an asynchronous value deserializer.
+    /// </summary>
+    public InMemoryShareConsumer(
+        InMemoryKafkaCluster cluster,
+        IDeserializer<TKey> keyDeserializer,
+        IAsyncDeserializer<TValue> valueDeserializer)
+        : this(cluster, keyDeserializer, valueDeserializer, new InMemoryShareConsumerOptions())
+    {
+    }
+
+    /// <summary>
+    /// Creates a share consumer with a synchronous key deserializer and an asynchronous value deserializer.
+    /// </summary>
+    public InMemoryShareConsumer(
+        InMemoryKafkaCluster cluster,
+        IDeserializer<TKey> keyDeserializer,
+        IAsyncDeserializer<TValue> valueDeserializer,
+        InMemoryShareConsumerOptions options)
+        : this(
+            cluster,
+            InMemorySerdeResolver.Required(keyDeserializer, nameof(keyDeserializer)),
+            valueDeserializer: null,
+            asyncKeyDeserializer: null,
+            InMemorySerdeResolver.Required(valueDeserializer, nameof(valueDeserializer)),
+            options)
+    {
+    }
+
+    /// <summary>
+    /// Creates a share consumer with an asynchronous key deserializer and a synchronous value deserializer.
+    /// </summary>
+    public InMemoryShareConsumer(
+        InMemoryKafkaCluster cluster,
+        IAsyncDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer)
+        : this(cluster, keyDeserializer, valueDeserializer, new InMemoryShareConsumerOptions())
+    {
+    }
+
+    /// <summary>
+    /// Creates a share consumer with an asynchronous key deserializer and a synchronous value deserializer.
+    /// </summary>
+    public InMemoryShareConsumer(
+        InMemoryKafkaCluster cluster,
+        IAsyncDeserializer<TKey> keyDeserializer,
+        IDeserializer<TValue> valueDeserializer,
+        InMemoryShareConsumerOptions options)
+        : this(
+            cluster,
+            keyDeserializer: null,
+            InMemorySerdeResolver.Required(valueDeserializer, nameof(valueDeserializer)),
+            InMemorySerdeResolver.Required(keyDeserializer, nameof(keyDeserializer)),
+            asyncValueDeserializer: null,
+            options)
+    {
+    }
+
+    private InMemoryShareConsumer(
+        InMemoryKafkaCluster cluster,
+        IDeserializer<TKey>? keyDeserializer,
+        IDeserializer<TValue>? valueDeserializer,
+        IAsyncDeserializer<TKey>? asyncKeyDeserializer,
+        IAsyncDeserializer<TValue>? asyncValueDeserializer,
+        InMemoryShareConsumerOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.GroupId);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPollRecords, 1);
         _cluster = cluster ?? throw new ArgumentNullException(nameof(cluster));
-        _keyDeserializer = keyDeserializer ?? throw new ArgumentNullException(nameof(keyDeserializer));
-        _valueDeserializer = valueDeserializer ?? throw new ArgumentNullException(nameof(valueDeserializer));
+        _asyncKeyDeserializer = asyncKeyDeserializer;
+        _asyncValueDeserializer = asyncValueDeserializer;
+        _keyDeserializer = asyncKeyDeserializer is null
+            ? keyDeserializer!
+            : AsyncOnlyDeserializerPlaceholder<TKey>.Instance;
+        _valueDeserializer = asyncValueDeserializer is null
+            ? valueDeserializer!
+            : AsyncOnlyDeserializerPlaceholder<TValue>.Instance;
+        _hasAsyncDeserializers = asyncKeyDeserializer is not null || asyncValueDeserializer is not null;
         _options = options;
         _memberId = _options.MemberId ?? Guid.NewGuid().ToString("N");
     }
@@ -146,7 +263,9 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
         for (var i = 0; i < _options.MaxPollRecords; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var record = TryTakeAvailableRecord();
+            var record = _hasAsyncDeserializers
+                ? await TryTakeAvailableRecordAsync(cancellationToken).ConfigureAwait(false)
+                : TryTakeAvailableRecord();
             if (record is null)
                 yield break;
 
@@ -210,44 +329,152 @@ public sealed class InMemoryShareConsumer<TKey, TValue> : IKafkaShareConsumer<TK
 
     private ShareConsumeResult<TKey, TValue>? TryTakeAvailableRecord()
     {
-        TopicPartition[] assignment;
-
-        lock (_gate)
+        foreach (var partition in OrderedAssignment())
         {
-            assignment = _assignment
-                .OrderBy(item => item.Topic, StringComparer.Ordinal)
-                .ThenBy(item => item.Partition)
-                .ToArray();
-        }
-
-        foreach (var partition in assignment)
-        {
-            long offset;
-            lock (_gate)
-                offset = GetNextOffsetUnderLock(partition);
-
-            if (!_cluster.TryAcquireShareRecord(
-                    _options.GroupId,
-                    _memberId,
-                    partition,
-                    offset,
-                    out var record,
-                    out var deliveryCount))
-            {
+            if (!TryAcquireRecord(partition, out var record, out var deliveryCount))
                 continue;
+
+            ShareConsumeResult<TKey, TValue> result;
+            try
+            {
+                result = ToShareResult(record, deliveryCount);
+            }
+            catch
+            {
+                ReleaseAcquiredRecord(partition, record);
+                throw;
             }
 
-            var result = ToShareResult(record, deliveryCount);
-            var pending = new PendingShareRecord(partition, record.Offset, record.Offset + 1);
-
-            lock (_gate)
-                _pending[result] = pending;
-
-            return result;
+            return RegisterPending(partition, record, result);
         }
 
         return null;
     }
+
+    /// <summary>
+    /// Poll path used when at least one component has an <see cref="IAsyncDeserializer{T}"/>.
+    /// Deliberate mirror of <see cref="TryTakeAvailableRecord"/>: both drive the same acquisition
+    /// and pending-record bookkeeping helpers.
+    /// </summary>
+    private async ValueTask<ShareConsumeResult<TKey, TValue>?> TryTakeAvailableRecordAsync(
+        CancellationToken cancellationToken)
+    {
+        foreach (var partition in OrderedAssignment())
+        {
+            if (!TryAcquireRecord(partition, out var record, out var deliveryCount))
+                continue;
+
+            ShareConsumeResult<TKey, TValue> result;
+            try
+            {
+                result = await ToShareResultAsync(record, deliveryCount, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                ReleaseAcquiredRecord(partition, record);
+                throw;
+            }
+
+            return RegisterPending(partition, record, result);
+        }
+
+        return null;
+    }
+
+    private TopicPartition[] OrderedAssignment()
+    {
+        lock (_gate)
+        {
+            return _assignment
+                .OrderBy(item => item.Topic, StringComparer.Ordinal)
+                .ThenBy(item => item.Partition)
+                .ToArray();
+        }
+    }
+
+    private bool TryAcquireRecord(TopicPartition partition, out InMemoryRecord record, out int deliveryCount)
+    {
+        long offset;
+        lock (_gate)
+            offset = GetNextOffsetUnderLock(partition);
+
+        return _cluster.TryAcquireShareRecord(
+            _options.GroupId,
+            _memberId,
+            partition,
+            offset,
+            out record,
+            out deliveryCount);
+    }
+
+    /// <summary>
+    /// Releases a record acquired for delivery that never became a pending result — a deserializer
+    /// threw or was cancelled. Without this the lease has no owner in <c>_pending</c>, so no
+    /// acknowledge, commit, unsubscribe or close path can ever release it and the record stays
+    /// unavailable to the group's other members.
+    /// </summary>
+    private void ReleaseAcquiredRecord(TopicPartition partition, InMemoryRecord record) =>
+        _cluster.ReleaseShareRecords(
+            _options.GroupId,
+            _memberId,
+            [new TopicPartitionOffset(partition.Topic, partition.Partition, record.Offset)]);
+
+    private ShareConsumeResult<TKey, TValue> RegisterPending(
+        TopicPartition partition,
+        InMemoryRecord record,
+        ShareConsumeResult<TKey, TValue> result)
+    {
+        var pending = new PendingShareRecord(partition, record.Offset, record.Offset + 1);
+
+        lock (_gate)
+            _pending[result] = pending;
+
+        return result;
+    }
+
+    private async ValueTask<ShareConsumeResult<TKey, TValue>> ToShareResultAsync(
+        InMemoryRecord record,
+        int deliveryCount,
+        CancellationToken cancellationToken)
+    {
+        var key = record.IsKeyNull
+            ? default
+            : await DeserializeAsync(
+                _asyncKeyDeserializer,
+                _keyDeserializer,
+                record.Key,
+                Context(record.Topic, SerializationComponent.Key, record.Headers, isNull: false),
+                cancellationToken).ConfigureAwait(false);
+
+        var value = await DeserializeAsync(
+            _asyncValueDeserializer,
+            _valueDeserializer,
+            record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value,
+            Context(record.Topic, SerializationComponent.Value, record.Headers, isNull: record.IsValueNull),
+            cancellationToken).ConfigureAwait(false);
+
+        return new ShareConsumeResult<TKey, TValue>
+        {
+            Topic = record.Topic,
+            Partition = record.Partition,
+            Offset = record.Offset,
+            Key = key,
+            Value = value,
+            Headers = record.Headers,
+            TimestampMs = record.TimestampMs,
+            DeliveryCount = deliveryCount
+        };
+    }
+
+    private static ValueTask<T> DeserializeAsync<T>(
+        IAsyncDeserializer<T>? asyncDeserializer,
+        IDeserializer<T> deserializer,
+        ReadOnlyMemory<byte> data,
+        SerializationContext context,
+        CancellationToken cancellationToken) =>
+        asyncDeserializer is not null
+            ? asyncDeserializer.DeserializeAsync(data, context, cancellationToken)
+            : ValueTask.FromResult(deserializer.Deserialize(data, context));
 
     private ShareConsumeResult<TKey, TValue> ToShareResult(InMemoryRecord record, int deliveryCount)
     {

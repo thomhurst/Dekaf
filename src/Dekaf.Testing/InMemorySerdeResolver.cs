@@ -14,6 +14,14 @@ internal static class InMemorySerdeResolver
         return Serde<T>();
     }
 
+    /// <summary>
+    /// Null-checks a constructor argument that is forwarded to a private constructor overload,
+    /// where the argument arrives as a nullable parameter and would otherwise lose its name.
+    /// </summary>
+    public static T Required<T>(T? value, string paramName)
+        where T : class =>
+        value ?? throw new ArgumentNullException(paramName);
+
     private static ISerde<T> Serde<T>()
     {
         var type = typeof(T);
