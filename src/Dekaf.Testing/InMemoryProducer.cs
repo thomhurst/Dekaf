@@ -13,6 +13,12 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     private readonly InMemoryKafkaCluster _cluster;
     private readonly ISerializer<TKey> _keySerializer;
     private readonly ISerializer<TValue> _valueSerializer;
+    // Non-null when the caller configured an IAsyncSerializer for that component. The matching
+    // synchronous slot then holds a throwing placeholder, mirroring KafkaProducer: reaching it
+    // means a produce path missed the asynchronous divert and must fail loudly.
+    private readonly IAsyncSerializer<TKey>? _asyncKeySerializer;
+    private readonly IAsyncSerializer<TValue>? _asyncValueSerializer;
+    private readonly bool _hasAsyncSerializers;
     private bool _disposed;
 
     public InMemoryProducer(InMemoryKafkaCluster cluster)
@@ -27,10 +33,80 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         InMemoryKafkaCluster cluster,
         ISerializer<TKey> keySerializer,
         ISerializer<TValue> valueSerializer)
+        : this(
+            cluster,
+            InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
+            InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)),
+            asyncKeySerializer: null,
+            asyncValueSerializer: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a producer that awaits <see cref="IAsyncSerializer{T}"/> for both components.
+    /// </summary>
+    public InMemoryProducer(
+        InMemoryKafkaCluster cluster,
+        IAsyncSerializer<TKey> keySerializer,
+        IAsyncSerializer<TValue> valueSerializer)
+        : this(
+            cluster,
+            keySerializer: null,
+            valueSerializer: null,
+            InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
+            InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)))
+    {
+    }
+
+    /// <summary>
+    /// Creates a producer with a synchronous key serializer and an asynchronous value serializer.
+    /// </summary>
+    public InMemoryProducer(
+        InMemoryKafkaCluster cluster,
+        ISerializer<TKey> keySerializer,
+        IAsyncSerializer<TValue> valueSerializer)
+        : this(
+            cluster,
+            InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
+            valueSerializer: null,
+            asyncKeySerializer: null,
+            InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)))
+    {
+    }
+
+    /// <summary>
+    /// Creates a producer with an asynchronous key serializer and a synchronous value serializer.
+    /// </summary>
+    public InMemoryProducer(
+        InMemoryKafkaCluster cluster,
+        IAsyncSerializer<TKey> keySerializer,
+        ISerializer<TValue> valueSerializer)
+        : this(
+            cluster,
+            keySerializer: null,
+            InMemorySerdeResolver.Required(valueSerializer, nameof(valueSerializer)),
+            InMemorySerdeResolver.Required(keySerializer, nameof(keySerializer)),
+            asyncValueSerializer: null)
+    {
+    }
+
+    private InMemoryProducer(
+        InMemoryKafkaCluster cluster,
+        ISerializer<TKey>? keySerializer,
+        ISerializer<TValue>? valueSerializer,
+        IAsyncSerializer<TKey>? asyncKeySerializer,
+        IAsyncSerializer<TValue>? asyncValueSerializer)
     {
         _cluster = cluster ?? throw new ArgumentNullException(nameof(cluster));
-        _keySerializer = keySerializer ?? throw new ArgumentNullException(nameof(keySerializer));
-        _valueSerializer = valueSerializer ?? throw new ArgumentNullException(nameof(valueSerializer));
+        _asyncKeySerializer = asyncKeySerializer;
+        _asyncValueSerializer = asyncValueSerializer;
+        _keySerializer = asyncKeySerializer is null
+            ? keySerializer!
+            : AsyncOnlySerializerPlaceholder<TKey>.Instance;
+        _valueSerializer = asyncValueSerializer is null
+            ? valueSerializer!
+            : AsyncOnlySerializerPlaceholder<TValue>.Instance;
+        _hasAsyncSerializers = asyncKeySerializer is not null || asyncValueSerializer is not null;
     }
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
@@ -213,6 +289,18 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
 
+        if (_hasAsyncSerializers)
+        {
+            return ProduceWithAsyncSerializersAsync(
+                topic,
+                partition,
+                key,
+                value,
+                headers,
+                timestamp,
+                cancellationToken);
+        }
+
         var keyBytes = Serialize(_keySerializer, key, topic, SerializationComponent.Key, headers, out var isKeyNull);
         var valueBytes = Serialize(_valueSerializer, value, topic, SerializationComponent.Value, headers, out var isValueNull);
 
@@ -245,6 +333,88 @@ public sealed class InMemoryProducer<TKey, TValue> : IKafkaProducer<TKey, TValue
         {
             // Matches IKafkaProducer fire-and-forget delivery semantics: failures are not surfaced.
         }
+    }
+
+    /// <summary>
+    /// Produce path used when at least one component has an <see cref="IAsyncSerializer{T}"/>.
+    /// Components without one still encode through their synchronous serializer, so mixed
+    /// configurations behave exactly like the production producer.
+    /// </summary>
+    private async ValueTask<RecordMetadata> ProduceWithAsyncSerializersAsync(
+        string topic,
+        int? partition,
+        TKey? key,
+        TValue value,
+        Headers? headers,
+        DateTimeOffset timestamp,
+        CancellationToken cancellationToken)
+    {
+        // Null components skip their serializer entirely, matching the synchronous path.
+        var isKeyNull = key is null;
+        byte[] keyBytes = isKeyNull
+            ? []
+            : await SerializeAsync(
+                _asyncKeySerializer,
+                _keySerializer,
+                key!,
+                topic,
+                SerializationComponent.Key,
+                headers,
+                cancellationToken).ConfigureAwait(false);
+
+        var isValueNull = value is null;
+        byte[] valueBytes = isValueNull
+            ? []
+            : await SerializeAsync(
+                _asyncValueSerializer,
+                _valueSerializer,
+                value,
+                topic,
+                SerializationComponent.Value,
+                headers,
+                cancellationToken).ConfigureAwait(false);
+
+        return await _cluster.AppendAsync(
+            topic,
+            partition,
+            keyBytes,
+            isKeyNull,
+            valueBytes,
+            isValueNull,
+            headers?.ToList(),
+            timestamp,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Encodes one non-null component, awaiting <paramref name="asyncSerializer"/> when the caller
+    /// configured one and falling back to the synchronous serializer otherwise, so mixed
+    /// configurations encode each component with its own serializer.
+    /// </summary>
+    private static async ValueTask<byte[]> SerializeAsync<T>(
+        IAsyncSerializer<T>? asyncSerializer,
+        ISerializer<T> serializer,
+        T value,
+        string topic,
+        SerializationComponent component,
+        Headers? headers,
+        CancellationToken cancellationToken)
+    {
+        var writer = new ArrayBufferWriter<byte>();
+        var context = new SerializationContext
+        {
+            Topic = topic,
+            Component = component,
+            Headers = headers,
+            IsNull = false
+        };
+
+        if (asyncSerializer is null)
+            serializer.Serialize(value, ref writer, context);
+        else
+            await asyncSerializer.SerializeAsync(value, writer, context, cancellationToken).ConfigureAwait(false);
+
+        return writer.WrittenSpan.ToArray();
     }
 
     private static byte[] Serialize<T>(

@@ -519,6 +519,38 @@ public readonly struct ConsumeResult<TKey, TValue>
         IsPartitionEof = false;
     }
 
+    /// <summary>
+    /// Creates a ConsumeResult from already-deserialized key and value with caller-owned headers.
+    /// Used by in-memory test doubles running an <see cref="IAsyncDeserializer{T}"/>, which await
+    /// deserialization before construction and have no pooled fetch buffers to reference.
+    /// </summary>
+    internal ConsumeResult(
+        string topic,
+        int partition,
+        long offset,
+        TKey? key,
+        TValue value,
+        IReadOnlyList<Header>? headers,
+        long timestampMs,
+        TimestampType timestampType,
+        int? leaderEpoch)
+    {
+        Topic = topic;
+        Partition = partition;
+        Offset = offset;
+        Key = key;
+        Value = value;
+        _headers = headers;
+        _pooledHeaders = null;
+        _pooledHeaderCount = 0;
+        _headerOwner = null;
+        _headerGeneration = 0;
+        _timestampMs = timestampMs;
+        TimestampType = timestampType;
+        LeaderEpoch = leaderEpoch;
+        IsPartitionEof = false;
+    }
+
     private ConsumeResult(
         string topic,
         int partition,
