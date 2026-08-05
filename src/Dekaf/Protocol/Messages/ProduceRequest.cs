@@ -93,8 +93,9 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>, IKafkaReque
     /// <summary>
     /// Number of topic entries regardless of whether the request was populated through
     /// <see cref="TopicData"/> or the internal scratch arrays. Pairs with
-    /// <see cref="GetTopicEntry"/>; exists so tests can observe scratch-built requests
-    /// without reflecting into private fields.
+    /// <see cref="GetTopicEntry"/>; used by the segmented produce pre-serializer
+    /// (KafkaConnection) to walk coalesced requests, and by tests to observe scratch-built
+    /// requests without reflecting into private fields.
     /// </summary>
     internal int TopicEntryCount => _topicDataScratch is not null ? _topicDataScratchCount : TopicData.Count;
 
@@ -167,8 +168,9 @@ public sealed class ProduceRequestTopicData
     /// <summary>
     /// Number of partition entries regardless of whether the topic was populated through
     /// <see cref="PartitionData"/> or the internal scratch arrays. Pairs with
-    /// <see cref="GetPartitionEntry"/>; exists so tests can observe scratch-built requests
-    /// without reflecting into private fields.
+    /// <see cref="GetPartitionEntry"/>; used by the segmented produce pre-serializer
+    /// (KafkaConnection) to walk coalesced requests, and by tests to observe scratch-built
+    /// requests without reflecting into private fields.
     /// </summary>
     internal int PartitionEntryCount => _partitionDataScratch is not null ? _partitionDataScratchCount : PartitionData.Count;
 

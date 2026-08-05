@@ -121,19 +121,7 @@ public sealed class KafkaConnectionTests
         short apiVersion)
     {
         var recordBytes = "arena-backed-records"u8.ToArray();
-        var batch = new RecordBatch
-        {
-            BaseOffset = 17,
-            PartitionLeaderEpoch = 3,
-            LastOffsetDelta = 0,
-            BaseTimestamp = 1234,
-            MaxTimestamp = 1234,
-            ProducerId = 42,
-            ProducerEpoch = 2,
-            BaseSequence = 7,
-            Records = [new Record { IsKeyNull = true, Value = "value"u8.ToArray() }]
-        };
-        batch.SetPreEncodedRecords(recordBytes);
+        var batch = CreatePreEncodedBatch(17, recordBytes);
         batch.PreCompress(compression, null);
         var encodedRecordsBackingArray = batch.PreCompressedRecords ?? recordBytes;
 
@@ -160,20 +148,7 @@ public sealed class KafkaConnectionTests
         const int correlationId = 123;
         var headerVersion = KafkaMessageMetadata<ProduceRequest, ProduceResponse>
             .GetRequestHeaderVersion(apiVersion);
-        var expectedBody = new ArrayBufferWriter<byte>();
-        var expectedWriter = new KafkaProtocolWriter(expectedBody);
-        new RequestHeader
-        {
-            ApiKey = ApiKey.Produce,
-            ApiVersion = apiVersion,
-            CorrelationId = correlationId,
-            ClientId = "segment-client",
-            HeaderVersion = headerVersion
-        }.Write(ref expectedWriter);
-        request.Write(ref expectedWriter, apiVersion);
-        var expected = new byte[sizeof(int) + expectedWriter.BytesWritten];
-        BinaryPrimitives.WriteInt32BigEndian(expected, expectedWriter.BytesWritten);
-        expectedBody.WrittenSpan.CopyTo(expected.AsSpan(sizeof(int)));
+        var expected = BuildExpectedProduceFrame(request, correlationId, apiVersion, headerVersion, "segment-client");
 
         var connection = new KafkaConnection("localhost", 9092, "segment-client");
         var segmented = connection.TryPreSerializeSingleBatchProduceRequest(
@@ -296,6 +271,477 @@ public sealed class KafkaConnectionTests
 
         await Assert.That(segmented).IsFalse();
         await Assert.That(metadataArray).IsNull();
+    }
+
+    [Test]
+    [Arguments(CompressionType.None, (short)12)]
+    [Arguments(CompressionType.Gzip, (short)12)]
+    [Arguments(CompressionType.None, (short)13)]
+    [Arguments(CompressionType.Gzip, (short)13)]
+    public async Task MultiBatchProduceSegments_TwoPartitionsSameTopic_MatchContiguousSerialization(
+        CompressionType compression,
+        short apiVersion)
+    {
+        var firstRecordBytes = "first-partition-arena-records"u8.ToArray();
+        var secondRecordBytes = "second-partition-records-with-a-longer-payload"u8.ToArray();
+        var firstBatch = CreatePreEncodedBatch(17, firstRecordBytes);
+        var secondBatch = CreatePreEncodedBatch(29, secondRecordBytes);
+        firstBatch.PreCompress(compression, null);
+        secondBatch.PreCompress(compression, null);
+        var firstBackingArray = firstBatch.PreCompressedRecords ?? firstRecordBytes;
+        var secondBackingArray = secondBatch.PreCompressedRecords ?? secondRecordBytes;
+
+        // Scratch-array population mirrors the coalesced request shape BrokerSender builds.
+        var partitions = new[]
+        {
+            new ProduceRequestPartitionData { Index = 5, Records = [firstBatch], Compression = compression },
+            new ProduceRequestPartitionData { Index = 9, Records = [secondBatch], Compression = compression }
+        };
+        var topic = new ProduceRequestTopicData
+        {
+            Name = "segment-topic",
+            TopicId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff")
+        };
+        topic.SetPartitionDataScratch(partitions, 0, 2);
+        var request = new ProduceRequest
+        {
+            TransactionalId = "tx-id",
+            Acks = -1,
+            TimeoutMs = 30_000
+        };
+        request.SetTopicDataScratch([topic], 1);
+
+        try
+        {
+            var (frameSegmentCount, recordArrays) = await AssertSegmentedProduceMatchesContiguousSerialization(
+                request, correlationId: 321, apiVersion, "segment-client");
+
+            // metadata, records, metadata, records, metadata
+            await Assert.That(frameSegmentCount).IsEqualTo(5);
+
+            // Zero-copy proof: record segments reference the batches' own buffers, in order.
+            await Assert.That(recordArrays.Count).IsEqualTo(2);
+            await Assert.That(recordArrays[0]).IsSameReferenceAs(firstBackingArray);
+            await Assert.That(recordArrays[1]).IsSameReferenceAs(secondBackingArray);
+        }
+        finally
+        {
+            firstBatch.ReturnPreCompressedBuffer();
+            secondBatch.ReturnPreCompressedBuffer();
+        }
+    }
+
+    [Test]
+    [Arguments((short)12)]
+    [Arguments((short)13)]
+    public async Task MultiBatchProduceSegments_TwoTopics_MatchContiguousSerialization(short apiVersion)
+    {
+        var alphaBatch = CreatePreEncodedBatch(3, "alpha-records"u8.ToArray());
+        var alphaSecondBatch = CreatePreEncodedBatch(11, "alpha-second-partition-larger-record-payload"u8.ToArray());
+        var betaBatch = CreatePreEncodedBatch(41, "beta-topic-record-bytes"u8.ToArray());
+
+        var request = new ProduceRequest
+        {
+            Acks = 1,
+            TimeoutMs = 15_000,
+            TopicData =
+            [
+                new ProduceRequestTopicData
+                {
+                    Name = "alpha-topic",
+                    TopicId = Guid.Parse("11111111-2222-3333-4444-555555555555"),
+                    PartitionData =
+                    [
+                        new ProduceRequestPartitionData { Index = 0, Records = [alphaBatch] },
+                        new ProduceRequestPartitionData { Index = 1, Records = [alphaSecondBatch] }
+                    ]
+                },
+                new ProduceRequestTopicData
+                {
+                    Name = "beta-topic",
+                    TopicId = Guid.Parse("66666666-7777-8888-9999-aaaaaaaaaaaa"),
+                    PartitionData =
+                    [
+                        new ProduceRequestPartitionData { Index = 7, Records = [betaBatch] }
+                    ]
+                }
+            ]
+        };
+
+        await AssertSegmentedProduceMatchesContiguousSerialization(
+            request, correlationId: 654, apiVersion, clientId: null);
+    }
+
+    [Test]
+    public async Task MultiBatchProduceSegments_MultipleBatchesPerPartition_MatchContiguousSerialization()
+    {
+        var firstBatch = CreatePreEncodedBatch(0, "first-batch-in-partition"u8.ToArray());
+        var secondBatch = CreatePreEncodedBatch(1, "second-batch-in-the-same-partition-with-more-bytes"u8.ToArray());
+
+        var request = new ProduceRequest
+        {
+            Acks = -1,
+            TimeoutMs = 30_000,
+            TopicData =
+            [
+                new ProduceRequestTopicData
+                {
+                    Name = "multi-batch-topic",
+                    PartitionData =
+                    [
+                        new ProduceRequestPartitionData { Index = 4, Records = [firstBatch, secondBatch] }
+                    ]
+                }
+            ]
+        };
+
+        await AssertSegmentedProduceMatchesContiguousSerialization(
+            request, correlationId: 987, apiVersion: 12, clientId: null);
+    }
+
+    [Test]
+    public async Task MultiBatchProduceSegments_ChunkedRecordSequence_MatchContiguousSerialization()
+    {
+        // First batch's pre-encoded records span two arena chunks; the second is contiguous.
+        var chunkedRecordBytes = "chunked-record-bytes-spanning-two-arena-segments"u8.ToArray();
+        var chunkedBatch = CreatePreEncodedBatch(5, []);
+        chunkedBatch.SetPreEncodedRecords(
+            Protocol.SequenceTestHelpers.CreateMultiSegmentSequence(chunkedRecordBytes, splitAt: 17));
+        var contiguousBatch = CreatePreEncodedBatch(9, "contiguous-records"u8.ToArray());
+
+        var request = new ProduceRequest
+        {
+            Acks = -1,
+            TimeoutMs = 30_000,
+            TopicData =
+            [
+                new ProduceRequestTopicData
+                {
+                    Name = "chunked-topic",
+                    PartitionData =
+                    [
+                        new ProduceRequestPartitionData { Index = 0, Records = [chunkedBatch] },
+                        new ProduceRequestPartitionData { Index = 1, Records = [contiguousBatch] }
+                    ]
+                }
+            ]
+        };
+
+        var (frameSegmentCount, recordArrays) = await AssertSegmentedProduceMatchesContiguousSerialization(
+            request, correlationId: 555, apiVersion: 12, clientId: null);
+
+        // metadata, chunk 1, chunk 2, metadata, records, metadata
+        await Assert.That(frameSegmentCount).IsEqualTo(6);
+        await Assert.That(recordArrays.Count).IsEqualTo(3);
+        await Assert.That(recordArrays[0]).IsSameReferenceAs(chunkedRecordBytes);
+        await Assert.That(recordArrays[1]).IsSameReferenceAs(chunkedRecordBytes);
+    }
+
+    [Test]
+    public async Task MultiBatchProduceSegments_ManyChunkIncrementalSequence_MatchContiguousSerialization()
+    {
+        // Mirrors BufferMemoryAllocationStrategy.Incremental: a batch's pre-encoded records
+        // arrive as many bounded-size chunks (IncrementalBatchBuffer caps chunks at 16KB, so a
+        // large batch spans dozens of segments).
+        const int chunkCount = 24;
+        const int chunkSize = 64;
+        var chunkedRecordBytes = new byte[chunkCount * chunkSize];
+        for (var i = 0; i < chunkedRecordBytes.Length; i++)
+            chunkedRecordBytes[i] = (byte)i;
+
+        var chunkedBatch = CreatePreEncodedBatch(5, []);
+        chunkedBatch.SetPreEncodedRecords(CreateChunkedSequence(chunkedRecordBytes, chunkSize));
+        var contiguousBatch = CreatePreEncodedBatch(9, "contiguous-records"u8.ToArray());
+
+        // The seal-time hint drives the exact frame-segment array rent, so many-chunk batches
+        // never pay per-chunk descriptor-array growth.
+        await Assert.That(chunkedBatch.SegmentedRecordsSegmentCountHint).IsEqualTo(chunkCount);
+        await Assert.That(contiguousBatch.SegmentedRecordsSegmentCountHint).IsEqualTo(1);
+
+        var request = new ProduceRequest
+        {
+            Acks = -1,
+            TimeoutMs = 30_000,
+            TopicData =
+            [
+                new ProduceRequestTopicData
+                {
+                    Name = "incremental-topic",
+                    PartitionData =
+                    [
+                        new ProduceRequestPartitionData { Index = 0, Records = [chunkedBatch] },
+                        new ProduceRequestPartitionData { Index = 1, Records = [contiguousBatch] }
+                    ]
+                }
+            ]
+        };
+
+        var (frameSegmentCount, recordArrays) = await AssertSegmentedProduceMatchesContiguousSerialization(
+            request, correlationId: 777, apiVersion: 12, clientId: null);
+
+        // metadata + 24 chunks + metadata + records + metadata
+        await Assert.That(frameSegmentCount).IsEqualTo(chunkCount + 4);
+        await Assert.That(recordArrays.Count).IsEqualTo(chunkCount + 1);
+    }
+
+    [Test]
+    public async Task MultiBatchProduceSegments_UnpreparedCompressedBatch_FallsBack()
+    {
+        var preparedBatch = CreatePreEncodedBatch(1, "prepared-records"u8.ToArray());
+        var unpreparedBatch = new RecordBatch
+        {
+            Records = [new Record { IsKeyNull = true, Value = "value"u8.ToArray() }]
+        };
+
+        var request = new ProduceRequest
+        {
+            Acks = -1,
+            TimeoutMs = 30_000,
+            TopicData =
+            [
+                new ProduceRequestTopicData
+                {
+                    Name = "fallback-topic",
+                    PartitionData =
+                    [
+                        new ProduceRequestPartitionData { Index = 0, Records = [preparedBatch] },
+                        new ProduceRequestPartitionData
+                        {
+                            Index = 1,
+                            Records = [unpreparedBatch],
+                            Compression = CompressionType.Gzip
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var connection = new KafkaConnection("localhost", 9092);
+        var segmented = connection.TryPreSerializeSegmentedProduceRequest(
+            request,
+            correlationId: 1,
+            apiVersion: 12,
+            headerVersion: 2,
+            out var metadataArray,
+            out var frameSegments,
+            out var frameSegmentCount);
+
+        // All-or-nothing: one ineligible batch sends the whole request down the copying path.
+        await Assert.That(segmented).IsFalse();
+        await Assert.That(metadataArray).IsNull();
+        await Assert.That(frameSegments).IsNull();
+        await Assert.That(frameSegmentCount).IsEqualTo(0);
+    }
+
+    [Test]
+    [Timeout(10_000)]
+    public async Task SendFireAndForgetAsync_MultiBatchProduce_WritesValidSegmentedFrame(
+        CancellationToken cancellationToken)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var acceptTask = AcceptAndCompleteHandshakeAsync(listener, cancellationToken);
+            await using var connection = new KafkaConnection(IPAddress.Loopback.ToString(), port);
+            await connection.ConnectAsync(cancellationToken);
+            using var serverClient = await acceptTask.ConfigureAwait(false);
+
+            var firstBatch = CreatePreEncodedBatch(9, "borrowed-record-data-partition-two"u8.ToArray());
+            var secondBatch = CreatePreEncodedBatch(13, "borrowed-record-data-partition-three-longer"u8.ToArray());
+            var request = new ProduceRequest
+            {
+                Acks = 0,
+                TimeoutMs = 30_000,
+                TopicData =
+                [
+                    new ProduceRequestTopicData
+                    {
+                        Name = "socket-topic",
+                        PartitionData =
+                        [
+                            new ProduceRequestPartitionData { Index = 2, Records = [firstBatch] },
+                            new ProduceRequestPartitionData { Index = 3, Records = [secondBatch] }
+                        ]
+                    }
+                ]
+            };
+
+            const short apiVersion = 12;
+            await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+                request,
+                apiVersion,
+                cancellationToken);
+
+            var actual = await ReadRequestFrameAsync(serverClient.GetStream(), cancellationToken);
+            var correlationId = BinaryPrimitives.ReadInt32BigEndian(actual.AsSpan(4));
+            var headerVersion = KafkaMessageMetadata<ProduceRequest, ProduceResponse>
+                .GetRequestHeaderVersion(apiVersion);
+            var expected = BuildExpectedProduceFrame(request, correlationId, apiVersion, headerVersion, clientId: null);
+
+            await Assert.That(actual).IsEquivalentTo(expected.AsSpan(sizeof(int)).ToArray());
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    private static RecordBatch CreatePreEncodedBatch(long baseOffset, byte[] recordBytes)
+    {
+        var batch = new RecordBatch
+        {
+            BaseOffset = baseOffset,
+            PartitionLeaderEpoch = 3,
+            LastOffsetDelta = 0,
+            BaseTimestamp = 1234,
+            MaxTimestamp = 1234,
+            ProducerId = 42,
+            ProducerEpoch = 2,
+            BaseSequence = 7,
+            Records = [new Record { IsKeyNull = true, Value = "value"u8.ToArray() }]
+        };
+        batch.SetPreEncodedRecords(recordBytes);
+        return batch;
+    }
+
+    private static byte[] BuildExpectedProduceFrame(
+        ProduceRequest request,
+        int correlationId,
+        short apiVersion,
+        short headerVersion,
+        string? clientId)
+    {
+        var expectedBody = new ArrayBufferWriter<byte>();
+        var expectedWriter = new KafkaProtocolWriter(expectedBody);
+        new RequestHeader
+        {
+            ApiKey = ApiKey.Produce,
+            ApiVersion = apiVersion,
+            CorrelationId = correlationId,
+            ClientId = clientId,
+            HeaderVersion = headerVersion
+        }.Write(ref expectedWriter);
+        request.Write(ref expectedWriter, apiVersion);
+        var expected = new byte[sizeof(int) + expectedWriter.BytesWritten];
+        BinaryPrimitives.WriteInt32BigEndian(expected, expectedWriter.BytesWritten);
+        expectedBody.WrittenSpan.CopyTo(expected.AsSpan(sizeof(int)));
+        return expected;
+    }
+
+    private static byte[] AssembleSegmentedFrame(
+        byte[] metadataArray,
+        KafkaConnection.SegmentedFrameSegment[] frameSegments,
+        int frameSegmentCount)
+    {
+        var totalLength = 0;
+        for (var i = 0; i < frameSegmentCount; i++)
+            totalLength += frameSegments[i].Count;
+
+        var frame = new byte[totalLength];
+        var offset = 0;
+        for (var i = 0; i < frameSegmentCount; i++)
+        {
+            var segment = frameSegments[i];
+            var source = segment.Array ?? metadataArray;
+            source.AsSpan(segment.Offset, segment.Count).CopyTo(frame.AsSpan(offset));
+            offset += segment.Count;
+        }
+
+        return frame;
+    }
+
+    private static List<byte[]> CollectRecordSegmentArrays(
+        KafkaConnection.SegmentedFrameSegment[] frameSegments,
+        int frameSegmentCount)
+    {
+        var recordArrays = new List<byte[]>();
+        for (var i = 0; i < frameSegmentCount; i++)
+        {
+            if (frameSegments[i].Array is { } array)
+                recordArrays.Add(array);
+        }
+
+        return recordArrays;
+    }
+
+    /// <summary>
+    /// Runs the segmented pre-serializer on <paramref name="request"/>, asserts the assembled
+    /// frame is byte-identical to the contiguous (copying-path) serialization, returns the
+    /// pooled buffers, and hands back the segment count and record-segment backing arrays for
+    /// any test-specific structural assertions.
+    /// </summary>
+    private static async Task<(int FrameSegmentCount, List<byte[]> RecordSegmentArrays)>
+        AssertSegmentedProduceMatchesContiguousSerialization(
+            ProduceRequest request,
+            int correlationId,
+            short apiVersion,
+            string? clientId)
+    {
+        var headerVersion = KafkaMessageMetadata<ProduceRequest, ProduceResponse>
+            .GetRequestHeaderVersion(apiVersion);
+        var expected = BuildExpectedProduceFrame(request, correlationId, apiVersion, headerVersion, clientId);
+
+        var connection = new KafkaConnection("localhost", 9092, clientId);
+        var segmented = connection.TryPreSerializeSegmentedProduceRequest(
+            request,
+            correlationId,
+            apiVersion,
+            headerVersion,
+            out var metadataArray,
+            out var frameSegments,
+            out var frameSegmentCount);
+
+        await Assert.That(segmented).IsTrue();
+        try
+        {
+            var actual = AssembleSegmentedFrame(metadataArray, frameSegments, frameSegmentCount);
+            await Assert.That(actual).IsEquivalentTo(expected);
+            return (frameSegmentCount, CollectRecordSegmentArrays(frameSegments, frameSegmentCount));
+        }
+        finally
+        {
+            ReturnSegmentedFrame(metadataArray, frameSegments, frameSegmentCount);
+        }
+    }
+
+    private static void ReturnSegmentedFrame(
+        byte[] metadataArray,
+        KafkaConnection.SegmentedFrameSegment[] frameSegments,
+        int frameSegmentCount)
+    {
+        // Mirror the production return contract: clear only the written prefix so the pooled
+        // descriptor array does not root record buffers.
+        Array.Clear(frameSegments, 0, frameSegmentCount);
+        ArrayPool<KafkaConnection.SegmentedFrameSegment>.Shared.Return(frameSegments, clearArray: false);
+        DekafPools.SerializationBuffers.Return(metadataArray, clearArray: false);
+    }
+
+    private static ReadOnlySequence<byte> CreateChunkedSequence(byte[] data, int chunkSize)
+    {
+        var first = new ChainedSegment(data.AsMemory(0, chunkSize));
+        var last = first;
+        for (var offset = chunkSize; offset < data.Length; offset += chunkSize)
+        {
+            var length = Math.Min(chunkSize, data.Length - offset);
+            last = last.Append(data.AsMemory(offset, length));
+        }
+
+        return new ReadOnlySequence<byte>(first, 0, last, last.Memory.Length);
+    }
+
+    private sealed class ChainedSegment : ReadOnlySequenceSegment<byte>
+    {
+        public ChainedSegment(ReadOnlyMemory<byte> memory) => Memory = memory;
+
+        public ChainedSegment Append(ReadOnlyMemory<byte> memory)
+        {
+            var next = new ChainedSegment(memory) { RunningIndex = RunningIndex + Memory.Length };
+            Next = next;
+            return next;
+        }
     }
 
     [Test]

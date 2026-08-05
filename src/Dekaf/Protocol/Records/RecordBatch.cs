@@ -700,12 +700,26 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
 
     private ReadOnlyMemory<byte> _preEncodedRecords;
     private ReadOnlySequence<byte> _segmentedPreEncodedRecords;
+    private int _segmentedPreEncodedRecordsSegmentCount;
     private bool _hasSegmentedPreEncodedRecords;
     private bool _hasPreEncodedRecords;
     // Valid only while _preEncodedRecords remains retained for this batch and unmodified through Write().
     private uint _preEncodedRecordsCrc;
 
     internal bool HasPreEncodedRecords => _hasPreEncodedRecords;
+
+    /// <summary>
+    /// O(1) count of the wire segments this batch's encoded records contribute to a segmented
+    /// produce frame: 1 for pre-compressed or contiguous pre-encoded records, or the non-empty
+    /// chunk count cached at seal time for segmented pre-encoded records (Incremental-strategy
+    /// batches are chunked, e.g. at 16KB, so a large batch can span dozens of chunks). Lets the
+    /// segmented produce pre-serializer rent its frame-segment array exactly instead of growing
+    /// it per chunk.
+    /// </summary>
+    internal int SegmentedRecordsSegmentCountHint =>
+        _hasSegmentedPreEncodedRecords && PreCompressedRecords is null
+            ? _segmentedPreEncodedRecordsSegmentCount
+            : 1;
 
     internal int PreEncodedRecordsLength => _hasPreEncodedRecords ? GetPreEncodedRecordsLength() : 0;
 
@@ -751,6 +765,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
     {
         _preEncodedRecords = records;
         _segmentedPreEncodedRecords = default;
+        _segmentedPreEncodedRecordsSegmentCount = 0;
         _hasPreEncodedRecords = true;
         _hasSegmentedPreEncodedRecords = false;
         _preEncodedRecordsCrc = Crc32C.Compute(records.Span);
@@ -764,8 +779,19 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             return;
         }
 
+        // Count non-empty chunks once per batch seal so the segmented produce pre-serializer
+        // can size its frame-segment array without re-walking the sequence (see
+        // SegmentedRecordsSegmentCountHint).
+        var segmentCount = 0;
+        foreach (var memory in records)
+        {
+            if (memory.Length > 0)
+                segmentCount++;
+        }
+
         _preEncodedRecords = default;
         _segmentedPreEncodedRecords = records;
+        _segmentedPreEncodedRecordsSegmentCount = segmentCount;
         _hasPreEncodedRecords = true;
         _hasSegmentedPreEncodedRecords = true;
         _preEncodedRecordsCrc = Crc32C.Compute(records);
@@ -973,6 +999,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
             item.PreCompressedRecordsCrc = 0;
             item._preEncodedRecords = default;
             item._segmentedPreEncodedRecords = default;
+            item._segmentedPreEncodedRecordsSegmentCount = 0;
             item._hasPreEncodedRecords = false;
             item._hasSegmentedPreEncodedRecords = false;
             item._preEncodedRecordsCrc = 0;
@@ -1056,6 +1083,7 @@ public sealed class RecordBatch : IReadOnlyList<Record>, IDisposable
         batch.Records = Records;
         batch._preEncodedRecords = _preEncodedRecords;
         batch._segmentedPreEncodedRecords = _segmentedPreEncodedRecords;
+        batch._segmentedPreEncodedRecordsSegmentCount = _segmentedPreEncodedRecordsSegmentCount;
         batch._hasPreEncodedRecords = _hasPreEncodedRecords;
         batch._hasSegmentedPreEncodedRecords = _hasSegmentedPreEncodedRecords;
         batch._preEncodedRecordsCrc = _preEncodedRecordsCrc;
