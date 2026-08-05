@@ -281,11 +281,17 @@ public class SnappyCompressionCodecTests
         new Random(42).NextBytes(payload);
         var reused = new SnappyCompressionCodec(blockSize: 1024);
 
-        var reusedOutput = new ArrayBufferWriter<byte>(payload.Length + 128);
+        // Split deliberately off a block boundary: 8192 bytes in 1024-byte blocks means an
+        // aligned split (4096) leaves every block inside one segment, so Compress would take
+        // the IsSingleSegment fast path and never touch the thread-cached scratch buffer this
+        // test exists to pin. 4097 straddles the fifth block across both segments.
+        var straddlingSplit = (payload.Length / 2) + 1;
+
+        ArrayBufferWriter<byte> reusedOutput = null!;
         for (var cycle = 0; cycle < 3; cycle++)
         {
             reusedOutput = new ArrayBufferWriter<byte>(payload.Length + 128);
-            reused.Compress(CreateMultiSegmentSequence(payload), reusedOutput);
+            reused.Compress(CreateMultiSegmentSequence(payload, straddlingSplit), reusedOutput);
             var warmDecompressed = new ArrayBufferWriter<byte>(payload.Length);
             reused.Decompress(new ReadOnlySequence<byte>(reusedOutput.WrittenMemory), warmDecompressed);
 
@@ -293,7 +299,8 @@ public class SnappyCompressionCodecTests
         }
 
         var freshOutput = new ArrayBufferWriter<byte>(payload.Length + 128);
-        new SnappyCompressionCodec(blockSize: 1024).Compress(CreateMultiSegmentSequence(payload), freshOutput);
+        new SnappyCompressionCodec(blockSize: 1024)
+            .Compress(CreateMultiSegmentSequence(payload, straddlingSplit), freshOutput);
 
         await Assert.That(reusedOutput.WrittenSpan.SequenceEqual(freshOutput.WrittenSpan)).IsTrue();
     }
@@ -334,10 +341,10 @@ public class SnappyCompressionCodecTests
         await Assert.That(failures).IsEqualTo(0);
     }
 
-    private static ReadOnlySequence<byte> CreateMultiSegmentSequence(byte[] payload)
+    private static ReadOnlySequence<byte> CreateMultiSegmentSequence(byte[] payload, int splitAt = -1)
         => payload.Length < 2
             ? new ReadOnlySequence<byte>(payload)
-            : SequenceTestHelpers.CreateMultiSegmentSequence(payload, payload.Length / 2);
+            : SequenceTestHelpers.CreateMultiSegmentSequence(payload, splitAt < 0 ? payload.Length / 2 : splitAt);
 
     private static int CountXerialBlocks(ReadOnlySpan<byte> compressed)
     {
