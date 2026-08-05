@@ -46,7 +46,14 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
                 () => accumulator.PendingAppendDrainEntryCountForTest > pendingBefore,
                 TimeSpan.FromSeconds(5));
             await Assert.That(enteredDrain).IsTrue();
-            await Assert.That(accumulator.PendingAppendCountForTest).IsEqualTo(1);
+            // The drain owner temporarily moves every candidate out of the pending-append
+            // queue while it evaluates admission, so a bare count read here races the scan
+            // and can observe 0 (CI flake). Wait for the parked op to be visible between
+            // scan windows; admission cannot succeed while the reservation holds all memory.
+            await WaitForConditionAsync(
+                () => accumulator.PendingAppendCountForTest == 1,
+                TimeSpan.FromSeconds(5),
+                description: "backpressured append never parked in the pending-append queue");
             await Assert.That(produce.IsCompleted).IsFalse();
 
             accumulator.ReleaseMemory(bufferMemory);
