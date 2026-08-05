@@ -1218,6 +1218,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // active linger queue when this counter is non-zero. Count is per batch, not per message.
     private int _pendingAwaitedProduceCount;
 
+    // Non-zero while a ProduceAllAsync registration loop is appending. Bulk registrations
+    // carry per-message completion sources but are awaited as an aggregate, not serially,
+    // so the app-limited immediate-seal gate must not fire on their first message (#2510).
+    // Incremented/decremented once per bulk call, never per message.
+    private int _bulkProduceScopeCount;
+
+    // Sealed batches whose delivery has not yet completed. Unlike _inFlightBatchCount —
+    // which is decremented in OnBatchExitsPipeline, AFTER CompleteSend has already resumed
+    // the awaiting caller (so a serial awaited caller's next append races the sender's
+    // bookkeeping and loses ~99% of the time) — this counter is decremented by the sender
+    // immediately BEFORE completion sources fire, so that next append deterministically
+    // observes zero. Read only by the app-limited bypass gate (#2510); flush/dispose
+    // continue to key on _inFlightBatchCount.
+    private long _undeliveredBatchCount;
+
     // Push-based notification queue for partitions with an unsealed CurrentBatch.
     // Linger drains this instead of scanning _partitionDeques every 1ms, making awaited-produce
     // checks O(active unsealed partitions) instead of O(all partitions ever touched).
@@ -3389,7 +3404,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsRecordResources = false;
                                 if (firstAwaitedProduceInBatch)
                                     TrackPendingAwaitedProduceBatch();
-                                if (ShouldSealAppendedBatch(currentBatch))
+                                if (ShouldSealAppendedBatch(currentBatch, completionSource))
                                 {
                                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
                                     ownsRotation = true;
@@ -3432,7 +3447,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 ownsRecordResources = false;
                                 if (firstAwaitedProduceInBatch)
                                     TrackPendingAwaitedProduceBatch();
-                                if (ShouldSealAppendedBatch(newBatch))
+                                if (ShouldSealAppendedBatch(newBatch, completionSource))
                                 {
                                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, newBatch);
                                     ownsRotation = true;
@@ -3968,7 +3983,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 if (reservedFirstAwaitedProduceInBatch)
                                     TrackPendingAwaitedProduceBatch();
 
-                                if (ShouldSealAppendedBatch(reservedAppendBatch))
+                                if (ShouldSealAppendedBatch(reservedAppendBatch, completionSource))
                                 {
                                     batchToComplete = DetachCurrentBatchForSealUnderLock(pd, reservedAppendBatch);
                                     ownsRotation = true;
@@ -4323,7 +4338,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (result.FirstCompletionSourceInBatch)
                 TrackPendingAwaitedProduceBatch();
 
-            if (ShouldSealAppendedBatch(currentBatch))
+            if (ShouldSealAppendedBatch(currentBatch, completionSource))
             {
                 batchToComplete = DetachCurrentBatchForSealUnderLock(pd, currentBatch);
             }
@@ -4531,12 +4546,82 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return result < current ? long.MaxValue : result;
     }
 
+    // No ShouldFlush conjunct: every call site runs on the appending thread immediately
+    // after a successful append, so RecordCount >= 1 and ShouldFlush(now, 0) is true on
+    // both the awaited (lingerMs == 0 => true) and fire-and-forget (elapsed >= 0) branches —
+    // calling it would only spend a Stopwatch.GetTimestamp() per append for a constant.
+    //
+    // The bypass branch checks only the mute set, not ShouldDeferPartialBatchSeal: with
+    // zero undelivered batches producer-wide (a gate condition), a non-zero
+    // _partitionQueueBytes entry is bookkeeping lag from the previous delivery
+    // (decremented in OnBatchExitsPipeline, after CompleteSend resumed the caller),
+    // never a real pipeline batch.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool ShouldSealAppendedBatch(PartitionBatch batch)
-        => batch.IsExactlyAtSizeLimit
-            || (_options.LingerMs == 0
-                && !ShouldDeferPartialBatchSeal(batch)
-                && batch.ShouldFlush(Stopwatch.GetTimestamp(), _options.LingerMs));
+    private bool ShouldSealAppendedBatch(PartitionBatch batch, PooledValueTaskSource<RecordMetadata>? completionSource)
+    {
+        if (batch.IsExactlyAtSizeLimit)
+            return true;
+
+        if (_options.LingerMs == 0)
+            return !ShouldDeferPartialBatchSeal(batch);
+
+        return IsAppLimitedAwaitedAppend(batch, completionSource)
+            && !_mutedPartitions.ContainsKey(batch.TopicPartition);
+    }
+
+    /// <summary>
+    /// App-limited awaited produce detection (#2510): a caller that serially awaits each
+    /// message can never coalesce anything into the open batch while it waits, so the
+    /// awaited linger window (min(2ms, LingerMs/2)) buys no batching — only latency and
+    /// linger-throttled throughput. When the appended message is provably the only demand
+    /// in the whole producer, seal and dispatch immediately instead of waiting.
+    ///
+    /// Every condition is required so batching under load is untouched (protected metric):
+    /// - completion source present: fire-and-forget appends keep full linger batching;
+    /// - sole record in this batch: nothing has coalesced, and no fire-and-forget records
+    ///   would ship early (with the just-appended record being the only one and carrying
+    ///   the completion source, it is also the batch's sole completion source);
+    /// - sole awaited batch producer-wide, sole unsealed batch, zero undelivered sealed
+    ///   batches: no concurrent demand exists that this batch could ride along with in a
+    ///   multi-partition produce request (undelivered — not _inFlightBatchCount, whose
+    ///   post-CompleteSend decrement loses the race against a serial caller's next append);
+    /// - no bulk produce scope open: ProduceAllAsync demand must batch normally, not
+    ///   ship 1-record requests.
+    /// Racy counter reads only make the gate conservative (skip bypass) or fire it at the
+    /// instant load begins (one small request) — the seal itself runs under the deque lock
+    /// on the existing LingerMs==0 machinery.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsAppLimitedAwaitedAppend(PartitionBatch batch, PooledValueTaskSource<RecordMetadata>? completionSource)
+        => completionSource is not null
+            && batch.RecordCount == 1
+            && Volatile.Read(ref _pendingAwaitedProduceCount) == 1
+            && Volatile.Read(ref _unsealedBatchCount) == 1
+            && Volatile.Read(ref _undeliveredBatchCount) == 0
+            && Volatile.Read(ref _bulkProduceScopeCount) == 0;
+
+    /// <summary>
+    /// Opens a bulk produce scope so aggregate-awaited registrations (ProduceAllAsync) are
+    /// not mistaken for app-limited serial awaited produce. The scope must stay open until
+    /// the aggregate completes: metadata-miss and backpressure appends land after the
+    /// registration loop, and pending bulk delivery is still aggregate demand. See
+    /// <see cref="IsAppLimitedAwaitedAppend"/>.
+    /// </summary>
+    internal BulkProduceScope EnterBulkProduceScope()
+    {
+        Interlocked.Increment(ref _bulkProduceScopeCount);
+        return new BulkProduceScope(this);
+    }
+
+    /// <summary>Counter guard returned by <see cref="EnterBulkProduceScope"/>.</summary>
+    internal readonly struct BulkProduceScope(RecordAccumulator accumulator) : IDisposable
+    {
+        public void Dispose()
+        {
+            var count = Interlocked.Decrement(ref accumulator._bulkProduceScopeCount);
+            Debug.Assert(count >= 0, "Bulk produce scope disposed more times than entered; a negative count silently disables the app-limited bypass.");
+        }
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool ShouldDeferPartialBatchSeal(PartitionBatch batch)
@@ -5503,8 +5588,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             batch.EnableDeliveryDiagnostics();
             batch.AppendDiag('E');
         }
+        batch.DeliveryAccountingArmed = 1;
+        Interlocked.Increment(ref _undeliveredBatchCount);
         Interlocked.Increment(ref _inFlightBatchCount);
         InFlightBatchListAdd(batch);
+    }
+
+    /// <summary>
+    /// Marks a pipeline batch's delivery as complete for the app-limited bypass gate
+    /// (#2510). Idempotent per flight: only the call that disarms
+    /// <see cref="ReadyBatch.DeliveryAccountingArmed"/> decrements, and batches that never
+    /// entered the pipeline are unarmed no-ops. The sender calls this immediately before
+    /// CompleteSend on the ack path so a serial awaited caller's next append sees zero
+    /// undelivered batches; OnBatchExitsPipeline calls it as the fallback covering every
+    /// failure, purge, sweep, and dispose path.
+    /// </summary>
+    internal void MarkBatchDeliveryComplete(ReadyBatch batch)
+    {
+        if (Interlocked.Exchange(ref batch.DeliveryAccountingArmed, 0) != 1)
+            return;
+
+        var count = Interlocked.Decrement(ref _undeliveredBatchCount);
+        Debug.Assert(count >= 0, $"Undelivered batch count went negative ({count}) — mismatched enter/complete accounting");
     }
 
     /// <summary>
@@ -5520,6 +5625,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // concurrent cleanup paths (e.g., DisposeAsync racing with SendLoopAsync's finally block).
         if (!InFlightBatchListRemove(batch))
             return false;
+
+        // Fallback for paths that never reached the sender's pre-CompleteSend call
+        // (failures, purge, sweeps, dispose). No-op when already marked.
+        MarkBatchDeliveryComplete(batch);
 
         if (Interlocked.Exchange(ref batch.UnackedBudget, null) is { } unackedBudget)
         {
@@ -8676,6 +8785,16 @@ internal sealed class ReadyBatch
     internal int UnackedReservedBytes;
     internal long AdmissionGeneration;
     internal int UnackedBudgetPipelineTracked;
+
+    /// <summary>
+    /// 1 while this flight is counted in the accumulator's undelivered-batch count
+    /// (app-limited bypass gate, #2510). Armed by OnBatchEntersPipeline; the first
+    /// MarkBatchDeliveryComplete call (sender pre-CompleteSend, or the
+    /// OnBatchExitsPipeline fallback) disarms it and decrements. Batches that never
+    /// entered the pipeline (e.g. test harnesses enqueueing straight into a sender)
+    /// stay at 0, so completion marking is a no-op for them.
+    /// </summary>
+    internal int DeliveryAccountingArmed;
 
     // Intrusive linked list pointers for RecordAccumulator._inFlightBatchList.
     // Using embedded pointers eliminates per-batch ConcurrentDictionary.Node allocations

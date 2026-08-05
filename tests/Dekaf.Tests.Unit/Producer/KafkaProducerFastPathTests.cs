@@ -37,6 +37,7 @@ public class KafkaProducerFastPathTests
             Serializers.String,
             Serializers.String);
         await StopProducerBackgroundLoopsAsync(producer);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(producer.RecordAccumulator);
         await using var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicInfo = CreateTopicInfo();
         var innerCompletion = pool.Rent();

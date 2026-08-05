@@ -53,6 +53,7 @@ public sealed class FireAndForgetDeliveryErrorMetricTests
 
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
 
         try

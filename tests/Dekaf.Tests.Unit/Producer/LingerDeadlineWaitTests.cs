@@ -79,6 +79,7 @@ public class LingerDeadlineWaitTests
     public async Task AwaitedBatch_WaitShrinksToAwaitedWindow()
     {
         var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 60_000));
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         await using var pool = new ValueTaskSourcePool<RecordMetadata>();
         try
         {
@@ -171,6 +172,7 @@ public class LingerDeadlineWaitTests
     public async Task LingerSweep_RaisesOldestBatchHintToSurvivingBatch(CancellationToken cancellationToken)
     {
         var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 60_000));
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         await using var pool = new ValueTaskSourcePool<RecordMetadata>();
         try
         {
@@ -205,6 +207,7 @@ public class LingerDeadlineWaitTests
     public async Task BatchQueuedAfterSweepSnapshot_SignalsLingerWakeup(CancellationToken cancellationToken)
     {
         var accumulator = new RecordAccumulator(CreateOptions(lingerMs: 60_000));
+        AccumulatorTestHelpers.KeepBatchesOpenDespiteAppLimitedBypass(accumulator);
         await using var pool = new ValueTaskSourcePool<RecordMetadata>();
         using var snapshotTaken = new ManualResetEventSlim();
         using var continueSweep = new ManualResetEventSlim();

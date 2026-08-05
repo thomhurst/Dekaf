@@ -14,6 +14,38 @@ namespace Dekaf.Tests.Unit.Producer;
 internal static class AccumulatorTestHelpers
 {
     /// <summary>
+    /// Suppresses the app-limited immediate-seal bypass (#2510) for the accumulator's
+    /// remaining lifetime by holding it in a bulk produce scope (the scope is deliberately
+    /// never disposed). Tests that use a sole awaited append as setup and then reach into
+    /// the still-open CurrentBatch (or expect the linger loop to own the seal) call this
+    /// right after constructing the accumulator; without it the bypass seals the batch at
+    /// append and CurrentBatch is already null.
+    /// </summary>
+    public static void KeepBatchesOpenDespiteAppLimitedBypass(RecordAccumulator accumulator)
+        => _ = accumulator.EnterBulkProduceScope();
+
+    /// <summary>
+    /// Appends one null-key/null-value record carrying a freshly rented completion source
+    /// (an awaited produce). Returns the append result.
+    /// </summary>
+    public static bool AppendAwaitedNullRecord(
+        RecordAccumulator accumulator,
+        ValueTaskSourcePool<RecordMetadata> pool,
+        string topic,
+        int partition = 0)
+    {
+        return accumulator.TryAppendWithCompletion(
+            topic,
+            partition,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            PooledMemory.Null,
+            PooledMemory.Null,
+            headers: null,
+            headerCount: 0,
+            pool.Rent());
+    }
+
+    /// <summary>
     /// Reads a private instance field via reflection.
     /// </summary>
     public static T GetPrivateField<T>(object instance, string fieldName)

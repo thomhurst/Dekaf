@@ -3253,6 +3253,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     : DateTimeOffset.UtcNow;
                 try { CompleteInflightEntry(batch); }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                // Before CompleteSend: the completion resumes a serial awaited caller whose
+                // next append reads the undelivered count (app-limited bypass, #2510) —
+                // decrementing after would lose that race on nearly every message.
+                _accumulator.MarkBatchDeliveryComplete(batch);
                 batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
                 try
                 {
@@ -3860,6 +3864,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
 
                         CompleteInflightEntry(batch);
+                        // Same pre-CompleteSend ordering as the acked path (#2510).
+                        _accumulator.MarkBatchDeliveryComplete(batch);
                         batch.CompleteSend(-1, fireAndForgetTimestamp);
                         try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null); }
                         catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
