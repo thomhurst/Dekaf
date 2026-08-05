@@ -22,7 +22,24 @@ internal static class DekafMetrics
         DekafDiagnostics.Meter.CreateCounter<long>(
             "dekaf.producer.sent.bytes",
             unit: "By",
-            description: "Total bytes published to Kafka.");
+            description: "Total encoded record-batch bytes published to Kafka.");
+
+    /// <summary>
+    /// Records a delivered batch's sent counters. Called once per batch from
+    /// <c>ReadyBatch.CompleteSend</c> — the single once-guarded choke point both the acked
+    /// and fire-and-forget send paths funnel through — so fire-and-forget traffic is counted
+    /// and awaited traffic (which emits only its operation duration) is never double-counted.
+    /// Per-batch, not per-message; the TagList is a stack struct, so no heap allocation.
+    /// </summary>
+    internal static void RecordBatchDelivered(string topic, int recordCount, long encodedBytes)
+    {
+        if (!MessagesSent.Enabled && !BytesSent.Enabled)
+            return;
+
+        var tags = DekafDiagnostics.ClientMetricTags(DekafDiagnostics.OperationNameSend, topic);
+        MessagesSent.Add(recordCount, tags);
+        BytesSent.Add(encodedBytes, tags);
+    }
 
     internal static readonly Histogram<double> OperationDuration =
         DekafDiagnostics.Meter.CreateHistogram<double>(

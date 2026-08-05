@@ -507,12 +507,15 @@ public readonly record struct RecordMetadata
     public required DateTimeOffset Timestamp { get; init; }
 
     /// <summary>
-    /// Size of the serialized key in bytes.
+    /// Size of the serialized key in bytes. Not populated by this client — always 0
+    /// (the in-memory testing cluster does populate it). Retained for compatibility;
+    /// for byte accounting use the <c>dekaf.producer.sent.bytes</c> metric.
     /// </summary>
     public int KeySize { get; init; }
 
     /// <summary>
-    /// Size of the serialized value in bytes.
+    /// Size of the serialized value in bytes. Not populated by this client — see
+    /// <see cref="KeySize"/>.
     /// </summary>
     public int ValueSize { get; init; }
 }

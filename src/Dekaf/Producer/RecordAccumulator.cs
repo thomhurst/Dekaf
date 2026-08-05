@@ -9519,6 +9519,9 @@ internal sealed class ReadyBatch
         {
             ProducerDebugCounters.RecordBatchSentSuccessfully();
 
+            // Counted exactly once here — see DekafMetrics.RecordBatchDelivered.
+            Diagnostics.DekafMetrics.RecordBatchDelivered(_topicPartition.Topic, _recordCount, EncodedSize);
+
             // Complete per-message completion sources with metadata
             if (_completionSourcesCount > 0 && _completionSourcesArray is not null)
             {

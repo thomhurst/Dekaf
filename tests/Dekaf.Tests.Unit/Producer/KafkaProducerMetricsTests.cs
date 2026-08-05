@@ -10,14 +10,14 @@ public sealed class KafkaProducerMetricsTests
 {
     [Test]
     [NotInParallel("MeterListener")]
-    public async Task AwaitWithMetrics_MeterOnlyListener_RecordsSuccessMetrics()
+    public async Task AwaitWithMetrics_MeterOnlyListener_RecordsDurationOnly()
     {
+        // Sent counters are per-batch (see ReadyBatchDeliveryMetricsTests); the awaited
+        // path must emit only the operation duration, never the counters.
         var topic = $"orders-{Guid.NewGuid():N}";
         long messagesSent = 0;
         long bytesSent = 0;
         double operationDuration = -1;
-        string? messagesTopic = null;
-        string? bytesTopic = null;
         string? durationTopic = null;
 
         using var listener = new MeterListener();
@@ -36,15 +36,9 @@ public sealed class KafkaProducerMetricsTests
                 return;
 
             if (instrument.Name == "messaging.client.sent.messages")
-            {
                 messagesSent += measurement;
-                messagesTopic = metricTopic;
-            }
             else if (instrument.Name == "dekaf.producer.sent.bytes")
-            {
                 bytesSent += measurement;
-                bytesTopic = metricTopic;
-            }
         });
         listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
         {
@@ -60,7 +54,7 @@ public sealed class KafkaProducerMetricsTests
         });
         listener.Start();
 
-        await Assert.That(ProducerMetricsEnabled()).IsTrue();
+        await Assert.That(OperationScopedMetricsEnabled()).IsTrue();
 
         await using var producer = new KafkaProducer<string, string>(
             new ProducerOptions
@@ -77,19 +71,15 @@ public sealed class KafkaProducerMetricsTests
             Topic = topic,
             Partition = 1,
             Offset = 42,
-            Timestamp = DateTimeOffset.UtcNow,
-            KeySize = 3,
-            ValueSize = 5
+            Timestamp = DateTimeOffset.UtcNow
         });
 
         var metadata = await InvokeAwaitWithMetrics(producer, completion, topic);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
-        await Assert.That(messagesSent).IsEqualTo(1);
-        await Assert.That(bytesSent).IsEqualTo(8);
+        await Assert.That(messagesSent).IsEqualTo(0);
+        await Assert.That(bytesSent).IsEqualTo(0);
         await Assert.That(operationDuration).IsGreaterThanOrEqualTo(0);
-        await Assert.That(messagesTopic).IsEqualTo(topic);
-        await Assert.That(bytesTopic).IsEqualTo(topic);
         await Assert.That(durationTopic).IsEqualTo(topic);
     }
 
@@ -179,10 +169,10 @@ public sealed class KafkaProducerMetricsTests
         await Assert.That(async () => await pending).Throws<OperationCanceledException>();
     }
 
-    private static bool ProducerMetricsEnabled()
+    private static bool OperationScopedMetricsEnabled()
     {
         var method = typeof(KafkaProducer<string, string>).GetMethod(
-            "ProducerMetricsEnabled",
+            "OperationScopedMetricsEnabled",
             BindingFlags.NonPublic | BindingFlags.Static);
 
         return (bool)method!.Invoke(null, null)!;

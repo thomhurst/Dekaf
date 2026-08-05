@@ -68,11 +68,11 @@ Both spans set `messaging.system = kafka` plus:
 | `messaging.kafka.message.key` | ✓ (string-convertible keys) | |
 | `messaging.destination.partition.id` | ✓ (on delivery) | ✓ |
 | `messaging.kafka.offset` | ✓ (on delivery) | ✓ |
-| `messaging.message.body.size` | ✓ (on delivery) | ✓ |
+| `messaging.message.body.size` | | ✓ |
 | `messaging.kafka.message.tombstone` | ✓ (null-value messages) | ✓ (tombstone records) |
 | `messaging.consumer.group.name` | | ✓ |
 
-`messaging.message.body.size` is the value payload only — the key is not part of the message body; tombstones report `0`.
+`messaging.message.body.size` is set on consume spans only, and is the value payload only — the key is not part of the message body; tombstones report `0`.
 
 Failures set the span status to `Error`, set `error.type` to the exception's fully-qualified type name, and record an `exception` event with `exception.type`, `exception.message`, and `exception.stacktrace`. Successful spans leave the status unset, per the OTel span-status guidance.
 
@@ -84,7 +84,7 @@ These are the spec-defined instruments from the [OTel messaging metrics conventi
 
 | Instrument | Type | Unit | Description |
 |------------|------|------|-------------|
-| `messaging.client.sent.messages` | Counter | `{message}` | Messages published |
+| `messaging.client.sent.messages` | Counter | `{message}` | Messages published (counted per delivered batch; includes fire-and-forget) |
 | `messaging.client.operation.duration` | Histogram | `s` | Produce operation duration (successes and failures) |
 | `messaging.client.consumed.messages` | Counter | `{message}` | Messages received |
 
@@ -98,7 +98,7 @@ Dekaf-specific instruments live under the `dekaf.*` prefix — the `messaging.*`
 
 | Instrument | Description |
 |------------|-------------|
-| `dekaf.producer.sent.bytes` | Bytes published (key + value) |
+| `dekaf.producer.sent.bytes` | Encoded record-batch bytes published (wire size after compression; counted per delivered batch, includes fire-and-forget) |
 | `dekaf.producer.send.errors` | Produce errors (includes fire-and-forget delivery failures) |
 | `dekaf.producer.send.retries` | Produce retries |
 | `dekaf.producer.buffer.used_bytes` / `limit_bytes` | `BufferMemory` reservation vs configured limit |
