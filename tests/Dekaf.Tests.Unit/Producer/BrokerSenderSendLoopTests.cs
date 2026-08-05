@@ -1460,6 +1460,63 @@ public sealed class BrokerSenderSendLoopTests : ScriptedProduceResponseFixture
     }
 
     [Test]
+    [Timeout(30_000)]
+    [NotInParallel("MeterListener")]
+    public async Task SendLoop_AckedBatch_EmitsSentCountersThroughRealSendPath(
+        CancellationToken cancellationToken)
+    {
+        // The original defect (#2529) was counters wired onto a path production traffic never
+        // took, so this drives the real send loop end to end rather than calling CompleteSend
+        // directly: enqueue -> serialize -> scripted ack -> per-batch counter emission.
+        const string topic = "test-topic";
+        // Resolve instrument names before the listener starts (static-initializer re-entry
+        // landmine — see FireAndForgetDeliveryErrorMetricTests).
+        var messagesSentName = DekafMetrics.MessagesSent.Name;
+        var bytesSentName = DekafMetrics.BytesSent.Name;
+        var messagesSent = 0L;
+        var bytesSent = 0L;
+        using var listener = AccumulatorTestHelpers.StartMeterListener(
+            [messagesSentName, bytesSentName],
+            onLong: (instrument, measurement, tags, _) =>
+            {
+                if (AccumulatorTestHelpers.GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                    return;
+
+                if (instrument.Name == messagesSentName)
+                    Interlocked.Add(ref messagesSent, measurement);
+                else
+                    Interlocked.Add(ref bytesSent, measurement);
+            });
+
+        var connection = new TestKafkaConnection
+        {
+            SendProducePipelinedAfterWrite = () => new ValueTask<Task<ProduceResponse>>(
+                Task.FromResult(CreateSuccessResponseForPartitions(topic, partitionCount: 1)))
+        };
+        var (pool, _) = CreateScaleTrackingPool(connection);
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>();
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, _) => { });
+
+        try
+        {
+            sender.Enqueue(CreateTestBatch(valueTaskSourcePool, topic, partition: 0, messageCount: 3));
+
+            await WaitUntilAsync(() => Volatile.Read(ref messagesSent) == 3, cancellationToken);
+
+            // Bytes are the batch's encoded wire size, stamped during serialization.
+            await Assert.That(Volatile.Read(ref bytesSent)).IsGreaterThan(0);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await valueTaskSourcePool.DisposeAsync();
+        }
+    }
+
+    [Test]
     [NotInParallel("MeterListener")]
     public async Task DeferredPendingResponseCleanup_ReportsDeferredAndRecoveredMetrics()
     {

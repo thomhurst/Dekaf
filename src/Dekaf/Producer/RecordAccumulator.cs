@@ -2230,10 +2230,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 StartSenderRetryPreSerialization(child, senderWakeup!);
         }
 
-        Diagnostics.DekafMetrics.BatchSplits.Add(1, new TagList
-        {
-            { Diagnostics.DekafDiagnostics.MessagingDestinationName, splitBatches[0].TopicPartition.Topic }
-        });
+        Diagnostics.DekafMetrics.RecordBatchSplit(splitBatches[0].TopicPartition.Topic);
         if (reenqueue)
             SignalWakeup();
         return splitBatches;
@@ -9689,13 +9686,7 @@ internal sealed class ReadyBatch
             // dekaf.producer.send.errors never reflects fire-and-forget delivery failures.
             // ProduceAsync records are excluded: each awaiter increments the counter itself.
             var unobservedRecords = _recordCount - _completionSourcesCount;
-            if (Diagnostics.DekafMetrics.ProduceErrors.Enabled && unobservedRecords > 0)
-            {
-                Diagnostics.DekafMetrics.ProduceErrors.Add(unobservedRecords, new TagList
-                {
-                    { Diagnostics.DekafDiagnostics.MessagingDestinationName, _topicPartition.Topic }
-                });
-            }
+            Diagnostics.DekafMetrics.RecordUnobservedProduceErrors(_topicPartition.Topic, unobservedRecords);
 
             // Fail per-message completion sources - these throw for ProduceAsync callers
             if (_completionSourcesCount > 0 && _completionSourcesArray is not null)

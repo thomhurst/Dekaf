@@ -20,39 +20,30 @@ public sealed class KafkaProducerMetricsTests
         double operationDuration = -1;
         string? durationTopic = null;
 
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (instrument, meterListener) =>
-        {
-            if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
-                IsProducerSuccessMetric(instrument.Name))
+        using var listener = AccumulatorTestHelpers.StartMeterListener(
+            ProducerSuccessMetrics,
+            onLong: (instrument, measurement, tags, _) =>
             {
-                meterListener.EnableMeasurementEvents(instrument);
-            }
-        };
-        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
-        {
-            var metricTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
-            if (metricTopic != topic)
-                return;
+                if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                    return;
 
-            if (instrument.Name == "messaging.client.sent.messages")
-                messagesSent += measurement;
-            else if (instrument.Name == "dekaf.producer.sent.bytes")
-                bytesSent += measurement;
-        });
-        listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
-        {
-            var metricTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
-            if (metricTopic != topic)
-                return;
-
-            if (instrument.Name == "messaging.client.operation.duration")
+                if (instrument.Name == "messaging.client.sent.messages")
+                    messagesSent += measurement;
+                else if (instrument.Name == "dekaf.producer.sent.bytes")
+                    bytesSent += measurement;
+            },
+            onDouble: (instrument, measurement, tags, _) =>
             {
-                operationDuration = measurement;
-                durationTopic = metricTopic;
-            }
-        });
-        listener.Start();
+                var metricTopic = GetTag(tags, DekafDiagnostics.MessagingDestinationName);
+                if (metricTopic != topic)
+                    return;
+
+                if (instrument.Name == "messaging.client.operation.duration")
+                {
+                    operationDuration = measurement;
+                    durationTopic = metricTopic;
+                }
+            });
 
         await Assert.That(OperationScopedMetricsEnabled()).IsTrue();
 
@@ -93,38 +84,30 @@ public sealed class KafkaProducerMetricsTests
         double operationDuration = -1;
         string? durationErrorType = null;
 
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (instrument, meterListener) =>
-        {
-            if (instrument.Meter.Name == DekafDiagnostics.MeterName &&
-                instrument.Name is "dekaf.producer.send.errors" or "messaging.client.operation.duration")
+        using var listener = AccumulatorTestHelpers.StartMeterListener(
+            ["dekaf.producer.send.errors", "messaging.client.operation.duration"],
+            onLong: (instrument, measurement, tags, _) =>
             {
-                meterListener.EnableMeasurementEvents(instrument);
-            }
-        };
-        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
-        {
-            if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
-                return;
+                if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                    return;
 
-            if (instrument.Name == "dekaf.producer.send.errors")
+                if (instrument.Name == "dekaf.producer.send.errors")
+                {
+                    errorCount += measurement;
+                    errorCountErrorType = GetTag(tags, DekafDiagnostics.ErrorType);
+                }
+            },
+            onDouble: (instrument, measurement, tags, _) =>
             {
-                errorCount += measurement;
-                errorCountErrorType = GetTag(tags, DekafDiagnostics.ErrorType);
-            }
-        });
-        listener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
-        {
-            if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
-                return;
+                if (GetTag(tags, DekafDiagnostics.MessagingDestinationName) != topic)
+                    return;
 
-            if (instrument.Name == "messaging.client.operation.duration")
-            {
-                operationDuration = measurement;
-                durationErrorType = GetTag(tags, DekafDiagnostics.ErrorType);
-            }
-        });
-        listener.Start();
+                if (instrument.Name == "messaging.client.operation.duration")
+                {
+                    operationDuration = measurement;
+                    durationErrorType = GetTag(tags, DekafDiagnostics.ErrorType);
+                }
+            });
 
         await using var producer = new KafkaProducer<string, string>(
             new ProducerOptions
@@ -195,18 +178,12 @@ public sealed class KafkaProducerMetricsTests
     }
 
     private static string? GetTag(ReadOnlySpan<KeyValuePair<string, object?>> tags, string key)
-    {
-        foreach (var tag in tags)
-        {
-            if (tag.Key == key)
-                return tag.Value?.ToString();
-        }
+        => AccumulatorTestHelpers.GetTag(tags, key);
 
-        return null;
-    }
-
-    private static bool IsProducerSuccessMetric(string name) =>
-        name is "messaging.client.sent.messages"
-            or "dekaf.producer.sent.bytes"
-            or "messaging.client.operation.duration";
+    private static readonly string[] ProducerSuccessMetrics =
+    [
+        "messaging.client.sent.messages",
+        "dekaf.producer.sent.bytes",
+        "messaging.client.operation.duration"
+    ];
 }

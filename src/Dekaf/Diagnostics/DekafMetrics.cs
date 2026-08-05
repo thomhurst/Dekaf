@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Runtime.CompilerServices;
 using Dekaf.Producer;
 
 namespace Dekaf.Diagnostics;
@@ -31,14 +32,94 @@ internal static class DekafMetrics
     /// and awaited traffic (which emits only its operation duration) is never double-counted.
     /// Per-batch, not per-message; the TagList is a stack struct, so no heap allocation.
     /// </summary>
+    /// <remarks>
+    /// The emission itself lives in a separate method: <c>Counter.Add</c> runs listener
+    /// callbacks (user or exporter code) inline on the caller's thread, and this is called
+    /// after <c>ReadyBatch</c>'s once-only completion guard is claimed but before the
+    /// completion sources are signalled — an escaping listener exception would retire the
+    /// batch with its awaiters unsignalled, and every later Fail would short-circuit on the
+    /// same guard, leaving ProduceAsync callers waiting forever. Dropping a telemetry sample
+    /// is the correct trade. RyuJIT never inlines a method containing an exception handler,
+    /// so the catch sits in the cold callee and the no-listener fast path stays inlinable.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static void RecordBatchDelivered(string topic, int recordCount, long encodedBytes)
     {
         if (!MessagesSent.Enabled && !BytesSent.Enabled)
             return;
 
-        var tags = DekafDiagnostics.ClientMetricTags(DekafDiagnostics.OperationNameSend, topic);
-        MessagesSent.Add(recordCount, tags);
-        BytesSent.Add(encodedBytes, tags);
+        EmitBatchDelivered(topic, recordCount, encodedBytes);
+    }
+
+    private static void EmitBatchDelivered(string topic, int recordCount, long encodedBytes)
+    {
+        try
+        {
+            var tags = DekafDiagnostics.ClientMetricTags(DekafDiagnostics.OperationNameSend, topic);
+            MessagesSent.Add(recordCount, tags);
+            BytesSent.Add(encodedBytes, tags);
+        }
+        catch
+        {
+            // Listener exceptions must not escape into batch completion — see the remarks above.
+        }
+    }
+
+    /// <summary>
+    /// Records produce errors for a failed batch's records that have no awaiter to observe them
+    /// (fire-and-forget and callback appends). Isolated from the caller for the same reason as
+    /// <see cref="RecordBatchDelivered"/>: the batch's completion guard is already claimed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void RecordUnobservedProduceErrors(string topic, int errorCount)
+    {
+        if (errorCount <= 0 || !ProduceErrors.Enabled)
+            return;
+
+        EmitUnobservedProduceErrors(topic, errorCount);
+    }
+
+    private static void EmitUnobservedProduceErrors(string topic, int errorCount)
+    {
+        try
+        {
+            ProduceErrors.Add(errorCount, new System.Diagnostics.TagList
+            {
+                { DekafDiagnostics.MessagingDestinationName, topic }
+            });
+        }
+        catch
+        {
+            // See RecordBatchDelivered — a throwing listener must not strand the batch's awaiters.
+        }
+    }
+
+    /// <summary>
+    /// Records a KIP-126 batch split. Isolated from the caller so a throwing listener cannot
+    /// escape into the sender loop between queueing the child batches and signalling the wakeup.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void RecordBatchSplit(string topic)
+    {
+        if (!BatchSplits.Enabled)
+            return;
+
+        EmitBatchSplit(topic);
+    }
+
+    private static void EmitBatchSplit(string topic)
+    {
+        try
+        {
+            BatchSplits.Add(1, new System.Diagnostics.TagList
+            {
+                { DekafDiagnostics.MessagingDestinationName, topic }
+            });
+        }
+        catch
+        {
+            // See RecordBatchDelivered.
+        }
     }
 
     internal static readonly Histogram<double> OperationDuration =

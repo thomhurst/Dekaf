@@ -84,7 +84,10 @@ public static class DekafDiagnostics
 
     /// <summary>
     /// Tag set for messaging.client.* instruments: the spec-required messaging.system and
-    /// messaging.operation.name plus the destination. Callers cache the result per topic.
+    /// messaging.operation.name plus the destination. <see cref="TagList"/> is a stack struct
+    /// holding reference-typed tag values, so building one costs no allocation; per-batch call
+    /// sites (see <c>DekafMetrics.RecordBatchDelivered</c>) deliberately build it inline rather
+    /// than caching per topic, which measured cheaper and avoids an unbounded per-topic cache.
     /// </summary>
     internal static System.Diagnostics.TagList ClientMetricTags(string operationName, string topic) => new()
     {
