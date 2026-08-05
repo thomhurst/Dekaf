@@ -24,11 +24,39 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
         var topic = $"outbox-relay-{Guid.NewGuid():N}";
         await KafkaContainer.CreateTopicAsync(topic, partitions: 2);
 
-        using var connection = new SqliteConnection("DataSource=:memory:");
-        connection.Open();
+        // A file database, not one shared in-memory SqliteConnection. The relay's background
+        // cycle and this test's polling both open contexts through the factory, and a
+        // SqliteConnection is not thread-safe: sharing a single instance corrupted its
+        // internal command list, surfacing as NullReferenceException from
+        // SqliteCommand.Dispose (relay cycle) and SqliteConnection.Close (test teardown).
+        // One connection per context leaves the concurrency to SQLite's own file locking,
+        // and DefaultTimeout makes a contended lock wait rather than fail.
+        var databasePath = Path.Combine(Path.GetTempPath(), $"dekaf-outbox-{Guid.NewGuid():N}.db");
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            DefaultTimeout = 30,
+            // Pooled connections outlive the contexts that opened them and keep the file
+            // handle open, which blocks the cleanup delete on Windows.
+            Pooling = false
+        }.ToString();
         var contextOptions = new DbContextOptionsBuilder<OutboxContext>()
-            .UseSqlite(connection)
+            .UseSqlite(connectionString)
             .Options;
+        try
+        {
+            await RunRelayScenarioAsync(topic, contextOptions);
+        }
+        finally
+        {
+            DeleteDatabaseFiles(databasePath);
+        }
+    }
+
+    private async Task RunRelayScenarioAsync(
+        string topic,
+        DbContextOptions<OutboxContext> contextOptions)
+    {
         await using (var context = new OutboxContext(contextOptions))
         {
             await context.Database.EnsureCreatedAsync();
@@ -112,6 +140,28 @@ public class OutboxRelayIntegrationTests(KafkaTestContainer kafka) : KafkaIntegr
         finally
         {
             await relay.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Removes the scenario's database and any journal SQLite left beside it. Deletion is
+    /// best-effort cleanup of a temp file: a failure here must not mask the test result, and
+    /// the file is uniquely named so a leftover cannot affect another run.
+    /// </summary>
+    private static void DeleteDatabaseFiles(string databasePath)
+    {
+        foreach (var suffix in new[] { "", "-journal", "-wal", "-shm" })
+        {
+            try
+            {
+                File.Delete(databasePath + suffix);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
         }
     }
 

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Reflection;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -160,6 +161,24 @@ public abstract class ScriptedProduceResponseFixture
         _scriptedResponses.Clear();
         if (failure is not null)
             throw failure;
+    }
+
+    /// <summary>
+    /// Declares the partitions a test's first wave will cover before its batches are
+    /// published. The send loop only spins for siblings while coalesced partitions are
+    /// fewer than the partitions it knows about, and it learns a partition from the batch
+    /// that carries it — so a wave enqueued into an empty set can be dispatched one batch
+    /// at a time. Seeding the width first makes multi-batch waves deterministic.
+    /// </summary>
+    private protected static void SeedKnownPartitions(
+        BrokerSender sender,
+        params TopicPartition[] topicPartitions)
+    {
+        var knownPartitions = (HashSet<TopicPartition>)typeof(BrokerSender).GetField(
+            "_knownPartitions",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sender)!;
+        foreach (var topicPartition in topicPartitions)
+            knownPartitions.Add(topicPartition);
     }
 
     /// <summary>
