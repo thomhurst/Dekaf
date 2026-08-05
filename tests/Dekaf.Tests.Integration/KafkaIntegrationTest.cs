@@ -88,19 +88,20 @@ public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer
         }
     }
 
-    /// <summary>
-    /// Polls until a condition is true, replacing fixed <c>Task.Delay</c> waits.
-    /// Returns as soon as the condition is met, avoiding unnecessary delays.
-    /// </summary>
-    protected static async Task WaitForConditionAsync(
+    /// <inheritdoc cref="TestWait.WaitForConditionAsync(Func{bool}, TimeSpan, int, string?)"/>
+    protected static Task WaitForConditionAsync(
         Func<bool> condition,
         TimeSpan timeout,
-        int pollIntervalMs = 100)
-    {
-        using var cts = new CancellationTokenSource(timeout);
-        while (!condition())
-        {
-            await Task.Delay(pollIntervalMs, cts.Token).ConfigureAwait(false);
-        }
-    }
+        int pollIntervalMs = 100,
+        string? description = null)
+        => TestWait.WaitForConditionAsync(condition, timeout, pollIntervalMs, description);
+
+    /// <inheritdoc cref="TestWait.WaitForConditionAsync{T}(Func{Task{T}}, Func{T, bool}, int, int, string?)"/>
+    protected static Task<T> WaitForConditionAsync<T>(
+        Func<Task<T>> check,
+        Func<T, bool> condition,
+        int maxRetries = 10,
+        int initialDelayMs = 500,
+        string? description = null)
+        => TestWait.WaitForConditionAsync(check, condition, maxRetries, initialDelayMs, description);
 }

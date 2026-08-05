@@ -23,27 +23,6 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             .Build();
     }
 
-    /// <summary>
-    /// Waits for a condition to become true with linear backoff.
-    /// Admin operations in Kafka have eventual consistency.
-    /// </summary>
-    private static async Task<T> WaitForConditionAsync<T>(
-        Func<Task<T>> check,
-        Func<T, bool> condition,
-        int maxRetries = 5,
-        int initialDelayMs = 500)
-    {
-        T result = default!;
-        for (var i = 0; i < maxRetries; i++)
-        {
-            await Task.Delay(initialDelayMs * (i + 1)).ConfigureAwait(false);
-            result = await check().ConfigureAwait(false);
-            if (condition(result))
-                return result;
-        }
-        return result;
-    }
-
     #region Concurrent CreateTopics
 
     [Test]

@@ -21,27 +21,6 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     }
 
     /// <summary>
-    /// Waits for a condition to become true with linear backoff.
-    /// Admin operations in Kafka have eventual consistency - changes may not be immediately visible.
-    /// </summary>
-    private static async Task<T> WaitForConditionAsync<T>(
-        Func<Task<T>> check,
-        Func<T, bool> condition,
-        int maxRetries = 10,
-        int initialDelayMs = 500)
-    {
-        T result = default!;
-        for (var i = 0; i < maxRetries; i++)
-        {
-            await Task.Delay(initialDelayMs * (i + 1)).ConfigureAwait(false);
-            result = await check().ConfigureAwait(false);
-            if (condition(result))
-                return result;
-        }
-        return result;
-    }
-
-    /// <summary>
     /// Produces the specified number of messages to a single-partition topic.
     /// </summary>
     private async Task ProduceMessagesAsync(string topic, int count, int partition = 0)
