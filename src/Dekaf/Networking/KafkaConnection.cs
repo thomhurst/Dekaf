@@ -124,14 +124,6 @@ public sealed partial class KafkaConnection :
     internal const int DefaultPreSerializeInitialCapacity = 4096;
     private const int MessageSizePrefixLength = 4;
     private const int RequestHeaderSizeSlack = 128;
-
-    // Per-entry estimates for sizing the segmented produce metadata buffer so typical
-    // coalesced requests never grow it mid-serialization (RentedBufferWriter growth is the
-    // safety net for outliers such as very long topic names). A topic contributes a UUID or
-    // compact name plus partition-array framing and tagged fields; a partition contributes
-    // its index, records-length varint, and tagged fields.
-    private const int SegmentedTopicMetadataSizeEstimate = 40;
-    private const int SegmentedPartitionMetadataSizeEstimate = 24;
     private static int s_globalCorrelationId;
     private readonly PendingRequestShard[] _pendingRequestShards;
     private readonly SemaphoreSlim _pendingRequestSlots;
@@ -1615,84 +1607,45 @@ public sealed partial class KafkaConnection :
     {
         if (!_isTls
             && _socket is not null
-            && request is ProduceRequest produceRequest)
+            && request is ProduceRequest produceRequest
+            && TryPreSerializeSingleBatchProduceRequest(
+                produceRequest,
+                correlationId,
+                apiVersion,
+                headerVersion,
+                out var metadataArray,
+                out var prefixLength,
+                out var encodedRecords,
+                out var suffixOffset,
+                out var suffixLength))
         {
-            if (TryPreSerializeSingleBatchProduceRequest(
-                    produceRequest,
-                    correlationId,
-                    apiVersion,
-                    headerVersion,
-                    out var metadataArray,
-                    out var prefixLength,
-                    out var encodedRecords,
-                    out var suffixOffset,
-                    out var suffixLength))
+            try
             {
-                try
-                {
-                    await SemaphoreHelper.AcquireOrThrowDisposedAsync(
-                            _writeLock,
-                            nameof(KafkaConnection),
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch
-                {
-                    DekafPools.SerializationBuffers.Return(metadataArray, clearArray: false);
-                    throw;
-                }
-
-                var segmentedWriteTask = WriteSegmentedFrameHoldingLockAsync(
-                    metadataArray,
-                    prefixLength,
-                    encodedRecords,
-                    suffixOffset,
-                    suffixLength);
-                await AwaitBorrowedFrameWriteAsync(
-                        segmentedWriteTask,
-                        correlationId,
-                        callerOwnsTimeout,
+                await SemaphoreHelper.AcquireOrThrowDisposedAsync(
+                        _writeLock,
+                        nameof(KafkaConnection),
                         cancellationToken)
                     .ConfigureAwait(false);
-                return;
             }
-
-            if (TryPreSerializeSegmentedProduceRequest(
-                    produceRequest,
-                    correlationId,
-                    apiVersion,
-                    headerVersion,
-                    out var segmentedMetadataArray,
-                    out var frameSegments,
-                    out var frameSegmentCount))
+            catch
             {
-                try
-                {
-                    await SemaphoreHelper.AcquireOrThrowDisposedAsync(
-                            _writeLock,
-                            nameof(KafkaConnection),
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch
-                {
-                    ReturnFrameSegments(frameSegments, frameSegmentCount);
-                    DekafPools.SerializationBuffers.Return(segmentedMetadataArray, clearArray: false);
-                    throw;
-                }
-
-                var segmentedFrameWriteTask = WriteSegmentedFrameHoldingLockAsync(
-                    segmentedMetadataArray,
-                    frameSegments,
-                    frameSegmentCount);
-                await AwaitBorrowedFrameWriteAsync(
-                        segmentedFrameWriteTask,
-                        correlationId,
-                        callerOwnsTimeout,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-                return;
+                DekafPools.SerializationBuffers.Return(metadataArray, clearArray: false);
+                throw;
             }
+
+            var segmentedWriteTask = WriteSegmentedFrameHoldingLockAsync(
+                metadataArray,
+                prefixLength,
+                encodedRecords,
+                suffixOffset,
+                suffixLength);
+            await AwaitBorrowedFrameWriteAsync(
+                    segmentedWriteTask,
+                    correlationId,
+                    callerOwnsTimeout,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return;
         }
 
         var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
@@ -1743,8 +1696,21 @@ public sealed partial class KafkaConnection :
             DefaultPreSerializeInitialCapacity,
             MessageSizePrefixLength);
         var writer = new KafkaProtocolWriter(metadataWriter);
-        var headerLength = WriteProduceHeaderAndPreamble(
-            ref writer, request, correlationId, apiVersion, headerVersion);
+        var header = new RequestHeader
+        {
+            ApiKey = ApiKey.Produce,
+            ApiVersion = apiVersion,
+            CorrelationId = correlationId,
+            ClientId = _clientId,
+            HeaderVersion = headerVersion
+        };
+
+        header.Write(ref writer);
+        var headerLength = writer.BytesWritten;
+
+        writer.WriteCompactNullableString(request.TransactionalId);
+        writer.WriteInt16(request.Acks);
+        writer.WriteInt32(request.TimeoutMs);
         writer.WriteUnsignedVarInt(2); // one topic, compact count is item count + 1
         if (apiVersion >= ProduceRequest.TopicIdVersion)
             writer.WriteUuid(topic.TopicId);
@@ -1792,311 +1758,18 @@ public sealed partial class KafkaConnection :
         suffixOffset = prefixLength;
         suffixLength = metadataWriter.WrittenCount - prefixLength;
 
-        ThrowIfProduceBodySizeHintMismatch(request, writer.BytesWritten - headerLength);
-
-        var totalLength = checked(metadataWriter.WrittenCount + encodedRecordsLength);
-        (metadataArray, _) = metadataWriter.DetachBuffer();
-        BinaryPrimitives.WriteInt32BigEndian(metadataArray, totalLength - MessageSizePrefixLength);
-        return true;
-    }
-
-    /// <summary>
-    /// Generalization of <see cref="TryPreSerializeSingleBatchProduceRequest"/> to coalesced
-    /// (multi-batch, multi-partition, multi-topic) produce requests. All request metadata —
-    /// size prefix, request header, topic/partition framing, each batch's 61-byte record-batch
-    /// header, and the trailing tagged fields — is serialized into one rented metadata array;
-    /// record payload bytes stay in their caller-owned buffers (accumulator memory or
-    /// pre-compressed arrays). The out parameters describe the exact wire interleaving as an
-    /// ordered pooled list of segments: metadata slice, record bytes, metadata slice, ...,
-    /// final metadata slice. The assembled segments are byte-identical to
-    /// <see cref="PreSerializeRequest{TRequest,TResponse}"/> output for the same request.
-    /// </summary>
-    /// <remarks>
-    /// All-or-nothing: if any batch cannot write segmented for its partition's compression, or
-    /// any record buffer is not array-backed, the method returns false without side effects and
-    /// the caller uses the copying path for the whole request. On success the caller owns
-    /// <paramref name="metadataArray"/> (return to <see cref="DekafPools.SerializationBuffers"/>)
-    /// and <paramref name="frameSegments"/> (return via <see cref="ReturnFrameSegments"/>,
-    /// which clears the written prefix so pooled descriptor arrays do not root record buffers).
-    /// </remarks>
-    internal bool TryPreSerializeSegmentedProduceRequest(
-        ProduceRequest request,
-        int correlationId,
-        short apiVersion,
-        short headerVersion,
-        out byte[] metadataArray,
-        out SegmentedFrameSegment[] frameSegments,
-        out int frameSegmentCount)
-    {
-        metadataArray = null!;
-        frameSegments = null!;
-        frameSegmentCount = 0;
-
-        // All-or-nothing precheck: every batch must be segment-eligible before any
-        // serialization work happens, so a mixed request takes the copying path whole. The
-        // same walk gathers the counts that size the metadata buffer and the frame-segment
-        // array exactly (each batch caches its chunk count at seal time), so neither grows
-        // mid-serialization on typical requests.
-        var topicCount = request.TopicEntryCount;
-        var totalPartitionCount = 0;
-        var totalBatchCount = 0;
-        var recordSegmentHint = 0;
-        for (var t = 0; t < topicCount; t++)
-        {
-            var topic = request.GetTopicEntry(t);
-            var partitionCount = topic.PartitionEntryCount;
-            for (var p = 0; p < partitionCount; p++)
-            {
-                var partition = topic.GetPartitionEntry(p);
-                var records = partition.Records;
-                for (var b = 0; b < records.Count; b++)
-                {
-                    var batch = records[b];
-                    if (!batch.CanWriteSegmented(partition.Compression))
-                        return false;
-
-                    recordSegmentHint += batch.SegmentedRecordsSegmentCountHint;
-                }
-
-                totalBatchCount += records.Count;
-            }
-
-            totalPartitionCount += partitionCount;
-        }
-
-        if (totalBatchCount == 0)
-            return false;
-
-        var metadataCapacity = Math.Max(
-            DefaultPreSerializeInitialCapacity,
-            checked(RequestHeaderSizeSlack
-                + (topicCount * SegmentedTopicMetadataSizeEstimate)
-                + (totalPartitionCount * SegmentedPartitionMetadataSizeEstimate)
-                + (totalBatchCount * RecordBatch.TotalBatchHeaderSize)));
-        using var metadataWriter = new RentedBufferWriter(
-            metadataCapacity,
-            MessageSizePrefixLength);
-        var writer = new KafkaProtocolWriter(metadataWriter);
-        var headerLength = WriteProduceHeaderAndPreamble(
-            ref writer, request, correlationId, apiVersion, headerVersion);
-        writer.WriteUnsignedVarInt(topicCount + 1);
-
-        // One metadata slice per batch (closed by that batch's header), one record segment per
-        // encoded chunk (hinted per batch at seal time), plus the final tagged-fields slice.
-        // AppendFrameSegment growth remains the safety net if a batch changes concurrently.
-        var frameSegmentCapacity = totalBatchCount + recordSegmentHint + 1;
-        var segments = ArrayPool<SegmentedFrameSegment>.Shared.Rent(frameSegmentCapacity);
-        var segmentCount = 0;
-        var metadataSliceStart = 0;
-        var detached = false;
-        try
-        {
-            for (var t = 0; t < topicCount; t++)
-            {
-                var topic = request.GetTopicEntry(t);
-                if (apiVersion >= ProduceRequest.TopicIdVersion)
-                    writer.WriteUuid(topic.TopicId);
-                else
-                    writer.WriteCompactString(topic.Name);
-
-                var partitionCount = topic.PartitionEntryCount;
-                writer.WriteUnsignedVarInt(partitionCount + 1);
-                for (var p = 0; p < partitionCount; p++)
-                {
-                    var partition = topic.GetPartitionEntry(p);
-                    writer.WriteInt32(partition.Index);
-
-                    var records = partition.Records;
-                    var recordsLength = 0;
-                    for (var b = 0; b < records.Count; b++)
-                        recordsLength = checked(recordsLength + records[b].GetEncodedSize(partition.Compression));
-
-                    // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null).
-                    writer.WriteUnsignedVarInt(checked(recordsLength + 1));
-
-                    var actualRecordsLength = 0;
-                    for (var b = 0; b < records.Count; b++)
-                    {
-                        if (!records[b].TryWriteSegmentedHeader(
-                                metadataWriter,
-                                partition.Compression,
-                                out var encodedRecords))
-                        {
-                            return false;
-                        }
-
-                        // Close the pending metadata slice; it ends with the batch header
-                        // TryWriteSegmentedHeader just wrote.
-                        AppendFrameSegment(
-                            ref segments,
-                            ref segmentCount,
-                            new SegmentedFrameSegment(
-                                null,
-                                metadataSliceStart,
-                                metadataWriter.WrittenCount - metadataSliceStart));
-
-                        var encodedRecordsLength = 0;
-                        foreach (var memory in encodedRecords)
-                        {
-                            if (memory.Length == 0)
-                                continue;
-
-                            if (!MemoryMarshal.TryGetArray(memory, out var recordsSegment))
-                                return false;
-
-                            AppendFrameSegment(
-                                ref segments,
-                                ref segmentCount,
-                                new SegmentedFrameSegment(
-                                    recordsSegment.Array,
-                                    recordsSegment.Offset,
-                                    recordsSegment.Count));
-                            encodedRecordsLength = checked(encodedRecordsLength + memory.Length);
-                        }
-
-                        metadataSliceStart = metadataWriter.WrittenCount;
-
-                        var encodedBatchSize = RecordBatch.TotalBatchHeaderSize + encodedRecordsLength;
-                        writer.AddBytesWritten(encodedBatchSize);
-                        actualRecordsLength = checked(actualRecordsLength + encodedBatchSize);
-                    }
-
-                    if (actualRecordsLength != recordsLength)
-                    {
-                        throw new KafkaException(
-                            ErrorCode.CorruptMessage,
-                            $"PRODUCE segmented framing mismatch for partition {partition.Index}: " +
-                            $"declared records length {recordsLength} but segmented headers and records " +
-                            $"total {actualRecordsLength} bytes across {records.Count} batch(es).");
-                    }
-
-                    writer.WriteEmptyTaggedFields(); // partition
-                }
-
-                writer.WriteEmptyTaggedFields(); // topic
-            }
-
-            writer.WriteEmptyTaggedFields(); // request
-
-            ThrowIfProduceBodySizeHintMismatch(request, writer.BytesWritten - headerLength);
-
-            // Close the final metadata slice (partition/topic/request tagged fields).
-            AppendFrameSegment(
-                ref segments,
-                ref segmentCount,
-                new SegmentedFrameSegment(
-                    null,
-                    metadataSliceStart,
-                    metadataWriter.WrittenCount - metadataSliceStart));
-
-#if DEBUG
-            var frameLength = 0L;
-            for (var i = 0; i < segmentCount; i++)
-                frameLength += segments[i].Count;
-            Debug.Assert(frameLength == MessageSizePrefixLength + writer.BytesWritten,
-                "Segmented produce frame segments do not add up to the full frame length");
-#endif
-
-            (metadataArray, _) = metadataWriter.DetachBuffer();
-            detached = true;
-            BinaryPrimitives.WriteInt32BigEndian(metadataArray, writer.BytesWritten);
-            frameSegments = segments;
-            frameSegmentCount = segmentCount;
-            return true;
-        }
-        finally
-        {
-            // Any bail-out (ineligible batch, non-array-backed records, framing mismatch throw)
-            // must return the pooled descriptor array; the using-disposal above returns the
-            // metadata buffer. Record buffers are untouched, so the copying path stays valid.
-            if (!detached)
-                ReturnFrameSegments(segments, segmentCount);
-        }
-    }
-
-    /// <summary>
-    /// Writes the request header and the produce body preamble (transactional id, acks,
-    /// timeout) shared by both segmented produce pre-serializers. Returns the serialized
-    /// header length so callers can validate the body length against the request size hint.
-    /// </summary>
-    private int WriteProduceHeaderAndPreamble(
-        ref KafkaProtocolWriter writer,
-        ProduceRequest request,
-        int correlationId,
-        short apiVersion,
-        short headerVersion)
-    {
-        var header = new RequestHeader
-        {
-            ApiKey = ApiKey.Produce,
-            ApiVersion = apiVersion,
-            CorrelationId = correlationId,
-            ClientId = _clientId,
-            HeaderVersion = headerVersion
-        };
-
-        header.Write(ref writer);
-        var headerLength = writer.BytesWritten;
-
-        writer.WriteCompactNullableString(request.TransactionalId);
-        writer.WriteInt16(request.Acks);
-        writer.WriteInt32(request.TimeoutMs);
-        return headerLength;
-    }
-
-    private static void ThrowIfProduceBodySizeHintMismatch(ProduceRequest request, int bodyLength)
-    {
+        var bodyLength = writer.BytesWritten - headerLength;
         if (request.RequestBodySizeHint > 0 && bodyLength != request.RequestBodySizeHint)
         {
             throw new KafkaException(
                 ErrorCode.CorruptMessage,
                 $"PRODUCE segmented body mismatch: size hint {request.RequestBodySizeHint} but serialized {bodyLength} bytes.");
         }
-    }
 
-    private static void AppendFrameSegment(
-        ref SegmentedFrameSegment[] segments,
-        ref int count,
-        in SegmentedFrameSegment segment)
-    {
-        if ((uint)count >= (uint)segments.Length)
-            GrowFrameSegments(ref segments, count);
-
-        segments[count++] = segment;
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void GrowFrameSegments(ref SegmentedFrameSegment[] segments, int count)
-    {
-        var grown = ArrayPool<SegmentedFrameSegment>.Shared.Rent(segments.Length * 2);
-        Array.Copy(segments, grown, count);
-        ReturnFrameSegments(segments, count);
-        segments = grown;
-    }
-
-    /// <summary>
-    /// Returns a pooled frame-segment array after clearing only its written prefix — enough
-    /// to stop the pooled array GC-rooting MB-scale record buffers, without memclearing the
-    /// full rounded-up rented length the way <c>Return(clearArray: true)</c> would.
-    /// </summary>
-    private static void ReturnFrameSegments(SegmentedFrameSegment[] segments, int count)
-    {
-        Array.Clear(segments, 0, count);
-        ArrayPool<SegmentedFrameSegment>.Shared.Return(segments, clearArray: false);
-    }
-
-    /// <summary>
-    /// One wire segment of a segmented produce frame. <see cref="Array"/> is null for a slice
-    /// of the rented metadata array — resolved against it at send time because the metadata
-    /// buffer can be reallocated (grown) while later metadata is still being serialized — and
-    /// non-null for a slice of a caller-owned records buffer (accumulator memory or a
-    /// pre-compressed array).
-    /// </summary>
-    internal readonly struct SegmentedFrameSegment(byte[]? array, int offset, int count)
-    {
-        public byte[]? Array { get; } = array;
-        public int Offset { get; } = offset;
-        public int Count { get; } = count;
+        var totalLength = checked(metadataWriter.WrittenCount + encodedRecordsLength);
+        (metadataArray, _) = metadataWriter.DetachBuffer();
+        BinaryPrimitives.WriteInt32BigEndian(metadataArray, totalLength - MessageSizePrefixLength);
+        return true;
     }
 
     private async Task WriteSegmentedFrameHoldingLockAsync(
@@ -2163,76 +1836,6 @@ public sealed partial class KafkaConnection :
                 SemaphoreHelper.ReleaseSafely(_scatterGatherSenderLock);
             }
 
-            DekafPools.SerializationBuffers.Return(metadataArray, clearArray: false);
-            SemaphoreHelper.ReleaseSafely(_writeLock);
-        }
-    }
-
-    /// <summary>
-    /// Multi-batch counterpart of
-    /// <see cref="WriteSegmentedFrameHoldingLockAsync(byte[], int, ReadOnlySequence{byte}, int, int)"/>:
-    /// writes the frame described by <paramref name="frameSegments"/> — alternating rented-metadata
-    /// slices and borrowed record buffers — without copying record bytes. From entry this task owns
-    /// the write lock, the metadata array, and the pooled segment array, and releases all three
-    /// itself so a timed-out caller can abandon the wait without cancelling a socket write mid-frame
-    /// (see <see cref="AwaitBorrowedFrameWriteAsync"/>).
-    /// </summary>
-    private async Task WriteSegmentedFrameHoldingLockAsync(
-        byte[] metadataArray,
-        SegmentedFrameSegment[] frameSegments,
-        int frameSegmentCount)
-    {
-        var scatterGatherSenderLockHeld = false;
-        try
-        {
-            await _scatterGatherSenderLock.WaitAsync().ConfigureAwait(false);
-            scatterGatherSenderLockHeld = true;
-
-            var socket = _socket ?? throw new InvalidOperationException("Not connected");
-            if (_stream is null)
-                throw new InvalidOperationException("Not connected");
-
-            if (Volatile.Read(ref _disposed) != 0)
-                throw new ObjectDisposedException(nameof(KafkaConnection));
-
-            var sender = _scatterGatherSender ??= new SocketScatterGatherSender(frameSegmentCount);
-            sender.EnsurePendingSegmentCapacity(frameSegmentCount);
-            var pendingSegments = sender.PendingSegments;
-            for (var i = 0; i < frameSegmentCount; i++)
-            {
-                var segment = frameSegments[i];
-                pendingSegments.Add(new ArraySegment<byte>(
-                    segment.Array ?? metadataArray,
-                    segment.Offset,
-                    segment.Count));
-            }
-
-            sender.BeginPendingSend();
-            while (sender.HasPendingSegments)
-            {
-                sender.LoadSendWindow();
-                var bytesSent = await sender.SendAsync(socket).ConfigureAwait(false);
-                if (bytesSent <= 0)
-                    throw new IOException("Socket closed while writing a Kafka request frame.");
-
-                sender.ConsumeSentBytes(bytesSent);
-            }
-        }
-        catch
-        {
-            AbortAfterWriteFailure();
-            throw;
-        }
-        finally
-        {
-            if (scatterGatherSenderLockHeld)
-            {
-                _scatterGatherSender?.Segments.Clear();
-                _scatterGatherSender?.PendingSegments.Clear();
-                SemaphoreHelper.ReleaseSafely(_scatterGatherSenderLock);
-            }
-
-            ReturnFrameSegments(frameSegments, frameSegmentCount);
             DekafPools.SerializationBuffers.Return(metadataArray, clearArray: false);
             SemaphoreHelper.ReleaseSafely(_writeLock);
         }
