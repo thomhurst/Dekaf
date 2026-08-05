@@ -5588,7 +5588,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             batch.EnableDeliveryDiagnostics();
             batch.AppendDiag('E');
         }
-        batch.DeliveryAccountingExited = 0;
+        batch.DeliveryAccountingArmed = 1;
         Interlocked.Increment(ref _undeliveredBatchCount);
         Interlocked.Increment(ref _inFlightBatchCount);
         InFlightBatchListAdd(batch);
@@ -5596,14 +5596,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Marks a pipeline batch's delivery as complete for the app-limited bypass gate
-    /// (#2510). Idempotent per flight (flag-guarded): the sender calls this immediately
-    /// before CompleteSend on the ack path so a serial awaited caller's next append sees
-    /// zero undelivered batches; OnBatchExitsPipeline calls it as the fallback covering
-    /// every failure, purge, sweep, and dispose path.
+    /// (#2510). Idempotent per flight: only the call that disarms
+    /// <see cref="ReadyBatch.DeliveryAccountingArmed"/> decrements, and batches that never
+    /// entered the pipeline are unarmed no-ops. The sender calls this immediately before
+    /// CompleteSend on the ack path so a serial awaited caller's next append sees zero
+    /// undelivered batches; OnBatchExitsPipeline calls it as the fallback covering every
+    /// failure, purge, sweep, and dispose path.
     /// </summary>
     internal void MarkBatchDeliveryComplete(ReadyBatch batch)
     {
-        if (Interlocked.Exchange(ref batch.DeliveryAccountingExited, 1) != 0)
+        if (Interlocked.Exchange(ref batch.DeliveryAccountingArmed, 0) != 1)
             return;
 
         var count = Interlocked.Decrement(ref _undeliveredBatchCount);
@@ -8785,12 +8787,14 @@ internal sealed class ReadyBatch
     internal int UnackedBudgetPipelineTracked;
 
     /// <summary>
-    /// 1 once this pipeline flight has been subtracted from the accumulator's undelivered
-    /// count (app-limited bypass gate, #2510). Guards the decrement so the sender's
-    /// pre-CompleteSend call and OnBatchExitsPipeline's fallback can both run.
-    /// Re-armed to 0 by OnBatchEntersPipeline at the start of every flight.
+    /// 1 while this flight is counted in the accumulator's undelivered-batch count
+    /// (app-limited bypass gate, #2510). Armed by OnBatchEntersPipeline; the first
+    /// MarkBatchDeliveryComplete call (sender pre-CompleteSend, or the
+    /// OnBatchExitsPipeline fallback) disarms it and decrements. Batches that never
+    /// entered the pipeline (e.g. test harnesses enqueueing straight into a sender)
+    /// stay at 0, so completion marking is a no-op for them.
     /// </summary>
-    internal int DeliveryAccountingExited;
+    internal int DeliveryAccountingArmed;
 
     // Intrusive linked list pointers for RecordAccumulator._inFlightBatchList.
     // Using embedded pointers eliminates per-batch ConcurrentDictionary.Node allocations
