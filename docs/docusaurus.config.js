@@ -13,6 +13,30 @@ const config = {
   organizationName: 'thomhurst',
   projectName: 'Dekaf',
 
+  headTags: [
+    {
+      tagName: 'script',
+      attributes: {},
+      innerHTML: `window.tlumaConfig = {
+  source: 'thomhurst/dekaf',
+  theme: 'auto',
+  brandColor: 'blue',
+  button: 'bottom-right',
+  welcomePulse: true,
+  edgePadding: '1rem',
+  autoOpen: false,
+  desktopFullscreenByDefault: false,
+};`,
+    },
+  ],
+
+  scripts: [
+    {
+      src: 'https://tluma.ai/widget.js',
+      async: true,
+    },
+  ],
+
   onBrokenLinks: 'throw',
 
   markdown: {
