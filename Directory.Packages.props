@@ -31,7 +31,7 @@
     <PackageVersion Include="ModularPipelines.DotNet" Version="3.2.8" />
     <PackageVersion Include="ModularPipelines.Git" Version="3.2.8" />
     <PackageVersion Include="ModularPipelines.GitHub" Version="3.2.8" />
-    <PackageVersion Include="NSubstitute" Version="6.0.0" />
+    <PackageVersion Include="NSubstitute" Version="6.1.0" />
     <PackageVersion Include="OpenTelemetry" Version="1.17.0" />
     <PackageVersion Include="OpenTelemetry.Api" Version="1.17.0" />
     <PackageVersion Include="Polyfill" Version="11.0.2" />
