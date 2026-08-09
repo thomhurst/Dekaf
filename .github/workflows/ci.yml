@@ -565,6 +565,7 @@ jobs:
     # artifact upload uses the exposed Actions runtime token — neither relies on GITHUB_TOKEN scopes.
     permissions:
       contents: write  # Create GitHub releases (and their tags) when publishing
+      id-token: write  # Request a NuGet trusted publishing token
 
     steps:
       - name: Checkout
@@ -607,13 +608,18 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
             core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
 
+      - name: NuGet login
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
       - name: Run Pipeline (publish)
         env:
           NET_VERSION: net10.0
           SKIP_INTEGRATION_TESTS: 'true'
           SKIP_AOT_SMOKE_TESTS: 'true'
           NuGet__ShouldPublish: 'true'
-          NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
+          NuGet__ApiKey: ${{ steps.login.outputs.NUGET_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Used by CreateReleaseModule when a publish ships packages
         run: dotnet run --project tools/Dekaf.Pipeline
 
