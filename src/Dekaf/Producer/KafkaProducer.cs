@@ -1937,24 +1937,57 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ArgumentNullException.ThrowIfNull(topic);
         ArgumentNullException.ThrowIfNull(messages);
 
-        // Materialize before entering the bulk scope so arbitrary caller enumeration cannot
-        // suppress the accumulator's app-limited seal gate for an unbounded duration.
-        var messageList = PooledReadOnlyList<TopicProducerMessage<TKey, TValue>>.Rent(messages);
-        if (messageList.Count == 0)
+        if (messages is IList<TopicProducerMessage<TKey, TValue>> messageList)
         {
-            messageList.Dispose();
-            return [];
-        }
+            if (messageList.Count == 0)
+                return [];
 
-        var completion = ProduceAllCompletion.Rent(messageList.Count);
-        using var bulkScope = _accumulator.EnterBulkProduceScope();
-        try
-        {
+            var listCompletion = ProduceAllCompletion.Rent(messageList.Count);
+            using var listBulkScope = _accumulator.EnterBulkProduceScope();
             for (var i = 0; i < messageList.Count; i++)
             {
                 try
                 {
                     var message = messageList[i];
+                    listCompletion.Register(i, ProduceAsync(
+                        topic,
+                        message.Key,
+                        message.Value,
+                        message.Headers,
+                        message.Partition,
+                        message.Timestamp,
+                        ProduceContinuationMode.InlineWhenDirect,
+                        cancellationToken));
+                }
+                catch (Exception ex)
+                {
+                    listCompletion.RecordFailure(i, ex);
+                    listCompletion.AbortRegistration(messageList.Count - i);
+                    break;
+                }
+            }
+
+            return await listCompletion.WaitAsync().ConfigureAwait(false);
+        }
+
+        // Materialize before entering the bulk scope so arbitrary caller enumeration cannot
+        // suppress the accumulator's app-limited seal gate for an unbounded duration.
+        var messageBuffer = PooledReadOnlyList<TopicProducerMessage<TKey, TValue>>.Rent(messages);
+        if (messageBuffer.Count == 0)
+        {
+            messageBuffer.Dispose();
+            return [];
+        }
+
+        var completion = ProduceAllCompletion.Rent(messageBuffer.Count);
+        using var bulkScope = _accumulator.EnterBulkProduceScope();
+        try
+        {
+            for (var i = 0; i < messageBuffer.Count; i++)
+            {
+                try
+                {
+                    var message = messageBuffer[i];
                     completion.Register(i, ProduceAsync(
                         topic,
                         message.Key,
@@ -1968,14 +2001,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 catch (Exception ex)
                 {
                     completion.RecordFailure(i, ex);
-                    completion.AbortRegistration(messageList.Count - i);
+                    completion.AbortRegistration(messageBuffer.Count - i);
                     break;
                 }
             }
         }
         finally
         {
-            messageList.Dispose();
+            messageBuffer.Dispose();
         }
 
         return await completion.WaitAsync().ConfigureAwait(false);

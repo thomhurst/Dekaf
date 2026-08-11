@@ -43,6 +43,25 @@ public class TopicProducerProduceAllBenchmarks
     [Benchmark]
     public Task<RecordMetadata[]> ProduceAllAsync() => _producer.ProduceAllAsync(GetMessages());
 
+    [Benchmark]
+    public int MaterializeForIndexedRegistration()
+    {
+        var source = GetMessages();
+        if (source is IList<TopicProducerMessage<string, string>> messageList)
+        {
+            var listChecksum = 0;
+            for (var i = 0; i < messageList.Count; i++)
+                listChecksum += messageList[i].Value.Length;
+            return listChecksum;
+        }
+
+        using var messages = PooledReadOnlyList<TopicProducerMessage<string, string>>.Rent(source);
+        var checksum = 0;
+        for (var i = 0; i < messages.Count; i++)
+            checksum += messages[i].Value.Length;
+        return checksum;
+    }
+
     private IEnumerable<TopicProducerMessage<string, string>> GetMessages() =>
         Source is MessageSource.Array ? _messages : EnumerateMessages();
 
