@@ -87,6 +87,7 @@ public class MpscFetchBufferSignalBenchmarks
     {
         var expectedVersion = Volatile.Read(ref _completionVersion) + 1;
         _completionException = null;
+        _signaled = false;
         _pendingWait = _buffer.WaitToReadAsync(Timeout.Infinite, CancellationToken.None);
         if (_pendingWait.IsCompleted)
             throw new InvalidOperationException("Read wait did not park.");
@@ -107,6 +108,9 @@ public class MpscFetchBufferSignalBenchmarks
 
         if (_completionException is not null)
             throw new InvalidOperationException("Read wait failed.", _completionException);
+
+        if (!_signaled)
+            throw new InvalidOperationException("Read wait completed without a data signal.");
 
         if (!_buffer.TryRead(out var item) || !ReferenceEquals(item, _item))
             throw new InvalidOperationException("Benchmark item could not be read.");
