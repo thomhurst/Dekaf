@@ -16,6 +16,7 @@ internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, T
     public int? CapturedPartition { get; private set; }
     public DateTimeOffset? CapturedTimestamp { get; private set; }
     public CancellationToken CapturedCancellationToken { get; private set; }
+    public List<TKey?> CapturedBatchKeys { get; } = [];
 
     public RecordMetadata Result { get; set; } = new()
     {
@@ -87,7 +88,8 @@ internal sealed class FastPathProducerSpy<TKey, TValue> : IKafkaProducer<TKey, T
                 message.Partition,
                 message.Timestamp,
                 cancellationToken);
-            results.Add(Result);
+            CapturedBatchKeys.Add(message.Key);
+            results.Add(Result with { Offset = results.Count });
         }
 
         return Task.FromResult(results.ToArray());

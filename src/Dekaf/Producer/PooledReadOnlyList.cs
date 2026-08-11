@@ -24,7 +24,57 @@ internal ref struct PooledReadOnlyList<T>
 
     public T this[int index] => _rentedArray is not null ? _rentedArray[index] : _firstItem!;
 
-    public static PooledReadOnlyList<T> Rent(IEnumerable<T> source)
+    public static PooledReadOnlyList<T> Rent(IEnumerable<T> source) => source switch
+    {
+        Queue<T> { Count: 1 } queue => new PooledReadOnlyList<T>(queue.Peek(), null, 1),
+        Queue<T> queue => RentQueue(queue),
+        Stack<T> { Count: 1 } stack => new PooledReadOnlyList<T>(stack.Peek(), null, 1),
+        LinkedList<T> { Count: 1 } linkedList => new PooledReadOnlyList<T>(linkedList.First!.Value, null, 1),
+        HashSet<T> { Count: 1 } hashSet => RentEnumerator(hashSet.GetEnumerator()),
+        SortedSet<T> { Count: 1 } sortedSet => RentEnumerator(sortedSet.GetEnumerator()),
+        ICollection<T> collection => RentCollection(collection),
+        _ => RentEnumerator(source.GetEnumerator()),
+    };
+
+    private static PooledReadOnlyList<T> RentQueue(Queue<T> queue)
+    {
+        if (queue.Count == 0)
+            return new PooledReadOnlyList<T>(default, null, 0);
+
+        // Keep the concrete CopyTo call: dispatch through ICollection<T> measured 40 B/op.
+        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, queue.Count));
+        try
+        {
+            queue.CopyTo(rentedArray, 0);
+            return new PooledReadOnlyList<T>(default, rentedArray, queue.Count);
+        }
+        catch
+        {
+            ArrayPool<T>.Shared.Return(rentedArray, clearArray: true);
+            throw;
+        }
+    }
+
+    private static PooledReadOnlyList<T> RentCollection(ICollection<T> collection)
+    {
+        if (collection.Count == 0)
+            return new PooledReadOnlyList<T>(default, null, 0);
+
+        var rentedArray = ArrayPool<T>.Shared.Rent(Math.Max(InitialPooledCapacity, collection.Count));
+        try
+        {
+            collection.CopyTo(rentedArray, 0);
+            return new PooledReadOnlyList<T>(default, rentedArray, collection.Count);
+        }
+        catch
+        {
+            ArrayPool<T>.Shared.Return(rentedArray, clearArray: true);
+            throw;
+        }
+    }
+
+    private static PooledReadOnlyList<T> RentEnumerator<TEnumerator>(TEnumerator enumerator)
+        where TEnumerator : IEnumerator<T>
     {
         T[]? rentedArray = null;
         T? firstItem = default;
@@ -32,8 +82,9 @@ internal ref struct PooledReadOnlyList<T>
 
         try
         {
-            foreach (var item in source)
+            while (enumerator.MoveNext())
             {
+                var item = enumerator.Current;
                 if (count == 0)
                 {
                     firstItem = item;
@@ -64,6 +115,10 @@ internal ref struct PooledReadOnlyList<T>
             if (rentedArray is not null)
                 ArrayPool<T>.Shared.Return(rentedArray, clearArray: true);
             throw;
+        }
+        finally
+        {
+            enumerator.Dispose();
         }
     }
 

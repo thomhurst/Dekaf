@@ -1979,39 +1979,57 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return [];
         }
 
-        var completion = ProduceAllCompletion.Rent(messageBuffer.Count);
-        using var bulkScope = _accumulator.EnterBulkProduceScope();
+        ProduceAllCompletion completion;
+        RecordAccumulator.BulkProduceScope bulkScope;
         try
         {
-            for (var i = 0; i < messageBuffer.Count; i++)
+            completion = ProduceAllCompletion.Rent(messageBuffer.Count);
+            bulkScope = _accumulator.EnterBulkProduceScope();
+        }
+        catch
+        {
+            messageBuffer.Dispose();
+            throw;
+        }
+
+        try
+        {
+            try
             {
-                try
+                for (var i = 0; i < messageBuffer.Count; i++)
                 {
-                    var message = messageBuffer[i];
-                    completion.Register(i, ProduceAsync(
-                        topic,
-                        message.Key,
-                        message.Value,
-                        message.Headers,
-                        message.Partition,
-                        message.Timestamp,
-                        ProduceContinuationMode.InlineWhenDirect,
-                        cancellationToken));
-                }
-                catch (Exception ex)
-                {
-                    completion.RecordFailure(i, ex);
-                    completion.AbortRegistration(messageBuffer.Count - i);
-                    break;
+                    try
+                    {
+                        var message = messageBuffer[i];
+                        completion.Register(i, ProduceAsync(
+                            topic,
+                            message.Key,
+                            message.Value,
+                            message.Headers,
+                            message.Partition,
+                            message.Timestamp,
+                            ProduceContinuationMode.InlineWhenDirect,
+                            cancellationToken));
+                    }
+                    catch (Exception ex)
+                    {
+                        completion.RecordFailure(i, ex);
+                        completion.AbortRegistration(messageBuffer.Count - i);
+                        break;
+                    }
                 }
             }
+            finally
+            {
+                messageBuffer.Dispose();
+            }
+
+            return await completion.WaitAsync().ConfigureAwait(false);
         }
         finally
         {
-            messageBuffer.Dispose();
+            bulkScope.Dispose();
         }
-
-        return await completion.WaitAsync().ConfigureAwait(false);
     }
 
     public ValueTask FlushAsync(CancellationToken cancellationToken = default)

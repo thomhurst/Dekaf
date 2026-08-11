@@ -181,24 +181,41 @@ public class TopicProducerProduceAllBenchmarks
 public class TopicProducerMessageMaterializationBenchmarks
 {
     private TopicProducerMessage<string, string>[] _messages = null!;
+    private Queue<TopicProducerMessage<string, string>> _queue = null!;
+
+    public enum EnumerableSource
+    {
+        Iterator,
+        Queue,
+    }
 
     [Params(1, 100)]
     public int MessageCount { get; set; }
 
+    [ParamsAllValues]
+    public EnumerableSource Source { get; set; }
+
     [GlobalSetup]
-    public void Setup() => _messages = Enumerable.Range(0, MessageCount)
-        .Select(static i => new TopicProducerMessage<string, string> { Key = i.ToString(), Value = "value" })
-        .ToArray();
+    public void Setup()
+    {
+        _messages = Enumerable.Range(0, MessageCount)
+            .Select(static i => new TopicProducerMessage<string, string> { Key = i.ToString(), Value = "value" })
+            .ToArray();
+        _queue = new Queue<TopicProducerMessage<string, string>>(_messages);
+    }
 
     [Benchmark]
     public int MaterializeForIndexedRegistration()
     {
-        using var messages = PooledReadOnlyList<TopicProducerMessage<string, string>>.Rent(EnumerateMessages());
+        using var messages = PooledReadOnlyList<TopicProducerMessage<string, string>>.Rent(GetMessages());
         var checksum = 0;
         for (var i = 0; i < messages.Count; i++)
             checksum += messages[i].Value.Length;
         return checksum;
     }
+
+    private IEnumerable<TopicProducerMessage<string, string>> GetMessages() =>
+        Source is EnumerableSource.Iterator ? EnumerateMessages() : _queue;
 
     private IEnumerable<TopicProducerMessage<string, string>> EnumerateMessages()
     {

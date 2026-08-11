@@ -360,6 +360,10 @@ public class TopicProducerTests
         var results = await topicProducer.ProduceAllAsync(messages, cts.Token);
 
         await Assert.That(results).Count().IsEqualTo(2);
+        await Assert.That(results[0].Offset).IsEqualTo(0);
+        await Assert.That(results[1].Offset).IsEqualTo(1);
+        await Assert.That(innerProducer.CapturedBatchKeys[0]).IsEqualTo("key1");
+        await Assert.That(innerProducer.CapturedBatchKeys[1]).IsEqualTo("key2");
         await Assert.That(innerProducer.BatchFastPathCalls).IsEqualTo(1);
         await Assert.That(innerProducer.FastPathCalls).IsEqualTo(2);
         await Assert.That(innerProducer.MessageCalls).IsEqualTo(0);
